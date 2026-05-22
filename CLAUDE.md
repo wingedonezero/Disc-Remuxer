@@ -69,6 +69,61 @@ A function at L0 or L1 cannot be ported. It must first be **deep-examined**:
 If the function calls into helpers that are still at L<2, **examine them
 first**. Topological order applies inside a function's callee tree too.
 
+## Step 3.5 — rebucket if the v1 categorizer was wrong
+
+The v1 categorizer used heuristics on string content and call patterns,
+so some functions ended up in the wrong bucket. **Once a function is
+L2** (and only once it is L2), you may move it to the correct bucket
+with explicit reasoning. **L0/L1 rows can never be rebucketed** — the
+per-function note is the evidence that justifies any move.
+
+### Inline at examine-time (preferred)
+
+If the deep-exam note already concludes the row belongs in a different
+bucket, add `--rebucket=BX` to the same `examine` call:
+
+```bash
+atlas.py examine 007e8260 --notes=atlas/per_function/FUN_007e8260.md \
+    --rebucket=B2_dvd
+```
+
+This is one atomic operation: L0→L2 + bucket change + audit-log entry.
+
+### Standalone for already-L2 rows
+
+For rows that became L2 in earlier sessions, use the bare command:
+
+```bash
+atlas.py rebucket 007a4af0 --bucket=B5_protection \
+    --reason="drive command-sequence sender (SDF/CSS class); per_function note"
+```
+
+`--reason` is required and goes into `atlas/rebucket_log.tsv` — one
+short sentence ("DVD-only callers", "AACS key loader", etc.).
+
+### When to rebucket
+
+A note has earned a rebucket if it identifies any of:
+
+- **All non-trivial callers are in one specific bucket** → move there
+  (e.g. a "helper/alloc" with 8 callers all in `0x7exxx` DVD range → B2_dvd).
+- **The string content nails a specific bucket** (e.g. `kvh.bin`,
+  `OSSL_AES_*`, `MakeMKV v1.18.3 ...` → B5_protection, B5_protection,
+  cli output).
+- **The codec/byte-stream is bucket-specific** (e.g. Dolby Vision RPU
+  → B4_uhd, BD+ SVQ → B5_protection).
+- **The function turns out to be cross-bucket foundation** even though
+  v1 tagged it specifically (e.g. central codec dispatchers) → move
+  to B1_foundation.
+
+The v1 tag is a starting point, not gospel. Use the L2 evidence.
+
+### Don't rebucket on speculation
+
+If the note says "possibly B5_protection (need to confirm)" or
+"STAYS B1 or B6_cli_tools", **defer**. Hedged notes don't justify
+moves. Either dig deeper or leave it.
+
 ## Step 4 — implementing
 
 Write port code in `/home/chaoz/Desktop/Programs/Disc-Remuxer/disc_remuxer/...`.
@@ -161,6 +216,7 @@ it.** If verify fails, fix the row or the code — don't paper over.
 | Atlas schema | `Tests/Disc-Remuxer/atlas/schema.md` |
 | Per-function deep-exam notes | `Tests/Disc-Remuxer/atlas/per_function/FUN_<addr>.md` |
 | Per-tier checklist | `Tests/Disc-Remuxer/atlas/tiers/B*.md` |
+| Rebucket audit log | `Tests/Disc-Remuxer/atlas/rebucket_log.tsv` |
 | Master trace + ambiguities doc | `Tests/Disc-Remuxer/TRACE_INDEX.md` |
 | Decomp dumps (read-only) | `Tests/Disc-Remuxer/decomp/functions/<shard>/FUN_<addr>.md` |
 | ptrace tracer + scripts | `Tests/Disc-Remuxer/traces/tools/` |
@@ -173,6 +229,11 @@ it.** If verify fails, fix the row or the code — don't paper over.
 - Mark a function `implemented` without the impl file containing the decomp anchor.
 - "Stub out" a function temporarily without recording the gap as `blockers`.
 - Write a Python helper that solves a problem MakeMKV does differently.
+- Rebucket a function before it's at L≥2. `atlas.py rebucket` blocks
+  this — don't try to work around it. The per-function note is the
+  evidence that justifies the move.
+- Rebucket based on the v1 tag alone. Read the decomp / strings /
+  callers and let the note's findings drive the decision.
 - Run `atlas.py` with `--by=user` or any other identity unless explicitly
   asked. Default is `claude_chat`.
 - Skip `atlas verify` and `atlas report` at session end.
