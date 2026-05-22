@@ -1,0 +1,37 @@
+[package]
+name = "disc-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Command-line entry point for disc-remuxer."
+
+[[bin]]
+name = "disc-remuxer"
+path = "src/main.rs"
+
+[dependencies]
+disc-core = { path = "../disc-core" }
+disc-dvd = { path = "../disc-dvd" }
+
+# These -sys crates are NOT used in our Rust code — disc-dvd already
+# depends on them transitively. We declare them as direct dependencies
+# only so the `DEP_DVDREAD_LIB_DIR` / `DEP_DVDCSS_LIB_DIR` /
+# `DEP_DVDNAV_LIB_DIR` environment variables (set by Cargo for crates
+# with the `links = "…"` key) become visible to our own `build.rs`.
+# That lets us bake absolute-path rpaths into the produced binary so it
+# loads our vendored 7.0.1 libdvdread / 1.5.0 libdvdcss / 7.0.0 libdvdnav
+# instead of whatever older versions the dev system may have installed
+# in /usr/lib.
+libdvdread-sys = { path = "../libdvdread-sys" }
+libdvdcss-sys = { path = "../libdvdcss-sys" }
+libdvdnav-sys = { path = "../libdvdnav-sys" }
+
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+env_logger = "0.11"
+log.workspace = true
+
+[lints]
+workspace = true
