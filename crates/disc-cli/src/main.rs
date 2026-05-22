@@ -10,6 +10,11 @@
 //!   — read raw sectors from a VOB stream and write them to disk, for
 //!   verification against external tools (`dd`, hash-compare, etc.).
 //!
+//! * `dump-title <path> --title N --out file.vob` — walk the cells of
+//!   title `N`'s PGC in IFO order, concatenate the `TITLE_VOBS` sector
+//!   ranges into the output file. Logs per-cell checks and a final
+//!   SHA-256 for byte-compare against external dumps.
+//!
 //! Logging: controlled by `RUST_LOG` (env_logger-style syntax). Defaults
 //! to `info` if unset. Set `RUST_LOG=debug` for IFO + sector-read
 //! lifecycle traces, `=trace` for byte-level detail. Subcommands that
@@ -22,6 +27,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 mod dump_sectors;
+mod dump_title;
 mod info;
 mod logging;
 
@@ -47,6 +53,9 @@ enum Command {
 
     /// Read raw sectors from a VOB stream and write them to disk.
     DumpSectors(dump_sectors::DumpSectorsArgs),
+
+    /// Walk a title's PGC cells and dump the concatenated VOB stream.
+    DumpTitle(dump_title::DumpTitleArgs),
 }
 
 fn main() -> Result<()> {
@@ -64,6 +73,12 @@ fn main() -> Result<()> {
             let path_disp = args.path.display().to_string();
             dump_sectors::run(args)
                 .with_context(|| format!("dump-sectors {path_disp}"))
+        }
+        Command::DumpTitle(args) => {
+            let path_disp = args.path.display().to_string();
+            let title = args.title;
+            dump_title::run(args)
+                .with_context(|| format!("dump-title {path_disp} title={title}"))
         }
     }
 }
