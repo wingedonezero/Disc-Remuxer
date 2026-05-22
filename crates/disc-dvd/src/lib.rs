@@ -34,6 +34,7 @@ pub mod demux;
 pub mod file;
 pub mod ifo;
 pub mod mpegps;
+pub mod nav;
 pub mod reader;
 pub mod source;
 
@@ -45,5 +46,6 @@ pub use demux::{DemuxError, DemuxSummary, Demuxer, MagicCheck, StreamKey, Stream
 pub use file::{DvdFile, ReadDomain, BLOCK_SIZE};
 pub use ifo::{IfoHandle, IfoKind};
 pub use mpegps::{scan_sector, stream_kind, MpegPsError, PackHeader, PesPacket, StreamKind};
+pub use nav::{DvdNav, NavEvent};
 pub use reader::DvdReader;
 pub use source::DvdSource;

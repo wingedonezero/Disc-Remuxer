@@ -31,6 +31,12 @@
 //!   to the demuxer so AC-3/DTS streams resync at chapter boundaries
 //!   via first_access_unit_pointer. Step-5b — preferred path for ripping.
 //!
+//! * `dump-title-nav --disc <path> --title N --out file.vob` — like
+//!   dump-title but drives the rip via libdvdnav (executes PGC
+//!   commands, follows authored playback chain). Step-6 minimal
+//!   integration — proves libdvdnav as a sector source produces the
+//!   same bytes as our manual cell walk for simple titles.
+//!
 //! Logging: controlled by `RUST_LOG` (env_logger-style syntax). Defaults
 //! to `info` if unset. Set `RUST_LOG=debug` for IFO + sector-read
 //! lifecycle traces, `=trace` for byte-level detail. Subcommands that
@@ -46,6 +52,7 @@ mod demux_title;
 mod demux_vob;
 mod dump_sectors;
 mod dump_title;
+mod dump_title_nav;
 mod info;
 mod logging;
 mod scan_streams;
@@ -85,6 +92,9 @@ enum Command {
     /// Demultiplex a title's PGC cells directly from disc, honoring
     /// stc_discontinuity for AC-3/DTS audio resync.
     DemuxTitle(demux_title::DemuxTitleArgs),
+
+    /// Dump a title via libdvdnav (executes PGC commands).
+    DumpTitleNav(dump_title_nav::DumpTitleNavArgs),
 }
 
 fn main() -> Result<()> {
@@ -124,6 +134,13 @@ fn main() -> Result<()> {
             let title = args.title;
             demux_title::run(args)
                 .with_context(|| format!("demux-title {path_disp} title={title}"))
+        }
+        Command::DumpTitleNav(args) => {
+            let path_disp = args.disc.display().to_string();
+            let title = args.title;
+            dump_title_nav::run(args).with_context(|| {
+                format!("dump-title-nav {path_disp} title={title}")
+            })
         }
     }
 }
