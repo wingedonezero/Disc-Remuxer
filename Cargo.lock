@@ -193,6 +193,7 @@ name = "disc-dvd"
 version = "0.1.0"
 dependencies = [
  "disc-core",
+ "libdvdcss-sys",
  "libdvdnav-sys",
  "libdvdread-sys",
  "log",

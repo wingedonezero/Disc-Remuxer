@@ -17,7 +17,8 @@ use disc_dvd::ifo::{
     audio_attr_t, cell_playback_t, format_dvd_time, pgc_t, ptt_info_t, subp_attr_t,
     title_info_t, video_attr_t, vtsi_mat_t, IfoHandle, IfoKind,
 };
-use disc_dvd::DvdSource;
+use disc_dvd::css::ProbeMethod;
+use disc_dvd::{CssProbe, DvdSource};
 
 // The libdvdread structs are `#[repr(packed)]` (they mirror DVD on-disc
 // layout — byte 1 = the first field, no padding). That means we cannot
@@ -47,6 +48,8 @@ pub fn run(path: &Path) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn print_dvd_info(path: &Path) -> Result<()> {
+    print_css_probe(path);
+
     let source = DvdSource::open(path).context("DvdSource::open")?;
     let vmg = IfoHandle::open(source.reader(), IfoKind::Vmg)
         .context("opening VMG IFO (VIDEO_TS.IFO)")?;
@@ -82,6 +85,64 @@ fn print_dvd_info(path: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// CSS probe (libdvdcss — libdvdread does not expose this)
+// ---------------------------------------------------------------------------
+
+fn print_css_probe(path: &Path) {
+    println!("CSS protection:");
+    let probe = match CssProbe::open(path) {
+        Ok(p) => p,
+        Err(e) => {
+            println!("  (libdvdcss could not open the path: {e})");
+            log::warn!("CssProbe failed: {e}");
+            return;
+        }
+    };
+
+    match probe.method {
+        ProbeMethod::LibdvdcssIoctl => {
+            let verdict = if probe.is_scrambled {
+                "SCRAMBLED  (libdvdcss will decrypt sectors transparently)"
+            } else {
+                "not scrambled  (sectors readable as plaintext)"
+            };
+            println!("  probe method:  libdvdcss DVD ioctls (authoritative)");
+            println!("  is_scrambled:  {} -> {verdict}", probe.is_scrambled);
+        }
+        ProbeMethod::VobMagic => {
+            let verdict = if probe.is_scrambled {
+                "SCRAMBLED  (sector header does not start with MPEG-PS pack)"
+            } else {
+                "not scrambled  (VOB sector header is MPEG-PS pack 00 00 01 ba)"
+            };
+            println!("  probe method:  VOB-magic heuristic");
+            if let Some(vob) = &probe.probed_vob {
+                println!("  probed VOB:    {}", vob.display());
+            }
+            println!(
+                "  first 4 bytes: {:02x} {:02x} {:02x} {:02x}",
+                probe.first_bytes[0],
+                probe.first_bytes[1],
+                probe.first_bytes[2],
+                probe.first_bytes[3],
+            );
+            println!("  is_scrambled:  {} -> {verdict}", probe.is_scrambled);
+            // Mention libdvdcss's confused default for transparency.
+            if let Some(err) = &probe.last_error {
+                println!("  (libdvdcss probe was inconclusive: {err:?} — directory paths don't support DVD ioctls)");
+            }
+        }
+        ProbeMethod::Inconclusive => {
+            println!("  probe method:  inconclusive");
+            println!("  is_scrambled:  UNKNOWN (libdvdcss probe failed and no title VOBs were readable)");
+            if let Some(err) = &probe.last_error {
+                println!("  libdvdcss last_error: {err:?}");
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

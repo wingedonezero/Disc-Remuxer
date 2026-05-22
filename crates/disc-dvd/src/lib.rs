@@ -13,16 +13,21 @@
 //!   per-PGC `audio_control` / `subp_control` arrays.
 //! * [`source`] — `DvdSource`, the `disc_core::DiscSource` impl that the
 //!   CLI hands a generic disc to.
+//! * [`css`] — `CssProbe`, a thin libdvdcss wrapper that reports whether
+//!   a disc is CSS-scrambled. libdvdread itself doesn't expose this state
+//!   through its API; libdvdcss does, via `dvdcss_is_scrambled()`.
 //!
 //! All public types log via the `log` crate at appropriate levels:
 //! `info!` for major lifecycle events (open/close), `debug!` for IFO
 //! reads, `trace!` for byte-level activity once we add demuxing.
 
+pub mod css;
 pub mod decode;
 pub mod ifo;
 pub mod reader;
 pub mod source;
 
+pub use css::CssProbe;
 pub use ifo::{IfoHandle, IfoKind};
 pub use reader::DvdReader;
 pub use source::DvdSource;
