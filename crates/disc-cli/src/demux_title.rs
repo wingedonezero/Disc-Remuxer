@@ -271,10 +271,7 @@ pub fn run(args: DemuxTitleArgs) -> Result<()> {
     println!("  sectors processed:       {}", summary.sectors_processed);
     println!("  input bytes:             {}", summary.input_bytes);
     println!("  pack header bytes:       {}", summary.pack_header_bytes);
-    println!(
-        "  PES/BD header bytes:     {} (incl. {} bytes FAP-resync)",
-        summary.stripped_header_bytes, summary.fap_bytes_skipped
-    );
+    println!("  PES/BD header bytes:     {}", summary.stripped_header_bytes);
     println!("  elementary bytes out:    {}", summary.elementary_emitted_bytes);
     println!("  dropped bytes (NV/pad/sys): {}", summary.dropped_pes_bytes);
     println!("  accounted total:         {accounted}");
@@ -287,8 +284,8 @@ pub fn run(args: DemuxTitleArgs) -> Result<()> {
         );
     }
     println!(
-        "  stc_discontinuity cells: {} (FAP resyncs applied: {})",
-        summary.discontinuity_boundaries, summary.fap_resyncs_applied
+        "  stc_discontinuity cells: {}",
+        summary.discontinuity_boundaries
     );
 
     println!();
