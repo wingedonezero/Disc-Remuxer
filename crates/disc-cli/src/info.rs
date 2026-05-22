@@ -109,18 +109,18 @@ fn print_css_probe(path: &Path) {
             } else {
                 "not scrambled  (sectors readable as plaintext)"
             };
-            println!("  probe method:  libdvdcss DVD ioctls (authoritative)");
+            println!("  probe method:  block device (libdvdcss DVD ioctls, authoritative)");
             println!("  is_scrambled:  {} -> {verdict}", probe.is_scrambled);
         }
-        ProbeMethod::VobMagic => {
+        ProbeMethod::IsoUdfSector => {
             let verdict = if probe.is_scrambled {
-                "SCRAMBLED  (sector header does not start with MPEG-PS pack)"
+                "SCRAMBLED  (raw VOB sector does not start with MPEG-PS pack)"
             } else {
-                "not scrambled  (VOB sector header is MPEG-PS pack 00 00 01 ba)"
+                "not scrambled  (raw VOB sector starts with MPEG-PS pack 00 00 01 ba)"
             };
-            println!("  probe method:  VOB-magic heuristic");
-            if let Some(vob) = &probe.probed_vob {
-                println!("  probed VOB:    {}", vob.display());
+            println!("  probe method:  ISO file (libdvdread UDFFindFile -> raw block read)");
+            if let Some(loc) = &probe.probed_location {
+                println!("  probed at:     {loc}");
             }
             println!(
                 "  first 4 bytes: {:02x} {:02x} {:02x} {:02x}",
@@ -130,18 +130,34 @@ fn print_css_probe(path: &Path) {
                 probe.first_bytes[3],
             );
             println!("  is_scrambled:  {} -> {verdict}", probe.is_scrambled);
-            // Mention libdvdcss's confused default for transparency.
-            if let Some(err) = &probe.last_error {
-                println!("  (libdvdcss probe was inconclusive: {err:?} — directory paths don't support DVD ioctls)");
+        }
+        ProbeMethod::VobFile => {
+            let verdict = if probe.is_scrambled {
+                "SCRAMBLED  (VOB sector does not start with MPEG-PS pack — unusual for a directory rip)"
+            } else {
+                "not scrambled  (VOB sector starts with MPEG-PS pack 00 00 01 ba)"
+            };
+            println!("  probe method:  directory rip (VOB file MPEG-PS magic check)");
+            if let Some(loc) = &probe.probed_location {
+                println!("  probed VOB:    {loc}");
             }
+            println!(
+                "  first 4 bytes: {:02x} {:02x} {:02x} {:02x}",
+                probe.first_bytes[0],
+                probe.first_bytes[1],
+                probe.first_bytes[2],
+                probe.first_bytes[3],
+            );
+            println!("  is_scrambled:  {} -> {verdict}", probe.is_scrambled);
         }
         ProbeMethod::Inconclusive => {
             println!("  probe method:  inconclusive");
-            println!("  is_scrambled:  UNKNOWN (libdvdcss probe failed and no title VOBs were readable)");
-            if let Some(err) = &probe.last_error {
-                println!("  libdvdcss last_error: {err:?}");
-            }
+            println!("  is_scrambled:  UNKNOWN (could not sample a VOB sector)");
         }
+    }
+
+    if let Some(err) = &probe.last_error {
+        println!("  libdvdcss last_error: {err:?}");
     }
 }
 

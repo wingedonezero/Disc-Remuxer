@@ -1,47 +1,61 @@
 //! CSS-protection probe.
 //!
-//! libdvdread uses libdvdcss internally to transparently decrypt scrambled
-//! VOBs but doesn't expose whether the disc *is* scrambled. libdvdcss does,
-//! via `dvdcss_is_scrambled()` — but that's only reliable on a real DVD
-//! block device, because libdvdcss's probe issues DVD ioctls (or reads the
-//! disc lead-in). For directory rips and ISO images, libdvdcss falls back
-//! to its "assume the worst" default of `b_scrambled = 1` regardless of
-//! actual content. We've verified this against ANGEL_S1D1 (cleartext VOBs
-//! that libdvdcss falsely reports as scrambled).
+//! libdvdread does not expose CSS state through its public API — it just
+//! uses libdvdcss internally to decrypt sectors transparently. To answer
+//! "is this disc scrambled?" we have to probe directly.
 //!
-//! Strategy:
+//! Our approach dispatches by path type:
 //!
-//! 1. Run the libdvdcss probe. If it's clearly authoritative (no
-//!    `last_error`), trust it.
-//! 2. Otherwise — directory paths, ISO images, anywhere libdvdcss couldn't
-//!    issue real ioctls — fall back to inspecting one of the title VOB
-//!    files. CSS encryption is sector-level on title VOBs; if the first
-//!    four bytes of a `VTS_NN_1.VOB` are the MPEG-PS pack-start code
-//!    `00 00 01 BA` then the sector is plaintext and the disc is not
-//!    scrambled. Anything else (high-entropy bytes) means CSS is in play
-//!    for that VOB.
-//! 3. If neither path can give a confident answer (no readable VOBs,
-//!    file open failures), report `Inconclusive`.
+//! * **Block device** (`/dev/sr0`, `/dev/dvd`, …): trust
+//!   `dvdcss_is_scrambled()`. libdvdcss issues DVD ioctls (effectively
+//!   the same SCSI sense-key probe MakeMKV does — the giveaway sense
+//!   codes are `READ OF SCRAMBLED SECTOR WITHOUT AUTHENTICATION` and
+//!   the `COPY PROTECTION KEY EXCHANGE FAILURE` family).
+//!
+//! * **ISO file** (`*.iso`, `*.img`): libdvdcss can't probe (no ioctls
+//!   on regular files; its `b_scrambled` stays at the "assume the
+//!   worst" default), so we use libdvdread's `UDFFindFile` to locate
+//!   `/VIDEO_TS/VTS_01_1.VOB`, then read four raw bytes from the file
+//!   at that block offset (bypassing libdvdread's decryption layer).
+//!   Cleartext VOB sectors start with the MPEG-PS pack-start code
+//!   `00 00 01 BA`; anything else means CSS is in play.
+//!
+//! * **Directory rip** (`VIDEO_TS/`): read `VTS_NN_1.VOB` directly and
+//!   apply the same MPEG-PS magic check.
+//!
+//! * **Anything else**: report `Inconclusive`.
+//!
+//! Note that libdvdread does NOT decrypt UDFFindFile's *return value*
+//! — that's just a file-location lookup. Our raw `read_at` of the
+//! resulting block is what gets ciphertext or plaintext, depending on
+//! whether the ISO was dumped with CSS keys applied or not.
 
 use std::ffi::{CStr, CString};
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use disc_core::DiscError;
-use libdvdcss_sys as sys;
+use libdvdcss_sys as css_sys;
+use libdvdread_sys as read_sys;
+
+const DVD_BLOCK_SIZE: u64 = 2048;
+const MPEG_PS_PACK_START: [u8; 4] = [0x00, 0x00, 0x01, 0xBA];
 
 /// Which mechanism produced the scramble verdict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeMethod {
-    /// libdvdcss `dvdcss_test()` succeeded — DVD ioctls were available
-    /// (block device path) and gave a definitive answer.
+    /// Block device path. libdvdcss `dvdcss_test()` ran DVD ioctls and
+    /// gave a definitive answer (effectively a SCSI sense probe).
     LibdvdcssIoctl,
-    /// libdvdcss could not probe (`last_error` set on the handle).
-    /// We read the first 4 bytes of a title VOB and checked for the
-    /// MPEG-PS pack-start code `00 00 01 BA`.
-    VobMagic,
-    /// Neither libdvdcss nor the VOB-magic heuristic could conclude.
+    /// ISO image. We located `/VIDEO_TS/VTS_01_1.VOB` via libdvdread's
+    /// UDF reader, then read the first 4 bytes from that block offset
+    /// in the file directly (no libdvdread decryption layer).
+    IsoUdfSector,
+    /// Directory rip. We read the first 4 bytes of `VTS_NN_1.VOB`
+    /// directly via `std::fs`.
+    VobFile,
+    /// Couldn't determine via any path.
     Inconclusive,
 }
 
@@ -52,90 +66,137 @@ pub struct CssProbe {
     pub is_scrambled: bool,
     /// Which mechanism produced `is_scrambled`.
     pub method: ProbeMethod,
-    /// libdvdcss's last_error string after the open (often `"read error"`
-    /// on directory paths — the signal that ioctls failed).
+    /// libdvdcss's last error string after the open. Often `"no error"`.
+    /// We surface this for transparency but it's only authoritative for
+    /// the `LibdvdcssIoctl` path.
     pub last_error: Option<String>,
-    /// VOB we used for the magic-byte check, if any.
-    pub probed_vob: Option<PathBuf>,
-    /// The first 4 bytes of `probed_vob`. Zeroed if we didn't read one.
+    /// Where we sampled bytes from (file path or `{iso}@sector=N`).
+    pub probed_location: Option<String>,
+    /// The first 4 bytes of the sampled location. Zeroed if we didn't
+    /// read one.
     pub first_bytes: [u8; 4],
     /// The path we probed.
     pub path: PathBuf,
 }
 
-const MPEG_PS_PACK_START: [u8; 4] = [0x00, 0x00, 0x01, 0xBA];
-
 impl CssProbe {
-    /// Open libdvdcss against `path`, ask for its verdict, and fall back
-    /// to inspecting a VOB's first bytes if the libdvdcss probe wasn't
-    /// authoritative.
+    /// Dispatch by path type and run the appropriate probe.
     pub fn open(path: &Path) -> Result<Self, DiscError> {
-        let (dvdcss_is_scrambled, last_error) = run_libdvdcss_probe(path)?;
+        let path_kind = classify_path(path);
+        log::debug!("css probe: path={} kind={path_kind:?}", path.display());
 
-        // If libdvdcss probed cleanly (no last_error) the answer is
-        // authoritative — it ran the DVD ioctl test and got a real reply.
-        if last_error.is_none() {
-            log::info!(
-                "css probe: libdvdcss authoritative, is_scrambled={dvdcss_is_scrambled}"
-            );
-            return Ok(Self {
-                is_scrambled: dvdcss_is_scrambled,
-                method: ProbeMethod::LibdvdcssIoctl,
-                last_error: None,
-                probed_vob: None,
-                first_bytes: [0; 4],
-                path: path.to_path_buf(),
-            });
+        // We always run the libdvdcss open for the `last_error` string —
+        // it's useful diagnostic info even when we don't trust the verdict.
+        let (libdvdcss_scrambled, libdvdcss_error) = run_libdvdcss_probe(path)?;
+
+        match path_kind {
+            PathKind::BlockDevice => {
+                log::info!(
+                    "css probe: block device → trusting libdvdcss-ioctl, is_scrambled={libdvdcss_scrambled}"
+                );
+                Ok(Self {
+                    is_scrambled: libdvdcss_scrambled,
+                    method: ProbeMethod::LibdvdcssIoctl,
+                    last_error: libdvdcss_error,
+                    probed_location: None,
+                    first_bytes: [0; 4],
+                    path: path.to_path_buf(),
+                })
+            }
+            PathKind::IsoFile => match probe_iso_via_udf(path) {
+                Some((sector, first_bytes)) => {
+                    let scrambled = first_bytes != MPEG_PS_PACK_START;
+                    log::info!(
+                        "css probe: ISO/UDF verdict, sector={sector} first_bytes={first_bytes:02x?} is_scrambled={scrambled}"
+                    );
+                    Ok(Self {
+                        is_scrambled: scrambled,
+                        method: ProbeMethod::IsoUdfSector,
+                        last_error: libdvdcss_error,
+                        probed_location: Some(format!(
+                            "{}@sector={sector}",
+                            path.display()
+                        )),
+                        first_bytes,
+                        path: path.to_path_buf(),
+                    })
+                }
+                None => Ok(inconclusive(path, libdvdcss_error)),
+            },
+            PathKind::Directory => match find_and_read_vob_header(path) {
+                Some((vob_path, first_bytes)) => {
+                    let scrambled = first_bytes != MPEG_PS_PACK_START;
+                    log::info!(
+                        "css probe: VOB-file verdict, vob={} first_bytes={first_bytes:02x?} is_scrambled={scrambled}",
+                        vob_path.display(),
+                    );
+                    Ok(Self {
+                        is_scrambled: scrambled,
+                        method: ProbeMethod::VobFile,
+                        last_error: libdvdcss_error,
+                        probed_location: Some(vob_path.display().to_string()),
+                        first_bytes,
+                        path: path.to_path_buf(),
+                    })
+                }
+                None => Ok(inconclusive(path, libdvdcss_error)),
+            },
+            PathKind::Other => Ok(inconclusive(path, libdvdcss_error)),
         }
-
-        // libdvdcss failed its probe (typically because `path` is a
-        // directory or regular file — no DVD ioctls available). Fall back
-        // to reading the first sector header of a VOB.
-        log::debug!(
-            "css probe: libdvdcss probe inconclusive (last_error={last_error:?}), \
-             falling back to VOB-magic heuristic"
-        );
-
-        if let Some((vob_path, first_bytes)) = find_and_read_vob_header(path) {
-            let scrambled = first_bytes != MPEG_PS_PACK_START;
-            log::info!(
-                "css probe: VOB-magic verdict, vob={} first_bytes={:02x?} is_scrambled={}",
-                vob_path.display(),
-                first_bytes,
-                scrambled,
-            );
-            return Ok(Self {
-                is_scrambled: scrambled,
-                method: ProbeMethod::VobMagic,
-                last_error,
-                probed_vob: Some(vob_path),
-                first_bytes,
-                path: path.to_path_buf(),
-            });
-        }
-
-        log::warn!("css probe: no readable VOBs found at {}", path.display());
-        Ok(Self {
-            // `is_scrambled = true` here is meaningless — `method` is
-            // Inconclusive. We pick `true` only because that's the more
-            // conservative assumption: if we can't tell, assume yes.
-            is_scrambled: true,
-            method: ProbeMethod::Inconclusive,
-            last_error,
-            probed_vob: None,
-            first_bytes: [0; 4],
-            path: path.to_path_buf(),
-        })
     }
 }
 
-/// Call `dvdcss_open` / `dvdcss_is_scrambled` / `dvdcss_error` / close.
+fn inconclusive(path: &Path, last_error: Option<String>) -> CssProbe {
+    log::warn!("css probe: inconclusive for {}", path.display());
+    CssProbe {
+        is_scrambled: true, // "assume the worst" — meaningless when method = Inconclusive
+        method: ProbeMethod::Inconclusive,
+        last_error,
+        probed_location: None,
+        first_bytes: [0; 4],
+        path: path.to_path_buf(),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PathKind {
+    BlockDevice,
+    IsoFile,
+    Directory,
+    Other,
+}
+
+fn classify_path(path: &Path) -> PathKind {
+    let Ok(meta) = fs::metadata(path) else {
+        return PathKind::Other;
+    };
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        let ft = meta.file_type();
+        if ft.is_block_device() || ft.is_char_device() {
+            return PathKind::BlockDevice;
+        }
+    }
+
+    if meta.is_dir() {
+        return PathKind::Directory;
+    }
+    if meta.is_file() {
+        return PathKind::IsoFile;
+    }
+    PathKind::Other
+}
+
+// -- libdvdcss probe (only authoritative on block devices) ------------------
+
 fn run_libdvdcss_probe(path: &Path) -> Result<(bool, Option<String>), DiscError> {
     let c_path = cstring_from_path(path).map_err(|()| DiscError::InvalidPath)?;
 
     log::debug!("dvdcss_open path={}", path.display());
     // SAFETY: `c_path` lives for the call; libdvdcss copies what it needs.
-    let handle = unsafe { sys::dvdcss_open(c_path.as_ptr()) };
+    let handle = unsafe { css_sys::dvdcss_open(c_path.as_ptr()) };
     if handle.is_null() {
         return Err(DiscError::OpenFailed {
             path: path.to_path_buf(),
@@ -144,39 +205,33 @@ fn run_libdvdcss_probe(path: &Path) -> Result<(bool, Option<String>), DiscError>
     }
 
     // SAFETY: handle is non-null and valid.
-    let scrambled = unsafe { sys::dvdcss_is_scrambled(handle) } == 1;
+    let scrambled = unsafe { css_sys::dvdcss_is_scrambled(handle) } == 1;
 
-    // SAFETY: dvdcss_error returns a pointer into the handle's owned
-    // buffer, valid until close.
-    let err_ptr = unsafe { sys::dvdcss_error(handle) };
+    // SAFETY: dvdcss_error returns a pointer into the handle's owned buffer,
+    // valid until close. The initial value is `"no error"` per libdvdcss
+    // source — we treat that as "no error condition".
+    let err_ptr = unsafe { css_sys::dvdcss_error(handle) };
     let last_error = if err_ptr.is_null() {
         None
     } else {
-        let s = unsafe { CStr::from_ptr(err_ptr) }.to_string_lossy().into_owned();
-        if s.is_empty() {
-            None
-        } else {
-            Some(s)
+        let s = unsafe { CStr::from_ptr(err_ptr) }
+            .to_string_lossy()
+            .into_owned();
+        match s.as_str() {
+            "" | "no error" => None,
+            _ => Some(s),
         }
     };
 
     // SAFETY: closing a valid handle.
-    unsafe { sys::dvdcss_close(handle) };
+    unsafe { css_sys::dvdcss_close(handle) };
 
     Ok((scrambled, last_error))
 }
 
-/// Find the first `VTS_NN_M.VOB` (with `M >= 1`) under `path` and read its
-/// first 4 bytes. Returns `None` if there's no such file or it can't be
-/// read.
-fn find_and_read_vob_header(path: &Path) -> Option<(PathBuf, [u8; 4])> {
-    // Only meaningful for directory-style paths. For ISO/block-device
-    // paths the libdvdcss path normally gives a real answer; this
-    // heuristic doesn't apply.
-    if !path.is_dir() {
-        return None;
-    }
+// -- Directory path: read VTS_NN_1.VOB directly via std::fs -----------------
 
+fn find_and_read_vob_header(path: &Path) -> Option<(PathBuf, [u8; 4])> {
     let candidates = [path.join("VIDEO_TS"), path.to_path_buf()];
 
     for dir in &candidates {
@@ -209,28 +264,100 @@ fn find_and_read_vob_header(path: &Path) -> Option<(PathBuf, [u8; 4])> {
             }
         }
     }
-
     None
 }
 
 /// Match filenames of the form `VTS_<NN>_<M>.VOB` with `M >= 1`. We skip
 /// `VTS_NN_0.VOB` because that's the menu VOB — title VOBs are sequence 1+.
 fn is_title_vob_filename(name: &str) -> bool {
-    // Strip the `VTS_` prefix and `.VOB` suffix, then expect "<NN>_<M>"
-    // — exactly one internal underscore separating two digit runs.
     let Some(stem) = name.strip_prefix("VTS_").and_then(|s| s.strip_suffix(".VOB")) else {
         return false;
     };
     let Some((nn, m)) = stem.split_once('_') else {
         return false;
     };
-    // Both halves must be non-empty digit strings; the M half must
-    // additionally parse to a number >= 1.
     if nn.is_empty() || !nn.chars().all(|c| c.is_ascii_digit()) {
         return false;
     }
     m.parse::<u8>().is_ok_and(|m| m >= 1)
 }
+
+// -- ISO file: use libdvdread to locate VTS_01_1.VOB, then read raw bytes ---
+
+/// For an ISO image, open it with libdvdread, ask UDF where
+/// `/VIDEO_TS/VTS_01_1.VOB` lives, close libdvdread, then read four raw
+/// bytes from that block offset directly. Returns `(sector, bytes)`.
+fn probe_iso_via_udf(path: &Path) -> Option<(u32, [u8; 4])> {
+    let sector = lookup_vob_start_sector(path)?;
+    if sector == 0 {
+        return None;
+    }
+
+    let mut f = fs::File::open(path).ok()?;
+    let byte_offset = u64::from(sector) * DVD_BLOCK_SIZE;
+    if f.seek(SeekFrom::Start(byte_offset)).is_err() {
+        return None;
+    }
+    let mut buf = [0u8; 4];
+    if f.read_exact(&mut buf).is_err() {
+        return None;
+    }
+    Some((sector, buf))
+}
+
+/// Try a small set of VOB paths via libdvdread's `UDFFindFile`, returning
+/// the first one that exists. Returns the starting LBA (block number) on
+/// the disc.
+fn lookup_vob_start_sector(path: &Path) -> Option<u32> {
+    let c_path = cstring_from_path(path).ok()?;
+
+    log::debug!("DVDOpen path={} (UDF lookup)", path.display());
+    // SAFETY: `c_path` lives for the call.
+    let reader = unsafe { read_sys::DVDOpen(c_path.as_ptr()) };
+    if reader.is_null() {
+        return None;
+    }
+
+    // Per libdvdread convention the title VOBs live at
+    // `/VIDEO_TS/VTS_NN_M.VOB` with `M >= 1`. Try VTS 1 / VOB 1 first,
+    // fall back through a few others in case the disc starts numbering
+    // somewhere else (rare but seen).
+    let candidates = [
+        "/VIDEO_TS/VTS_01_1.VOB",
+        "/VIDEO_TS/VTS_02_1.VOB",
+        "/VIDEO_TS/VTS_03_1.VOB",
+        "/VIDEO_TS/VTS_04_1.VOB",
+    ];
+
+    let mut found_sector: u32 = 0;
+    for c in candidates {
+        let Ok(filename) = CString::new(c) else {
+            continue;
+        };
+        let mut size_out: u32 = 0;
+        // SAFETY: `reader` is non-null, `filename` lives for the call,
+        // `&mut size_out` is a valid u32 destination.
+        let lba = unsafe {
+            read_sys::UDFFindFile(reader, filename.as_ptr(), &mut size_out as *mut u32)
+        };
+        if lba != 0 && size_out >= DVD_BLOCK_SIZE as u32 {
+            log::debug!("UDFFindFile hit: {c} -> lba={lba} size={size_out}");
+            found_sector = lba;
+            break;
+        }
+    }
+
+    // SAFETY: closing a valid handle we opened above.
+    unsafe { read_sys::DVDClose(reader) };
+
+    if found_sector == 0 {
+        None
+    } else {
+        Some(found_sector)
+    }
+}
+
+// -- Path → CString helper --------------------------------------------------
 
 #[cfg(unix)]
 fn cstring_from_path(path: &Path) -> Result<CString, ()> {
