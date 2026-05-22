@@ -1,14 +1,36 @@
 # Disc-Remuxer — session rules (READ BEFORE STARTING WORK)
 
-This is a long-running multi-session reverse-engineering port of MakeMKV's
-`makemkvcon` 1.18.3 to Python. Source of truth, working artifacts, and
-test data live in **`/home/chaoz/Desktop/Makemkv/Tests/Disc-Remuxer/`**.
-Port code commits here (`/home/chaoz/Desktop/Programs/Disc-Remuxer/`).
+This is a long-running multi-session reverse-engineering project. The
+**atlas** (research, decomp notes, function map) lives in
+**`/home/chaoz/Desktop/Makemkv/Tests/Disc-Remuxer/`**. The **implementation
+repo** is this directory (`/home/chaoz/Desktop/Programs/Disc-Remuxer/`).
 Two directories. Never mix.
 
-The goal is **byte-identical MKV output** vs MakeMKV on supported disc types.
-That requires the same control-flow decisions and edge-case coverage as the
-original binary. We don't get there by guessing.
+Goal: a Rust CLI tool (`disc-remuxer`) that reads DVD / Blu-ray / UHD discs
+and extracts byte-identical elementary streams. We use the atlas to
+*understand* what proven correct disc-handling looks like, then write our
+own clean Rust on top of upstream OSS libraries (libdvdread, libdvdcss,
+libdvdnav for DVD; libaacs/libbluray/libbdplus later for BD/UHD). The
+implementation is original; the atlas is private research.
+
+## Clean-room policy (read this twice)
+
+The atlas notes and decomp dumps under `Tests/Disc-Remuxer/` are research
+artifacts. **Nothing from them — no specific function addresses, no source
+binary names, no internal identifier conventions — appears in this repo's
+code or commit messages.** Use:
+
+- **Public specs** for justifications: DVD-Video Book, MPEG-PS, SCSI MMC,
+  EBML/Matroska, AACS-LA, BDA BDMV — all publicly documented.
+- **Public library APIs** for naming: libdvdread / libdvdnav / libdvdcss
+  field names exactly (`tt_srpt_t::nr_of_srpts`, `pgc_t::nr_of_cells`,
+  `dvdnav_get_next_block`, etc.).
+- **DVD/BD spec terminology** for fields not exposed by the libraries.
+
+The atlas's `impl_path` / `impl_function` columns record which `FUN_<addr>`
+maps to which Rust function — that mapping is research-internal and stays
+in `atlas.tsv`. It does **not** appear in code docstrings, comments, or
+commit messages.
 
 ## Step 1 — orient yourself
 
@@ -126,40 +148,76 @@ moves. Either dig deeper or leave it.
 
 ## Step 4 — implementing
 
-Write port code in `/home/chaoz/Desktop/Programs/Disc-Remuxer/disc_remuxer/...`.
+The Rust workspace lives at this repo's root. Crate layout:
 
-The port code **must** cite the decomp anchor in a comment at the function
-top:
-
-```python
-def parse_vts_ifo(buf: bytes) -> VtsIfo:
-    """Port of MakeMKV FUN_007abc12 (mmgpl/dvdread/ifo_read.c:1029–1158).
-
-    Walks the VTS_PTT_SRPT table, validates the magic at offset 0,
-    extracts per-title sector pointers ...
-    """
+```
+crates/
+├── libdvdcss-sys/    FFI bindings — vendored libdvdcss build via meson
+├── libdvdread-sys/   FFI bindings — vendored libdvdread (linked to libdvdcss)
+├── libdvdnav-sys/    FFI bindings — vendored libdvdnav
+├── disc-core/        pure-Rust traits + DiscError + DiscType + check::*
+├── disc-dvd/         safe wrappers over libdvdread + libdvdcss + libdvdnav
+└── disc-cli/         the `disc-remuxer` binary (clap, flexi_logger, sha2)
+vendor/
+├── libdvdread/       git submodule, pinned tag
+├── libdvdcss/        git submodule, pinned tag
+└── libdvdnav/        git submodule, pinned tag
 ```
 
-The string `FUN_<addr>` must appear in the file. `atlas.py implement` won't
-let you promote to L3 without it. Then:
+Add new code to the appropriate crate. Build with `cargo build`. The CLI
+binary lives at `target/release/disc-remuxer`.
+
+### Coding conventions
+
+1. **Field names mirror libdvdread / libdvdnav public C headers verbatim**
+   (`tt_srpt_t::nr_of_srpts`, `pgc_t::nr_of_cells`, `cell_playback_t::first_sector`,
+   etc.). Rust structs and variables follow the same names. Anyone reading
+   the code can grep them in `<dvdread/ifo_types.h>` / `<dvdnav/dvdnav.h>`.
+2. **No mention of the research source binary in code or commits.** See
+   the clean-room policy at the top of this file. Use public-spec
+   citations instead (DVD-Video, SCSI MMC, MPEG-PS, etc.).
+3. **Every observable step logs.** `log::info!` for lifecycle events,
+   `log::debug!` for inner steps, `log::trace!` for byte-level detail.
+   `disc_core::check::{check_eq, require_eq, check_in_range, check}` for
+   PASS/FAIL verifications, all under the `disc_check` log target.
+4. **Every invariant we know about gets a check.** If MakeMKV-via-the-atlas
+   tells us "this VOB sector should start with 00 00 01 BA on a cleartext
+   disc," that becomes a `check!` in our code, logged PASS/FAIL with the
+   actual bytes shown. Transparency at every step — not after-the-fact
+   debugging.
+5. **Errors propagate via `disc_core::DiscError`** for library code,
+   `anyhow::Result` for the CLI. Each error variant carries enough context
+   (path, offset, count, etc.) to debug from the log alone.
+6. **Job-log support** is built in via `flexi_logger`. CLI subcommands
+   that produce output accept `--log-file <path>` (global flag) to mirror
+   the structured log into a file with timestamps. Wire this in for any
+   new "rip-like" subcommand so the operation is self-documenting.
+
+### Recording an implementation in the atlas
+
+When a Rust function implements behavior from a specific `FUN_<addr>`
+that's been L2-deep-examined in the atlas, record the mapping there:
 
 ```bash
-atlas.py implement <addr> \
-    --path=disc_remuxer/dvd/ifo.py \
-    --function=parse_vts_ifo \
-    --kind=semantic_port \
-    --name=parse_vts_ifo \
-    --oss=mmgpl/dvdread/ifo_read.c:1029-1158
+/home/chaoz/Desktop/Makemkv/Tests/.venv/bin/python \
+    /home/chaoz/Desktop/Makemkv/Tests/Disc-Remuxer/atlas/atlas.py \
+    implement <addr> \
+        --path=crates/disc-dvd/src/file.rs \
+        --function=DvdFile::read_blocks \
+        --kind=semantic_port
 ```
 
 `--kind` choices:
-- `exact_port` — control flow matches the decomp line-by-line (used for
-  protection / cell-walk / where divergence breaks byte-identity)
-- `semantic_port` — matches OSS source (mmgpl / libmakemkv / libmmbd) with
-  MakeMKV's customizations layered on
-- `mechanical_port` — boilerplate that came along with an owning class port
-- `hardcoded` — used for deobfuscation stubs (we bake in the cleartext output)
-- `skipped` — out-of-scope or genuinely dead code
+- `exact_port` — behavior matches the decomp exactly (used where divergence
+  breaks byte-identity, e.g. cell-walk ordering, structural-protection skip)
+- `semantic_port` — matches the equivalent published spec / OSS library
+  behavior; we use the upstream library where one exists
+- `mechanical_port` — boilerplate that came along with an owning class
+- `hardcoded` — baked-in constants (deobfuscation tables, magic strings)
+- `skipped` — out-of-scope, replaced by upstream library, or dead code
+
+The atlas mapping is research-internal. The code itself stays
+implementation-name-only (no `FUN_<addr>` strings in source).
 
 ## Step 5 — verifying
 
@@ -170,11 +228,16 @@ atlas.py test <addr> --status=unit
 atlas.py test <addr> --status=byte_compare_pass
 ```
 
-`byte_compare_pass` is the gold standard — extract ES + EBML-tree-diff
-against the captured MakeMKV reference rips in
-`Tests/Disc-Remuxer/outputs/makemkv/`, excluding the 24 per-rip random bytes
-(SegmentUID + DateUTC + the cascading CRC-32s — see
+`byte_compare_pass` is the gold standard — `cargo build --release && ./target/release/disc-remuxer extract …`
+output should match the captured reference rips in
+`Tests/Disc-Remuxer/outputs/makemkv/` byte-for-byte, excluding the 24
+per-rip random bytes (SegmentUID + DateUTC + the cascading CRC-32s — see
 `atlas/seeds/per_rip_random.md` or the `project_random_ebml_fields` memory).
+
+Smaller verification gates between L3 and full byte-compare:
+- `cargo test` — unit + integration tests must pass clean
+- `disc-remuxer dump-sectors … && sha256sum` — for the sector-read layer,
+  hash must match `dd` of the same range on an unscrambled corpus disc
 
 ## Step 6 — keep the atlas honest
 
@@ -193,21 +256,32 @@ it.** If verify fails, fix the row or the code — don't paper over.
 
 1. **No skipping levels.** A row goes L0 → L1 → L2 → L3 → L4. Sessions that
    mark L3 without writing L2 notes are corrupting the atlas.
-2. **Every port commit cites a `FUN_<addr>` anchor** OR is tagged
-   `[infra]` / `[tooling]` / `[test]` / `[binding]` in the message body.
-3. **No invented functions.** If you can't find a decomp anchor and no OSS
+2. **Clean-room separation.** Code and commits in this repo cite *public
+   specs and library APIs only*. The research source binary's name and
+   `FUN_<addr>` identifiers do **not** appear in source files or commit
+   messages. The atlas's `impl_path`/`impl_function` columns track the
+   research-to-implementation mapping privately.
+3. **Commits are tagged.** Every commit is `[infra]` / `[tooling]` /
+   `[test]` / `[binding]` in the subject. (`[port]` and `FUN_<addr>` in
+   subject lines are the old convention from the Python-port plan; do
+   not use them.)
+4. **No invented functions.** If you can't find an atlas note and no OSS
    analogue exists, *stop and trace* (`Tests/Disc-Remuxer/traces/tools/ptrace_tracer`)
    or *read more decomp*. Never write a function that "feels right."
-4. **No defensive code that isn't in MakeMKV.** Faithful first.
-5. **Byte-compare is the only success metric.** Test suites that count MSGs
+5. **No defensive code we can't justify from spec or atlas.** Faithful
+   first. If a check looks defensive but appears in the atlas notes for the
+   equivalent function, keep it. If it's a "what if" hypothetical, drop it.
+6. **Byte-compare is the only success metric.** Test suites that count MSGs
    or check metadata fields can pass while bytes diverge.
-6. **One rip pipeline.** No ffmpeg-pipe fallback, no "we'll retire this
+7. **One rip pipeline.** No ffmpeg-pipe fallback, no "we'll retire this
    later" parallel path. If you can't make it work, mark the row blocked
    and surface the issue.
-7. **If decomp is ambiguous** → `traces/tools/ptrace_tracer` on the relevant
-   disc, OR read more decomp from callers/callees. Never guess.
+8. **If a behavior is ambiguous** → `traces/tools/ptrace_tracer` on the
+   relevant disc, OR read more decomp from callers/callees. Never guess.
 
 ## Where things live
+
+### Research workspace (read-only from this repo's perspective)
 
 | | Path |
 |---|---|
@@ -218,17 +292,42 @@ it.** If verify fails, fix the row or the code — don't paper over.
 | Per-tier checklist | `Tests/Disc-Remuxer/atlas/tiers/B*.md` |
 | Rebucket audit log | `Tests/Disc-Remuxer/atlas/rebucket_log.tsv` |
 | Master trace + ambiguities doc | `Tests/Disc-Remuxer/TRACE_INDEX.md` |
-| Decomp dumps (read-only) | `Tests/Disc-Remuxer/decomp/functions/<shard>/FUN_<addr>.md` |
+| Decomp dumps | `Tests/Disc-Remuxer/decomp/functions/<shard>/FUN_<addr>.md` |
 | ptrace tracer + scripts | `Tests/Disc-Remuxer/traces/tools/` |
-| MakeMKV reference rips (for byte-compare) | `Tests/Disc-Remuxer/outputs/makemkv/` |
-| Port code (this repo) | `disc_remuxer/...` (to be created) |
+| Reference rips (for byte-compare) | `Tests/Disc-Remuxer/outputs/makemkv/` |
+
+### Implementation repo (this directory)
+
+| | Path |
+|---|---|
+| Workspace root | `Cargo.toml` |
+| FFI crates (cargo-built C libs + bindgen) | `crates/libdvd{css,read,nav}-sys/` |
+| Pure-Rust core (traits, errors, check::*) | `crates/disc-core/` |
+| DVD safe wrappers | `crates/disc-dvd/` |
+| CLI binary (`disc-remuxer`) | `crates/disc-cli/` |
+| Vendored upstream libraries | `vendor/libdvd{read,css,nav}/` (git submodules) |
+| Build output | `target/{debug,release}/disc-remuxer` |
+| rpath / linker config | `.cargo/config.toml` |
+
+### Test corpus (host filesystem)
+
+| | Path |
+|---|---|
+| DVD test discs (directories + ISOs) | `/home/chaoz/Desktop/Makemkv/Dvds for testing/` |
+| BD + UHD test discs | `/home/chaoz/Desktop/Makemkv/Discs for testing/` |
+| libdvdcss key cache | `~/.dvdcss/<disc-id>/` |
 
 ## Things to **never** do in a session
 
 - Edit `atlas.tsv` by hand. Use `atlas.py` commands.
-- Mark a function `implemented` without the impl file containing the decomp anchor.
+- Mention the research source binary by name in source files or commit
+  messages. The atlas tracks research-to-impl mappings privately via
+  `impl_path`/`impl_function`; nothing leaks into this repo.
+- Use the old `Port of <SourceBinary> FUN_<addr>` docstring pattern. That
+  was the Python-port plan. Current code uses spec-citation comments only.
 - "Stub out" a function temporarily without recording the gap as `blockers`.
-- Write a Python helper that solves a problem MakeMKV does differently.
+- Add code that solves a problem differently from the proven correct
+  behavior. Faithful first, then improve later if needed.
 - Rebucket a function before it's at L≥2. `atlas.py rebucket` blocks
   this — don't try to work around it. The per-function note is the
   evidence that justifies the move.
@@ -236,7 +335,9 @@ it.** If verify fails, fix the row or the code — don't paper over.
   callers and let the note's findings drive the decision.
 - Run `atlas.py` with `--by=user` or any other identity unless explicitly
   asked. Default is `claude_chat`.
-- Skip `atlas verify` and `atlas report` at session end.
+- Skip `atlas verify` and `atlas report` at session end when atlas work
+  was done this session. (Pure implementation-side sessions that don't
+  touch the atlas don't need this.)
 
 When a session is unsure whether something is allowed, ask the user before
 proceeding. The cost of pausing is small; the cost of corrupting the atlas
