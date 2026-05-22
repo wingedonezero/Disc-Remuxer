@@ -49,6 +49,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 mod demux_title;
+mod demux_title_nav;
 mod demux_vob;
 mod dump_sectors;
 mod dump_title;
@@ -95,6 +96,10 @@ enum Command {
 
     /// Dump a title via libdvdnav (executes PGC commands).
     DumpTitleNav(dump_title_nav::DumpTitleNavArgs),
+
+    /// Demultiplex a title via libdvdnav, looking up cell metadata
+    /// on each CellChange so AC-3/DTS audio resyncs correctly.
+    DemuxTitleNav(demux_title_nav::DemuxTitleNavArgs),
 }
 
 fn main() -> Result<()> {
@@ -140,6 +145,13 @@ fn main() -> Result<()> {
             let title = args.title;
             dump_title_nav::run(args).with_context(|| {
                 format!("dump-title-nav {path_disp} title={title}")
+            })
+        }
+        Command::DemuxTitleNav(args) => {
+            let path_disp = args.disc.display().to_string();
+            let title = args.title;
+            demux_title_nav::run(args).with_context(|| {
+                format!("demux-title-nav {path_disp} title={title}")
             })
         }
     }

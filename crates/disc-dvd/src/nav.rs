@@ -264,6 +264,30 @@ impl DvdNav {
         Ok((title, part))
     }
 
+    /// Query the current `(title, pgcn, pgn)` libdvdnav is playing
+    /// back — all 1-based. The PGC number is what we need to look up
+    /// cell metadata via [`crate::CellLookup`].
+    pub fn current_title_program(&self) -> Result<(i32, i32, i32), DiscError> {
+        let mut title: i32 = 0;
+        let mut pgcn: i32 = 0;
+        let mut pgn: i32 = 0;
+        // SAFETY: handle is valid; all three out-pointers are non-null.
+        let status = unsafe {
+            sys::dvdnav_current_title_program(
+                self.handle, &mut title, &mut pgcn, &mut pgn,
+            )
+        };
+        if status != sys::DVDNAV_STATUS_OK as i32 {
+            return Err(DiscError::OpenFailed {
+                path: std::path::PathBuf::new(),
+                reason: format!(
+                    "dvdnav_current_title_program returned {status}"
+                ),
+            });
+        }
+        Ok((title, pgcn, pgn))
+    }
+
     /// Drive one step of the navigation VM.
     ///
     /// Fills the shared 2048-byte buffer with either sector data (for
