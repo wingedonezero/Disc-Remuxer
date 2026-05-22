@@ -35,7 +35,9 @@ pub mod ifo;
 pub mod reader;
 pub mod source;
 
-pub use cell::{cells_in_pgc, check_cell_walk, CellInfo};
+pub use cell::{
+    cells_in_pgc, check_cell_vs_c_adt, check_cell_walk, find_cell_adr, CellInfo,
+};
 pub use css::CssProbe;
 pub use file::{DvdFile, ReadDomain, BLOCK_SIZE};
 pub use ifo::{IfoHandle, IfoKind};

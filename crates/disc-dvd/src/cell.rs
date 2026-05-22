@@ -20,13 +20,14 @@
 //! roadmap. Any time the walk encounters a non-monotonic sector range
 //! the per-cell check logs a warning so it's visible in the job log.
 
-use disc_core::{check, check_in_range};
+use disc_core::{check, check_eq, check_in_range};
 use libdvdread_sys as sys;
 
-pub use sys::dvd_time_t;
+pub use sys::{cell_adr_t, dvd_time_t};
 
-/// Decoded snapshot of one `cell_playback_t` entry from a PGC's
-/// `cell_playback` array.
+/// Decoded snapshot of one `cell_playback_t` (+ paired `cell_position_t`)
+/// entry from a PGC's `cell_playback` / `cell_position` arrays. Field
+/// names mirror libdvdread's C structs verbatim.
 #[derive(Debug, Clone, Copy)]
 pub struct CellInfo {
     /// 0-based index of this cell within `pgc.cell_playback`.
@@ -37,6 +38,14 @@ pub struct CellInfo {
     pub first_sector: u32,
     /// `cell_playback_t::last_sector` — inclusive LBA end of the cell.
     pub last_sector: u32,
+    /// `cell_playback_t::first_ilvu_end_sector` — last sector of the
+    /// first ILVU when this cell is part of an interleaved (multi-
+    /// angle) block. Meaningful only when `block_type == 1`.
+    pub first_ilvu_end_sector: u32,
+    /// `cell_playback_t::last_vobu_start_sector` — start sector of the
+    /// last VOBU in the cell. Used by libdvdnav to find a clean exit
+    /// point near the cell's end.
+    pub last_vobu_start_sector: u32,
     /// `last_sector - first_sector + 1` — the number of 2048-byte blocks
     /// to read. libdvdnav uses this same expression internally
     /// (`vendor/libdvdnav/src/searching.c`).
@@ -44,7 +53,15 @@ pub struct CellInfo {
     /// `cell_playback_t::playback_time` — BCD-encoded HH:MM:SS.FF with
     /// framerate flag in the top two bits of `frame_u`.
     pub playback_time: dvd_time_t,
-    /// `cell_playback_t::block_mode` (2-bit).
+    /// `cell_playback_t::still_time` — seconds to pause after this
+    /// cell. `0xff` = pause indefinitely (DVD spec).
+    pub still_time: u8,
+    /// `cell_playback_t::cell_cmd_nr` — index into the PGC's
+    /// `command_tbl.cell_cmds` array of a VM command to execute on
+    /// cell-end. `0` = no command.
+    pub cell_cmd_nr: u8,
+    /// `cell_playback_t::block_mode` (2-bit; 0 = not-in-block,
+    /// 1 = first cell of an angle block, 2 = in-block, 3 = last cell).
     pub block_mode: u8,
     /// `cell_playback_t::block_type` (2-bit; 0 = not in block,
     /// 1 = angle-block cell).
@@ -58,33 +75,72 @@ pub struct CellInfo {
     pub stc_discontinuity: bool,
     /// `cell_playback_t::seamless_angle`.
     pub seamless_angle: bool,
+    /// `cell_playback_t::playback_mode` — when set, the player enters
+    /// StillMode after each VOBU in this cell.
+    pub playback_mode: bool,
+    /// `cell_playback_t::restricted` — playback restriction flag
+    /// (libdvdread header marks the exact semantics as "?? drop out
+    /// of fastforward").
+    pub restricted: bool,
+    /// `cell_playback_t::cell_type` (5-bit; karaoke metadata, reserved
+    /// otherwise).
+    pub cell_type: u8,
+    /// `cell_position_t::vob_id_nr` — the VOB ID this cell belongs to,
+    /// keyed against `vts_c_adt::cell_adr_table[i].vob_id`.
+    pub vob_id_nr: u16,
+    /// `cell_position_t::cell_nr` — the cell number within the VOB,
+    /// keyed against `vts_c_adt::cell_adr_table[i].cell_id`.
+    pub cell_nr: u8,
 }
 
 impl CellInfo {
-    /// Build a `CellInfo` from libdvdread's raw `cell_playback_t`.
+    /// Build a `CellInfo` from libdvdread's raw `cell_playback_t` plus
+    /// the matching `cell_position_t` entry (same index within the PGC).
     ///
-    /// `cell_playback_t` is `#[repr(packed)]`; the `{ raw.field }` block
-    /// syntax copies each primitive field by value, which is the safe
-    /// way to read from a packed struct.
-    pub(crate) fn from_raw(idx: u8, raw: &sys::cell_playback_t) -> Self {
-        let first_sector = { raw.first_sector };
-        let last_sector = { raw.last_sector };
-        let playback_time = { raw.playback_time };
+    /// `cell_playback_t` and `cell_position_t` are `#[repr(packed)]`;
+    /// the `{ raw.field }` block syntax copies each primitive field by
+    /// value, which is the safe way to read from a packed struct.
+    pub(crate) fn from_raw(
+        idx: u8,
+        play: &sys::cell_playback_t,
+        pos: Option<&sys::cell_position_t>,
+    ) -> Self {
+        let first_sector = { play.first_sector };
+        let last_sector = { play.last_sector };
+        let first_ilvu_end_sector = { play.first_ilvu_end_sector };
+        let last_vobu_start_sector = { play.last_vobu_start_sector };
+        let playback_time = { play.playback_time };
+        let still_time = { play.still_time };
+        let cell_cmd_nr = { play.cell_cmd_nr };
         let block_count = last_sector
             .saturating_sub(first_sector)
             .saturating_add(1);
+        let (vob_id_nr, cell_nr) = pos.map_or((0, 0), |p| {
+            let vid = { p.vob_id_nr };
+            let cnr = { p.cell_nr };
+            (vid, cnr)
+        });
         Self {
             idx,
             first_sector,
             last_sector,
+            first_ilvu_end_sector,
+            last_vobu_start_sector,
             block_count,
             playback_time,
-            block_mode: raw.block_mode(),
-            block_type: raw.block_type(),
-            seamless_play: raw.seamless_play() != 0,
-            interleaved: raw.interleaved() != 0,
-            stc_discontinuity: raw.stc_discontinuity() != 0,
-            seamless_angle: raw.seamless_angle() != 0,
+            still_time,
+            cell_cmd_nr,
+            block_mode: play.block_mode(),
+            block_type: play.block_type(),
+            seamless_play: play.seamless_play() != 0,
+            interleaved: play.interleaved() != 0,
+            stc_discontinuity: play.stc_discontinuity() != 0,
+            seamless_angle: play.seamless_angle() != 0,
+            playback_mode: play.playback_mode() != 0,
+            restricted: play.restricted() != 0,
+            cell_type: play.cell_type(),
+            vob_id_nr,
+            cell_nr,
         }
     }
 
@@ -125,18 +181,84 @@ const fn bcd_to_u8(bcd: u8) -> u8 {
 #[must_use]
 pub fn cells_in_pgc(pgc: &sys::pgc_t) -> Vec<CellInfo> {
     let nr = { pgc.nr_of_cells };
-    let ptr = { pgc.cell_playback };
-    if ptr.is_null() || nr == 0 {
+    let play_ptr = { pgc.cell_playback };
+    let pos_ptr = { pgc.cell_position };
+    if play_ptr.is_null() || nr == 0 {
         return Vec::new();
     }
     // SAFETY: libdvdread guarantees `cell_playback[0..nr_of_cells]` is
-    // initialized whenever the `cell_playback` pointer is non-null.
-    let raw: &[sys::cell_playback_t] =
-        unsafe { std::slice::from_raw_parts(ptr, usize::from(nr)) };
-    raw.iter()
+    // initialized whenever its pointer is non-null. The `cell_position`
+    // array tracks the same length when present; we treat NULL as "no
+    // position info" and fall back to zeros rather than fail.
+    let play: &[sys::cell_playback_t] =
+        unsafe { std::slice::from_raw_parts(play_ptr, usize::from(nr)) };
+    let pos: Option<&[sys::cell_position_t]> = if pos_ptr.is_null() {
+        None
+    } else {
+        Some(unsafe { std::slice::from_raw_parts(pos_ptr, usize::from(nr)) })
+    };
+    play.iter()
         .enumerate()
-        .map(|(i, c)| CellInfo::from_raw(u8::try_from(i).unwrap_or(u8::MAX), c))
+        .map(|(i, c)| {
+            CellInfo::from_raw(
+                u8::try_from(i).unwrap_or(u8::MAX),
+                c,
+                pos.and_then(|p| p.get(i)),
+            )
+        })
         .collect()
+}
+
+/// Locate a `cell_adr_t` entry in `vts_c_adt` matching `(vob_id, cell_id)`.
+/// libdvdread doesn't sort the cell-address table, so we walk it
+/// linearly. The table is typically small (one entry per VOB cell —
+/// dozens, occasionally low hundreds).
+#[must_use]
+pub fn find_cell_adr(table: &[sys::cell_adr_t], vob_id: u16, cell_id: u8) -> Option<&sys::cell_adr_t> {
+    table
+        .iter()
+        .find(|e| {
+            let v = { e.vob_id };
+            let c = { e.cell_id };
+            v == vob_id && c == cell_id
+        })
+}
+
+/// Cross-check a PGC cell's sector range against the `vts_c_adt` entry
+/// keyed by `(vob_id_nr, cell_nr)`. Both libdvdread tables describe the
+/// same cell on disc, so they must agree: any divergence is an IFO
+/// inconsistency.
+///
+/// Logs PASS/FAIL via `disc_check`. Returns `true` when both
+/// `start_sector` and `last_sector` match (or when there's no
+/// corresponding `c_adt` entry, which we report as a soft check
+/// failure but don't treat as a hard error — a few discs ship with
+/// PGC cells that don't appear in c_adt).
+pub fn check_cell_vs_c_adt(cell: &CellInfo, c_adt_table: &[sys::cell_adr_t]) -> bool {
+    let Some(adr) = find_cell_adr(c_adt_table, cell.vob_id_nr, cell.cell_nr) else {
+        check(
+            &format!(
+                "cell[{}] (vob_id={}, cell_nr={}) has a c_adt entry",
+                cell.idx, cell.vob_id_nr, cell.cell_nr
+            ),
+            "matching c_adt row exists",
+            || false,
+        );
+        return false;
+    };
+    let start = { adr.start_sector };
+    let last = { adr.last_sector };
+    let s_ok = check_eq(
+        &format!("cell[{}] first_sector matches c_adt.start_sector", cell.idx),
+        cell.first_sector,
+        start,
+    );
+    let l_ok = check_eq(
+        &format!("cell[{}] last_sector matches c_adt.last_sector", cell.idx),
+        cell.last_sector,
+        last,
+    );
+    s_ok && l_ok
 }
 
 /// Per-cell invariant checks. Each one logs PASS/FAIL through the
@@ -218,14 +340,33 @@ mod tests {
             idx,
             first_sector: first,
             last_sector: last,
+            first_ilvu_end_sector: 0,
+            last_vobu_start_sector: last,
             block_count: last.saturating_sub(first).saturating_add(1),
             playback_time: time(0, 0, 0),
+            still_time: 0,
+            cell_cmd_nr: 0,
             block_mode: 0,
             block_type: 0,
             seamless_play: false,
             interleaved: false,
             stc_discontinuity: false,
             seamless_angle: false,
+            playback_mode: false,
+            restricted: false,
+            cell_type: 0,
+            vob_id_nr: 0,
+            cell_nr: 0,
+        }
+    }
+
+    fn c_adt_row(vob_id: u16, cell_id: u8, start: u32, last: u32) -> sys::cell_adr_t {
+        sys::cell_adr_t {
+            vob_id,
+            cell_id,
+            zero_1: 0,
+            start_sector: start,
+            last_sector: last,
         }
     }
 
@@ -277,5 +418,48 @@ mod tests {
         let c0 = cell(0, 0, 200);
         let c1 = cell(1, 100, 300);
         assert!(!check_cell_walk(&c1, Some(&c0), 1_000));
+    }
+
+    #[test]
+    fn find_cell_adr_locates_matching_row() {
+        let table = [
+            c_adt_row(1, 1, 0, 99),
+            c_adt_row(1, 2, 100, 199),
+            c_adt_row(2, 1, 200, 299),
+        ];
+        let row = find_cell_adr(&table, 1, 2).expect("row should exist");
+        assert_eq!({ row.start_sector }, 100);
+        assert_eq!({ row.last_sector }, 199);
+        assert!(find_cell_adr(&table, 99, 99).is_none());
+    }
+
+    #[test]
+    fn check_cell_vs_c_adt_passes_when_sectors_agree() {
+        let mut c = cell(0, 100, 199);
+        c.vob_id_nr = 1;
+        c.cell_nr = 2;
+        let table = [
+            c_adt_row(1, 1, 0, 99),
+            c_adt_row(1, 2, 100, 199),
+        ];
+        assert!(check_cell_vs_c_adt(&c, &table));
+    }
+
+    #[test]
+    fn check_cell_vs_c_adt_fails_on_sector_mismatch() {
+        let mut c = cell(0, 100, 199);
+        c.vob_id_nr = 1;
+        c.cell_nr = 1;
+        let table = [c_adt_row(1, 1, 0, 99)];
+        assert!(!check_cell_vs_c_adt(&c, &table));
+    }
+
+    #[test]
+    fn check_cell_vs_c_adt_fails_when_no_match() {
+        let mut c = cell(0, 100, 199);
+        c.vob_id_nr = 7;
+        c.cell_nr = 7;
+        let table = [c_adt_row(1, 1, 0, 99)];
+        assert!(!check_cell_vs_c_adt(&c, &table));
     }
 }

@@ -32,7 +32,9 @@ use std::path::PathBuf;
 use anyhow::{anyhow, Context, Result};
 use clap::Args;
 use disc_core::{check, check_eq, detect_disc_type, DiscType};
-use disc_dvd::cell::{cells_in_pgc, check_cell_walk, dvd_time_seconds, CellInfo};
+use disc_dvd::cell::{
+    cells_in_pgc, check_cell_vs_c_adt, check_cell_walk, dvd_time_seconds, CellInfo,
+};
 use disc_dvd::ifo::{format_dvd_time, IfoHandle, IfoKind};
 use disc_dvd::{DvdFile, DvdSource, ReadDomain, BLOCK_SIZE};
 use sha2::{Digest, Sha256};
@@ -173,6 +175,18 @@ pub fn run(args: DumpTitleArgs) -> Result<()> {
     }
     log::info!("walking {} cells in IFO order", cells.len());
 
+    // The VTS Cell Address Table (`vts_c_adt`) is an independent
+    // directory of every on-disc cell keyed by (vob_id, cell_id). The
+    // PGC's `cell_playback` array refers to the same cells indirectly
+    // via `cell_position[i] = (vob_id_nr, cell_nr)`. Both libdvdread
+    // tables must agree on each cell's sector range — divergence
+    // points at an IFO inconsistency. Per-cell check below.
+    let c_adt_rows = vts_ifo.cell_adr_table();
+    log::info!(
+        "vts_c_adt: {} cell-address entries available for cross-check",
+        c_adt_rows.len()
+    );
+
     let mut writer = BufWriter::new(
         File::create(&args.out)
             .with_context(|| format!("creating {}", args.out.display()))?,
@@ -187,20 +201,33 @@ pub fn run(args: DumpTitleArgs) -> Result<()> {
 
     for cell in &cells {
         log::info!(
-            "cell[{}/{}] first_sector={} last_sector={} block_count={} block_type={} block_mode={} interleaved={} stc_disc={} playback_time={}",
+            "cell[{}/{}] vob_id_nr={} cell_nr={} first_sector={} last_sector={} block_count={} block_type={} block_mode={} still_time={} cell_cmd_nr={} interleaved={} stc_disc={} playback_mode={} playback_time={}",
             cell.idx + 1,
             cells.len(),
+            cell.vob_id_nr,
+            cell.cell_nr,
             cell.first_sector,
             cell.last_sector,
             cell.block_count,
             cell.block_type,
             cell.block_mode,
+            cell.still_time,
+            cell.cell_cmd_nr,
             cell.interleaved,
             cell.stc_discontinuity,
+            cell.playback_mode,
             format_dvd_time(&cell.playback_time),
         );
 
         let _walk_ok = check_cell_walk(cell, prev_cell.as_ref(), title_file_blocks);
+
+        // Cross-check the PGC cell against the VTS cell-address table:
+        // the (vob_id_nr, cell_nr) lookup must produce identical
+        // start_sector/last_sector values. Skipped when c_adt is empty
+        // (no cross-source to compare against).
+        if !c_adt_rows.is_empty() {
+            let _c_adt_ok = check_cell_vs_c_adt(cell, c_adt_rows);
+        }
 
         // Read the cell in `READ_CHUNK_BLOCKS`-sized pieces. Doing this
         // in chunks keeps peak memory bounded for cells that span tens

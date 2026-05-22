@@ -29,9 +29,10 @@ use crate::reader::DvdReader;
 // `#[repr(packed)]` because they mirror DVD on-disc layout — readers must
 // copy fields into local variables before formatting / referencing.
 pub use libdvdread_sys::{
-    audio_attr_t, cell_playback_t, dvd_time_t, pgc_t, pgci_srp_t, pgcit_t, ptt_info_t,
-    subp_attr_t, title_info_t, tt_srpt_t, ttu_t, video_attr_t, vmgi_mat_t,
-    vts_ptt_srpt_t, vtsi_mat_t,
+    audio_attr_t, c_adt_t, cell_adr_t, cell_playback_t, cell_position_t, dvd_time_t,
+    map_ent_t, pgc_t, pgci_srp_t, pgcit_t, ptl_mait_country_t, ptl_mait_t, ptt_info_t,
+    subp_attr_t, title_info_t, tt_srpt_t, ttu_t, video_attr_t, vmgi_mat_t, vobu_admap_t,
+    vts_atrt_t, vts_ptt_srpt_t, vts_tmap_t, vts_tmapt_t, vtsi_mat_t,
 };
 
 /// Which IFO file to open.
@@ -126,6 +127,28 @@ impl<'r> IfoHandle<'r> {
         unsafe { self.dvd_video().tt_srpt.as_ref() }
     }
 
+    /// `first_play_pgc` — the PGC the player runs on disc insert
+    /// (FP_PGC in the DVD-Video spec). Typical use: studio logos and
+    /// menu intros. `None` when there is no first-play PGC (rare) or
+    /// for VTS IFOs.
+    pub fn first_play_pgc(&self) -> Option<&sys::pgc_t> {
+        unsafe { self.dvd_video().first_play_pgc.as_ref() }
+    }
+
+    /// `ptl_mait` — Parental Management Information Table. Maps each
+    /// (country, VTS) pair to a parental level. `None` if the disc has
+    /// no parental controls or this is a VTS IFO.
+    pub fn ptl_mait(&self) -> Option<&sys::ptl_mait_t> {
+        unsafe { self.dvd_video().ptl_mait.as_ref() }
+    }
+
+    /// `vts_atrt` — VTS Attribute Table. For each VTS on the disc,
+    /// stores a copy of the VTS attribute block — useful when scanning
+    /// disc-wide attributes without opening every VTS IFO. VMG only.
+    pub fn vts_atrt(&self) -> Option<&sys::vts_atrt_t> {
+        unsafe { self.dvd_video().vts_atrt.as_ref() }
+    }
+
     // --- VTS-side accessors (only meaningful when `kind() == Vts(_)`) ---
 
     /// `vtsi_mat` — VTS Information Management Table. Only present in
@@ -144,6 +167,31 @@ impl<'r> IfoHandle<'r> {
     /// per-PGC pointers used during title playback.
     pub fn vts_pgcit(&self) -> Option<&sys::pgcit_t> {
         unsafe { self.dvd_video().vts_pgcit.as_ref() }
+    }
+
+    /// `vts_c_adt` — VTS Cell Address Table. A flat
+    /// `(vob_id, cell_id, start_sector, last_sector)` directory of
+    /// every VOB cell on the VTS, independent of any PGC. Useful for
+    /// cross-checking the sector ranges advertised in
+    /// [`pgc_t::cell_playback`].
+    pub fn vts_c_adt(&self) -> Option<&sys::c_adt_t> {
+        unsafe { self.dvd_video().vts_c_adt.as_ref() }
+    }
+
+    /// `vts_vobu_admap` — VOBU Address Map. A flat list of starting
+    /// sectors for every VOBU (Video OBject Unit, ~0.4–1 s of MPEG-PS)
+    /// in the VTS. Used by the navigation VM for time-based seeks and
+    /// useful to us as a hard list of valid pack-header sector
+    /// positions when validating MPEG-PS structure.
+    pub fn vts_vobu_admap(&self) -> Option<&sys::vobu_admap_t> {
+        unsafe { self.dvd_video().vts_vobu_admap.as_ref() }
+    }
+
+    /// `vts_tmapt` — VTS Time Map Table. Maps PGC playback time to
+    /// sector LBA. The navigation VM uses this for time-search;
+    /// libdvdnav will too once we integrate it (roadmap step 6).
+    pub fn vts_tmapt(&self) -> Option<&sys::vts_tmapt_t> {
+        unsafe { self.dvd_video().vts_tmapt.as_ref() }
     }
 
     // --- Slice convenience over libdvdread's "count + ptr" arrays ---
@@ -209,6 +257,80 @@ impl<'r> IfoHandle<'r> {
         // SAFETY: libdvdread guarantees `ptt[0..nr_of_ptts]` is initialized
         // when `ttu.ptt` is non-null.
         unsafe { slice::from_raw_parts(ptt, usize::from(nr)) }
+    }
+
+    /// Cell-address table entries (`cell_adr_t[]`) from `vts_c_adt`.
+    ///
+    /// libdvdread doesn't store an explicit entry count on `c_adt_t`;
+    /// the on-disc count is derived from `last_byte` per the DVD-Video
+    /// spec:
+    ///
+    /// ```text
+    /// nr_of_entries = (last_byte + 1 - C_ADT_SIZE) / CELL_ADDR_SIZE
+    ///               = (last_byte - 7) / 12
+    /// ```
+    ///
+    /// Note that libdvdread's own `ifo_print.c` uses `sizeof(c_adt_t)`
+    /// (= 8) in this formula by mistake; that bug is cosmetic (it
+    /// only affects the library's debug print) and we use the correct
+    /// divisor 12 (= `CELL_ADDR_SIZE`) here.
+    pub fn cell_adr_table(&self) -> &[sys::cell_adr_t] {
+        let Some(c_adt) = self.vts_c_adt() else {
+            return &[];
+        };
+        // Copy packed fields by value before doing arithmetic.
+        let raw_last_byte: u32 = { c_adt.last_byte };
+        let last_byte = u64::from(raw_last_byte);
+        let ptr = { c_adt.cell_adr_table };
+        if ptr.is_null() || last_byte + 1 < 8 + 12 {
+            return &[];
+        }
+        let nr = ((last_byte + 1 - 8) / 12) as usize;
+        // SAFETY: libdvdread reads `nr * CELL_ADDR_SIZE` bytes from the
+        // IFO into `cell_adr_table` when the IFO parses successfully;
+        // see `ifo_read.c:2202`.
+        unsafe { slice::from_raw_parts(ptr, nr) }
+    }
+
+    /// VOBU starting-sector list from `vts_vobu_admap`.
+    ///
+    /// `vobu_admap_t` carries only a `last_byte` field plus the array
+    /// pointer — the entry count is derived per the DVD-Video spec:
+    ///
+    /// ```text
+    /// nr_of_entries = (last_byte + 1 - VOBU_ADMAP_SIZE) / 4
+    ///               = (last_byte - 3) / 4
+    /// ```
+    pub fn vobu_start_sectors(&self) -> &[u32] {
+        let Some(admap) = self.vts_vobu_admap() else {
+            return &[];
+        };
+        let raw_last_byte: u32 = { admap.last_byte };
+        let last_byte = u64::from(raw_last_byte);
+        let ptr = { admap.vobu_start_sectors };
+        if ptr.is_null() || last_byte + 1 < 4 + 4 {
+            return &[];
+        }
+        let nr = ((last_byte + 1 - 4) / 4) as usize;
+        // SAFETY: see the c_adt slice helper — same read pattern.
+        unsafe { slice::from_raw_parts(ptr, nr) }
+    }
+
+    /// Time-map array (`vts_tmap_t[]`) from `vts_tmapt`. One entry per
+    /// PGC that has a time-search table; each entry stores a list of
+    /// `(time, sector_lba)` pairs for fast seek.
+    pub fn tmaps(&self) -> &[sys::vts_tmap_t] {
+        let Some(tmapt) = self.vts_tmapt() else {
+            return &[];
+        };
+        let nr: u16 = { tmapt.nr_of_tmaps };
+        let ptr = { tmapt.tmap };
+        if ptr.is_null() || nr == 0 {
+            return &[];
+        }
+        // SAFETY: libdvdread populates the time-map array when the IFO
+        // parses successfully.
+        unsafe { slice::from_raw_parts(ptr, usize::from(nr)) }
     }
 }
 
