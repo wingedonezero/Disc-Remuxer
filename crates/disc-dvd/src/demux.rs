@@ -98,7 +98,7 @@ pub enum DemuxError {
 /// demuxer's writer / stats tables. Mirrors [`StreamKind`] but drops
 /// variants that don't get emitted (`SystemHeader`, `Padding`, `NavPack`,
 /// `Unknown`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StreamKey {
     /// MPEG-2 video, holds the raw `stream_id` byte (DVD permits only
     /// `0xE0` in practice but the parser accepts `0xE0..=0xEF`).
@@ -237,6 +237,20 @@ pub struct DemuxSummary {
     pub stripped_header_bytes: u64,
     /// `14 * sectors_processed` — the pack header on every sector.
     pub pack_header_bytes: u64,
+    /// Number of times a cell boundary with stc_discontinuity=true was
+    /// observed. The first cell of a title is also counted here so the
+    /// caller can sanity-check against the cells iterated.
+    pub discontinuity_boundaries: u64,
+    /// Number of PESes where FAP-based resync actually dropped bytes
+    /// from the leading partial frame. Lower than
+    /// `discontinuity_boundaries * (audio_streams_count)` when an
+    /// audio stream's first post-boundary PES happens to start
+    /// frame-aligned (FAP = 0).
+    pub fap_resyncs_applied: u64,
+    /// Bytes dropped via FAP resync (partial leading frames at
+    /// stc_discontinuity boundaries). Counted as part of
+    /// `stripped_header_bytes` for the accounting invariant.
+    pub fap_bytes_skipped: u64,
     pub streams: BTreeMap<StreamKey, StreamStats>,
 }
 
@@ -250,6 +264,13 @@ pub struct Demuxer {
     elementary_emitted_bytes: u64,
     dropped_pes_bytes: u64,
     stripped_header_bytes: u64,
+    /// Stream keys that need FAP-based resync on their next PES because
+    /// the most recent cell boundary carried stc_discontinuity=true.
+    /// Populated by [`Demuxer::begin_cell`].
+    audio_resync_pending: std::collections::HashSet<StreamKey>,
+    discontinuity_boundaries: u64,
+    fap_resyncs_applied: u64,
+    fap_bytes_skipped: u64,
 }
 
 impl Demuxer {
@@ -266,7 +287,48 @@ impl Demuxer {
             elementary_emitted_bytes: 0,
             dropped_pes_bytes: 0,
             stripped_header_bytes: 0,
+            audio_resync_pending: std::collections::HashSet::new(),
+            discontinuity_boundaries: 0,
+            fap_resyncs_applied: 0,
+            fap_bytes_skipped: 0,
         }
+    }
+
+    /// Signal that a new PGC cell starts at the next call to
+    /// [`Self::process_sector`] (or [`Self::process_pes`]). When
+    /// `stc_discontinuity` is `true` the caller has indicated this cell
+    /// resets the System Time Clock — the encoder did not stitch
+    /// frames across the boundary, so the partial leading frame in the
+    /// first audio PES of each stream after this boundary is garbage
+    /// and must be skipped.
+    ///
+    /// Implementation: marks every AC-3 and DTS stream key we've
+    /// already seen as `resync pending`; on the first PES the demuxer
+    /// observes for each marked stream, [`first_access_unit_pointer`]
+    /// is honored to skip the partial leading frame's bytes.
+    ///
+    /// Streams the demuxer hasn't seen yet aren't marked here — they
+    /// don't need a resync because their very first PES is by
+    /// definition their stream start (which is already frame-aligned
+    /// in well-formed discs).
+    ///
+    /// LPCM streams are left alone: the BD common header is still
+    /// stripped but the LPCM samples themselves don't have framing
+    /// that can lose sync, so FAP skipping isn't required.
+    pub fn begin_cell(&mut self, stc_discontinuity: bool) {
+        if !stc_discontinuity {
+            return;
+        }
+        self.discontinuity_boundaries += 1;
+        for key in self.stats.keys() {
+            if matches!(key, StreamKey::Ac3(_) | StreamKey::Dts(_)) {
+                self.audio_resync_pending.insert(*key);
+            }
+        }
+        log::debug!(
+            "demux: stc_discontinuity boundary, {} audio streams marked for FAP resync",
+            self.audio_resync_pending.len(),
+        );
     }
 
     /// Parse one 2048-byte sector and route its PES packets.
@@ -313,7 +375,66 @@ impl Demuxer {
             return Ok(());
         }
 
-        let bytes_to_emit = &pes.payload[prefix..];
+        // FAP-based resync at stc_discontinuity boundaries (step 5b).
+        //
+        // Only applies to AC-3 / DTS, which have a meaningful syncword
+        // structure that loses sync if you emit partial frame bytes
+        // from before a discontinuity. LPCM doesn't have frame sync to
+        // lose; video and MPEG audio don't carry FAP in this header
+        // position.
+        //
+        // Reads the 16-bit big-endian FAP from the 3-byte BD common
+        // header (offsets 1..3 of `pes.payload`). FAP is the byte
+        // offset from the END of the 3-byte common header to the first
+        // byte of the first complete audio frame in this PES. So we
+        // emit from `pes.payload[3 + fap..]`.
+        //
+        // FAP == 0 with a resync pending means "this PES already
+        // starts on a frame boundary" — nothing extra to skip. We
+        // still consume the resync marker so subsequent PESes emit
+        // normally.
+        //
+        // FAP > pes.payload.len() - 3 would point past the end and is
+        // either spec-violating or means the PES is all-continuation;
+        // we treat it as "skip the rest of this PES" and clear the
+        // resync.
+        let mut effective_prefix = prefix;
+        if self.audio_resync_pending.contains(&key) {
+            // pes.payload[0] = num_audio_frames (1 byte)
+            // pes.payload[1..3] = first_access_unit_pointer (BE u16)
+            let fap = (u16::from(pes.payload[1]) << 8) | u16::from(pes.payload[2]);
+            let fap = usize::from(fap);
+            let extra_skip = fap;
+            let new_prefix = prefix.saturating_add(extra_skip);
+            log::debug!(
+                "demux: FAP resync on {:?}: FAP={fap}, extra_skip={extra_skip} bytes",
+                key,
+            );
+            if new_prefix >= pes.payload.len() {
+                // FAP points past PES end — entire payload is
+                // continuation. Drop it and clear resync.
+                let bytes_dropped =
+                    pes.payload.len().saturating_sub(prefix) as u32;
+                self.fap_bytes_skipped += u64::from(bytes_dropped);
+                self.stripped_header_bytes += u64::from(bytes_dropped);
+                self.fap_resyncs_applied += 1;
+                self.audio_resync_pending.remove(&key);
+                let stats = self.stats.entry(key).or_default();
+                stats.pes_count += 1;
+                stats.pes_bytes += pes.total_size as u64;
+                return Ok(());
+            }
+            effective_prefix = new_prefix;
+            if extra_skip > 0 {
+                let n = extra_skip as u64;
+                self.fap_bytes_skipped += n;
+                self.stripped_header_bytes += n;
+            }
+            self.fap_resyncs_applied += 1;
+            self.audio_resync_pending.remove(&key);
+        }
+
+        let bytes_to_emit = &pes.payload[effective_prefix..];
 
         // Lazy-open the writer.
         let writer = match self.writers.get_mut(&key) {
@@ -388,6 +509,9 @@ impl Demuxer {
             dropped_pes_bytes: self.dropped_pes_bytes,
             stripped_header_bytes: self.stripped_header_bytes,
             pack_header_bytes,
+            discontinuity_boundaries: self.discontinuity_boundaries,
+            fap_resyncs_applied: self.fap_resyncs_applied,
+            fap_bytes_skipped: self.fap_bytes_skipped,
             streams: self.stats,
         })
     }
@@ -582,4 +706,129 @@ mod tests {
         );
     }
 
+    // --- FAP / begin_cell tests (step 5b) ----------------------------
+
+    /// Build a synthetic PES packet for an AC-3 stream so we can drive
+    /// `Demuxer::process_pes` directly without a real DVD sector.
+    ///
+    /// `bd_common`: the 3-byte BD common header (num_audio_frames +
+    /// 16-bit big-endian FAP).
+    /// `payload_after_common`: the bytes that follow it (typically a
+    /// few synthetic AC-3 frames; we don't care about their content,
+    /// only their length and byte values).
+    fn make_ac3_pes(
+        bd_common: [u8; 3],
+        payload_after_common: &[u8],
+    ) -> (Vec<u8>, PesPacket<'static>) {
+        // Total payload that the parser would surface: `bd_common`
+        // followed by the payload bytes. The parser already strips the
+        // PES header and substream_id, so `pes.payload` begins at the
+        // BD common header.
+        let mut payload_buf = Vec::with_capacity(3 + payload_after_common.len());
+        payload_buf.extend_from_slice(&bd_common);
+        payload_buf.extend_from_slice(payload_after_common);
+        let leaked: &'static [u8] = Box::leak(payload_buf.clone().into_boxed_slice());
+        let raw_leaked: &'static [u8] = leaked;
+        let pes = PesPacket {
+            stream_id: 0xBD,
+            substream_id: Some(0x80),
+            sector_offset: 0,
+            total_size: 9 + leaked.len() + 1, // arbitrary; not checked here
+            header_size: 9 + 1,               // arbitrary; not checked here
+            raw: raw_leaked,
+            payload: leaked,
+        };
+        (payload_buf, pes)
+    }
+
+    #[test]
+    fn begin_cell_without_discontinuity_is_noop() {
+        let tmp = std::env::temp_dir().join("disc-remuxer-demux-test-noop");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let mut demux = Demuxer::new(&tmp);
+
+        // Seed an AC-3 stream so begin_cell would have a stream to
+        // mark — but call it with stc_discontinuity=false.
+        let bd = [0x01, 0x00, 0x00]; // FAP = 0
+        let frames = [0x0B, 0x77, 0xAA, 0xBB, 0xCC, 0xDD]; // syncword + body
+        let (_buf, pes) = make_ac3_pes(bd, &frames);
+        demux.process_pes(&pes).unwrap();
+
+        demux.begin_cell(false);
+        // No discontinuity → no streams pending resync.
+        assert!(demux.audio_resync_pending.is_empty());
+        assert_eq!(demux.discontinuity_boundaries, 0);
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn begin_cell_with_discontinuity_marks_known_ac3_streams() {
+        let tmp = std::env::temp_dir().join("disc-remuxer-demux-test-mark");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let mut demux = Demuxer::new(&tmp);
+
+        // Seed AC-3 stream 0 with one PES so it's known to the demuxer.
+        let (_b, pes) = make_ac3_pes([0x01, 0x00, 0x00], &[0x0B, 0x77, 0xAA, 0xBB]);
+        demux.process_pes(&pes).unwrap();
+
+        demux.begin_cell(true);
+        assert_eq!(demux.discontinuity_boundaries, 1);
+        assert!(demux.audio_resync_pending.contains(&StreamKey::Ac3(0)));
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn fap_resync_skips_partial_leading_frame() {
+        let tmp = std::env::temp_dir().join("disc-remuxer-demux-test-fap");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let mut demux = Demuxer::new(&tmp);
+
+        // First PES on this stream: FAP=0, ordinary emit.
+        let (_b, pes1) = make_ac3_pes([0x01, 0x00, 0x00], &[0x0B, 0x77, 0xAA, 0xBB]);
+        demux.process_pes(&pes1).unwrap();
+
+        // Cell boundary with discontinuity.
+        demux.begin_cell(true);
+        assert!(demux.audio_resync_pending.contains(&StreamKey::Ac3(0)));
+
+        // Next PES on the stream: FAP = 4 → first 4 bytes are partial
+        // frame continuation from before the cut and must be skipped.
+        // Payload after BD common is the 4 "partial" bytes followed by
+        // a fresh AC-3 syncword + body.
+        let (_b, pes2) = make_ac3_pes(
+            [0x01, 0x00, 0x04],
+            &[0xDE, 0xAD, 0xBE, 0xEF, 0x0B, 0x77, 0xCA, 0xFE],
+        );
+        demux.process_pes(&pes2).unwrap();
+
+        // The resync should have consumed the marker.
+        assert!(!demux.audio_resync_pending.contains(&StreamKey::Ac3(0)));
+        assert_eq!(demux.fap_resyncs_applied, 1);
+        assert_eq!(demux.fap_bytes_skipped, 4);
+
+        // The first emit of pes2 should be the post-FAP bytes, NOT
+        // the partial frame. We don't reset first_bytes_set across
+        // PESes, so it'll still hold the first PES's first bytes —
+        // that's expected. The way to verify the FAP skip is by
+        // reading the output file.
+        let summary = demux.finish().unwrap();
+        assert_eq!(summary.fap_bytes_skipped, 4);
+        assert_eq!(summary.fap_resyncs_applied, 1);
+
+        let body =
+            std::fs::read(tmp.join(StreamKey::Ac3(0).filename())).unwrap();
+        // First 4 bytes: pes1's emitted bytes (after stripping 3 BD
+        // common): 0x0B 0x77 0xAA 0xBB.
+        // Next bytes from pes2 should START at the syncword (we
+        // skipped 0xDE 0xAD 0xBE 0xEF).
+        assert_eq!(&body[..4], &[0x0B, 0x77, 0xAA, 0xBB]);
+        assert_eq!(&body[4..8], &[0x0B, 0x77, 0xCA, 0xFE]);
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
 }

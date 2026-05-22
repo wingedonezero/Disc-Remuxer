@@ -25,6 +25,12 @@
 //!   DVD BD-substream headers and verifies first-byte codec magic per
 //!   stream. Step-5a skeleton — no cross-cell frame alignment yet.
 //!
+//! * `demux-title --disc <path> --title N --out-dir <dir>` — same
+//!   output as demux-vob but walks the title's PGC cells directly from
+//!   disc, wiring cell metadata (especially stc_discontinuity) through
+//!   to the demuxer so AC-3/DTS streams resync at chapter boundaries
+//!   via first_access_unit_pointer. Step-5b — preferred path for ripping.
+//!
 //! Logging: controlled by `RUST_LOG` (env_logger-style syntax). Defaults
 //! to `info` if unset. Set `RUST_LOG=debug` for IFO + sector-read
 //! lifecycle traces, `=trace` for byte-level detail. Subcommands that
@@ -36,6 +42,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
+mod demux_title;
 mod demux_vob;
 mod dump_sectors;
 mod dump_title;
@@ -74,6 +81,10 @@ enum Command {
 
     /// Demultiplex an MPEG-PS sector stream into per-stream files.
     DemuxVob(demux_vob::DemuxVobArgs),
+
+    /// Demultiplex a title's PGC cells directly from disc, honoring
+    /// stc_discontinuity for AC-3/DTS audio resync.
+    DemuxTitle(demux_title::DemuxTitleArgs),
 }
 
 fn main() -> Result<()> {
@@ -107,6 +118,12 @@ fn main() -> Result<()> {
             let path_disp = args.path.display().to_string();
             demux_vob::run(args)
                 .with_context(|| format!("demux-vob {path_disp}"))
+        }
+        Command::DemuxTitle(args) => {
+            let path_disp = args.disc.display().to_string();
+            let title = args.title;
+            demux_title::run(args)
+                .with_context(|| format!("demux-title {path_disp} title={title}"))
         }
     }
 }
