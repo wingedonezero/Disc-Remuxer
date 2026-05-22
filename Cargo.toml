@@ -1,6 +1,10 @@
 [workspace]
 resolver = "2"
-members = []
+members = [
+    "crates/libdvdcss-sys",
+    "crates/libdvdread-sys",
+    "crates/libdvdnav-sys",
+]
 exclude = ["vendor"]
 
 [workspace.package]

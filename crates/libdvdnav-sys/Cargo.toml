@@ -1,0 +1,23 @@
+[package]
+name = "libdvdnav-sys"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# libdvdnav itself is GPL-2-or-later; linking it transitively GPLs the binary.
+license = "GPL-2.0-or-later"
+publish = false
+description = "Raw FFI bindings to libdvdnav. Builds the bundled libdvdnav at vendor/libdvdnav via meson, linked against the bundled libdvdread."
+links = "dvdnav"
+
+[dependencies]
+# libdvdcss-sys is an explicit dep so DEP_DVDCSS_* env vars are visible
+# to this crate's build.rs even though the transitive link goes through
+# libdvdread.
+libdvdcss-sys = { path = "../libdvdcss-sys" }
+libdvdread-sys = { path = "../libdvdread-sys" }
+
+[build-dependencies]
+bindgen = "0.72"
+
+[lints]
+workspace = true
