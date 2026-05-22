@@ -29,3 +29,24 @@ Thumbs.db
 build/
 dist/
 *.egg-info/
+
+# Rust / Cargo
+/target/
+**/*.rs.bk
+*.orig
+
+# Vendored autotools artifacts (in case anyone runs configure in-tree by mistake;
+# normally cargo's build.rs invokes autotools in an out-of-tree build dir under target/)
+vendor/*/build/
+vendor/*/.libs/
+vendor/*/.deps/
+vendor/*/autom4te.cache/
+vendor/*/config.h
+vendor/*/config.log
+vendor/*/config.status
+vendor/*/configure
+vendor/*/Makefile
+vendor/*/Makefile.in
+vendor/*/aclocal.m4
+vendor/*/libtool
+vendor/*/stamp-h1
