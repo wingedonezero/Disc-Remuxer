@@ -14,6 +14,7 @@ libdvdread-sys = { path = "../libdvdread-sys" }
 libdvdnav-sys = { path = "../libdvdnav-sys" }
 
 log.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true

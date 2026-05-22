@@ -32,6 +32,7 @@ pub mod css;
 pub mod decode;
 pub mod file;
 pub mod ifo;
+pub mod mpegps;
 pub mod reader;
 pub mod source;
 
@@ -41,5 +42,6 @@ pub use cell::{
 pub use css::CssProbe;
 pub use file::{DvdFile, ReadDomain, BLOCK_SIZE};
 pub use ifo::{IfoHandle, IfoKind};
+pub use mpegps::{scan_sector, stream_kind, MpegPsError, PackHeader, PesPacket, StreamKind};
 pub use reader::DvdReader;
 pub use source::DvdSource;
