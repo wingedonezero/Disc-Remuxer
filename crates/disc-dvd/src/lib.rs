@@ -30,6 +30,7 @@
 pub mod cell;
 pub mod css;
 pub mod decode;
+pub mod demux;
 pub mod file;
 pub mod ifo;
 pub mod mpegps;
@@ -40,6 +41,7 @@ pub use cell::{
     cells_in_pgc, check_cell_vs_c_adt, check_cell_walk, find_cell_adr, CellInfo,
 };
 pub use css::CssProbe;
+pub use demux::{DemuxError, DemuxSummary, Demuxer, MagicCheck, StreamKey, StreamStats};
 pub use file::{DvdFile, ReadDomain, BLOCK_SIZE};
 pub use ifo::{IfoHandle, IfoKind};
 pub use mpegps::{scan_sector, stream_kind, MpegPsError, PackHeader, PesPacket, StreamKind};

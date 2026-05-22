@@ -19,6 +19,12 @@
 //!   the output of `dump-title`) and report per-stream packet + byte
 //!   counts. Verifies the MPEG-PS pack/PES parser before demux.
 //!
+//! * `demux-vob <vob_path> --out-dir <dir>` — split an MPEG-PS sector
+//!   stream into per-stream elementary files (`video.0xE0.m2v`,
+//!   `audio.ac3.0.ac3`, `subpicture.0.sup`, …). Strips PES headers +
+//!   DVD BD-substream headers and verifies first-byte codec magic per
+//!   stream. Step-5a skeleton — no cross-cell frame alignment yet.
+//!
 //! Logging: controlled by `RUST_LOG` (env_logger-style syntax). Defaults
 //! to `info` if unset. Set `RUST_LOG=debug` for IFO + sector-read
 //! lifecycle traces, `=trace` for byte-level detail. Subcommands that
@@ -30,6 +36,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
+mod demux_vob;
 mod dump_sectors;
 mod dump_title;
 mod info;
@@ -64,6 +71,9 @@ enum Command {
 
     /// Scan an MPEG-PS sector stream and report per-stream byte counts.
     ScanStreams(scan_streams::ScanStreamsArgs),
+
+    /// Demultiplex an MPEG-PS sector stream into per-stream files.
+    DemuxVob(demux_vob::DemuxVobArgs),
 }
 
 fn main() -> Result<()> {
@@ -92,6 +102,11 @@ fn main() -> Result<()> {
             let path_disp = args.path.display().to_string();
             scan_streams::run(args)
                 .with_context(|| format!("scan-streams {path_disp}"))
+        }
+        Command::DemuxVob(args) => {
+            let path_disp = args.path.display().to_string();
+            demux_vob::run(args)
+                .with_context(|| format!("demux-vob {path_disp}"))
         }
     }
 }
