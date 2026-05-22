@@ -55,6 +55,7 @@ fn print_dvd_info(path: &Path) -> Result<()> {
         .context("opening VMG IFO (VIDEO_TS.IFO)")?;
 
     print_vmg_summary(&vmg);
+    print_vmg_extras(&vmg);
 
     let titles = vmg.titles();
     if titles.is_empty() {
@@ -202,6 +203,45 @@ fn print_vmg_summary(vmg: &IfoHandle<'_>) {
     println!("  provider_identifier:      {provider:?}");
 }
 
+// --- VMG-side ancillary tables (first_play_pgc, parental, vts_atrt) ---
+
+fn print_vmg_extras(vmg: &IfoHandle<'_>) {
+    println!();
+    println!("VMG ancillary tables:");
+
+    match vmg.first_play_pgc() {
+        Some(pgc) => {
+            let nr_of_cells: u8 = { pgc.nr_of_cells };
+            let nr_of_programs: u8 = { pgc.nr_of_programs };
+            let pt = { pgc.playback_time };
+            println!(
+                "  first_play_pgc:          present (nr_of_programs={nr_of_programs} nr_of_cells={nr_of_cells} playback_time={})",
+                disc_dvd::ifo::format_dvd_time(&pt),
+            );
+        }
+        None => println!("  first_play_pgc:          (none)"),
+    }
+
+    match vmg.ptl_mait() {
+        Some(p) => {
+            let nr_countries: u16 = { p.nr_of_countries };
+            let nr_vtss: u16 = { p.nr_of_vtss };
+            println!(
+                "  ptl_mait:                nr_of_countries={nr_countries} nr_of_vtss={nr_vtss}"
+            );
+        }
+        None => println!("  ptl_mait:                (no parental management table)"),
+    }
+
+    match vmg.vts_atrt() {
+        Some(a) => {
+            let nr_vtss: u16 = { a.nr_of_vtss };
+            println!("  vts_atrt:                nr_of_vtss={nr_vtss}");
+        }
+        None => println!("  vts_atrt:                (no VTS attribute table)"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Title summary (from VMG's tt_srpt)
 // ---------------------------------------------------------------------------
@@ -232,6 +272,7 @@ fn print_vts_detail(vts_ifo: &IfoHandle<'_>, target_vts_ttn: u8) {
     print_audio_streams(vtsi_mat);
     print_subp_streams(vtsi_mat);
     print_chapter_list(vts_ifo, target_vts_ttn);
+    print_vts_address_tables(vts_ifo);
     print_pgc_detail(vts_ifo, vtsi_mat, target_vts_ttn);
 }
 
@@ -369,6 +410,58 @@ fn print_subp_streams(vtsi_mat: &vtsi_mat_t) {
         println!("          lang_extension={lang_ext} ({})", decode::subp_lang_extension(lang_ext));
         println!("          code_extension={code_ext}");
         println!("          PS stream id:           0x{main:02X} substream 0x{sub:02X}");
+    }
+}
+
+// --- VTS address tables (vts_c_adt + vts_vobu_admap + vts_tmapt) ---
+
+fn print_vts_address_tables(vts_ifo: &IfoHandle<'_>) {
+    let c_adt_rows = vts_ifo.cell_adr_table();
+    let vobu_starts = vts_ifo.vobu_start_sectors();
+    let tmaps = vts_ifo.tmaps();
+    let nr_of_vobs: u16 = vts_ifo.vts_c_adt().map_or(0, |c| { c.nr_of_vobs });
+
+    println!(
+        "    vts_c_adt:        nr_of_vobs={nr_of_vobs}  cell_adr_table_entries={}",
+        c_adt_rows.len(),
+    );
+    if !c_adt_rows.is_empty() {
+        let preview = c_adt_rows.len().min(3);
+        for entry in c_adt_rows.iter().take(preview) {
+            let vob_id: u16 = { entry.vob_id };
+            let cell_id: u8 = { entry.cell_id };
+            let start: u32 = { entry.start_sector };
+            let last: u32 = { entry.last_sector };
+            println!(
+                "      vob_id={vob_id:>3} cell_id={cell_id:>3} start={start} last={last}",
+            );
+        }
+        if c_adt_rows.len() > preview {
+            println!("      ... ({} more)", c_adt_rows.len() - preview);
+        }
+    }
+
+    println!(
+        "    vts_vobu_admap:   vobu_start_sectors_entries={}{}",
+        vobu_starts.len(),
+        if vobu_starts.is_empty() {
+            ""
+        } else {
+            "  (first/last VOBU starts logged below)"
+        },
+    );
+    if let (Some(first), Some(last)) = (vobu_starts.first(), vobu_starts.last()) {
+        println!("      first VOBU start sector: {first}");
+        println!("      last  VOBU start sector: {last}");
+    }
+
+    println!("    vts_tmapt:        nr_of_tmaps={}", tmaps.len());
+    for (i, tmap) in tmaps.iter().enumerate() {
+        let tmu: u8 = { tmap.tmu };
+        let nr_entries: u16 = { tmap.nr_of_entries };
+        println!(
+            "      tmap[{i}]: tmu={tmu}s nr_of_entries={nr_entries}",
+        );
     }
 }
 

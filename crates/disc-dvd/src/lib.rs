@@ -19,20 +19,38 @@
 //! * [`file`] — `DvdFile`, RAII wrapper for `DVDOpenFile` / `DVDReadBlocks` /
 //!   `DVDCloseFile`. The sector-reading layer, with built-in range checks
 //!   and short-read warnings.
+//! * [`cell`] — `CellInfo` + `cells_in_pgc()` iterator: decoded snapshot
+//!   of a PGC's `cell_playback` array, with per-cell range checks used
+//!   to drive title dumps.
 //!
 //! All public types log via the `log` crate at appropriate levels:
 //! `info!` for major lifecycle events (open/close), `debug!` for IFO
 //! reads, `trace!` for byte-level activity once we add demuxing.
 
+pub mod cell;
+pub mod chapters;
 pub mod css;
 pub mod decode;
+pub mod demux;
 pub mod file;
 pub mod ifo;
+pub mod mpegps;
+pub mod nav;
+pub mod nav_cells;
 pub mod reader;
 pub mod source;
+pub mod video_es;
+pub mod vobsub;
 
+pub use cell::{
+    cells_in_pgc, check_cell_vs_c_adt, check_cell_walk, find_cell_adr, CellInfo,
+};
 pub use css::CssProbe;
+pub use demux::{DemuxError, DemuxSummary, Demuxer, MagicCheck, StreamKey, StreamStats};
 pub use file::{DvdFile, ReadDomain, BLOCK_SIZE};
 pub use ifo::{IfoHandle, IfoKind};
+pub use mpegps::{scan_sector, stream_kind, MpegPsError, PackHeader, PesPacket, StreamKind};
+pub use nav::{DvdNav, NavEvent};
+pub use nav_cells::{CellKey, CellLookup};
 pub use reader::DvdReader;
 pub use source::DvdSource;

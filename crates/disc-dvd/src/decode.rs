@@ -2,9 +2,9 @@
 //! `video_attr_t` / `audio_attr_t` / `subp_attr_t` structures.
 //!
 //! The decode tables come from the DVD-Video specification (publicly
-//! documented) and align with libdvdread's own printer in `ifo_print.c`.
-//! All function names track the libdvdread field they decode so log lines
-//! and CLI output stay greppable against the public C headers.
+//! documented). All function names track the libdvdread field they
+//! decode so log lines and CLI output stay greppable against the public
+//! C headers in `<dvdread/ifo_types.h>`.
 
 /// Decode `video_attr_t::mpeg_version` (2-bit field).
 #[must_use]

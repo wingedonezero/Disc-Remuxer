@@ -279,6 +279,150 @@ it.** If verify fails, fix the row or the code — don't paper over.
 8. **If a behavior is ambiguous** → `traces/tools/ptrace_tracer` on the
    relevant disc, OR read more decomp from callers/callees. Never guess.
 
+## DVD rip ground truth (verified 2026-05-22 vs MakeMKV mkvextract)
+
+These are the lessons that took the longest to learn the hard way.
+Re-read before touching the demuxer, the file naming, or anything
+about audio.
+
+### Audio bytes: naive PES-payload concatenation IS the answer
+
+**MakeMKV preserves every audio byte the encoder emitted.** Across cell
+boundaries with `stc_discontinuity == true`, do NOT drop bytes:
+
+- No first_access_unit_pointer (FAP) resync.
+- No trailing partial-frame truncation.
+- No PTS-aware byte drops.
+
+Verified on ANGEL_S1D1 title 1 (44 min, 23 cells, 9 stc_discontinuity
+boundaries, 4 AC-3 streams): naive concat produces SHA-identical bytes
+to `mkvextract` of MakeMKV's MKV for ALL 4 audio tracks. An earlier
+implementation (`5b/6.5`) of FAP-resync dropped 7 bytes per stream and
+was wrong — reverted in commit `ca1256f`.
+
+The relevant FFmpeg patch the user maintains
+(`/home/chaoz/Desktop/Programs/FFmpeg` HEAD,
+`avformat/dvdvideo: fix AC3 frame loss at PTM discontinuity boundaries`)
+fixes a DIFFERENT bug — wrongly DISCARDING valid frames whose PTS
+equalled `prev_pts` after a PTM reset. The fix resets the duplicate-
+tracking state at the discontinuity. Same principle: byte stream
+stays intact, time base resets.
+
+Per-PES byte stripping for DVD private_stream_1 (`0xBD`) substreams:
+
+| substream | strip beyond PES header | output ext |
+|---|---:|---|
+| AC-3 (`0x80..=0x87`) | 3 bytes (BD common: num + 16-bit FAP) | `.ac3` |
+| DTS (`0x88..=0x8F`) | 3 bytes (same BD common) | `.dts` |
+| LPCM (`0xA0..=0xA7`) | 6 bytes (BD common 3 + LPCM 3) | `.wav` |
+| Subpicture (`0x20..=0x3F`) | 0 (SPU starts immediately) | (.idx/.sub) |
+| Video (`0xE0`) | 0 | `.mpg` |
+
+### Video bytes: strip `user_data_start_code (0x000001B2)`
+
+DVD MPEG-2 video carries NTSC Line-21 closed captions inside MPEG-2
+`user_data` blocks. MakeMKV strips those bytes from the video ES (so
+the result is "pure" MPEG-2) and emits them separately as an SRT
+track (after EIA-608 decoding). To match their `.mpg` bytewise we
+MUST do the same strip.
+
+On ANGEL_S1D1 title 1, there are 5805 user_data blocks totaling
+~1.26 MB — without stripping, our `.mpg` is +1.26 MB vs MakeMKV's.
+
+Current `disc-dvd::video_es::UserDataFilter` strips them (passes unit
+tests) but has a **known PES-boundary bug** producing ~106-byte zero
+gaps at certain video PES seams. Resulting `.mpg` is still ~727 KB
+larger than MakeMKV's and not yet byte-identical.
+
+### Subpicture format: VobSub (.idx + .sub), NOT .sup
+
+`.sup` is Blu-ray PGS. DVD subtitles are **VobSub**: a `.sub` file
+containing MPEG-PS sectors (each subtitle pack-aligned to 2048 bytes,
+private_stream_1 PES wrapping the raw SPU bytes) plus a `.idx` text
+file with the YCrCb→RGB palette + per-subtitle `timestamp:`/`filepos:`
+index. `disc-dvd::vobsub` emits both.
+
+### Filename convention (MakeMKV's exact mkvextract format)
+
+```
+{prefix}_t{NN}_track{N}_[{lang}].mpg                 video
+{prefix}_t{NN}_track{N}_[{lang}]_DELAY {ms}ms.ac3    audio (ac3/dts/wav)
+{prefix}_t{NN}_track{N}_[{lang}].idx                 VobSub index
+{prefix}_t{NN}_track{N}_[{lang}].sub                 VobSub data
+{prefix}_t{NN}_track{N}_[{lang}].srt                 closed-caption text
+{prefix}_t{NN}_chapters.xml                          MKV chapter XML
+```
+
+The `_DELAY {ms}ms` literal is **part of the filename, not a sidecar.**
+mkvtoolnix auto-reads it. Delay is measured per audio track as
+`first_audio_pts - first_video_pts` (90 kHz ticks / 90 = ms). Our
+`disc-dvd::chapters` writes the XML; `disc-cli::rip_title` is the
+user-facing command that produces all of the above.
+
+### `mkvmerge "invalid data"` warnings on raw audio are NOT authoritative
+
+When you `mkvmerge` a raw `.ac3` from our output, it can flag chunks
+(typically ~767 bytes = one AC-3 frame at 192 kbps) at stc_discontinuity
+boundaries as "invalid data … skipped." Those bytes match MakeMKV's
+elementary stream EXACTLY. The MKV container layer expects PTS
+metadata to handle the discontinuity; raw `.ac3` lacks that. Treat the
+warnings as expected; verify against `mkvextract` of MakeMKV's MKV
+output if in doubt.
+
+### Library defaults
+
+* `libdvdread`: no logger callback registered. Its `CHECK_VALUE`
+  warnings go to stdout/stderr via `fprintf` (e.g. the
+  `libdvdread: Couldn't find device name.` messages on directory
+  rips). To route them through `log::warn!`, register a
+  `dvd_logger_cb.pf_log` with `DVDOpen2` — outstanding follow-up.
+* `libdvdnav`: silently filters NV_PCK / system_header sectors out of
+  the block stream — they don't reach the caller as `BLOCK_OK`. For
+  ANGEL title 7 this is 31 sectors; on title 1, 5081. We don't need
+  them either, but the math affects "bytes emitted by libdvdnav" vs
+  "sectors in the cells we ripped manually."
+* `libdvdread`'s `ifo_print.c` has a known cosmetic divisor bug
+  (`sizeof(c_adt_t)` instead of `CELL_ADDR_SIZE`) in its debug
+  printer. We don't link the printer — see `wrapper.h` and the
+  comment in `disc-dvd::ifo::cell_adr_table`.
+
+### Current CLI surface
+
+| command | what it does |
+|---|---|
+| `info <path>` | dump everything libdvdread tells us about a DVD |
+| `dump-sectors` | read raw sectors from a VOB stream |
+| `dump-title` | walk PGC cells manually, write a single `.vob` |
+| `dump-title-nav` | same output via libdvdnav (no NV_PCK / sys_header sectors) |
+| `demux-vob` | per-stream split of a `.vob` file (no IFO context) |
+| `demux-title` | per-stream split driven by the manual cell walk |
+| `demux-title-nav` | per-stream split driven by libdvdnav |
+| `scan-streams` | parse a sector stream and report per-stream byte counts |
+| `rip-title` | **MakeMKV-style per-track output**: language tags, delay value, VobSub subs, chapters XML, CC sidecar |
+
+`rip-title` is the user-facing command. Everything else is plumbing /
+testing.
+
+### Open follow-ups at end of 2026-05-22 session
+
+1. `video_es::UserDataFilter` PES-boundary bug — produces ~106-byte
+   zero gaps at certain seams. Filter passes its unit tests on the
+   same byte patterns in single-call feeds; bug is in the multi-call
+   trailing-3-byte holdback interacting with state.
+2. VobSub `.sub` size is ~30% smaller than MakeMKV's per stream —
+   likely missing multi-PES SPU collection (we treat every PES with
+   PTS as a complete SPU).
+3. EIA-608 → SRT decoder not yet written. CC bytes go to
+   `*_cc.bin` (raw user_data with start codes intact).
+4. libdvdread logger bridge — defer to follow-up.
+5. Multi-angle handling untested (no multi-angle disc in the corpus).
+6. Reachability-traced cellwalk mode (the "third mode" of MakeMKV
+   speculatively — atlas hasn't deep-examined FUN_00708050 so we
+   don't have ground truth).
+7. End-to-end verification still incomplete on Merlin (3hr) and
+   SPACE_SYMPHONY (LPCM) — only ANGEL_S1D1 has been compared.
+   Audit at `Tests/Disc-Remuxer/outputs/ours/AUDIT_2026-05-22.md`.
+
 ## Where things live
 
 ### Research workspace (read-only from this repo's perspective)
@@ -294,7 +438,9 @@ it.** If verify fails, fix the row or the code — don't paper over.
 | Master trace + ambiguities doc | `Tests/Disc-Remuxer/TRACE_INDEX.md` |
 | Decomp dumps | `Tests/Disc-Remuxer/decomp/functions/<shard>/FUN_<addr>.md` |
 | ptrace tracer + scripts | `Tests/Disc-Remuxer/traces/tools/` |
-| Reference rips (for byte-compare) | `Tests/Disc-Remuxer/outputs/makemkv/` |
+| Reference rips (MKV form, for byte-compare) | `Tests/Disc-Remuxer/outputs/makemkv/` |
+| Reference rips (mkvextract'd streams) | `/home/chaoz/Desktop/Makemkv/<DISC>/` — ANGEL_S1D1, SPACE_SYMPHONY_MAETEL_1.iso_001, Merlin 1998 R1 SE |
+| Our rip outputs (for inspection / SHA-compare) | `Tests/Disc-Remuxer/outputs/ours/<disc>/<command>/` |
 
 ### Implementation repo (this directory)
 
