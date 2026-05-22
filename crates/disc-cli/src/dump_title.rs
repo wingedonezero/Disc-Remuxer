@@ -209,6 +209,7 @@ pub fn run(args: DumpTitleArgs) -> Result<()> {
         let mut blocks_remaining = cell.block_count;
         let mut offset = cell.first_sector;
         let mut cell_bytes: u64 = 0;
+        let mut first_chunk_of_cell = true;
         while blocks_remaining > 0 {
             let chunk = blocks_remaining.min(READ_CHUNK_BLOCKS);
             let buf = title_vobs
@@ -219,6 +220,22 @@ pub fn run(args: DumpTitleArgs) -> Result<()> {
                         cell.idx,
                     )
                 })?;
+
+            // DVD-Video spec: every VOB sector starts with an MPEG-PS
+            // pack-start code (00 00 01 BA), because each sector
+            // contains exactly one MPEG-PS pack. Check the first
+            // sector of each cell — if this fails on what should be a
+            // cleartext disc, the cell-walk lookup is pointing into
+            // the wrong byte range.
+            if first_chunk_of_cell && buf.len() >= 4 {
+                let head = [buf[0], buf[1], buf[2], buf[3]];
+                check(
+                    &format!("cell[{}] first sector starts with MPEG-PS pack-start", cell.idx),
+                    "00 00 01 BA",
+                    || head == [0x00, 0x00, 0x01, 0xBA],
+                );
+                first_chunk_of_cell = false;
+            }
 
             hasher.update(&buf);
             writer.write_all(&buf).with_context(|| {
