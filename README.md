@@ -11,25 +11,25 @@ Phase 0: workspace scaffolding. No working features yet.
 ## Building
 
 The build vendors and compiles three C libraries from source
-(libdvdread, libdvdcss, libdvdnav) via their autotools build systems,
-so the host needs the autotools toolchain installed in addition to a
-Rust compiler.
+(libdvdread, libdvdcss, libdvdnav) via their meson build systems,
+so the host needs meson + ninja and a C compiler installed in
+addition to a Rust toolchain.
 
 ### Prerequisites
 
 **Debian / Ubuntu:**
 ```
-sudo apt install build-essential autoconf automake libtool pkg-config
+sudo apt install build-essential meson ninja-build pkg-config
 ```
 
 **Fedora:**
 ```
-sudo dnf install gcc make autoconf automake libtool pkgconf-pkg-config
+sudo dnf install gcc make meson ninja-build pkgconf-pkg-config
 ```
 
 **macOS (Homebrew):**
 ```
-brew install autoconf automake libtool pkg-config
+brew install meson ninja pkg-config
 ```
 
 You'll also need a Rust toolchain (1.75 or later). Install via
@@ -91,10 +91,18 @@ The distributed binary statically/dynamically links libdvdnav
 Source files in this repository carry their own SPDX identifiers; the
 overall distribution is GPL-2+.
 
-Vendored libraries retain their upstream licenses:
+Vendored libraries are pinned to specific upstream release tags:
 
-| library     | license            |
-|-------------|--------------------|
-| libdvdread  | LGPL-2.1-or-later  |
-| libdvdcss   | LGPL-2.1-or-later  |
-| libdvdnav   | GPL-2.0-or-later   |
+| library     | version | release    | license            |
+|-------------|---------|------------|--------------------|
+| libdvdread  | 7.0.1   | 2025-11-09 | LGPL-2.1-or-later  |
+| libdvdcss   | 1.5.0   | 2025-09-23 | LGPL-2.1-or-later  |
+| libdvdnav   | 7.0.0   | 2025-09-23 | GPL-2.0-or-later   |
+
+Bumping a vendored library is `git -C vendor/<lib> checkout <tag>` +
+`git add vendor/<lib>` from the workspace root.
+
+libdvdread is built with `-Dlibdvdcss=enabled` so it links libdvdcss
+directly (via DT_NEEDED) instead of resolving it via `dlopen()` at
+runtime. The dynamic linker resolves `libdvdcss.so` through the
+binary's rpath, which we set to `$ORIGIN`.
