@@ -1,0 +1,15 @@
+[package]
+name = "disc-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Core traits, types, and errors shared by all disc-remuxer backends (DVD / Blu-ray / UHD)."
+
+[dependencies]
+log.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

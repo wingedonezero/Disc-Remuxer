@@ -1,0 +1,18 @@
+[package]
+name = "libdvdread-sys"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "LGPL-2.1-or-later"
+publish = false
+description = "Raw FFI bindings to libdvdread. Builds the bundled libdvdread at vendor/libdvdread via meson, linked directly against libdvdcss (via -Dlibdvdcss=enabled) so libdvdread.so DT_NEEDED's libdvdcss.so."
+links = "dvdread"
+
+[dependencies]
+libdvdcss-sys = { path = "../libdvdcss-sys" }
+
+[build-dependencies]
+bindgen = "0.72"
+
+[lints]
+workspace = true

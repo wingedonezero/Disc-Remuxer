@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/libdvdcss-sys",
+    "crates/libdvdread-sys",
+    "crates/libdvdnav-sys",
+    "crates/disc-core",
+    "crates/disc-dvd",
+    "crates/disc-cli",
+]
+exclude = ["vendor"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "GPL-2.0-or-later"
+publish = false
+
+[workspace.dependencies]
+log = "0.4"
+thiserror = "2"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Pedantic carve-outs that don't fit a low-level FFI codebase:
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

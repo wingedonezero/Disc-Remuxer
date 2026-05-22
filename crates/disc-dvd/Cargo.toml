@@ -1,0 +1,19 @@
+[package]
+name = "disc-dvd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Safe Rust wrappers over libdvdread (IFO / sector reader) and libdvdnav (PGC navigation VM) for DVD-Video. Field names mirror the public C headers verbatim."
+
+[dependencies]
+disc-core = { path = "../disc-core" }
+libdvdcss-sys = { path = "../libdvdcss-sys" }
+libdvdread-sys = { path = "../libdvdread-sys" }
+libdvdnav-sys = { path = "../libdvdnav-sys" }
+
+log.workspace = true
+
+[lints]
+workspace = true

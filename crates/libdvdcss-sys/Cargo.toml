@@ -1,0 +1,15 @@
+[package]
+name = "libdvdcss-sys"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "LGPL-2.1-or-later"
+publish = false
+description = "Raw FFI bindings to libdvdcss. Builds the bundled libdvdcss at vendor/libdvdcss via meson on the host."
+links = "dvdcss"
+
+[build-dependencies]
+bindgen = "0.72"
+
+[lints]
+workspace = true
