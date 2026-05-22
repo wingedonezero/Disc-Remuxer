@@ -7,10 +7,11 @@
 //! Our approach dispatches by path type:
 //!
 //! * **Block device** (`/dev/sr0`, `/dev/dvd`, …): trust
-//!   `dvdcss_is_scrambled()`. libdvdcss issues DVD ioctls (effectively
-//!   the same SCSI sense-key probe MakeMKV does — the giveaway sense
-//!   codes are `READ OF SCRAMBLED SECTOR WITHOUT AUTHENTICATION` and
-//!   the `COPY PROTECTION KEY EXCHANGE FAILURE` family).
+//!   `dvdcss_is_scrambled()`. libdvdcss issues DVD ioctls — the
+//!   standard SCSI MMC authentication probe. The disc returns sense
+//!   codes such as `READ OF SCRAMBLED SECTOR WITHOUT AUTHENTICATION`
+//!   or the `COPY PROTECTION KEY EXCHANGE FAILURE` family if it's
+//!   CSS-protected and we haven't authenticated yet.
 //!
 //! * **ISO file** (`*.iso`, `*.img`): libdvdcss can't probe (no ioctls
 //!   on regular files; its `b_scrambled` stays at the "assume the

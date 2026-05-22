@@ -1,10 +1,8 @@
 //! Disc-type detection by filesystem layout.
 //!
-//! Mirrors the role of MakeMKV's disc-type detector (anchored at FUN_006c5ce0
-//! in the atlas) — looks at which marker files / directories are present in
-//! the given path and dispatches to the right backend. We use the public
-//! file-system layout defined by the DVD-Video / BDMV specs, not MakeMKV's
-//! internal heuristics.
+//! Inspects which marker files and directories are present in the given
+//! path — per the DVD-Video and BDMV public specs — and dispatches to the
+//! appropriate backend.
 
 use std::path::Path;
 
