@@ -29,8 +29,9 @@ use crate::reader::DvdReader;
 // `#[repr(packed)]` because they mirror DVD on-disc layout — readers must
 // copy fields into local variables before formatting / referencing.
 pub use libdvdread_sys::{
-    cell_playback_t, dvd_time_t, pgc_t, pgci_srp_t, pgcit_t, title_info_t, tt_srpt_t,
-    vmgi_mat_t, vtsi_mat_t,
+    audio_attr_t, cell_playback_t, dvd_time_t, pgc_t, pgci_srp_t, pgcit_t, ptt_info_t,
+    subp_attr_t, title_info_t, tt_srpt_t, ttu_t, video_attr_t, vmgi_mat_t,
+    vts_ptt_srpt_t, vtsi_mat_t,
 };
 
 /// Which IFO file to open.
@@ -133,6 +134,12 @@ impl<'r> IfoHandle<'r> {
         unsafe { self.dvd_video().vtsi_mat.as_ref() }
     }
 
+    /// `vts_ptt_srpt` — VTS Part-of-Title Search Pointer Table. Holds the
+    /// per-title chapter (PTT) arrays for titles owned by this VTS.
+    pub fn vts_ptt_srpt(&self) -> Option<&sys::vts_ptt_srpt_t> {
+        unsafe { self.dvd_video().vts_ptt_srpt.as_ref() }
+    }
+
     /// `vts_pgcit` — the PGC Information Table for this VTS. Holds the
     /// per-PGC pointers used during title playback.
     pub fn vts_pgcit(&self) -> Option<&sys::pgcit_t> {
@@ -167,6 +174,41 @@ impl<'r> IfoHandle<'r> {
         // SAFETY: libdvdread guarantees `pgci_srp[0..nr_of_pgci_srp]` is
         // initialized when `vts_pgcit` is non-null.
         unsafe { slice::from_raw_parts(pgcit.pgci_srp, usize::from(pgcit.nr_of_pgci_srp)) }
+    }
+
+    /// The `ttu_t` array embedded in `vts_ptt_srpt` — one entry per title
+    /// owned by this VTS, each holding the title's chapter (PTT) array.
+    pub fn ttus(&self) -> &[sys::ttu_t] {
+        let Some(srpt) = self.vts_ptt_srpt() else {
+            return &[];
+        };
+        if srpt.title.is_null() {
+            return &[];
+        }
+        // SAFETY: libdvdread guarantees `title[0..nr_of_srpts]` is
+        // initialized when `vts_ptt_srpt` is non-null.
+        unsafe { slice::from_raw_parts(srpt.title, usize::from(srpt.nr_of_srpts)) }
+    }
+
+    /// The chapter list (`ptt_info_t[]`) for the title at `vts_ttn` within
+    /// this VTS. Returns an empty slice if `vts_ttn` is out of range or the
+    /// title's `ptt` pointer is NULL.
+    ///
+    /// Note: `vts_ttn` is 1-based per libdvdread's `title_info_t::vts_ttn`,
+    /// so this method subtracts one internally.
+    pub fn chapters_for(&self, vts_ttn: u8) -> &[sys::ptt_info_t] {
+        let ttus = self.ttus();
+        let Some(ttu) = ttus.get(usize::from(vts_ttn.saturating_sub(1))) else {
+            return &[];
+        };
+        let nr = ttu.nr_of_ptts;
+        let ptt = ttu.ptt;
+        if ptt.is_null() || nr == 0 {
+            return &[];
+        }
+        // SAFETY: libdvdread guarantees `ptt[0..nr_of_ptts]` is initialized
+        // when `ttu.ptt` is non-null.
+        unsafe { slice::from_raw_parts(ptt, usize::from(nr)) }
     }
 }
 
