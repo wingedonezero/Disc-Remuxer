@@ -8,11 +8,16 @@
 //! * `<dvdread/dvd_udf.h>` — UDF filesystem walker
 //! * `<dvdread/ifo_types.h>` — VMG / VTS / PGC / cell record structs
 //! * `<dvdread/ifo_read.h>` — IFO parser entrypoints
-//! * `<dvdread/ifo_print.h>` — IFO pretty-printer (debug)
 //! * `<dvdread/nav_types.h>` — PCI / DSI navigation packet structs
 //! * `<dvdread/nav_read.h>` — navigation packet parsers
-//! * `<dvdread/nav_print.h>` — navigation packet pretty-printer
 //! * `<dvdread/bitreader.h>` — small bit-level reader helper
+//!
+//! Deliberately excluded: `<dvdread/ifo_print.h>` and
+//! `<dvdread/nav_print.h>`. Those are libdvdread's debug pretty-printers
+//! and produce no information that isn't already on the parsed structs.
+//! Our `disc-remuxer info` subcommand fills the same role from the Rust
+//! side, walking the parsed fields directly. See `wrapper.h` for the
+//! policy rationale.
 //!
 //! Field names in the generated bindings mirror libdvdread's public C
 //! headers exactly (e.g. `tt_srpt_t::nr_of_srpts`, `pgc_t::nr_of_cells`).
