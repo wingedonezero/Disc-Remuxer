@@ -5,10 +5,12 @@
 //! it's pure-Rust so it can be reused from tools, tests, and the safe
 //! Python/PyQt bindings we'll add later.
 
+pub mod check;
 pub mod detect;
 pub mod error;
 pub mod source;
 
+pub use check::{check, check_eq, check_in_range, require_eq};
 pub use detect::{detect_disc_type, DiscType};
 pub use error::DiscError;
 pub use source::DiscSource;

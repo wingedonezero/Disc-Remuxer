@@ -30,8 +30,9 @@ libdvdnav-sys = { path = "../libdvdnav-sys" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-env_logger = "0.11"
+flexi_logger = { version = "0.31", default-features = false }
 log.workspace = true
+sha2 = "0.10"
 
 [lints]
 workspace = true

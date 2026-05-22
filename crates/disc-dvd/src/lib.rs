@@ -16,6 +16,9 @@
 //! * [`css`] — `CssProbe`, a thin libdvdcss wrapper that reports whether
 //!   a disc is CSS-scrambled. libdvdread itself doesn't expose this state
 //!   through its API; libdvdcss does, via `dvdcss_is_scrambled()`.
+//! * [`file`] — `DvdFile`, RAII wrapper for `DVDOpenFile` / `DVDReadBlocks` /
+//!   `DVDCloseFile`. The sector-reading layer, with built-in range checks
+//!   and short-read warnings.
 //!
 //! All public types log via the `log` crate at appropriate levels:
 //! `info!` for major lifecycle events (open/close), `debug!` for IFO
@@ -23,11 +26,13 @@
 
 pub mod css;
 pub mod decode;
+pub mod file;
 pub mod ifo;
 pub mod reader;
 pub mod source;
 
 pub use css::CssProbe;
+pub use file::{DvdFile, ReadDomain, BLOCK_SIZE};
 pub use ifo::{IfoHandle, IfoKind};
 pub use reader::DvdReader;
 pub use source::DvdSource;

@@ -23,6 +23,27 @@ pub enum DiscError {
     #[error("IFO {ifo_nr} could not be opened (libdvdread returned NULL)")]
     IfoOpenFailed { ifo_nr: u32 },
 
+    #[error("could not open file: vts={vts_nr} domain={domain} ({reason})")]
+    FileOpenFailed {
+        vts_nr: u32,
+        domain: &'static str,
+        reason: String,
+    },
+
+    #[error("sector read out of range: offset={offset} count={count} total_blocks={total}")]
+    ReadOutOfRange {
+        offset: u32,
+        count: u32,
+        total: u32,
+    },
+
+    #[error("sector read failed: offset={offset} count={count} (libdvdread returned {ret})")]
+    ReadFailed {
+        offset: u32,
+        count: u32,
+        ret: i32,
+    },
+
     #[error("invalid path: contains interior NUL byte")]
     InvalidPath,
 
