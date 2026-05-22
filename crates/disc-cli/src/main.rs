@@ -56,6 +56,7 @@ mod dump_title;
 mod dump_title_nav;
 mod info;
 mod logging;
+mod rip_title;
 mod scan_streams;
 
 #[derive(Parser)]
@@ -100,6 +101,10 @@ enum Command {
     /// Demultiplex a title via libdvdnav, looking up cell metadata
     /// on each CellChange so AC-3/DTS audio resyncs correctly.
     DemuxTitleNav(demux_title_nav::DemuxTitleNavArgs),
+
+    /// Rip a title to MakeMKV-style per-track outputs (.mpg + .ac3
+    /// with DELAY suffix + VobSub .idx/.sub + chapters XML).
+    RipTitle(rip_title::RipTitleArgs),
 }
 
 fn main() -> Result<()> {
@@ -152,6 +157,13 @@ fn main() -> Result<()> {
             let title = args.title;
             demux_title_nav::run(args).with_context(|| {
                 format!("demux-title-nav {path_disp} title={title}")
+            })
+        }
+        Command::RipTitle(args) => {
+            let path_disp = args.disc.display().to_string();
+            let title = args.title;
+            rip_title::run(args).with_context(|| {
+                format!("rip-title {path_disp} title={title}")
             })
         }
     }
