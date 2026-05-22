@@ -651,6 +651,7 @@ mod tests {
             sector_offset: 0,
             total_size: 9 + leaked.len() + 1, // arbitrary; not checked here
             header_size: 9 + 1,               // arbitrary; not checked here
+            pts: None,
             raw: raw_leaked,
             payload: leaked,
         };

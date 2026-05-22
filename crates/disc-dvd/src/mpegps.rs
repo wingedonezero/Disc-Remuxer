@@ -235,6 +235,16 @@ pub struct PesPacket<'a> {
     /// flags, header-data-length, optional PTS/DTS, substream byte for
     /// `0xBD`/`0xBF`). Payload begins at `raw[header_size..]`.
     pub header_size: usize,
+    /// 33-bit Presentation Timestamp in 90 kHz units, if the PES
+    /// header carries one (`PTS_DTS_flags` = `'10'` or `'11'`).
+    /// `None` for system_header / padding / program_stream_map
+    /// packets, or for PES headers that don't include PTS.
+    ///
+    /// On DVD-Video, the first PES of each access unit carries a
+    /// PTS; subsequent PESes for the same access unit do not. So
+    /// callers building a per-frame PTS index should index this
+    /// field where it's `Some(...)`.
+    pub pts: Option<u64>,
     pub raw: &'a [u8],
     pub payload: &'a [u8],
 }
@@ -438,9 +448,9 @@ fn parse_pes(buf: &[u8], offset: usize) -> Result<PesPacket<'_>, MpegPsError> {
     //   payload. For DVD-Video this is the common case.
     // * Less common: legacy MPEG-1 PES with stuffing-FFs before flags
     //   byte. DVD streams shouldn't hit that.
-    let (header_size, substream_id) = match stream_id {
+    let (header_size, substream_id, pts) = match stream_id {
         STREAM_ID_SYSTEM_HEADER | STREAM_ID_PADDING | STREAM_ID_PROGRAM_STREAM_MAP => {
-            (total_size, None)
+            (total_size, None, None)
         }
         _ => {
             if raw.len() < 9 {
@@ -450,8 +460,39 @@ fn parse_pes(buf: &[u8], offset: usize) -> Result<PesPacket<'_>, MpegPsError> {
                     have: raw.len(),
                 });
             }
+            // Per ISO/IEC 13818-1 Table 2-17:
+            //   raw[6] = '10' | PES_scrambling_control(2) | priority(1)
+            //          | data_alignment_indicator(1) | copyright(1) | original_or_copy(1)
+            //   raw[7] = PTS_DTS_flags(2) | ESCR_flag(1) | ES_rate_flag(1)
+            //          | DSM_trick_mode_flag(1) | additional_copy_info_flag(1)
+            //          | PES_CRC_flag(1) | PES_extension_flag(1)
+            //   raw[8] = PES_header_data_length
+            //   raw[9..9+PES_header_data_length] = optional fields
+            //     (PTS / DTS / ESCR / ES_rate / ...)
+            let pts_dts_flags = (raw[7] >> 6) & 0b11;
             let pes_header_data_length = usize::from(raw[8]);
             let mut hdr = 9 + pes_header_data_length;
+
+            // PTS extraction. PTS_DTS_flags:
+            //   '00' = no PTS / no DTS
+            //   '01' = forbidden
+            //   '10' = PTS only (5 bytes at raw[9..14])
+            //   '11' = PTS + DTS (10 bytes at raw[9..19])
+            //
+            // PTS encoding (5 bytes, 33-bit value):
+            //   byte 0: '0010' or '0011' (tag) | PTS[32:30](3) | M(1)
+            //   byte 1: PTS[29:22](8)
+            //   byte 2: PTS[21:15](7) | M(1)
+            //   byte 3: PTS[14:7](8)
+            //   byte 4: PTS[6:0](7) | M(1)
+            let pts = if (pts_dts_flags == 0b10 || pts_dts_flags == 0b11)
+                && raw.len() >= 14
+            {
+                Some(decode_pts_field(&raw[9..14]))
+            } else {
+                None
+            };
+
             // For DVD private streams, payload[0] is the substream id.
             let substream_id = if matches!(stream_id, STREAM_ID_PRIVATE_1 | STREAM_ID_PRIVATE_2) {
                 if hdr < raw.len() {
@@ -464,7 +505,7 @@ fn parse_pes(buf: &[u8], offset: usize) -> Result<PesPacket<'_>, MpegPsError> {
             } else {
                 None
             };
-            (hdr.min(raw.len()), substream_id)
+            (hdr.min(raw.len()), substream_id, pts)
         }
     };
 
@@ -476,9 +517,27 @@ fn parse_pes(buf: &[u8], offset: usize) -> Result<PesPacket<'_>, MpegPsError> {
         sector_offset: offset,
         total_size,
         header_size,
+        pts,
         raw,
         payload,
     })
+}
+
+/// Decode a 5-byte PTS or DTS field per ISO/IEC 13818-1 §2.4.3.6.
+///
+/// The 33-bit value is in 90 kHz units. The top 4 bits of `buf[0]` are
+/// the tag (`'0010'`, `'0011'`, or `'0001'`); we don't enforce a
+/// specific tag here — the caller decided to call us because the
+/// `PTS_DTS_flags` field told it to.
+fn decode_pts_field(buf: &[u8]) -> u64 {
+    debug_assert!(buf.len() >= 5);
+    // Bits 32..30 in byte 0: shift right by 1 to strip the marker.
+    let hi = u64::from((buf[0] >> 1) & 0b111);
+    // 15 bits across bytes 1..2 with a marker at the LSB of byte 2.
+    let mid = (u64::from(buf[1]) << 7) | u64::from((buf[2] >> 1) & 0x7F);
+    // 15 bits across bytes 3..4 with a marker at the LSB of byte 4.
+    let lo = (u64::from(buf[3]) << 7) | u64::from((buf[4] >> 1) & 0x7F);
+    (hi << 30) | (mid << 15) | lo
 }
 
 #[cfg(test)]
@@ -645,5 +704,71 @@ mod tests {
         sector[19] = 0xFF;
         let err = scan_sector(&sector, "x").expect_err("should fail");
         assert!(matches!(err, MpegPsError::OversizePes { .. }));
+    }
+
+    /// PTS field encoding round-trip. Encodes a known 33-bit PTS value
+    /// (0x01_2345_6789, near 33-bit max) into the wire format with all
+    /// marker bits set, then verifies our decoder recovers it.
+    #[test]
+    fn pts_field_round_trips() {
+        let pts: u64 = 0x0_1234_5678; // 32-bit value (within 33-bit range)
+        let hi = (pts >> 30) & 0b111;
+        let mid = (pts >> 15) & 0x7FFF;
+        let lo = pts & 0x7FFF;
+        let buf = [
+            // tag '0010' (PTS only) | hi(3) | marker(1) = 1
+            ((0b0010 << 4) | ((hi as u8) << 1) | 0b1),
+            ((mid >> 7) & 0xFF) as u8,
+            (((mid & 0x7F) as u8) << 1) | 0b1,
+            ((lo >> 7) & 0xFF) as u8,
+            (((lo & 0x7F) as u8) << 1) | 0b1,
+        ];
+        assert_eq!(decode_pts_field(&buf), pts);
+    }
+
+    /// Build a minimal PES packet with PTS_DTS_flags = '10' and a
+    /// known PTS, then verify the parser surfaces it on PesPacket.
+    #[test]
+    fn parse_pes_extracts_pts() {
+        let pts: u64 = 90_000; // exactly 1 second at 90 kHz
+        let hi = (pts >> 30) & 0b111;
+        let mid = (pts >> 15) & 0x7FFF;
+        let lo = pts & 0x7FFF;
+        let pts_field = [
+            ((0b0010 << 4) | ((hi as u8) << 1) | 0b1),
+            ((mid >> 7) & 0xFF) as u8,
+            (((mid & 0x7F) as u8) << 1) | 0b1,
+            ((lo >> 7) & 0xFF) as u8,
+            (((lo & 0x7F) as u8) << 1) | 0b1,
+        ];
+
+        // Lay out the PES (stream_id = 0xE0 video):
+        //   00 00 01 E0          (start code + stream_id)
+        //   00 0E                (packet_length = 14 => total_size = 20)
+        //   80                   (flags1 = '10' + zero)
+        //   80                   (flags2 = PTS_DTS_flags '10', rest 0)
+        //   05                   (PES_header_data_length = 5)
+        //   <5 PTS bytes>
+        //   00 00 01 B3 ...      (some payload — at least 1 byte)
+        let mut sector = vec![0u8; SECTOR_SIZE];
+        sector[..14].copy_from_slice(&pack_header_bytes());
+        sector[14..17].copy_from_slice(&[0x00, 0x00, 0x01]);
+        sector[17] = STREAM_ID_VIDEO_E0;
+        let payload_len = SECTOR_SIZE - 14 - 6;
+        sector[18] = (payload_len >> 8) as u8;
+        sector[19] = (payload_len & 0xFF) as u8;
+        sector[20] = 0x80;
+        sector[21] = 0x80;
+        sector[22] = 0x05;
+        sector[23..28].copy_from_slice(&pts_field);
+        // Fill rest of "payload" with MPEG-2 sequence header so the
+        // packet is realistic; not required for the PTS test.
+        sector[28..32].copy_from_slice(&[0x00, 0x00, 0x01, 0xB3]);
+
+        let contents = scan_sector(&sector, "pts-test").expect("scan");
+        assert_eq!(contents.pes_packets.len(), 1);
+        let pes = &contents.pes_packets[0];
+        assert_eq!(pes.stream_id, STREAM_ID_VIDEO_E0);
+        assert_eq!(pes.pts, Some(pts));
     }
 }
