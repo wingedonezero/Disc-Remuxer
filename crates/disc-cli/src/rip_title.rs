@@ -250,6 +250,7 @@ pub fn run(args: RipTitleArgs) -> Result<()> {
             &args.out_dir,
             &title_prefix,
             track_number,
+            stream_n,
             &language,
         )?;
         subp_handlers.insert(stream_n, h);
@@ -663,6 +664,7 @@ fn open_subpicture_handler(
     out_dir: &std::path::Path,
     title_prefix: &str,
     track_number: u8,
+    stream_index: u8,
     language: &str,
 ) -> Result<SubpictureHandler> {
     let sub_path = out_dir.join(format!(
@@ -673,9 +675,9 @@ fn open_subpicture_handler(
     ));
     let file = File::create(&sub_path)
         .with_context(|| format!("creating {}", sub_path.display()))?;
-    // SPU substream IDs are 0x20..=0x3F. We assign them in stream
-    // order so substream_id = 0x20 + stream_n.
-    let substream_id = 0x20 + (track_number.saturating_sub(2));
+    // DVD subpicture substream IDs are 0x20..=0x3F, indexed by the
+    // subpicture stream's IFO position (0 → 0x20, 1 → 0x21, etc.).
+    let substream_id = 0x20u8 + stream_index;
     let writer = SubWriter::new(file, substream_id);
     Ok(SubpictureHandler {
         track_number,
@@ -725,17 +727,25 @@ fn dispatch_pes(
         }
         StreamKind::Subpicture(n) => {
             if let Some(h) = subp_handlers.get_mut(&n) {
-                // Each subpicture PES on DVD = one SPU. PTS is on the
-                // first (and typically only) PES.
+                // First PES of an SPU carries a PTS; later PESes of
+                // a multi-PES SPU don't and are written as
+                // continuation sectors.
                 if let Some(pts) = pes.pts {
                     h.writer
                         .write_subtitle(pts, pes.payload)
                         .with_context(|| {
                             format!("writing subpicture track {}", h.track_number)
                         })?;
+                } else {
+                    h.writer
+                        .write_continuation(pes.payload)
+                        .with_context(|| {
+                            format!(
+                                "writing subpicture continuation track {}",
+                                h.track_number
+                            )
+                        })?;
                 }
-                // PES without PTS: continuation of a multi-PES SPU.
-                // Rare on DVD; not handled here.
             }
         }
         StreamKind::SystemHeader

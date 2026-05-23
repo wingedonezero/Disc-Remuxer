@@ -10,19 +10,31 @@
 //!
 //! ## What we generate
 //!
-//! For each subpicture PES observed during demux, we:
+//! Every input PES becomes one output 2048-byte sector. For each
+//! subpicture PES observed during demux:
 //!
-//! 1. Pad the `.sub` writer to the next 2048-byte sector boundary
-//!    (zeros — the existing pack at the previous offset is "complete"
-//!    because its declared PES packet_length plus the pack header
-//!    plus this padding sum to 2048).
-//! 2. Record the new sector-aligned offset and the PES's PTS.
-//! 3. Write a synthetic 14-byte pack header with the PTS encoded as
-//!    SCR (the SCR value doesn't change which subpicture renders —
-//!    decoders use the PTS in the inner PES — but real DVDs always
-//!    carry one so we do too).
-//! 4. Write a private_stream_1 PES with PTS and substream_id, then
-//!    the SPU bytes.
+//! 1. If the PES carries a PTS, it starts a new SPU. Record the new
+//!    sector-aligned offset and the PES's PTS in the `.idx` index,
+//!    and write a sector with a `private_stream_1` PES whose PES
+//!    header carries that PTS.
+//! 2. If the PES has no PTS, it's a continuation of the current SPU.
+//!    Write a sector with a `private_stream_1` PES whose PES header
+//!    carries no PTS, using the previous SPU's PTS as the SCR in the
+//!    pack header.
+//!
+//! Each sector contains, in order:
+//!
+//! * a 14-byte MPEG-2 pack header (`00 00 01 BA …`) with the SPU's
+//!   PTS encoded as SCR (decoders don't validate this for VobSub
+//!   playback — but real DVDs always carry one so we do too),
+//! * a `private_stream_1` PES (`00 00 01 BD …`) with `packet_length`
+//!   sized to fit the SPU payload, substream_id, and the SPU bytes,
+//! * a `pad_stream` PES (`00 00 01 BE …`) of `0xFF` bytes sized to
+//!   pad the sector to exactly 2048 bytes.
+//!
+//! Multi-PES SPUs (where the SPU's encoded length is too large for a
+//! single sector) on the disc are emitted as one output sector per
+//! input PES — the spec is permissive about where the split lands.
 //!
 //! The `.idx` is written once at the end with the palette and the
 //! per-subtitle index.
@@ -45,15 +57,27 @@ pub struct VobSubEntry {
     pub filepos: u64,
 }
 
-/// Streaming `.sub` writer. Tracks the byte offset itself so it can
-/// align each new SPU to a 2048-byte boundary.
+/// Streaming `.sub` writer. Emits exactly one 2048-byte sector per
+/// input PES.
 pub struct SubWriter<W: Write + Seek> {
     out: W,
     bytes_written: u64,
     pub entries: Vec<VobSubEntry>,
     /// Stream's substream_id byte (0x20..=0x3F).
     substream_id: u8,
+    /// PTS of the most recently-started SPU. Used as the SCR encoded
+    /// in continuation sectors so all sectors of one SPU share a
+    /// consistent time reference.
+    current_pts: Option<u64>,
 }
+
+/// Maximum SPU payload bytes that fit in one 2048-byte sector when
+/// the PES carries a PTS (sector = 14 pack + 15 PES header + N SPU +
+/// pad_stream). Computed as `2048 - 14 - 15 = 2019`.
+const MAX_SPU_WITH_PTS: usize = 2048 - 14 - 15;
+/// Same, for continuation sectors whose PES omits the 5-byte PTS
+/// field (`2048 - 14 - 10 = 2024`).
+const MAX_SPU_NO_PTS: usize = 2048 - 14 - 10;
 
 impl<W: Write + Seek> SubWriter<W> {
     pub fn new(out: W, substream_id: u8) -> Self {
@@ -62,79 +86,138 @@ impl<W: Write + Seek> SubWriter<W> {
             bytes_written: 0,
             entries: Vec::new(),
             substream_id,
+            current_pts: None,
         }
     }
 
-    /// Write one subtitle (SPU bytes + PTS) into the `.sub` file.
+    /// Start a new SPU. Writes a single 2048-byte sector whose PES
+    /// carries the supplied PTS and the first portion of the SPU.
     pub fn write_subtitle(&mut self, pts_90khz: u64, spu: &[u8]) -> io::Result<()> {
-        // Align to next 2048-byte boundary if we're not already there.
-        let pos = self.bytes_written;
-        if pos % SECTOR_SIZE != 0 {
-            let pad = SECTOR_SIZE - (pos % SECTOR_SIZE);
-            self.write_padding(pad)?;
+        if spu.len() > MAX_SPU_WITH_PTS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "subpicture PES payload {} bytes exceeds sector capacity {}",
+                    spu.len(),
+                    MAX_SPU_WITH_PTS
+                ),
+            ));
         }
-        // Record the aligned filepos before writing this subtitle.
         let filepos = self.bytes_written;
         self.entries.push(VobSubEntry {
             pts_90khz,
             filepos,
         });
+        self.current_pts = Some(pts_90khz);
+        self.write_sector(pts_90khz, Some(pts_90khz), spu)
+    }
 
-        // Write pack header (14 bytes), PES header (16 bytes), then
-        // the SPU payload.
-        let pack = pack_header_bytes(pts_90khz);
-        self.out.write_all(&pack)?;
+    /// Continue an SPU started by a prior `write_subtitle` call.
+    /// Writes a single 2048-byte sector whose PES carries no PTS and
+    /// the next portion of the SPU.
+    pub fn write_continuation(&mut self, spu: &[u8]) -> io::Result<()> {
+        if spu.len() > MAX_SPU_NO_PTS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "subpicture continuation PES payload {} bytes exceeds sector capacity {}",
+                    spu.len(),
+                    MAX_SPU_NO_PTS
+                ),
+            ));
+        }
+        let scr = self.current_pts.unwrap_or(0);
+        self.write_sector(scr, None, spu)
+    }
+
+    /// Internal: write one complete 2048-byte sector. `scr_90khz`
+    /// goes into the pack header; `pts_90khz`, if `Some`, goes into
+    /// the inner PES header; `spu` is the SPU payload.
+    fn write_sector(
+        &mut self,
+        scr_90khz: u64,
+        pts_90khz: Option<u64>,
+        spu: &[u8],
+    ) -> io::Result<()> {
+        let start = self.bytes_written;
+        // 1) Pack header (14 bytes).
+        self.out.write_all(&pack_header_bytes(scr_90khz))?;
         self.bytes_written += 14;
-
-        // PES layout:
-        //   6 bytes: 00 00 01 BD + length(2)
-        //   1 byte:  flags1 (0x81 = '10' marker + data_alignment)
-        //   1 byte:  flags2 (0x80 = PTS_DTS_flags '10')
-        //   1 byte:  PES_header_data_length = 5
-        //   5 bytes: PTS field
-        //   1 byte:  substream_id
-        //   N bytes: SPU
-        // Total PES bytes = 15 + N. packet_length field excludes the
-        // first 6 bytes (start code + stream_id + length itself).
-        let pes_packet_length = u16::try_from(9 + 1 + spu.len()).unwrap_or(u16::MAX);
-        let mut pes = Vec::with_capacity(15);
-        pes.extend_from_slice(&[0x00, 0x00, 0x01, 0xBD]);
-        pes.extend_from_slice(&pes_packet_length.to_be_bytes());
-        pes.push(0x81); // flags1
-        pes.push(0x80); // flags2
-        pes.push(0x05); // PES_header_data_length
-        pes.extend_from_slice(&encode_pts_field(0b0010, pts_90khz));
-        pes.push(self.substream_id);
-        debug_assert_eq!(pes.len(), 15);
-        self.out.write_all(&pes)?;
-        self.bytes_written += 15;
-
+        // 2) private_stream_1 PES carrying the SPU.
+        //
+        // PES bytes inside `packet_length`:
+        //   1 flags1 (0x81 = '10' markers + data_alignment_indicator)
+        //   1 flags2 (0x80 = PTS-only, 0x00 = no PTS)
+        //   1 PES_header_data_length (5 for PTS, 0 for no-PTS)
+        //   5 PTS field (only if PTS)
+        //   1 substream_id
+        //   N SPU bytes
+        let (flags2, hdr_data_len, pts_field_len) = match pts_90khz {
+            Some(_) => (0x80u8, 0x05u8, 5),
+            None => (0x00u8, 0x00u8, 0),
+        };
+        let pes_pkt_len = u16::try_from(3 + pts_field_len + 1 + spu.len())
+            .expect("PES packet length fits in u16 by construction");
+        self.out.write_all(&[0x00, 0x00, 0x01, 0xBD])?;
+        self.out.write_all(&pes_pkt_len.to_be_bytes())?;
+        self.out.write_all(&[0x81, flags2, hdr_data_len])?;
+        self.bytes_written += 9;
+        if let Some(pts) = pts_90khz {
+            self.out.write_all(&encode_pts_field(0b0010, pts))?;
+            self.bytes_written += 5;
+        }
+        self.out.write_all(&[self.substream_id])?;
+        self.bytes_written += 1;
         self.out.write_all(spu)?;
         self.bytes_written += spu.len() as u64;
+        // 3) Pad to the 2048-byte sector boundary with a pad_stream
+        //    PES (0x00 0x00 0x01 0xBE + length + 0xFF…). This matches
+        //    real DVD VOBs.
+        let written_in_sector = (self.bytes_written - start) as usize;
+        let remaining = (SECTOR_SIZE as usize)
+            .checked_sub(written_in_sector)
+            .expect("sector overflow — caller must respect MAX_SPU_*");
+        self.write_pad_stream(remaining)?;
+        debug_assert_eq!(self.bytes_written - start, SECTOR_SIZE);
         Ok(())
     }
 
-    /// Write `count` bytes of zero padding.
-    fn write_padding(&mut self, count: u64) -> io::Result<()> {
-        let mut remaining = count;
-        let zeros = [0u8; 256];
+    /// Emit exactly `total` bytes of pad_stream (`00 00 01 BE` PES
+    /// with `0xFF` content). If `total` is 0, nothing is written;
+    /// if `total < 6` we cannot fit a pad_stream and fall back to
+    /// zero-fill (does not occur for any DVD-spec-conforming SPU
+    /// payload size).
+    fn write_pad_stream(&mut self, total: usize) -> io::Result<()> {
+        if total == 0 {
+            return Ok(());
+        }
+        if total < 6 {
+            let zeros = vec![0u8; total];
+            self.out.write_all(&zeros)?;
+            self.bytes_written += total as u64;
+            return Ok(());
+        }
+        let payload_len = total - 6;
+        let pkt_len = u16::try_from(payload_len)
+            .expect("pad_stream payload_len fits in u16 for sector-bounded total");
+        self.out.write_all(&[0x00, 0x00, 0x01, 0xBE])?;
+        self.out.write_all(&pkt_len.to_be_bytes())?;
+        let chunk = [0xFFu8; 512];
+        let mut remaining = payload_len;
         while remaining > 0 {
-            let n = std::cmp::min(remaining as usize, zeros.len());
-            self.out.write_all(&zeros[..n])?;
-            self.bytes_written += n as u64;
-            remaining -= n as u64;
+            let n = std::cmp::min(remaining, chunk.len());
+            self.out.write_all(&chunk[..n])?;
+            remaining -= n;
         }
+        self.bytes_written += total as u64;
         Ok(())
     }
 
-    /// Pad the final entry out to a sector boundary so the file
-    /// length is a multiple of 2048. Returns the writer.
+    /// Close the writer. Each `write_subtitle` / `write_continuation`
+    /// already produces a sector-aligned 2048-byte sector, so no
+    /// trailing padding is required.
     pub fn finish(mut self) -> io::Result<(W, Vec<VobSubEntry>)> {
-        let pos = self.bytes_written;
-        if pos % SECTOR_SIZE != 0 {
-            let pad = SECTOR_SIZE - (pos % SECTOR_SIZE);
-            self.write_padding(pad)?;
-        }
+        debug_assert_eq!(self.bytes_written % SECTOR_SIZE, 0);
         let _ = self.out.seek(SeekFrom::Start(0))?;
         Ok((self.out, self.entries))
     }
@@ -306,24 +389,97 @@ mod tests {
     fn sub_writer_aligns_to_sector() {
         let buf = Cursor::new(Vec::new());
         let mut sw = SubWriter::new(buf, 0x20);
-        // Write 3 tiny subtitles. Each gets its own 2048-byte sector.
         sw.write_subtitle(90_000, &[0x00, 0x01, 0x02, 0x03]).unwrap();
         sw.write_subtitle(180_000, &[0x10, 0x11, 0x12, 0x13]).unwrap();
         sw.write_subtitle(270_000, &[0x20, 0x21, 0x22, 0x23]).unwrap();
         let (cur, entries) = sw.finish().unwrap();
         let data = cur.into_inner();
-        // 3 entries * 2048 byte sectors = 6144 bytes.
         assert_eq!(data.len(), 3 * 2048);
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].filepos, 0);
         assert_eq!(entries[1].filepos, 2048);
         assert_eq!(entries[2].filepos, 4096);
-        // Each entry starts with the pack-header magic.
         for e in &entries {
             assert_eq!(
                 &data[e.filepos as usize..e.filepos as usize + 4],
                 &[0x00, 0x00, 0x01, 0xBA]
             );
         }
+    }
+
+    #[test]
+    fn sub_writer_emits_pad_stream() {
+        let buf = Cursor::new(Vec::new());
+        let mut sw = SubWriter::new(buf, 0x20);
+        let spu = [0xAAu8; 64];
+        sw.write_subtitle(90_000, &spu).unwrap();
+        let (cur, _) = sw.finish().unwrap();
+        let data = cur.into_inner();
+        // Find the pad_stream start code.
+        let pad_off = data
+            .windows(4)
+            .position(|w| w == [0x00, 0x00, 0x01, 0xBE])
+            .expect("pad_stream PES should be present");
+        // After pad_stream's 2-byte length field comes 0xFF content.
+        let pkt_len = ((data[pad_off + 4] as usize) << 8) | data[pad_off + 5] as usize;
+        let content = &data[pad_off + 6..pad_off + 6 + pkt_len];
+        assert!(content.iter().all(|&b| b == 0xFF), "pad content must be 0xFF");
+        // Sector should be exactly 2048 bytes.
+        assert_eq!(data.len(), 2048);
+    }
+
+    #[test]
+    fn sub_writer_continuation_no_pts() {
+        let buf = Cursor::new(Vec::new());
+        let mut sw = SubWriter::new(buf, 0x20);
+        sw.write_subtitle(90_000, &[0xAA; 32]).unwrap();
+        sw.write_continuation(&[0xBB; 16]).unwrap();
+        // Next SPU starts a fresh sector.
+        sw.write_subtitle(180_000, &[0xCC; 32]).unwrap();
+        let (cur, entries) = sw.finish().unwrap();
+        let data = cur.into_inner();
+        assert_eq!(data.len(), 3 * 2048);
+        // Only 2 .idx entries (the continuation doesn't add one).
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].filepos, 0);
+        assert_eq!(entries[1].filepos, 4096);
+
+        // First sector: PES with PTS (flags2 == 0x80).
+        // PES starts at offset 14 (pack header is 14 bytes).
+        assert_eq!(&data[14..18], &[0x00, 0x00, 0x01, 0xBD]);
+        assert_eq!(data[14 + 6], 0x81); // flags1
+        assert_eq!(data[14 + 7], 0x80); // flags2 = PTS only
+        assert_eq!(data[14 + 8], 0x05); // PES_header_data_length
+
+        // Continuation sector at offset 2048: PES with no PTS.
+        let cont = 2048;
+        assert_eq!(&data[cont + 14..cont + 18], &[0x00, 0x00, 0x01, 0xBD]);
+        assert_eq!(data[cont + 14 + 6], 0x81); // flags1
+        assert_eq!(data[cont + 14 + 7], 0x00); // flags2 = no PTS
+        assert_eq!(data[cont + 14 + 8], 0x00); // PES_header_data_length = 0
+        // substream_id follows the (empty) PES header data.
+        assert_eq!(data[cont + 14 + 9], 0x20);
+    }
+
+    #[test]
+    fn sub_writer_substream_id_in_pes() {
+        let buf = Cursor::new(Vec::new());
+        let mut sw = SubWriter::new(buf, 0x23);
+        sw.write_subtitle(90_000, &[0xAA; 8]).unwrap();
+        let (cur, _) = sw.finish().unwrap();
+        let data = cur.into_inner();
+        // substream_id sits right after the 5-byte PTS field in the
+        // PES header (PES preamble 6 + flags+len 3 + PTS 5 = 14
+        // bytes inside the PES, so at offset pack(14) + 14 = 28).
+        assert_eq!(data[28], 0x23);
+    }
+
+    #[test]
+    fn sub_writer_rejects_oversized_payload() {
+        let buf = Cursor::new(Vec::new());
+        let mut sw = SubWriter::new(buf, 0x20);
+        let oversized = vec![0xAAu8; MAX_SPU_WITH_PTS + 1];
+        let err = sw.write_subtitle(90_000, &oversized).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 }
