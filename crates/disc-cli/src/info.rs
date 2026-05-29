@@ -517,7 +517,20 @@ fn print_pgc_summary(pgc: &pgc_t, vtsi_mat: &vtsi_mat_t) {
 
     print_pgc_audio_control(pgc, vtsi_mat);
     print_pgc_subp_control(pgc, vtsi_mat);
+    print_pgc_palette(pgc);
     print_pgc_cells(pgc);
+}
+
+/// Dump the 16-entry PGC color lookup table. Each entry is packed
+/// `0x00 Y Cr Cb` (8-bit components) per the DVD-Video spec; subpicture
+/// pixels index into this CLUT and it feeds the VobSub `.idx` palette.
+fn print_pgc_palette(pgc: &pgc_t) {
+    let palette: [u32; 16] = { pgc.palette };
+    print!("      palette (YCrCb x16):");
+    for &e in &palette {
+        print!(" {:06x}", e & 0x00FF_FFFF);
+    }
+    println!();
 }
 
 fn print_pgc_audio_control(pgc: &pgc_t, vtsi_mat: &vtsi_mat_t) {

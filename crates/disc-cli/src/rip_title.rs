@@ -250,7 +250,6 @@ pub fn run(args: RipTitleArgs) -> Result<()> {
             &args.out_dir,
             &title_prefix,
             track_number,
-            stream_n,
             &language,
         )?;
         subp_handlers.insert(stream_n, h);
@@ -664,7 +663,6 @@ fn open_subpicture_handler(
     out_dir: &std::path::Path,
     title_prefix: &str,
     track_number: u8,
-    stream_index: u8,
     language: &str,
 ) -> Result<SubpictureHandler> {
     let sub_path = out_dir.join(format!(
@@ -675,9 +673,11 @@ fn open_subpicture_handler(
     ));
     let file = File::create(&sub_path)
         .with_context(|| format!("creating {}", sub_path.display()))?;
-    // DVD subpicture substream IDs are 0x20..=0x3F, indexed by the
-    // subpicture stream's IFO position (0 → 0x20, 1 → 0x21, etc.).
-    let substream_id = 0x20u8 + stream_index;
+    // Each .sub is a standalone single-stream file, so the subpicture
+    // substream id is always 0x20 (first of the DVD 0x20..=0x3F range),
+    // regardless of the stream's IFO position — matching MakeMKV's
+    // per-track extraction.
+    let substream_id = 0x20u8;
     let writer = SubWriter::new(file, substream_id);
     Ok(SubpictureHandler {
         track_number,
@@ -731,8 +731,16 @@ fn dispatch_pes(
                 // a multi-PES SPU don't and are written as
                 // continuation sectors.
                 if let Some(pts) = pes.pts {
+                    // Title-relative PTS (ISO/IEC 13818-1, 90 kHz):
+                    // subtract the title's first video PTS so the
+                    // subpicture timeline starts at zero. Full
+                    // precision — no container-timescale rounding.
+                    // `first_pts` is set by the first video PES, which
+                    // precedes any subpicture in a title.
+                    let base = video.first_pts.unwrap_or(0);
+                    let rel = pts.saturating_sub(base);
                     h.writer
-                        .write_subtitle(pts, pes.payload)
+                        .write_subtitle(rel, pes.payload)
                         .with_context(|| {
                             format!("writing subpicture track {}", h.track_number)
                         })?;
