@@ -262,6 +262,13 @@ pub fn run(args: RipTitleArgs) -> Result<()> {
     let mut stc_disc_boundaries: u64 = 0;
     let mut left_title = false;
     let mut last_cell: Option<(i32, i32)> = None;
+    // Title-relative subtitle timeline. The DVD presentation clock
+    // resets at each cell with stc_discontinuity, so we accumulate the
+    // inter-VOBU gap from the NAV-pack VOBU presentation times
+    // (vobu_s_ptm/vobu_e_ptm) and add it to subtitle PTS to keep the
+    // .idx/.sub timeline continuous across the title.
+    let mut sub_pts_offset: i64 = 0;
+    let mut prev_vobu_e_ptm: u32 = 0;
 
     for event_idx in 0..args.max_events {
         let evt = nav.next_block().with_context(|| {
@@ -279,6 +286,7 @@ pub fn run(args: RipTitleArgs) -> Result<()> {
                         &mut video,
                         &mut audio_handlers,
                         &mut subp_handlers,
+                        sub_pts_offset,
                     )?;
                 }
                 sectors_processed += 1;
@@ -315,8 +323,21 @@ pub fn run(args: RipTitleArgs) -> Result<()> {
                     }
                 }
             }
-            NavEvent::NavPacket
-            | NavEvent::Highlight
+            NavEvent::NavPacket => {
+                // VOBU presentation times from the NAV-pack PCI. When the
+                // previous VOBU's end PTM exceeds this VOBU's start PTM the
+                // clock jumped backward (cell stc_discontinuity), so add
+                // the gap to the running offset to keep the title timeline
+                // monotonic.
+                if let Some((s_ptm, e_ptm)) = nav.current_vobu_ptm() {
+                    if prev_vobu_e_ptm > s_ptm {
+                        sub_pts_offset +=
+                            i64::from(prev_vobu_e_ptm) - i64::from(s_ptm);
+                    }
+                    prev_vobu_e_ptm = e_ptm;
+                }
+            }
+            NavEvent::Highlight
             | NavEvent::SpuClutChange
             | NavEvent::HopChannel
             | NavEvent::Other(_) => {}
@@ -693,6 +714,7 @@ fn dispatch_pes(
     video: &mut VideoHandler,
     audio_handlers: &mut BTreeMap<u8, AudioHandler>,
     subp_handlers: &mut BTreeMap<u8, SubpictureHandler>,
+    sub_pts_offset: i64,
 ) -> Result<()> {
     let kind = stream_kind(pes.stream_id, pes.substream_id);
     match kind {
@@ -732,13 +754,15 @@ fn dispatch_pes(
                 // continuation sectors.
                 if let Some(pts) = pes.pts {
                     // Title-relative PTS (ISO/IEC 13818-1, 90 kHz):
-                    // subtract the title's first video PTS so the
-                    // subpicture timeline starts at zero. Full
-                    // precision — no container-timescale rounding.
-                    // `first_pts` is set by the first video PES, which
-                    // precedes any subpicture in a title.
+                    // subtract the title's first video PTS, then add the
+                    // accumulated NAV-pack offset so the subpicture
+                    // timeline stays continuous across cell
+                    // stc_discontinuity. Full precision — no container
+                    // rounding. `first_pts` is set by the first video PES,
+                    // which precedes any subpicture in a title.
                     let base = video.first_pts.unwrap_or(0);
-                    let rel = pts.saturating_sub(base);
+                    let rel = ((pts as i64) - (base as i64) + sub_pts_offset)
+                        .max(0) as u64;
                     h.writer
                         .write_subtitle(rel, pes.payload)
                         .with_context(|| {
