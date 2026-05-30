@@ -360,6 +360,25 @@ impl DvdNav {
         })
     }
 
+    /// Read the current VOBU's start/end presentation times from the
+    /// NAV-pack PCI (`pci_gi.vobu_s_ptm` / `vobu_e_ptm`, 90 kHz ticks).
+    /// Valid immediately after a [`NavEvent::NavPacket`]; returns `None`
+    /// when no PCI is currently available. The DVD clock resets per cell
+    /// (DVD-Video Part 3, NV_PCK), so these times drive the title-relative
+    /// timeline reconstruction across `stc_discontinuity`.
+    #[must_use]
+    pub fn current_vobu_ptm(&self) -> Option<(u32, u32)> {
+        // SAFETY: handle is valid for `self`'s lifetime; the returned
+        // pci_t is owned by libdvdnav and valid until the next
+        // `next_block`. We only read scalar fields out of it here.
+        let pci = unsafe { sys::dvdnav_get_current_nav_pci(self.handle) };
+        if pci.is_null() {
+            return None;
+        }
+        let gi = unsafe { (*pci).pci_gi };
+        Some((gi.vobu_s_ptm, gi.vobu_e_ptm))
+    }
+
     /// Acknowledge a `StillFrame` event and resume — without this
     /// libdvdnav stalls indefinitely on still cells.
     pub fn still_skip(&mut self) -> Result<(), DiscError> {

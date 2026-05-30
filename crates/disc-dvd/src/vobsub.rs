@@ -322,8 +322,10 @@ pub fn write_idx_file<W: Write>(
     writeln!(w, "id: {lang_2letter}, index: 0")?;
     for e in entries {
         // Timestamp format in .idx is HH:MM:SS:MMM (millisecond
-        // colon-separated). filepos is 9 hex digits.
-        let total_ms = e.pts_90khz / 90;
+        // colon-separated). filepos is 9 hex digits. PTS is 90 kHz, so
+        // 1 ms = 90 ticks; round to the nearest millisecond (the .idx
+        // grid is inherently millisecond-resolution).
+        let total_ms = (e.pts_90khz + 45) / 90;
         let h = total_ms / 3_600_000;
         let m = (total_ms / 60_000) % 60;
         let s = (total_ms / 1_000) % 60;
@@ -338,18 +340,25 @@ pub fn write_idx_file<W: Write>(
 }
 
 /// Convert one `pgc.palette[i]` entry (`0x00 Y Cr Cb`) into a 24-bit
-/// `(R, G, B)` triple using ITU-R BT.601 limited-range matrix
-/// coefficients. The conversion mirrors what most VobSub viewers and
-/// MakeMKV's own palette emission do.
+/// `(R, G, B)` triple. DVD CLUT entries are studio-swing Y'CbCr (Y
+/// 16..235); the VobSub `.idx` palette is full-range RGB, so we expand
+/// with the ITU-R BT.601 full-range ("PC") matrix (luma gain 255/219,
+/// Y-16 offset). Components are **truncated** (floor), not rounded:
+/// verified on the reference grayscale CLUT (Y=191->0xCB, 54->0x2C,
+/// 28->0x0D); rounding would yield 0xCC / 0x0E. The chroma terms are
+/// the standard full-range coefficients but UNVERIFIED here — every
+/// ANGEL CLUT entry is neutral (Cr=Cb=128); confirm on a colored-
+/// subtitle disc via byte-compare.
 #[must_use]
 pub fn ycrcb_u32_to_rgb(ycrcb: u32) -> (u8, u8, u8) {
     let y = ((ycrcb >> 16) & 0xFF) as f64;
     let cr = ((ycrcb >> 8) & 0xFF) as f64;
     let cb = (ycrcb & 0xFF) as f64;
-    let r = y + 1.402 * (cr - 128.0);
-    let g = y - 0.344_136 * (cb - 128.0) - 0.714_136 * (cr - 128.0);
-    let b = y + 1.772 * (cb - 128.0);
-    let clip = |v: f64| -> u8 { v.clamp(0.0, 255.0).round() as u8 };
+    let luma = 1.164_383 * (y - 16.0);
+    let r = luma + 1.596_027 * (cr - 128.0);
+    let g = luma - 0.391_762 * (cb - 128.0) - 0.812_968 * (cr - 128.0);
+    let b = luma + 2.017_232 * (cb - 128.0);
+    let clip = |v: f64| -> u8 { v.clamp(0.0, 255.0) as u8 };
     (clip(r), clip(g), clip(b))
 }
 
@@ -380,9 +389,34 @@ mod tests {
     #[test]
     fn ycrcb_zero_chroma_is_grey() {
         let (r, g, b) = ycrcb_u32_to_rgb(0x00_80_80_80); // Y=0x80, Cr=Cb=0x80
-        // Y=128, neutral chroma → neutral grey ~128
-        assert!(r.abs_diff(g) <= 1 && g.abs_diff(b) <= 1);
-        assert_eq!(r, 128);
+        // Neutral chroma → grey. Full-range expand: floor(1.164*(128-16))=130.
+        assert_eq!((r, g, b), (130, 130, 130));
+    }
+
+    #[test]
+    fn ycrcb_matches_reference_clut() {
+        // ANGEL_S1D1 t00 CLUT is all-grayscale (Cr=Cb=0x80). These four
+        // distinct luma levels map to the exact RGB MakeMKV writes in
+        // its reference .idx — full-range expansion, floor (not round;
+        // round would give 0xCC and 0x0E).
+        assert_eq!(ycrcb_u32_to_rgb(0x00_10_80_80), (0x00, 0x00, 0x00));
+        assert_eq!(ycrcb_u32_to_rgb(0x00_bf_80_80), (0xcb, 0xcb, 0xcb));
+        assert_eq!(ycrcb_u32_to_rgb(0x00_36_80_80), (0x2c, 0x2c, 0x2c));
+        assert_eq!(ycrcb_u32_to_rgb(0x00_1c_80_80), (0x0d, 0x0d, 0x0d));
+    }
+
+    #[test]
+    fn idx_timestamp_rounds_to_nearest_ms() {
+        // Full-precision normalized PTS 318318 (90 kHz) = 3536.87 ms →
+        // rounds to 3537 ms, matching MakeMKV's reference .idx.
+        let entries = vec![VobSubEntry { pts_90khz: 318_318, filepos: 0 }];
+        let mut out = Vec::new();
+        write_idx_file(&mut out, &[0u32; 16], "en", 720, 480, &entries).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.contains("timestamp: 00:00:03:537, filepos: 000000000"),
+            "idx should round 318318 ticks to 3537 ms; got:\n{text}"
+        );
     }
 
     #[test]
