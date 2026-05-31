@@ -28,13 +28,13 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
 use clap::Args;
-use disc_core::{check, check_eq, detect_disc_type, DiscType};
+use disc_core::{check, check_eq, check_in_range, detect_disc_type, DiscType};
 use disc_dvd::chapters::write_chapters_xml;
 use disc_dvd::ifo::{audio_attr_t, subp_attr_t, IfoHandle, IfoKind};
 use disc_dvd::mpegps::{scan_sector, stream_kind, PesPacket, StreamKind, SECTOR_SIZE};
 use disc_dvd::nav::{DvdNav, NavEvent};
 use disc_dvd::nav_cells::CellLookup;
-use disc_dvd::video_es::UserDataFilter;
+use disc_dvd::video_es::{analyze_video_start, UserDataFilter};
 use disc_dvd::vobsub::{write_idx_file, SubWriter, VobSubEntry};
 use disc_dvd::DvdSource;
 
@@ -367,17 +367,62 @@ pub fn run(args: RipTitleArgs) -> Result<()> {
 
     // 6) Close handlers and write sidecar files.
     let video_first_pts = video.first_pts;
+    let video_path = video.video_path.clone();
     finish_video_handler(video, &mut audio_handlers, &mut subp_handlers)?;
 
-    // For each audio track, compute delay = first_audio_pts -
-    // first_video_pts in ms. PTS is in 90 kHz units, so 1 ms = 90 ticks.
+    // Anchor the audio delay to the first *displayed* video frame, not the
+    // first *coded* I-frame's PTS. In an open GOP the leading B-frames
+    // display before the I-frame, so the real picture start is earlier by
+    // `leading_b_frames` frame periods. Scan the written .mpg head for the
+    // frame rate + leading-B count (ports DGIndex's LeadingBFrames; see
+    // disc_dvd::video_es::analyze_video_start) and shift the anchor back.
+    let vstart = {
+        let mut head = Vec::new();
+        if let Ok(f) = File::open(&video_path) {
+            use std::io::Read;
+            let _ = f.take(256 * 1024).read_to_end(&mut head);
+        }
+        analyze_video_start(&head)
+    };
+    let period_ticks: i64 = if vstart.frame_rate > 0.0 {
+        (90_000.0 / vstart.frame_rate).round() as i64
+    } else {
+        0
+    };
+    let reorder_ticks = i64::from(vstart.leading_b_frames) * period_ticks;
+    let video_anchor: Option<i64> = video_first_pts.map(|v| v as i64 - reorder_ticks);
+    if let (Some(v), Some(anchor)) = (video_first_pts, video_anchor) {
+        log::info!(
+            target: "disc_check",
+            "title {} A/V anchor: first_video_pts={v} - {} leading B-frame(s) x {period_ticks} ticks ({:.3} fps) = display anchor {anchor} (first picture)",
+            args.title, vstart.leading_b_frames, vstart.frame_rate,
+        );
+    }
+
+    // For each audio track, compute delay = first_audio_pts - display anchor
+    // in ms (PTS is 90 kHz, so 1 ms = 90 ticks). Audio is preserved in full
+    // (no frames dropped); the muxer trims leading frames at mux time for a
+    // large negative delay, the same net result as MakeMKV.
     let mut audio_summaries: Vec<(u8, AudioCodec, String, u8, i64, u64, PathBuf)> = Vec::new();
     for (stream_n, mut h) in std::mem::take(&mut audio_handlers) {
         h.writer.flush().context("flushing audio writer")?;
-        let delay_ms: i64 = match (video_first_pts, h.first_pts) {
-            (Some(v), Some(a)) => ((a as i64) - (v as i64)) / 90,
+        let delay_ms: i64 = match (video_anchor, h.first_pts) {
+            (Some(anchor), Some(a)) => ((a as i64) - anchor) / 90,
             _ => 0,
         };
+        if h.first_pts.is_some() {
+            let lead_ms = if delay_ms < 0 { -delay_ms } else { 0 };
+            log::info!(
+                target: "disc_check",
+                "title {} track {} [{}] {:?}: DELAY {delay_ms} ms (audio leads first picture by {lead_ms} ms; all frames preserved, muxer aligns)",
+                args.title, h.track_number, h.language, h.codec,
+            );
+            check_in_range(
+                "rip-title: audio delay magnitude (ms) is sane",
+                delay_ms.unsigned_abs(),
+                10_000,
+            );
+        }
         // Rename to include the delay literal MakeMKV uses.
         let final_path = audio_final_path(
             &args.out_dir,

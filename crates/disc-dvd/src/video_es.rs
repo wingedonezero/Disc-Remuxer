@@ -345,9 +345,167 @@ pub struct UserDataStats {
     pub user_data_blocks: u64,
 }
 
+/// Frame rate (frames/sec) for an MPEG-2 `frame_rate_code`
+/// (ISO/IEC 13818-2 Table 6-4). `0.0` for forbidden/reserved codes.
+fn frame_rate_from_code(code: u8) -> f64 {
+    match code {
+        1 => 24_000.0 / 1001.0,
+        2 => 24.0,
+        3 => 25.0,
+        4 => 30_000.0 / 1001.0,
+        5 => 30.0,
+        6 => 50.0,
+        7 => 60_000.0 / 1001.0,
+        8 => 60.0,
+        _ => 0.0,
+    }
+}
+
+/// Timing facts scanned from the head of an MPEG-2 video elementary
+/// stream, used to anchor the audio delay to the first *displayed*
+/// frame rather than the first *coded* (I-)frame's PTS.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VideoStartInfo {
+    /// Coded frame rate from the first `sequence_header` (`0.0` if none seen).
+    pub frame_rate: f64,
+    /// B-frames (in *frame* units) that display before the first I-frame —
+    /// the open-GOP reorder offset. The first displayed picture is this many
+    /// frame periods *earlier* than the first I-frame's PTS, so the delay
+    /// anchor is `first_i_frame_pts - leading_b_frames * (90000 / frame_rate)`.
+    pub leading_b_frames: u32,
+}
+
+/// Scan the head of an MPEG-2 video elementary stream for the frame rate
+/// and the leading-B-frame reorder count.
+///
+/// The first I-frame's PES PTS is *not* when the picture first appears:
+/// open-GOP B-frames that reference the previous GOP display before it, so
+/// the true display start is earlier. This ports DGIndex's `LeadingBFrames`
+/// logic (DGMPGDec 2005, `DGIndex/mpeg2dec.cpp` lines 422-437, with the
+/// `VideoPTS -= LeadingBFrames * picture_period * 90000` adjustment in
+/// `getbit.cpp`): after the first I-frame, count consecutive B-frames
+/// (frame picture `+= 2`, field picture `+= 1`) up to the first non-B
+/// picture, then `/= 2` for frame units. `picture_coding_type` comes from
+/// the `picture_header` (`00 00 01 00`, ISO/IEC 13818-2 §6.2.3) and
+/// `picture_structure` from the following `picture_coding_extension`
+/// (`00 00 01 B5`, extension id 8, §6.2.3.1).
+///
+/// `data` need only cover the first GOP (a few tens of KB).
+#[must_use]
+pub fn analyze_video_start(data: &[u8]) -> VideoStartInfo {
+    const I_TYPE: u8 = 1;
+    const B_TYPE: u8 = 3;
+    const PIC_STRUCT_FRAME: u8 = 3;
+    const EXT_PICTURE_CODING: u8 = 8;
+
+    let mut frame_rate = 0.0_f64;
+    let mut leading_b_fields: u32 = 0;
+    let mut seen_first_i = false;
+    let mut done = false;
+    // Set when the current picture is a leading B-frame awaiting its
+    // picture_coding_extension (to learn frame-vs-field structure).
+    let mut pending_b = false;
+
+    let mut i = 0usize;
+    while i + 3 < data.len() {
+        if !(data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1) {
+            i += 1;
+            continue;
+        }
+        match data[i + 3] {
+            // sequence_header: body[3] low nibble = frame_rate_code.
+            0xB3 => {
+                if frame_rate == 0.0 && i + 7 < data.len() {
+                    frame_rate = frame_rate_from_code(data[i + 7] & 0x0F);
+                }
+            }
+            // picture_header: picture_coding_type = bits [5:3] of body[1].
+            0x00 => {
+                pending_b = false;
+                if !done && i + 5 < data.len() {
+                    let pct = (data[i + 5] >> 3) & 0x07;
+                    if pct == I_TYPE {
+                        if seen_first_i {
+                            done = true; // a second I ends the leading-B run
+                        } else {
+                            seen_first_i = true;
+                        }
+                    } else if seen_first_i {
+                        if pct == B_TYPE {
+                            pending_b = true; // count once we read its structure
+                        } else {
+                            done = true; // first non-B (P) after I ends the run
+                        }
+                    }
+                }
+            }
+            // picture_coding_extension (ext id 8): picture_structure = body[2] & 0x03.
+            0xB5 => {
+                if pending_b
+                    && i + 6 < data.len()
+                    && (data[i + 4] >> 4) == EXT_PICTURE_CODING
+                {
+                    let pic_struct = data[i + 6] & 0x03;
+                    leading_b_fields += if pic_struct == PIC_STRUCT_FRAME { 2 } else { 1 };
+                    pending_b = false;
+                }
+            }
+            _ => {}
+        }
+        i += 3;
+    }
+    VideoStartInfo {
+        frame_rate,
+        leading_b_frames: leading_b_fields / 2,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn analyze_video_start_counts_two_leading_b_frames() {
+        // seq header (frame_rate_code 4 = 30000/1001), I-frame, two
+        // frame-structured B-frames, then a P-frame (ends the run).
+        let seq = b"\x00\x00\x01\xB3\x00\x00\x00\x14"; // body[3]=0x14 -> code 4
+        let i_pic = b"\x00\x00\x01\x00\x00\x08"; // pct=(0x08>>3)&7 = 1 (I)
+        let b_pic = b"\x00\x00\x01\x00\x00\x18"; // pct=(0x18>>3)&7 = 3 (B)
+        let p_pic = b"\x00\x00\x01\x00\x00\x10"; // pct=(0x10>>3)&7 = 2 (P)
+        let pce_frame = b"\x00\x00\x01\xB5\x88\x00\x03"; // ext 8, picture_structure=3 (frame)
+        let mut s = Vec::new();
+        s.extend_from_slice(seq);
+        s.extend_from_slice(i_pic);
+        s.extend_from_slice(pce_frame);
+        s.extend_from_slice(b_pic);
+        s.extend_from_slice(pce_frame);
+        s.extend_from_slice(b_pic);
+        s.extend_from_slice(pce_frame);
+        s.extend_from_slice(p_pic);
+        s.extend_from_slice(pce_frame);
+        let info = analyze_video_start(&s);
+        assert!((info.frame_rate - 30_000.0 / 1001.0).abs() < 1e-6);
+        assert_eq!(info.leading_b_frames, 2);
+    }
+
+    #[test]
+    fn analyze_video_start_field_structured_b_frames_halve() {
+        // Two field-structured B-frame pictures = one frame of leading B.
+        let i_pic = b"\x00\x00\x01\x00\x00\x08";
+        let b_pic = b"\x00\x00\x01\x00\x00\x18";
+        let p_pic = b"\x00\x00\x01\x00\x00\x10";
+        let pce_field = b"\x00\x00\x01\xB5\x88\x00\x01"; // picture_structure=1 (top field)
+        let mut s = Vec::new();
+        s.extend_from_slice(i_pic);
+        s.extend_from_slice(pce_field);
+        s.extend_from_slice(b_pic);
+        s.extend_from_slice(pce_field);
+        s.extend_from_slice(b_pic);
+        s.extend_from_slice(pce_field);
+        s.extend_from_slice(p_pic);
+        let info = analyze_video_start(&s);
+        assert_eq!(info.leading_b_frames, 1);
+    }
 
     fn run(input: &[u8]) -> (Vec<u8>, Vec<u8>, UserDataStats) {
         let mut video = Vec::new();
