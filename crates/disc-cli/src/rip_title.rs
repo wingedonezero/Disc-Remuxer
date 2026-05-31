@@ -269,6 +269,10 @@ pub fn run(args: RipTitleArgs) -> Result<()> {
     // .idx/.sub timeline continuous across the title.
     let mut sub_pts_offset: i64 = 0;
     let mut prev_vobu_e_ptm: u32 = 0;
+    // First VOBU's vobu_s_ptm (NAV PCI) = the authored "first picture"
+    // presentation time. Used to cross-check our video-ES-derived display
+    // anchor (PgcDemux computes the audio delay from this NAV value).
+    let mut first_vobu_s_ptm: Option<u32> = None;
 
     for event_idx in 0..args.max_events {
         let evt = nav.next_block().with_context(|| {
@@ -330,6 +334,9 @@ pub fn run(args: RipTitleArgs) -> Result<()> {
                 // the gap to the running offset to keep the title timeline
                 // monotonic.
                 if let Some((s_ptm, e_ptm)) = nav.current_vobu_ptm() {
+                    if first_vobu_s_ptm.is_none() {
+                        first_vobu_s_ptm = Some(s_ptm);
+                    }
                     if prev_vobu_e_ptm > s_ptm {
                         sub_pts_offset +=
                             i64::from(prev_vobu_e_ptm) - i64::from(s_ptm);
@@ -396,6 +403,24 @@ pub fn run(args: RipTitleArgs) -> Result<()> {
             target: "disc_check",
             "title {} A/V anchor: first_video_pts={v} - {} leading B-frame(s) x {period_ticks} ticks ({:.3} fps) = display anchor {anchor} (first picture)",
             args.title, vstart.leading_b_frames, vstart.frame_rate,
+        );
+    }
+
+    // Cross-check the video-ES-derived anchor against the NAV pack's
+    // vobu_s_ptm (PgcDemux computes the audio delay from this NAV value).
+    // Both represent the first displayed frame, so they should agree within
+    // one frame period.
+    if let (Some(anchor), Some(nav_ptm)) = (video_anchor, first_vobu_s_ptm) {
+        let diff = (anchor - i64::from(nav_ptm)).abs();
+        log::info!(
+            target: "disc_check",
+            "title {} anchor cross-check: video-derived={anchor} vs NAV vobu_s_ptm={nav_ptm} (diff {diff} ticks, ~{} ms)",
+            args.title, diff / 90,
+        );
+        check_in_range(
+            "rip-title: video anchor matches NAV vobu_s_ptm within one frame (ticks)",
+            diff.unsigned_abs(),
+            period_ticks.unsigned_abs().max(1),
         );
     }
 

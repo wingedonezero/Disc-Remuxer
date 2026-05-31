@@ -507,6 +507,75 @@ mod tests {
         assert_eq!(info.leading_b_frames, 1);
     }
 
+    /// The video/user_data split must be invariant to how the input is
+    /// chunked across `feed()` calls. Checks every 2-way split AND a
+    /// byte-at-a-time feed against the single-call result. Regression for
+    /// the multi-call tail-holdback seam bug (zero bytes leaking into video
+    /// at PES seams).
+    fn assert_chunking_invariant(stream: &[u8]) {
+        let (v0, u0, _) = run(stream);
+        // Every 2-way split.
+        for split in 0..=stream.len() {
+            let mut v = Vec::new();
+            let mut u = Vec::new();
+            let mut f = UserDataFilter::new();
+            f.feed(&stream[..split], &mut v, &mut u).unwrap();
+            f.feed(&stream[split..], &mut v, &mut u).unwrap();
+            f.finish(&mut v, &mut u).unwrap();
+            assert_eq!(v, v0, "video differs at 2-split {split}");
+            assert_eq!(u, u0, "user_data differs at 2-split {split}");
+        }
+        // One byte per feed() — the worst case for the holdback.
+        let mut v = Vec::new();
+        let mut u = Vec::new();
+        let mut f = UserDataFilter::new();
+        for b in stream {
+            f.feed(std::slice::from_ref(b), &mut v, &mut u).unwrap();
+        }
+        f.finish(&mut v, &mut u).unwrap();
+        assert_eq!(v, v0, "video differs under byte-at-a-time feed");
+        assert_eq!(u, u0, "user_data differs under byte-at-a-time feed");
+    }
+
+    #[test]
+    fn chunking_invariant_gop_stuffing_userdata() {
+        let mut s = Vec::new();
+        s.extend_from_slice(b"\x00\x00\x01\xB8\x11\x22\x33\x44"); // GOP + 4-byte body
+        s.extend(std::iter::repeat(0u8).take(124)); // 124 zero stuffing
+        s.extend_from_slice(b"\x00\x00\x01\xB2\x55\x66"); // user_data
+        s.extend_from_slice(b"\x00\x00\x01\xB3\x77\x88\x99\x14"); // seq header
+        s.extend_from_slice(b"\x00\x00\x01\x01\xAA\xBB"); // slice
+        let (v0, _, _) = run(&s);
+        assert_eq!(v0.len(), 8 + 8 + 6, "single-call video strips stuffing+user_data");
+        assert_chunking_invariant(&s);
+    }
+
+    #[test]
+    fn chunking_invariant_gop_body_ending_in_zero() {
+        // GOP 4-byte body ends in 0x00 (a mandatory body byte that must NOT
+        // be misread as stuffing), then more stuffing, then user_data.
+        let mut s = Vec::new();
+        s.extend_from_slice(b"\x00\x00\x01\xB8\x11\x22\x33\x00"); // GOP body ends in 0x00
+        s.extend(std::iter::repeat(0u8).take(40));
+        s.extend_from_slice(b"\x00\x00\x01\xB2\x55\x66"); // user_data
+        s.extend_from_slice(b"\x00\x00\x01\x00\x00\x08"); // picture header
+        assert_chunking_invariant(&s);
+    }
+
+    #[test]
+    fn chunking_invariant_consecutive_userdata_and_spanning() {
+        // Two consecutive user_data blocks (GA94 then DTG1) with stuffing
+        // between, then a long user_data body, then a kept block.
+        let mut s = Vec::new();
+        s.extend_from_slice(b"\x00\x00\x01\xB3SEQ"); // seq
+        s.extend_from_slice(b"\x00\x00\x01\xB2GA94"); // user_data 1
+        s.extend(std::iter::repeat(0u8).take(8)); // stuffing between
+        s.extend_from_slice(b"\x00\x00\x01\xB2"); // user_data 2 start
+        s.extend(std::iter::repeat(0x42u8).take(200)); // long body
+        s.extend_from_slice(b"\x00\x00\x01\xB8GOPB"); // kept GOP
+        assert_chunking_invariant(&s);
+    }
+
     fn run(input: &[u8]) -> (Vec<u8>, Vec<u8>, UserDataStats) {
         let mut video = Vec::new();
         let mut user_data = Vec::new();
