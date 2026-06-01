@@ -27,6 +27,7 @@
 //! `info!` for major lifecycle events (open/close), `debug!` for IFO
 //! reads, `trace!` for byte-level activity once we add demuxing.
 
+pub mod backend;
 pub mod cell;
 pub mod chapters;
 pub mod css;
@@ -44,6 +45,7 @@ pub mod source;
 pub mod video_es;
 pub mod vobsub;
 
+pub use backend::DvdBackend;
 pub use cell::{
     cells_in_pgc, check_cell_vs_c_adt, check_cell_walk, find_cell_adr, CellInfo,
 };

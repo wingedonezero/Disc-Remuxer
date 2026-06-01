@@ -69,6 +69,7 @@ pub fn run(args: RipTitleArgs) -> Result<()> {
             title: args.title,
             out_dir: args.out_dir.clone(),
             max_events: args.max_events,
+            tracks: op::TrackFilter::default(),
         },
     )?;
 

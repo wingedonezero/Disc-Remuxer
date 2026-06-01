@@ -39,11 +39,34 @@ use crate::vobsub::{write_idx_file, SubWriter};
 
 const STILL_LENGTH_INFINITE: u8 = 0xFF;
 
+/// Which substreams the rip should emit. `None` means "all" — the default,
+/// byte-identical to ripping every track. `Some(list)` restricts output to
+/// those IFO substream indices (audio / subpicture order). Excluded streams
+/// simply get no handler, so their PES are dropped during the walk.
+#[derive(Debug, Default, Clone)]
+pub struct TrackFilter {
+    pub audio: Option<Vec<u32>>,
+    pub subp: Option<Vec<u32>>,
+}
+
+impl TrackFilter {
+    fn audio_enabled(&self, idx: usize) -> bool {
+        let idx = u32::try_from(idx).unwrap_or(u32::MAX);
+        self.audio.as_ref().map_or(true, |v| v.contains(&idx))
+    }
+
+    fn subp_enabled(&self, idx: usize) -> bool {
+        let idx = u32::try_from(idx).unwrap_or(u32::MAX);
+        self.subp.as_ref().map_or(true, |v| v.contains(&idx))
+    }
+}
+
 #[derive(Debug)]
 pub struct Params {
     pub title: u8,
     pub out_dir: PathBuf,
     pub max_events: u64,
+    pub tracks: TrackFilter,
 }
 
 #[derive(Debug)]
@@ -234,12 +257,15 @@ pub fn run(reader: &crate::DvdReader, params: Params) -> Result<Report> {
     // each AC-3 substream the IFO's index 0, 1, 2, ... — matching
     // libdvdread's `audio_format` ordering.
     for (idx, attr) in metadata.audio_attrs.iter().enumerate() {
+        let stream_n = u8::try_from(idx).unwrap_or(7);
+        if !params.tracks.audio_enabled(idx) {
+            continue;
+        }
         let codec = audio_codec_from_attr(attr);
         let lang_code: u16 = { attr.lang_code };
         let language = decode_language_code(lang_code);
         let track_number = next_track_number;
         next_track_number += 1;
-        let stream_n = u8::try_from(idx).unwrap_or(7);
         let h = open_audio_handler(
             &params.out_dir,
             &title_prefix,
@@ -250,11 +276,14 @@ pub fn run(reader: &crate::DvdReader, params: Params) -> Result<Report> {
         audio_handlers.insert(stream_n, h);
     }
     for (idx, attr) in metadata.subp_attrs.iter().enumerate() {
+        let stream_n = u8::try_from(idx).unwrap_or(31);
+        if !params.tracks.subp_enabled(idx) {
+            continue;
+        }
         let lang_code: u16 = { attr.lang_code };
         let language = decode_language_code(lang_code);
         let track_number = next_track_number;
         next_track_number += 1;
-        let stream_n = u8::try_from(idx).unwrap_or(31);
         let h = open_subpicture_handler(
             &params.out_dir,
             &title_prefix,

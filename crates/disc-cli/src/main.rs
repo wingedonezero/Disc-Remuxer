@@ -56,6 +56,7 @@ mod dump_title;
 mod dump_title_nav;
 mod info;
 mod logging;
+mod rip;
 mod rip_title;
 mod scan_streams;
 
@@ -102,7 +103,12 @@ enum Command {
     /// on each CellChange so AC-3/DTS audio resyncs correctly.
     DemuxTitleNav(demux_title_nav::DemuxTitleNavArgs),
 
-    /// Rip a title to MakeMKV-style per-track outputs (.mpg + .ac3
+    /// Rip selected titles + tracks. Default = all titles + all tracks;
+    /// narrow with --title / --audio / --subtitle (the makemkvcon-style
+    /// "rip all" front-end over the uniform selection model).
+    Rip(rip::RipArgs),
+
+    /// Rip a single title to MakeMKV-style per-track outputs (.mpg + .ac3
     /// with DELAY suffix + VobSub .idx/.sub + chapters XML).
     RipTitle(rip_title::RipTitleArgs),
 }
@@ -158,6 +164,10 @@ fn main() -> Result<()> {
             demux_title_nav::run(args).with_context(|| {
                 format!("demux-title-nav {path_disp} title={title}")
             })
+        }
+        Command::Rip(args) => {
+            let path_disp = args.disc.display().to_string();
+            rip::run(args).with_context(|| format!("rip {path_disp}"))
         }
         Command::RipTitle(args) => {
             let path_disp = args.disc.display().to_string();
