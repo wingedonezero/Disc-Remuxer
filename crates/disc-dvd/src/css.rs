@@ -36,7 +36,7 @@ use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use disc_core::DiscError;
+use crate::DvdError;
 use libdvdcss_sys as css_sys;
 use libdvdread_sys as read_sys;
 
@@ -82,7 +82,7 @@ pub struct CssProbe {
 
 impl CssProbe {
     /// Dispatch by path type and run the appropriate probe.
-    pub fn open(path: &Path) -> Result<Self, DiscError> {
+    pub fn open(path: &Path) -> Result<Self, DvdError> {
         let path_kind = classify_path(path);
         log::debug!("css probe: path={} kind={path_kind:?}", path.display());
 
@@ -192,14 +192,14 @@ fn classify_path(path: &Path) -> PathKind {
 
 // -- libdvdcss probe (only authoritative on block devices) ------------------
 
-fn run_libdvdcss_probe(path: &Path) -> Result<(bool, Option<String>), DiscError> {
-    let c_path = cstring_from_path(path).map_err(|()| DiscError::InvalidPath)?;
+fn run_libdvdcss_probe(path: &Path) -> Result<(bool, Option<String>), DvdError> {
+    let c_path = cstring_from_path(path).map_err(|()| DvdError::InvalidPath)?;
 
     log::debug!("dvdcss_open path={}", path.display());
     // SAFETY: `c_path` lives for the call; libdvdcss copies what it needs.
     let handle = unsafe { css_sys::dvdcss_open(c_path.as_ptr()) };
     if handle.is_null() {
-        return Err(DiscError::OpenFailed {
+        return Err(DvdError::OpenFailed {
             path: path.to_path_buf(),
             reason: "libdvdcss dvdcss_open() returned NULL".into(),
         });

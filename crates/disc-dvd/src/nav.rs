@@ -52,7 +52,7 @@
 use std::ffi::CString;
 use std::path::Path;
 
-use disc_core::DiscError;
+use crate::DvdError;
 use libdvdnav_sys as sys;
 
 /// One of libdvdnav's `DVDNAV_*` events, with the payload decoded.
@@ -141,8 +141,8 @@ impl DvdNav {
     /// Open a DVD via libdvdnav. `path` may be a directory containing
     /// `VIDEO_TS/`, an ISO image, or a block device — same as
     /// [`crate::DvdReader::open`].
-    pub fn open(path: &Path) -> Result<Self, DiscError> {
-        let c_path = cstring_from_path(path).map_err(|()| DiscError::InvalidPath)?;
+    pub fn open(path: &Path) -> Result<Self, DvdError> {
+        let c_path = cstring_from_path(path).map_err(|()| DvdError::InvalidPath)?;
         let mut handle: *mut sys::dvdnav_t = std::ptr::null_mut();
         log::info!("dvdnav_open path={}", path.display());
         // SAFETY: `c_path` is valid for the duration of this call;
@@ -150,7 +150,7 @@ impl DvdNav {
         // handle pointer through `&mut handle`.
         let status = unsafe { sys::dvdnav_open(&mut handle, c_path.as_ptr()) };
         if status != sys::DVDNAV_STATUS_OK as i32 || handle.is_null() {
-            return Err(DiscError::OpenFailed {
+            return Err(DvdError::OpenFailed {
                 path: path.to_path_buf(),
                 reason: format!("libdvdnav dvdnav_open() returned status={status}"),
             });
@@ -165,12 +165,12 @@ impl DvdNav {
     /// Disable / enable libdvdnav's read-ahead cache. We want it OFF
     /// for ripping — read-ahead can re-order or skip blocks in ways
     /// that aren't byte-exact.
-    pub fn set_readahead(&mut self, on: bool) -> Result<(), DiscError> {
+    pub fn set_readahead(&mut self, on: bool) -> Result<(), DvdError> {
         let flag = i32::from(on);
         // SAFETY: handle is valid for the lifetime of `self`.
         let status = unsafe { sys::dvdnav_set_readahead_flag(self.handle, flag) };
         if status != sys::DVDNAV_STATUS_OK as i32 {
-            return Err(DiscError::OpenFailed {
+            return Err(DvdError::OpenFailed {
                 path: std::path::PathBuf::new(),
                 reason: format!("dvdnav_set_readahead_flag returned {status}"),
             });
@@ -181,12 +181,12 @@ impl DvdNav {
     /// Configure libdvdnav to express position queries in PGC time
     /// (when `on == true`) rather than VTS-relative time. We enable
     /// this because our demuxer logs use PGC-relative offsets.
-    pub fn set_pgc_positioning(&mut self, on: bool) -> Result<(), DiscError> {
+    pub fn set_pgc_positioning(&mut self, on: bool) -> Result<(), DvdError> {
         let flag = i32::from(on);
         // SAFETY: handle is valid for the lifetime of `self`.
         let status = unsafe { sys::dvdnav_set_PGC_positioning_flag(self.handle, flag) };
         if status != sys::DVDNAV_STATUS_OK as i32 {
-            return Err(DiscError::OpenFailed {
+            return Err(DvdError::OpenFailed {
                 path: std::path::PathBuf::new(),
                 reason: format!(
                     "dvdnav_set_PGC_positioning_flag returned {status}"
@@ -198,12 +198,12 @@ impl DvdNav {
 
     /// Number of playable titles as libdvdnav sees them. Equivalent to
     /// `dvdnav_get_number_of_titles`.
-    pub fn num_titles(&self) -> Result<i32, DiscError> {
+    pub fn num_titles(&self) -> Result<i32, DvdError> {
         let mut n: i32 = 0;
         // SAFETY: handle is valid for the lifetime of `self`.
         let status = unsafe { sys::dvdnav_get_number_of_titles(self.handle, &mut n) };
         if status != sys::DVDNAV_STATUS_OK as i32 {
-            return Err(DiscError::OpenFailed {
+            return Err(DvdError::OpenFailed {
                 path: std::path::PathBuf::new(),
                 reason: format!("dvdnav_get_number_of_titles returned {status}"),
             });
@@ -212,13 +212,13 @@ impl DvdNav {
     }
 
     /// Number of chapters/parts in `title` (1-based per libdvdnav).
-    pub fn num_parts(&self, title: i32) -> Result<i32, DiscError> {
+    pub fn num_parts(&self, title: i32) -> Result<i32, DvdError> {
         let mut n: i32 = 0;
         // SAFETY: handle is valid; `title` is bounds-checked by libdvdnav.
         let status =
             unsafe { sys::dvdnav_get_number_of_parts(self.handle, title, &mut n) };
         if status != sys::DVDNAV_STATUS_OK as i32 {
-            return Err(DiscError::OpenFailed {
+            return Err(DvdError::OpenFailed {
                 path: std::path::PathBuf::new(),
                 reason: format!(
                     "dvdnav_get_number_of_parts({title}) returned {status}"
@@ -231,12 +231,12 @@ impl DvdNav {
     /// Start playback at title `title` (1-based per libdvdnav's
     /// numbering, NOT necessarily the same as libdvdread's `tt_srpt`
     /// index).
-    pub fn title_play(&mut self, title: i32) -> Result<(), DiscError> {
+    pub fn title_play(&mut self, title: i32) -> Result<(), DvdError> {
         log::info!("dvdnav_title_play({title})");
         // SAFETY: handle is valid; libdvdnav bounds-checks `title`.
         let status = unsafe { sys::dvdnav_title_play(self.handle, title) };
         if status != sys::DVDNAV_STATUS_OK as i32 {
-            return Err(DiscError::OpenFailed {
+            return Err(DvdError::OpenFailed {
                 path: std::path::PathBuf::new(),
                 reason: format!("dvdnav_title_play({title}) returned {status}"),
             });
@@ -248,7 +248,7 @@ impl DvdNav {
     /// Returns `(title, part)`, both 1-based. Title `0` means the
     /// first-play PGC (intro / menus); the caller should treat that
     /// as "not in a content title yet."
-    pub fn current_title_part(&self) -> Result<(i32, i32), DiscError> {
+    pub fn current_title_part(&self) -> Result<(i32, i32), DvdError> {
         let mut title: i32 = 0;
         let mut part: i32 = 0;
         // SAFETY: handle is valid; both out-pointers are non-null.
@@ -256,7 +256,7 @@ impl DvdNav {
             sys::dvdnav_current_title_info(self.handle, &mut title, &mut part)
         };
         if status != sys::DVDNAV_STATUS_OK as i32 {
-            return Err(DiscError::OpenFailed {
+            return Err(DvdError::OpenFailed {
                 path: std::path::PathBuf::new(),
                 reason: format!("dvdnav_current_title_info returned {status}"),
             });
@@ -267,7 +267,7 @@ impl DvdNav {
     /// Query the current `(title, pgcn, pgn)` libdvdnav is playing
     /// back — all 1-based. The PGC number is what we need to look up
     /// cell metadata via [`crate::CellLookup`].
-    pub fn current_title_program(&self) -> Result<(i32, i32, i32), DiscError> {
+    pub fn current_title_program(&self) -> Result<(i32, i32, i32), DvdError> {
         let mut title: i32 = 0;
         let mut pgcn: i32 = 0;
         let mut pgn: i32 = 0;
@@ -278,7 +278,7 @@ impl DvdNav {
             )
         };
         if status != sys::DVDNAV_STATUS_OK as i32 {
-            return Err(DiscError::OpenFailed {
+            return Err(DvdError::OpenFailed {
                 path: std::path::PathBuf::new(),
                 reason: format!(
                     "dvdnav_current_title_program returned {status}"
@@ -293,7 +293,7 @@ impl DvdNav {
     /// Fills the shared 2048-byte buffer with either sector data (for
     /// `BLOCK_OK`) or the event payload struct (for other event
     /// codes), then returns a [`NavEvent`] describing what was emitted.
-    pub fn next_block(&mut self) -> Result<NavEvent<'_>, DiscError> {
+    pub fn next_block(&mut self) -> Result<NavEvent<'_>, DvdError> {
         let mut event: i32 = 0;
         let mut len: i32 = 0;
         // SAFETY: `self.buf` is 2048 bytes; libdvdnav writes up to
@@ -309,7 +309,7 @@ impl DvdNav {
         if status != sys::DVDNAV_STATUS_OK as i32 {
             // Fetch libdvdnav's error string for diagnostics.
             let err_str = self.last_error();
-            return Err(DiscError::ReadFailed {
+            return Err(DvdError::ReadFailed {
                 offset: 0,
                 count: 1,
                 ret: status,
@@ -381,11 +381,11 @@ impl DvdNav {
 
     /// Acknowledge a `StillFrame` event and resume — without this
     /// libdvdnav stalls indefinitely on still cells.
-    pub fn still_skip(&mut self) -> Result<(), DiscError> {
+    pub fn still_skip(&mut self) -> Result<(), DvdError> {
         // SAFETY: handle is valid.
         let status = unsafe { sys::dvdnav_still_skip(self.handle) };
         if status != sys::DVDNAV_STATUS_OK as i32 {
-            return Err(DiscError::ReadFailed {
+            return Err(DvdError::ReadFailed {
                 offset: 0,
                 count: 0,
                 ret: status,
@@ -395,11 +395,11 @@ impl DvdNav {
     }
 
     /// Acknowledge a `Wait` event and resume.
-    pub fn wait_skip(&mut self) -> Result<(), DiscError> {
+    pub fn wait_skip(&mut self) -> Result<(), DvdError> {
         // SAFETY: handle is valid.
         let status = unsafe { sys::dvdnav_wait_skip(self.handle) };
         if status != sys::DVDNAV_STATUS_OK as i32 {
-            return Err(DiscError::ReadFailed {
+            return Err(DvdError::ReadFailed {
                 offset: 0,
                 count: 0,
                 ret: status,
@@ -411,11 +411,11 @@ impl DvdNav {
     /// Stop navigation. Optional — `Drop` will close the handle either
     /// way — but calling this explicitly lets libdvdnav clean up
     /// internal state before close.
-    pub fn stop(&mut self) -> Result<(), DiscError> {
+    pub fn stop(&mut self) -> Result<(), DvdError> {
         // SAFETY: handle is valid.
         let status = unsafe { sys::dvdnav_stop(self.handle) };
         if status != sys::DVDNAV_STATUS_OK as i32 {
-            return Err(DiscError::ReadFailed {
+            return Err(DvdError::ReadFailed {
                 offset: 0,
                 count: 0,
                 ret: status,
@@ -462,13 +462,13 @@ fn cstring_from_path(path: &Path) -> Result<CString, ()> {
 }
 
 /// Small ergonomic extension to attach an additional context string to
-/// an existing `DiscError`. Kept private to this module.
+/// an existing `DvdError`. Kept private to this module.
 trait ErrorContextExt {
     fn also_context(self, ctx: String) -> Self;
 }
-impl ErrorContextExt for DiscError {
+impl ErrorContextExt for DvdError {
     fn also_context(self, _ctx: String) -> Self {
-        // DiscError variants already carry their own structured fields;
+        // DvdError variants already carry their own structured fields;
         // we don't have a generic context attachment point. Return self
         // as-is. Future work could add a Wrapped { inner, ctx } variant.
         self

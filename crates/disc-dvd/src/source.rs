@@ -6,7 +6,9 @@
 
 use std::path::Path;
 
-use disc_core::{DiscError, DiscSource, DiscType};
+use disc_core::{DiscSource, DiscType};
+
+use crate::DvdError;
 
 use crate::DvdReader;
 
@@ -17,7 +19,7 @@ pub struct DvdSource {
 impl DvdSource {
     /// Open a DVD-Video source at the given path. Delegates to
     /// [`DvdReader::open`].
-    pub fn open(path: &Path) -> Result<Self, DiscError> {
+    pub fn open(path: &Path) -> Result<Self, DvdError> {
         Ok(Self {
             reader: DvdReader::open(path)?,
         })

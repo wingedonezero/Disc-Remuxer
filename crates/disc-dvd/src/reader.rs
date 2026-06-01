@@ -3,7 +3,7 @@
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 
-use disc_core::DiscError;
+use crate::DvdError;
 use libdvdread_sys as sys;
 
 /// An open DVD handle. Holds the libdvdread reader pointer; closes it on
@@ -27,9 +27,9 @@ impl DvdReader {
     /// * a block device (e.g. `/dev/sr0`).
     ///
     /// libdvdread auto-detects which case applies.
-    pub fn open(path: &Path) -> Result<Self, DiscError> {
+    pub fn open(path: &Path) -> Result<Self, DvdError> {
         let c_path =
-            cstring_from_path(path).map_err(|()| DiscError::InvalidPath)?;
+            cstring_from_path(path).map_err(|()| DvdError::InvalidPath)?;
 
         log::info!("DVDOpen path={}", path.display());
         // SAFETY: `c_path` lives for the duration of this call; `DVDOpen`
@@ -37,7 +37,7 @@ impl DvdReader {
         let handle = unsafe { sys::DVDOpen(c_path.as_ptr()) };
 
         if handle.is_null() {
-            return Err(DiscError::OpenFailed {
+            return Err(DvdError::OpenFailed {
                 path: path.to_path_buf(),
                 reason: "libdvdread DVDOpen() returned NULL".into(),
             });

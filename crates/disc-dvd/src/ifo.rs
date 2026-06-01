@@ -18,7 +18,7 @@
 use std::marker::PhantomData;
 use std::slice;
 
-use disc_core::DiscError;
+use crate::DvdError;
 use libdvdread_sys as sys;
 
 use crate::reader::DvdReader;
@@ -68,7 +68,7 @@ pub struct IfoHandle<'r> {
 
 impl<'r> IfoHandle<'r> {
     /// Open an IFO. Returns `IfoOpenFailed` if libdvdread can't parse it.
-    pub fn open(reader: &'r DvdReader, kind: IfoKind) -> Result<Self, DiscError> {
+    pub fn open(reader: &'r DvdReader, kind: IfoKind) -> Result<Self, DvdError> {
         let ifo_nr = kind.as_ifo_nr();
         log::debug!("ifoOpen ifo_nr={ifo_nr}");
         // SAFETY: `reader.raw()` is valid for the lifetime `'r`; `ifoOpen`
@@ -78,7 +78,7 @@ impl<'r> IfoHandle<'r> {
         let handle = unsafe { sys::ifoOpen(reader.raw(), ifo_nr as i32) };
 
         if handle.is_null() {
-            return Err(DiscError::IfoOpenFailed { ifo_nr });
+            return Err(DvdError::IfoOpenFailed { ifo_nr });
         }
 
         log::debug!("ifoOpen ok ifo_nr={ifo_nr} handle={handle:p}");

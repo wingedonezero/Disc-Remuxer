@@ -279,11 +279,13 @@ dependencies = [
 name = "disc-dvd"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "disc-core",
  "libdvdcss-sys",
  "libdvdnav-sys",
  "libdvdread-sys",
  "log",
+ "sha2",
  "thiserror",
 ]
 

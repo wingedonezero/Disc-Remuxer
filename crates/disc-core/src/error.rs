@@ -1,9 +1,10 @@
-//! Common error type returned by every backend.
+//! Common error type returned at the cross-format boundary.
 //!
-//! Backends can carry their own internal errors and convert into `DiscError`
-//! at the public boundary via the `OpenFailed { reason }` / `BackendError`
-//! variants. The CLI / future bindings only need to handle these top-level
-//! variants.
+//! `disc-core` carries no format-specific concepts. Each backend
+//! (`disc-dvd`, future `disc-bd` / `disc-uhd`) defines its own internal
+//! error type (e.g. `disc_dvd::DvdError`) and converts into `DiscError` at
+//! the public boundary via the `Backend` variant. The CLI / future bindings
+//! only need to handle these top-level variants.
 
 use std::io;
 use std::path::PathBuf;
@@ -14,41 +15,19 @@ pub enum DiscError {
     #[error("path does not exist: {0}")]
     PathNotFound(PathBuf),
 
-    #[error("could not open disc at {path}: {reason}")]
-    OpenFailed { path: PathBuf, reason: String },
-
     #[error("disc type at {0} is not recognized (no VIDEO_TS/, BDMV/, or recognized image found)")]
     UnknownDiscType(PathBuf),
 
-    #[error("IFO {ifo_nr} could not be opened (libdvdread returned NULL)")]
-    IfoOpenFailed { ifo_nr: u32 },
-
-    #[error("could not open file: vts={vts_nr} domain={domain} ({reason})")]
-    FileOpenFailed {
-        vts_nr: u32,
-        domain: &'static str,
-        reason: String,
-    },
-
-    #[error("sector read out of range: offset={offset} count={count} total_blocks={total}")]
-    ReadOutOfRange {
-        offset: u32,
-        count: u32,
-        total: u32,
-    },
-
-    #[error("sector read failed: offset={offset} count={count} (libdvdread returned {ret})")]
-    ReadFailed {
-        offset: u32,
-        count: u32,
-        ret: i32,
-    },
-
-    #[error("invalid path: contains interior NUL byte")]
-    InvalidPath,
-
     #[error("requested feature not yet implemented: {0}")]
     Unsupported(&'static str),
+
+    /// A backend's internal error, surfaced at the format-agnostic boundary.
+    /// Backends construct this via their own `From<XxxError> for DiscError`.
+    #[error("backend error: {source}")]
+    Backend {
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
 
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
