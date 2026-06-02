@@ -126,7 +126,7 @@ fn build_title(
         order,
         backend_stream_id: 0,
         codec: "mpeg2".into(),
-        language: "und".into(),
+        language: None,
         channels: 0,
         enabled: true,
     });
@@ -140,7 +140,7 @@ fn build_title(
             order,
             backend_stream_id: u32::try_from(i).unwrap_or(u32::MAX),
             codec: audio_codec_str(attr.audio_format()).into(),
-            language: iso639_3(lang_code),
+            language: iso639_opt(lang_code),
             channels,
             enabled: true,
         });
@@ -154,7 +154,7 @@ fn build_title(
             order,
             backend_stream_id: u32::try_from(i).unwrap_or(u32::MAX),
             codec: "vobsub".into(),
-            language: iso639_3(lang_code),
+            language: iso639_opt(lang_code),
             channels: 0,
             enabled: true,
         });
@@ -190,45 +190,47 @@ fn audio_codec_str(fmt: u8) -> &'static str {
     }
 }
 
-/// Decode a 16-bit packed ISO-639 language code into a 3-letter lowercase
-/// string (`"und"` when absent / non-alphabetic). Common 2-letter codes are
-/// mapped to their 3-letter (639-2/T) equivalents. Mirrors
+/// Decode a 16-bit packed ISO-639 language code into `Some(3-letter)`, or
+/// `None` when the track is untagged (`raw == 0` or non-alphabetic). Common
+/// 2-letter codes map to their 639-2/T equivalents; an unrecognised but
+/// valid 2-letter code is returned as-is (it is still a real tag). Mirrors
 /// `ops::rip_title::decode_language_code` (shared home is a future cleanup).
-fn iso639_3(raw: u16) -> String {
+fn iso639_opt(raw: u16) -> Option<String> {
     if raw == 0 {
-        return "und".into();
+        return None;
     }
     let lo = (raw & 0xFF) as u8;
     let hi = (raw >> 8) as u8;
     if !hi.is_ascii_alphabetic() || !lo.is_ascii_alphabetic() {
-        return "und".into();
+        return None;
     }
     let two = [hi.to_ascii_lowercase(), lo.to_ascii_lowercase()];
     let two_str = std::str::from_utf8(&two).unwrap_or("un");
-    match two_str {
-        "en" => "eng".into(),
-        "fr" => "fre".into(),
-        "es" => "spa".into(),
-        "de" => "ger".into(),
-        "it" => "ita".into(),
-        "ja" => "jpn".into(),
-        "zh" => "chi".into(),
-        "ko" => "kor".into(),
-        "pt" => "por".into(),
-        "ru" => "rus".into(),
-        "nl" => "dut".into(),
-        "sv" => "swe".into(),
-        "fi" => "fin".into(),
-        "no" => "nor".into(),
-        "da" => "dan".into(),
-        "pl" => "pol".into(),
-        "cs" => "cze".into(),
-        "ar" => "ara".into(),
-        "he" => "heb".into(),
-        "hi" => "hin".into(),
-        "tr" => "tur".into(),
-        "el" => "gre".into(),
-        "hu" => "hun".into(),
-        _ => two_str.into(),
-    }
+    let three = match two_str {
+        "en" => "eng",
+        "fr" => "fre",
+        "es" => "spa",
+        "de" => "ger",
+        "it" => "ita",
+        "ja" => "jpn",
+        "zh" => "chi",
+        "ko" => "kor",
+        "pt" => "por",
+        "ru" => "rus",
+        "nl" => "dut",
+        "sv" => "swe",
+        "fi" => "fin",
+        "no" => "nor",
+        "da" => "dan",
+        "pl" => "pol",
+        "cs" => "cze",
+        "ar" => "ara",
+        "he" => "heb",
+        "hi" => "hin",
+        "tr" => "tur",
+        "el" => "gre",
+        "hu" => "hun",
+        other => return Some(other.to_string()),
+    };
+    Some(three.to_string())
 }

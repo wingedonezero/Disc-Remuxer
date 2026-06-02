@@ -38,14 +38,13 @@ pub enum TrackSelector {
 }
 
 impl TrackSelector {
-    fn selects(&self, position: usize, language: &str) -> bool {
+    fn selects(&self, position: usize, language: Option<&str>) -> bool {
         match self {
             Self::All => true,
             Self::None => false,
             Self::Indices(idxs) => idxs.contains(&position),
-            Self::Languages(langs) => {
-                langs.iter().any(|l| l.eq_ignore_ascii_case(language))
-            }
+            Self::Languages(langs) => language
+                .is_some_and(|l| langs.iter().any(|x| x.eq_ignore_ascii_case(l))),
         }
     }
 }
@@ -90,13 +89,40 @@ impl Selection {
 
 /// Set the `enabled` flag on every track of `kind` per `sel`, counting
 /// positions within the kind (0-based).
+///
+/// Language include-only is *lenient*: if a `Languages` selector matches no
+/// track of a kind the title actually has (e.g. an untagged disc where
+/// `--audio eng` matches nothing), fall back to enabling all of that kind
+/// rather than silently dropping it. Index selection is the precise path.
 fn apply_kind(tracks: &mut [Track], kind: TrackKind, sel: &TrackSelector) {
+    if let TrackSelector::Languages(langs) = sel {
+        let present = tracks.iter().any(|t| t.kind == kind);
+        let any_match = tracks.iter().any(|t| {
+            t.kind == kind
+                && t.language
+                    .as_deref()
+                    .is_some_and(|l| langs.iter().any(|x| x.eq_ignore_ascii_case(l)))
+        });
+        if present && !any_match {
+            log::warn!(
+                target: "disc_check",
+                "selection: {} language filter {langs:?} matched no track — including all {}(s)",
+                kind.as_str(),
+                kind.as_str(),
+            );
+            for track in tracks.iter_mut().filter(|t| t.kind == kind) {
+                track.enabled = true;
+            }
+            return;
+        }
+    }
+
     let mut position = 0usize;
     for track in tracks.iter_mut() {
         if track.kind != kind {
             continue;
         }
-        track.enabled = sel.selects(position, &track.language);
+        track.enabled = sel.selects(position, track.language.as_deref());
         position += 1;
     }
 }
@@ -116,13 +142,13 @@ mod tests {
     use crate::model::{Title, Track, TrackKind};
     use std::time::Duration;
 
-    fn track(kind: TrackKind, order: u32, lang: &str) -> Track {
+    fn track(kind: TrackKind, order: u32, lang: Option<&str>) -> Track {
         Track {
             kind,
             order,
             backend_stream_id: order,
             codec: "x".into(),
-            language: lang.into(),
+            language: lang.map(str::to_string),
             channels: 0,
             enabled: false,
         }
@@ -135,10 +161,10 @@ mod tests {
             duration: Duration::from_secs(60),
             chapter_count: 1,
             tracks: vec![
-                track(TrackKind::Video, 1, "und"),
-                track(TrackKind::Audio, 2, "eng"),
-                track(TrackKind::Audio, 3, "fre"),
-                track(TrackKind::Subtitle, 4, "eng"),
+                track(TrackKind::Video, 1, None),
+                track(TrackKind::Audio, 2, Some("eng")),
+                track(TrackKind::Audio, 3, Some("fre")),
+                track(TrackKind::Subtitle, 4, Some("eng")),
             ],
             enabled: false,
             skip_reason: None,
@@ -212,6 +238,56 @@ mod tests {
                 .filter(|tr| tr.kind == TrackKind::Subtitle && tr.enabled)
                 .count(),
             0
+        );
+    }
+
+    #[test]
+    fn audio_language_no_match_falls_back_to_all() {
+        let mut c = sample();
+        let sel = Selection {
+            // no Spanish audio on the sample → lenient fallback to all audio
+            audio: TrackSelector::Languages(vec!["spa".into()]),
+            ..Default::default()
+        };
+        sel.apply(&mut c);
+        let enabled_audio = c.titles[0]
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Audio && t.enabled)
+            .count();
+        assert_eq!(enabled_audio, 2);
+    }
+
+    #[test]
+    fn untagged_audio_not_matched_by_named_language() {
+        // A title whose only audio is untagged (None): a named-language
+        // filter matches nothing, so the fallback keeps it.
+        let mut c = TitleCollection {
+            titles: vec![Title {
+                index: 0,
+                backend_title_id: 1,
+                duration: Duration::from_secs(60),
+                chapter_count: 1,
+                tracks: vec![
+                    track(TrackKind::Video, 1, None),
+                    track(TrackKind::Audio, 2, None),
+                ],
+                enabled: false,
+                skip_reason: None,
+            }],
+        };
+        let sel = Selection {
+            audio: TrackSelector::Languages(vec!["eng".into()]),
+            ..Default::default()
+        };
+        sel.apply(&mut c);
+        assert_eq!(
+            c.titles[0]
+                .tracks
+                .iter()
+                .filter(|t| t.kind == TrackKind::Audio && t.enabled)
+                .count(),
+            1
         );
     }
 }

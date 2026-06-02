@@ -55,6 +55,7 @@ mod dump_sectors;
 mod dump_title;
 mod dump_title_nav;
 mod info;
+mod list;
 mod logging;
 mod rip;
 mod rip_title;
@@ -76,6 +77,14 @@ struct Cli {
 enum Command {
     /// Open a disc and print its metadata + title list.
     Info {
+        /// Path to a disc, ISO image, VIDEO_TS directory, or device node.
+        path: PathBuf,
+    },
+
+    /// Print the uniform title/track tree the `rip` selectors operate on
+    /// (the index map: per-title index, per-track audio/subtitle indices,
+    /// codec, language). What the future UI displays + checkmarks.
+    List {
         /// Path to a disc, ISO image, VIDEO_TS directory, or device node.
         path: PathBuf,
     },
@@ -123,6 +132,9 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Info { path } => {
             info::run(&path).with_context(|| format!("info {}", path.display()))
+        }
+        Command::List { path } => {
+            list::run(&path).with_context(|| format!("list {}", path.display()))
         }
         Command::DumpSectors(args) => {
             let path_disp = args.path.display().to_string();

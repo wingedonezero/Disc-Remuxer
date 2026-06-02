@@ -47,9 +47,12 @@ pub struct Track {
     /// Short codec id, e.g. `"ac3"`, `"dts"`, `"lpcm"`, `"mpeg2"`,
     /// `"vobsub"`.
     pub codec: String,
-    /// 3-letter ISO-639 language code (`"und"` when unknown / not
-    /// applicable, e.g. DVD video).
-    pub language: String,
+    /// ISO-639 language: `Some("eng")` etc., or `None` when the track
+    /// carries no language tag (common for DVD video and untagged audio).
+    /// Selection never *routes* by this — it's metadata for display and the
+    /// optional language filter; the stable identity is `backend_stream_id`
+    /// / track order.
+    pub language: Option<String>,
     /// Channel count for audio tracks; `0` for video / subtitle.
     pub channels: u8,
     /// Whether this track is selected for output.
