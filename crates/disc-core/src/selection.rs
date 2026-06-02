@@ -10,7 +10,9 @@
 //! `--audio 0` selects the first audio track regardless of how many video
 //! or subtitle tracks precede it in [`Title::tracks`].
 
-use crate::model::{Title, TitleCollection, Track, TrackKind};
+use std::time::Duration;
+
+use crate::model::{SkipReason, Title, TitleCollection, Track, TrackKind};
 
 /// Which titles to select.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -66,7 +68,11 @@ impl Selection {
     pub fn apply(&self, collection: &mut TitleCollection) {
         for title in &mut collection.titles {
             let title_enabled = match &self.titles {
-                TitleSelector::All => true,
+                // `All` = every title that survived the default filters
+                // (min-length etc.) — i.e. not flagged with a skip_reason.
+                TitleSelector::All => title.skip_reason.is_none(),
+                // An explicit index list overrides the default filters: the
+                // user asked for these titles by number, skipped or not.
                 TitleSelector::Indices(idxs) => idxs.contains(&title.index),
             };
             title.enabled = title_enabled;
@@ -136,10 +142,26 @@ pub fn enable_all(title: &mut Title) {
     }
 }
 
+/// Default filter: flag every title shorter than `min` with
+/// [`SkipReason::MinLength`].
+///
+/// This *unselects by default* — under [`TitleSelector::All`] a flagged
+/// title is not enabled — but it never **removes** anything: the title
+/// stays in the collection (visible in `list`) and an explicit
+/// [`TitleSelector::Indices`] still selects it. Only titles not already
+/// flagged (for another reason) are marked.
+pub fn mark_min_length(collection: &mut TitleCollection, min: Duration) {
+    for title in &mut collection.titles {
+        if title.skip_reason.is_none() && title.duration < min {
+            title.skip_reason = Some(SkipReason::MinLength);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Title, Track, TrackKind};
+    use crate::model::{SkipReason, Title, Track, TrackKind};
     use std::time::Duration;
 
     fn track(kind: TrackKind, order: u32, lang: Option<&str>) -> Track {
@@ -288,6 +310,31 @@ mod tests {
                 .filter(|t| t.kind == TrackKind::Audio && t.enabled)
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn min_length_unselects_but_keeps_titles() {
+        let mut c = sample(); // 3 titles, 60s each
+        mark_min_length(&mut c, Duration::from_secs(120));
+        // flagged MinLength, but still present (never removed)
+        assert_eq!(c.len(), 3);
+        assert!(c
+            .titles
+            .iter()
+            .all(|t| t.skip_reason == Some(SkipReason::MinLength)));
+        // default (All) selects none of the short titles
+        Selection::default().apply(&mut c);
+        assert_eq!(c.enabled_titles().count(), 0);
+        // but an explicit index overrides the min-length default
+        let sel = Selection {
+            titles: TitleSelector::Indices(vec![1]),
+            ..Default::default()
+        };
+        sel.apply(&mut c);
+        assert_eq!(
+            c.enabled_titles().map(|t| t.index).collect::<Vec<_>>(),
+            vec![1]
         );
     }
 }

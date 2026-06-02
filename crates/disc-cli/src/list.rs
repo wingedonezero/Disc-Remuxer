@@ -18,7 +18,7 @@ use disc_core::model::TrackKind;
 use disc_core::{detect_disc_type, DiscBackend, DiscType, Session, Title};
 use disc_dvd::DvdBackend;
 
-pub fn run(path: &Path) -> Result<()> {
+pub fn run(path: &Path, min_length: u64) -> Result<()> {
     let disc_type = detect_disc_type(path).context("detect_disc_type")?;
     let backend: Box<dyn DiscBackend> = match disc_type {
         DiscType::Dvd => {
@@ -27,7 +27,15 @@ pub fn run(path: &Path) -> Result<()> {
         other => bail!("`list` does not support {} yet", other.as_str()),
     };
 
-    let session = Session::new(backend).context("enumerating titles")?;
+    let mut session = Session::new(backend).context("enumerating titles")?;
+    // Mark (don't remove) titles below the threshold so the listing shows
+    // the default selection state, same as `rip`.
+    if min_length > 0 {
+        disc_core::mark_min_length(
+            session.collection_mut(),
+            std::time::Duration::from_secs(min_length),
+        );
+    }
     let collection = session.collection();
 
     println!(

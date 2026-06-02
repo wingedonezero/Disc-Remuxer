@@ -87,6 +87,12 @@ enum Command {
     List {
         /// Path to a disc, ISO image, VIDEO_TS directory, or device node.
         path: PathBuf,
+
+        /// Minimum title length, seconds — titles below this are shown
+        /// as `[skipped: MinLength]`. `0` = mark none. Default matches
+        /// makemkvcon (120).
+        #[arg(long, default_value_t = 120)]
+        min_length: u64,
     },
 
     /// Read raw sectors from a VOB stream and write them to disk.
@@ -133,8 +139,9 @@ fn main() -> Result<()> {
         Command::Info { path } => {
             info::run(&path).with_context(|| format!("info {}", path.display()))
         }
-        Command::List { path } => {
-            list::run(&path).with_context(|| format!("list {}", path.display()))
+        Command::List { path, min_length } => {
+            list::run(&path, min_length)
+                .with_context(|| format!("list {}", path.display()))
         }
         Command::DumpSectors(args) => {
             let path_disp = args.path.display().to_string();

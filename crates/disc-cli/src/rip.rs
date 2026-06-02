@@ -47,6 +47,12 @@ pub struct RipArgs {
     #[arg(long, default_value = "all")]
     pub subtitle: String,
 
+    /// Minimum title length, in seconds. Shorter titles are *unselected by
+    /// default* (still listed + selectable via --title); `0` = no minimum.
+    /// Matches makemkvcon's default of 120.
+    #[arg(long, default_value_t = 120)]
+    pub min_length: u64,
+
     /// Safety cap on per-title event iterations.
     #[arg(long, default_value_t = 100_000_000)]
     pub max_events: u64,
@@ -63,6 +69,14 @@ pub fn run(args: RipArgs) -> Result<()> {
 
     let backend = DvdBackend::open(&args.disc).context("DvdBackend::open")?;
     let mut collection = backend.enumerate().context("enumerate titles")?;
+
+    // Default filter: unselect (don't remove) titles below the threshold.
+    if args.min_length > 0 {
+        disc_core::mark_min_length(
+            &mut collection,
+            std::time::Duration::from_secs(args.min_length),
+        );
+    }
 
     let selection = Selection {
         titles: parse_title_selector(&args.title)?,
@@ -82,9 +96,10 @@ pub fn run(args: RipArgs) -> Result<()> {
     }
 
     log::info!(
-        "rip: {} of {} title(s) selected -> {}",
+        "rip: {} of {} title(s) selected (min-length {}s) -> {}",
         enabled.len(),
         collection.len(),
+        args.min_length,
         args.out_dir.display(),
     );
     for t in &enabled {
