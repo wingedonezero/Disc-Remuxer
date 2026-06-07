@@ -27,26 +27,31 @@
 //! `info!` for major lifecycle events (open/close), `debug!` for IFO
 //! reads, `trace!` for byte-level activity once we add demuxing.
 
+pub mod backend;
 pub mod cell;
 pub mod chapters;
 pub mod css;
 pub mod decode;
 pub mod demux;
+pub mod error;
 pub mod file;
 pub mod ifo;
 pub mod mpegps;
 pub mod nav;
 pub mod nav_cells;
+pub mod ops;
 pub mod reader;
 pub mod source;
 pub mod video_es;
 pub mod vobsub;
 
+pub use backend::DvdBackend;
 pub use cell::{
     cells_in_pgc, check_cell_vs_c_adt, check_cell_walk, find_cell_adr, CellInfo,
 };
 pub use css::CssProbe;
 pub use demux::{DemuxError, DemuxSummary, Demuxer, MagicCheck, StreamKey, StreamStats};
+pub use error::DvdError;
 pub use file::{DvdFile, ReadDomain, BLOCK_SIZE};
 pub use ifo::{IfoHandle, IfoKind};
 pub use mpegps::{scan_sector, stream_kind, MpegPsError, PackHeader, PesPacket, StreamKind};

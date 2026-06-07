@@ -15,6 +15,8 @@ libdvdnav-sys = { path = "../libdvdnav-sys" }
 
 log.workspace = true
 thiserror.workspace = true
+anyhow = "1"
+sha2 = "0.10"
 
 [lints]
 workspace = true

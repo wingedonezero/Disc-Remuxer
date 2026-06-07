@@ -1,18 +1,18 @@
-//! `disc-remuxer dump-title <path> --title N --out file.vob` — walk the
-//! cells of a DVD title's PGC in playback order and write the
-//! concatenated `TITLE_VOBS` sectors out as a single file.
+//! `dump-title` operation — walk the cells of a DVD title's PGC in
+//! playback order and write the concatenated `TITLE_VOBS` sectors out as
+//! a single file.
 //!
 //! Title resolution mirrors the libdvdread convention:
 //!
 //! 1. VMG `tt_srpt[--title - 1]` → `(title_set_nr, vts_ttn)` for the
-//!    title number the user passed.
+//!    title number the caller passed.
 //! 2. VTS IFO `vts_ptt_srpt.title[vts_ttn - 1]` → the title's chapter
 //!    (PTT) array; chapter 1's `pgcn` selects the title's main PGC.
 //! 3. VTS `vts_pgcit.pgci_srp[pgcn - 1].pgc` → the `pgc_t` itself.
-//! 4. Walk `pgc.cell_playback[0..nr_of_cells]` via [`disc_dvd::cells_in_pgc`].
+//! 4. Walk `pgc.cell_playback[0..nr_of_cells]` via [`crate::cells_in_pgc`].
 //!
-//! For each cell the command runs the per-cell invariant checks from
-//! [`disc_dvd::check_cell_walk`], reads `cell.first_sector..=cell.last_sector`
+//! For each cell the op runs the per-cell invariant checks from
+//! [`crate::check_cell_walk`], reads `cell.first_sector..=cell.last_sector`
 //! from the title's `TITLE_VOBS` stream via [`DvdFile::read_blocks`], and
 //! writes the bytes to the output file. A SHA-256 of the concatenated
 //! stream is logged at the end so the result can be byte-compared against
@@ -30,64 +30,44 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
-use clap::Args;
-use disc_core::{check, check_eq, detect_disc_type, DiscType};
-use disc_dvd::cell::{
+use disc_core::{check, check_eq};
+use sha2::{Digest, Sha256};
+
+use crate::cell::{
     cells_in_pgc, check_cell_vs_c_adt, check_cell_walk, dvd_time_seconds, CellInfo,
 };
-use disc_dvd::ifo::{format_dvd_time, IfoHandle, IfoKind};
-use disc_dvd::{DvdFile, DvdSource, ReadDomain, BLOCK_SIZE};
-use sha2::{Digest, Sha256};
+use crate::ifo::{format_dvd_time, IfoHandle, IfoKind};
+use crate::{DvdFile, DvdReader, ReadDomain, BLOCK_SIZE};
 
 /// Cap on a single `DVDReadBlocks` call. 512 blocks = 1 MiB; small
 /// enough to keep peak memory low even for large cells, big enough to
 /// amortise per-call overhead.
 const READ_CHUNK_BLOCKS: u32 = 512;
 
-#[derive(Args, Debug)]
-pub struct DumpTitleArgs {
-    /// Path to a disc, ISO image, VIDEO_TS directory, or device node.
-    pub path: PathBuf,
-
-    /// 1-based title number to dump (as it appears in `tt_srpt`).
-    #[arg(long)]
+#[derive(Debug)]
+pub struct Params {
     pub title: u8,
-
-    /// Output file path. Existing files are overwritten.
-    #[arg(long)]
     pub out: PathBuf,
 }
 
-pub fn run(args: DumpTitleArgs) -> Result<()> {
-    if args.title == 0 {
-        return Err(anyhow!("--title must be >= 1 (1-based per tt_srpt)"));
-    }
+#[derive(Debug)]
+pub struct Report {
+    pub cells: usize,
+    pub total_bytes: u64,
+    pub total_blocks: u64,
+    pub sha256: String,
+}
 
-    let disc_type = detect_disc_type(&args.path).context("detect_disc_type")?;
-    if !matches!(disc_type, DiscType::Dvd) {
-        return Err(anyhow!(
-            "dump-title currently supports DVD only; detected {}",
-            disc_type.as_str()
-        ));
-    }
-
-    log::info!(
-        "dump-title path={} title={} out={}",
-        args.path.display(),
-        args.title,
-        args.out.display(),
-    );
-
-    let source = DvdSource::open(&args.path).context("DvdSource::open")?;
-    let vmg = IfoHandle::open(source.reader(), IfoKind::Vmg)
+pub fn run(reader: &DvdReader, params: Params) -> Result<Report> {
+    let vmg = IfoHandle::open(reader, IfoKind::Vmg)
         .context("opening VMG IFO")?;
 
     let titles = vmg.titles();
-    let title_idx = usize::from(args.title - 1);
+    let title_idx = usize::from(params.title - 1);
     let title = titles.get(title_idx).ok_or_else(|| {
         anyhow!(
             "--title {} out of range (disc has {} titles in tt_srpt)",
-            args.title,
+            params.title,
             titles.len()
         )
     })?;
@@ -97,18 +77,18 @@ pub fn run(args: DumpTitleArgs) -> Result<()> {
     let nr_of_angles: u8 = { title.nr_of_angles };
     log::info!(
         "title {}: title_set_nr={title_set_nr} vts_ttn={vts_ttn} nr_of_ptts={nr_of_ptts} nr_of_angles={nr_of_angles}",
-        args.title,
+        params.title,
     );
 
     if nr_of_angles > 1 {
         log::warn!(
             "title {} has nr_of_angles={nr_of_angles} — the simple cell walk only emits the IFO-order cells; multi-angle titles need libdvdnav navigation (roadmap)",
-            args.title,
+            params.title,
         );
     }
 
     let vts_ifo =
-        IfoHandle::open(source.reader(), IfoKind::Vts(u32::from(title_set_nr)))
+        IfoHandle::open(reader, IfoKind::Vts(u32::from(title_set_nr)))
             .with_context(|| format!("opening VTS_{title_set_nr:02}_0.IFO"))?;
 
     // PTT chapter table → first chapter's pgcn picks the main PGC.
@@ -116,14 +96,14 @@ pub fn run(args: DumpTitleArgs) -> Result<()> {
     let first_chapter = chapters.first().ok_or_else(|| {
         anyhow!(
             "title {} has no PTT chapter entries (vts_ttn={vts_ttn}, VTS {title_set_nr})",
-            args.title,
+            params.title,
         )
     })?;
     let pgcn: u16 = { first_chapter.pgcn };
     let pgn: u16 = { first_chapter.pgn };
     log::info!(
         "title {} -> chapter 1 -> pgcn={pgcn} pgn={pgn} ({} chapters total)",
-        args.title,
+        params.title,
         chapters.len(),
     );
 
@@ -152,7 +132,7 @@ pub fn run(args: DumpTitleArgs) -> Result<()> {
     // TITLE_VOBS holds the title's MPEG-PS sectors. `vts_nr` is the
     // VTS that owns the title (per `title_set_nr`).
     let title_vobs = DvdFile::open(
-        source.reader(),
+        reader,
         u32::from(title_set_nr),
         ReadDomain::TitleVobs,
     )
@@ -169,7 +149,7 @@ pub fn run(args: DumpTitleArgs) -> Result<()> {
     if cells.is_empty() {
         return Err(anyhow!(
             "PGC for title {} has no cells (nr_of_cells={nr_of_cells}, cell_playback={:p})",
-            args.title,
+            params.title,
             { pgc.cell_playback },
         ));
     }
@@ -188,8 +168,8 @@ pub fn run(args: DumpTitleArgs) -> Result<()> {
     );
 
     let mut writer = BufWriter::new(
-        File::create(&args.out)
-            .with_context(|| format!("creating {}", args.out.display()))?,
+        File::create(&params.out)
+            .with_context(|| format!("creating {}", params.out.display()))?,
     );
 
     let mut hasher = Sha256::new();
@@ -266,7 +246,7 @@ pub fn run(args: DumpTitleArgs) -> Result<()> {
 
             hasher.update(&buf);
             writer.write_all(&buf).with_context(|| {
-                format!("writing cell[{}] chunk to {}", cell.idx, args.out.display())
+                format!("writing cell[{}] chunk to {}", cell.idx, params.out.display())
             })?;
 
             let n = buf.len() as u64;
@@ -320,20 +300,18 @@ pub fn run(args: DumpTitleArgs) -> Result<()> {
     );
 
     let digest = hasher.finalize();
-    log::info!("sha256 = {digest:x}");
+    let sha256 = format!("{digest:x}");
+    log::info!("sha256 = {sha256}");
     log::info!(
         "wrote {total_bytes} bytes ({total_blocks} blocks, {} cells) to {}",
         cells.len(),
-        args.out.display(),
+        params.out.display(),
     );
 
-    println!(
-        "title {}: {} cells, {total_bytes} bytes ({total_blocks} blocks) -> {}",
-        args.title,
-        cells.len(),
-        args.out.display(),
-    );
-    println!("sha256: {digest:x}");
-
-    Ok(())
+    Ok(Report {
+        cells: cells.len(),
+        total_bytes,
+        total_blocks,
+        sha256,
+    })
 }

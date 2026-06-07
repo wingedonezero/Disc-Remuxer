@@ -155,9 +155,20 @@ crates/
 ├── libdvdcss-sys/    FFI bindings — vendored libdvdcss build via meson
 ├── libdvdread-sys/   FFI bindings — vendored libdvdread (linked to libdvdcss)
 ├── libdvdnav-sys/    FFI bindings — vendored libdvdnav
-├── disc-core/        pure-Rust traits + DiscError + DiscType + check::*
-├── disc-dvd/         safe wrappers over libdvdread + libdvdcss + libdvdnav
-└── disc-cli/         the `disc-remuxer` binary (clap, flexi_logger, sha2)
+├── disc-core/        format-agnostic foundation: DiscType + detect, DiscError
+│                     (generic variants + a Backend{source} wrapper), check::*,
+│                     and the uniform selection model — model (TitleCollection/
+│                     Title/Track, each with an `enabled` flag), selection
+│                     (Selection + mark_min_length), backend (DiscBackend trait
+│                     + Session). NO format concepts.
+├── disc-dvd/         all DVD: libdvdread/css/nav wrappers, DvdError, DvdBackend
+│                     (IFO→TitleCollection enumerator), the demuxers
+│                     (demux/video_es/vobsub/mpegps/nav/...), and ops/ — the
+│                     orchestration. ops::rip_title is THE rip pipeline;
+│                     dump_*/demux_*/scan_streams/info are isolated stages.
+└── disc-cli/         thin command triggers (parse args → call a disc-dvd op →
+                      print). src/ top = info/list/rip (user pipeline);
+                      src/dvd/ = `dvd <tool>` diagnostics. (clap, flexi_logger, sha2)
 vendor/
 ├── libdvdread/       git submodule, pinned tag
 ├── libdvdcss/        git submodule, pinned tag
@@ -185,9 +196,13 @@ binary lives at `target/release/disc-remuxer`.
    disc," that becomes a `check!` in our code, logged PASS/FAIL with the
    actual bytes shown. Transparency at every step — not after-the-fact
    debugging.
-5. **Errors propagate via `disc_core::DiscError`** for library code,
-   `anyhow::Result` for the CLI. Each error variant carries enough context
-   (path, offset, count, etc.) to debug from the log alone.
+5. **Errors:** `disc-core` exposes a format-agnostic `DiscError` (generic
+   variants + a `Backend { source }` wrapper). Each backend keeps its own
+   error type — `disc_dvd::DvdError` for the libdvdread/css/nav primitives —
+   and converts to `DiscError::Backend` at the public boundary
+   (`From<DvdError> for DiscError`). The `disc-dvd::ops` orchestration layer
+   and the CLI use `anyhow::Result` (rich `.context`). Every variant / context
+   carries enough detail (path, offset, count, …) to debug from the log alone.
 6. **Job-log support** is built in via `flexi_logger`. CLI subcommands
    that produce output accept `--log-file <path>` (global flag) to mirror
    the structured log into a file with timestamps. Wire this in for any
@@ -388,20 +403,38 @@ output if in doubt.
 
 ### Current CLI surface
 
+**User commands** (format-agnostic — detect disc type, delegate to the backend):
+
 | command | what it does |
 |---|---|
 | `info <path>` | dump everything libdvdread tells us about a DVD |
-| `dump-sectors` | read raw sectors from a VOB stream |
-| `dump-title` | walk PGC cells manually, write a single `.vob` |
-| `dump-title-nav` | same output via libdvdnav (no NV_PCK / sys_header sectors) |
-| `demux-vob` | per-stream split of a `.vob` file (no IFO context) |
-| `demux-title` | per-stream split driven by the manual cell walk |
-| `demux-title-nav` | per-stream split driven by libdvdnav |
-| `scan-streams` | parse a sector stream and report per-stream byte counts |
-| `rip-title` | **MakeMKV-style per-track output**: language tags, delay value, VobSub subs, chapters XML, CC sidecar |
+| `list <path>` | the uniform title/track tree the selectors operate on — per-title index, per-track audio/subtitle index, codec, language (`—` = untagged), `[skipped: MinLength]` marks; `--min-length` (default 120) |
+| `rip --disc <path> --out-dir <dir>` | **the rip pipeline** — MakeMKV-style per-track output (libdvdnav + faithful handlers: user_data strip, VobSub, delay, chapters). Default = all titles ≥ `--min-length` (120s; `0`=all), all tracks in IFO order; narrow with `--title 0,2` / `--audio eng/0/none` / `--subtitle …` |
 
-`rip-title` is the user-facing command. Everything else is plumbing /
-testing.
+`rip` is THE pipeline. Selection is **index-anchored** (`rip --title N` is the
+0-based collection index from `list`; language is a convenience layer that
+falls back to all-of-kind on no match). `rip --title N` replaced the old
+`rip-title`. Min-length **unselects** (marks `SkipReason::MinLength`), never
+removes — short titles stay listed + explicitly selectable.
+
+**DVD diagnostics** — `dvd <tool>` (source under `disc-cli/src/dvd/`). NOT the
+rip pipeline: isolated single stages + the older manual cell-walk, for
+debugging / byte-verification. Always callable; grouped + labelled so they
+don't confuse the base:
+
+| command | what it does |
+|---|---|
+| `dvd dump-sectors` | read raw sectors from a VOB stream (+ CSS) |
+| `dvd scan-streams` | parse a sector stream, report per-stream byte counts |
+| `dvd demux-vob` | per-stream split of a `.vob` file (generic `Demuxer`) |
+| `dvd dump-title` | manual PGC cell-walk → single `.vob` |
+| `dvd demux-title` | per-stream split via the manual cell walk |
+| `dvd dump-title-nav` | dump a title via libdvdnav |
+| `dvd demux-title-nav` | per-stream split via libdvdnav |
+
+The traversal axis (manual cell-walk vs libdvdnav) and MakeMKV's protection
+modes (CellWalk/CellTrim/CellFull) belong as a future `rip` option resolved
+**inside `disc-dvd`**, not as separate commands.
 
 ### Open follow-ups at end of 2026-05-22 session
 

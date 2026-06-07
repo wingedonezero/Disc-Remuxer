@@ -23,7 +23,7 @@
 
 use std::collections::HashMap;
 
-use disc_core::DiscError;
+use crate::DvdError;
 
 use crate::cell::{cells_in_pgc, CellInfo};
 use crate::ifo::{IfoHandle, IfoKind};
@@ -64,7 +64,7 @@ impl CellLookup {
     /// (callers will get `None` from [`Self::get`]). This mirrors how
     /// the demuxer treats unknown discontinuities: defer to the
     /// caller's policy rather than abort the whole rip.
-    pub fn build(reader: &DvdReader) -> Result<Self, DiscError> {
+    pub fn build(reader: &DvdReader) -> Result<Self, DvdError> {
         let vmg = IfoHandle::open(reader, IfoKind::Vmg)?;
         let titles = vmg.titles();
         let mut title_to_vts = Vec::with_capacity(titles.len());

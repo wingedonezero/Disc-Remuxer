@@ -1,5 +1,5 @@
-//! `disc-remuxer rip-title --disc <path> --title N --out-dir <dir>` —
-//! produce MakeMKV-style per-track outputs for one DVD title.
+//! `rip-title` operation — produce MakeMKV-style per-track outputs for
+//! one DVD title.
 //!
 //! Files produced (matching MakeMKV's mkvextract output conventions):
 //!
@@ -23,41 +23,85 @@
 
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{BufWriter, Cursor, Write};
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
-use clap::Args;
-use disc_core::{check, check_eq, check_in_range, detect_disc_type, DiscType};
-use disc_dvd::chapters::write_chapters_xml;
-use disc_dvd::ifo::{audio_attr_t, subp_attr_t, IfoHandle, IfoKind};
-use disc_dvd::mpegps::{scan_sector, stream_kind, PesPacket, StreamKind, SECTOR_SIZE};
-use disc_dvd::nav::{DvdNav, NavEvent};
-use disc_dvd::nav_cells::CellLookup;
-use disc_dvd::video_es::{analyze_video_start, UserDataFilter};
-use disc_dvd::vobsub::{write_idx_file, SubWriter, VobSubEntry};
-use disc_dvd::DvdSource;
+use disc_core::{check, check_eq, check_in_range};
+
+use crate::chapters::write_chapters_xml;
+use crate::ifo::{audio_attr_t, subp_attr_t, IfoHandle, IfoKind};
+use crate::mpegps::{scan_sector, stream_kind, PesPacket, StreamKind};
+use crate::nav::{DvdNav, NavEvent};
+use crate::nav_cells::CellLookup;
+use crate::video_es::{analyze_video_start, UserDataFilter};
+use crate::vobsub::{write_idx_file, SubWriter};
 
 const STILL_LENGTH_INFINITE: u8 = 0xFF;
 
-#[derive(Args, Debug)]
-pub struct RipTitleArgs {
-    /// Path to a disc, ISO image, VIDEO_TS directory, or device node.
-    #[arg(long = "disc")]
-    pub disc: PathBuf,
+/// Which substreams the rip should emit. `None` means "all" — the default,
+/// byte-identical to ripping every track. `Some(list)` restricts output to
+/// those IFO substream indices (audio / subpicture order). Excluded streams
+/// simply get no handler, so their PES are dropped during the walk.
+#[derive(Debug, Default, Clone)]
+pub struct TrackFilter {
+    pub audio: Option<Vec<u32>>,
+    pub subp: Option<Vec<u32>>,
+}
 
-    /// 1-based title number per libdvdnav.
-    #[arg(long)]
+impl TrackFilter {
+    fn audio_enabled(&self, idx: usize) -> bool {
+        let idx = u32::try_from(idx).unwrap_or(u32::MAX);
+        self.audio.as_ref().map_or(true, |v| v.contains(&idx))
+    }
+
+    fn subp_enabled(&self, idx: usize) -> bool {
+        let idx = u32::try_from(idx).unwrap_or(u32::MAX);
+        self.subp.as_ref().map_or(true, |v| v.contains(&idx))
+    }
+}
+
+#[derive(Debug)]
+pub struct Params {
     pub title: u8,
-
-    /// Directory to write per-track output files into. Created if
-    /// missing.
-    #[arg(long)]
     pub out_dir: PathBuf,
-
-    /// Safety cap on event iterations.
-    #[arg(long, default_value_t = 100_000_000)]
     pub max_events: u64,
+    pub tracks: TrackFilter,
+}
+
+#[derive(Debug)]
+pub struct AudioTrackInfo {
+    pub stream_n: u8,
+    pub track_number: u8,
+    pub codec: AudioCodec,
+    pub language: String,
+    pub delay_ms: i64,
+    pub bytes: u64,
+    pub path: PathBuf,
+}
+
+#[derive(Debug)]
+pub struct SubpTrackInfo {
+    pub stream_n: u8,
+    pub track_number: u8,
+    pub language: String,
+    pub bytes: u64,
+    pub sub_path: PathBuf,
+    pub idx_path: PathBuf,
+}
+
+#[derive(Debug)]
+pub struct Report {
+    pub title: u8,
+    pub out_dir: PathBuf,
+    pub sectors_processed: u64,
+    pub cell_changes: u64,
+    pub stc_disc_boundaries: u64,
+    pub video_path: PathBuf,
+    pub video_language: String,
+    pub audio: Vec<AudioTrackInfo>,
+    pub subpictures: Vec<SubpTrackInfo>,
+    pub chapters_path: PathBuf,
 }
 
 /// Decode a 16-bit ISO-639 language code (two ASCII bytes packed
@@ -107,7 +151,7 @@ fn decode_language_code(raw: u16) -> String {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum AudioCodec {
+pub enum AudioCodec {
     Ac3,
     Dts,
     Lpcm,
@@ -157,37 +201,26 @@ struct VideoHandler {
     first_pts: Option<u64>,
 }
 
-pub fn run(args: RipTitleArgs) -> Result<()> {
-    if args.title == 0 {
-        return Err(anyhow!("--title must be >= 1"));
-    }
-    let disc_type = detect_disc_type(&args.disc).context("detect_disc_type")?;
-    if !matches!(disc_type, DiscType::Dvd) {
-        return Err(anyhow!(
-            "rip-title currently supports DVD only; detected {}",
-            disc_type.as_str()
-        ));
-    }
-    std::fs::create_dir_all(&args.out_dir)
-        .with_context(|| format!("creating {}", args.out_dir.display()))?;
+pub fn run(reader: &crate::DvdReader, params: Params) -> Result<Report> {
+    std::fs::create_dir_all(&params.out_dir)
+        .with_context(|| format!("creating {}", params.out_dir.display()))?;
 
-    let title_prefix = format!("t{:02}", args.title);
+    let title_prefix = format!("t{:02}", params.title);
     log::info!(
         "rip-title disc={} title={} (prefix={title_prefix}) out_dir={}",
-        args.disc.display(),
-        args.title,
-        args.out_dir.display(),
+        reader.path().display(),
+        params.title,
+        params.out_dir.display(),
     );
 
     // 1) Resolve title metadata: VTS number, language codes, palette.
     let metadata = {
-        let source = DvdSource::open(&args.disc).context("DvdSource::open (metadata)")?;
-        TitleMetadata::resolve(source.reader(), args.title)
+        TitleMetadata::resolve(reader, params.title)
             .context("resolving title metadata")?
     };
     log::info!(
         "title {}: VTS={} #audio={} #subp={} #chapters={}",
-        args.title,
+        params.title,
         metadata.vts_nr,
         metadata.audio_attrs.len(),
         metadata.subp_attrs.len(),
@@ -196,26 +229,25 @@ pub fn run(args: RipTitleArgs) -> Result<()> {
 
     // 2) Build CellLookup (used by demux for stc_discontinuity log).
     let lookup = {
-        let source = DvdSource::open(&args.disc).context("DvdSource::open (lookup)")?;
-        CellLookup::build(source.reader()).context("CellLookup::build")?
+        CellLookup::build(reader).context("CellLookup::build")?
     };
 
     // 3) Open the nav VM.
-    let mut nav = DvdNav::open(&args.disc).context("DvdNav::open")?;
+    let mut nav = DvdNav::open(reader.path()).context("DvdNav::open")?;
     nav.set_readahead(false).context("disable readahead")?;
     nav.set_pgc_positioning(true)
         .context("enable PGC positioning")?;
     let n_titles = nav.num_titles().context("num_titles")?;
-    if i32::from(args.title) > n_titles {
+    if i32::from(params.title) > n_titles {
         return Err(anyhow!(
             "--title {} out of range (disc has {n_titles} titles per dvdnav)",
-            args.title
+            params.title
         ));
     }
-    nav.title_play(i32::from(args.title)).context("dvdnav_title_play")?;
+    nav.title_play(i32::from(params.title)).context("dvdnav_title_play")?;
 
     // 4) Set up per-stream handlers.
-    let video = open_video_handler(&args.out_dir, &title_prefix, 1)?;
+    let video = open_video_handler(&params.out_dir, &title_prefix, 1)?;
     let mut audio_handlers: BTreeMap<u8, AudioHandler> = BTreeMap::new();
     let mut subp_handlers: BTreeMap<u8, SubpictureHandler> = BTreeMap::new();
     let mut next_track_number: u8 = 2;
@@ -225,14 +257,17 @@ pub fn run(args: RipTitleArgs) -> Result<()> {
     // each AC-3 substream the IFO's index 0, 1, 2, ... — matching
     // libdvdread's `audio_format` ordering.
     for (idx, attr) in metadata.audio_attrs.iter().enumerate() {
+        let stream_n = u8::try_from(idx).unwrap_or(7);
+        if !params.tracks.audio_enabled(idx) {
+            continue;
+        }
         let codec = audio_codec_from_attr(attr);
         let lang_code: u16 = { attr.lang_code };
         let language = decode_language_code(lang_code);
         let track_number = next_track_number;
         next_track_number += 1;
-        let stream_n = u8::try_from(idx).unwrap_or(7);
         let h = open_audio_handler(
-            &args.out_dir,
+            &params.out_dir,
             &title_prefix,
             track_number,
             &language,
@@ -241,13 +276,16 @@ pub fn run(args: RipTitleArgs) -> Result<()> {
         audio_handlers.insert(stream_n, h);
     }
     for (idx, attr) in metadata.subp_attrs.iter().enumerate() {
+        let stream_n = u8::try_from(idx).unwrap_or(31);
+        if !params.tracks.subp_enabled(idx) {
+            continue;
+        }
         let lang_code: u16 = { attr.lang_code };
         let language = decode_language_code(lang_code);
         let track_number = next_track_number;
         next_track_number += 1;
-        let stream_n = u8::try_from(idx).unwrap_or(31);
         let h = open_subpicture_handler(
-            &args.out_dir,
+            &params.out_dir,
             &title_prefix,
             track_number,
             &language,
@@ -274,7 +312,7 @@ pub fn run(args: RipTitleArgs) -> Result<()> {
     // anchor (PgcDemux computes the audio delay from this NAV value).
     let mut first_vobu_s_ptm: Option<u32> = None;
 
-    for event_idx in 0..args.max_events {
+    for event_idx in 0..params.max_events {
         let evt = nav.next_block().with_context(|| {
             format!("dvdnav_get_next_block at event {event_idx}")
         })?;
@@ -358,10 +396,10 @@ pub fn run(args: RipTitleArgs) -> Result<()> {
         }
         if !left_title {
             if let Ok((t, _)) = nav.current_title_part() {
-                if t != i32::from(args.title) {
+                if t != i32::from(params.title) {
                     log::info!(
                         "left title {} -> currently in title {}; stopping",
-                        args.title, t
+                        params.title, t
                     );
                     left_title = true;
                 }
@@ -402,7 +440,7 @@ pub fn run(args: RipTitleArgs) -> Result<()> {
         log::info!(
             target: "disc_check",
             "title {} A/V anchor: first_video_pts={v} - {} leading B-frame(s) x {period_ticks} ticks ({:.3} fps) = display anchor {anchor} (first picture)",
-            args.title, vstart.leading_b_frames, vstart.frame_rate,
+            params.title, vstart.leading_b_frames, vstart.frame_rate,
         );
     }
 
@@ -415,7 +453,7 @@ pub fn run(args: RipTitleArgs) -> Result<()> {
         log::info!(
             target: "disc_check",
             "title {} anchor cross-check: video-derived={anchor} vs NAV vobu_s_ptm={nav_ptm} (diff {diff} ticks, ~{} ms)",
-            args.title, diff / 90,
+            params.title, diff / 90,
         );
         check_in_range(
             "rip-title: video anchor matches NAV vobu_s_ptm within one frame (ticks)",
@@ -440,7 +478,7 @@ pub fn run(args: RipTitleArgs) -> Result<()> {
             log::info!(
                 target: "disc_check",
                 "title {} track {} [{}] {:?}: DELAY {delay_ms} ms (audio leads first picture by {lead_ms} ms; all frames preserved, muxer aligns)",
-                args.title, h.track_number, h.language, h.codec,
+                params.title, h.track_number, h.language, h.codec,
             );
             check_in_range(
                 "rip-title: audio delay magnitude (ms) is sane",
@@ -450,7 +488,7 @@ pub fn run(args: RipTitleArgs) -> Result<()> {
         }
         // Rename to include the delay literal MakeMKV uses.
         let final_path = audio_final_path(
-            &args.out_dir,
+            &params.out_dir,
             &title_prefix,
             h.track_number,
             &h.language,
@@ -501,22 +539,21 @@ pub fn run(args: RipTitleArgs) -> Result<()> {
     }
 
     // Chapters XML.
-    let chapters_path = args.out_dir.join(format!("{title_prefix}_chapters.xml"));
+    let chapters_path = params.out_dir.join(format!("{title_prefix}_chapters.xml"));
     {
         let mut f = File::create(&chapters_path)
             .with_context(|| format!("creating {}", chapters_path.display()))?;
         // Need to fetch the PGC + chapters via libdvdread (we don't
         // keep it alive across the rip — re-open just for this).
-        let source = DvdSource::open(&args.disc).context("DvdSource::open (chapters)")?;
-        let vmg = IfoHandle::open(source.reader(), IfoKind::Vmg).context("VMG IFO")?;
+        let vmg = IfoHandle::open(reader, IfoKind::Vmg).context("VMG IFO")?;
         let titles = vmg.titles();
         let title = titles
-            .get(usize::from(args.title - 1))
-            .ok_or_else(|| anyhow!("title {} out of range", args.title))?;
+            .get(usize::from(params.title - 1))
+            .ok_or_else(|| anyhow!("title {} out of range", params.title))?;
         let title_set_nr: u8 = { title.title_set_nr };
         let vts_ttn: u8 = { title.vts_ttn };
         let vts =
-            IfoHandle::open(source.reader(), IfoKind::Vts(u32::from(title_set_nr)))
+            IfoHandle::open(reader, IfoKind::Vts(u32::from(title_set_nr)))
                 .context("VTS IFO")?;
         let chapters_for = vts.chapters_for(vts_ttn);
         let chapters = chapters_for;
@@ -532,48 +569,57 @@ pub fn run(args: RipTitleArgs) -> Result<()> {
         // SAFETY: see dump_title.rs — libdvdread populates the PGC
         // pointer when the IFO parses successfully.
         let pgc = unsafe { pgc_ptr.as_ref() }.ok_or_else(|| anyhow!("PGC ptr NULL"))?;
-        write_chapters_xml(&mut f, pgc, chapters, u32::from(args.title), "eng")
+        write_chapters_xml(&mut f, pgc, chapters, u32::from(params.title), "eng")
             .context("writing chapters XML")?;
     }
 
     // 7) Stats + summary
-    let cell_diag = cell_changes;
     check_eq(
         "rip-title: sectors processed > 0",
         sectors_processed > 0,
         true,
     );
 
-    println!();
-    println!("rip-title summary (title {}):", args.title);
-    println!("  out dir:            {}", args.out_dir.display());
-    println!("  sectors processed:  {sectors_processed}");
-    println!("  cell changes:       {cell_diag} ({stc_disc_boundaries} with stc_discontinuity)");
-    println!();
-    println!("video track 1 ({}):", "eng");
-    println!("  {}", video_path_for(&args.out_dir, &title_prefix, 1, "eng").display());
-    println!();
-    println!("audio tracks:");
-    for (stream_n, codec, lang, track_n, delay_ms, bytes, path) in &audio_summaries {
-        println!(
-            "  track {track_n} substream {stream_n} {:?} [{lang}] delay {delay_ms}ms {bytes} bytes",
-            codec
-        );
-        println!("    {}", path.display());
-    }
-    println!();
-    println!("subpicture tracks:");
-    for (stream_n, lang, track_n, bytes, sub_path, idx_path) in &subp_summaries {
-        println!(
-            "  track {track_n} substream {stream_n} [{lang}] {bytes} bytes",
-        );
-        println!("    {}", sub_path.display());
-        println!("    {}", idx_path.display());
-    }
-    println!();
-    println!("chapters: {}", chapters_path.display());
+    let audio = audio_summaries
+        .into_iter()
+        .map(
+            |(stream_n, codec, language, track_number, delay_ms, bytes, path)| AudioTrackInfo {
+                stream_n,
+                track_number,
+                codec,
+                language,
+                delay_ms,
+                bytes,
+                path,
+            },
+        )
+        .collect();
+    let subpictures = subp_summaries
+        .into_iter()
+        .map(
+            |(stream_n, language, track_number, bytes, sub_path, idx_path)| SubpTrackInfo {
+                stream_n,
+                track_number,
+                language,
+                bytes,
+                sub_path,
+                idx_path,
+            },
+        )
+        .collect();
 
-    Ok(())
+    Ok(Report {
+        title: params.title,
+        out_dir: params.out_dir,
+        sectors_processed,
+        cell_changes,
+        stc_disc_boundaries,
+        video_path,
+        video_language: "eng".to_string(),
+        audio,
+        subpictures,
+        chapters_path,
+    })
 }
 
 // ============================================================================
@@ -591,7 +637,7 @@ struct TitleMetadata {
 }
 
 impl TitleMetadata {
-    fn resolve(reader: &disc_dvd::DvdReader, title: u8) -> Result<Self> {
+    fn resolve(reader: &crate::DvdReader, title: u8) -> Result<Self> {
         let vmg = IfoHandle::open(reader, IfoKind::Vmg).context("VMG IFO")?;
         let titles = vmg.titles();
         let title_info = titles
@@ -632,10 +678,10 @@ impl TitleMetadata {
             .copied()
             .collect();
 
-        let video_attr: disc_dvd::ifo::video_attr_t = { vtsi_mat.vts_video_attr };
+        let video_attr: crate::ifo::video_attr_t = { vtsi_mat.vts_video_attr };
         let picture_size = video_attr.picture_size();
         let video_format = video_attr.video_format();
-        let (w, h) = disc_dvd::decode::video_picture_size(picture_size, video_format);
+        let (w, h) = crate::decode::video_picture_size(picture_size, video_format);
         let video_width = u32::from(w);
         let video_height = u32::from(h);
 

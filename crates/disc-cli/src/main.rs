@@ -1,63 +1,34 @@
 //! `disc-remuxer` CLI entry point.
 //!
-//! Current commands:
+//! User commands (format-agnostic — they detect the disc type and delegate
+//! to the right backend):
 //!
-//! * `info <path>` — open a disc and dump everything we can read from the
-//!   IFOs: disc metadata, title list, per-VTS PGC counts. Equivalent in
-//!   spirit to `lsdvd`, with libdvdread-style field names.
+//! * `info <path>` — dump the disc's metadata + title list.
+//! * `list <path>` — print the uniform title/track tree the `rip` selectors
+//!   operate on (per-title index, per-track audio/subtitle index, codec,
+//!   language). The index map the future UI mirrors.
+//! * `rip --disc <path> --out-dir <dir> [--title …] [--audio …]
+//!   [--subtitle …] [--min-length N]` — rip selected titles + tracks
+//!   (default: every title ≥ min-length, all tracks, in order).
 //!
-//! * `dump-sectors <path> --vts N --offset M --count K --out file.bin`
-//!   — read raw sectors from a VOB stream and write them to disk, for
-//!   verification against external tools (`dd`, hash-compare, etc.).
+//! `dvd <tool>` — DVD-specific low-level tools for debugging / verification.
+//! These are **not** the rip pipeline; their source lives under `src/dvd/`,
+//! out of the base commands. See [`dvd`] for what each isolates.
 //!
-//! * `dump-title <path> --title N --out file.vob` — walk the cells of
-//!   title `N`'s PGC in IFO order, concatenate the `TITLE_VOBS` sector
-//!   ranges into the output file. Logs per-cell checks and a final
-//!   SHA-256 for byte-compare against external dumps.
-//!
-//! * `scan-streams <vob_path>` — walk an MPEG-PS sector stream (e.g.
-//!   the output of `dump-title`) and report per-stream packet + byte
-//!   counts. Verifies the MPEG-PS pack/PES parser before demux.
-//!
-//! * `demux-vob <vob_path> --out-dir <dir>` — split an MPEG-PS sector
-//!   stream into per-stream elementary files (`video.0xE0.m2v`,
-//!   `audio.ac3.0.ac3`, `subpicture.0.sup`, …). Strips PES headers +
-//!   DVD BD-substream headers and verifies first-byte codec magic per
-//!   stream. Step-5a skeleton — no cross-cell frame alignment yet.
-//!
-//! * `demux-title --disc <path> --title N --out-dir <dir>` — same
-//!   output as demux-vob but walks the title's PGC cells directly from
-//!   disc, wiring cell metadata (especially stc_discontinuity) through
-//!   to the demuxer so AC-3/DTS streams resync at chapter boundaries
-//!   via first_access_unit_pointer. Step-5b — preferred path for ripping.
-//!
-//! * `dump-title-nav --disc <path> --title N --out file.vob` — like
-//!   dump-title but drives the rip via libdvdnav (executes PGC
-//!   commands, follows authored playback chain). Step-6 minimal
-//!   integration — proves libdvdnav as a sector source produces the
-//!   same bytes as our manual cell walk for simple titles.
-//!
-//! Logging: controlled by `RUST_LOG` (env_logger-style syntax). Defaults
-//! to `info` if unset. Set `RUST_LOG=debug` for IFO + sector-read
-//! lifecycle traces, `=trace` for byte-level detail. Subcommands that
-//! produce output may additionally write a duplicate log to
-//! `<output>.log` next to the output file — set `--log-file` to opt in.
+//! Logging: controlled by `RUST_LOG` (env_logger-style). Defaults to `info`.
+//! `RUST_LOG=debug` for IFO + sector-read traces, `=trace` for byte detail.
+//! `--log-file <path>` mirrors the log to a file.
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
-mod demux_title;
-mod demux_title_nav;
-mod demux_vob;
-mod dump_sectors;
-mod dump_title;
-mod dump_title_nav;
+mod dvd;
 mod info;
+mod list;
 mod logging;
-mod rip_title;
-mod scan_streams;
+mod rip;
 
 #[derive(Parser)]
 #[command(name = "disc-remuxer", version, about, long_about = None)]
@@ -79,32 +50,30 @@ enum Command {
         path: PathBuf,
     },
 
-    /// Read raw sectors from a VOB stream and write them to disk.
-    DumpSectors(dump_sectors::DumpSectorsArgs),
+    /// Print the uniform title/track tree the `rip` selectors operate on
+    /// (the index map: per-title index, per-track audio/subtitle indices,
+    /// codec, language). What the future UI displays + checkmarks.
+    List {
+        /// Path to a disc, ISO image, VIDEO_TS directory, or device node.
+        path: PathBuf,
 
-    /// Walk a title's PGC cells and dump the concatenated VOB stream.
-    DumpTitle(dump_title::DumpTitleArgs),
+        /// Minimum title length, seconds — titles below this are shown
+        /// as `[skipped: MinLength]`. `0` = mark none. Default matches
+        /// makemkvcon (120).
+        #[arg(long, default_value_t = 120)]
+        min_length: u64,
+    },
 
-    /// Scan an MPEG-PS sector stream and report per-stream byte counts.
-    ScanStreams(scan_streams::ScanStreamsArgs),
+    /// Rip selected titles + tracks. Default = all titles ≥ --min-length,
+    /// all tracks, in order; narrow with --title / --audio / --subtitle.
+    Rip(rip::RipArgs),
 
-    /// Demultiplex an MPEG-PS sector stream into per-stream files.
-    DemuxVob(demux_vob::DemuxVobArgs),
-
-    /// Demultiplex a title's PGC cells directly from disc, honoring
-    /// stc_discontinuity for AC-3/DTS audio resync.
-    DemuxTitle(demux_title::DemuxTitleArgs),
-
-    /// Dump a title via libdvdnav (executes PGC commands).
-    DumpTitleNav(dump_title_nav::DumpTitleNavArgs),
-
-    /// Demultiplex a title via libdvdnav, looking up cell metadata
-    /// on each CellChange so AC-3/DTS audio resyncs correctly.
-    DemuxTitleNav(demux_title_nav::DemuxTitleNavArgs),
-
-    /// Rip a title to MakeMKV-style per-track outputs (.mpg + .ac3
-    /// with DELAY suffix + VobSub .idx/.sub + chapters XML).
-    RipTitle(rip_title::RipTitleArgs),
+    /// DVD-specific low-level tools (debugging / verification). NOT the rip
+    /// pipeline — these expose individual layers + the manual cell-walk.
+    Dvd {
+        #[command(subcommand)]
+        tool: dvd::DvdTool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -118,53 +87,14 @@ fn main() -> Result<()> {
         Command::Info { path } => {
             info::run(&path).with_context(|| format!("info {}", path.display()))
         }
-        Command::DumpSectors(args) => {
-            let path_disp = args.path.display().to_string();
-            dump_sectors::run(args)
-                .with_context(|| format!("dump-sectors {path_disp}"))
+        Command::List { path, min_length } => {
+            list::run(&path, min_length)
+                .with_context(|| format!("list {}", path.display()))
         }
-        Command::DumpTitle(args) => {
-            let path_disp = args.path.display().to_string();
-            let title = args.title;
-            dump_title::run(args)
-                .with_context(|| format!("dump-title {path_disp} title={title}"))
-        }
-        Command::ScanStreams(args) => {
-            let path_disp = args.path.display().to_string();
-            scan_streams::run(args)
-                .with_context(|| format!("scan-streams {path_disp}"))
-        }
-        Command::DemuxVob(args) => {
-            let path_disp = args.path.display().to_string();
-            demux_vob::run(args)
-                .with_context(|| format!("demux-vob {path_disp}"))
-        }
-        Command::DemuxTitle(args) => {
+        Command::Rip(args) => {
             let path_disp = args.disc.display().to_string();
-            let title = args.title;
-            demux_title::run(args)
-                .with_context(|| format!("demux-title {path_disp} title={title}"))
+            rip::run(args).with_context(|| format!("rip {path_disp}"))
         }
-        Command::DumpTitleNav(args) => {
-            let path_disp = args.disc.display().to_string();
-            let title = args.title;
-            dump_title_nav::run(args).with_context(|| {
-                format!("dump-title-nav {path_disp} title={title}")
-            })
-        }
-        Command::DemuxTitleNav(args) => {
-            let path_disp = args.disc.display().to_string();
-            let title = args.title;
-            demux_title_nav::run(args).with_context(|| {
-                format!("demux-title-nav {path_disp} title={title}")
-            })
-        }
-        Command::RipTitle(args) => {
-            let path_disp = args.disc.display().to_string();
-            let title = args.title;
-            rip_title::run(args).with_context(|| {
-                format!("rip-title {path_disp} title={title}")
-            })
-        }
+        Command::Dvd { tool } => dvd::run(tool),
     }
 }

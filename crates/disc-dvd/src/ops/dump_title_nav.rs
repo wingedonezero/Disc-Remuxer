@@ -1,6 +1,5 @@
-//! `disc-remuxer dump-title-nav --disc <path> --title N --out file.vob`
-//! — like `dump-title` but drives the rip via libdvdnav instead of the
-//! manual `cell_playback[0..]` walk.
+//! `dump-title-nav` operation — like `dump-title` but drives the rip via
+//! libdvdnav instead of the manual `cell_playback[0..]` walk.
 //!
 //! This is the step-6 minimal integration: it proves the libdvdnav
 //! sector source produces the same bytes our manual cell walk does for
@@ -15,96 +14,82 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
-use clap::Args;
 use disc_core::check_eq;
-use disc_dvd::nav::{DvdNav, NavEvent};
 use sha2::{Digest, Sha256};
+
+use crate::nav::{DvdNav, NavEvent};
+use crate::DvdReader;
 
 /// libdvdnav's still-frame `length` byte. `0xFF` means "indefinite";
 /// for ripping we always immediately advance past stills, indefinite
 /// or not.
 const STILL_LENGTH_INFINITE: u8 = 0xFF;
 
-#[derive(Args, Debug)]
-pub struct DumpTitleNavArgs {
-    /// Path to a disc, ISO image, VIDEO_TS directory, or device node.
-    #[arg(long = "disc")]
-    pub disc: PathBuf,
-
-    /// 1-based title number per libdvdnav's `dvdnav_get_number_of_titles`.
-    /// (Usually matches libdvdread's `tt_srpt` index but the mapping
-    /// can differ on discs with first-play / VMG-menu titles.)
-    #[arg(long)]
+#[derive(Debug)]
+pub struct Params {
     pub title: i32,
-
-    /// Output file path. Existing files are overwritten.
-    #[arg(long)]
     pub out: PathBuf,
-
-    /// Safety cap on iteration. Default = 100M events (more than any
-    /// real DVD would produce). Set lower to bound runaway VM loops.
-    #[arg(long, default_value_t = 100_000_000)]
     pub max_events: u64,
 }
 
-#[derive(Default)]
-struct EventCounts {
-    blocks: u64,
-    nops: u64,
-    still_frames: u64,
-    spu_stream_changes: u64,
-    audio_stream_changes: u64,
-    vts_changes: u64,
-    cell_changes: u64,
-    nav_packets: u64,
-    highlights: u64,
-    spu_clut_changes: u64,
-    hop_channels: u64,
-    waits: u64,
-    others: u64,
+#[derive(Debug)]
+pub struct Report {
+    pub title: i32,
+    pub total_blocks: u64,
+    pub total_bytes: u64,
+    pub out: PathBuf,
+    pub sha256: String,
+    pub events: EventCounts,
 }
 
-pub fn run(args: DumpTitleNavArgs) -> Result<()> {
-    if args.title < 1 {
-        return Err(anyhow!("--title must be >= 1"));
-    }
-    log::info!(
-        "dump-title-nav disc={} title={} out={}",
-        args.disc.display(),
-        args.title,
-        args.out.display(),
-    );
+#[derive(Default, Debug)]
+pub struct EventCounts {
+    pub blocks: u64,
+    pub nops: u64,
+    pub still_frames: u64,
+    pub spu_stream_changes: u64,
+    pub audio_stream_changes: u64,
+    pub vts_changes: u64,
+    pub cell_changes: u64,
+    pub nav_packets: u64,
+    pub highlights: u64,
+    pub spu_clut_changes: u64,
+    pub hop_channels: u64,
+    pub waits: u64,
+    pub others: u64,
+}
 
-    let mut nav = DvdNav::open(&args.disc).context("DvdNav::open")?;
+pub fn run(reader: &DvdReader, params: Params) -> Result<Report> {
+    let mut nav = DvdNav::open(reader.path()).context("DvdNav::open")?;
     nav.set_readahead(false).context("disable readahead")?;
     nav.set_pgc_positioning(true)
         .context("enable PGC positioning")?;
 
     let n_titles = nav.num_titles().context("num_titles")?;
     log::info!("dvdnav reports {n_titles} titles");
-    if args.title > n_titles {
+    if params.title > n_titles {
         return Err(anyhow!(
             "--title {} out of range (disc has {n_titles} titles per dvdnav)",
-            args.title
+            params.title
         ));
     }
-    if let Ok(n_parts) = nav.num_parts(args.title) {
-        log::info!("title {} has {n_parts} parts (chapters)", args.title);
+    if let Ok(n_parts) = nav.num_parts(params.title) {
+        log::info!("title {} has {n_parts} parts (chapters)", params.title);
     }
 
-    nav.title_play(args.title).context("dvdnav_title_play")?;
+    nav.title_play(params.title).context("dvdnav_title_play")?;
 
-    let out_file = File::create(&args.out)
-        .with_context(|| format!("creating {}", args.out.display()))?;
+    let out_file = File::create(&params.out)
+        .with_context(|| format!("creating {}", params.out.display()))?;
     let mut writer = BufWriter::with_capacity(64 * 1024, out_file);
     let mut hasher = Sha256::new();
     let mut total_bytes: u64 = 0;
     let mut total_blocks: u64 = 0;
     let mut events = EventCounts::default();
-    let mut last_title_logged: i32 = args.title;
+    let mut last_title_logged: i32 = params.title;
     let mut left_title = false;
 
-    for event_idx in 0..args.max_events {
+    for event_idx in 0..params.max_events {
         let evt = nav.next_block().with_context(|| {
             format!("dvdnav_get_next_block at event {event_idx}")
         })?;
@@ -172,11 +157,11 @@ pub fn run(args: DumpTitleNavArgs) -> Result<()> {
         // moved us out of the requested title (e.g. rolled into the
         // next title or back to first-play). If so, stop.
         match nav.current_title_part() {
-            Ok((t, _)) if t != args.title => {
+            Ok((t, _)) if t != params.title => {
                 if !left_title {
                     log::info!(
                         "left title {} -> currently in title {}; stopping",
-                        args.title, t
+                        params.title, t
                     );
                     left_title = true;
                 }
@@ -208,33 +193,17 @@ pub fn run(args: DumpTitleNavArgs) -> Result<()> {
     log::info!("sha256 = {digest:x}");
     log::info!(
         "wrote {total_bytes} bytes ({total_blocks} sectors) to {}",
-        args.out.display()
+        params.out.display()
     );
 
-    println!();
-    println!(
-        "dump-title-nav (title {}, libdvdnav driven):",
-        args.title
-    );
-    println!("  sectors written:         {total_blocks}");
-    println!("  bytes written:           {total_bytes}");
-    println!("  output:                  {}", args.out.display());
-    println!("  sha256:                  {digest:x}");
-    println!();
-    println!("nav event counts:");
-    println!("  BLOCK_OK              {:>10}", events.blocks);
-    println!("  NOP                   {:>10}", events.nops);
-    println!("  STILL_FRAME           {:>10}", events.still_frames);
-    println!("  SPU_STREAM_CHANGE     {:>10}", events.spu_stream_changes);
-    println!("  AUDIO_STREAM_CHANGE   {:>10}", events.audio_stream_changes);
-    println!("  VTS_CHANGE            {:>10}", events.vts_changes);
-    println!("  CELL_CHANGE           {:>10}", events.cell_changes);
-    println!("  NAV_PACKET            {:>10}", events.nav_packets);
-    println!("  HIGHLIGHT             {:>10}", events.highlights);
-    println!("  SPU_CLUT_CHANGE       {:>10}", events.spu_clut_changes);
-    println!("  HOP_CHANNEL           {:>10}", events.hop_channels);
-    println!("  WAIT                  {:>10}", events.waits);
-    println!("  (unknown)             {:>10}", events.others);
+    let sha256 = format!("{digest:x}");
 
-    Ok(())
+    Ok(Report {
+        title: params.title,
+        total_blocks,
+        total_bytes,
+        out: params.out,
+        sha256,
+        events,
+    })
 }

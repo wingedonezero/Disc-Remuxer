@@ -21,7 +21,9 @@
 
 use std::marker::PhantomData;
 
-use disc_core::{check_eq, check_in_range, DiscError};
+use disc_core::{check_eq, check_in_range};
+
+use crate::DvdError;
 use libdvdread_sys as sys;
 
 use crate::reader::DvdReader;
@@ -84,7 +86,7 @@ impl<'r> DvdFile<'r> {
         reader: &'r DvdReader,
         vts_nr: u32,
         domain: ReadDomain,
-    ) -> Result<Self, DiscError> {
+    ) -> Result<Self, DvdError> {
         log::info!("DVDOpenFile vts={vts_nr} domain={}", domain.as_str());
         // SAFETY: `reader.raw()` is valid for the lifetime `'r`. libdvdread
         // returns NULL on failure (handled immediately below).
@@ -93,7 +95,7 @@ impl<'r> DvdFile<'r> {
             sys::DVDOpenFile(reader.raw(), vts_nr as i32, domain.as_sys())
         };
         if handle.is_null() {
-            return Err(DiscError::FileOpenFailed {
+            return Err(DvdError::FileOpenFailed {
                 vts_nr,
                 domain: domain.as_str(),
                 reason: "libdvdread DVDOpenFile() returned NULL".into(),
@@ -109,7 +111,7 @@ impl<'r> DvdFile<'r> {
             );
             // SAFETY: closing a valid handle.
             unsafe { sys::DVDCloseFile(handle) };
-            return Err(DiscError::FileOpenFailed {
+            return Err(DvdError::FileOpenFailed {
                 vts_nr,
                 domain: domain.as_str(),
                 reason: format!("DVDFileSize returned {raw_size}"),
@@ -170,8 +172,8 @@ impl<'r> DvdFile<'r> {
     ///
     /// Returns the bytes actually read (always a multiple of 2048).
     /// Short reads are logged as warnings; a libdvdread return of -1
-    /// surfaces as `DiscError::ReadFailed`.
-    pub fn read_blocks(&self, offset: u32, count: u32) -> Result<Vec<u8>, DiscError> {
+    /// surfaces as `DvdError::ReadFailed`.
+    pub fn read_blocks(&self, offset: u32, count: u32) -> Result<Vec<u8>, DvdError> {
         // Range check up-front.
         let end = offset.saturating_add(count);
         if end > self.block_count {
@@ -179,7 +181,7 @@ impl<'r> DvdFile<'r> {
                 "DVDReadBlocks range error: offset={offset} count={count} (end={end}) exceeds file block_count={}",
                 self.block_count,
             );
-            return Err(DiscError::ReadOutOfRange {
+            return Err(DvdError::ReadOutOfRange {
                 offset,
                 count,
                 total: self.block_count,
@@ -214,7 +216,7 @@ impl<'r> DvdFile<'r> {
                 self.vts_nr,
                 self.domain.as_str(),
             );
-            return Err(DiscError::ReadFailed {
+            return Err(DvdError::ReadFailed {
                 offset,
                 count,
                 ret: i32::try_from(ret_isize).unwrap_or(i32::MIN),
