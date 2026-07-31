@@ -109,11 +109,16 @@ the address so the next version bump is a remap, not a redo.
 A function whose only non-libc callees live in the `0x0048xxxx`/`0x0049xxxx`
 family is a deobfuscated-string builder. That is **5,144 of 10,136 (51%)**.
 It produces no output bytes → `format=oos`, `role=obfuscation`. Independently
-re-derived on 1.18.4; matches the v1 count (5,125) to within 0.4%.
-Combined with the 1,258 leaf stubs/thunks, that excludes **6,401** rows and
-leaves **3,233 functions** that actually need analysis, not 9,634. Both rules
-are implemented in `analysis/sweep/mechanical_tier.py` — run it, don't
-re-derive it by hand.
+re-derived on 1.18.4; matches the v1 count (5,125) to within 0.4%. That leaves
+**4,491 functions** that actually need analysis, not 9,634. Implemented in
+`analysis/sweep/mechanical_tier.py` — run it, don't re-derive it by hand.
+
+This is the *only* rule that earns a mechanical exclusion. A companion rule
+excluding small leaf functions by size was tried and **rejected**: size does
+not imply role, and it mislabelled a 35-byte `mux` function and a 39-byte
+`io` function as `glue`, and asserted `glue` on a function we had honestly
+marked `unknown`. See `analysis/sweep/README.md`. **If a mechanical rule
+cannot cite evidence about behaviour, it does not get to assign a role.**
 
 **3. `format` is already populated as a hypothesis for the traced rows.**
 `outputs/set_format_hypothesis.py` derived it from the firing pattern
@@ -515,7 +520,7 @@ modes (CellWalk/CellTrim/CellFull) belong as a future `rip` option resolved
    truth yet.
 7. End-to-end verification incomplete on Merlin (3hr) and SPACE_SYMPHONY
    (LPCM) — only ANGEL_S1D1 has been compared.
-8. The classification sweep over the 3,233-function real universe has not
+8. The classification sweep over the 4,491-function real universe has not
    been run. `role` is `unknown` for 9,583 of 9,634 rows. Design, tooling
    and a validated prototype are in `analysis/sweep/`.
 
