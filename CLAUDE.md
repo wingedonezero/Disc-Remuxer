@@ -107,7 +107,7 @@ the address so the next version bump is a remap, not a redo.
 
 **2. Half the binary is string-deobfuscation and can be excluded mechanically.**
 A function whose only non-libc callees live in the `0x0048xxxx`/`0x0049xxxx`
-family is a deobfuscated-string builder. That is **5,144 of 10,136 (51%)**.
+family is a deobfuscated-string builder. That is **5,143 of 9,634 (53%)**.
 It produces no output bytes → `format=oos`, `role=obfuscation`. Independently
 re-derived on 1.18.4; matches the v1 count (5,125) to within 0.4%. That leaves
 **4,491 functions** that actually need analysis, not 9,634. Implemented in
