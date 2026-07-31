@@ -150,7 +150,7 @@ Two commands, deliberately different in cost. **Use the cheap one by default.**
 ### `classify` — format + role + a cited reason, no article
 
 ```bash
-atlas.py classify 00720b80 \
+atlas.py classify <addr> \
     --format=dvd --role=demux --name=ps1_substream_header_parse \
     --confidence=evidenced \
     --evidence="switch on (id&0xf800): 0x8000=AC3, 0x8800=DTS, 0xA000=LPCM; \
@@ -188,7 +188,7 @@ to `atlas/per_function/FUN_<addr>.md` using the template in `schema_v2.md`:
 then:
 
 ```bash
-atlas.py examine 00720b80 --note=atlas/per_function/FUN_00720b80.md \
+atlas.py examine <addr> --note=atlas/per_function/FUN_<addr>.md \
     --format=dvd --role=demux --name=ps1_substream_header_parse \
     --confidence=evidenced
 ```
@@ -451,8 +451,10 @@ drops a frame from *every* audio track:
 
 Still unknown from outside and needing decomp: whether the dropped frame is
 the last of the outgoing clip or the first of the incoming one, and whether
-the accumulator runs in 90 kHz ticks or samples. Anchor via the message
-catalog (`msg_catalog_lookup`, `0065a320` on 1.18.4).
+the accumulator runs in 90 kHz ticks or samples. Anchor it via the message
+catalog — the sweep has located the emitter, lookup and robot-mode writer;
+query the atlas for `semantic_name` `msg_catalog_lookup` / `message_emit_entry`
+rather than citing an address here.
 
 MPLS PlayItem layout, for reference: name `b[0:5]`, codec `b[5:9]`,
 flags `b[9:11]`, stc_id `b[11]`, IN/OUT `b[12:20]`, times in 45 kHz.
@@ -520,9 +522,20 @@ modes (CellWalk/CellTrim/CellFull) belong as a future `rip` option resolved
    truth yet.
 7. End-to-end verification incomplete on Merlin (3hr) and SPACE_SYMPHONY
    (LPCM) — only ANGEL_S1D1 has been compared.
-8. The classification sweep over the 4,491-function real universe has not
-   been run. `role` is `unknown` for 9,583 of 9,634 rows. Design, tooling
-   and a validated prototype are in `analysis/sweep/`.
+8. The classification sweep is **56/100 batches done** (2,520 functions,
+   0 QC failures). DVD, foundation, BD and UHD tiers are complete; batches
+   056-099 remain, all never-fired tail. Resume from
+   `analysis/sweep/RESUME.md`. Follow-ups 1, 2, 3, 5 and 6 above now have
+   located functions recorded in the atlas — query it by `semantic_name`
+   rather than re-deriving.
+9. **The protection layer has never been traced.** CSS and AACS both show
+   zero fires despite owning CSS discs, because every capture ran against
+   already-decrypted folders/ISOs rather than a disc in a drive. One
+   re-trace lights up ~30 functions. Cheapest coverage win available.
+10. **The obfuscated-string scheme is located but not implemented.** Decoding
+   the literals statically would recover the whole message catalog and let a
+   log line be traced to its emitting function. Research-side only — recovered
+   strings never enter `crates/`.
 
 ---
 
