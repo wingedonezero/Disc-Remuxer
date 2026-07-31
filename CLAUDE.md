@@ -13,6 +13,9 @@ own clean Rust on top of upstream OSS libraries (libdvdread, libdvdcss,
 libdvdnav for DVD; libaacs/libbluray/libbdplus later for BD/UHD). The
 implementation is original; the atlas is private research.
 
+**Reference version is MakeMKV 1.18.4** (moved 2026-06-30; 1.18.3 archived
+under `Tests/Disc-Remuxer/OLD/`). Sources live in `Tests/Disc-Remuxer/Sources/`.
+
 ## Clean-room policy (read this twice)
 
 The atlas notes and decomp dumps under `Tests/Disc-Remuxer/` are research
@@ -30,125 +33,194 @@ code or commit messages.** Use:
 The atlas's `impl_path` / `impl_function` columns record which `FUN_<addr>`
 maps to which Rust function — that mapping is research-internal and stays
 in `atlas.tsv`. It does **not** appear in code docstrings, comments, or
-commit messages.
+commit messages. The atlas integrity check greps the source for the
+**Rust symbol** (`impl_function`), never for `FUN_<addr>`.
+
+---
+
+# Part 1 — The atlas (v2)
+
+## The v2 model: progress and trust are separate axes
+
+The atlas is **one row per function** in `atlas.tsv` (9,634 rows, 24 columns)
+plus a **prose encyclopedia article** per examined function in
+`per_function/<FUN>.md`. Everything else — status dashboards, cone maps,
+worklists, the corpus-gap ledger — is a **regenerated view**, never a
+separate source of truth.
+
+v1 used a single `analysis_level` L0–L4 axis that conflated *how far we got*
+with *how sure we are*, so a heuristic guess looked exactly as authoritative
+as a verified fact. Some of those guesses were wrong. **v2 splits the axes,
+and that split is the whole point:**
+
+| axis | values | means |
+|---|---|---|
+| **`status`** | `unknown → traced → classified → examined → verified` | how far analysis has progressed |
+| **`confidence`** | `none → hypothesis → evidenced → verified` | trust in the format+role claim |
+
+- `traced` = observed firing in a capture. A **mechanical fact.**
+- `classified` = format+role assigned with cited evidence, no article yet.
+- `examined` = full encyclopedia article, control-flow + callees understood.
+- `verified` = confirmed against a trace AND, where it produces output, byte-compare.
+- `hypothesis` = a guess (pattern, LLM label, firing pattern). **NOT validated.**
+- `evidenced` = backed by decomp/trace evidence read under v2.
+
+`fired_on`, `oss_match`, `callers`/`callees` are mechanical and trustworthy
+regardless of `confidence` — that axis is specifically about the *semantic*
+classification.
+
+**Buckets (B1–B8) and levels (L0–L4) are gone.** Do not use them, do not
+look for `atlas.py next --bucket=`, do not try to `rebucket`. The
+replacement is two orthogonal vocabularies:
+
+```
+format:  unknown / foundation / dvd / bd / uhd / hddvd / protection / cli / oos
+role:    unknown / byte_deciding / glue / io / vm / codec / demux / mux /
+         subpic / nav / container / crypto / obfuscation
+```
 
 ## Step 1 — orient yourself
-
-Before writing anything, run:
 
 ```bash
 /home/chaoz/Desktop/Makemkv/Tests/.venv/bin/python \
     /home/chaoz/Desktop/Makemkv/Tests/Disc-Remuxer/atlas/atlas.py status
 ```
 
-Read `Tests/Disc-Remuxer/atlas/status.md` and `Tests/Disc-Remuxer/TRACE_INDEX.md`.
-The atlas tracks **every one of 9,628 functions** in `makemkvcon` with a
-strict per-function progression. Don't take any action that bypasses it.
+Then read `Tests/Disc-Remuxer/atlas/schema_v2.md` and, if `atlas.py report`
+has been run, the regenerated views in `atlas/views/`.
 
-## Step 2 — pick work from the right tier
+> The v1 companions (`status.md`, `TRACE_INDEX.md`, `ISSUE_TRACKER.md`,
+> `FULL_CONE_MAP_*.md`) now live under `OLD/` and describe the **1.18.3**
+> binary. They are historical. See "Mechanical facts" below for why.
 
-Tier order is **topological** and must not be jumped:
+## Mechanical facts you must know before touching anything
 
-```
-B1_foundation → B2_dvd / B3_bd / B4_uhd → B5_protection → B6_cli_tools
-```
+**1. Addresses are not stable across MakeMKV versions.** The 1.18.3 → 1.18.4
+rebuild kept only **489 of 9,628** addresses (~5%). Every address-keyed v1
+artifact — the 1,643-row LLM summary pass, the v1 per-function notes, the
+cone map, the BSim OSS labels — is stranded. **Do not remap them in.** Some
+v1 semantic labels were wrong, which is why v2 was rebuilt clean; importing
+them re-imports the contamination. Mechanical artifacts (BSim `oss_match`,
+cluster membership) are **re-derived directly against 1.18.4**, never
+migrated. Any new bulk pass must store a **content fingerprint** alongside
+the address so the next version bump is a remap, not a redo.
 
-Within a tier:
+**2. Half the binary is string-deobfuscation and can be excluded mechanically.**
+A function whose only non-libc callees live in the `0x0048xxxx`/`0x0049xxxx`
+family is a deobfuscated-string builder. That is **5,143 of 9,634 (53%)**.
+It produces no output bytes → `format=oos`, `role=obfuscation`. Independently
+re-derived on 1.18.4; matches the v1 count (5,125) to within 0.4%. That leaves
+**4,491 functions** that actually need analysis, not 9,634. Implemented in
+`analysis/sweep/mechanical_tier.py` — run it, don't re-derive it by hand.
 
-```bash
-atlas.py next --bucket=B1_foundation
-```
+This is the *only* rule that earns a mechanical exclusion. A companion rule
+excluding small leaf functions by size was tried and **rejected**: size does
+not imply role, and it mislabelled a 35-byte `mux` function and a 39-byte
+`io` function as `glue`, and asserted `glue` on a function we had honestly
+marked `unknown`. See `analysis/sweep/README.md`. **If a mechanical rule
+cannot cite evidence about behaviour, it does not get to assign a role.**
 
-picks the highest-priority unfinished item (lowest analysis_level, largest
-size first within that level).
+**3. `format` is already populated as a hypothesis for the traced rows.**
+`outputs/set_format_hypothesis.py` derived it from the firing pattern
+(`uhd`-only→uhd, `dvd`-only→dvd, `bd`/`bd,uhd`→bd, all-three→foundation) at
+`confidence=hypothesis`, `provenance=trace_fired`. Don't redo it. **Do**
+correct it when content contradicts firing — a function that fires only on
+UHD but whose strings are all BD-J is `bd`, not `uhd`.
 
-## Step 3 — examine before implementing
+**4. Never-fired ≠ dead.** 6,399 rows have never fired, but that means *our
+corpus doesn't cover them*, not that they're unreachable. A never-fired
+function whose content is clearly HD-DVD or BD+ is a `corpus-gap`, recorded
+with `atlas.py corpus-gap <addr> --needs=<disc-or-feature>`. Never bulk-retire
+a function for not having fired.
 
-A function at L0 or L1 cannot be ported. It must first be **deep-examined**:
-
-1. Read the full decomp: `Tests/Disc-Remuxer/decomp/functions/<shard>/FUN_<addr>.md`
-2. Walk callers and callees one level out.
-3. Check `Tests/Disc-Remuxer/analysis/oss_matches.tsv` for an OSS source anchor.
-   If matched, read that source range. If not matched, search
-   `makemkv-oss-1.18.3/{libmakemkv,mmgpl,libmmbd,libdriveio}/` for functions
-   with similar string refs or call patterns.
-4. Capture findings to `Tests/Disc-Remuxer/atlas/per_function/FUN_<addr>.md`
-   with this structure:
-   - **Address / size / signature**
-   - **What it does** (one paragraph)
-   - **Control-flow shape** (key branches, loops, dispatch tables, decoded magic numbers)
-   - **Callers** (who triggers it, when in the pipeline)
-   - **Callees** (what helpers it relies on — each must already be at L≥2)
-   - **State touched** (struct offsets read/written, global addresses, decoded constants)
-   - **OSS anchor** (path:lines or `none — internal to makemkvcon`)
-   - **Edge cases handled** (every conditional branch's purpose)
-   - **Trace evidence** (which captured traces fire it, with sample arg values if any)
-5. Promote to L2:
-   ```bash
-   atlas.py examine <addr> --notes=atlas/per_function/FUN_<addr>.md
-   ```
-
-If the function calls into helpers that are still at L<2, **examine them
-first**. Topological order applies inside a function's callee tree too.
-
-## Step 3.5 — rebucket if the v1 categorizer was wrong
-
-The v1 categorizer used heuristics on string content and call patterns,
-so some functions ended up in the wrong bucket. **Once a function is
-L2** (and only once it is L2), you may move it to the correct bucket
-with explicit reasoning. **L0/L1 rows can never be rebucketed** — the
-per-function note is the evidence that justifies any move.
-
-### Inline at examine-time (preferred)
-
-If the deep-exam note already concludes the row belongs in a different
-bucket, add `--rebucket=BX` to the same `examine` call:
+## Step 2 — pick work
 
 ```bash
-atlas.py examine 007e8260 --notes=atlas/per_function/FUN_007e8260.md \
-    --rebucket=B2_dvd
+atlas.py next --format=dvd --limit=20
 ```
 
-This is one atomic operation: L0→L2 + bucket change + audit-log entry.
+There is no tier order any more — `format` and `role` are independent, so
+work is prioritised by **byte-impact**, leaf-first within a callee tree. A
+function whose callees are still `unknown` is harder to trust; prefer leaves.
 
-### Standalone for already-L2 rows
+## Step 3 — classify (cheap) or examine (expensive)
 
-For rows that became L2 in earlier sessions, use the bare command:
+Two commands, deliberately different in cost. **Use the cheap one by default.**
+
+### `classify` — format + role + a cited reason, no article
 
 ```bash
-atlas.py rebucket 007a4af0 --bucket=B5_protection \
-    --reason="drive command-sequence sender (SDF/CSS class); per_function note"
+atlas.py classify <addr> \
+    --format=dvd --role=demux --name=ps1_substream_header_parse \
+    --confidence=evidenced \
+    --evidence="switch on (id&0xf800): 0x8000=AC3, 0x8800=DTS, 0xA000=LPCM; \
+reads BE16 first_access_unit_pointer then advances 3"
 ```
 
-`--reason` is required and goes into `atlas/rebucket_log.tsv` — one
-short sentence ("DVD-only callers", "AACS key loader", etc.).
+`--evidence` is **required**. It is the auditable link between the label and
+what justified it. A classification with no citable evidence is a guess —
+record it at `--confidence=hypothesis` or not at all.
 
-### When to rebucket
+**Abstention is a correct answer.** If a function has no strings, no
+informative callees, and an opaque body, leave it `unknown`. Recording
+`unknown` honestly is strictly better than a plausible label that later
+poisons downstream work. That is the exact failure v2 exists to prevent.
 
-A note has earned a rebucket if it identifies any of:
+### `examine` — the full encyclopedia article
 
-- **All non-trivial callers are in one specific bucket** → move there
-  (e.g. a "helper/alloc" with 8 callers all in `0x7exxx` DVD range → B2_dvd).
-- **The string content nails a specific bucket** (e.g. `kvh.bin`,
-  `OSSL_AES_*`, `MakeMKV v1.18.3 ...` → B5_protection, B5_protection,
-  cli output).
-- **The codec/byte-stream is bucket-specific** (e.g. Dolby Vision RPU
-  → B4_uhd, BD+ SVQ → B5_protection).
-- **The function turns out to be cross-bucket foundation** even though
-  v1 tagged it specifically (e.g. central codec dispatchers) → move
-  to B1_foundation.
+Reserve this for functions that **decide output bytes**. Write the article
+to `atlas/per_function/FUN_<addr>.md` using the template in `schema_v2.md`:
 
-The v1 tag is a starting point, not gospel. Use the L2 evidence.
+```
+# FUN_<addr> — <semantic_name>
+| address | size | status | confidence | format | role |
+## What it does            (one paragraph — the lookup summary)
+## Control-flow shape      (branches, loops, dispatch tables, magic numbers)
+## Callers                 (who triggers it, when — [[FUN_x]] links)
+## Callees                 (what it relies on — [[FUN_y]] links)
+## State touched           (struct offsets, globals, constants)
+## Trace evidence          (which runs fire it, sample args)
+## OSS                     (oss_match / delegates_to)
+## Byte-impact             (byte_deciding? why — verdict + evidence)
+## Confidence & provenance (why we believe the above, and how sure)
+```
 
-### Don't rebucket on speculation
+then:
 
-If the note says "possibly B5_protection (need to confirm)" or
-"STAYS B1 or B6_cli_tools", **defer**. Hedged notes don't justify
-moves. Either dig deeper or leave it.
+```bash
+atlas.py examine <addr> --note=atlas/per_function/FUN_<addr>.md \
+    --format=dvd --role=demux --name=ps1_substream_header_parse \
+    --confidence=evidenced
+```
 
-## Step 4 — implementing
+### Other row commands
 
-The Rust workspace lives at this repo's root. Crate layout:
+```bash
+atlas.py show <addr>                              # everything known about one row
+atlas.py set-delegation <addr> --to=libdvdnav:dvdnav_get_next_block
+atlas.py corpus-gap <addr> --needs=hddvd          # known-but-never-fired
+atlas.py ingest-trace --tag=dvd --set=analysis/dvd_01_ASBY_2582_ISO.set
+atlas.py implement <addr> --path=… --function=… --kind=…
+```
+
+## Step 4 — keep the atlas honest
+
+```bash
+atlas.py verify       # must exit 0
+atlas.py report       # regenerate atlas/views/
+```
+
+`verify` blocks if a row claims an implementation without the cited
+`impl_path` existing or without the `impl_function` symbol appearing in that
+file. **Never bypass it.** If verify fails, fix the row or the code.
+
+Pure implementation-side sessions that don't touch the atlas don't need this.
+
+---
+
+# Part 2 — The implementation
+
+## Crate layout
 
 ```
 crates/
@@ -178,7 +250,10 @@ vendor/
 Add new code to the appropriate crate. Build with `cargo build`. The CLI
 binary lives at `target/release/disc-remuxer`.
 
-### Coding conventions
+> Fresh worktrees need `git submodule update --init vendor/libdvd*` before
+> `cargo build`, or the `-sys` crates fail.
+
+## Coding conventions
 
 1. **Field names mirror libdvdread / libdvdnav public C headers verbatim**
    (`tt_srpt_t::nr_of_srpts`, `pgc_t::nr_of_cells`, `cell_playback_t::first_sector`,
@@ -191,11 +266,10 @@ binary lives at `target/release/disc-remuxer`.
    `log::debug!` for inner steps, `log::trace!` for byte-level detail.
    `disc_core::check::{check_eq, require_eq, check_in_range, check}` for
    PASS/FAIL verifications, all under the `disc_check` log target.
-4. **Every invariant we know about gets a check.** If MakeMKV-via-the-atlas
-   tells us "this VOB sector should start with 00 00 01 BA on a cleartext
-   disc," that becomes a `check!` in our code, logged PASS/FAIL with the
-   actual bytes shown. Transparency at every step — not after-the-fact
-   debugging.
+4. **Every invariant we know about gets a check.** If the atlas tells us
+   "this VOB sector should start with 00 00 01 BA on a cleartext disc,"
+   that becomes a `check!` in our code, logged PASS/FAIL with the actual
+   bytes shown. Transparency at every step — not after-the-fact debugging.
 5. **Errors:** `disc-core` exposes a format-agnostic `DiscError` (generic
    variants + a `Backend { source }` wrapper). Each backend keeps its own
    error type — `disc_dvd::DvdError` for the libdvdread/css/nav primitives —
@@ -208,18 +282,13 @@ binary lives at `target/release/disc-remuxer`.
    the structured log into a file with timestamps. Wire this in for any
    new "rip-like" subcommand so the operation is self-documenting.
 
-### Recording an implementation in the atlas
-
-When a Rust function implements behavior from a specific `FUN_<addr>`
-that's been L2-deep-examined in the atlas, record the mapping there:
+## Recording an implementation in the atlas
 
 ```bash
-/home/chaoz/Desktop/Makemkv/Tests/.venv/bin/python \
-    /home/chaoz/Desktop/Makemkv/Tests/Disc-Remuxer/atlas/atlas.py \
-    implement <addr> \
-        --path=crates/disc-dvd/src/file.rs \
-        --function=DvdFile::read_blocks \
-        --kind=semantic_port
+atlas.py implement <addr> \
+    --path=crates/disc-dvd/src/file.rs \
+    --function=DvdFile::read_blocks \
+    --kind=semantic_port
 ```
 
 `--kind` choices:
@@ -231,55 +300,36 @@ that's been L2-deep-examined in the atlas, record the mapping there:
 - `hardcoded` — baked-in constants (deobfuscation tables, magic strings)
 - `skipped` — out-of-scope, replaced by upstream library, or dead code
 
-The atlas mapping is research-internal. The code itself stays
-implementation-name-only (no `FUN_<addr>` strings in source).
+## Verifying
 
-## Step 5 — verifying
+`byte_compare_pass` is the gold standard — `cargo build --release &&
+./target/release/disc-remuxer rip …` output should match the captured
+reference rips in `Tests/Disc-Remuxer/outputs/makemkv/` byte-for-byte,
+excluding the 24 per-rip random bytes (SegmentUID + DateUTC + the cascading
+CRC-32s — see the `project_random_ebml_fields` memory).
 
-Every L3 implementation needs evidence it works:
-
-```bash
-atlas.py test <addr> --status=unit
-atlas.py test <addr> --status=byte_compare_pass
-```
-
-`byte_compare_pass` is the gold standard — `cargo build --release && ./target/release/disc-remuxer extract …`
-output should match the captured reference rips in
-`Tests/Disc-Remuxer/outputs/makemkv/` byte-for-byte, excluding the 24
-per-rip random bytes (SegmentUID + DateUTC + the cascading CRC-32s — see
-`atlas/seeds/per_rip_random.md` or the `project_random_ebml_fields` memory).
-
-Smaller verification gates between L3 and full byte-compare:
+Smaller verification gates:
 - `cargo test` — unit + integration tests must pass clean
-- `disc-remuxer dump-sectors … && sha256sum` — for the sector-read layer,
+- `disc-remuxer dvd dump-sectors … && sha256sum` — for the sector-read layer,
   hash must match `dd` of the same range on an unscrambled corpus disc
 
-## Step 6 — keep the atlas honest
+---
 
-Before ending a session:
-
-```bash
-atlas.py verify       # must exit 0
-atlas.py report       # regenerate status.md and tier checklists
-```
-
-`atlas verify` blocks if any row claims L≥3 without the cited `impl_path`
-existing or without the decomp anchor appearing in that file. **Never bypass
-it.** If verify fails, fix the row or the code — don't paper over.
+# Part 3 — Hard-won ground truth
 
 ## Hard rules — non-negotiable
 
-1. **No skipping levels.** A row goes L0 → L1 → L2 → L3 → L4. Sessions that
-   mark L3 without writing L2 notes are corrupting the atlas.
+1. **Progress and trust are separate.** Never record a semantic claim above
+   the confidence its evidence supports. `unknown` and `hypothesis` are
+   legitimate, useful answers. A confident wrong label is the most expensive
+   thing you can put in the atlas.
 2. **Clean-room separation.** Code and commits in this repo cite *public
    specs and library APIs only*. The research source binary's name and
    `FUN_<addr>` identifiers do **not** appear in source files or commit
-   messages. The atlas's `impl_path`/`impl_function` columns track the
-   research-to-implementation mapping privately.
+   messages.
 3. **Commits are tagged.** Every commit is `[infra]` / `[tooling]` /
    `[test]` / `[binding]` in the subject. (`[port]` and `FUN_<addr>` in
-   subject lines are the old convention from the Python-port plan; do
-   not use them.)
+   subject lines are the old convention; do not use them.)
 4. **No invented functions.** If you can't find an atlas note and no OSS
    analogue exists, *stop and trace* (`Tests/Disc-Remuxer/traces/tools/ptrace_tracer`)
    or *read more decomp*. Never write a function that "feels right."
@@ -312,16 +362,19 @@ boundaries with `stc_discontinuity == true`, do NOT drop bytes:
 Verified on ANGEL_S1D1 title 1 (44 min, 23 cells, 9 stc_discontinuity
 boundaries, 4 AC-3 streams): naive concat produces SHA-identical bytes
 to `mkvextract` of MakeMKV's MKV for ALL 4 audio tracks. An earlier
-implementation (`5b/6.5`) of FAP-resync dropped 7 bytes per stream and
-was wrong — reverted in commit `ca1256f`.
+implementation of FAP-resync dropped 7 bytes per stream and was wrong —
+reverted in commit `ca1256f`.
 
 The relevant FFmpeg patch the user maintains
 (`/home/chaoz/Desktop/Programs/FFmpeg` HEAD,
 `avformat/dvdvideo: fix AC3 frame loss at PTM discontinuity boundaries`)
 fixes a DIFFERENT bug — wrongly DISCARDING valid frames whose PTS
-equalled `prev_pts` after a PTM reset. The fix resets the duplicate-
-tracking state at the discontinuity. Same principle: byte stream
+equalled `prev_pts` after a PTM reset. Same principle: byte stream
 stays intact, time base resets.
+
+> **This rule is DVD-specific — do not generalise it across formats.**
+> On BD/UHD seamless-branching discs MakeMKV *does* drop whole audio
+> frames at PlayItem junctions. See the BD section below.
 
 Per-PES byte stripping for DVD private_stream_1 (`0xBD`) substreams:
 
@@ -344,10 +397,9 @@ MUST do the same strip.
 On ANGEL_S1D1 title 1, there are 5805 user_data blocks totaling
 ~1.26 MB — without stripping, our `.mpg` is +1.26 MB vs MakeMKV's.
 
-Current `disc-dvd::video_es::UserDataFilter` strips them (passes unit
-tests) but has a **known PES-boundary bug** producing ~106-byte zero
-gaps at certain video PES seams. Resulting `.mpg` is still ~727 KB
-larger than MakeMKV's and not yet byte-identical.
+`disc-dvd::video_es::UserDataFilter` strips them (passes unit tests)
+but has a **known PES-boundary bug** producing ~106-byte zero gaps at
+certain video PES seams.
 
 ### Subpicture format: VobSub (.idx + .sub), NOT .sup
 
@@ -369,39 +421,59 @@ index. `disc-dvd::vobsub` emits both.
 ```
 
 The `_DELAY {ms}ms` literal is **part of the filename, not a sidecar.**
-mkvtoolnix auto-reads it. Delay is measured per audio track as
-`first_audio_pts - first_video_pts` (90 kHz ticks / 90 = ms). Our
-`disc-dvd::chapters` writes the XML; `disc-cli::rip_title` is the
-user-facing command that produces all of the above.
+mkvtoolnix auto-reads it.
 
 ### `mkvmerge "invalid data"` warnings on raw audio are NOT authoritative
 
 When you `mkvmerge` a raw `.ac3` from our output, it can flag chunks
 (typically ~767 bytes = one AC-3 frame at 192 kbps) at stc_discontinuity
 boundaries as "invalid data … skipped." Those bytes match MakeMKV's
-elementary stream EXACTLY. The MKV container layer expects PTS
-metadata to handle the discontinuity; raw `.ac3` lacks that. Treat the
-warnings as expected; verify against `mkvextract` of MakeMKV's MKV
+elementary stream EXACTLY. Verify against `mkvextract` of MakeMKV's MKV
 output if in doubt.
 
-### Library defaults
+## BD / UHD ground truth
+
+### Seamless-branch AV sync: whole audio frames ARE dropped
+
+Verified 2026-07-31 on a 2-in-1 UHD (theatrical + extended sharing clips).
+**Every `AV sync issue … encountered overlapping frame` log line is a
+PlayItem junction in the MPLS** — 26 junctions matched 26 log events exact
+to the millisecond.
+
+Each clip's audio is independently frame-aligned but the video cut is not on
+an audio frame boundary, so the outgoing clip's last audio frame overhangs.
+MakeMKV accumulates a running skew; when it reaches one full audio frame it
+drops a frame from *every* audio track:
+
+- `10.666 ms` = 512 samples @ 48 kHz = one DTS core frame — the drop quantum
+- 26 overlaps summed to 156.657 ms; 14 drops × 10.666 = 149.324 ms
+- residual 7.333 ms = exactly the final reported skew
+
+Still unknown from outside and needing decomp: whether the dropped frame is
+the last of the outgoing clip or the first of the incoming one, and whether
+the accumulator runs in 90 kHz ticks or samples. Anchor it via the message
+catalog — the sweep has located the emitter, lookup and robot-mode writer;
+query the atlas for `semantic_name` `msg_catalog_lookup` / `message_emit_entry`
+rather than citing an address here.
+
+MPLS PlayItem layout, for reference: name `b[0:5]`, codec `b[5:9]`,
+flags `b[9:11]`, stc_id `b[11]`, IN/OUT `b[12:20]`, times in 45 kHz.
+
+## Library defaults
 
 * `libdvdread`: no logger callback registered. Its `CHECK_VALUE`
-  warnings go to stdout/stderr via `fprintf` (e.g. the
-  `libdvdread: Couldn't find device name.` messages on directory
-  rips). To route them through `log::warn!`, register a
-  `dvd_logger_cb.pf_log` with `DVDOpen2` — outstanding follow-up.
+  warnings go to stdout/stderr via `fprintf`. To route them through
+  `log::warn!`, register a `dvd_logger_cb.pf_log` with `DVDOpen2` —
+  outstanding follow-up.
 * `libdvdnav`: silently filters NV_PCK / system_header sectors out of
   the block stream — they don't reach the caller as `BLOCK_OK`. For
-  ANGEL title 7 this is 31 sectors; on title 1, 5081. We don't need
-  them either, but the math affects "bytes emitted by libdvdnav" vs
-  "sectors in the cells we ripped manually."
+  ANGEL title 7 this is 31 sectors; on title 1, 5081.
 * `libdvdread`'s `ifo_print.c` has a known cosmetic divisor bug
   (`sizeof(c_adt_t)` instead of `CELL_ADDR_SIZE`) in its debug
   printer. We don't link the printer — see `wrapper.h` and the
   comment in `disc-dvd::ifo::cell_adr_table`.
 
-### Current CLI surface
+## Current CLI surface
 
 **User commands** (format-agnostic — detect disc type, delegate to the backend):
 
@@ -413,14 +485,12 @@ output if in doubt.
 
 `rip` is THE pipeline. Selection is **index-anchored** (`rip --title N` is the
 0-based collection index from `list`; language is a convenience layer that
-falls back to all-of-kind on no match). `rip --title N` replaced the old
-`rip-title`. Min-length **unselects** (marks `SkipReason::MinLength`), never
-removes — short titles stay listed + explicitly selectable.
+falls back to all-of-kind on no match). Min-length **unselects** (marks
+`SkipReason::MinLength`), never removes.
 
 **DVD diagnostics** — `dvd <tool>` (source under `disc-cli/src/dvd/`). NOT the
 rip pipeline: isolated single stages + the older manual cell-walk, for
-debugging / byte-verification. Always callable; grouped + labelled so they
-don't confuse the base:
+debugging / byte-verification.
 
 | command | what it does |
 |---|---|
@@ -436,87 +506,104 @@ The traversal axis (manual cell-walk vs libdvdnav) and MakeMKV's protection
 modes (CellWalk/CellTrim/CellFull) belong as a future `rip` option resolved
 **inside `disc-dvd`**, not as separate commands.
 
-### Open follow-ups at end of 2026-05-22 session
+## Open follow-ups
 
-1. `video_es::UserDataFilter` PES-boundary bug — produces ~106-byte
-   zero gaps at certain seams. Filter passes its unit tests on the
-   same byte patterns in single-call feeds; bug is in the multi-call
-   trailing-3-byte holdback interacting with state.
-2. VobSub `.sub` size is ~30% smaller than MakeMKV's per stream —
-   likely missing multi-PES SPU collection (we treat every PES with
-   PTS as a complete SPU).
-3. EIA-608 → SRT decoder not yet written. CC bytes go to
-   `*_cc.bin` (raw user_data with start codes intact).
-4. libdvdread logger bridge — defer to follow-up.
+1. `video_es::UserDataFilter` PES-boundary bug — ~106-byte zero gaps at
+   certain seams. Filter passes its unit tests on the same byte patterns
+   in single-call feeds; bug is in the multi-call trailing-3-byte
+   holdback interacting with state.
+2. VobSub `.sub` size vs MakeMKV's per stream — partly addressed by the
+   multi-PES SPU continuation work; re-measure.
+3. EIA-608 → SRT decoder not yet written. CC bytes go to `*_cc.bin`
+   (raw user_data with start codes intact).
+4. libdvdread logger bridge — deferred.
 5. Multi-angle handling untested (no multi-angle disc in the corpus).
-6. Reachability-traced cellwalk mode (the "third mode" of MakeMKV
-   speculatively — atlas hasn't deep-examined FUN_00708050 so we
-   don't have ground truth).
-7. End-to-end verification still incomplete on Merlin (3hr) and
-   SPACE_SYMPHONY (LPCM) — only ANGEL_S1D1 has been compared.
-   Audit at `Tests/Disc-Remuxer/outputs/ours/AUDIT_2026-05-22.md`.
+6. Reachability-traced cellwalk mode (MakeMKV's "third mode") — no ground
+   truth yet.
+7. End-to-end verification incomplete on Merlin (3hr) and SPACE_SYMPHONY
+   (LPCM) — only ANGEL_S1D1 has been compared.
+8. The classification sweep is **56/100 batches done** (2,520 functions,
+   0 QC failures). DVD, foundation, BD and UHD tiers are complete; batches
+   056-099 remain, all never-fired tail. Resume from
+   `analysis/sweep/RESUME.md`. Follow-ups 1, 2, 3, 5 and 6 above now have
+   located functions recorded in the atlas — query it by `semantic_name`
+   rather than re-deriving.
+9. **The protection layer has never been traced.** CSS and AACS both show
+   zero fires despite owning CSS discs, because every capture ran against
+   already-decrypted folders/ISOs rather than a disc in a drive. One
+   re-trace lights up ~30 functions. Cheapest coverage win available.
+10. **The obfuscated-string scheme is located but not implemented.** Decoding
+   the literals statically would recover the whole message catalog and let a
+   log line be traced to its emitting function. Research-side only — recovered
+   strings never enter `crates/`.
 
-## Where things live
+---
 
-### Research workspace (read-only from this repo's perspective)
+# Part 4 — Where things live
+
+## Research workspace (read-only from this repo's perspective)
 
 | | Path |
 |---|---|
 | Atlas source-of-truth | `Tests/Disc-Remuxer/atlas/atlas.tsv` |
-| Atlas tool | `Tests/Disc-Remuxer/atlas/atlas.py` |
-| Atlas schema | `Tests/Disc-Remuxer/atlas/schema.md` |
-| Per-function deep-exam notes | `Tests/Disc-Remuxer/atlas/per_function/FUN_<addr>.md` |
-| Per-tier checklist | `Tests/Disc-Remuxer/atlas/tiers/B*.md` |
-| Rebucket audit log | `Tests/Disc-Remuxer/atlas/rebucket_log.tsv` |
-| Master trace + ambiguities doc | `Tests/Disc-Remuxer/TRACE_INDEX.md` |
+| Atlas tool (v2) | `Tests/Disc-Remuxer/atlas/atlas.py` |
+| Atlas schema (v2) | `Tests/Disc-Remuxer/atlas/schema_v2.md` |
+| Encyclopedia articles | `Tests/Disc-Remuxer/atlas/per_function/FUN_<addr>.md` |
+| Regenerated views | `Tests/Disc-Remuxer/atlas/views/` (`atlas.py report`) |
 | Decomp dumps | `Tests/Disc-Remuxer/decomp/functions/<shard>/FUN_<addr>.md` |
+| Call graph | `Tests/Disc-Remuxer/outputs/callgraph_1.18.4.tsv` |
+| Trace fired-sets (per disc) | `Tests/Disc-Remuxer/analysis/*.set` |
+| Classification sweep tooling | `Tests/Disc-Remuxer/analysis/sweep/` |
 | ptrace tracer + scripts | `Tests/Disc-Remuxer/traces/tools/` |
-| Reference rips (MKV form, for byte-compare) | `Tests/Disc-Remuxer/outputs/makemkv/` |
-| Reference rips (mkvextract'd streams) | `/home/chaoz/Desktop/Makemkv/<DISC>/` — ANGEL_S1D1, SPACE_SYMPHONY_MAETEL_1.iso_001, Merlin 1998 R1 SE |
-| Our rip outputs (for inspection / SHA-compare) | `Tests/Disc-Remuxer/outputs/ours/<disc>/<command>/` |
+| MakeMKV sources (bin + oss, 1.18.4) | `Tests/Disc-Remuxer/Sources/` |
+| Reference tools' sources | `Tests/Disc-Remuxer/Sources/{PgcDemux_1205_src,dgmpgdec2005src}` |
+| Reference rips (MKV, for byte-compare) | `Tests/Disc-Remuxer/outputs/makemkv/` |
+| Reference rips (mkvextract'd streams) | `/home/chaoz/Desktop/Makemkv/<DISC>/` |
+| Our rip outputs | `Tests/Disc-Remuxer/outputs/ours/<disc>/<command>/` |
+| **1.18.3-era archive (historical)** | `Tests/Disc-Remuxer/OLD/` |
 
-### Implementation repo (this directory)
+## Implementation repo (this directory)
 
 | | Path |
 |---|---|
 | Workspace root | `Cargo.toml` |
-| FFI crates (cargo-built C libs + bindgen) | `crates/libdvd{css,read,nav}-sys/` |
-| Pure-Rust core (traits, errors, check::*) | `crates/disc-core/` |
-| DVD safe wrappers | `crates/disc-dvd/` |
+| FFI crates | `crates/libdvd{css,read,nav}-sys/` |
+| Pure-Rust core | `crates/disc-core/` |
+| DVD safe wrappers + ops | `crates/disc-dvd/` |
 | CLI binary (`disc-remuxer`) | `crates/disc-cli/` |
 | Vendored upstream libraries | `vendor/libdvd{read,css,nav}/` (git submodules) |
 | Build output | `target/{debug,release}/disc-remuxer` |
 | rpath / linker config | `.cargo/config.toml` |
 
-### Test corpus (host filesystem)
+## Test corpus (host filesystem)
 
 | | Path |
 |---|---|
-| DVD test discs (directories + ISOs) | `/home/chaoz/Desktop/Makemkv/Dvds for testing/` |
+| DVD test discs | `/home/chaoz/Desktop/Makemkv/Dvds for testing/` |
 | BD + UHD test discs | `/home/chaoz/Desktop/Makemkv/Discs for testing/` |
 | libdvdcss key cache | `~/.dvdcss/<disc-id>/` |
 
-## Things to **never** do in a session
+Scratch (rips, traces, mux temp, `TMPDIR`) goes to on-disk `scratch/` under
+the research workspace — **never `/tmp`**, which is tmpfs/RAM here.
+
+## Things to never do in a session
 
 - Edit `atlas.tsv` by hand. Use `atlas.py` commands.
+- Use v1 vocabulary — buckets `B1`–`B8`, levels `L0`–`L4`, `rebucket`. Gone.
+- Import v1 semantic labels (summaries, notes, cone map) into v2. They are
+  quarantined evidence, not truth, and some are wrong. Re-derive instead.
+- Record a semantic claim at a confidence its evidence doesn't support.
+  `unknown` is a valid, useful answer.
+- Bulk-retire never-fired functions as dead. Use `corpus-gap`.
 - Mention the research source binary by name in source files or commit
-  messages. The atlas tracks research-to-impl mappings privately via
-  `impl_path`/`impl_function`; nothing leaks into this repo.
-- Use the old `Port of <SourceBinary> FUN_<addr>` docstring pattern. That
-  was the Python-port plan. Current code uses spec-citation comments only.
-- "Stub out" a function temporarily without recording the gap as `blockers`.
+  messages.
+- "Stub out" a function without recording the gap.
 - Add code that solves a problem differently from the proven correct
-  behavior. Faithful first, then improve later if needed.
-- Rebucket a function before it's at L≥2. `atlas.py rebucket` blocks
-  this — don't try to work around it. The per-function note is the
-  evidence that justifies the move.
-- Rebucket based on the v1 tag alone. Read the decomp / strings /
-  callers and let the note's findings drive the decision.
-- Run `atlas.py` with `--by=user` or any other identity unless explicitly
-  asked. Default is `claude_chat`.
-- Skip `atlas verify` and `atlas report` at session end when atlas work
-  was done this session. (Pure implementation-side sessions that don't
-  touch the atlas don't need this.)
+  behavior. Faithful first.
+- Run `atlas.py` with `--by=user` unless explicitly asked. Default is
+  `claude_chat`.
+- Skip `atlas verify` + `atlas report` at session end when atlas work was
+  done.
 
 When a session is unsure whether something is allowed, ask the user before
 proceeding. The cost of pausing is small; the cost of corrupting the atlas
