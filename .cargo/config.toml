@@ -1,0 +1,14 @@
+# Tell the linker to set rpath = $ORIGIN on every binary we produce,
+# so the binary finds the bundled libdvdread.so / libdvdcss.so / libdvdnav.so
+# files sitting next to it at runtime. No LD_LIBRARY_PATH needed.
+#
+# $ORIGIN is a special token the dynamic linker resolves to "the directory
+# containing the binary being loaded" — see ld.so(8). It is NOT a shell
+# variable; the cargo build does not expand it.
+
+[target.'cfg(target_os = "linux")']
+rustflags = ["-C", "link-args=-Wl,-rpath,$ORIGIN"]
+
+[target.'cfg(target_os = "macos")']
+# macOS uses @loader_path instead of $ORIGIN. Equivalent semantics.
+rustflags = ["-C", "link-args=-Wl,-rpath,@loader_path"]

@@ -1,0 +1,9 @@
+[submodule "vendor/libdvdread"]
+	path = vendor/libdvdread
+	url = https://code.videolan.org/videolan/libdvdread.git
+[submodule "vendor/libdvdcss"]
+	path = vendor/libdvdcss
+	url = https://code.videolan.org/videolan/libdvdcss.git
+[submodule "vendor/libdvdnav"]
+	path = vendor/libdvdnav
+	url = https://code.videolan.org/videolan/libdvdnav.git
