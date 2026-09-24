@@ -50,3 +50,6 @@ vendor/*/Makefile.in
 vendor/*/aclocal.m4
 vendor/*/libtool
 vendor/*/stamp-h1
+
+# Private session instructions — never commit
+CLAUDE.local.md
