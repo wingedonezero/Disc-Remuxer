@@ -1,0 +1,19 @@
+[package]
+name = "libdvdread-sys"
+description = "Builds our libdvdread and exposes its C API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "GPL-2.0-or-later"
+publish = false
+links = "dvdread"
+build = "build.rs"
+
+[dependencies]
+libdvdcss-sys = { path = "../libdvdcss-sys" }
+
+[build-dependencies]
+cc.workspace = true
+
+[lints]
+workspace = true

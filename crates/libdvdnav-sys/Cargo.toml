@@ -1,0 +1,19 @@
+[package]
+name = "libdvdnav-sys"
+description = "Builds our libdvdnav and exposes its C API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "GPL-2.0-or-later"
+publish = false
+links = "dvdnav"
+build = "build.rs"
+
+[dependencies]
+libdvdread-sys = { path = "../libdvdread-sys" }
+
+[build-dependencies]
+cc.workspace = true
+
+[lints]
+workspace = true

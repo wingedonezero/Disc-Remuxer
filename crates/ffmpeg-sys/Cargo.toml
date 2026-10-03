@@ -1,0 +1,21 @@
+[package]
+name = "ffmpeg-sys"
+description = "Builds our FFmpeg (libs/ffmpeg) against our DVD libraries and exposes its C API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "GPL-2.0-or-later"
+publish = false
+links = "ffmpeg"
+build = "build.rs"
+
+[dependencies]
+libdvdcss-sys = { path = "../libdvdcss-sys" }
+libdvdread-sys = { path = "../libdvdread-sys" }
+libdvdnav-sys = { path = "../libdvdnav-sys" }
+
+[build-dependencies]
+cc.workspace = true
+
+[lints]
+workspace = true

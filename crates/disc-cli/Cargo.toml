@@ -1,0 +1,24 @@
+[package]
+name = "disc-cli"
+description = "The disc-remuxer command-line program"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "disc-remuxer"
+path = "src/main.rs"
+
+[dependencies]
+ffmpeg-sys = { path = "../ffmpeg-sys" }
+libdvdcss-sys = { path = "../libdvdcss-sys" }
+libdvdread-sys = { path = "../libdvdread-sys" }
+libdvdnav-sys = { path = "../libdvdnav-sys" }
+log.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+
+[lints]
+workspace = true
