@@ -13,6 +13,7 @@ publish = false
 cc = "1"
 log = { version = "0.4", features = ["std"] }
 anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
 toml = "1"

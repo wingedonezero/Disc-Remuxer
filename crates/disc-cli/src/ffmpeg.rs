@@ -1,6 +1,5 @@
 //! Calls into our FFmpeg: versions, log routing, the stock DVD-Video probe.
 
-use anyhow::{bail, Context, Result};
 use ffmpeg_sys::log_level;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
@@ -53,18 +52,15 @@ unsafe extern "C" fn sink(level: c_int, line: *const c_char) {
     log::log!(target: "ffmpeg", level, "{text}");
 }
 
-pub fn probe_dvdvideo(source: &Path, title: i32) -> Result<()> {
+/// Opens one title with FFmpeg's DVD-Video demuxer and logs FFmpeg's stream
+/// dump; the error is FFmpeg's reason.
+pub fn probe_dvdvideo(source: &Path, title: i32) -> Result<(), String> {
     let path = CString::new(source.as_os_str().as_encoded_bytes())
-        .context("source path contains a NUL byte")?;
-    log::info!("probing title {title} of {} with FFmpeg's DVD-Video demuxer", source.display());
+        .map_err(|_| "the path contains a NUL byte".to_string())?;
     // SAFETY: path is a valid NUL-terminated string.
     let ret = unsafe { ffmpeg_sys::dr_probe_dvdvideo(path.as_ptr(), title) };
     if ret < 0 {
-        bail!(
-            "FFmpeg could not open title {title} of {}: {}",
-            source.display(),
-            ffmpeg_sys::error_text(ret)
-        );
+        return Err(ffmpeg_sys::error_text(ret));
     }
     Ok(())
 }

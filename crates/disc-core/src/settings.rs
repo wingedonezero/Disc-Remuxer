@@ -441,3 +441,29 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     }
     lines
 }
+
+/// `docs/SETTINGS.md`: every setting of the registry as a reference page.
+#[must_use]
+pub fn markdown() -> String {
+    let mut out = String::from(
+        "# Settings\n\n\
+         Generated from the settings registry (`crates/disc-core/src/settings.rs`); a test \
+         keeps this page in step (`UPDATE_DOCS=1 cargo test -p disc-core` rewrites it).\n\n\
+         The settings file (`~/.config/disc-remuxer/settings.toml`, or `--settings FILE`) lists \
+         every setting below with its value. It is created on the first run and kept in step \
+         with the program on every start: missing settings are added with their default, \
+         unknown entries removed, kept values never changed, the old file saved as a backup \
+         first. A wrong value stops the program and leaves the file as it is. The value in \
+         effect comes from the default, then the settings file, then the command line \
+         (`--set group.key=value`).\n",
+    );
+    let mut group = "";
+    for s in SETTINGS {
+        if s.group != group {
+            group = s.group;
+            let _ = write!(out, "\n## [{group}]\n\n| Setting | Allowed | Default | What it does |\n|---|---|---|---|\n");
+        }
+        let _ = writeln!(out, "| `{}` | {} | `{}` | {} |", s.name(), s.allowed(), s.default.value(), s.help.split_whitespace().collect::<Vec<_>>().join(" "));
+    }
+    out
+}

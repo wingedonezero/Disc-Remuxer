@@ -1,14 +1,18 @@
 //! `disc-remuxer`: the command-line front end.
 //!
-//! Skeleton stage: `version`, and `probe`, which runs FFmpeg's DVD-Video
-//! demuxer unchanged on one title so its behaviour can be checked on real
-//! discs before anything is changed.
+//! Commands so far: `version`, `settings`, `scan` (which discs are found under
+//! a path and where their job folders go) and `probe` (FFmpeg's DVD-Video
+//! demuxer, unchanged, on one title of each disc found; with an output folder
+//! every disc becomes a job with its own job folder and job log).
 
 mod ffmpeg;
+mod jobs;
 mod logger;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use disc_core::emit;
+use disc_core::msg;
 use disc_core::settings::{self, Settings};
 use std::path::{Path, PathBuf};
 
@@ -40,18 +44,31 @@ enum Command {
         #[command(subcommand)]
         what: Option<SettingsCommand>,
     },
-    /// Open one DVD title with FFmpeg's DVD-Video demuxer as it is and print
-    /// the streams it finds.
+    /// List the discs found under a path and the job folder each would get.
+    /// Creates nothing.
+    Scan {
+        /// A disc (folder or image) or a folder holding discs.
+        source: PathBuf,
+        /// Output folder (overrides output.root).
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
+    },
+    /// Open one title of every disc found with FFmpeg's DVD-Video demuxer as
+    /// it is and log the streams it finds. With an output folder, every disc
+    /// is a job with its own job folder and job log.
     Probe {
-        /// DVD folder (holding `VIDEO_TS`) or image file.
+        /// A disc (folder or image) or a folder holding discs.
         source: PathBuf,
         /// Title number (1-based; 0 = the demuxer's own choice).
         #[arg(long, default_value_t = 1)]
         title: i32,
+        /// Output folder for the job folders (overrides output.root).
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone, Copy)]
 enum SettingsCommand {
     /// Every setting with its value and where the value came from (default).
     Show,
@@ -63,6 +80,7 @@ fn main() {
     let cli = Cli::parse();
     // Until the settings are read, the console shows what -q / -v ask for.
     logger::init(console_level(&cli, None));
+    ffmpeg::route_log(logger::max_level());
 
     let settings = match load_settings(&cli) {
         Ok(s) => s,
@@ -71,11 +89,11 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let level = console_level(&cli, settings.text("log.console"));
-    log::set_max_level(level);
-    ffmpeg::route_log(level);
+    logger::set_console(console_level(&cli, settings.text("log.console")));
+    ffmpeg::route_log(logger::max_level());
 
-    if let Err(e) = run(cli.command, &settings, cli.settings.as_deref()) {
+    let command_line = std::env::args().collect::<Vec<_>>().join(" ");
+    if let Err(e) = run(&cli, &settings, &command_line) {
         log::error!("{e:#}");
         std::process::exit(1);
     }
@@ -99,54 +117,78 @@ fn console_level(cli: &Cli, setting: Option<&str>) -> log::LevelFilter {
     }
 }
 
+fn settings_path(cli: &Cli) -> Result<PathBuf> {
+    match &cli.settings {
+        Some(p) => Ok(p.clone()),
+        None => settings::default_path().context("no default settings file"),
+    }
+}
+
 /// Reads the settings file (bringing it in step with this program) and applies
 /// the command-line overrides.
 fn load_settings(cli: &Cli) -> Result<Settings> {
-    let path = match &cli.settings {
-        Some(p) => p.clone(),
-        None => settings::default_path()?,
-    };
+    let path = settings_path(cli)?;
     let (mut s, report) = settings::load(&path)?;
+    emit!(msg::SETTINGS_FILE, path = path.display());
     if report.created {
-        log::info!("settings file created with every setting at its default: {}", path.display());
+        emit!(msg::SETTINGS_CREATED, path = path.display());
     }
     for (name, value) in &report.added {
-        log::info!("setting added to the settings file: {name} = {value}");
+        emit!(msg::SETTING_ADDED, name = name, value = value);
     }
     for (name, value) in &report.removed {
-        log::warn!("setting removed from the settings file (this program has no such setting): {name} = {value}");
+        emit!(msg::SETTING_REMOVED, name = name, value = value);
     }
     if let Some(backup) = &report.backup {
-        log::info!("previous settings file saved as {}", backup.display());
+        emit!(msg::SETTINGS_BACKUP, path = backup.display());
     }
-    log::debug!("settings file: {}", path.display());
     for assignment in &cli.set {
         s.set_from_command_line(assignment)?;
     }
     Ok(s)
 }
 
-fn run(command: Command, settings: &Settings, settings_file: Option<&Path>) -> Result<()> {
-    match command {
+/// The output folder: `--out`, else `output.root`, else none.
+fn output_root<'a>(out: Option<&'a Path>, settings: &'a Settings) -> Option<&'a Path> {
+    out.or_else(|| settings.text("output.root").map(Path::new))
+}
+
+fn run(cli: &Cli, settings: &Settings, command_line: &str) -> Result<()> {
+    match &cli.command {
         Command::Version => {
             print_versions();
             Ok(())
         }
-        Command::Settings { what } => match what.unwrap_or(SettingsCommand::Show) {
-            SettingsCommand::Show => {
-                show_settings(settings);
-                Ok(())
+        Command::Settings { what } => {
+            match what.unwrap_or(SettingsCommand::Show) {
+                SettingsCommand::Show => show_settings(settings),
+                SettingsCommand::Path => println!("{}", settings_path(cli)?.display()),
             }
-            SettingsCommand::Path => {
-                let path = match settings_file {
-                    Some(p) => p.to_path_buf(),
-                    None => settings::default_path().context("no default settings file")?,
-                };
-                println!("{}", path.display());
-                Ok(())
+            Ok(())
+        }
+        Command::Scan { source, out } => {
+            let discs = jobs::find(source, settings)?;
+            let root = output_root(out.as_deref(), settings);
+            for job in jobs::plan(source, &discs, root, settings) {
+                match &job.folder {
+                    Some(f) => println!("{}\t{}\t-> {}", job.disc.layout.describe(), job.disc.path.display(), f.display()),
+                    None => println!("{}\t{}", job.disc.layout.describe(), job.disc.path.display()),
+                }
             }
-        },
-        Command::Probe { source, title } => ffmpeg::probe_dvdvideo(&source, title),
+            Ok(())
+        }
+        Command::Probe { source, title, out } => {
+            let discs = jobs::find(source, settings)?;
+            let root = output_root(out.as_deref(), settings);
+            let planned = jobs::plan(source, &discs, root, settings);
+            jobs::run(&planned, settings, command_line, |disc| {
+                emit!(msg::PROBE_TITLE, title = title, source = disc.path.display());
+                ffmpeg::probe_dvdvideo(&disc.path, *title).map_err(|reason| {
+                    emit!(msg::PROBE_FAILED, title = title, source = disc.path.display(), reason = reason);
+                    anyhow::anyhow!("title {title} could not be opened")
+                })
+            })
+        }
     }
 }
 
@@ -165,4 +207,46 @@ fn print_versions() {
     println!("  libdvdread    {}", libdvdread_sys::VERSION);
     println!("  libdvdnav     {}", libdvdnav_sys::VERSION);
     println!("  libdvdcss     {}", libdvdcss_sys::VERSION);
+}
+
+/// `docs/CLI.md`: every command with its full help, generated from the
+/// command-line definitions.
+#[cfg(test)]
+mod cli_doc {
+    use clap::CommandFactory;
+    use std::fmt::Write as _;
+
+    fn page() -> String {
+        let mut out = String::from(
+            "# Commands and options\n\nGenerated from the command-line definitions \
+             (`crates/disc-cli/src/main.rs`); a test keeps this page in step \
+             (`UPDATE_DOCS=1 cargo test -p disc-cli` rewrites it). Settings: `docs/SETTINGS.md`.\n",
+        );
+        let mut root = super::Cli::command();
+        root.build();
+        add(&mut out, &mut root, "disc-remuxer");
+        out
+    }
+
+    fn add(out: &mut String, cmd: &mut clap::Command, path: &str) {
+        let help = cmd.render_long_help().to_string();
+        let _ = write!(out, "\n## `{path}`\n\n```text\n{}\n```\n", help.trim_end());
+        let names: Vec<String> =
+            cmd.get_subcommands().filter(|s| s.get_name() != "help").map(|s| s.get_name().to_string()).collect();
+        for name in names {
+            let sub = cmd.find_subcommand_mut(&name).expect("listed above");
+            add(out, sub, &format!("{path} {name}"));
+        }
+    }
+
+    #[test]
+    fn cli_doc_matches_the_definitions() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/CLI.md");
+        let want = page();
+        if std::env::var_os("UPDATE_DOCS").is_some() {
+            std::fs::write(path, &want).unwrap();
+        }
+        let have = std::fs::read_to_string(path).unwrap_or_default();
+        assert!(have == want, "docs/CLI.md is out of date: run UPDATE_DOCS=1 cargo test -p disc-cli");
+    }
 }

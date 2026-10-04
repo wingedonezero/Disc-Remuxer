@@ -35,22 +35,45 @@ system, IFO, NAV packets), libdvdcss (CSS) — all from `libs/`.
 | Crate | Role |
 |---|---|
 | `disc-cli` | the `disc-remuxer` binary |
-| `disc-core` | settings (registry, settings file, values in effect); later the message catalog, job folders and job logs |
+| `disc-core` | settings (registry, settings file, values in effect), the message catalog, finding discs and choosing job folders |
 | `ffmpeg-sys` | builds `libs/ffmpeg`; C glue (`glue/glue.c`) + declarations |
 | `libdvdnav-sys`, `libdvdread-sys`, `libdvdcss-sys` | build `libs/libdvd*` |
 
 ## Commands so far
 
 - `disc-remuxer version` — program and library versions.
-- `disc-remuxer probe <source> [--title N]` — FFmpeg's DVD-Video demuxer as
-  it is, one title: stream list, chapters. For checking its behaviour on real
-  discs before changing it.
+- `disc-remuxer scan <path> [--out DIR]` — the discs found and their job
+  folders; creates nothing.
+- `disc-remuxer probe <path> [--title N] [--out DIR]` — FFmpeg's DVD-Video
+  demuxer as it is, one title of every disc found: stream list, chapters;
+  with an output folder each disc is a job with its job folder and logs.
 - `disc-remuxer settings [show|path]` — every setting with its value and
   source; the settings file's path.
 - Global: `-v` / `-vv` (debug / trace; includes FFmpeg's, libdvdnav's and
   libdvdread's log lines), `-q`, `--settings FILE`, `--set group.key=value`.
 
-## Settings
+## Commands, settings, messages, jobs
+
+Commands and options: `docs/CLI.md`; settings: `docs/SETTINGS.md` (both
+generated from the code, kept in step by tests).
+
+Messages the program writes come from one catalog (`disc-core/src/msg.rs`):
+number, level, text with named fields, written as `[id] text`. Number areas:
+1xxx program / settings / jobs, 2xxx sources / discs, 3xxx titles, 4xxx
+reading, 5xxx streams / timeline, 6xxx output. Lines from FFmpeg and the
+libraries under it are written as they come, prefixed `ffmpeg:`.
+
+Discs are found under a given path (`output.scan_depth` levels deep: folders
+holding VIDEO_TS or BDMV, folders holding the disc files directly, `.iso` /
+`.img` images). With an output folder (`--out` or `output.root`) every disc is
+a job with its own job folder (named after the disc folder or image;
+`output.keep_structure` recreates the searched tree; `_001`, `_002`, ... on a
+clash) holding `<folder>_disc-remuxer.log` (info and up, timestamps, starting
+with the command and every setting in effect) and, with `log.debug_file`,
+`<folder>_disc-remuxer_debug.log` (everything). The console shows up to
+`log.console` (`-q` / `-v` override).
+
+### Settings file
 
 One registry in `disc-core` lists every setting (group, key, type, default,
 help). The settings file (`~/.config/disc-remuxer/settings.toml`, or
