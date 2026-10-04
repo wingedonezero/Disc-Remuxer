@@ -78,3 +78,37 @@ pub fn error_text(code: c_int) -> String {
         std::ffi::CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned()
     }
 }
+
+/// Disc I/O of our FFmpeg (`libavformat/discio.h`): sources and block reads.
+pub mod discio {
+    use std::os::raw::{c_char, c_int, c_void};
+
+    pub const BLOCK_SIZE: usize = 2048;
+
+    /// `DiscIOSourceOps`.
+    #[repr(C)]
+    pub struct SourceOps {
+        pub read_at: unsafe extern "C" fn(opaque: *mut c_void, pos: i64, buf: *mut u8, len: c_int) -> c_int,
+        pub close: Option<unsafe extern "C" fn(opaque: *mut c_void)>,
+    }
+
+    /// `DiscIOSource` (only handled through pointers here).
+    #[repr(C)]
+    pub struct Source {
+        _private: [u8; 0],
+    }
+
+    extern "C" {
+        pub fn ff_discio_source_new(
+            logctx: *mut c_void,
+            name: *const c_char,
+            size: i64,
+            ops: *const SourceOps,
+            opaque: *mut c_void,
+        ) -> *mut Source;
+        pub fn ff_discio_source_open_file(logctx: *mut c_void, path: *const c_char, out: *mut *mut Source) -> c_int;
+        pub fn ff_discio_source_free(src: *mut *mut Source);
+        pub fn ff_discio_read_blocks(src: *mut Source, pos: i64, buf: *mut u8, len: c_int, attempts: c_int, quiet: c_int) -> c_int;
+        pub fn ff_discio_read_bytes(src: *mut Source, pos: i64, buf: *mut u8, len: c_int, attempts: c_int, quiet: c_int) -> c_int;
+    }
+}
