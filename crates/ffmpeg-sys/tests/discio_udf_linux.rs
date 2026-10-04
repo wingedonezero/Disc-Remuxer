@@ -498,6 +498,16 @@ fn adjacent_pieces_are_joined() {
 }
 
 #[test]
+fn blocks_past_the_allocation_are_one_unrecorded_run() {
+    // README records 2^50 bytes but has one block of allocation: the rest is
+    // not recorded (and mapping it must not take one step per block).
+    let mut im = standard();
+    im.file_entry(4, 5, 1 << 50, 4, &[(2048, 10)]);
+    let (v, _img) = mount(&im).unwrap();
+    assert_eq!(v.open("/README").unwrap().extents, vec![(p(10), 1), (-1, (1 << 39) - 1)]);
+}
+
+#[test]
 fn paths_follow_the_vfs() {
     let (v, _img) = mount(&standard()).unwrap();
     assert!(v.open("/VIDEO_TS/./VIDEO_TS.IFO").is_ok());
