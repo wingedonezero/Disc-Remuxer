@@ -887,3 +887,55 @@ fn corpus_matches_the_reference_dumps() {
     assert!(images > 0, "no image of the index exists");
     assert_eq!(diffs, 0, "the reader differs from the reference dumps");
 }
+
+// ---- our loop guards (structural, never time-based) ----
+
+/// `VIDEO_TS` holds `LOOP.IFO` (an indirect entry chain 60 -> 62 -> 60) and
+/// `AED.IFO` (a 1 TiB file whose allocation extent at 72 continues at 72).
+fn loop_image() -> Img {
+    let mut im = build("LOOPS", &[fid("LOOP.IFO", 0, 60, 0), fid("AED.IFO", 0, 70, 0)]);
+    // strategy 4096: the indirect entry is the block after the file entry
+    for (fe, next) in [(60u32, 62u32), (62, 60)] {
+        im.file_entry(fe, 5, 100, 4096, &[(100, 30)]);
+        let mut ie = vec![0u8; S];
+        put16(&mut ie, 0x14, 4);
+        put32(&mut ie, 36, 2048);
+        put32(&mut ie, 40, next);
+        put16(&mut ie, 44, 0);
+        tag(&mut ie, 259, fe + 1, 36);
+        im.put(PART_START + fe + 1, &ie);
+    }
+    // the file entry's one descriptor continues in the allocation extent at 72,
+    // which holds one recorded block and then continues at 72 again
+    im.file_entry(70, 5, 1 << 40, 4, &[((3 << 30) | 2048, 72)]);
+    let mut aed = vec![0u8; S];
+    put32(&mut aed, 20, 16);
+    put32(&mut aed, 24, 2048);
+    put32(&mut aed, 28, 30);
+    put32(&mut aed, 32, (3 << 30) | 2048);
+    put32(&mut aed, 36, 72);
+    tag(&mut aed, 258, 72, 24);
+    im.put(PART_START + 72, &aed);
+    im
+}
+
+#[test]
+fn an_indirect_entry_loop_stops_at_the_first_revisit() {
+    let (v, _img) = mount(&loop_image()).unwrap();
+    let t = std::time::Instant::now();
+    assert!(v.with_file("/VIDEO_TS/LOOP.IFO", |_| ()).is_err());
+    // the first revisit, not upstream's 1024 entries
+    assert!(t.elapsed() < std::time::Duration::from_secs(5));
+}
+
+#[test]
+fn an_allocation_extent_loop_is_an_error_not_a_hang() {
+    let (v, _img) = mount(&loop_image()).unwrap();
+    let t = std::time::Instant::now();
+    assert!(v.with_file("/VIDEO_TS/AED.IFO", |_| ()).is_err());
+    // stopped at the first revisit (without the guard the walk runs on through
+    // the 1 TiB the file entry records)
+    assert!(t.elapsed() < std::time::Duration::from_secs(5), "took {:?}", t.elapsed());
+    // the rest of the volume is unaffected
+    assert!(v.with_file("/README", |_| ()).is_ok());
+}

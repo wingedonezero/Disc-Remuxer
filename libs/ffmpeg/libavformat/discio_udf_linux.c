@@ -52,7 +52,12 @@
  * Structural guards (never time-based), where the C code could loop forever
  * or step outside its data:
  * - udf_find_vat_block stops at block 0 instead of wrapping below it.
- * - A strategy-4096 indirect entry chain ends after 1024 entries, as upstream.
+ * - A strategy-4096 indirect entry chain ends after 1024 entries, as upstream,
+ *   or (our loop guard) as soon as it comes back to a location it visited.
+ * - Our loop guards (structural, never time-based): an allocation extent chain
+ *   that comes back to a block it entered makes the inode unusable; a block
+ *   translation through a metadata partition that reaches a metadata
+ *   partition again fails.
  *
  * The operations of the common interface follow the Linux VFS on top of the
  * driver: a path is split on '/', empty components and "." are skipped, ".."
@@ -234,6 +239,7 @@ typedef struct ICacheSlot {
 /* the read side of struct udf_sb_info */
 typedef struct UDFLinux {
     DiscIOSource *src;
+    int       meta_depth;   /* our loop guard: metadata translations in progress */
     uint32_t  blocksize;    /* sb->s_blocksize */
     int       bits;         /* sb->s_blocksize_bits */
     uint64_t  sectors;      /* size of the device in 2048-byte sectors */
@@ -257,6 +263,9 @@ typedef struct ExtentPosition {
     uint8_t *bh;            /* allocation extent block (blocksize bytes) or NULL */
     uint32_t offset;
     LbAddr   block;
+    /* our loop guard: the allocation extent blocks this walk has entered */
+    uint64_t *visited;
+    int       nb_visited, visited_cap;
 } ExtentPosition;
 
 /* one allocation descriptor read by udf_current_aext */
@@ -553,6 +562,8 @@ static int inode_is_reg(const UDFInode *inode)
 static void epos_release(ExtentPosition *epos)
 {
     av_freep(&epos->bh);
+    av_freep(&epos->visited);
+    epos->nb_visited = epos->visited_cap = 0;
 }
 
 /*
@@ -648,6 +659,33 @@ static int udf_next_aext(UDFLinux *sb, const UDFInode *inode, ExtentPosition *ep
             udf_log(sb, AV_LOG_WARNING, "too many indirect extents in the inode at block %"PRIu32,
                     inode->location.lbn);
             return udf_corrupt(sb, inode->location, "too many indirect extents");
+        }
+
+        /* our loop guard: a chain of allocation extents that comes back to a
+         * block it already entered can never end (upstream only limits the
+         * extents followed in one call, so a loop through recorded or
+         * zero-length extents runs forever) */
+        {
+            uint64_t key = (uint64_t)a->eloc.part << 32 | a->eloc.lbn;
+
+            for (int i = 0; i < epos->nb_visited; i++) {
+                if (epos->visited[i] == key) {
+                    udf_log(sb, AV_LOG_WARNING, "the allocation extents of the inode at block %"PRIu32
+                            " come back to block %"PRIu32" of partition %u: a loop, the inode is unusable",
+                            inode->location.lbn, a->eloc.lbn, a->eloc.part);
+                    return udf_corrupt(sb, inode->location, "allocation extent chain loops");
+                }
+            }
+            if (epos->nb_visited == epos->visited_cap) {
+                int cap = epos->visited_cap ? 2 * epos->visited_cap : 8;
+                uint64_t *v = av_realloc_array(epos->visited, cap, sizeof(*v));
+
+                if (!v)
+                    return AVERROR(ENOMEM);
+                epos->visited     = v;
+                epos->visited_cap = cap;
+            }
+            epos->visited[epos->nb_visited++] = key;
         }
 
         epos->block  = a->eloc;
@@ -832,7 +870,29 @@ static uint32_t udf_try_read_meta(UDFLinux *sb, const UDFInode *inode, uint32_t 
 
 static UDFInode *udf_find_metadata_inode_efe(UDFLinux *sb, uint32_t meta_file_loc, uint16_t partition_ref);
 
+static uint32_t udf_get_pblock_meta25_inner(UDFLinux *sb, uint32_t block, uint16_t partition,
+                                            uint32_t offset);
+
+/* our loop guard: translating a block through the metadata partition reads
+ * the metadata file's allocation descriptors; when those lead back into a
+ * metadata partition, upstream recurses without end (stack overflow) */
 static uint32_t udf_get_pblock_meta25(UDFLinux *sb, uint32_t block, uint16_t partition, uint32_t offset)
+{
+    uint32_t ret;
+
+    if (sb->meta_depth) {
+        udf_log(sb, AV_LOG_WARNING, "metadata partition %u is reached again while translating "
+                "through a metadata partition (block %"PRIu32"): a loop", partition, block);
+        return UDF_BAD_BLOCK;
+    }
+    sb->meta_depth++;
+    ret = udf_get_pblock_meta25_inner(sb, block, partition, offset);
+    sb->meta_depth--;
+    return ret;
+}
+
+static uint32_t udf_get_pblock_meta25_inner(UDFLinux *sb, uint32_t block, uint16_t partition,
+                                            uint32_t offset)
 {
     PartMap *map = &sb->partmaps[partition];
     const UDFInode *inode = map->metadata_fe ? map->metadata_fe : map->mirror_fe;
@@ -891,6 +951,9 @@ static int udf_read_inode(UDFLinux *sb, LbAddr iloc, int hidden_inode, UDFInode 
     uint8_t bh[UDF_MAX_BLOCKSIZE], ibh[UDF_MAX_BLOCKSIZE];
     uint32_t bs = sb->blocksize;
     unsigned indirections = 0;
+    /* our loop guard: the locations of this indirect entry chain */
+    uint64_t seen[UDF_MAX_ICB_NESTING + 1];
+    unsigned nb_seen = 0;
     unsigned link_count;
     uint16_t ident, strategy;
     UDFInode *inode;
@@ -922,8 +985,16 @@ reread:
 
         if (!udf_read_ptagged(sb, iloc, 1, ibh, &iident) && iident == TAG_IDENT_IE &&
             AV_RL32(ibh + 36)) {    /* indirectICB.extLength */
+            seen[nb_seen++] = (uint64_t)iloc.part << 32 | iloc.lbn;
             iloc.lbn  = AV_RL32(ibh + 40);
             iloc.part = AV_RL16(ibh + 44);
+            for (unsigned i = 0; i < nb_seen; i++) {
+                if (seen[i] == ((uint64_t)iloc.part << 32 | iloc.lbn)) {
+                    udf_log(sb, AV_LOG_WARNING, "the indirect entries come back to block %"PRIu32
+                            " of partition %u: a loop", iloc.lbn, iloc.part);
+                    return udf_corrupt(sb, iloc, "indirect entry chain loops");
+                }
+            }
             if (++indirections > UDF_MAX_ICB_NESTING) {
                 udf_log(sb, AV_LOG_WARNING, "too many ICBs in ICB hierarchy (max %d supported)",
                         UDF_MAX_ICB_NESTING);
