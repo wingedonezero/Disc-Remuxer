@@ -2793,14 +2793,14 @@ static int udf_walk(UDFLinux *sb, const char *path, LbAddr *loc, UDFInode **inod
 static int udf_file_extents(UDFLinux *sb, const UDFInode *inode, DiscIOFile *f)
 {
     uint64_t bs = sb->blocksize, per = bs / DISCIO_BLOCK_SIZE;
-    uint64_t nblocks = (inode->size + bs - 1) / bs;
+    uint64_t nblocks = inode->size / bs + (inode->size % bs != 0);
     ExtentPosition pos = { .bh = NULL, .offset = 0, .block = inode->location };
     uint64_t lbcount = 0;
     int have = 0, ret = 0, cap = 0;
     Aext a = { { 0, 0 }, 0, 0 };
 
     for (uint64_t b = 0; b < nblocks; b++) {
-        uint64_t bcount = b << sb->bits;
+        uint64_t bcount = b << sb->bits, run = per;
         int64_t start = -1;
         DiscIOExtent *last;
 
@@ -2811,7 +2811,13 @@ static int udf_file_extents(UDFLinux *sb, const UDFInode *inode, DiscIOFile *f)
             if (ret < 0)
                 goto out;
             if (!ret) {
+                /* past the last allocation descriptor every remaining block
+                 * maps to nothing (the descriptors would end here again for
+                 * each of them): one run, instead of one step per block of a
+                 * possibly huge recorded size */
                 have = 0;
+                run  = (nblocks - b) * per;
+                b    = nblocks - 1;
                 break;
             }
             lbcount += a.elen;
@@ -2825,7 +2831,7 @@ static int udf_file_extents(UDFLinux *sb, const UDFInode *inode, DiscIOFile *f)
         last = f->nb_extents ? &f->extents[f->nb_extents - 1] : NULL;
         if (last && ((last->sector < 0 && start < 0) ||
                      (last->sector >= 0 && start >= 0 && start == last->sector + last->count))) {
-            last->count += per;
+            last->count += run;
             continue;
         }
         if (f->nb_extents == cap) {
@@ -2840,7 +2846,7 @@ static int udf_file_extents(UDFLinux *sb, const UDFInode *inode, DiscIOFile *f)
             cap = ncap;
         }
         f->extents[f->nb_extents].sector = start;
-        f->extents[f->nb_extents].count  = per;
+        f->extents[f->nb_extents].count  = run;
         f->nb_extents++;
     }
     ret = 0;
