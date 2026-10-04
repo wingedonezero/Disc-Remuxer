@@ -12,6 +12,7 @@ name = "disc-remuxer"
 path = "src/main.rs"
 
 [dependencies]
+disc-core = { path = "../disc-core" }
 ffmpeg-sys = { path = "../ffmpeg-sys" }
 libdvdcss-sys = { path = "../libdvdcss-sys" }
 libdvdread-sys = { path = "../libdvdread-sys" }

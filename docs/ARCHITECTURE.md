@@ -35,6 +35,7 @@ system, IFO, NAV packets), libdvdcss (CSS) — all from `libs/`.
 | Crate | Role |
 |---|---|
 | `disc-cli` | the `disc-remuxer` binary |
+| `disc-core` | settings (registry, settings file, values in effect); later the message catalog, job folders and job logs |
 | `ffmpeg-sys` | builds `libs/ffmpeg`; C glue (`glue/glue.c`) + declarations |
 | `libdvdnav-sys`, `libdvdread-sys`, `libdvdcss-sys` | build `libs/libdvd*` |
 
@@ -44,5 +45,17 @@ system, IFO, NAV packets), libdvdcss (CSS) — all from `libs/`.
 - `disc-remuxer probe <source> [--title N]` — FFmpeg's DVD-Video demuxer as
   it is, one title: stream list, chapters. For checking its behaviour on real
   discs before changing it.
+- `disc-remuxer settings [show|path]` — every setting with its value and
+  source; the settings file's path.
 - Global: `-v` / `-vv` (debug / trace; includes FFmpeg's, libdvdnav's and
-  libdvdread's log lines), `-q`.
+  libdvdread's log lines), `-q`, `--settings FILE`, `--set group.key=value`.
+
+## Settings
+
+One registry in `disc-core` lists every setting (group, key, type, default,
+help). The settings file (`~/.config/disc-remuxer/settings.toml`, or
+`--settings`) always lists all of them with their help text. On every start it
+is brought in step with the registry: missing settings are added with their
+default, unknown entries removed, kept values never changed, the old file saved
+as a backup first. A wrong value stops the program and leaves the file as it
+is. Value in effect: default, then settings file, then command line.
