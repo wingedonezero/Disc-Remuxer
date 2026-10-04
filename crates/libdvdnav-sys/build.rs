@@ -92,7 +92,10 @@ fn main() {
     for f in files {
         build.file(src.join(f));
     }
+    // Hooks for this crate's tests (glue/selftest.c); unused otherwise.
+    build.file(manifest.join("glue/selftest.c"));
     build.compile("dvdnav");
+    println!("cargo:rerun-if-changed={}", manifest.join("glue").display());
     // libdvdnav uses pthread mutexes.
     println!("cargo:rustc-link-lib=pthread");
 
