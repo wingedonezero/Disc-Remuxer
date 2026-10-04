@@ -49,8 +49,9 @@ DiscIOSource *ff_discio_source_new(void *logctx, const char *name, int64_t size,
     }
     src->ops    = ops;
     src->opaque = opaque;
-    src->size   = size;
-    src->logctx = logctx;
+    src->size     = size;
+    src->logctx   = logctx;
+    src->attempts = DISCIO_DEFAULT_ATTEMPTS;
     return src;
 }
 

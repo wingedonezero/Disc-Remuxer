@@ -98,6 +98,54 @@ pub mod discio {
         _private: [u8; 0],
     }
 
+    /// `DiscIOExtent`.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Extent {
+        pub sector: i64,
+        pub count: i64,
+    }
+
+    /// `DiscIOFile`.
+    #[repr(C)]
+    pub struct File {
+        pub size: i64,
+        pub nb_extents: c_int,
+        pub extents: *mut Extent,
+    }
+
+    /// `DiscIODirCallback`.
+    pub type DirCallback = unsafe extern "C" fn(opaque: *mut c_void, name: *const c_char, is_dir: c_int) -> c_int;
+
+    /// `DiscIOFSOps`.
+    #[repr(C)]
+    pub struct FsOps {
+        pub name: *const c_char,
+        pub open_file: unsafe extern "C" fn(fs: *mut Fs, path: *const c_char, out: *mut *mut File) -> c_int,
+        pub list_dir: unsafe extern "C" fn(fs: *mut Fs, path: *const c_char, cb: DirCallback, opaque: *mut c_void) -> c_int,
+        pub close: Option<unsafe extern "C" fn(fs: *mut Fs)>,
+    }
+
+    /// `DISCIO_LABEL_SIZE`.
+    pub const LABEL_SIZE: usize = 161;
+
+    /// `DiscIOFS`.
+    #[repr(C)]
+    pub struct Fs {
+        pub ops: *const FsOps,
+        pub priv_: *mut c_void,
+        pub src: *mut Source,
+        pub label: [c_char; LABEL_SIZE],
+    }
+
+    extern "C" {
+        pub fn ff_discio_fs_close(fs: *mut *mut Fs);
+        pub fn ff_discio_file_free(file: *mut *mut File);
+        pub fn ff_discio_file_read(fs: *mut Fs, file: *const File, pos: i64, buf: *mut u8, len: c_int) -> c_int;
+        pub fn ff_discio_iso9660_mount(src: *mut Source, joliet: c_int, out: *mut *mut Fs) -> c_int;
+        pub fn ff_discio_iso9660_creation_date(fs: *const Fs, date: *mut c_char) -> c_int;
+    }
+
     extern "C" {
         pub fn ff_discio_source_new(
             logctx: *mut c_void,

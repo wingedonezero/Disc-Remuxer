@@ -54,6 +54,8 @@ typedef struct DiscIOSource {
     int64_t                size;    /**< bytes */
     char                  *name;    /**< for log messages (the path) */
     void                  *logctx;  /**< av_log() context, may be NULL */
+    int                    attempts; /**< read attempts used by the file systems
+                                          (DISCIO_DEFAULT_ATTEMPTS unless set) */
 } DiscIOSource;
 
 /**
@@ -97,5 +99,98 @@ int ff_discio_read_blocks(DiscIOSource *src, int64_t pos, uint8_t *buf, int len,
  */
 int ff_discio_read_bytes(DiscIOSource *src, int64_t pos, uint8_t *buf, int len,
                          int attempts, int quiet);
+
+/* ---- file systems (ISO 9660 / Joliet, UDF) ---- */
+
+/** Room for a volume label, including the terminating NUL. */
+#define DISCIO_LABEL_SIZE 161
+
+/** A run of consecutive sectors of the source. */
+typedef struct DiscIOExtent {
+    int64_t sector;   /**< first 2048-byte sector, from the start of the source */
+    int64_t count;    /**< sectors */
+} DiscIOExtent;
+
+/** A file found in a file system: its size and where its data lies. */
+typedef struct DiscIOFile {
+    int64_t       size;        /**< bytes */
+    int           nb_extents;
+    DiscIOExtent *extents;     /**< in file order; together >= size bytes */
+} DiscIOFile;
+
+struct DiscIOFS;
+
+/** Called once per directory entry by DiscIOFSOps.list_dir. */
+typedef int (*DiscIODirCallback)(void *opaque, const char *name, int is_dir);
+
+/** What a file system does (one table per file-system reader). */
+typedef struct DiscIOFSOps {
+    /** e.g. "ISO 9660", "Joliet", "UDF (NetBSD)" */
+    const char *name;
+    /**
+     * Find the file at path ("/VIDEO_TS/VIDEO_TS.IFO"; separators '/' or '\',
+     * the path starts with one).
+     * @return 0, AVERROR(ENOENT) when there is no such file, or another
+     *         negative AVERROR code
+     */
+    int  (*open_file)(struct DiscIOFS *fs, const char *path, DiscIOFile **out);
+    /**
+     * Call cb for every entry of the directory at path ("/" = root), in disc
+     * order; a non-zero return of cb ends the listing with that value.
+     * @return 0, AVERROR(ENOENT), AVERROR_INVALIDDATA for a corrupt directory
+     */
+    int  (*list_dir)(struct DiscIOFS *fs, const char *path, DiscIODirCallback cb, void *opaque);
+    void (*close)(struct DiscIOFS *fs);
+} DiscIOFSOps;
+
+/** A mounted file system on a source. */
+typedef struct DiscIOFS {
+    const DiscIOFSOps *ops;
+    void              *priv;
+    DiscIOSource      *src;     /**< not owned */
+    char               label[DISCIO_LABEL_SIZE];  /**< UTF-8, may be empty */
+} DiscIOFS;
+
+/** Close a file system and set *fs to NULL. */
+void ff_discio_fs_close(DiscIOFS **fs);
+
+/** Free a file and set *file to NULL. */
+void ff_discio_file_free(DiscIOFile **file);
+
+/**
+ * Read len bytes of file at byte pos, from its extents, with the source's
+ * attempt count.
+ * @return 0, AVERROR(EINVAL) for a range past the end of the file, or a
+ *         read error
+ */
+int ff_discio_file_read(DiscIOFS *fs, const DiscIOFile *file, int64_t pos,
+                        uint8_t *buf, int len);
+
+/**
+ * Walk path from the root: calls subdir for every component but the last
+ * (empty components skipped; '/' and '\\' separate, '/' wins while the rest
+ * holds one; the path must start with a separator) and returns the last
+ * component in *last. subdir returns 0 and its new directory in *dir, or a
+ * negative AVERROR code (AVERROR(ENOENT) for a missing directory).
+ * @return 0 or the first error
+ */
+int ff_discio_walk_path(const char *path, void **dir,
+                        int (*subdir)(void *ctx, void **dir, const char *name, int name_len),
+                        void *ctx, const char **last);
+
+/**
+ * Mount the ISO 9660 file system (joliet = 0) or the Joliet one (joliet = 1)
+ * of src: the first primary (and supplementary) volume descriptor of sectors
+ * 16-127 must carry CD001 and 2048-byte blocks.
+ * @return 0 or a negative AVERROR code
+ */
+int ff_discio_iso9660_mount(DiscIOSource *src, int joliet, DiscIOFS **out);
+
+/**
+ * The first 14 digits (YYYYMMDDHHMMSS) of the primary volume descriptor's
+ * volume creation date of an ISO 9660 / Joliet file system, NUL-terminated.
+ * @return 0, or AVERROR(EINVAL) when fs is not ISO 9660 / Joliet
+ */
+int ff_discio_iso9660_creation_date(const DiscIOFS *fs, char date[15]);
 
 #endif /* AVFORMAT_DISCIO_H */
