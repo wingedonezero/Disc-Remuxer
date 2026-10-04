@@ -15,6 +15,18 @@ disc-remuxer (crates/disc-cli)     the caller: commands, options, settings, logg
   └─ outputs                       (to add) elementary streams; Matroska
 ```
 
+The DVD-Video demuxer (`libs/ffmpeg/libavformat/`) is split into files:
+
+| File | Part |
+|---|---|
+| `dvdvideodec.c` | the orchestrator: FFmpeg's demuxer entry points (open, read packet, seek, close), sub-demuxer handling, options |
+| `dvdvideo_internal.h` | structures and functions shared by the files |
+| `dvdvideo_ifo.c` | opening the volume and the IFO structures |
+| `dvdvideo_play.c` | reading MPEG-PS blocks by playback through libdvdnav (titles) and from the menu VOBs; to be replaced by our own navigation scan and reading layer |
+| `dvdvideo_chapters.c` | chapter markers |
+| `dvdvideo_streams.c` | video, audio and subpicture streams from the IFO attributes |
+| `dvdclut.c` | subpicture palette conversion |
+
 DVD reading underneath FFmpeg: libdvdnav (navigation), libdvdread (file
 system, IFO, NAV packets), libdvdcss (CSS) — all from `libs/`.
 
