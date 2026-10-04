@@ -3033,6 +3033,21 @@ static void udf_linux_free(UDFLinux *sb)
     av_free(sb);
 }
 
+static int udf_linux_find_dir(DiscIOFS *fs, const char *path)
+{
+    UDFLinux *sb = fs->priv;
+    UDFInode *dir;
+    LbAddr loc;
+    int ret;
+
+    sb->why[0] = 0;
+    if ((ret = udf_walk(sb, path, &loc, &dir)) < 0) {
+        udf_log(sb, AV_LOG_DEBUG, "cannot find the directory '%s': %s", path, sb->why);
+        return ret;
+    }
+    return ret && inode_is_dir(dir) ? 0 : AVERROR(ENOENT);
+}
+
 static void udf_linux_close(DiscIOFS *fs)
 {
     udf_linux_free(fs->priv);
@@ -3044,6 +3059,8 @@ static const DiscIOFSOps udf_linux_ops = {
     .open_file = udf_linux_open_file,
     .list_dir  = udf_linux_list_dir,
     .close     = udf_linux_close,
+    .find_dir  = udf_linux_find_dir,
+    .kind      = DISCIO_FS_UDF,
 };
 
 int ff_discio_udf_linux_mount(DiscIOSource *src, DiscIOFS **out)

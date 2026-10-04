@@ -413,6 +413,31 @@ static int iso_list_dir(DiscIOFS *fs, const char *path, DiscIODirCallback cb, vo
     return ret;
 }
 
+static int iso_find_dir(DiscIOFS *fs, const char *path)
+{
+    ISODir *dir, *parent;
+    const char *last;
+    WalkCtx ctx = { fs };
+    void *d;
+    int ret;
+
+    if (!strcmp(path, "/")) {
+        if (!(dir = root_dir(fs)))
+            return AVERROR_INVALIDDATA;
+        dir_free(dir);
+        return 0;
+    }
+    if ((ret = walk_to_parent(fs, path, &parent, &last)) < 0)
+        return ret;
+    d = parent;
+    if ((ret = walk_subdir(&ctx, &d, last, strlen(last))) < 0) {
+        dir_free(parent);
+        return ret;
+    }
+    dir_free(d);
+    return 0;
+}
+
 static void iso_close(DiscIOFS *fs)
 {
     av_freep(&fs->priv);
@@ -423,6 +448,8 @@ static const DiscIOFSOps iso9660_ops = {
     .open_file = iso_open_file,
     .list_dir  = iso_list_dir,
     .close     = iso_close,
+    .find_dir  = iso_find_dir,
+    .kind      = DISCIO_FS_ISO9660,
 };
 
 static const DiscIOFSOps joliet_ops = {
@@ -430,6 +457,8 @@ static const DiscIOFSOps joliet_ops = {
     .open_file = iso_open_file,
     .list_dir  = iso_list_dir,
     .close     = iso_close,
+    .find_dir  = iso_find_dir,
+    .kind      = DISCIO_FS_JOLIET,
 };
 
 int ff_discio_iso9660_mount(DiscIOSource *src, int joliet, DiscIOFS **out)
