@@ -201,3 +201,36 @@ fn host_file_source() {
     unsafe { discio::ff_discio_source_free(&raw mut src) };
     assert!(src.is_null());
 }
+
+#[test]
+fn file_reads_cross_extents_and_not_recorded_runs_read_as_zeros() {
+    use discio::{Extent, File, Fs, LABEL_SIZE, SECTOR_NOT_RECORDED};
+    let data = pattern(4 * 2048);
+    let r = Reader::new(data.clone(), None, &[]);
+    let mut fs = Fs {
+        ops: std::ptr::null(),
+        priv_: std::ptr::null_mut(),
+        src: r.src,
+        label: [0; LABEL_SIZE],
+        udf_revision: 0,
+        udf_recording_time: [0; 12],
+    };
+    // file = source block 3, then a block that is not recorded, then block 1
+    let mut ext = [
+        Extent { sector: 3, count: 1 },
+        Extent { sector: SECTOR_NOT_RECORDED, count: 1 },
+        Extent { sector: 1, count: 1 },
+    ];
+    let file = File { size: 3 * 2048 - 10, nb_extents: 3, extents: ext.as_mut_ptr(), data: std::ptr::null_mut() };
+    let mut b = vec![0xAAu8; 3 * 2048 - 10];
+    // SAFETY: fs / file describe live memory; b is writable.
+    let ret = unsafe { discio::ff_discio_file_read(&raw mut fs, &raw const file, 0, b.as_mut_ptr(), c_int::try_from(b.len()).unwrap()) };
+    assert_eq!(ret, 0);
+    assert_eq!(&b[..2048], &data[3 * 2048..]);
+    assert!(b[2048..4096].iter().all(|&x| x == 0));
+    assert_eq!(&b[4096..], &data[2048..2 * 2048 - 10]);
+    // past the end of the file
+    let mut one = [0u8; 20];
+    // SAFETY: as above.
+    assert!(unsafe { discio::ff_discio_file_read(&raw mut fs, &raw const file, 3 * 2048 - 15, one.as_mut_ptr(), 20) } < 0);
+}

@@ -102,12 +102,21 @@ int ff_discio_read_bytes(DiscIOSource *src, int64_t pos, uint8_t *buf, int len,
 
 /* ---- file systems (ISO 9660 / Joliet, UDF) ---- */
 
-/** Room for a volume label, including the terminating NUL. */
-#define DISCIO_LABEL_SIZE 161
+/**
+ * Room for a volume label as a file system decodes it, including the
+ * terminating NUL (UDF logical volume identifiers decode to at most 258
+ * bytes). Rules that limit a label further (e.g. for naming) are applied by
+ * the code choosing the file system, not by the readers.
+ */
+#define DISCIO_LABEL_SIZE 260
+
+/** DiscIOExtent.sector of a run that is not recorded (it reads as zeros). */
+#define DISCIO_SECTOR_NOT_RECORDED (-1)
 
 /** A run of consecutive sectors of the source. */
 typedef struct DiscIOExtent {
-    int64_t sector;   /**< first 2048-byte sector, from the start of the source */
+    int64_t sector;   /**< first 2048-byte sector, from the start of the source,
+                           or DISCIO_SECTOR_NOT_RECORDED */
     int64_t count;    /**< sectors */
 } DiscIOExtent;
 
@@ -133,8 +142,10 @@ typedef struct DiscIOFSOps {
     /** e.g. "ISO 9660", "Joliet", "UDF (NetBSD)" */
     const char *name;
     /**
-     * Find the file at path ("/VIDEO_TS/VIDEO_TS.IFO"; separators '/' or '\',
-     * the path starts with one).
+     * Find the file at path ("/VIDEO_TS/VIDEO_TS.IFO"). For unusual paths each
+     * reader follows its upstream's rules (ISO 9660 and the NetBSD-based UDF
+     * reader: '/' or a backslash separate and the path starts with one; the
+     * Linux-based UDF reader: '/' only, the leading '/' optional).
      * @return 0, AVERROR(ENOENT) when there is no such file, or another
      *         negative AVERROR code
      */

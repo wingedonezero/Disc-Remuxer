@@ -112,6 +112,7 @@ pub mod discio {
         pub size: i64,
         pub nb_extents: c_int,
         pub extents: *mut Extent,
+        pub data: *mut u8,
     }
 
     /// `DiscIODirCallback`.
@@ -127,7 +128,10 @@ pub mod discio {
     }
 
     /// `DISCIO_LABEL_SIZE`.
-    pub const LABEL_SIZE: usize = 161;
+    pub const LABEL_SIZE: usize = 260;
+
+    /// `DISCIO_SECTOR_NOT_RECORDED`.
+    pub const SECTOR_NOT_RECORDED: i64 = -1;
 
     /// `DiscIOFS`.
     #[repr(C)]
@@ -136,6 +140,8 @@ pub mod discio {
         pub priv_: *mut c_void,
         pub src: *mut Source,
         pub label: [c_char; LABEL_SIZE],
+        pub udf_revision: u16,
+        pub udf_recording_time: [u8; 12],
     }
 
     extern "C" {

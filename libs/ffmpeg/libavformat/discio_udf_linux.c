@@ -65,8 +65,8 @@
  * not recorded (or lie past the allocation descriptors) is an extent with
  * sector -1 (reads as zeros). Data recorded inside the file entry is returned
  * in DiscIOFile.data, with no extents. The label is the logical volume
- * identifier decoded with udf_dstrCS0toChar (at most DISCIO_LABEL_SIZE - 1
- * bytes, cut before a character that does not fit); the UDF revision and the
+ * identifier decoded with udf_dstrCS0toChar (at most 254 bytes, as upstream,
+ * cut before a character that does not fit); the UDF revision and the
  * recording time are read from the implementation use and primary volume
  * descriptors.
  */
@@ -3002,7 +3002,7 @@ int ff_discio_udf_linux_mount(DiscIOSource *src, DiscIOFS **out)
     fs->src  = src;
     /* the logical volume identifier (d-string, 128 bytes at 84), decoded
      * without translation */
-    len = udf_dstrCS0toChar(sb, (uint8_t *)fs->label, DISCIO_LABEL_SIZE - 1, sb->lvd + 84, 128);
+    len = udf_dstrCS0toChar(sb, (uint8_t *)fs->label, FFMIN(254, DISCIO_LABEL_SIZE - 1), sb->lvd + 84, 128);
     fs->label[len > 0 ? len : 0] = 0;
     /* implementation use volume descriptor holding "*UDF LV Info": the UDF
      * revision is the first two bytes of its identifier suffix */

@@ -71,10 +71,15 @@ int ff_discio_file_read(DiscIOFS *fs, const DiscIOFile *file, int64_t pos,
         if (at < ext_start + ext_bytes) {
             int64_t in_ext = at - ext_start;
             int n = FFMIN(len - done, ext_bytes - in_ext);
-            int ret = ff_discio_read_bytes(src, e->sector * DISCIO_BLOCK_SIZE + in_ext,
-                                           buf + done, n, src->attempts, 0);
-            if (ret < 0)
-                return ret;
+
+            if (e->sector == DISCIO_SECTOR_NOT_RECORDED) {
+                memset(buf + done, 0, n);   /* not recorded: zeros */
+            } else {
+                int ret = ff_discio_read_bytes(src, e->sector * DISCIO_BLOCK_SIZE + in_ext,
+                                               buf + done, n, src->attempts, 0);
+                if (ret < 0)
+                    return ret;
+            }
             done += n;
         }
         ext_start += ext_bytes;

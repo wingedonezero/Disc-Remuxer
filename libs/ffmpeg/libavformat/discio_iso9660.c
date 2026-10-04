@@ -44,6 +44,7 @@
 #include "discio.h"
 
 #define ISO_MAX_DIR_LEN 0x100000
+#define ISO_LABEL_ROOM  161     /* a label longer than this (with its NUL) is empty */
 #define ISO_MIN_RECORD  0x21
 
 typedef struct ISOVolume {
@@ -113,7 +114,7 @@ static void units_to_label(const uint16_t *w, int n, char *label)
 
     memcpy(tmp, w, n * sizeof(*w));
     tmp[n] = 0;
-    len = units_to_utf8(tmp, n + 1, (uint8_t *)label, DISCIO_LABEL_SIZE);
+    len = units_to_utf8(tmp, n + 1, (uint8_t *)label, ISO_LABEL_ROOM);
     /* the last byte written is the terminator unit's NUL; an earlier NUL
      * unit ends the label sooner, as C strings do */
     if (!len)
