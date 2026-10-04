@@ -41,6 +41,15 @@
 #include "dvdnav_internal.h"
 #include "logger.h"
 
+/* A broken assumption (see vm_failed() in vm.h): stop. */
+static link_t play_failed(vm_t *vm, const char *what) {
+  link_t link_values = { Exit, 0, 0, 0 };
+  vm_failed(vm, what);
+  return link_values;
+}
+#define PLAY_CHECK(vm, cond) \
+  do { if(!(cond)) return play_failed((vm), VM_WHERE(#cond)); } while(0)
+
 /* Playback control */
 
 link_t play_PGC(vm_t *vm) {
@@ -85,7 +94,7 @@ link_t play_PGC(vm_t *vm) {
   if((vm->state).pgc->command_tbl && (vm->state).pgc->command_tbl->nr_of_pre) {
     if(vmEval_CMD((vm->state).pgc->command_tbl->pre_cmds,
                   (vm->state).pgc->command_tbl->nr_of_pre,
-                  &(vm->state).registers, &link_values)) {
+                  vm, &link_values)) {
       /*  link_values contains the 'jump' return value */
       return link_values;
     } else {
@@ -124,7 +133,7 @@ link_t play_PGC_PG(vm_t *vm, int pgN) {
   if((vm->state).pgc->command_tbl && (vm->state).pgc->command_tbl->nr_of_pre) {
     if(vmEval_CMD((vm->state).pgc->command_tbl->pre_cmds,
                   (vm->state).pgc->command_tbl->nr_of_pre,
-                  &(vm->state).registers, &link_values)) {
+                  vm, &link_values)) {
       /*  link_values contains the 'jump' return value */
       return link_values;
     } else {
@@ -151,7 +160,7 @@ link_t play_PGC_post(vm_t *vm) {
   if((vm->state).pgc->command_tbl && (vm->state).pgc->command_tbl->nr_of_post &&
      vmEval_CMD((vm->state).pgc->command_tbl->post_cmds,
                 (vm->state).pgc->command_tbl->nr_of_post,
-                &(vm->state).registers, &link_values)) {
+                vm, &link_values)) {
     return link_values;
   }
 
@@ -171,7 +180,7 @@ link_t play_PG(vm_t *vm) {
   Log3(vm, "play_PG: (vm->state).pgN (%i)", (vm->state).pgN);
 #endif
 
-  assert((vm->state).pgN > 0);
+  PLAY_CHECK(vm, (vm->state).pgN > 0);
   if((vm->state).pgN > (vm->state).pgc->nr_of_programs) {
 #ifdef TRACE
     Log3(vm, "play_PG: (vm->state).pgN (%i) > pgc->nr_of_programs (%i)",
@@ -197,7 +206,7 @@ link_t play_Cell(vm_t *vm) {
   Log3(vm, "play_Cell: (vm->state).cellN (%i)", (vm->state).cellN);
 #endif
 
-  assert((vm->state).cellN > 0);
+  PLAY_CHECK(vm, (vm->state).cellN > 0);
   if((vm->state).cellN > (vm->state).pgc->nr_of_cells) {
 #ifdef TRACE
     Log3(vm, "(vm->state).cellN (%i) > pgc->nr_of_cells (%i)",
@@ -214,12 +223,12 @@ link_t play_Cell(vm_t *vm) {
   /* Multi angle/Interleaved */
   switch((vm->state).pgc->cell_playback[(vm->state).cellN - 1].block_mode) {
   case 0: /*  Normal */
-    assert((vm->state).pgc->cell_playback[(vm->state).cellN - 1].block_type == 0);
+    PLAY_CHECK(vm, (vm->state).pgc->cell_playback[(vm->state).cellN - 1].block_type == 0);
     break;
   case 1: /*  The first cell in the block */
     switch((vm->state).pgc->cell_playback[(vm->state).cellN - 1].block_type) {
     case 0: /*  Not part of a block */
-      assert(0);
+      return play_failed(vm, VM_WHERE("cell in a block, block_type 0"));
       break;
     case 1: /*  Angle block */
       /* Loop and check each cell instead? So we don't get outside the block? */
@@ -243,7 +252,7 @@ link_t play_Cell(vm_t *vm) {
       Log1(vm, "Invalid? Cell block_mode (%d), block_type (%d)",
               (vm->state).pgc->cell_playback[(vm->state).cellN - 1].block_mode,
               (vm->state).pgc->cell_playback[(vm->state).cellN - 1].block_type);
-      assert(0);
+      return play_failed(vm, VM_WHERE("reserved cell block_type"));
     }
     break;
   case 2: /*  Cell in the block */
@@ -256,8 +265,7 @@ link_t play_Cell(vm_t *vm) {
   /* Updates (vm->state).pgN and PTTN_REG */
   if(!set_PGN(vm)) {
     /* Should not happen */
-    assert(0);
-    return play_PGC_post(vm);
+    return play_failed(vm, VM_WHERE("set_PGN(vm) failed"));
   }
   (vm->state).cell_restart++;
   (vm->state).blockN = 0;
@@ -288,7 +296,7 @@ link_t play_Cell_post(vm_t *vm) {
       Log3(vm, "Cell command present, executing");
 #endif
       if(vmEval_CMD(&(vm->state).pgc->command_tbl->cell_cmds[cell->cell_cmd_nr - 1], 1,
-                    &(vm->state).registers, &link_values)) {
+                    vm, &link_values)) {
         return link_values;
       } else {
 #ifdef TRACE
@@ -306,7 +314,7 @@ link_t play_Cell_post(vm_t *vm) {
   /* Multi angle/Interleaved */
   switch((vm->state).pgc->cell_playback[(vm->state).cellN - 1].block_mode) {
   case 0: /*  Normal */
-    assert((vm->state).pgc->cell_playback[(vm->state).cellN - 1].block_type == 0);
+    PLAY_CHECK(vm, (vm->state).pgc->cell_playback[(vm->state).cellN - 1].block_type == 0);
     (vm->state).cellN++;
     break;
   case 1: /*  The first cell in the block */
@@ -315,7 +323,7 @@ link_t play_Cell_post(vm_t *vm) {
   default:
     switch((vm->state).pgc->cell_playback[(vm->state).cellN - 1].block_type) {
     case 0: /*  Not part of a block */
-      assert(0);
+      return play_failed(vm, VM_WHERE("cell in a block, block_type 0"));
       break;
     case 1: /*  Angle block */
       /* Skip the 'other' angles */
@@ -331,7 +339,7 @@ link_t play_Cell_post(vm_t *vm) {
       Log1(vm, "Invalid? Cell block_mode (%d), block_type (%d)",
               (vm->state).pgc->cell_playback[(vm->state).cellN - 1].block_mode,
               (vm->state).pgc->cell_playback[(vm->state).cellN - 1].block_type);
-      assert(0);
+      return play_failed(vm, VM_WHERE("reserved cell block_type"));
     }
     break;
   }

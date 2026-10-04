@@ -385,6 +385,16 @@ DVDNAV_API dvdnav_status_t dvdnav_current_title_program(dvdnav_t *self, int32_t 
                                           int32_t *pgcn, int32_t *pgn);
 
 /*
+ * Return how many broken assumptions about the disc's navigation data the
+ * VM has met: conditions upstream libdvdnav checks with assert(). Each one
+ * is recorded and stops the VM (DVDNAV_STOP follows) instead of aborting
+ * the program. If first is not NULL it receives a description of the first
+ * one ("file:line: condition"), or NULL. A copy made with dvdnav_dup()
+ * starts with the record of its source.
+ */
+DVDNAV_API uint32_t dvdnav_get_vm_failures(dvdnav_t *self, const char **first);
+
+/*
  * Return the current position (in blocks) within the current
  * title and the length (in blocks) of said title.
  *
