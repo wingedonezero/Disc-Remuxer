@@ -42,6 +42,7 @@ void ff_discio_file_free(DiscIOFile **file)
     if (!*file)
         return;
     av_freep(&(*file)->extents);
+    av_freep(&(*file)->data);
     av_freep(file);
 }
 
@@ -57,6 +58,10 @@ int ff_discio_file_read(DiscIOFS *fs, const DiscIOFile *file, int64_t pos,
                "Read of %d bytes at %"PRId64" runs past the end of a %"PRId64"-byte file on '%s'\n",
                len, pos, file->size, src->name);
         return AVERROR(EINVAL);
+    }
+    if (file->data) {
+        memcpy(buf, file->data + pos, len);
+        return 0;
     }
     for (int i = 0; i < file->nb_extents && done < len; i++) {
         const DiscIOExtent *e = &file->extents[i];

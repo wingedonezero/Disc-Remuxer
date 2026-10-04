@@ -116,6 +116,11 @@ typedef struct DiscIOFile {
     int64_t       size;        /**< bytes */
     int           nb_extents;
     DiscIOExtent *extents;     /**< in file order; together >= size bytes */
+    /**
+     * The file's data, for a file recorded inside its file entry (UDF
+     * "embedded" data): size bytes, no extents. NULL otherwise.
+     */
+    uint8_t      *data;
 } DiscIOFile;
 
 struct DiscIOFS;
@@ -148,7 +153,13 @@ typedef struct DiscIOFS {
     const DiscIOFSOps *ops;
     void              *priv;
     DiscIOSource      *src;     /**< not owned */
-    char               label[DISCIO_LABEL_SIZE];  /**< UTF-8, may be empty */
+    char               label[DISCIO_LABEL_SIZE];  /**< as decoded, may be empty */
+    /** UDF only: revision from the implementation use volume descriptor
+     *  ("*UDF LV Info"), e.g. 0x0102, 0x0250; 0 when there is none. */
+    uint16_t           udf_revision;
+    /** UDF only: recording date and time of the primary volume descriptor
+     *  (ECMA-167 1/7.3 timestamp, 12 bytes as recorded; year = bytes 2-3 LE). */
+    uint8_t            udf_recording_time[12];
 } DiscIOFS;
 
 /** Close a file system and set *fs to NULL. */
@@ -177,6 +188,20 @@ int ff_discio_file_read(DiscIOFS *fs, const DiscIOFile *file, int64_t pos,
 int ff_discio_walk_path(const char *path, void **dir,
                         int (*subdir)(void *ctx, void **dir, const char *name, int name_len),
                         void *ctx, const char **last);
+
+/**
+ * Mount the UDF file system of src with the NetBSD-based reader (the default
+ * reader): NetBSD sys/fs/udf, read side, with the changes listed in the file.
+ * @return 0 or a negative AVERROR code
+ */
+int ff_discio_udf_netbsd_mount(DiscIOSource *src, DiscIOFS **out);
+
+/**
+ * Mount the UDF file system of src with the Linux-based reader: Linux fs/udf,
+ * read side, mounted read-only with default options.
+ * @return 0 or a negative AVERROR code
+ */
+int ff_discio_udf_linux_mount(DiscIOSource *src, DiscIOFS **out);
 
 /**
  * Mount the ISO 9660 file system (joliet = 0) or the Joliet one (joliet = 1)
