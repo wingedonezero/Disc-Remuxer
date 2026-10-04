@@ -162,7 +162,7 @@ static int exists_or_mkdir( const char *path, int perm )
 }
 
 static dvdcss_t dvdcss_open_common ( const char *psz_target, void *p_stream,
-                                     dvdcss_stream_cb *p_stream_cb );
+                                     dvdcss_stream_cb *p_stream_cb, int b_cache );
 static void set_verbosity( dvdcss_t dvdcss )
 {
     const char *psz_verbose = getenv( "DVDCSS_VERBOSE" );
@@ -517,7 +517,7 @@ static void init_cache( dvdcss_t dvdcss )
  */
 LIBDVDCSS_EXPORT dvdcss_t dvdcss_open ( const char *psz_target )
 {
-    return dvdcss_open_common( psz_target, NULL, NULL );
+    return dvdcss_open_common( psz_target, NULL, NULL, 1 );
 }
 
 /**
@@ -532,11 +532,24 @@ LIBDVDCSS_EXPORT dvdcss_t dvdcss_open ( const char *psz_target )
 LIBDVDCSS_EXPORT dvdcss_t dvdcss_open_stream ( void *p_stream,
                                                dvdcss_stream_cb *p_stream_cb )
 {
-    return dvdcss_open_common( NULL, p_stream, p_stream_cb );
+    return dvdcss_open_common( NULL, p_stream, p_stream_cb, 1 );
+}
+
+/**
+ * \brief Open a stream like dvdcss_open_stream(), without the title key cache.
+ *
+ * Nothing is read from or written to a cache directory: every title key is
+ * found from the disc (or cracked from the data) in this instance.
+ * (Disc-Remuxer addition.)
+ */
+LIBDVDCSS_EXPORT dvdcss_t dvdcss_open_stream_uncached ( void *p_stream,
+                                                        dvdcss_stream_cb *p_stream_cb )
+{
+    return dvdcss_open_common( NULL, p_stream, p_stream_cb, 0 );
 }
 
 static dvdcss_t dvdcss_open_common ( const char *psz_target, void *p_stream,
-                                     dvdcss_stream_cb *p_stream_cb )
+                                     dvdcss_stream_cb *p_stream_cb, int b_cache )
 {
     int i_ret;
 
@@ -627,7 +640,10 @@ static dvdcss_t dvdcss_open_common ( const char *psz_target, void *p_stream,
         }
     }
 
-    init_cache( dvdcss );
+    if( b_cache )
+    {
+        init_cache( dvdcss );
+    }
 
     /* Seek to the beginning, just for safety. */
     dvdcss->pf_seek( dvdcss, 0 );
@@ -762,6 +778,65 @@ LIBDVDCSS_EXPORT int dvdcss_read ( dvdcss_t dvdcss, void *p_buffer,
     }
 
     return i_ret;
+}
+
+/**
+ * \brief The title key of the title starting at a block, for callers that
+ *        read sectors themselves. (Disc-Remuxer addition.)
+ *
+ * \param dvdcss a \e libdvdcss instance
+ * \param i_block the first block of the title (its first VOB)
+ * \param p_key receives the title key (all zero when there is none)
+ * \return 1 when a key was found, 0 when the title is not scrambled (no
+ *         scrambled sector was found, or the disc is not scrambled), or a
+ *         negative value when the key could not be found.
+ *
+ * The key is found as dvdcss_seek() with #DVDCSS_SEEK_KEY finds it: from the
+ * drive, or cracked from the title's data read through the instance.
+ */
+LIBDVDCSS_EXPORT int dvdcss_title_key ( dvdcss_t dvdcss, int i_block,
+                                        unsigned char p_key[DVDCSS_KEY_SIZE] )
+{
+    memset( p_key, 0, DVDCSS_KEY_SIZE );
+    if( !dvdcss->b_scrambled )
+    {
+        return 0;
+    }
+    if( dvdcss_title( dvdcss, i_block ) < 0 )
+    {
+        return -1;
+    }
+    memcpy( p_key, dvdcss->css.p_title_key, DVDCSS_KEY_SIZE );
+    return memcmp( p_key, "\0\0\0\0\0", DVDCSS_KEY_SIZE ) ? 1 : 0;
+}
+
+/**
+ * \brief Descramble one sector in place with a title key, as dvdcss_read()
+ *        with #DVDCSS_READ_DECRYPT does. (Disc-Remuxer addition.)
+ *
+ * \param p_key the title key from dvdcss_title_key()
+ * \param p_sector one #DVDCSS_BLOCK_SIZE sector
+ * \return 1 when the sector was scrambled and is now descrambled (its PES
+ *         scrambling bits cleared), 0 when it was not scrambled (left as it
+ *         is), -1 when it is scrambled but the key is all zero (left as it is).
+ */
+LIBDVDCSS_EXPORT int dvdcss_unscramble_sector ( const unsigned char p_key[DVDCSS_KEY_SIZE],
+                                                unsigned char *p_sector )
+{
+    dvd_key key;
+
+    if( !(p_sector[0x14] & 0x30) )
+    {
+        return 0;
+    }
+    if( !memcmp( p_key, "\0\0\0\0\0", DVDCSS_KEY_SIZE ) )
+    {
+        return -1;
+    }
+    memcpy( key, p_key, DVDCSS_KEY_SIZE );
+    dvdcss_unscramble( key, p_sector );
+    p_sector[0x14] &= 0x8f;
+    return 1;
 }
 
 /**

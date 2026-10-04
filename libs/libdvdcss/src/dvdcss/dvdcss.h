@@ -108,6 +108,19 @@ LIBDVDCSS_EXPORT int      dvdcss_is_scrambled ( dvdcss_t );
 
 LIBDVDCSS_EXPORT int dvdcss_get_encryption_type ( dvdcss_t );
 
+/* Disc-Remuxer additions: for callers that read and descramble sectors
+ * themselves (see libs/README.md). */
+
+/** The size of a CSS title key in bytes. */
+#define DVDCSS_KEY_SIZE 5
+
+LIBDVDCSS_EXPORT dvdcss_t dvdcss_open_stream_uncached ( void *p_stream,
+                                                        dvdcss_stream_cb *p_stream_cb );
+LIBDVDCSS_EXPORT int      dvdcss_title_key ( dvdcss_t, int i_block,
+                                             unsigned char p_key[DVDCSS_KEY_SIZE] );
+LIBDVDCSS_EXPORT int      dvdcss_unscramble_sector ( const unsigned char p_key[DVDCSS_KEY_SIZE],
+                                                     unsigned char *p_sector );
+
 #ifdef __cplusplus
 }
 #endif
