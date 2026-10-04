@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/dict.h>
 #include <libavutil/log.h>
@@ -55,6 +56,67 @@ void dr_log_install(dr_log_sink sink, int max_level)
     pthread_mutex_unlock(&log_lock);
     av_log_set_level(max_level);
     av_log_set_callback(log_callback);
+}
+
+typedef void (*dr_parser_frame_cb)(void *opaque, int size, int64_t pts, int64_t dts);
+
+/* Runs FFmpeg's parser for the codec named `codec_name` (a codec descriptor
+ * name such as "ac3") over `nb` packets the way libavformat does: each
+ * packet's timestamp is passed on its first parser call only, the rest of the
+ * packet follows without one, and the parser is flushed at the end. `cb` gets
+ * every frame the parser returns with the timestamps the parser gave it.
+ * Returns 0 or a negative AVERROR. */
+int dr_parser_run(const char *codec_name, const uint8_t *const *data,
+                  const int *sizes, const int64_t *pts, int nb,
+                  dr_parser_frame_cb cb, void *opaque)
+{
+    const AVCodecDescriptor *desc = avcodec_descriptor_get_by_name(codec_name);
+    AVCodecParserContext *parser;
+    AVCodecContext *avctx;
+    int64_t pos = 0;
+    uint8_t *out;
+    int out_size;
+
+    if (!desc)
+        return AVERROR_DECODER_NOT_FOUND;
+    parser = av_parser_init(desc->id);
+    if (!parser)
+        return AVERROR(ENOSYS);
+    avctx = avcodec_alloc_context3(NULL);
+    if (!avctx) {
+        av_parser_close(parser);
+        return AVERROR(ENOMEM);
+    }
+    avctx->codec_id   = desc->id;
+    avctx->codec_type = desc->type;
+
+    for (int i = 0; i < nb; i++) {
+        const uint8_t *p = data[i];
+        int left = sizes[i];
+        int64_t t = pts[i], packet_pos = pos;
+
+        pos += sizes[i];
+        while (left > 0) {
+            int used = av_parser_parse2(parser, avctx, &out, &out_size, p, left,
+                                        t, t, packet_pos);
+            t          = AV_NOPTS_VALUE;
+            packet_pos = -1;
+            p    += used;
+            left -= used;
+            if (out_size)
+                cb(opaque, out_size, parser->pts, parser->dts);
+        }
+    }
+    do {
+        av_parser_parse2(parser, avctx, &out, &out_size, NULL, 0,
+                         AV_NOPTS_VALUE, AV_NOPTS_VALUE, -1);
+        if (out_size)
+            cb(opaque, out_size, parser->pts, parser->dts);
+    } while (out_size);
+
+    av_parser_close(parser);
+    avcodec_free_context(&avctx);
+    return 0;
 }
 
 /* Opens one title with FFmpeg's DVD-Video demuxer, reads stream information

@@ -4,7 +4,7 @@
 //! Declarations are added as the workspace uses them. `glue/glue.c` holds the
 //! C side of calls that are awkward from Rust (log callback, option sets).
 
-use std::os::raw::{c_char, c_int, c_uint};
+use std::os::raw::{c_char, c_int, c_uint, c_void};
 
 // Keeps the DVD libraries linked after FFmpeg.
 use libdvdnav_sys as _;
@@ -23,6 +23,13 @@ pub mod log_level {
     pub const TRACE: c_int = 56;
 }
 
+/// Receives one frame from [`dr_parser_run`]: its size and the timestamps the
+/// parser gave it (`AV_NOPTS_VALUE` = none).
+pub type ParserFrameCb = unsafe extern "C" fn(opaque: *mut c_void, size: c_int, pts: i64, dts: i64);
+
+/// FFmpeg's "no timestamp" value (`AV_NOPTS_VALUE`).
+pub const AV_NOPTS_VALUE: i64 = i64::MIN;
+
 /// Receives one complete FFmpeg log line (without its newline).
 pub type LogSink = unsafe extern "C" fn(level: c_int, line: *const c_char);
 
@@ -38,6 +45,18 @@ extern "C" {
     /// glue.c: routes FFmpeg's log (and through it libdvdread / libdvdnav's)
     /// to `sink`, for lines up to `max_level`.
     pub fn dr_log_install(sink: LogSink, max_level: c_int);
+    /// glue.c: runs FFmpeg's parser for `codec_name` (codec descriptor name)
+    /// over `nb` packets as libavformat does (timestamp on each packet's first
+    /// call only, flush at the end); `cb` gets every frame. 0 or AVERROR.
+    pub fn dr_parser_run(
+        codec_name: *const c_char,
+        data: *const *const u8,
+        sizes: *const c_int,
+        pts: *const i64,
+        nb: c_int,
+        cb: ParserFrameCb,
+        opaque: *mut c_void,
+    ) -> c_int;
     /// glue.c: opens one title with the DVD-Video demuxer, reads stream
     /// information and logs FFmpeg's stream dump. 0 or a negative AVERROR.
     pub fn dr_probe_dvdvideo(path: *const c_char, title: c_int) -> c_int;
