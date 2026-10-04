@@ -165,7 +165,12 @@ int av_parser_parse2(AVCodecParserContext *s, AVCodecContext *avctx,
         s->last_pts        = s->pts;
         s->last_dts        = s->dts;
         s->last_pos        = s->pos;
-        ff_fetch_timestamp(s, 0, 0, 0);
+        /* Look the timestamp up at the start of the frame that follows. When
+         * the parser returned a negative index, that frame began in data
+         * buffered from an earlier packet, i.e. before cur_offset; looking it
+         * up at cur_offset would give it the timestamp of the next packet,
+         * which belongs to the first frame starting in that packet. */
+        ff_fetch_timestamp(s, s->next_frame_offset - s->cur_offset, 0, 0);
     }
     /* WARNING: the returned index can be negative */
     index = ffcodecparser(s->parser)->parse(s, avctx, (const uint8_t **) poutbuf,

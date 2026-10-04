@@ -30,4 +30,10 @@ which its DVD-Video demuxer requires).
 
 ## Our changes
 
-None yet.
+Every change to a file that comes from upstream is listed here (newest last).
+Format-specific copies of FFmpeg components (`dvdvideo_*`, `hddvd_*`,
+`bluray_*`) are listed with the file they were copied from.
+
+| # | File | Change | Why | Test |
+|---|---|---|---|---|
+| 1 | `ffmpeg/libavcodec/parser.c` (in place) | `av_parser_parse2` looks the next frame's timestamp up at that frame's real start (`next_frame_offset`), not at `cur_offset` | When a parser returns a negative index (the frame began in data buffered from the previous packet, e.g. an AC-3 header split across two packets), the frame got the NEXT packet's PTS, which belongs to the first frame starting in that packet (ISO/IEC 13818-1 2.4.3.7); the frame after it then got the same PTS. On DVDs whose audio packs split AC-3 headers this gave one frame in 21 a timestamp 32 ms late plus a duplicate, and the DVD-Video demuxer's AC-3 check then dropped every duplicate (audio drifting ahead of video) | `crates/ffmpeg-sys/tests/parser_timestamps.rs` (fails without the change) |
