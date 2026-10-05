@@ -432,6 +432,22 @@ DVDNAV_API dvdnav_status_t dvdnav_current_title_program(dvdnav_t *self, int32_t 
                                           int32_t *pgcn, int32_t *pgn);
 
 /*
+ * Return the position currently being played: title number, title set
+ * (vtsn), program chain (pgcn), program (pgn) and cell (celln).
+ * Unlike dvdnav_current_title_program(), it also reports positions that have
+ * no title / part entry:
+ *  - in a menu: title 0, vtsn = the title set of a VTS menu or 0 in the
+ *    video manager menu, whether or not the menu has a menu ID;
+ *  - in a VTS title: title -1 when no part of title of the title set leads
+ *    to the current program chain and program.
+ * Fails only when no IFO is loaded, the VM is not started, there is no
+ * current program chain, or in the first-play domain.
+ */
+DVDNAV_API dvdnav_status_t dvdnav_current_title_program2(dvdnav_t *self, int32_t *title,
+                                          int32_t *vtsn, int32_t *pgcn,
+                                          int32_t *pgn, int32_t *celln);
+
+/*
  * Return how many broken assumptions about the disc's navigation data the
  * VM has met: conditions upstream libdvdnav checks with assert(). Each one
  * is recorded and stops the VM (DVDNAV_STOP follows) instead of aborting
