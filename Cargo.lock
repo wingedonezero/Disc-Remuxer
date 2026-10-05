@@ -196,6 +196,7 @@ dependencies = [
  "libdvdcss-sys",
  "libdvdnav-sys",
  "libdvdread-sys",
+ "libexpat-sys",
 ]
 
 [[package]]

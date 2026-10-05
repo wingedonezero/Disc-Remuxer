@@ -3,10 +3,11 @@
 //! workspace, plus the `ffmpeg` and `ffprobe` programs, which are copied next
 //! to our binary in `target/<profile>/` for testing.
 //!
-//! FFmpeg finds libdvdread / libdvdnav through pkg-config; the `.pc` files are
-//! written here and point at the static libraries the `libdvd*-sys` crates
-//! built. Autodetection is off, so the build never picks up whatever happens
-//! to be installed on the host: every external library is enabled by name.
+//! FFmpeg finds libdvdread / libdvdnav / expat through pkg-config; the `.pc`
+//! files are written here and point at the static libraries the
+//! `libdvd*-sys` / `libexpat-sys` crates built. Autodetection is off, so the
+//! build never picks up whatever happens to be installed on the host: every
+//! external library is enabled by name.
 //!
 //! `configure` runs again only when its arguments change; `make` itself
 //! rebuilds only what changed.
@@ -44,12 +45,14 @@ fn main() {
     fs::create_dir_all(&pc_dir).unwrap();
 
     write_dvd_pc_files(&pc_dir);
+    write_expat_pc_file(&pc_dir);
 
     let args = [
         format!("--prefix={}", prefix.display()),
         "--enable-gpl".into(),
         "--enable-libdvdnav".into(),
         "--enable-libdvdread".into(),
+        "--enable-libexpat".into(),
         "--disable-autodetect".into(),
         "--enable-static".into(),
         "--disable-shared".into(),
@@ -141,8 +144,24 @@ fn write_dvd_pc_files(pc_dir: &Path) {
     pc("dvdnav", dep("DEP_DVDNAV_VERSION"), &nav_cflags, &nav_libs);
 }
 
+/// `expat.pc` for FFmpeg's configure, pointing at our `libexpat-sys` build.
+fn write_expat_pc_file(pc_dir: &Path) {
+    let dep = |name: &str| env::var(name).unwrap_or_else(|_| panic!("{name} not set"));
+    fs::write(
+        pc_dir.join("expat.pc"),
+        format!(
+            "Name: expat\nDescription: expat built by disc-remuxer\n\
+             Version: {}\nCflags: -I{}\nLibs: -L{} -lexpat\n",
+            dep("DEP_EXPAT_VERSION"),
+            dep("DEP_EXPAT_INCLUDE"),
+            dep("DEP_EXPAT_ROOT")
+        ),
+    )
+    .unwrap();
+}
+
 /// System libraries FFmpeg's static libraries need (from the installed
-/// `.pc` files), minus the FFmpeg and DVD libraries linked separately.
+/// `.pc` files), minus the FFmpeg, DVD and expat libraries linked separately.
 fn system_libs(ffmpeg_pc: &Path, dvd_pc: &Path) -> Vec<String> {
     let path = env::join_paths([ffmpeg_pc, dvd_pc]).unwrap();
     let names: Vec<String> = LIBS.iter().map(|l| format!("lib{l}")).collect();
@@ -161,7 +180,7 @@ fn system_libs(ffmpeg_pc: &Path, dvd_pc: &Path) -> Vec<String> {
     let ours: Vec<&str> = LIBS
         .iter()
         .copied()
-        .chain(["dvdnav", "dvdread", "dvdcss"])
+        .chain(["dvdnav", "dvdread", "dvdcss", "expat"])
         .collect();
     let mut libs = Vec::new();
     for flag in String::from_utf8(output.stdout).unwrap().split_whitespace() {

@@ -1,6 +1,6 @@
 [package]
 name = "ffmpeg-sys"
-description = "Builds our FFmpeg (libs/ffmpeg) against our DVD libraries and exposes its C API"
+description = "Builds our FFmpeg (libs/ffmpeg) against our DVD libraries and expat and exposes its C API"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,6 +13,7 @@ build = "build.rs"
 libdvdcss-sys = { path = "../libdvdcss-sys" }
 libdvdread-sys = { path = "../libdvdread-sys" }
 libdvdnav-sys = { path = "../libdvdnav-sys" }
+libexpat-sys = { path = "../libexpat-sys" }
 
 [build-dependencies]
 cc.workspace = true
