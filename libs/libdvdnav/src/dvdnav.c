@@ -155,7 +155,6 @@ static dvdnav_status_t dvdnav_open_common(dvdnav_t** dest,
                                           dvdnav_stream_cb *stream_cb,
                                           dvd_reader_filesystem_h *files) {
   dvdnav_t *this;
-  struct timeval time;
 
   /* Create a new structure */
   (*dest) = NULL;
@@ -202,11 +201,6 @@ static dvdnav_status_t dvdnav_open_common(dvdnav_t** dest,
   this->cache = dvdnav_read_cache_new(this);
   if(!this->cache)
     goto fail;
-
-  /* Seed the random numbers. So that the DVD VM Command rand()
-   * gives a different start value each time a DVD is played. */
-  gettimeofday(&time, NULL);
-  srand(time.tv_usec);
 
   dvdnav_clear(this);
 
@@ -421,6 +415,38 @@ static int32_t dvdnav_decode_packet(dvdnav_t *this, uint8_t *p,
     return 1;
   }
   return 0;
+}
+
+/*
+ * Advances the VM's playback clock by the cell time this NAV packet adds
+ * (dsi_gi.c_eltm, the time elapsed in the cell), and keeps that time in
+ * cur_cell_time:
+ *  - first NAV packet of a cell (cur_cell_time 0): its whole elapsed time
+ *    counts only when it is under 2 seconds (a cell entered at its start);
+ *    cur_cell_time becomes at least 1;
+ *  - later packets: the increase counts when it is positive and under
+ *    260 minutes; going back, or a jump of 260 minutes or more, adds nothing;
+ *  - a VOBU whose next VOBU lies behind it (angle change) adds 88 units
+ *    (about half a second).
+ * Clock units are 512 ticks; the remainder of each addition is dropped.
+ */
+static void dvdnav_advance_clock(dvdnav_t *this) {
+  uint32_t *clock = &this->vm->state.registers.time_counter;
+  uint32_t now = (uint32_t)dvdnav_convert_time(&this->dsi.dsi_gi.c_eltm);
+
+  if(this->cur_cell_time == 0) {
+    if(now < 2 * 90000)
+      *clock += now >> 9;
+    if(now == 0)
+      now = 1;
+  } else if(now > this->cur_cell_time &&
+            now - this->cur_cell_time < 260u * 60 * 90000) {
+    *clock += (now - this->cur_cell_time) >> 9;
+  }
+  this->cur_cell_time = now;
+
+  if(this->vobu.vobu_next < 0)
+    *clock += 88;
 }
 
 /*
@@ -1031,7 +1057,7 @@ dvdnav_status_t dvdnav_get_next_cache_block(dvdnav_t *this, uint8_t **buf,
     Log3(this, "NAV_PACKET");
 #endif
     (*len) = 2048;
-    this->cur_cell_time = dvdnav_convert_time(&this->dsi.dsi_gi.c_eltm);
+    dvdnav_advance_clock(this);
     pthread_mutex_unlock(&this->vm_lock);
     return DVDNAV_STATUS_OK;
   }

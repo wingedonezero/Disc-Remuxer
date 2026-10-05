@@ -36,6 +36,10 @@
 
 dvdnav_status_t dvdnav_still_skip(dvdnav_t *this) {
   pthread_mutex_lock(&this->vm_lock);
+  /* the skipped still counts as played: its length (seconds, low 8 bits)
+   * in playback clock units of 512/90000 s */
+  this->vm->state.registers.time_counter +=
+      (((uint32_t)this->position_current.still & 0xff) * 5625u) >> 5;
   this->position_current.still = 0;
   pthread_mutex_unlock(&this->vm_lock);
   this->skip_still = 1;
