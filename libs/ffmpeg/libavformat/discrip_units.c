@@ -178,6 +178,8 @@ static int window_add(DRCutter *c, const uint8_t *data, int size)
 /* One unit at stream offset off: check it, time it, give it out. */
 static int unit_take(DRCutter *c, const uint8_t *data, int size, int64_t off)
 {
+    int samples = c->parser ? c->parser->duration : 0;
+    int rate    = c->parser ? c->avctx->sample_rate : 0;
     int64_t time = AV_NOPTS_VALUE;
     int unit, a;
 
@@ -198,7 +200,7 @@ static int unit_take(DRCutter *c, const uint8_t *data, int size, int64_t off)
     c->st.units++;
     if (time != AV_NOPTS_VALUE)
         c->st.timed++;
-    return c->cb(c->opaque, &(DRUnit){ data, size, time, off });
+    return c->cb(c->opaque, &(DRUnit){ data, size, time, off, samples, rate });
 }
 
 /* The bytes up to stream offset end are given out. */

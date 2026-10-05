@@ -136,9 +136,11 @@ static int sync_mlp(const uint8_t *p, int n)
     return major_sync(p, n);
 }
 
-static int header_mlp(DRAudio *a, const uint8_t *p, int n, DRAudioHeader *h)
+static int header_mlp(DRAudio *a, const DRFrame *f, DRAudioHeader *h)
 {
     MlpState *m = ff_discrip_audio_priv(a);
+    const uint8_t *p = f->data;
+    int n = f->size;
     int ratebits;
 
     if (!major_sync(p, n) || !major_sync_ok(p, n))

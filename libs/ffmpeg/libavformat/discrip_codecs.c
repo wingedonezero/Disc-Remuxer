@@ -22,6 +22,8 @@
 
 #include "libavcodec/ac3_parser_internal.h"
 #include "libavcodec/ac3defs.h"
+#include "libavcodec/dca.h"
+#include "libavutil/intreadwrite.h"
 
 #include "discrip.h"
 
@@ -29,6 +31,7 @@ enum {
     REVIEW_FRAME_LENGTH = 1,   /* frame length or rate changes within the stream */
     REVIEW_DEPENDENT,          /* E-AC-3 dependent substream (extra channels) */
     REVIEW_SUBSTREAM,          /* E-AC-3 second program (independent substream > 0) */
+    REVIEW_DTS_SUBSTREAM_ONLY, /* DTS-HD substream without a core (DTS Express / LBR) */
 };
 
 /* Offset of the first start code 00 00 01 <code> in a unit, or -1. */
@@ -91,11 +94,11 @@ static int check_eac3(const uint8_t *data, int size)
     return ac3_header(data, size, &h) >= 0 && is_eac3(&h);
 }
 
-static int header_ac3(DRAudio *a, const uint8_t *data, int size, DRAudioHeader *out)
+static int header_ac3(DRAudio *a, const DRFrame *f, DRAudioHeader *out)
 {
     AC3HeaderInfo h;
 
-    if (ac3_header(data, size, &h) < 0)
+    if (ac3_header(f->data, f->size, &h) < 0)
         return -1;
     out->rate    = h.sample_rate;
     out->samples = h.num_blocks * 256;
@@ -165,11 +168,89 @@ static const DRAudioRules audio_eac3 = {
     .inspect  = inspect_eac3,
 };
 
-/* DTS core frames start with the sync word 0x7FFE8001 (ETSI TS 102 114). */
+/* ---- DTS (ETSI TS 102 114) ----
+ * A core frame starts with the sync word 7F FE 80 01; a DTS-HD extension
+ * substream (ETSI TS 102 114 7.4) with 64 58 20 25. FFmpeg's parser keeps a
+ * core frame and the extension substream after it in one unit (DTS-HD); a
+ * stream of extension substreams only (DTS Express / LBR) has no core. */
+
+/* core sampling frequencies, SFREQ (Table 5-5) */
+static const int dts_rates[16] = { 0, 8000, 16000, 32000, 0, 0, 11025, 22050, 44100, 0, 0, 12000, 24000, 48000, 0, 0 };
+
+static int dts_core_sync(const uint8_t *d, int size)
+{
+    return size >= 4 && AV_RB32(d) == 0x7FFE8001;
+}
+
+static int dts_exss_sync(const uint8_t *d, int size)
+{
+    return size >= 4 && AV_RB32(d) == 0x64582025;
+}
+
+static int dts_core(const uint8_t *d, int size, DCACoreFrameHeader *h)
+{
+    if (!dts_core_sync(d, size) || size < 16 || avpriv_dca_parse_core_frame_header(h, d, size) < 0)
+        return -1;
+    return dts_rates[h->sr_code] ? 0 : -1;
+}
+
 static int check_dts(const uint8_t *data, int size)
 {
-    return size >= 4 && data[0] == 0x7F && data[1] == 0xFE && data[2] == 0x80 && data[3] == 0x01;
+    DCACoreFrameHeader h;
+    return dts_core(data, size, &h) >= 0 || dts_exss_sync(data, size);
 }
+
+static int header_dts(DRAudio *a, const DRFrame *f, DRAudioHeader *out)
+{
+    DCACoreFrameHeader h;
+
+    if (dts_core(f->data, f->size, &h) >= 0) {
+        out->rate    = dts_rates[h.sr_code];
+        out->samples = h.npcmblocks * 32;
+        return 0;
+    }
+    if (dts_exss_sync(f->data, f->size) && f->samples > 0 && f->rate > 0) {
+        out->rate    = f->rate;
+        out->samples = f->samples;
+        return 0;
+    }
+    return -1;
+}
+
+/* A unit with a core is timed by its core frame header (npcmblocks x 32
+ * samples); a core-only track keeps only the core frame. A unit without a
+ * core is timed by FFmpeg's parser (extension substream asset) and reviewed. */
+static int duration_dts(DRAudio *a, DRFrame *f)
+{
+    const DRAudioHeader *s = ff_discrip_audio_header(a);
+    DCACoreFrameHeader h;
+    int rate, samples;
+
+    if (dts_core(f->data, f->size, &h) >= 0) {
+        if ((ff_discrip_audio_flags(a) & DR_AUDIO_CORE_ONLY) && h.frame_size < f->size)
+            f->size = h.frame_size;
+        rate    = dts_rates[h.sr_code];
+        samples = h.npcmblocks * 32;
+    } else if (dts_exss_sync(f->data, f->size) && !(ff_discrip_audio_flags(a) & DR_AUDIO_CORE_ONLY) &&
+               f->samples > 0 && f->rate > 0) {
+        ff_discrip_audio_review(a, REVIEW_DTS_SUBSTREAM_ONLY, "DTS-HD extension substream without a core "
+                                "(DTS Express / LBR), timed by FFmpeg's parser");
+        rate    = f->rate;
+        samples = f->samples;
+    } else
+        return AVERROR_INVALIDDATA;
+    if (rate != s->rate || samples != s->samples)
+        ff_discrip_audio_review(a, REVIEW_FRAME_LENGTH, "a frame's length or sample rate differs from the "
+                                "stream's first frame (timed by its own values)");
+    f->dur = (int64_t)((uint64_t)samples * DR_TICKS_PER_SECOND / (uint64_t)rate);
+    return 0;
+}
+
+static const DRAudioRules audio_dts = {
+    .header   = header_dts,
+    .sync     = sync_always,
+    .duration = duration_dts,
+};
 
 /* MPEG audio frames start with the 11-bit frame sync (ISO/IEC 11172-3). */
 static int check_mpa(const uint8_t *data, int size)
@@ -187,7 +268,7 @@ static const DRCodec codecs[] = {
       ff_discrip_mlp_unit_size, ff_discrip_mlp_resync },
     { AV_CODEC_ID_MLP,          "mlp",          anchor_unit, ff_discrip_mlp_check, &ff_discrip_audio_mlp,
       ff_discrip_mlp_unit_size, ff_discrip_mlp_resync },
-    { AV_CODEC_ID_DTS,          "dts",          anchor_unit, check_dts },
+    { AV_CODEC_ID_DTS,          "dts",          anchor_unit, check_dts,  &audio_dts  },
     { AV_CODEC_ID_PCM_DVD,      "pcm_dvd",      anchor_unit      },
     { AV_CODEC_ID_MP1,          "mp1",          anchor_unit, check_mpa },
     { AV_CODEC_ID_MP2,          "mp2",          anchor_unit, check_mpa },

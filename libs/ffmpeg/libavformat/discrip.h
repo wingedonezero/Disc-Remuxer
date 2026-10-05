@@ -50,6 +50,8 @@ typedef struct DRFrame {
     int64_t      dur;      /**< ticks */
     int64_t      pos;      /**< byte offset of the unit in its track's stream */
     unsigned     flags;    /**< DR_F_* */
+    int          samples;  /**< samples FFmpeg's parser gave the unit, 0 = none */
+    int          rate;     /**< and their sample rate */
 } DRFrame;
 
 /** Hands a frame on; the callee owns it (ff_discrip_frame_unref). */
@@ -70,7 +72,7 @@ typedef struct DRAudioRules {
     /** The stream's values from a unit; < 0 when the unit gives none. The
      *  first unit that is a sync unit and gives them sets them for the
      *  segment. */
-    int  (*header)(DRAudio *a, const uint8_t *data, int size, DRAudioHeader *h);
+    int  (*header)(DRAudio *a, const DRFrame *unit, DRAudioHeader *h);
     /** 1 when the unit is a sync unit (DR_F_SYNC). NULL: never. */
     int  (*sync)(const uint8_t *data, int size);
     /** The unit's duration in ticks, and its final bytes (a core cut
@@ -124,6 +126,8 @@ typedef struct DRUnit {
     int            size;
     int64_t        time;   /**< ticks, or AV_NOPTS_VALUE */
     int64_t        pos;    /**< byte offset of the unit's first byte in the track's stream */
+    int            samples;/**< samples FFmpeg's parser gives the unit, 0 = none */
+    int            rate;   /**< and their sample rate */
 } DRUnit;
 
 /** Called for every unit, in stream order. A negative return stops the

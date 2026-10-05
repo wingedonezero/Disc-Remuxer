@@ -12,3 +12,6 @@ last one of 13):
 Full command (TrueHD):
 
     ffmpeg -f lavfi -i "sine=frequency=440:sample_rate=48000,aformat=channel_layouts=stereo:sample_fmts=s16,atrim=end_sample=4813" -c:a truehd -strict -2 -f truehd sine_4813.thd
+
+- `sine_5120.dts`: `-c:a dca -strict -2 -f dts` from the same sine, 5120 samples
+  (10 DTS core frames of 512 samples, 1884 bytes each, 48 kHz)

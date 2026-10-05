@@ -46,6 +46,11 @@ pub struct Run {
 
 /// Payloads (bytes, time) of one segment through the cutter and the audio stage.
 pub fn run(codec: &str, payloads: &[(&[u8], Option<i64>)], marker: Option<i64>) -> Run {
+    run_flags(codec, 0, payloads, marker)
+}
+
+/// As `run`, with audio flags (e.g. `AUDIO_CORE_ONLY`).
+pub fn run_flags(codec: &str, flags: c_int, payloads: &[(&[u8], Option<i64>)], marker: Option<i64>) -> Run {
     let id = codec_id(&CString::new(codec).unwrap()).unwrap();
     let mut outs: Vec<Out> = Vec::new();
     let mut a: *mut Audio = std::ptr::null_mut();
@@ -53,7 +58,7 @@ pub fn run(codec: &str, payloads: &[(&[u8], Option<i64>)], marker: Option<i64>) 
     // SAFETY: outs outlives both stages; both are closed below.
     unsafe {
         assert_eq!(
-            ff_discrip_audio_open(&raw mut a, std::ptr::null_mut(), id, 0, on_frame, (&raw mut outs).cast()),
+            ff_discrip_audio_open(&raw mut a, std::ptr::null_mut(), id, flags, on_frame, (&raw mut outs).cast()),
             0
         );
         assert_eq!(ff_discrip_cutter_open(&raw mut c, std::ptr::null_mut(), id, ff_discrip_audio_unit, a.cast()), 0);

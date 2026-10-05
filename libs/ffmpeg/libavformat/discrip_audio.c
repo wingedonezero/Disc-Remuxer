@@ -178,7 +178,7 @@ static int unit_done(DRAudio *a, DRFrame *f)
 int ff_discrip_audio_unit(void *opaque, const DRUnit *u)
 {
     DRAudio *a = opaque;
-    DRFrame f = { .time = u->time, .pos = u->pos };
+    DRFrame f = { .time = u->time, .pos = u->pos, .samples = u->samples, .rate = u->rate };
     int ret;
 
     if (!(f.buf = av_buffer_alloc(u->size + AV_INPUT_BUFFER_PADDING_SIZE)))
@@ -195,7 +195,7 @@ int ff_discrip_audio_unit(void *opaque, const DRUnit *u)
     /* The stream's values come from its first sync unit that gives them;
      * units before it wait and then get the same values. */
     if ((!a->rules->sync || a->rules->sync(f.data, f.size)) &&
-        a->rules->header(a, f.data, f.size, &a->hdr) >= 0) {
+        a->rules->header(a, &f, &a->hdr) >= 0) {
         if (a->hdr.rate <= 0 || a->hdr.samples <= 0) {
             av_log(a->log, AV_LOG_ERROR, "Rip core: %s: unusable stream values (rate %d, %d samples)\n",
                    a->codec->name, a->hdr.rate, a->hdr.samples);
