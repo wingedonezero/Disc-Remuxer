@@ -245,6 +245,16 @@ void ff_dvdvideo_play_close(AVFormatContext *s, DVDVideoPlaybackState *state)
     if ((nb_failures = dvdnav_get_vm_failures(state->dvdnav, &first)))
         av_log(s, AV_LOG_WARNING, "libdvdnav met %"PRIu32" broken navigation assumption(s) on this disc; "
                "the first: %s\n", nb_failures, first ? first : "(not recorded)");
+    {
+        int reg = 0;
+        uint16_t value = 0;
+        uint32_t nb = dvdnav_get_ignored_counter_sets(state->dvdnav, &reg, &value);
+
+        if (nb)
+            av_log(s, AV_LOG_WARNING, "The disc set a GPRM counter to a non-zero value %"PRIu32" time(s) (first: GPRM%d "
+                   "= %u); a counter restarts from 0 when it is set (the value is not used), so the disc's path may "
+                   "differ from the one its author meant\n", nb, reg, value);
+    }
 
     /* not allocated by av_malloc() */
     if (state->pgc_pg_times_est)
