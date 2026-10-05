@@ -121,18 +121,17 @@ int dr_parser_run(const char *codec_name, const uint8_t *const *data,
 
 /* Opens one title with FFmpeg's DVD-Video demuxer, reads stream information
  * and logs FFmpeg's stream dump. Returns 0 or a negative AVERROR. */
-int dr_probe_dvdvideo(const char *path, int title)
+int dr_probe_dvdvideo(const char *path, const char *options)
 {
     const AVInputFormat *fmt = av_find_input_format("dvdvideo");
     AVFormatContext *ctx = NULL;
     AVDictionary *opts = NULL;
-    char value[16];
     int ret;
 
     if (!fmt)
         return AVERROR_DEMUXER_NOT_FOUND;
-    snprintf(value, sizeof(value), "%d", title);
-    av_dict_set(&opts, "title", value, 0);
+    if (options && (ret = av_dict_parse_string(&opts, options, "=", ":", 0)) < 0)
+        return ret;
     ret = avformat_open_input(&ctx, path, fmt, &opts);
     av_dict_free(&opts);
     if (ret < 0)

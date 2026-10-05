@@ -183,7 +183,7 @@ fn run(cli: &Cli, settings: &Settings, command_line: &str) -> Result<()> {
             let planned = jobs::plan(source, &discs, root, settings);
             jobs::run(&planned, settings, command_line, |disc| {
                 emit!(msg::PROBE_TITLE, title = title, source = disc.path.display());
-                ffmpeg::probe_dvdvideo(&disc.path, *title).map_err(|reason| {
+                ffmpeg::probe_dvdvideo(&disc.path, *title, settings).map_err(|reason| {
                     emit!(msg::PROBE_FAILED, title = title, source = disc.path.display(), reason = reason);
                     anyhow::anyhow!("title {title} could not be opened")
                 })
