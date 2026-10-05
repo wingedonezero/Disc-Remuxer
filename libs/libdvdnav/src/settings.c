@@ -60,6 +60,13 @@ dvdnav_status_t dvdnav_set_random_source(dvdnav_t *this,
   return DVDNAV_STATUS_OK;
 }
 
+dvdnav_status_t dvdnav_set_title_play_follows_jumps(dvdnav_t *this, int32_t follow) {
+  pthread_mutex_lock(&this->vm_lock);
+  this->vm->title_play_follows_jumps = follow != 0;
+  pthread_mutex_unlock(&this->vm_lock);
+  return DVDNAV_STATUS_OK;
+}
+
 dvdnav_status_t dvdnav_set_nav_only_flag(dvdnav_t *this, int32_t nav_only) {
   this->nav_only = nav_only;
   return DVDNAV_STATUS_OK;
