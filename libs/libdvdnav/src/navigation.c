@@ -36,6 +36,10 @@
 
 dvdnav_status_t dvdnav_still_skip(dvdnav_t *this) {
   pthread_mutex_lock(&this->vm_lock);
+  /* the skipped still counts as played: its length (seconds, low 8 bits)
+   * in playback clock units of 512/90000 s */
+  this->vm->state.registers.time_counter +=
+      (((uint32_t)this->position_current.still & 0xff) * 5625u) >> 5;
   this->position_current.still = 0;
   pthread_mutex_unlock(&this->vm_lock);
   this->skip_still = 1;
@@ -190,6 +194,81 @@ uint32_t dvdnav_get_vm_failures(dvdnav_t *this, const char **first) {
   if (first)
     *first = this->vm->first_failure;
   return this->vm->failures;
+}
+
+uint32_t dvdnav_get_ignored_counter_sets(dvdnav_t *this, int *reg, uint16_t *value) {
+  const registers_t *r = &this->vm->state.registers;
+
+  if (reg)
+    *reg = r->ignored_counter_reg;
+  if (value)
+    *value = r->ignored_counter_value;
+  return r->counter_sets_ignored;
+}
+
+dvdnav_status_t dvdnav_current_title_program2(dvdnav_t *this, int32_t *title,
+                                              int32_t *vtsn, int32_t *pgcn,
+                                              int32_t *pgn, int32_t *celln) {
+  int32_t part;
+
+  pthread_mutex_lock(&this->vm_lock);
+  if (!this->vm->vtsi && !this->vm->vmgi) {
+    printerr("Bad VM state.");
+    pthread_mutex_unlock(&this->vm_lock);
+    return DVDNAV_STATUS_ERR;
+  }
+  if (!this->started) {
+    printerr("Virtual DVD machine not started.");
+    pthread_mutex_unlock(&this->vm_lock);
+    return DVDNAV_STATUS_ERR;
+  }
+  if (!this->vm->state.pgc) {
+    printerr("No current PGC.");
+    pthread_mutex_unlock(&this->vm_lock);
+    return DVDNAV_STATUS_ERR;
+  }
+  switch (this->vm->state.domain) {
+  case DVD_DOMAIN_VTSMenu:
+  case DVD_DOMAIN_VMGM:
+    *title = 0;
+    *vtsn = this->vm->state.domain == DVD_DOMAIN_VTSMenu ? this->vm->state.vtsN : 0;
+    break;
+  case DVD_DOMAIN_VTSTitle:
+    if (!vm_get_current_title_part(this->vm, title, &part))
+      *title = -1;
+    *vtsn = this->vm->state.vtsN;
+    break;
+  default:
+    printerr("Not in a title or menu.");
+    pthread_mutex_unlock(&this->vm_lock);
+    return DVDNAV_STATUS_ERR;
+  }
+  *pgcn = this->vm->state.pgcN;
+  *pgn = this->vm->state.pgN;
+  *celln = this->vm->state.cellN;
+  pthread_mutex_unlock(&this->vm_lock);
+  return DVDNAV_STATUS_OK;
+}
+
+uint64_t dvdnav_get_absolute_time(dvdnav_t *this) {
+  return (uint64_t)this->vm->state.registers.time_counter << 9;
+}
+
+uint32_t dvdnav_get_prm(dvdnav_t *this, uint8_t type, uint8_t reg) {
+  const registers_t *registers = &this->vm->state.registers;
+
+  switch (type) {
+  case DVDNAV_PRM_GPRM:
+    return reg < 16 ? registers->GPRM[reg] : 0;
+  case DVDNAV_PRM_SPRM:
+    return reg < 24 ? registers->SPRM[reg] : 0;
+  case DVDNAV_PRM_GPRM_MODE:
+    return registers->GPRM_mode;
+  case DVDNAV_PRM_SPRM_FLAGS:
+    return registers->SPRM_flags;
+  default:
+    return 0;
+  }
 }
 
 dvdnav_status_t dvdnav_title_play(dvdnav_t *this, int32_t title) {

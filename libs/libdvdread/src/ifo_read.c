@@ -782,9 +782,21 @@ DVDREAD_API void ifoFree_UD_PGCIT(ifo_handle_t *ifofile) {
   ifofile->ud_pgcit = NULL;
 }
 
+ifo_handle_t *ifoAddRef(ifo_handle_t *ifofile) {
+  if(ifofile)
+    PRIV(ifofile)->extra_refs++;
+  return ifofile;
+}
+
 void ifoClose(ifo_handle_t *ifofile) {
   if(!ifofile)
     return;
+
+  /* Only the last reference frees the handle. */
+  if(PRIV(ifofile)->extra_refs > 0) {
+    PRIV(ifofile)->extra_refs--;
+    return;
+  }
 
   switch(ifofile->ifo_format) {
     case IFO_VIDEO:

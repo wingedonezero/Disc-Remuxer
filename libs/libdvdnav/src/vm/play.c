@@ -37,9 +37,23 @@
 #include "vm.h"
 #include "play.h"
 #include "vm/getset.h"
+#include "rand.h"
 
 #include "dvdnav_internal.h"
 #include "logger.h"
+
+/* Random / shuffle program chains: start a new cycle and pick its first
+ * program (the order comes from rand.h). */
+int vm_random_start(vm_t *vm) {
+  vm_rand_next(&(vm->state).rnd);
+  (vm->state).pgN_step = 0;
+  /* a random chain without programs has no order to pick from */
+  if(!VM_CHECK(vm, (vm->state).pgc->nr_of_programs > 0))
+    return 0;
+  (vm->state).pgN = 1 + vm_rand_shuffle((vm->state).rnd,
+                                        (vm->state).pgc->nr_of_programs, 0);
+  return 1;
+}
 
 /* A broken assumption (see vm_failed() in vm.h): stop. */
 static link_t play_failed(vm_t *vm, const char *what) {
@@ -71,19 +85,11 @@ link_t play_PGC(vm_t *vm) {
   (vm->state).cellN = 0;
   (vm->state).blockN = 0;
 
-  /* Handle random playback mode by choosing our initial program
-   * number randomly - some discs end up jumping to nowhere if you
-   * always choose the first cell.
-   */
-  if ((vm->state).pgc->pg_playback_mode!=0 &&
-      ((vm->state).pgc->pg_playback_mode & 0x80)==0) {
-    int pgCnt = ((vm->state).pgc->pg_playback_mode & 0x7f) + 1;
-    if (pgCnt > (vm->state).pgc->nr_of_programs) {
-      pgCnt = (vm->state).pgc->nr_of_programs;
-    }
-    if (pgCnt>1) {
-      (vm->state).pgN = 1 + ((int) ((float) pgCnt * rand()/(RAND_MAX+1.0)));
-    }
+  /* Random and shuffle playback (treated alike, no program twice in a
+   * cycle): a new cycle starts with a random program of the whole chain. */
+  if ((vm->state).pgc->pg_playback_mode != 0 && !vm_random_start(vm)) {
+    link_values.command = Exit;
+    return link_values;
   }
 
   /* eval -> updates the state and returns either
@@ -180,6 +186,12 @@ link_t play_PG(vm_t *vm) {
   Log3(vm, "play_PG: (vm->state).pgN (%i)", (vm->state).pgN);
 #endif
 
+  if((vm->state).pgN == 0) {
+    /* a link to program 0 (there is none): stop */
+    link_t link_values = { Exit, 0, 0, 0 };
+    (vm->state).pgN = 1;
+    return link_values;
+  }
   PLAY_CHECK(vm, (vm->state).pgN > 0);
   if((vm->state).pgN > (vm->state).pgc->nr_of_programs) {
 #ifdef TRACE
@@ -263,7 +275,7 @@ link_t play_Cell(vm_t *vm) {
   }
 
   /* Updates (vm->state).pgN and PTTN_REG */
-  if(!set_PGN(vm)) {
+  if(!set_PGN(vm, get_PGN(vm))) {
     /* Should not happen */
     return play_failed(vm, VM_WHERE("set_PGN(vm) failed"));
   }
@@ -274,6 +286,8 @@ link_t play_Cell(vm_t *vm) {
 #endif
   return play_this;
 }
+
+static link_t play_PGN(vm_t *vm);
 
 link_t play_Cell_post(vm_t *vm) {
   const cell_playback_t *cell;
@@ -297,7 +311,13 @@ link_t play_Cell_post(vm_t *vm) {
 #endif
       if(vmEval_CMD(&(vm->state).pgc->command_tbl->cell_cmds[cell->cell_cmd_nr - 1], 1,
                     vm, &link_values)) {
-        return link_values;
+        if(link_values.command != LinkNoLink)
+          return link_values;
+        /* A link to nowhere: continue with the next cell, as if the
+         * command had not linked (its button number is not used). */
+#ifdef TRACE
+        Log3(vm, "Cell command linked to nowhere, continuing");
+#endif
       } else {
 #ifdef TRACE
         Log3(vm, "Cell command didn't do a Jump, Link or Call");
@@ -344,12 +364,46 @@ link_t play_Cell_post(vm_t *vm) {
     break;
   }
 
-  /* Figure out the correct pgN for the new cell */
-  if(!set_PGN(vm)) {
+  return play_PGN(vm);
+}
+
+/* After a cell: continue with the next cell, the next program or the end
+ * of the program chain. */
+static link_t play_PGN(vm_t *vm) {
+  const pgc_t *pgc = (vm->state).pgc;
+  int pgN;
+
+  PLAY_CHECK(vm, pgc != NULL);
+  /* the program the new cell belongs to */
+  pgN = get_PGN(vm);
+
+  if(pgc->pg_playback_mode != 0) {
+    /* random / shuffle: when the cell step leaves the current program, the
+     * next program comes from the chain's random order; after
+     * (pg_playback_mode & 0x7f) + 1 programs the chain ends. (Leaving the
+     * highest-numbered program at the chain's end keeps pgN unchanged, and
+     * play_Cell then ends the chain.) */
+    if(pgN != (vm->state).pgN) {
+      unsigned int count = (unsigned int)(pgc->pg_playback_mode & 0x7f) + 1;
+      (vm->state).pgN_step++;
+      if((unsigned int)(vm->state).pgN_step >= count) {
+#ifdef TRACE
+        Log3(vm, "last random program in this PGC");
+#endif
+        return play_PGC_post(vm);
+      }
+      PLAY_CHECK(vm, pgc->nr_of_programs > 0);
+      pgN = 1 + vm_rand_shuffle((vm->state).rnd, pgc->nr_of_programs,
+                                (unsigned int)(vm->state).pgN_step);
+      (vm->state).cellN = pgc->program_map[pgN - 1];
+    }
+  } else if(pgN == pgc->nr_of_programs && (vm->state).cellN > pgc->nr_of_cells) {
 #ifdef TRACE
     Log3(vm, "last cell in this PGC");
 #endif
     return play_PGC_post(vm);
   }
+
+  set_PGN(vm, pgN);
   return play_Cell(vm);
 }

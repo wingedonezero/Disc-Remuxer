@@ -46,6 +46,7 @@
 #include "vm.h"
 #include "play.h"
 #include "getset.h"
+#include "rand.h"
 #include "dvdnav_internal.h"
 #include "logger.h"
 
@@ -372,9 +373,10 @@ int vm_reset(vm_t *vm, const char *dvdroot,
   /*  Setup State */
   memset(vm->state.registers.SPRM, 0, sizeof(vm->state.registers.SPRM));
   memset(vm->state.registers.GPRM, 0, sizeof(vm->state.registers.GPRM));
-  memset(vm->state.registers.GPRM_mode, 0, sizeof(vm->state.registers.GPRM_mode));
-  memset(vm->state.registers.GPRM_mode, 0, sizeof(vm->state.registers.GPRM_mode));
+  vm->state.registers.GPRM_mode = 0;
   memset(vm->state.registers.GPRM_time, 0, sizeof(vm->state.registers.GPRM_time));
+  vm->state.registers.time_counter = 0;
+  vm->state.registers.SPRM_flags = 0;
   vm->state.registers.SPRM[0]  = ('e'<<8)|'n'; /* Player Menu Language code */
   vm->state.AST_REG            = 15;           /* 15 why? */
   vm->state.SPST_REG           = 62;           /* 62 why? */
@@ -421,12 +423,23 @@ int vm_reset(vm_t *vm, const char *dvdroot,
     vm_close(vm);
   }
   if (!vm->dvd) {
+    /* the path names a directory of the application file callbacks, not a real file */
+    int from_files = 0;
     /* dvdread stream callback handlers for redirection */
 #if DVDREAD_VERSION >= DVDREAD_VERSION_CODE(6,1,0)
     dvd_logger_cb dvdread_logcb = { .pf_log = dvd_reader_logger_handler };
     /* Only install log handler if we have one ourself */
     dvd_logger_cb *p_dvdread_logcb = vm->logcb.pf_log ? &dvdread_logcb : NULL;
-    if(dvdroot)
+    if(dvdroot && vm->files) {
+        dvd_reader_filesystem_h *files = vm->files;
+        /* the reader owns the callbacks once it is open; on failure we close them */
+        vm->files = NULL;
+        from_files = 1;
+        vm->dvd = DVDOpenFiles(vm, p_dvdread_logcb, dvdroot, files);
+        if(!vm->dvd)
+            files->close(files);
+    }
+    else if(dvdroot)
         vm->dvd = DVDOpen2(vm, p_dvdread_logcb, dvdroot);
     else if(vm->priv && vm->dvdstreamcb.pf_read)
         vm->dvd = DVDOpenStream2(vm, p_dvdread_logcb, &vm->dvdstreamcb);
@@ -470,7 +483,9 @@ int vm_reset(vm_t *vm, const char *dvdroot,
       /* return 0; Not really used for now.. */
     }
     /* ifoRead_TXTDT_MGI(vmgi); Not implemented yet */
-    if(dvd_read_name(vm, vm->dvd_name, vm->dvd_serial, dvdroot) != 1) {
+    /* dvd_read_name() opens the path on the real file system */
+    if(!from_files &&
+       dvd_read_name(vm, vm->dvd_name, vm->dvd_serial, dvdroot) != 1) {
       Log1(vm, "vm: dvd_read_name failed");
     }
   }
@@ -490,50 +505,43 @@ int vm_reset(vm_t *vm, const char *dvdroot,
     Log2(vm, "DVD disk reports itself with Region mask 0x%08x. Regions:%s",
       vm->vmgi->vmgi_mat->vmg_category, buffer);
   }
+  if (vm->vmgi) {
+    /* the random program order of this disc (rand.h) */
+    vm->state.rnd = 0;
+    vm_rand_seed(&vm->state.rnd, vm->vmgi->vmgi_mat->vmg_last_sector);
+    vm_rand_seed(&vm->state.rnd, vm->vmgi->vmgi_mat->vmgi_last_sector);
+    vm_rand_seed(&vm->state.rnd, vm->vmgi->vmgi_mat->vmgm_vobu_admap);
+  }
   return 1;
 }
 
 
 /* copying and merging */
 
+/* A copy is a full snapshot of the VM in any state (also before a PGC is
+ * set). It shares the source's reader and IFO handles: the handles are
+ * reference counted (a copy that moves to another VTS releases its share
+ * and opens that VTSI for itself), the reader is not, so copies must be
+ * freed with vm_free_copy() before the original is freed. */
 vm_t *vm_new_copy(vm_t *source) {
   vm_t *target = vm_new_vm(source->priv, &source->logcb);
-  int vtsN;
-  int pgcN = get_PGCN(source);
-  int pgN  = (source->state).pgN;
 
-  if (target == NULL || pgcN == 0)
-    goto fail;
+  if (target == NULL)
+    return NULL;
 
   memcpy(target, source, sizeof(vm_t));
-
-  /* open a new vtsi handle, because the copy might switch to another VTS */
-  target->vtsi = NULL;
-  vtsN = (target->state).vtsN;
-  if (vtsN > 0) {
-    (target->state).vtsN = 0;
-    if (!ifoOpenNewVTSI(target, target->dvd, vtsN))
-      goto fail;
-
-    /* restore pgc pointer into the new vtsi */
-    if (!set_PGCN(target, pgcN))
-      goto fail;
-
-    (target->state).pgN = pgN;
-  }
+  ifoAddRef(target->vmgi);
+  ifoAddRef(target->vtsi);
 
   return target;
-
-fail:
-  if (target != NULL)
-    vm_free_vm(target);
-
-  return NULL;
 }
 
 void vm_merge(vm_t *target, vm_t *source) {
+  /* the target's shares are released, the source's move to the target */
   if(target->vtsi)
     ifoClose(target->vtsi);
+  if(target->vmgi)
+    ifoClose(target->vmgi);
   memcpy(target, source, sizeof(vm_t));
   memset(source, 0, sizeof(vm_t));
 }
@@ -541,6 +549,8 @@ void vm_merge(vm_t *target, vm_t *source) {
 void vm_free_copy(vm_t *vm) {
   if(vm->vtsi)
     ifoClose(vm->vtsi);
+  if(vm->vmgi)
+    ifoClose(vm->vmgi);
   free(vm);
 }
 
@@ -567,6 +577,9 @@ void vm_position_get(vm_t *vm, vm_position_t *position) {
   /* still already determined */
   if (position->still)
     return;
+#if 0
+  /* Disabled: it turns short regular cells into stills, and an invented
+   * still of 0xff is an infinite one that waits for the user. */
   /* This is a rough fix for some strange still situations on some strange DVDs.
    * There are discs (like the German "Back to the Future" RC2) where the only
    * indication of a still is a cell playback time higher than the time the frames
@@ -594,6 +607,7 @@ void vm_position_get(vm_t *vm, vm_position_t *position) {
     if (time > 0xff) time = 0xff;
     position->still = time;
   }
+#endif
 }
 
 void vm_get_next_cell(vm_t *vm) {
@@ -641,6 +655,13 @@ int vm_jump_title_part(vm_t *vm, int title, int part) {
 
   if(!set_PTT(vm, title, part))
     return 0;
+  if(vm->title_play_follows_jumps) {
+    /* Play the title as a player does: the title PGC's pre commands run and
+     * any jump they make is followed (back to a menu, to another PGC, ...).
+     * vm_jump_title_program() still ignores such jumps. */
+    process_command(vm, play_PGC_PG(vm, vm->state.pgN));
+    return 1;
+  }
   /* Some DVDs do not want us to jump directly into a title and have
    * PGC pre commands taking us back to some menu. Since we do not like that,
    * we do not execute PGC pre commands that would do a jump. */
@@ -760,7 +781,12 @@ int vm_failed(vm_t *vm, const char *what) {
 
 /* link processing */
 
+/* Links followed by one process_command() before the VM is stopped: a
+ * disc whose links never reach something to play would loop forever. */
+#define VM_MAX_LINKS 2500
+
 static int process_command(vm_t *vm, link_t link_values) {
+  int links = 0;
 
   while(link_values.command != PlayThis) {
 
@@ -772,6 +798,12 @@ static int process_command(vm_t *vm, link_t link_values) {
     vm_print_current_domain_state(vm);
     Log3(vm, "Before printout ends.");
 #endif
+
+    if(links++ > VM_MAX_LINKS) {
+      Log1(vm, "More than %d links without anything to play, stopping", VM_MAX_LINKS);
+      vm->stopped = 1;
+      return 0;
+    }
 
     switch(link_values.command) {
 
@@ -830,6 +862,16 @@ static int process_command(vm_t *vm, link_t link_values) {
       /* BUTTON number:data1 */
       if(link_values.data1 != 0)
         vm->state.HL_BTNN_REG = link_values.data1 << 10;
+      if(vm->state.pgN == 1 || vm->state.pgc->pg_playback_mode != 0) {
+        /* No previous program (the first one, or a random / shuffle chain):
+         * go to the previous program chain, as LinkPrevPGC does. */
+        if(!VM_CHECK(vm, vm->state.pgc->prev_pgc_nr != 0)) return 0;
+        if(set_PGCN(vm, vm->state.pgc->prev_pgc_nr))
+          link_values = play_PGC(vm);
+        else
+          link_values.command = Exit;
+        break;
+      }
       if(!VM_CHECK(vm, vm->state.pgN > 1)) return 0;
       vm->state.pgN -= 1;
       link_values = play_PG(vm);
@@ -921,7 +963,7 @@ static int process_command(vm_t *vm, link_t link_values) {
           link_values.command = PlayThis;
           link_values.data1 = vm->state.rsm_blockN & 0xffff;
           link_values.data2 = vm->state.rsm_blockN >> 16;
-          if(!set_PGN(vm)) {
+          if(!set_PGN(vm, get_PGN(vm))) {
             /* Were at the end of the PGC, should not happen for a RSM */
             return vm_failed(vm, VM_WHERE("set_PGN(vm) failed"));
             link_values.command = LinkTailPGC;
@@ -946,8 +988,13 @@ static int process_command(vm_t *vm, link_t link_values) {
         vm->state.HL_BTNN_REG = link_values.data2 << 10;
       if(!set_VTS_PTT(vm, vm->state.vtsN, vm->state.VTS_TTN_REG, link_values.data1))
         link_values.command = Exit;
-      else
+      else {
+        /* in a random / shuffle chain the part's program is not used: a new
+         * cycle starts with a random program */
+        if(vm->state.pgc->pg_playback_mode != 0 && !vm_random_start(vm))
+          return 0;
         link_values = play_PG(vm);
+      }
       break;
 
     case LinkPGN:

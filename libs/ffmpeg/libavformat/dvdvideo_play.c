@@ -219,6 +219,13 @@ int ff_dvdvideo_menu_next_ps_block(AVFormatContext *s, DVDVideoPlaybackState *st
 
     /* we are in the middle of a VOBU, so pass on the PS packet */
     memcpy(buf, &read_buf, DVDVIDEO_BLOCK_SIZE);
+    {
+        DVDVideoDemuxContext *c = s->priv_data;
+        int ret = ff_dvdvideo_source_descramble(c->source, c->opt_menu_vts, 1, buf);
+
+        if (ret < 0)
+            return ret;
+    }
     state->sector_offset++;
     state->vobu_remaining--;
 
@@ -227,8 +234,27 @@ int ff_dvdvideo_menu_next_ps_block(AVFormatContext *s, DVDVideoPlaybackState *st
 
 void ff_dvdvideo_play_close(AVFormatContext *s, DVDVideoPlaybackState *state)
 {
+    const char *first = NULL;
+    uint32_t nb_failures;
+
     if (!state->dvdnav)
         return;
+
+    /* the navigator records what it found broken in the disc's navigation
+     * data instead of stopping the program */
+    if ((nb_failures = dvdnav_get_vm_failures(state->dvdnav, &first)))
+        av_log(s, AV_LOG_WARNING, "libdvdnav met %"PRIu32" broken navigation assumption(s) on this disc; "
+               "the first: %s\n", nb_failures, first ? first : "(not recorded)");
+    {
+        int reg = 0;
+        uint16_t value = 0;
+        uint32_t nb = dvdnav_get_ignored_counter_sets(state->dvdnav, &reg, &value);
+
+        if (nb)
+            av_log(s, AV_LOG_WARNING, "The disc set a GPRM counter to a non-zero value %"PRIu32" time(s) (first: GPRM%d "
+                   "= %u); a counter restarts from 0 when it is set (the value is not used), so the disc's path may "
+                   "differ from the one its author meant\n", nb, reg, value);
+    }
 
     /* not allocated by av_malloc() */
     if (state->pgc_pg_times_est)
@@ -250,8 +276,13 @@ int ff_dvdvideo_play_open(AVFormatContext *s, DVDVideoPlaybackState *state)
     int cur_title, cur_pgcn, cur_pgn;
     pgc_t *pgc;
 
+    dvd_reader_filesystem_h *files;
+
     dvdnav_log_cb = (dvdnav_logger_cb) { .pf_log = dvdvideo_libdvdnav_log };
-    dvdnav_open_status = dvdnav_open2(&state->dvdnav, s, &dvdnav_log_cb, s->url);
+    if (!(files = ff_dvdvideo_source_files(c->source)))
+        return AVERROR(ENOMEM);
+    /* the navigator takes the files over in every case */
+    dvdnav_open_status = dvdnav_open_files(&state->dvdnav, s, &dvdnav_log_cb, "/", files);
 
     if (!state->dvdnav                                                          ||
         dvdnav_open_status != DVDNAV_STATUS_OK                                  ||
@@ -556,6 +587,12 @@ int ff_dvdvideo_play_next_ps_block(AVFormatContext *s, DVDVideoPlaybackState *st
                                               state->pgn, cur_pgn);
 
                 memcpy(buf, &nav_buf, nav_len);
+                {
+                    int ret = ff_dvdvideo_source_descramble(c->source, state->vtsn, 0, buf);
+
+                    if (ret < 0)
+                        return ret;
+                }
 
                 state->is_seeking = 0;
 

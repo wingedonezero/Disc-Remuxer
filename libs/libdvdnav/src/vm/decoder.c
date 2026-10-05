@@ -67,19 +67,11 @@ uint32_t vm_getbits(command_t *command, int32_t start, int32_t count) {
 }
 
 static uint16_t get_GPRM(registers_t* registers, uint8_t reg) {
-  if (registers->GPRM_mode[reg] & 0x01) {
-    struct timeval current_time, time_offset;
+  if (registers->GPRM_mode & (1 << reg)) {
     uint16_t result;
-    /* Counter mode */
-    /* fprintf(MSG_OUT, "libdvdnav: Getting counter %d\n",reg);*/
-    gettimeofday(&current_time, NULL);
-    time_offset.tv_sec = current_time.tv_sec - registers->GPRM_time[reg].tv_sec;
-    time_offset.tv_usec = current_time.tv_usec - registers->GPRM_time[reg].tv_usec;
-    if (time_offset.tv_usec < 0) {
-      time_offset.tv_sec--;
-      time_offset.tv_usec += 1000000;
-    }
-    result = (uint16_t) (time_offset.tv_sec & 0xffff);
+    /* Counter mode: whole seconds of playback clock since the counter was set
+     * (units * 512 / 90000 = units * 32 / 5625; 32-bit arithmetic) */
+    result = (uint16_t) (((registers->time_counter - registers->GPRM_time[reg]) * 32u) / 5625u);
     registers->GPRM[reg]=result;
     return result;
 
@@ -91,13 +83,14 @@ static uint16_t get_GPRM(registers_t* registers, uint8_t reg) {
 }
 
 static void set_GPRM(registers_t* registers, uint8_t reg, uint16_t value) {
-  if (registers->GPRM_mode[reg] & 0x01) {
-    struct timeval current_time;
-    /* Counter mode */
-    /* fprintf(MSG_OUT, "libdvdnav: Setting counter %d\n",reg); */
-    gettimeofday(&current_time, NULL);
-    registers->GPRM_time[reg] = current_time;
-    registers->GPRM_time[reg].tv_sec -= value;
+  if (registers->GPRM_mode & (1 << reg)) {
+    /* Counter mode: the counter restarts from 0 at the current playback
+     * clock; the value is stored in GPRM but does not offset the counter */
+    registers->GPRM_time[reg] = registers->time_counter;
+    if (value != 0 && !registers->counter_sets_ignored++) {
+      registers->ignored_counter_reg   = reg;
+      registers->ignored_counter_value = value;
+    }
   }
   registers->GPRM[reg] = value;
 }
@@ -106,10 +99,16 @@ static void set_GPRM(registers_t* registers, uint8_t reg, uint16_t value) {
    SXXX_XXXX, where S is 1 if it is system register. */
 static uint16_t eval_reg(command_t* command, uint8_t reg) {
   if(reg & 0x80) {
-    if ((reg & 0x1f) == 20) {
+    uint8_t sprm = reg & 0x1f;
+    if (sprm == 20) {
       fprintf(MSG_OUT, "libdvdnav: Suspected RCE Region Protection!!!\n");
     }
-    return command->registers->SPRM[reg & 0x1f]; /*  FIXME max 24 not 32 */
+    /* remember which system registers the disc tests (all 32 numbers) */
+    command->registers->SPRM_flags |= 1u << sprm;
+    /* only SPRM 0..23 exist; the others read as 0 */
+    if (sprm >= 24)
+      return 0;
+    return command->registers->SPRM[sprm];
   } else {
     return get_GPRM(command->registers, reg & 0x0f) ;
   }
@@ -252,10 +251,10 @@ void vm_print_registers( registers_t *registers ) {
     fprintf(MSG_OUT, "%04x|", get_GPRM(registers, i) );
   fprintf(MSG_OUT, "\nlibdvdnav: Gmode: ");
   for(i = 0; i < 16; i++)
-    fprintf(MSG_OUT, "%04x|", registers->GPRM_mode[i]);
+    fprintf(MSG_OUT, "%04x|", (registers->GPRM_mode >> i) & 1);
   fprintf(MSG_OUT, "\nlibdvdnav: Gtime: ");
   for(i = 0; i < 16; i++)
-    fprintf(MSG_OUT, "%04lx|", registers->GPRM_time[i].tv_sec & 0xffff);
+    fprintf(MSG_OUT, "%04x|", registers->GPRM_time[i] & 0xffff);
   fprintf(MSG_OUT, "\n");
 }
 
@@ -532,9 +531,9 @@ static int32_t eval_system_set(command_t* command, int32_t cond, link_t *return_
       data = eval_reg_or_data(command, vm_getbits(command, 60, 1), 47);
       data2 = vm_getbits(command, 19, 4);
       if(vm_getbits(command, 23, 1)) {
-        command->registers->GPRM_mode[data2] |= 1; /* Set bit 0 */
+        command->registers->GPRM_mode |= 1 << data2; /* counter mode */
       } else {
-        command->registers->GPRM_mode[data2] &= ~ 0x01; /* Reset bit 0 */
+        command->registers->GPRM_mode &= ~(1 << data2); /* register mode */
       }
       if(cond) {
         set_GPRM(command->registers, data2, data);
@@ -543,7 +542,8 @@ static int32_t eval_system_set(command_t* command, int32_t cond, link_t *return_
     case 6: /*  Set system reg 8 (Highlighted button) */
       data = eval_reg_or_data(command, vm_getbits(command, 60, 1), 31); /*  Not system reg!! */
       if(cond) {
-        command->registers->SPRM[8] = data;
+        /* the button number is in bits 15..10; the low bits must be 0 */
+        command->registers->SPRM[8] = data & 0xfc00;
       }
       break;
   }
@@ -599,8 +599,12 @@ static void eval_set_op(command_t* command, int32_t op, int32_t reg, int32_t reg
       }
       break;
     case 8: /* SPECIAL CASE - RND! Return numbers between 1 and data. */
-      set_GPRM(command->registers, reg, 1 + ((uint16_t) ((float) data * rand()/(RAND_MAX+1.0))) );
+    {
+      vm_t *vm = command->vm;
+      int r = vm->rnd_fn ? vm->rnd_fn(vm->rnd_priv) : rand();
+      set_GPRM(command->registers, reg, 1 + ((uint16_t) ((float) data * r/(RAND_MAX+1.0))) );
       break;
+    }
     case 9:
       set_GPRM(command->registers, reg, (get_GPRM(command->registers, reg) & data) );
       break;

@@ -36,7 +36,7 @@ int  set_VTS_PROG(vm_t *vm, int vtsN, int vts_ttn, int pgcn, int pgn);
 int  set_FP_PGC(vm_t *vm);
 int  set_MENU(vm_t *vm, int menu);
 int  set_PGCN(vm_t *vm, int pgcN);
-int  set_PGN(vm_t *vm); /* Set PGN based on (vm->state).CellN */
+int  set_PGN(vm_t *vm, int pgN); /* Make pgN current, update PTTN_REG */
 void set_RSMinfo(vm_t *vm, int cellN, int blockN);
 void set_HL_BTN(vm_t *vm, int btnn);
 
@@ -44,6 +44,7 @@ void set_HL_BTN(vm_t *vm, int btnn);
 int get_TT(vm_t *vm, int vtsN, int vts_ttn);
 int get_ID(vm_t *vm, int id);
 int get_PGCN(vm_t *vm);
+int get_PGN(vm_t *vm); /* Program of (vm->state).cellN */
 
 const pgcit_t* get_MENU_PGCIT(vm_t *vm, ifo_handle_t *h, uint16_t lang);
 const pgcit_t* get_PGCIT(vm_t *vm);

@@ -120,6 +120,26 @@ DVDNAV_API dvdnav_status_t dvdnav_open_stream2(dvdnav_t **dest,
                                     void *priv, const dvdnav_logger_cb *,
                                     dvdnav_stream_cb *stream_cb);
 
+/*
+ * Opens a DVD whose files are served by the application: libdvdread reads
+ * the directory "path" through the callbacks in "fs" (see DVDOpenFiles() in
+ * <dvdread/dvd_reader.h>), so nothing is read from the real file system.
+ *
+ * The navigator takes "fs" over in every case: it is closed with fs->close()
+ * when the navigator is closed, or before this function returns an error.
+ * Copies made with dvdnav_dup() share it.
+ */
+DVDNAV_API dvdnav_status_t dvdnav_open_files(dvdnav_t **dest,
+                                  void *priv, const dvdnav_logger_cb *,
+                                  const char *path,
+                                  dvd_reader_filesystem_h *fs);
+
+/*
+ * Makes a full copy of a navigator in its current state (VM state and
+ * registers, position, NAV data, flags), which can then be run on its own.
+ * Copies share the source's DVD reader and IFO data: free every copy with
+ * dvdnav_free_dup() before closing the navigator it was made from.
+ */
 DVDNAV_API dvdnav_status_t dvdnav_dup(dvdnav_t **dest, dvdnav_t *src);
 DVDNAV_API dvdnav_status_t dvdnav_free_dup(dvdnav_t * _this);
 
@@ -189,6 +209,48 @@ DVDNAV_API dvdnav_status_t dvdnav_get_region_mask(dvdnav_t *self, int32_t *regio
  * at dvdnav_get_next_cache_block().
  */
 DVDNAV_API dvdnav_status_t dvdnav_set_readahead_flag(dvdnav_t *self, int32_t read_ahead_flag);
+
+/*
+ * Navigation-only mode, for following the navigation of a disc without its
+ * contents. When the flag is non-zero, data blocks are never read or
+ * returned: where the next block would be a data block, the rest of the
+ * current VOBU is skipped and DVDNAV_BLOCK_OK is returned with len 0. Every
+ * VOBU's NAV packet is still read (DVDNAV_NAV_PACKET), except that in a title
+ * cell played in sequence the navigator may also skip whole VOBUs forward:
+ *  - only in a VTS title, in a program chain with sequential playback
+ *    (pg_playback_mode 0), in a cell without per-VOBU stills (playback_mode 0),
+ *    and never from a VOBU whose PCI carries highlight (button) information;
+ *  - in a cell that is not part of a block, not interleaved and not a
+ *    seamless angle cell, it jumps straight to the cell's last VOBU when that
+ *    is at least 0x1000 sectors ahead;
+ *  - otherwise it takes the first of the DSI's forward VOBU pointers
+ *    (vobu_sri.fwda[0..15], farthest first) whose offset is below 0x20000
+ *    sectors;
+ *  - a jump is taken only when it is more than 0x20 sectors and the target
+ *    sector is a NAV packet whose PCI names that very sector (a NAV packet
+ *    that names another sector is not followed).
+ * The flag is cleared by dvdnav_reset() and copied by dvdnav_dup().
+ */
+DVDNAV_API dvdnav_status_t dvdnav_set_nav_only_flag(dvdnav_t *self, int32_t nav_only);
+
+/*
+ * Sets where the VM's Rnd operation (a set command that picks a number from
+ * 1 to N) takes its random numbers from: fn(priv) must return a value from 0
+ * to RAND_MAX, like rand(). NULL restores the default, rand().
+ * Copies made with dvdnav_dup() afterwards use the same fn and priv, so all
+ * copies of one navigator can share one sequence.
+ */
+DVDNAV_API dvdnav_status_t dvdnav_set_random_source(dvdnav_t *self,
+                                         int (*fn)(void *priv), void *priv);
+
+/*
+ * Sets whether dvdnav_title_play() / dvdnav_part_play() follow a jump made by
+ * the title PGC's pre commands, as a player does (follow != 0), or ignore it
+ * and play the title's program anyway (0, the default). A navigation scan
+ * that must find what the disc plays turns it on; reading one title's own
+ * program chain needs it off. Copies made with dvdnav_dup() keep it.
+ */
+DVDNAV_API dvdnav_status_t dvdnav_set_title_play_follows_jumps(dvdnav_t *self, int32_t follow);
 
 /*
  * Query whether read-ahead caching/buffering will be used.
@@ -385,6 +447,41 @@ DVDNAV_API dvdnav_status_t dvdnav_current_title_program(dvdnav_t *self, int32_t 
                                           int32_t *pgcn, int32_t *pgn);
 
 /*
+ * Return the VM's playback clock in 90 kHz ticks: the time the disc has
+ * played since the VM was reset (NAV packet cell times and skipped stills,
+ * not wall-clock time). GPRM counters run on this clock.
+ */
+DVDNAV_API uint64_t dvdnav_get_absolute_time(dvdnav_t *self);
+
+/* Register sets for dvdnav_get_prm() */
+#define DVDNAV_PRM_GPRM       0 /* general register reg (0..15), as stored */
+#define DVDNAV_PRM_SPRM       1 /* system register reg (0..23) */
+#define DVDNAV_PRM_GPRM_MODE  2 /* bit r set: GPRM r is a counter (reg ignored) */
+#define DVDNAV_PRM_SPRM_FLAGS 3 /* bit n set: a command has read SPRM n since
+                                 * the VM was reset, n 0..31 (reg ignored) */
+
+/*
+ * Return a VM register value; 0 for an unknown set or register number.
+ */
+DVDNAV_API uint32_t dvdnav_get_prm(dvdnav_t *self, uint8_t type, uint8_t reg);
+
+/*
+ * Return the position currently being played: title number, title set
+ * (vtsn), program chain (pgcn), program (pgn) and cell (celln).
+ * Unlike dvdnav_current_title_program(), it also reports positions that have
+ * no title / part entry:
+ *  - in a menu: title 0, vtsn = the title set of a VTS menu or 0 in the
+ *    video manager menu, whether or not the menu has a menu ID;
+ *  - in a VTS title: title -1 when no part of title of the title set leads
+ *    to the current program chain and program.
+ * Fails only when no IFO is loaded, the VM is not started, there is no
+ * current program chain, or in the first-play domain.
+ */
+DVDNAV_API dvdnav_status_t dvdnav_current_title_program2(dvdnav_t *self, int32_t *title,
+                                          int32_t *vtsn, int32_t *pgcn,
+                                          int32_t *pgn, int32_t *celln);
+
+/*
  * Return how many broken assumptions about the disc's navigation data the
  * VM has met: conditions upstream libdvdnav checks with assert(). Each one
  * is recorded and stops the VM (DVDNAV_STOP follows) instead of aborting
@@ -393,6 +490,15 @@ DVDNAV_API dvdnav_status_t dvdnav_current_title_program(dvdnav_t *self, int32_t 
  * starts with the record of its source.
  */
 DVDNAV_API uint32_t dvdnav_get_vm_failures(dvdnav_t *self, const char **first);
+
+/*
+ * Return how many times a GPRM in counter mode was set to a non-zero value.
+ * The counter restarts from 0 all the same (the value does not offset it),
+ * so a disc that relies on the value can take another path than its author
+ * meant. If reg / value are not NULL they receive the register and value of
+ * the first such set.
+ */
+DVDNAV_API uint32_t dvdnav_get_ignored_counter_sets(dvdnav_t *self, int *reg, uint16_t *value);
 
 /*
  * Return the current position (in blocks) within the current

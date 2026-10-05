@@ -105,8 +105,8 @@ int ff_discio_read_bytes(DiscIOSource *src, int64_t pos, uint8_t *buf, int len,
 /**
  * Room for a volume label as a file system decodes it, including the
  * terminating NUL (UDF logical volume identifiers decode to at most 258
- * bytes). Rules that limit a label further (e.g. for naming) are applied by
- * the code choosing the file system, not by the readers.
+ * bytes). Labels are kept whole: no rule empties or shortens a label that
+ * fits (ff_discio_label_copy() only cuts at a broken UTF-8 sequence).
  */
 #define DISCIO_LABEL_SIZE 260
 
@@ -134,6 +134,13 @@ typedef struct DiscIOFile {
 
 struct DiscIOFS;
 
+/** What kind of file system a DiscIOFS is (DiscIOFSOps.kind). */
+enum DiscIOFSKind {
+    DISCIO_FS_ISO9660 = 1,
+    DISCIO_FS_JOLIET,
+    DISCIO_FS_UDF,
+};
+
 /** Called once per directory entry by DiscIOFSOps.list_dir. */
 typedef int (*DiscIODirCallback)(void *opaque, const char *name, int is_dir);
 
@@ -157,6 +164,14 @@ typedef struct DiscIOFSOps {
      */
     int  (*list_dir)(struct DiscIOFS *fs, const char *path, DiscIODirCallback cb, void *opaque);
     void (*close)(struct DiscIOFS *fs);
+    /**
+     * Find the directory at path ("/" = root) with the lookups open_file and
+     * list_dir use, without reading its entries.
+     * @return 0, AVERROR(ENOENT) when there is no such directory, or another
+     *         negative AVERROR code when it cannot be read
+     */
+    int  (*find_dir)(struct DiscIOFS *fs, const char *path);
+    int  kind;                 /**< enum DiscIOFSKind */
 } DiscIOFSOps;
 
 /** A mounted file system on a source. */
@@ -228,5 +243,88 @@ int ff_discio_iso9660_mount(DiscIOSource *src, int joliet, DiscIOFS **out);
  * @return 0, or AVERROR(EINVAL) when fs is not ISO 9660 / Joliet
  */
 int ff_discio_iso9660_creation_date(const DiscIOFS *fs, char date[15]);
+
+/* ---- the file system of a disc image ---- */
+
+/** UDF reader (DiscIOImageOptions.udf_reader). */
+enum DiscIOUDFReader {
+    DISCIO_UDF_NETBSD = 0,     /**< NetBSD-based (the default) */
+    DISCIO_UDF_LINUX,          /**< Linux-based */
+};
+
+/** How ff_discio_mount_image() mounts and chooses. */
+typedef struct DiscIOImageOptions {
+    int udf_reader;            /**< enum DiscIOUDFReader */
+    /**
+     * Read a UDF 1.02 volume whose primary volume descriptor was recorded
+     * before 2006 through ISO 9660 (or Joliet) when that passes the DVD-Video
+     * check. On by default.
+     */
+    int prefer_iso_for_old_udf102;
+} DiscIOImageOptions;
+
+/** The defaults of DiscIOImageOptions. */
+#define DISCIO_IMAGE_OPTIONS_DEFAULT { DISCIO_UDF_NETBSD, 1 }
+
+/**
+ * Mount the file system a disc image is read through:
+ * 1. UDF is mounted first. Without a UDF volume, ISO 9660 is mounted; it is
+ *    kept when it passes ff_discio_dvd_video_check(), else Joliet when it
+ *    mounts and passes, else the ISO 9660 volume anyway. Neither UDF nor
+ *    ISO 9660: AVERROR_INVALIDDATA.
+ * 2. A UDF volume whose revision is not 1.02 is kept without a check.
+ * 3. UDF 1.02: kept when it passes the check, unless prefer_iso_for_old_udf102 is
+ *    on and its primary volume descriptor was recorded before 2006 (the
+ *    check is then not made). Otherwise ISO 9660, then Joliet, is kept when
+ *    it mounts and passes the check, and takes the UDF label by
+ *    ff_discio_label_copy(). When neither passes, the UDF volume is kept.
+ * The UDF label itself goes through ff_discio_label_copy() into an empty
+ * label. Every decision is logged.
+ * @param opts NULL for DISCIO_IMAGE_OPTIONS_DEFAULT
+ * @return 0 or a negative AVERROR code
+ */
+int ff_discio_mount_image(DiscIOSource *src, const DiscIOImageOptions *opts, DiscIOFS **out);
+
+/**
+ * The DVD-Video check of a mounted file system (DVD-Video: VMGI_MAT of
+ * VIDEO_TS.IFO):
+ * - no root directory: fails;
+ * - no VIDEO_TS directory: passes (not a DVD-Video volume);
+ * - VIDEO_TS.IFO must be one non-empty extent; its first sector (or, when
+ *   that cannot be read, the first sector of VIDEO_TS.BUP when that is one
+ *   extent) must start with "DVDVIDEO-VMG" and give 1-99 title sets
+ *   (vmg_nr_of_title_sets);
+ * - VTS_01_0.IFO .. VTS_nn_0.IFO must each be one non-empty extent.
+ * The sector is read from the source with 5 attempts, quietly.
+ * @return 1 when the file system passes, 0 when it fails
+ */
+int ff_discio_dvd_video_check(DiscIOFS *fs);
+
+/**
+ * Copy label src over label dst (DISCIO_LABEL_SIZE bytes) when src is at
+ * least half as long as dst (byte lengths, the half rounded down); otherwise
+ * dst is kept. The copy is cut before the first byte sequence that is not
+ * one whole, valid UTF-8 character.
+ */
+void ff_discio_label_copy(char *dst, const char *src);
+
+/** Disc formats ff_discio_disc_format() tells apart. */
+enum DiscIODiscFormat {
+    DISCIO_DISC_NONE = 0,
+    DISCIO_DISC_DVD,
+    DISCIO_DISC_BLURAY,        /**< BDMV or BDAV, incl. UHD and 3-D */
+    DISCIO_DISC_HDDVD,
+};
+
+/**
+ * The disc format of a mounted file system, from the files present (names
+ * exact, contents not read), the first match winning:
+ * 1. Blu-ray: (/BDMV/index.bdmv or /BDMV/INDEX.BDM) and (/BDMV/MovieObject.bdmv
+ *    or /BDMV/MOVIEOBJ.BDM), or else /BDAV/info.bdav;
+ * 2. HD DVD: (/HVDVD_TS/HVA00001.VTI or /HDDVD_TS/HVA00001.VTI) and
+ *    /ADV_OBJ/DISCID.DAT;
+ * 3. DVD: /VIDEO_TS/VIDEO_TS.IFO.
+ */
+enum DiscIODiscFormat ff_discio_disc_format(DiscIOFS *fs);
 
 #endif /* AVFORMAT_DISCIO_H */

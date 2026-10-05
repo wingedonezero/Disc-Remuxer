@@ -31,6 +31,7 @@
 #define DVDCSS_DVDCSS_H 1
 #endif
 
+#include <stdarg.h>
 #include <stdint.h>
 
 #include <dvdcss/version.h>
@@ -107,6 +108,30 @@ LIBDVDCSS_EXPORT const char *dvdcss_error ( const dvdcss_t );
 LIBDVDCSS_EXPORT int      dvdcss_is_scrambled ( dvdcss_t );
 
 LIBDVDCSS_EXPORT int dvdcss_get_encryption_type ( dvdcss_t );
+
+/* Disc-Remuxer additions: for callers that read and descramble sectors
+ * themselves (see libs/README.md). */
+
+/** The size of a CSS title key in bytes. */
+#define DVDCSS_KEY_SIZE 5
+
+/** Message levels of a dvdcss_log_cb. */
+#define DVDCSS_LOG_ERROR 0
+#define DVDCSS_LOG_DEBUG 1
+
+/** Receives every message of an instance: level, printf format, arguments. */
+typedef void ( *dvdcss_log_cb ) ( void *p_log, int i_level, const char *psz_format, va_list args );
+
+/* dvdcss_open_stream() without the title key cache (nothing is read from or
+ * written to a cache directory); with pf_log set, every message of the
+ * instance goes to pf_log (whatever DVDCSS_VERBOSE says) instead of stderr. */
+LIBDVDCSS_EXPORT dvdcss_t dvdcss_open_stream_uncached ( void *p_stream,
+                                                        dvdcss_stream_cb *p_stream_cb,
+                                                        dvdcss_log_cb pf_log, void *p_log );
+LIBDVDCSS_EXPORT int      dvdcss_title_key ( dvdcss_t, int i_block,
+                                             unsigned char p_key[DVDCSS_KEY_SIZE] );
+LIBDVDCSS_EXPORT int      dvdcss_unscramble_sector ( const unsigned char p_key[DVDCSS_KEY_SIZE],
+                                                     unsigned char *p_sector );
 
 #ifdef __cplusplus
 }

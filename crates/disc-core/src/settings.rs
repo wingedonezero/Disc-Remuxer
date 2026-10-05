@@ -132,6 +132,30 @@ pub const SETTINGS: &[Setting] = &[
                folders, BDMV folders, disc images).",
     },
     Setting {
+        group: "read",
+        key: "attempts",
+        kind: Kind::Number { min: 1, max: 100 },
+        default: DefaultValue::Number(5),
+        help: "How many times a read from a disc is tried before it counts as failed; after the \
+               first retry the rest of the read goes one sector at a time.",
+    },
+    Setting {
+        group: "read",
+        key: "udf_reader",
+        kind: Kind::Choice(&["netbsd", "linux"]),
+        default: DefaultValue::Text("netbsd"),
+        help: "Which UDF reader opens disc images: netbsd (based on NetBSD's UDF code) or linux \
+               (based on Linux's).",
+    },
+    Setting {
+        group: "read",
+        key: "prefer_iso_for_old_udf102",
+        kind: Kind::Switch,
+        default: DefaultValue::Switch(true),
+        help: "Read a DVD image whose UDF 1.02 file system was recorded before 2006 through its \
+               ISO 9660 file system, when that holds a valid DVD-Video structure.",
+    },
+    Setting {
         group: "log",
         key: "console",
         kind: Kind::Choice(&["error", "warning", "info", "debug", "trace"]),

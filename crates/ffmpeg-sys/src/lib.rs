@@ -57,9 +57,11 @@ extern "C" {
         cb: ParserFrameCb,
         opaque: *mut c_void,
     ) -> c_int;
-    /// glue.c: opens one title with the DVD-Video demuxer, reads stream
-    /// information and logs FFmpeg's stream dump. 0 or a negative AVERROR.
-    pub fn dr_probe_dvdvideo(path: *const c_char, title: c_int) -> c_int;
+    /// glue.c: opens the DVD-Video demuxer with `options` (its `AVOptions` as
+    /// `key=value` pairs joined by `:`, e.g. `title=1:read_attempts=5`; may
+    /// be NULL), reads stream information and logs FFmpeg's stream dump. 0 or
+    /// a negative AVERROR.
+    pub fn dr_probe_dvdvideo(path: *const c_char, options: *const c_char) -> c_int;
 }
 
 /// Splits a packed library version (`AV_VERSION_INT`) into major.minor.micro.
@@ -125,7 +127,40 @@ pub mod discio {
         pub open_file: unsafe extern "C" fn(fs: *mut Fs, path: *const c_char, out: *mut *mut File) -> c_int,
         pub list_dir: unsafe extern "C" fn(fs: *mut Fs, path: *const c_char, cb: DirCallback, opaque: *mut c_void) -> c_int,
         pub close: Option<unsafe extern "C" fn(fs: *mut Fs)>,
+        pub find_dir: unsafe extern "C" fn(fs: *mut Fs, path: *const c_char) -> c_int,
+        /// [`FS_ISO9660`], [`FS_JOLIET`] or [`FS_UDF`].
+        pub kind: c_int,
     }
+
+    /// `enum DiscIOFSKind`.
+    pub const FS_ISO9660: c_int = 1;
+    pub const FS_JOLIET: c_int = 2;
+    pub const FS_UDF: c_int = 3;
+
+    /// `enum DiscIOUDFReader`.
+    pub const UDF_NETBSD: c_int = 0;
+    pub const UDF_LINUX: c_int = 1;
+
+    /// `DiscIOImageOptions`.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ImageOptions {
+        pub udf_reader: c_int,
+        pub prefer_iso_for_old_udf102: c_int,
+    }
+
+    impl Default for ImageOptions {
+        /// `DISCIO_IMAGE_OPTIONS_DEFAULT`.
+        fn default() -> Self {
+            ImageOptions { udf_reader: UDF_NETBSD, prefer_iso_for_old_udf102: 1 }
+        }
+    }
+
+    /// `enum DiscIODiscFormat`.
+    pub const DISC_NONE: c_int = 0;
+    pub const DISC_DVD: c_int = 1;
+    pub const DISC_BLURAY: c_int = 2;
+    pub const DISC_HDDVD: c_int = 3;
 
     /// `DISCIO_LABEL_SIZE`.
     pub const LABEL_SIZE: usize = 260;
@@ -150,6 +185,12 @@ pub mod discio {
         pub fn ff_discio_file_read(fs: *mut Fs, file: *const File, pos: i64, buf: *mut u8, len: c_int) -> c_int;
         pub fn ff_discio_iso9660_mount(src: *mut Source, joliet: c_int, out: *mut *mut Fs) -> c_int;
         pub fn ff_discio_iso9660_creation_date(fs: *const Fs, date: *mut c_char) -> c_int;
+        pub fn ff_discio_udf_netbsd_mount(src: *mut Source, out: *mut *mut Fs) -> c_int;
+        pub fn ff_discio_udf_linux_mount(src: *mut Source, out: *mut *mut Fs) -> c_int;
+        pub fn ff_discio_mount_image(src: *mut Source, opts: *const ImageOptions, out: *mut *mut Fs) -> c_int;
+        pub fn ff_discio_dvd_video_check(fs: *mut Fs) -> c_int;
+        pub fn ff_discio_label_copy(dst: *mut c_char, src: *const c_char);
+        pub fn ff_discio_disc_format(fs: *mut Fs) -> c_int;
     }
 
     extern "C" {

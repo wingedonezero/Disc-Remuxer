@@ -27,9 +27,11 @@ fn exec(command: [u8; 8], programs: i32, pg_n: i32) -> (i32, u32, String) {
 }
 
 #[test]
-fn link_prev_pg_at_the_first_program_is_recorded_not_aborted() {
+fn link_prev_pg_at_the_first_program_without_a_previous_chain_is_recorded_not_aborted() {
+    // At program 1 LinkPrevPG goes to the previous program chain; this chain
+    // has none, a broken assumption that is recorded (upstream asserts).
     let (ret, failures, first) = exec(LINK_PREV_PG, 3, 1);
     assert_eq!(ret, 0, "the command must not continue playback");
     assert_eq!(failures, 1);
-    assert!(first.contains("pgN > 1"), "first failure: {first}");
+    assert!(first.contains("prev_pgc_nr != 0"), "first failure: {first}");
 }

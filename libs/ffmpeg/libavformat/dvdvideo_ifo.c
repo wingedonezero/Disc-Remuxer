@@ -41,6 +41,76 @@ static void dvdvideo_libdvdread_log(void *opaque, dvd_logger_level_t level,
     av_log(s, lavu_level, "libdvdread: %s\n", msg_buf);
 }
 
+static int cmp_u32(const void *a, const void *b)
+{
+    uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+
+    return (x > y) - (x < y);
+}
+
+int ff_dvdvideo_check_vts(void *log, dvd_reader_t *dvd, int vtsn, const ifo_handle_t *ifo)
+{
+    const pgcit_t *pgcit = ifo->vts_pgcit;
+    const vobu_admap_t *map = ifo->vts_vobu_admap;
+    uint32_t *starts = NULL;
+    size_t nb = 0;
+    ssize_t vob_sectors = -1;
+    dvd_file_t *vobs;
+    int nb_cells = 0, found = 0;
+
+    if (!pgcit)
+        return 0;
+    if (map && map->vobu_start_sectors && map->last_byte + 1 >= VOBU_ADMAP_SIZE) {
+        nb = (map->last_byte + 1 - VOBU_ADMAP_SIZE) / 4;
+        if ((starts = av_memdup(map->vobu_start_sectors, nb * sizeof(*starts))))
+            qsort(starts, nb, sizeof(*starts), cmp_u32);
+    }
+    if ((vobs = DVDOpenFile(dvd, vtsn, DVD_READ_TITLE_VOBS))) {
+        vob_sectors = DVDFileSize(vobs);
+        DVDCloseFile(vobs);
+    }
+    if (vob_sectors < 0)
+        av_log(log, AV_LOG_WARNING, "VTS %d: the size of the title VOBs is unknown; cells are not checked "
+               "against it\n", vtsn);
+
+    for (int i = 0; i < pgcit->nr_of_pgci_srp; i++) {
+        const pgc_t *pgc = pgcit->pgci_srp[i].pgc;
+
+        if (!pgc || !pgc->cell_playback)
+            continue;
+        for (int j = 0; j < pgc->nr_of_cells; j++) {
+            const cell_playback_t *cell = &pgc->cell_playback[j];
+            uint32_t first = cell->first_sector, last = cell->last_vobu_start_sector;
+
+            nb_cells++;
+            if (starts && !(found & DVDVIDEO_VTS_MAP_DISTRUSTED)) {
+                const uint32_t *missing = !bsearch(&first, starts, nb, sizeof(*starts), cmp_u32) ? &first :
+                                          !bsearch(&last,  starts, nb, sizeof(*starts), cmp_u32) ? &last  : NULL;
+
+                if (missing) {
+                    av_log(log, AV_LOG_WARNING, "VTS %d: cell %d of PGC %d %s at sector %"PRIu32", which the VOBU "
+                           "address map (VTS_VOBU_ADMAP) does not list as a VOBU start; the map cannot be trusted "
+                           "for this title set\n", vtsn, j + 1, i + 1,
+                           missing == &first ? "starts" : "has its last VOBU", *missing);
+                    found |= DVDVIDEO_VTS_MAP_DISTRUSTED;
+                }
+            }
+            if (vob_sectors >= 0 && cell->last_sector >= (uint64_t)vob_sectors &&
+                !(found & DVDVIDEO_VTS_CELL_PAST_VOBS)) {
+                av_log(log, AV_LOG_ERROR, "VTS %d: cell %d of PGC %d ends at sector %"PRIu32", but the title VOBs "
+                       "hold only %zd sectors: video data of this cell is missing\n", vtsn, j + 1, i + 1,
+                       cell->last_sector, vob_sectors);
+                found |= DVDVIDEO_VTS_CELL_PAST_VOBS;
+            }
+        }
+    }
+    if (!found)
+        av_log(log, AV_LOG_VERBOSE, "VTS %d: all %d cells lie inside the title VOBs (%zd sectors) and start and end "
+               "on VOBUs of the VOBU address map (%zu entries)\n", vtsn, nb_cells, vob_sectors, nb);
+    av_free(starts);
+    return found;
+}
+
 void ff_dvdvideo_ifo_close(AVFormatContext *s)
 {
     DVDVideoDemuxContext *c = s->priv_data;
@@ -60,10 +130,24 @@ int ff_dvdvideo_ifo_open(AVFormatContext *s)
     DVDVideoDemuxContext *c = s->priv_data;
 
     dvd_logger_cb dvdread_log_cb;
+    dvd_reader_filesystem_h *files;
     title_info_t title_info;
 
+    if (!c->source) {
+        DiscIOImageOptions opts = { .udf_reader                = c->opt_udf_reader,
+                                    .prefer_iso_for_old_udf102 = c->opt_prefer_iso };
+        int ret = ff_dvdvideo_source_open(s, s->url, &opts, c->opt_read_attempts, &c->source);
+
+        if (ret < 0)
+            return ret;
+    }
+
     dvdread_log_cb = (dvd_logger_cb) { .pf_log = dvdvideo_libdvdread_log };
-    c->dvdread = DVDOpen2(s, &dvdread_log_cb, s->url);
+    if (!(files = ff_dvdvideo_source_files(c->source)))
+        return AVERROR(ENOMEM);
+    /* on failure the files stay with the caller */
+    if (!(c->dvdread = DVDOpenFiles(s, &dvdread_log_cb, "/", files)))
+        files->close(files);
 
     if (!c->dvdread) {
         av_log(s, AV_LOG_ERROR, "Unable to open the DVD-Video structure\n");
@@ -83,6 +167,8 @@ int ff_dvdvideo_ifo_open(AVFormatContext *s)
 
             return AVERROR_EXTERNAL;
         }
+        if (c->vts_ifo)
+            ff_dvdvideo_check_vts(s, c->dvdread, c->opt_menu_vts, c->vts_ifo);
 
         return 0;
     }
@@ -120,6 +206,7 @@ int ff_dvdvideo_ifo_open(AVFormatContext *s)
 
         return AVERROR_EXTERNAL;
     }
+    ff_dvdvideo_check_vts(s, c->dvdread, title_info.title_set_nr, c->vts_ifo);
 
     if (title_info.vts_ttn < 1                                      ||
         title_info.vts_ttn > 99                                     ||

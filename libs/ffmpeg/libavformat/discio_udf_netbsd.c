@@ -3588,6 +3588,13 @@ static int udf_netbsd_list_dir(DiscIOFS *fs, const char *path, DiscIODirCallback
     return 0;
 }
 
+static int udf_netbsd_find_dir(DiscIOFS *fs, const char *path)
+{
+    UDFNode *dir;
+
+    return udf_open_dir(fs->priv, path, &dir);
+}
+
 static void udf_netbsd_close(DiscIOFS *fs)
 {
     if (fs->priv)
@@ -3600,6 +3607,8 @@ static const DiscIOFSOps udf_netbsd_ops = {
     .open_file = udf_netbsd_open_file,
     .list_dir  = udf_netbsd_list_dir,
     .close     = udf_netbsd_close,
+    .find_dir  = udf_netbsd_find_dir,
+    .kind      = DISCIO_FS_UDF,
 };
 
 int ff_discio_udf_netbsd_mount(DiscIOSource *src, DiscIOFS **out)

@@ -38,6 +38,10 @@ typedef struct {
   int32_t   cell_restart; /* get cell to restart */
   int       blockN;
 
+  /* Random / shuffle program chains (pg_playback_mode != 0), see rand.h */
+  int       pgN_step;     /* programs played so far in the current chain */
+  uint32_t  rnd;          /* generator state, seeded from the VMGI in vm_reset */
+
   /* Resume info */
   int      rsm_vtsN;
   int      rsm_blockN;    /* of nav_packet */
@@ -72,6 +76,7 @@ typedef struct vm_s {
   dvdnav_stream_cb streamcb;
   dvd_reader_t *dvd;
   dvd_reader_stream_cb dvdstreamcb;
+  dvd_reader_filesystem_h *files; /* application file callbacks, handed to the reader at open */
   ifo_handle_t *vmgi;
   ifo_handle_t *vtsi;
   dvd_state_t   state;
@@ -79,6 +84,9 @@ typedef struct vm_s {
   char          dvd_name[50];
   char          dvd_serial[15];
   int           stopped;
+  int         (*rnd_fn)(void *priv); /* random numbers of the Rnd operation, NULL: rand() */
+  void         *rnd_priv;
+  int           title_play_follows_jumps; /* see dvdnav_set_title_play_follows_jumps() */
   unsigned int  failures;      /* broken assumptions met, see vm_failed() */
   const char   *first_failure; /* where and what the first one was */
 } vm_t;
