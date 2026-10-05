@@ -26,12 +26,61 @@
 #include <stdint.h>
 
 #include "libavcodec/codec_id.h"
+#include "libavutil/buffer.h"
 
 /* Time: one unit = 1/1,080,000,000 s (27 MHz x 40). Exact for 90 kHz PES
  * times, for 1001-based frame and field durations and for 48 / 96 / 192 kHz
  * samples. A missing time is AV_NOPTS_VALUE. */
 #define DR_TICKS_PER_SECOND 1080000000LL
 #define DR_TICKS_PER_PTS    12000          /* 90 kHz -> ticks */
+
+/* ---- Frames: the units the stages after stage 1 hand on ---- */
+
+#define DR_F_KEY      0x0001   /**< key frame / random access point */
+#define DR_F_SYNC     0x0002   /**< a unit at which audio may be dropped or joined */
+#define DR_F_MARKER   0x0004   /**< empty marker: carries a time, no bytes */
+#define DR_F_DISCARD  0x0008   /**< not referenced (B picture) */
+#define DR_F_CHAPTER  0x0010   /**< a chapter starts here */
+
+typedef struct DRFrame {
+    AVBufferRef *buf;      /**< owns the bytes (NULL for a marker) */
+    uint8_t     *data;
+    int          size;
+    int64_t      time;     /**< ticks, or AV_NOPTS_VALUE */
+    int64_t      dur;      /**< ticks */
+    int64_t      pos;      /**< byte offset of the unit in its track's stream */
+    unsigned     flags;    /**< DR_F_* */
+} DRFrame;
+
+/** Hands a frame on; the callee owns it (ff_discrip_frame_unref). */
+typedef int (*DRFrameCb)(void *opaque, DRFrame *frame);
+
+void ff_discrip_frame_unref(DRFrame *frame);
+
+typedef struct DRAudio DRAudio;
+
+/* The stream values every unit's duration is computed from. */
+typedef struct DRAudioHeader {
+    int rate;              /**< samples per second */
+    int samples;           /**< samples per unit */
+} DRAudioHeader;
+
+/* What the core needs to know about an audio codec. */
+typedef struct DRAudioRules {
+    /** The stream's values from a unit; < 0 when the unit gives none. The
+     *  first unit that is a sync unit and gives them sets them for the
+     *  segment. */
+    int  (*header)(const uint8_t *data, int size, DRAudioHeader *h);
+    /** 1 when the unit is a sync unit (DR_F_SYNC). NULL: never. */
+    int  (*sync)(const uint8_t *data, int size);
+    /** The unit's duration in ticks, and its final bytes (a core cut
+     *  shortens frame->size); < 0 on failure. NULL: samples / rate of the
+     *  header. */
+    int  (*duration)(DRAudio *a, DRFrame *frame);
+    /** Checks a unit for features that are implemented but not met on real
+     *  discs yet (ff_discrip_audio_review). NULL: none. */
+    void (*inspect)(DRAudio *a, const DRFrame *frame);
+} DRAudioRules;
 
 /* One entry of the codec table: what the core needs to know about a codec.
  * A codec without an entry is refused (the track is not ripped). Entries
@@ -48,6 +97,9 @@ typedef struct DRCodec {
      *  (bytes before the first sync word, bytes between units): such bytes
      *  are left out and take no time. NULL: every output is a unit. */
     int (*check)(const uint8_t *data, int size);
+    /** Audio rules; NULL for video / subtitles, or while not implemented
+     *  (the track is then refused by ff_discrip_audio_open). */
+    const DRAudioRules *audio;
 } DRCodec;
 
 /** The codec table entry of a codec, or NULL (the codec is not supported). */
@@ -74,6 +126,7 @@ typedef struct DRCutterStats {
     int64_t records_unused;/**< records dropped without giving their time to a unit */
     int64_t skipped;       /**< parser outputs that are not units (left out) */
     int64_t skipped_bytes;
+    int64_t joined;        /**< parser outputs added to the unit before them (DRCodec.continues) */
 } DRCutterStats;
 
 typedef struct DRCutter DRCutter;
@@ -100,5 +153,49 @@ int ff_discrip_cutter_flush(DRCutter *c);
 void ff_discrip_cutter_stats(const DRCutter *c, DRCutterStats *stats);
 
 void ff_discrip_cutter_close(DRCutter **cutter);
+
+/* ---- Stage 2, audio: units timed within one segment (discrip_audio.c) ---- */
+
+#define DR_AUDIO_CORE_ONLY 0x0001  /**< the track is the core of a stream that also
+                                        carries an extension: units are cut to the core */
+
+typedef struct DRAudioStats {
+    int64_t units;         /**< units written */
+    int64_t frames;        /**< frames handed on (units and markers) */
+    int64_t markers;
+    int64_t cut_bytes;     /**< bytes removed by core cuts */
+    int64_t review;        /**< untested features met: the job must be looked at */
+    int64_t continuity;    /**< unit times that differ from the previous unit's end */
+    DRAudioHeader header;
+} DRAudioStats;
+
+/**
+ * Audio timing of one track in one segment. Units come from the track's
+ * cutter (ff_discrip_audio_unit as its callback); timed frames go to cb.
+ * @return 0, AVERROR(ENOSYS) when the codec's audio rules are missing
+ */
+int ff_discrip_audio_open(DRAudio **audio, void *logctx, enum AVCodecID codec, int flags,
+                          DRFrameCb cb, void *opaque);
+
+/** A DRUnitCb: opaque = the DRAudio. */
+int ff_discrip_audio_unit(void *audio, const DRUnit *unit);
+
+/** An empty marker at a time (no bytes); it keeps its place in the stream. */
+int ff_discrip_audio_marker(DRAudio *a, int64_t time);
+
+/** The end of the segment. Fails when no unit ever gave the stream's header. */
+int ff_discrip_audio_flush(DRAudio *a);
+
+/** A feature implemented but not met on real discs: logged once per kind as
+ *  an error, counted in the statistics (the job is then marked failed). */
+void ff_discrip_audio_review(DRAudio *a, unsigned kind, const char *what);
+
+void ff_discrip_audio_stats(const DRAudio *a, DRAudioStats *stats);
+
+void ff_discrip_audio_close(DRAudio **audio);
+
+/* the audio stream values the rules use (for rules that keep state) */
+const DRAudioHeader *ff_discrip_audio_header(const DRAudio *a);
+int ff_discrip_audio_flags(const DRAudio *a);
 
 #endif /* AVFORMAT_DISCRIP_H */

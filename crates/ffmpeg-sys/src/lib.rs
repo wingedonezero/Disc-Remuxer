@@ -871,6 +871,53 @@ pub mod discrip {
         pub skipped_bytes: i64,
     }
 
+    pub const F_KEY: u32 = 0x0001;
+    pub const F_SYNC: u32 = 0x0002;
+    pub const F_MARKER: u32 = 0x0004;
+
+    /// `DRFrame`.
+    #[repr(C)]
+    pub struct Frame {
+        pub buf: *mut c_void,
+        pub data: *mut u8,
+        pub size: c_int,
+        pub time: i64,
+        pub dur: i64,
+        pub pos: i64,
+        pub flags: u32,
+    }
+
+    pub type FrameCb = unsafe extern "C" fn(opaque: *mut c_void, frame: *mut Frame) -> c_int;
+
+    /// `DRAudioHeader`.
+    #[repr(C)]
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+    pub struct AudioHeader {
+        pub rate: c_int,
+        pub samples: c_int,
+    }
+
+    /// `DRAudioStats`.
+    #[repr(C)]
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct AudioStats {
+        pub units: i64,
+        pub frames: i64,
+        pub markers: i64,
+        pub cut_bytes: i64,
+        pub review: i64,
+        pub continuity: i64,
+        pub header: AudioHeader,
+    }
+
+    /// `DRAudio` (only handled through pointers).
+    #[repr(C)]
+    pub struct Audio {
+        _private: [u8; 0],
+    }
+
+    pub const AUDIO_CORE_ONLY: c_int = 0x0001;
+
     /// `DRCutter` (only handled through pointers).
     #[repr(C)]
     pub struct Cutter {
@@ -900,6 +947,20 @@ pub mod discrip {
         pub fn ff_discrip_cutter_flush(c: *mut Cutter) -> c_int;
         pub fn ff_discrip_cutter_stats(c: *const Cutter, stats: *mut CutterStats);
         pub fn ff_discrip_cutter_close(c: *mut *mut Cutter);
+        pub fn ff_discrip_frame_unref(f: *mut Frame);
+        pub fn ff_discrip_audio_open(
+            out: *mut *mut Audio,
+            log: *mut c_void,
+            codec: c_int,
+            flags: c_int,
+            cb: FrameCb,
+            opaque: *mut c_void,
+        ) -> c_int;
+        pub fn ff_discrip_audio_unit(audio: *mut c_void, unit: *const Unit) -> c_int;
+        pub fn ff_discrip_audio_marker(a: *mut Audio, time: i64) -> c_int;
+        pub fn ff_discrip_audio_flush(a: *mut Audio) -> c_int;
+        pub fn ff_discrip_audio_stats(a: *const Audio, stats: *mut AudioStats);
+        pub fn ff_discrip_audio_close(a: *mut *mut Audio);
     }
 
     /// FFmpeg's codec id for a codec name (e.g. "ac3"), or None.
