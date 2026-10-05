@@ -6,6 +6,7 @@
 #![allow(clippy::many_single_char_names, reason = "one short name per descriptor being built")]
 
 pub mod dvd;
+pub mod hddvd;
 
 pub const S: usize = 2048;
 

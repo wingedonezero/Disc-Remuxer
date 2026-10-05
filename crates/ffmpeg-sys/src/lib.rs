@@ -724,4 +724,26 @@ pub mod hddvd {
         /// Free the result with `av_free`.
         pub fn ff_hddvd_xpl_dump(xpl: *const Xpl) -> *mut c_char;
     }
+
+    /// `HDDVDTitlePlan` (only handled through pointers).
+    #[repr(C)]
+    pub struct TitlePlan {
+        _private: [u8; 0],
+    }
+
+    extern "C" {
+        pub fn ff_hddvd_titles_plan(
+            log: *mut c_void,
+            fs: *mut Fs,
+            vti: *const Vti,
+            xpls: *const *mut Xpl,
+            nb_xpls: c_int,
+            min_length: c_int,
+            out: *mut *mut TitlePlan,
+        ) -> c_int;
+        pub fn ff_hddvd_titles_free(plan: *mut *mut TitlePlan);
+        /// Free the result with `av_free`.
+        pub fn ff_hddvd_titles_dump(plan: *const TitlePlan) -> *mut c_char;
+        pub fn ff_disc_lang_code(code: *const c_char) -> *const c_char;
+    }
 }

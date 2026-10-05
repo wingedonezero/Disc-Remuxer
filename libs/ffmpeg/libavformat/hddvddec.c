@@ -1,8 +1,8 @@
 /*
  * HD DVD (Advanced Content) demuxer: the orchestrator. It opens a disc image
  * through the disc readers (discio) and reads the title set's structure
- * (VTI) and the playlists; titles, AACS and the EVOB reading follow in
- * later steps.
+ * (VTI), the playlists and the title plan; AACS and the EVOB reading
+ * follow in later steps.
  *
  * This file is part of FFmpeg.
  *
@@ -34,18 +34,21 @@ typedef struct HDDVDDemuxContext {
     const AVClass *class;
     int            opt_read_attempts;
     int            opt_udf_reader;
+    int            opt_min_length;
 
     DiscIOSource  *image;
     DiscIOFS      *fs;
     HDDVDVTI      *vti;
     HDDVDXpl     **xpls;
     int            nb_xpls;
+    HDDVDTitlePlan *plan;
 } HDDVDDemuxContext;
 
 static int hddvd_close(AVFormatContext *s)
 {
     HDDVDDemuxContext *c = s->priv_data;
 
+    ff_hddvd_titles_free(&c->plan);
     ff_hddvd_xpl_free_all(&c->xpls, c->nb_xpls);
     ff_hddvd_vti_free(&c->vti);
     ff_discio_fs_close(&c->fs);
@@ -74,8 +77,10 @@ static int hddvd_read_header(AVFormatContext *s)
         return ret;
     if ((ret = ff_hddvd_xpl_load(s, c->fs, &c->xpls, &c->nb_xpls)) < 0)
         return ret;
+    if ((ret = ff_hddvd_titles_plan(s, c->fs, c->vti, c->xpls, c->nb_xpls, c->opt_min_length, &c->plan)) < 0)
+        return ret;
 
-    av_log(s, AV_LOG_ERROR, "HD DVD: reading titles is not implemented yet\n");
+    av_log(s, AV_LOG_ERROR, "HD DVD: reading a title is not implemented yet\n");
     return AVERROR_PATCHWELCOME;
 }
 
@@ -87,6 +92,7 @@ static int hddvd_read_packet(AVFormatContext *s, AVPacket *pkt)
 #define OFFSET(x) offsetof(HDDVDDemuxContext, x)
 static const AVOption hddvd_options[] = {
     {"read_attempts",   "read attempts per request on the disc",                    OFFSET(opt_read_attempts),  AV_OPT_TYPE_INT,    { .i64=DISCIO_DEFAULT_ATTEMPTS }, 1, 100, AV_OPT_FLAG_DECODING_PARAM },
+    {"min_length",      "titles shorter than this (seconds) are listed, not selected", OFFSET(opt_min_length), AV_OPT_TYPE_INT, { .i64=0 }, 0, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
     {"udf_reader",      "UDF reader for disc images",                               OFFSET(opt_udf_reader),     AV_OPT_TYPE_INT,    { .i64=DISCIO_UDF_NETBSD }, DISCIO_UDF_NETBSD, DISCIO_UDF_LINUX, AV_OPT_FLAG_DECODING_PARAM, .unit = "udf_reader" },
         {"netbsd",      "based on NetBSD (default)",                                0,                          AV_OPT_TYPE_CONST,  { .i64=DISCIO_UDF_NETBSD }, 0, 0, AV_OPT_FLAG_DECODING_PARAM, .unit = "udf_reader" },
         {"linux",       "based on Linux",                                           0,                          AV_OPT_TYPE_CONST,  { .i64=DISCIO_UDF_LINUX },  0, 0, AV_OPT_FLAG_DECODING_PARAM, .unit = "udf_reader" },

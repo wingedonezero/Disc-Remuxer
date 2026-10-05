@@ -211,4 +211,93 @@ int ff_hddvd_xpl_count(const HDDVDXplNode *n, int cls);
  */
 char *ff_hddvd_xpl_dump(const HDDVDXpl *xpl);
 
+/* ---- titles ---- */
+
+/** One extent of an EVOB: stream blocks mapped to blocks of its EVO file. */
+typedef struct HDDVDExtent {
+    uint32_t stream;                /**< first 2048-byte block in the EVOB's stream */
+    uint32_t file;                  /**< first block in the EVO file */
+    uint32_t count;                 /**< blocks */
+} HDDVDExtent;
+
+/**
+ * An EVOB as titles use it: its record and, from its time map
+ * (<name>.MAP, "HDDVD_TMAP00"), its blocks. Shared by every title using it.
+ */
+typedef struct HDDVDClip {
+    const HDDVDEvob *evob;
+    int              state;         /**< 0 not read yet, 1 usable, -1 not usable */
+    uint32_t         keybase;       /**< playlist index << 8 (title keys) */
+    uint64_t         size;          /**< bytes of the stream: every count of the first table x 2048 */
+    HDDVDExtent     *extents;       /**< sorted by stream block, unique */
+    int              nb_extents;
+} HDDVDClip;
+
+typedef struct HDDVDChapterMark {
+    const char *name;               /**< the chapter's displayName ("" when not given) */
+    uint32_t    ms;                 /**< from the title's start */
+} HDDVDChapterMark;
+
+typedef struct HDDVDTitle {
+    HDDVDClip       **clips;        /**< its EVOBs, in playing order */
+    int               nb_clips;
+    HDDVDChapterMark *marks;
+    int               nb_marks;
+    const char       *lang;         /**< TitleSet defaultLanguage as an ISO 639-2 code when known,
+                                         else as written */
+    const char       *name;         /**< the playlist Title's name, else the first EVOB's base name */
+    uint64_t          duration;     /**< 90 kHz: the EVOBs' end - start times added up */
+    uint64_t          size;         /**< bytes: the clips' sizes added up */
+    int               from_playlist;/**< 1: a playlist title, 0: an EVOB no playlist title uses */
+    int               not_selected; /**< 1: shorter than the minimum length */
+} HDDVDTitle;
+
+typedef struct HDDVDTitlePlan {
+    HDDVDTitle *titles;
+    int         nb_titles;
+    HDDVDClip  *clips[HDDVD_VTI_MAX_EVOBS];     /**< by EVOB slot - 1, NULL = not looked at */
+    char      **strings;
+    int         nb_strings;
+} HDDVDTitlePlan;
+
+/**
+ * The titles of the disc:
+ * 1. every playlist, from the last to the first, gives candidates: its
+ *    FirstPlayTitle's clips and each Title's clips (PrimaryAudioVideoClip), split
+ *    into runs at every clip that is not seamless; a candidate is the list of
+ *    its clips' time-map names, its TitleSet's defaultLanguage and the
+ *    chapters of its Title's first ChapterList that lie in the run; the
+ *    candidates are kept sorted (number of names, then the names without
+ *    regard to case) and a candidate whose names are already there is dropped;
+ * 2. from the last candidate to the first, a title: each name is matched to
+ *    the first EVOB record (slot order) with the same name up to its first '.'
+ *    (case not regarded); a name that matches none, or an EVOB whose time map
+ *    cannot be used, loses the candidate;
+ * 3. then, when there is a title at all, every EVOB (slot order) whose time
+ *    map can be used and that no title plays becomes a title of its own.
+ * Each playlist must have exactly one TitleSet. Titles shorter than
+ * min_length seconds are kept, not selected.
+ * @return 0, AVERROR_INVALIDDATA (a playlist without exactly one TitleSet),
+ *         AVERROR(ENOMEM)
+ */
+int ff_hddvd_titles_plan(void *logctx, DiscIOFS *fs, const HDDVDVTI *vti, HDDVDXpl *const *xpls,
+                         int nb_xpls, int min_length, HDDVDTitlePlan **out);
+void ff_hddvd_titles_free(HDDVDTitlePlan **plan);
+
+/**
+ * Read an EVOB's time map and EVO file (once; later calls return the first
+ * result). The time map must start "HDDVD_TMAP00", must not have bit 1 of byte
+ * 0x14 set and must have at least one table.
+ * @return 1 usable, 0 not usable (logged), AVERROR(ENOMEM)
+ */
+int ff_hddvd_clip_load(void *logctx, DiscIOFS *fs, const char *folder, HDDVDClip *clip);
+
+/**
+ * The plan as text: per title its name, language, selection, duration
+ * (90 kHz), size, EVOB names and chapters; then every EVOB looked at with its
+ * time map's result, size and extents (stream:file:count); for the tests.
+ * @return a string to free with av_free(), NULL when out of memory
+ */
+char *ff_hddvd_titles_dump(const HDDVDTitlePlan *plan);
+
 #endif /* AVFORMAT_HDDVD_INTERNAL_H */

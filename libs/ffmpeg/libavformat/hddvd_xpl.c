@@ -417,9 +417,9 @@ static int xml_error(void *logctx, XML_Parser p)
 {
     enum XML_Error e = XML_GetErrorCode(p);
 
-    av_log(logctx, AV_LOG_ERROR, "XPL: not well-formed XML: expat error %d (%s) at line %lu, column %lu\n",
-           (int)e, XML_ErrorString(e), (unsigned long)XML_GetCurrentLineNumber(p),
-           (unsigned long)XML_GetCurrentColumnNumber(p));
+    av_log(logctx, AV_LOG_ERROR, "XPL: not well-formed XML: expat error %d (%s) at line %llu, column %llu\n",
+           (int)e, XML_ErrorString(e), (unsigned long long)XML_GetCurrentLineNumber64(p),
+           (unsigned long long)XML_GetCurrentColumnNumber64(p));
     return AVERROR_INVALIDDATA;
 }
 
