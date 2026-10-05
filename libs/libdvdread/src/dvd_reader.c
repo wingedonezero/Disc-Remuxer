@@ -130,6 +130,11 @@ struct dvd_file_s {
   /* Cache of the dvd_file. If not NULL, the cache corresponds to the whole
    * dvd_file. Used only for IFO and BUP. */
   unsigned char *cache;
+
+  /* VOBs served by the application's vob_read (directory path drive) */
+  int vob_served;
+  int vob_title;
+  int vob_menu;
 };
 
 /**
@@ -1194,6 +1199,24 @@ static dvd_file_t *DVDOpenVOBPath( dvd_reader_t *ctx, int title, int menu )
   if( !dvd_file ) return NULL;
   dvd_file->ctx = ctx;
 
+  /* VOBs the application serves as one run of blocks */
+  if( ctx->dvd_type == DVD_V && ctx->fs->vob_blocks && ctx->fs->vob_read ) {
+    int64_t blocks = ctx->fs->vob_blocks( ctx->fs, title, menu );
+
+    if( blocks >= 0 ) {
+      if( blocks == 0 || blocks > INT32_MAX ) {
+        free( dvd_file );
+        return NULL;
+      }
+      dvd_file->vob_served = 1;
+      dvd_file->vob_title = title;
+      dvd_file->vob_menu = menu;
+      dvd_file->title_sizes[ 0 ] = (size_t)blocks;
+      dvd_file->filesize = (ssize_t)blocks;
+      return dvd_file;
+    }
+  }
+
   /* DVD-VR has no menu vobs */
   if ( ctx->dvd_type == DVD_VR && menu ) {
     free( dvd_file );
@@ -1714,6 +1737,10 @@ static int DVDReadBlocksPath( const dvd_file_t *dvd_file, unsigned int offset,
   const dvd_reader_t *ctx = dvd_file->ctx;
   int i;
   int ret, ret2, off;
+
+  if( dvd_file->vob_served )
+    return ctx->fs->vob_read( ctx->fs, dvd_file->vob_title, dvd_file->vob_menu,
+                              offset, block_count, data );
 
   ret = 0;
   ret2 = 0;

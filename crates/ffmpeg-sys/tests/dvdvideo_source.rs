@@ -692,7 +692,95 @@ fn folder_vob_groups_are_their_files() {
     std::fs::write(vts.join("VTS_01_4.VOB"), block(9)).unwrap();
     let src = Src::open(&dir).unwrap();
     assert_eq!(src.vob_block(1, false, 2).unwrap(), block(3), "VTS_01_2.VOB follows VTS_01_1.VOB");
-    assert_eq!(src.vob_block(1, false, 3).unwrap(), [vec![4; 100], vec![0; S - 100]].concat(), "padded with zeros");
+    assert_eq!(src.vob_block(1, false, 3).unwrap(), [vec![4; 100], vec![0xFF; S - 100]].concat(), "0xFF after the end");
     assert_eq!(src.vob_block(1, false, 4).err(), Some(EOF), "VTS_01_4.VOB is not reached: VTS_01_3.VOB is missing");
     assert_eq!(src.vob_block(1, true, 0).err(), Some(ENOENT), "no menu VOB");
+}
+
+/// A folder whose title VOBs are `parts` (in order, `VTS_01_1.VOB` on); a part
+/// `None` is a directory of that name.
+fn vob_folder(test: &str, parts: &[Option<Vec<u8>>]) -> PathBuf {
+    let dir = scratch(test);
+    let vts = dir.join("VIDEO_TS");
+    std::fs::create_dir_all(&vts).unwrap();
+    std::fs::write(vts.join("VIDEO_TS.IFO"), [b"DVDVIDEO-VMG".as_slice(), &[0; S - 12]].concat()).unwrap();
+    for (k, part) in parts.iter().enumerate() {
+        let path = vts.join(format!("VTS_01_{}.VOB", k + 1));
+        match part {
+            Some(data) => std::fs::write(path, data).unwrap(),
+            None => std::fs::create_dir(path).unwrap(),
+        }
+    }
+    dir
+}
+
+/// Blocks `from..from + n` of the joined bytes, 0xFF after their end.
+fn joined_blocks(bytes: &[u8], from: usize, n: usize) -> Vec<u8> {
+    let mut out = vec![0xFF; n * S];
+    let end = bytes.len().min((from + n) * S);
+    if from * S < end {
+        out[..end - from * S].copy_from_slice(&bytes[from * S..end]);
+    }
+    out
+}
+
+#[test]
+fn folder_vob_files_are_joined_as_bytes() {
+    // 7000 bytes of pattern split into files of 3000 (not whole blocks), 2500
+    // and 1500 bytes: the blocks are those of the bytes joined, a block may
+    // hold the end of one file and the start of the next; 0xFF after the end
+    let all: Vec<u8> = (0..7000).map(|i| u8::try_from(i % 251).unwrap()).collect();
+    let dir = vob_folder("vob-joined", &[Some(all[..3000].to_vec()), Some(all[3000..5500].to_vec()),
+                                         Some(all[5500..].to_vec())]);
+    let src = Src::open(&dir).unwrap();
+    for b in 0..4 {
+        assert_eq!(src.vob_block(1, false, b).unwrap(), joined_blocks(&all, usize::try_from(b).unwrap(), 1), "block {b}");
+    }
+    assert_eq!(src.vob_block(1, false, 4).err(), Some(EOF));
+    // libdvdread reads the title VOBs through the same blocks
+    let dvd = src.reader();
+    assert_eq!(dvd.read_title_blocks(1, 0, 4), joined_blocks(&all, 0, 4));
+    assert_eq!(dvd.read_title_blocks(1, 1, 2), joined_blocks(&all, 1, 2));
+}
+
+#[test]
+fn an_empty_vob_file_adds_nothing() {
+    let all: Vec<u8> = (0..5000).map(|i| u8::try_from(i % 249).unwrap()).collect();
+    let dir = vob_folder("vob-empty", &[Some(all[..2048].to_vec()), Some(vec![]), Some(all[2048..].to_vec())]);
+    let src = Src::open(&dir).unwrap();
+    assert!(logged("is empty: skipped", || {
+        assert_eq!(src.vob_block(1, false, 1).unwrap(), joined_blocks(&all, 1, 1), "VTS_01_3.VOB follows VTS_01_1.VOB");
+    }));
+    assert_eq!(src.reader().read_title_blocks(1, 0, 3), joined_blocks(&all, 0, 3));
+}
+
+#[test]
+fn a_vob_name_that_is_not_a_regular_file_ends_the_vob_files() {
+    let dir = vob_folder("vob-dir", &[Some(vec![1; S]), None, Some(vec![3; S])]);
+    let src = Src::open(&dir).unwrap();
+    assert!(logged("is not a regular file: the VOB files of the title set end before it", || {
+        assert_eq!(src.vob_block(1, false, 0).unwrap(), vec![1; S]);
+    }));
+    assert_eq!(src.vob_block(1, false, 1).err(), Some(EOF), "VTS_01_3.VOB is not reached");
+}
+
+#[test]
+fn a_vob_file_that_cannot_be_opened_makes_the_title_vobs_unreadable() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = vob_folder("vob-noread", &[Some(vec![1; S]), Some(vec![2; S])]);
+    let part2 = dir.join("VIDEO_TS").join("VTS_01_2.VOB");
+    std::fs::set_permissions(&part2, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if File::open(&part2).is_ok() {
+        eprintln!("skipped: the file stays readable (running as root?)");
+        return;
+    }
+    let src = Src::open(&dir).unwrap();
+    assert!(logged("the title VOBs of title set 1 cannot be read", || {
+        assert!(src.vob_block(1, false, 0).is_err(), "not even VTS_01_1.VOB is read");
+    }));
+    let dvd = src.reader();
+    // SAFETY: the reader is open.
+    let f = unsafe { DVDOpenFile(dvd.0, 1, DVD_READ_TITLE_VOBS) };
+    assert!(f.is_null(), "libdvdread has no title VOBs either");
+    std::fs::set_permissions(&part2, std::fs::Permissions::from_mode(0o644)).unwrap();
 }
