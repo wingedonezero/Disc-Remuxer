@@ -70,7 +70,7 @@ pub fn find(source: &Path, settings: &Settings) -> Result<Vec<Disc>> {
 
 /// Runs `work` for every job; each job's log files are open while it runs.
 /// Returns an error when any job failed (after running them all).
-pub fn run(jobs: &[Job], settings: &Settings, command: &str, mut work: impl FnMut(&Disc) -> Result<()>) -> Result<()> {
+pub fn run(jobs: &[Job], settings: &Settings, command: &str, mut work: impl FnMut(&Job) -> Result<()>) -> Result<()> {
     let count = jobs.len();
     let mut failed = 0;
     for (i, job) in jobs.iter().enumerate() {
@@ -98,7 +98,7 @@ pub fn run(jobs: &[Job], settings: &Settings, command: &str, mut work: impl FnMu
                 emit!(msg::JOB_DEBUG_LOG, path = d.display());
             }
         }
-        match work(job.disc) {
+        match work(job) {
             Ok(()) => emit!(msg::JOB_DONE, index = index, count = count, source = job.disc.path.display()),
             Err(e) => {
                 failed += 1;

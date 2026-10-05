@@ -66,7 +66,45 @@ extern "C" {
     /// be NULL), reads stream information and logs FFmpeg's stream dump. 0 or
     /// a negative AVERROR.
     pub fn dr_probe_dvdvideo(path: *const c_char, options: *const c_char) -> c_int;
+    /// Opens a title with demuxer `format`, writes every stream to its own file
+    /// in `outdir` (`<prefix><index>_<lang>.<ext>`) and the chapters as
+    /// Matroska XML (`<prefix>chapters.xml`); `cb` gets each stream's
+    /// statistics. `nb_titles` gets the demuxer's title count (or -1).
+    pub fn dr_demux(
+        format: *const c_char,
+        path: *const c_char,
+        options: *const c_char,
+        key_files: *const c_char,
+        outdir: *const c_char,
+        prefix: *const c_char,
+        nb_titles: *mut c_int,
+        cb: DemuxStreamCb,
+        opaque: *mut c_void,
+    ) -> c_int;
 }
+
+/// `DrStreamStats` of the C glue: one stream's statistics after demuxing
+/// (timestamps in 90 kHz for the disc demuxers; `AV_NOPTS_VALUE` = none).
+#[repr(C)]
+pub struct DemuxStreamStats {
+    pub index: c_int,
+    pub kind: *const c_char,
+    pub codec: *const c_char,
+    pub lang: *const c_char,
+    pub file: *const c_char,
+    pub packets: i64,
+    pub bytes: i64,
+    pub no_ts: i64,
+    pub first_ts: i64,
+    pub end_ts: i64,
+    pub overlaps: i64,
+    pub max_overlap: i64,
+    pub gaps: i64,
+    pub max_gap: i64,
+}
+
+/// Receives one stream's statistics from [`dr_demux`].
+pub type DemuxStreamCb = unsafe extern "C" fn(opaque: *mut c_void, stats: *const DemuxStreamStats);
 
 /// Splits a packed library version (`AV_VERSION_INT`) into major.minor.micro.
 #[must_use]

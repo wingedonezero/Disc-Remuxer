@@ -14,6 +14,7 @@ Commands:
   settings  The settings in effect, or where the settings file is
   scan      List the discs found under a path and the job folder each would get. Creates nothing
   probe     Open one title of every disc found with FFmpeg's DVD-Video demuxer as it is and log the streams it finds. With an output folder, every disc is a job with its own job folder and job log
+  demux     Write the streams of HD DVD titles as elementary-stream files, one file per track, and the chapters as Matroska XML, into each disc's job folder (files <title>_<stream>_<language>.<ext>, <title>_chapters.xml)
   debug     Developer tools: the steps of the DVD processing one at a time, with their raw results on standard output
   help      Print this message or the help of the given subcommand(s)
 
@@ -185,6 +186,40 @@ Options:
           Title number (1-based; 0 = the demuxer's own choice)
           
           [default: 1]
+
+  -v, --verbose...
+          More log detail on the console: -v debug, -vv trace (overrides log.console)
+
+      --out <DIR>
+          Output folder for the job folders (overrides output.root)
+
+  -q, --quiet
+          Errors only on the console (overrides log.console)
+
+      --settings <FILE>
+          Settings file to use instead of the default one
+
+      --set <GROUP.KEY=VALUE>
+          Override one setting for this run (repeatable), e.g. `--set output.scan_depth=2`
+
+  -h, --help
+          Print help
+```
+
+## `disc-remuxer demux`
+
+```text
+Write the streams of HD DVD titles as elementary-stream files, one file per track, and the chapters as Matroska XML, into each disc's job folder (files <title>_<stream>_<language>.<ext>, <title>_chapters.xml)
+
+Usage: disc-remuxer demux [OPTIONS] <SOURCE>
+
+Arguments:
+  <SOURCE>
+          A disc image or a folder holding disc images
+
+Options:
+      --title <TITLE>
+          Title number (0-based, as listed); every title when not given
 
   -v, --verbose...
           More log detail on the console: -v debug, -vv trace (overrides log.console)
