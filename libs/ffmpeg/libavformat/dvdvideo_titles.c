@@ -68,6 +68,8 @@ static const char *const event_names[] = {
     [DVDVIDEO_EV_ANGLE]               = "angle",
     [DVDVIDEO_EV_ANGLE_FAILED]        = "angle-failed",
     [DVDVIDEO_EV_NAV_INVALID]         = "nav-invalid",
+    [DVDVIDEO_EV_TITLE_SET_INVALID]   = "title-set-invalid",
+    [DVDVIDEO_EV_TITLE_SET_START]     = "title-set-start-mismatch",
 };
 
 const char *ff_dvdvideo_event_name(int kind)
@@ -1659,6 +1661,31 @@ static void add_title(Plan *p, int t, const DVDVideoChapter *chapters, int nb_ch
     }
 }
 
+/* Every title of a title set gives the set's start sector (title_set_sector);
+ * the first non-zero one is the set's, a later title giving another one is
+ * reported. */
+static void check_title_set_starts(Plan *p)
+{
+    const tt_srpt_t *tt = p->disc->vts[0].ifo->tt_srpt;
+    uint32_t first[100] = { 0 };
+    char args[48];
+
+    for (int i = 0; tt && i < tt->nr_of_srpts; i++) {
+        const title_info_t *e = &tt->title[i];
+        int vtsn = e->title_set_nr;
+
+        if (!vtsn || !e->vts_ttn || !e->nr_of_ptts || vtsn > p->disc->nb_vts)
+            continue;
+        if (!first[vtsn]) {
+            first[vtsn] = e->title_set_sector;
+        } else if (e->title_set_sector != first[vtsn]) {
+            snprintf(args, sizeof(args), "%d\t%"PRIu32"\t%"PRIu32, vtsn, first[vtsn], e->title_set_sector);
+            event(p, AV_LOG_WARNING, DVDVIDEO_EV_TITLE_SET_START, args, "Title %d puts title set %d at sector %"PRIu32
+                  "; an earlier title put it at sector %"PRIu32, i + 1, vtsn, e->title_set_sector, first[vtsn]);
+        }
+    }
+}
+
 /* Builds the titles of title search table entry t (0-based). */
 static void enumerate_title(Plan *p, int t)
 {
@@ -1675,8 +1702,14 @@ static void enumerate_title(Plan *p, int t)
         event(p, AV_LOG_WARNING, DVDVIDEO_EV_TITLE_EMPTY, args, "Title %d of the title search table is empty", t + 1);
         return;
     }
-    if (p->disc->nb_vts < vtsn)
+    if (p->disc->nb_vts < vtsn) {
+        /* a title set the disc does not have: the title is left out (the
+         * rest of the disc stays usable) */
+        snprintf(args, sizeof(args), "%d\t%d\t%d", t + 1, vtsn, p->disc->nb_vts);
+        event(p, AV_LOG_WARNING, DVDVIDEO_EV_TITLE_SET_INVALID, args, "Title %d names title set %d; the disc has "
+              "%d title sets: the title is left out", t + 1, vtsn, p->disc->nb_vts);
         return;
+    }
     if (!p->disc->vts[vtsn].ifo) {
         snprintf(args, sizeof(args), "%d", t + 1);
         event(p, AV_LOG_WARNING, DVDVIDEO_EV_TITLE_SET_MISSING, args, "Title %d: its title set %d cannot be used",
@@ -1843,6 +1876,7 @@ int ff_dvdvideo_titles_plan(void *log, DVDVideoDisc *disc, const DVDVideoScan *s
     if (order == DVDVIDEO_ORDER_AUTO)
         order = opt->cell_mode == DVDVIDEO_CELLS_AUTO || opt->cell_mode == DVDVIDEO_CELLS_WALK ?
                 DVDVIDEO_ORDER_SCAN_FIRST : DVDVIDEO_ORDER_TABLE;
+    check_title_set_starts(&p);
     if (order == DVDVIDEO_ORDER_SCAN_FIRST) {
         /* first the titles the scan reached, then the others */
         for (int t = 0; t < n && !p.error; t++)
