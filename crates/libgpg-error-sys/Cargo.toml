@@ -1,0 +1,15 @@
+[package]
+name = "libgpg-error-sys"
+description = "Builds our libgpg-error"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "LGPL-2.1-or-later"
+publish = false
+links = "gpg-error"
+build = "build.rs"
+
+[dependencies]
+
+[lints]
+workspace = true
