@@ -134,7 +134,7 @@ pub const SETTINGS: &[Setting] = &[
     Setting {
         group: "read",
         key: "attempts",
-        kind: Kind::Number { min: 1, max: 100 },
+        kind: Kind::Number { min: 1, max: 99 },
         default: DefaultValue::Number(5),
         help: "How many times a read from a disc is tried before it counts as failed; after the \
                first retry the rest of the read goes one sector at a time.",
