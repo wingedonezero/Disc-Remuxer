@@ -24,6 +24,8 @@
 
 #include "logging.h"
 
+#include "libaacs/aacs.h"
+
 #include "file/file.h"
 
 #include <stdlib.h>
@@ -32,6 +34,13 @@
 #include <string.h>
 
 uint32_t debug_mask = (uint32_t)-1; /* set all bits to make sure bd_debug() is called for initialization */
+
+static void (*debug_handler)(const char *) = NULL;
+
+void aacs_set_debug_handler(void (*handler)(const char *))
+{
+    debug_handler = handler;
+}
 
 void bd_debug(const char *file, int line, uint32_t mask, const char *format, ...)
 {
@@ -76,6 +85,9 @@ void bd_debug(const char *file, int line, uint32_t mask, const char *format, ...
         vsnprintf(pt, sizeof(buffer) - (size_t)(intptr_t)(pt - buffer) - 1, format, args);
         va_end(args);
 
-        fprintf(logfile, "%s", buffer);
+        if (debug_handler)
+            debug_handler(buffer);
+        else
+            fprintf(logfile, "%s", buffer);
     }
 }

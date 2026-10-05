@@ -20,6 +20,8 @@ libaacs_la_SOURCES=\
 	src/libaacs/content_cert.c \
 	src/libaacs/crypto.h \
 	src/libaacs/crypto.c \
+	src/libaacs/hddvd.c \
+	src/libaacs/mk.h \
 	src/libaacs/mkb.h \
 	src/libaacs/mkb.c \
 	src/libaacs/mmc.h \

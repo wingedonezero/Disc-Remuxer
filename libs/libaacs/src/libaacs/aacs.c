@@ -31,6 +31,7 @@
 #include "content_cert.h"
 #include "crypto.h"
 #include "mmc.h"
+#include "mk.h"
 #include "mkb.h"
 #include "unit_key.h"
 #include "file/file.h"
@@ -305,7 +306,7 @@ static dk_list *_find_dk(dk_list *dkl, uint32_t *p_dev_key_v_mask, uint32_t uv, 
     return dkl;
 }
 
-static int _calc_mk_dks(MKB *mkb, dk_list *dkl, uint8_t *mk)
+int aacs_calc_mk_dks(MKB *mkb, dk_list *dkl, uint8_t *mk)
 {
     /* calculate processing key and media key using device keys */
 
@@ -579,7 +580,7 @@ static MKB *_mkb_open(AACS *aacs)
  * Calculate media key using a set of processing keys
  */
 
-static int _calc_mk_pks(MKB *mkb, pk_list *pkl, uint8_t *mk)
+int aacs_calc_mk_pks(MKB *mkb, pk_list *pkl, uint8_t *mk)
 {
     int a, num_uvs = 0;
     size_t len;
@@ -668,10 +669,10 @@ static int _calc_mk(AACS *aacs, uint8_t *mk, pk_list *pkl, dk_list *dkl)
 
     /* try device keys first */
     if (dkl) {
-        result = _calc_mk_dks(mkb, dkl, mk);
+        result = aacs_calc_mk_dks(mkb, dkl, mk);
     }
     if (result != AACS_SUCCESS) {
-        result = _calc_mk_pks(mkb, pkl, mk);
+        result = aacs_calc_mk_pks(mkb, pkl, mk);
     }
 
     if (result == AACS_SUCCESS) {

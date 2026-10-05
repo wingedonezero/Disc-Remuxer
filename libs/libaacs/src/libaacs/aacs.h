@@ -21,6 +21,7 @@
 #ifndef AACS_H_
 #define AACS_H_
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifndef AACS_PUBLIC
@@ -203,5 +204,62 @@ AACS_PUBLIC uint32_t aacs_get_bus_encryption(AACS *);
 struct aacs_basic_cci;
 
 AACS_PUBLIC struct aacs_basic_cci *aacs_get_basic_cci(AACS *, uint32_t title);
+
+/*
+ * HD DVD (Advanced Content)
+ */
+
+typedef struct aacs_hddvd AACS_HDDVD;
+
+/* Reads a file of the disc's AACS directory (name: "MKBROM.AACS",
+ * "VTKF000.AACS", ...): 0 and *data (allocated with malloc, freed by
+ * libaacs) / *size, 1 when the file does not exist, < 0 on a read error. */
+typedef int (*AACS_HDDVD_READ)(void *opaque, const char *name, uint8_t **data, size_t *size);
+
+#define AACS_HDDVD_LOG_ERROR   0
+#define AACS_HDDVD_LOG_WARNING 1
+#define AACS_HDDVD_LOG_INFO    2
+
+/* One message of the HD DVD AACS open (level AACS_HDDVD_LOG_*). */
+typedef void (*AACS_HDDVD_LOG)(void *opaque, int level, const char *message);
+
+/**
+ * Open the AACS layer of an HD DVD: the disc ID (SHA-1 of VTKF000.AACS), the
+ * title keys of VTKF000.AACS .. VTKF<nb_title_key_files - 1>.AACS (64 per
+ * file, ids file * 0x100 + slot + 1; a missing file is skipped, a bad one
+ * fails the open) decrypted with the volume unique key. The volume unique
+ * key comes from the key files (KEYDB.cfg, with or without "0x" before the
+ * hex values), read in order: the first entry for the disc ID with a volume
+ * unique key; else media key (the first entry's, or from MKBROM.AACS with the
+ * files' device keys, then processing keys) and the first entry's volume ID.
+ * @return the handle, or NULL with *error_code an AACS_ERROR_* code
+ */
+AACS_PUBLIC AACS_HDDVD *aacs_hddvd_open(AACS_HDDVD_READ read, void *opaque,
+                                        const char *const *key_files, unsigned nb_key_files,
+                                        unsigned nb_title_key_files,
+                                        AACS_HDDVD_LOG log, void *log_opaque, int *error_code);
+AACS_PUBLIC void aacs_hddvd_close(AACS_HDDVD *);
+
+/* The 20-byte disc ID. */
+AACS_PUBLIC const uint8_t *aacs_hddvd_disc_id(const AACS_HDDVD *);
+
+/* Title key id: 1 and key, or 0 when the disc has no such key. */
+AACS_PUBLIC int aacs_hddvd_title_key(const AACS_HDDVD *, uint32_t id, uint8_t key[16]);
+
+/**
+ * Decrypt a 2048-byte EVOB pack in place: bytes 0x80..0x7ff with AES-128-CBC
+ * (AACS IV), key AES-G(title key, pack bytes 0x54..0x57 + seed12), seed12
+ * coming from the EVOB's navigation pack. The pack's scrambling bits are
+ * left to the caller.
+ * @return 0, < 0 on a cryptography error
+ */
+AACS_PUBLIC int aacs_hddvd_decrypt_pack(const uint8_t title_key[16], const uint8_t seed12[12], uint8_t *pack);
+
+/*
+ * Debug log: every message libaacs would write (to stderr or AACS_DEBUG_FILE,
+ * as AACS_DEBUG_MASK selects) goes to handler instead; NULL restores that.
+ */
+typedef void (*AACS_DEBUG_HANDLER)(const char *message);
+AACS_PUBLIC void aacs_set_debug_handler(AACS_DEBUG_HANDLER handler);
 
 #endif /* AACS_H_ */
