@@ -87,6 +87,10 @@ static void set_GPRM(registers_t* registers, uint8_t reg, uint16_t value) {
     /* Counter mode: the counter restarts from 0 at the current playback
      * clock; the value is stored in GPRM but does not offset the counter */
     registers->GPRM_time[reg] = registers->time_counter;
+    if (value != 0 && !registers->counter_sets_ignored++) {
+      registers->ignored_counter_reg   = reg;
+      registers->ignored_counter_value = value;
+    }
   }
   registers->GPRM[reg] = value;
 }

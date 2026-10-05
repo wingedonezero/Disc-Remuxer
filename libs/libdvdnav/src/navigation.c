@@ -196,6 +196,16 @@ uint32_t dvdnav_get_vm_failures(dvdnav_t *this, const char **first) {
   return this->vm->failures;
 }
 
+uint32_t dvdnav_get_ignored_counter_sets(dvdnav_t *this, int *reg, uint16_t *value) {
+  const registers_t *r = &this->vm->state.registers;
+
+  if (reg)
+    *reg = r->ignored_counter_reg;
+  if (value)
+    *value = r->ignored_counter_value;
+  return r->counter_sets_ignored;
+}
+
 dvdnav_status_t dvdnav_current_title_program2(dvdnav_t *this, int32_t *title,
                                               int32_t *vtsn, int32_t *pgcn,
                                               int32_t *pgn, int32_t *celln) {

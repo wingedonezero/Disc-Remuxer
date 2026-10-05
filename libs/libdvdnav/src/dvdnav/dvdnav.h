@@ -483,6 +483,15 @@ DVDNAV_API dvdnav_status_t dvdnav_current_title_program2(dvdnav_t *self, int32_t
 DVDNAV_API uint32_t dvdnav_get_vm_failures(dvdnav_t *self, const char **first);
 
 /*
+ * Return how many times a GPRM in counter mode was set to a non-zero value.
+ * The counter restarts from 0 all the same (the value does not offset it),
+ * so a disc that relies on the value can take another path than its author
+ * meant. If reg / value are not NULL they receive the register and value of
+ * the first such set.
+ */
+DVDNAV_API uint32_t dvdnav_get_ignored_counter_sets(dvdnav_t *self, int *reg, uint16_t *value);
+
+/*
  * Return the current position (in blocks) within the current
  * title and the length (in blocks) of said title.
  *

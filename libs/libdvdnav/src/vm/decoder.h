@@ -84,6 +84,11 @@ typedef struct {
   uint32_t GPRM_time[16];  /* counter mode: playback clock value when the counter was set */
   uint32_t time_counter;   /* the playback clock, in units of 512/90000 s (see below) */
   uint32_t SPRM_flags;     /* bit n set: a command has read system register n (since vm_reset) */
+  /* sets of a counter-mode GPRM to a non-zero value (the counter restarts
+   * from 0 all the same), and the first of them */
+  uint32_t counter_sets_ignored;
+  uint8_t  ignored_counter_reg;
+  uint16_t ignored_counter_value;
 } registers_t;
 
 /* The playback clock counts the time the disc has played, not wall-clock
