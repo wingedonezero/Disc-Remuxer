@@ -24,6 +24,7 @@ use common::*;
 
 const ENOENT: c_int = -2;
 const EINVAL: c_int = -22;
+const EOF: c_int = -0x2046_4F45; // FFERRTAG('E','O','F',' ')
 const INVALIDDATA: c_int = -0x4144_4E49; // FFERRTAG('I','N','D','A')
 const PATCHWELCOME: c_int = -0x4557_4150; // FFERRTAG('P','A','W','E')
 
@@ -59,6 +60,8 @@ extern "C" {
     fn ff_dvdvideo_source_close(src: *mut *mut Source);
     fn ff_dvdvideo_source_files(src: *mut Source) -> *mut Files;
     fn ff_dvdvideo_source_descramble(src: *mut Source, vtsn: c_int, menu: c_int, block: *mut u8) -> c_int;
+    fn ff_dvdvideo_source_vob_read(src: *mut Source, vtsn: c_int, menu: c_int, sector: i64, buf: *mut u8, attempts: c_int)
+        -> c_int;
     fn DVDOpenFiles(priv_: *mut c_void, logcb: *const c_void, path: *const c_char, fs: *mut Files) -> *mut Reader;
     fn DVDClose(dvd: *mut Reader);
     fn DVDOpenFile(dvd: *mut Reader, title: c_int, domain: c_int) -> *mut DvdFile;
@@ -584,4 +587,112 @@ fn corpus_css_folder_equals_libdvdcss() {
     assert!(scrambled > 0, "no scrambled block in the sample");
     assert!(ours == libdvdcss_read(&vob, 0, CSS_BLOCKS), "folder: blocks differ");
     eprintln!("folder: {scrambled} of {CSS_BLOCKS} blocks descrambled, equal to libdvdcss");
+}
+
+// ---- VOB groups ----
+
+impl Src {
+    /// Block `sector` of the menu VOBs (`menu`) or title VOBs of title set
+    /// `vtsn`, or the error code.
+    fn vob_block(&self, vtsn: c_int, menu: bool, sector: i64) -> Result<Vec<u8>, c_int> {
+        let mut buf = vec![0u8; S];
+        // SAFETY: the source is open; buf holds one block.
+        let ret = unsafe { ff_dvdvideo_source_vob_read(self.0, vtsn, c_int::from(menu), sector, buf.as_mut_ptr(), 1) };
+        if ret < 0 { Err(ret) } else { Ok(buf) }
+    }
+}
+
+/// Image blocks of the files of title set 1 in the VOB-group images.
+const VTS_IFO: u32 = VTS1; // 2 blocks
+const MENU_VOB: u32 = PART_START + 40;
+const TITLE_VOB: u32 = PART_START + 50;
+
+/// Makes `sector` the first NAV pack of a VOB (its PCI and DSI name sector 0).
+fn first_nav_pack(im: &mut Img, sector: u32) {
+    let s = im.sector(sector);
+    s.fill(0);
+    s[..5].copy_from_slice(&[0, 0, 1, 0xba, 0x44]);
+    s[0x0e..0x14].copy_from_slice(&[0, 0, 1, 0xbb, 0, 0x12]);
+    s[0x26..0x2d].copy_from_slice(&[0, 0, 1, 0xbf, 0x03, 0xd4, 0]);
+    s[0x400..0x407].copy_from_slice(&[0, 0, 1, 0xbf, 0x03, 0xfa, 1]);
+}
+
+/// An image with `VTS_01_0.VOB` (2 blocks) at `menu_file` and `VTS_01_1.VOB`
+/// (2 blocks) at `title_file`; the VTS IFO header puts the menu VOBs `vtsm`
+/// and the title VOBs `vtstt` blocks after the IFO. Every block from the
+/// menu file on holds a pattern of its own.
+fn vob_image(menu_file: u32, title_file: u32, vtsm: u32, vtstt: u32) -> Img {
+    let mut files = dvd_files();
+    files.push(("VTS_01_0.VOB", menu_file, 4096));
+    files.push(("VTS_01_1.VOB", title_file, 4096));
+    let mut im = bridge(Some(&udf102(2009, files)), dvd_files(), None);
+    let h = im.sector(VTS_IFO);
+    h[..12].copy_from_slice(b"DVDVIDEO-VTS");
+    h[0xc0..0xc4].copy_from_slice(&vtsm.to_be_bytes());
+    h[0xc4..0xc8].copy_from_slice(&vtstt.to_be_bytes());
+    fill(&mut im, MENU_VOB, 520 - MENU_VOB, 0x6c);
+    im
+}
+
+#[test]
+fn image_vob_groups_reach_past_their_files() {
+    // the IFO and the file system agree: the title VOBs run to the end of the
+    // image (beyond VTS_01_1.VOB), the menu VOBs up to the title VOBs
+    let im = vob_image(MENU_VOB, TITLE_VOB, MENU_VOB - VTS_IFO, TITLE_VOB - VTS_IFO);
+    let src = Src::open(&write_image("vob-groups", &im)).unwrap();
+    assert_eq!(src.vob_block(1, false, 0).unwrap(), sectors(&im, TITLE_VOB, 1));
+    assert_eq!(src.vob_block(1, false, 100).unwrap(), sectors(&im, TITLE_VOB + 100, 1), "past the file");
+    assert_eq!(src.vob_block(1, false, i64::from(519 - TITLE_VOB)).unwrap(), sectors(&im, 519, 1));
+    assert_eq!(src.vob_block(1, false, i64::from(520 - TITLE_VOB)).err(), Some(EOF), "past the image");
+    assert_eq!(src.vob_block(1, true, 9).unwrap(), sectors(&im, TITLE_VOB - 1, 1));
+    assert_eq!(src.vob_block(1, true, 10).err(), Some(EOF), "the menu VOBs end where the title VOBs start");
+}
+
+#[test]
+fn image_vob_start_when_the_ifo_and_the_file_system_disagree() {
+    // the IFO says 4 blocks later than the file: the file's position holds the
+    // first NAV pack of a VOB, the IFO's does not -> the file system's start
+    let mut im = vob_image(MENU_VOB, TITLE_VOB, MENU_VOB - VTS_IFO, TITLE_VOB + 4 - VTS_IFO);
+    first_nav_pack(&mut im, TITLE_VOB);
+    let src = Src::open(&write_image("vob-start-fs", &im)).unwrap();
+    assert!(logged("the IFO puts its title VOBs 20 blocks after the IFO, the file system 16 blocks after it", || {
+        assert_eq!(src.vob_block(1, false, 0).unwrap(), sectors(&im, TITLE_VOB, 1));
+    }));
+    // both positions start a VOB: the IFO's wins
+    first_nav_pack(&mut im, TITLE_VOB + 4);
+    let src = Src::open(&write_image("vob-start-both", &im)).unwrap();
+    assert_eq!(src.vob_block(1, false, 0).unwrap(), sectors(&im, TITLE_VOB + 4, 1));
+    // the menu VOBs: neither position starts a VOB -> they start where the
+    // title VOBs start, which is also their end: nothing to read
+    let im = vob_image(MENU_VOB, TITLE_VOB, MENU_VOB + 2 - VTS_IFO, TITLE_VOB - VTS_IFO);
+    let src = Src::open(&write_image("vob-start-none", &im)).unwrap();
+    assert!(logged("neither position starts a VOB", || {
+        assert_eq!(src.vob_block(1, true, 0).err(), Some(EOF));
+    }));
+}
+
+#[test]
+fn image_menu_vobs_starting_after_the_title_vobs_reach_to_the_end_of_the_image() {
+    // the menu VOBs start 2 blocks after the title VOBs (the file is there too)
+    let im = vob_image(TITLE_VOB + 2, TITLE_VOB, TITLE_VOB + 2 - VTS_IFO, TITLE_VOB - VTS_IFO);
+    let src = Src::open(&write_image("vob-menu-late", &im)).unwrap();
+    assert_eq!(src.vob_block(1, true, 0).unwrap(), sectors(&im, TITLE_VOB + 2, 1));
+    assert_eq!(src.vob_block(1, true, 100).unwrap(), sectors(&im, TITLE_VOB + 102, 1));
+}
+
+#[test]
+fn folder_vob_groups_are_their_files() {
+    let dir = scratch("vob-folder");
+    let vts = dir.join("VIDEO_TS");
+    std::fs::create_dir_all(&vts).unwrap();
+    let block = |b: u8| vec![b; S];
+    std::fs::write(vts.join("VIDEO_TS.IFO"), [b"DVDVIDEO-VMG".as_slice(), &[0; S - 12]].concat()).unwrap();
+    std::fs::write(vts.join("VTS_01_1.VOB"), [block(1), block(2)].concat()).unwrap();
+    std::fs::write(vts.join("VTS_01_2.VOB"), [block(3), vec![4; 100]].concat()).unwrap();
+    std::fs::write(vts.join("VTS_01_4.VOB"), block(9)).unwrap();
+    let src = Src::open(&dir).unwrap();
+    assert_eq!(src.vob_block(1, false, 2).unwrap(), block(3), "VTS_01_2.VOB follows VTS_01_1.VOB");
+    assert_eq!(src.vob_block(1, false, 3).unwrap(), [vec![4; 100], vec![0; S - 100]].concat(), "padded with zeros");
+    assert_eq!(src.vob_block(1, false, 4).err(), Some(EOF), "VTS_01_4.VOB is not reached: VTS_01_3.VOB is missing");
+    assert_eq!(src.vob_block(1, true, 0).err(), Some(ENOENT), "no menu VOB");
 }
