@@ -213,8 +213,9 @@ Developer tools: the steps of the DVD processing one at a time, with their raw r
 Usage: disc-remuxer debug [OPTIONS] <COMMAND>
 
 Commands:
-  dvd-scan  Scan the navigation of one DVD (folder or image) and print the cell sequence found for each title and program chain: `result <start> title <n> pgc <n> cells <list>`, then `entered <title set>` for every title set the navigation played, or `scan failed: <reason>`
-  help      Print this message or the help of the given subcommand(s)
+  dvd-scan    Scan the navigation of one DVD (folder or image) and print the cell sequence found for each title and program chain: `result <start> title <n> pgc <n> cells <list>`, then `entered <title set>` for every title set the navigation played, or `scan failed: <reason>`
+  dvd-titles  Build the title plan of one DVD (folder or image) with the dvd.* settings and print the findings made (`event <name>` and its arguments, tab-separated) and every title: `title <name> vts <n> pgc <n> angle <a>/<n> cells <n> chapters <n> length <h:mm:ss> measured <s> size <bytes> segments <n> map <cells> scan <start> selected <yes|short|fake>`
+  help        Print this message or the help of the given subcommand(s)
 
 Options:
   -v, --verbose...
@@ -248,6 +249,34 @@ Options:
       --trace
           Print every navigator call, event and sector read before the results
 
+  -v, --verbose...
+          More log detail on the console: -v debug, -vv trace (overrides log.console)
+
+  -q, --quiet
+          Errors only on the console (overrides log.console)
+
+      --settings <FILE>
+          Settings file to use instead of the default one
+
+      --set <GROUP.KEY=VALUE>
+          Override one setting for this run (repeatable), e.g. `--set output.scan_depth=2`
+
+  -h, --help
+          Print help
+```
+
+## `disc-remuxer debug dvd-titles`
+
+```text
+Build the title plan of one DVD (folder or image) with the dvd.* settings and print the findings made (`event <name>` and its arguments, tab-separated) and every title: `title <name> vts <n> pgc <n> angle <a>/<n> cells <n> chapters <n> length <h:mm:ss> measured <s> size <bytes> segments <n> map <cells> scan <start> selected <yes|short|fake>`
+
+Usage: disc-remuxer debug dvd-titles [OPTIONS] <SOURCE>
+
+Arguments:
+  <SOURCE>
+          The disc: a DVD folder or image
+
+Options:
   -v, --verbose...
           More log detail on the console: -v debug, -vv trace (overrides log.console)
 

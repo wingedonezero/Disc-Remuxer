@@ -88,6 +88,15 @@ enum DebugCommand {
         #[arg(long)]
         trace: bool,
     },
+    /// Build the title plan of one DVD (folder or image) with the dvd.*
+    /// settings and print the findings made (`event <name>` and its
+    /// arguments, tab-separated) and every title: `title <name> vts <n> pgc
+    /// <n> angle <a>/<n> cells <n> chapters <n> length <h:mm:ss> measured <s>
+    /// size <bytes> segments <n> map <cells> scan <start> selected <yes|short|fake>`.
+    DvdTitles {
+        /// The disc: a DVD folder or image.
+        source: PathBuf,
+    },
 }
 
 #[derive(Subcommand, Clone, Copy)]
@@ -212,6 +221,7 @@ fn run(cli: &Cli, settings: &Settings, command_line: &str) -> Result<()> {
             })
         }
         Command::Debug { what: DebugCommand::DvdScan { source, trace } } => ffmpeg::debug_dvd_scan(source, *trace, settings),
+        Command::Debug { what: DebugCommand::DvdTitles { source } } => ffmpeg::debug_dvd_titles(source, settings),
     }
 }
 
