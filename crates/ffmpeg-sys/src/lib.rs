@@ -917,6 +917,73 @@ pub mod discrip {
     }
 
     pub const AUDIO_CORE_ONLY: c_int = 0x0001;
+    pub const F_TAIL: u32 = 0x0020;
+
+    pub const EV_START_GAP: c_int = 1;
+    pub const EV_START_DROP: c_int = 2;
+    pub const EV_START_SHIFT: c_int = 3;
+    pub const EV_OVERLAP: c_int = 4;
+    pub const EV_GAP_ABSORBED: c_int = 5;
+    pub const EV_GAP: c_int = 6;
+    pub const EV_DROP: c_int = 7;
+    pub const EV_GAP_MARKER: c_int = 8;
+    pub const EV_VIDEO_ENDED: c_int = 9;
+    pub const EV_TIME_ORDER: c_int = 10;
+
+    /// `DREvent`.
+    #[repr(C)]
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+    pub struct Event {
+        pub kind: c_int,
+        pub track: c_int,
+        pub pos: i64,
+        pub dur: i64,
+        pub skew: i64,
+        pub count: i64,
+    }
+
+    pub type EventCb = unsafe extern "C" fn(opaque: *mut c_void, ev: *const Event);
+
+    /// `DRVideoRef`.
+    #[repr(C)]
+    pub struct VideoRef {
+        pub opaque: *mut c_void,
+        pub max_time: unsafe extern "C" fn(opaque: *mut c_void) -> i64,
+        pub advance: unsafe extern "C" fn(opaque: *mut c_void, target: i64, ended: *mut c_int) -> c_int,
+    }
+
+    /// `DRJunctionConfig`.
+    #[repr(C)]
+    pub struct JunctionConfig {
+        pub track: c_int,
+        pub frame_dur: i64,
+        pub tolerance: i64,
+        pub video: VideoRef,
+        pub out: FrameCb,
+        pub out_opaque: *mut c_void,
+        pub event: Option<EventCb>,
+        pub event_opaque: *mut c_void,
+    }
+
+    /// `DRJunctionStats`.
+    #[repr(C)]
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct JunctionStats {
+        pub input: i64,
+        pub out: i64,
+        pub dropped: i64,
+        pub dropped_dur: i64,
+        pub markers: i64,
+        pub skew: i64,
+        pub base: i64,
+        pub ended: c_int,
+    }
+
+    /// `DRJunction` (only handled through pointers).
+    #[repr(C)]
+    pub struct Junction {
+        _private: [u8; 0],
+    }
 
     /// `DRCutter` (only handled through pointers).
     #[repr(C)]
@@ -961,6 +1028,11 @@ pub mod discrip {
         pub fn ff_discrip_audio_flush(a: *mut Audio) -> c_int;
         pub fn ff_discrip_audio_stats(a: *const Audio, stats: *mut AudioStats);
         pub fn ff_discrip_audio_close(a: *mut *mut Audio);
+        pub fn ff_discrip_junction_open(out: *mut *mut Junction, log: *mut c_void, cfg: *const JunctionConfig) -> c_int;
+        pub fn ff_discrip_junction_push(j: *mut Junction, frame: *mut Frame) -> c_int;
+        pub fn ff_discrip_junction_finish(j: *mut Junction) -> c_int;
+        pub fn ff_discrip_junction_stats(j: *const Junction, st: *mut JunctionStats);
+        pub fn ff_discrip_junction_close(j: *mut *mut Junction);
     }
 
     /// FFmpeg's codec id for a codec name (e.g. "ac3"), or None.

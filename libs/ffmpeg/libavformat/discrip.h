@@ -41,6 +41,7 @@
 #define DR_F_MARKER   0x0004   /**< empty marker: carries a time, no bytes */
 #define DR_F_DISCARD  0x0008   /**< not referenced (B picture) */
 #define DR_F_CHAPTER  0x0010   /**< a chapter starts here */
+#define DR_F_TAIL     0x0020   /**< read from the last 64 MiB of its segment's source */
 
 typedef struct DRFrame {
     AVBufferRef *buf;      /**< owns the bytes (NULL for a marker) */
@@ -215,6 +216,72 @@ const DRAudioHeader *ff_discrip_audio_header(const DRAudio *a);
 int ff_discrip_audio_flags(const DRAudio *a);
 void *ff_discrip_audio_priv(DRAudio *a);
 void *ff_discrip_audio_log(const DRAudio *a);
+
+/* ---- Stage 4, audio: the junction of one output track (discrip_junction.c) ----
+ * Title start (lead-in shift / drop), then per frame: overlaps grow the
+ * audio skew, short gaps are absorbed into it, real gaps reset it (nothing is
+ * inserted), whole frames are dropped (only up to a sync unit) once the skew
+ * reaches the start shift + one frame. Every frame leaves at time + skew. */
+
+enum DREventKind {
+    DR_EV_START_GAP = 1,   /**< first frame 0.5..3 ms after the video start: kept */
+    DR_EV_START_DROP,      /**< frames before the lead-in tolerance dropped (count may be 0) */
+    DR_EV_START_SHIFT,     /**< lead-in kept, the whole track delayed by it */
+    DR_EV_OVERLAP,         /**< a frame starts before the previous one ended: skew grows */
+    DR_EV_GAP_ABSORBED,    /**< a short gap taken from the skew */
+    DR_EV_GAP,             /**< a real gap: missing frames, skew reset, nothing inserted */
+    DR_EV_DROP,            /**< frames dropped to reduce the skew */
+    DR_EV_GAP_MARKER,      /**< a marker 1 s further into a long gap while the video goes on */
+    DR_EV_VIDEO_ENDED,     /**< the video ends before this frame: the rest of the track is left out */
+    DR_EV_TIME_ORDER,      /**< a frame leaves at or before the previous one (logged only) */
+};
+
+typedef struct DREvent {
+    int     kind;          /**< DREventKind */
+    int     track;
+    int64_t pos;           /**< ticks: where (title timeline) */
+    int64_t dur;           /**< ticks: how much (overlap, gap, dropped duration, lead-in) */
+    int64_t skew;          /**< ticks: the audio skew after the event */
+    int64_t count;         /**< frames (DROP / START_DROP); x1000 missing frames (GAP) */
+} DREvent;
+
+typedef void (*DREventCb)(void *opaque, const DREvent *ev);
+
+/* The video track as the audio junction sees it. */
+typedef struct DRVideoRef {
+    void    *opaque;
+    /** the highest video time handed on so far */
+    int64_t (*max_time)(void *opaque);
+    /** read the video on until max_time() >= target or the video ends;
+     *  *ended = 1 when it ended before target; < 0 on error */
+    int     (*advance)(void *opaque, int64_t target, int *ended);
+} DRVideoRef;
+
+typedef struct DRJunctionConfig {
+    int        track;          /**< output track number (events) */
+    int64_t    frame_dur;      /**< the stream's nominal frame duration (ticks) */
+    int64_t    tolerance;      /**< format's audio lead-in tolerance (ticks); at least 1 ms is used */
+    DRVideoRef video;
+    DRFrameCb  out;  void *out_opaque;
+    DREventCb  event; void *event_opaque;
+} DRJunctionConfig;
+
+typedef struct DRJunctionStats {
+    int64_t in, out, dropped, dropped_dur, markers;
+    int64_t skew, base;        /**< current skew and start shift */
+    int     ended;             /**< the video ended before the track */
+} DRJunctionStats;
+
+typedef struct DRJunction DRJunction;
+
+int  ff_discrip_junction_open(DRJunction **j, void *logctx, const DRJunctionConfig *cfg);
+/** A frame of the track on the title timeline (taken over); processes as
+ *  far as the frames already given allow. */
+int  ff_discrip_junction_push(DRJunction *j, DRFrame *frame);
+/** The end of the track: processes the rest. */
+int  ff_discrip_junction_finish(DRJunction *j);
+void ff_discrip_junction_stats(const DRJunction *j, DRJunctionStats *st);
+void ff_discrip_junction_close(DRJunction **j);
 
 /* rules of codecs in their own files */
 extern const DRAudioRules ff_discrip_audio_mlp;
