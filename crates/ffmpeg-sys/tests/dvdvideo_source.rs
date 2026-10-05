@@ -244,6 +244,10 @@ fn image_with_a_cut_ifo(bup: bool) -> Img {
     for (i, b) in im.sector(CUT_IFO)[0x400..].iter_mut().enumerate() {
         *b = u8::try_from(i % 241).unwrap();
     }
+    // the BUP holds the IFO's bytes: its block 0 equals the IFO's, block 1 is
+    // the copy of the IFO block the cut image lost
+    let block0 = sectors(&im, CUT_IFO, 1);
+    im.sector(BUP).copy_from_slice(&block0);
     fill(&mut im, BUP + 1, 1, 0x33);
     im.d.truncate((CUT_IFO as usize + 1) * S);
     im
@@ -251,12 +255,32 @@ fn image_with_a_cut_ifo(bup: bool) -> Img {
 
 #[test]
 fn an_unreadable_ifo_block_is_read_from_the_bup() {
+    // the read of both blocks fails on the IFO (try 1); the next try reads the
+    // BUP, which then serves the rest
     let im = image_with_a_cut_ifo(true);
     let src = Src::open(&write_image("cut-ifo", &im)).unwrap();
-    let got = src.reader().read_bytes(0, DVD_READ_INFO_FILE, 4096);
     let mut want = sectors(&im, CUT_IFO, 1);
     want.extend(sectors(&im, BUP + 1, 1));
-    assert_eq!(got, want, "block 0 from the IFO, block 1 from the BUP");
+    assert!(logged("VIDEO_TS.IFO: read at byte 0 failed (try 1 of 16); the next try reads the backup copy (BUP)", || {
+        assert_eq!(src.reader().read_bytes(0, DVD_READ_INFO_FILE, 4096), want);
+    }));
+}
+
+#[test]
+fn after_a_failed_try_the_reads_stay_on_the_bup() {
+    // a BUP whose block 0 differs from the IFO's shows where each block came
+    // from: after the failed try on the IFO, block 0 too is read from the BUP
+    let mut im = image_with_a_cut_ifo(true);
+    let mut other = vec![0u8; 0];
+    for (i, b) in im.sector(BUP).iter_mut().enumerate() {
+        *b = u8::try_from(i % 239).unwrap();
+        other.push(*b);
+    }
+    let src = Src::open(&write_image("cut-ifo-stay", &im)).unwrap();
+    let dvd = src.reader();
+    let got = dvd.read_bytes(0, DVD_READ_INFO_FILE, 4096);
+    assert_eq!(&got[..S], other.as_slice(), "block 0 from the BUP");
+    assert_eq!(got[S..], sectors(&im, BUP + 1, 1)[..], "block 1 from the BUP");
 }
 
 #[test]
@@ -269,7 +293,9 @@ fn without_a_bup_the_unreadable_ifo_block_is_a_read_error() {
         let f = DVDOpenFile(dvd.0, 0, DVD_READ_INFO_FILE);
         assert!(!f.is_null());
         let mut buf = vec![0u8; 4096];
-        assert!(DVDReadBytes(f, buf.as_mut_ptr().cast(), 4096) < 4096);
+        assert!(logged("could not be read from the IFO or its backup copy in 16 tries", || {
+            assert!(DVDReadBytes(f, buf.as_mut_ptr().cast(), 4096) < 4096);
+        }));
         DVDCloseFile(f);
     }
 }

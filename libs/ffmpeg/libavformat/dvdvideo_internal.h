@@ -225,6 +225,7 @@ int ff_dvdvideo_css_can_test(const uint8_t *sec);
 
 /* dvdvideo_disc.c */
 #define DVDVIDEO_NAV_READ_ATTEMPTS  3   /* read attempts of a NAV pack */
+#define DVDVIDEO_IFO_READ_TRIES    16   /* tries per IFO block, alternating IFO / BUP */
 
 typedef struct DVDVideoTitleSet {
     ifo_handle_t   *ifo;                /* NULL: not open (the title set cannot be used) */

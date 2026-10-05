@@ -156,10 +156,11 @@ typedef struct FileHandle {
     int64_t         size;
     int64_t         pos;
     char           *path;     /* as libdvdread named it (tidied) */
-    /* an IFO file: its backup copy, opened at the first block that cannot
-     * be read (a BUP holds the same bytes as its IFO) */
+    /* an IFO file: its backup copy, opened at the first failed read (a BUP
+     * holds the same bytes as its IFO); reads go to the copy that read last */
     int             is_ifo;
     int             bup_tried;
+    int             copy;      /* 0 = the IFO, 1 = the BUP */
     DiscIOFile     *bup_file;
     DiscIOSource   *bup_host;
     int64_t         bup_size;
@@ -192,35 +193,62 @@ static void open_bup(FileHandle *h)
     av_free(bup);
 }
 
-static int read_ifo_or_bup_part(FileHandle *h, int64_t pos, uint8_t *buf, int n, int bup)
+static int read_part(FileHandle *h, int64_t pos, uint8_t *buf, int n)
 {
-    if (bup)
-        return h->bup_host ? ff_discio_read_bytes(h->bup_host, pos, buf, n, h->bup_host->attempts, 0)
-                           : ff_discio_file_read(h->src->fs, h->bup_file, pos, buf, n);
     return h->host ? ff_discio_read_bytes(h->host, pos, buf, n, h->host->attempts, 0)
                    : ff_discio_file_read(h->src->fs, h->file, pos, buf, n);
 }
 
-/* An IFO read that failed, again block by block: a block that cannot be
- * read from the IFO is read from the same place of its BUP. */
-static int read_ifo_blocks(FileHandle *h, int64_t pos, uint8_t *buf, int len)
+/* One try (one read attempt, failures logged at debug level) of n bytes at pos
+ * from copy 0 (the IFO) or 1 (its BUP). */
+static int read_ifo_copy(FileHandle *h, int copy, int64_t pos, uint8_t *buf, int n)
 {
+    if (!copy)
+        return h->host ? ff_discio_read_bytes(h->host, pos, buf, n, 1, 1)
+                       : ff_discio_file_read_attempts(h->src->fs, h->file, pos, buf, n, 1, 1);
+    if (pos + n > h->bup_size)
+        return AVERROR(EIO);
+    return h->bup_host ? ff_discio_read_bytes(h->bup_host, pos, buf, n, 1, 1)
+                       : ff_discio_file_read_attempts(h->src->fs, h->bup_file, pos, buf, n, 1, 1);
+}
+
+/* After a failed try: the other copy is used from now on (when the IFO has a
+ * BUP that can be opened). */
+static void switch_ifo_copy(FileHandle *h, int64_t pos, int tries)
+{
+    if (!h->bup_tried)
+        open_bup(h);
+    if (h->bup_file || h->bup_host)
+        h->copy = !h->copy;
+    av_log(h->src->log, AV_LOG_WARNING, "%s: read at byte %"PRId64" failed (try %d of %d); the next try reads the %s\n",
+           h->path, pos, tries, DVDVIDEO_IFO_READ_TRIES, h->copy ? "backup copy (BUP)" : "IFO");
+}
+
+/* IFO reads: up to DVDVIDEO_IFO_READ_TRIES tries per block, the first one
+ * covering the whole request, the others one block each; every failed try
+ * moves to the other copy (IFO <-> BUP), and later reads stay on the copy
+ * that read last. */
+static int read_ifo(FileHandle *h, int64_t pos, uint8_t *buf, int len)
+{
+    int tries;
+
+    if (read_ifo_copy(h, h->copy, pos, buf, len) >= 0)
+        return 0;
+    tries = 1;
+    switch_ifo_copy(h, pos, tries);
     for (int done = 0; done < len;) {
         int64_t at = pos + done;
         int n = FFMIN(len - done, DISCIO_BLOCK_SIZE - (int)(at % DISCIO_BLOCK_SIZE));
 
-        if (read_ifo_or_bup_part(h, at, buf + done, n, 0) < 0) {
-            if (!h->bup_tried)
-                open_bup(h);
-            if ((!h->bup_file && !h->bup_host) || at + n > h->bup_size ||
-                read_ifo_or_bup_part(h, at, buf + done, n, 1) < 0) {
-                av_log(h->src->log, AV_LOG_ERROR, "%s: block %"PRId64" can be read neither from the IFO nor from "
-                       "its backup copy\n", h->path, at / DISCIO_BLOCK_SIZE);
+        while (read_ifo_copy(h, h->copy, at, buf + done, n) < 0) {
+            if (++tries >= DVDVIDEO_IFO_READ_TRIES) {
+                av_log(h->src->log, AV_LOG_ERROR, "%s: block %"PRId64" could not be read from the IFO or its "
+                       "backup copy in %d tries\n", h->path, at / DISCIO_BLOCK_SIZE, tries);
                 return AVERROR(EIO);
             }
-            av_log(h->src->log, AV_LOG_WARNING, "%s: block %"PRId64" cannot be read; it was read from the "
-                   "backup copy (BUP) instead\n", h->path, at / DISCIO_BLOCK_SIZE);
+            switch_ifo_copy(h, at, tries);
         }
+        tries = 0;
         done += n;
     }
     return 0;
@@ -388,9 +416,7 @@ static ssize_t fs_file_read(void *file, char *buf, size_t size)
     n = FFMIN(n, INT_MAX & ~(DISCIO_BLOCK_SIZE - 1));
     if (!n)
         return 0;
-    ret = read_ifo_or_bup_part(h, h->pos, (uint8_t *)buf, n, 0);
-    if (ret < 0 && h->is_ifo)
-        ret = read_ifo_blocks(h, h->pos, (uint8_t *)buf, n);
+    ret = h->is_ifo ? read_ifo(h, h->pos, (uint8_t *)buf, n) : read_part(h, h->pos, (uint8_t *)buf, n);
     if (ret < 0)
         return -1;
     h->pos += n;
@@ -1014,8 +1040,10 @@ static int image_vob_starts_at(DVDVideoSource *src, int64_t at)
 /* A VOB group of a disc image, placed by its IFO: blocks are counted from the
  * IFO's first block. The group starts at the IFO header's vmgm_vobs /
  * vtsm_vobs (menu) or vtstt_vobs (title VOBs) when the file system puts the
- * VOB file there too (or the file's position is the IFO's own); when the two
- * disagree, at whichever of them holds the first NAV pack of a VOB, the IFO's
+ * VOB file there too, or puts it at the IFO's own block (distance 0); a VOB
+ * file the file system cannot place counts as image block 0, whose distance
+ * from the IFO wraps around (32 bits) and is compared like any other. When the
+ * two disagree, at whichever of them holds the first NAV pack of a VOB, the IFO's
  * first, else at vtstt_vobs. A title set's menu VOBs end where its title VOBs
  * start (when the header gives them); everything else reaches to the end of
  * the image, and so does a group whose start lies past its end. */

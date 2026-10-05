@@ -53,6 +53,12 @@ void ff_discio_file_free(DiscIOFile **file)
 int ff_discio_file_read(DiscIOFS *fs, const DiscIOFile *file, int64_t pos,
                         uint8_t *buf, int len)
 {
+    return ff_discio_file_read_attempts(fs, file, pos, buf, len, fs->src->attempts, 0);
+}
+
+int ff_discio_file_read_attempts(DiscIOFS *fs, const DiscIOFile *file, int64_t pos,
+                                 uint8_t *buf, int len, int attempts, int quiet)
+{
     DiscIOSource *src = fs->src;
     int64_t ext_start = 0;   /* file offset where the current extent begins */
     int done = 0;
@@ -80,7 +86,7 @@ int ff_discio_file_read(DiscIOFS *fs, const DiscIOFile *file, int64_t pos,
                 memset(buf + done, 0, n);   /* not recorded: zeros */
             } else {
                 int ret = ff_discio_read_bytes(src, e->sector * DISCIO_BLOCK_SIZE + in_ext,
-                                               buf + done, n, src->attempts, 0);
+                                               buf + done, n, attempts, quiet);
                 if (ret < 0)
                     return ret;
             }
