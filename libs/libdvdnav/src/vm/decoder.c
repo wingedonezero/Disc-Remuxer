@@ -538,7 +538,8 @@ static int32_t eval_system_set(command_t* command, int32_t cond, link_t *return_
     case 6: /*  Set system reg 8 (Highlighted button) */
       data = eval_reg_or_data(command, vm_getbits(command, 60, 1), 31); /*  Not system reg!! */
       if(cond) {
-        command->registers->SPRM[8] = data;
+        /* the button number is in bits 15..10; the low bits must be 0 */
+        command->registers->SPRM[8] = data & 0xfc00;
       }
       break;
   }

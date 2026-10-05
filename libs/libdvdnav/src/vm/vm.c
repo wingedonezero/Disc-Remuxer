@@ -859,6 +859,16 @@ static int process_command(vm_t *vm, link_t link_values) {
       /* BUTTON number:data1 */
       if(link_values.data1 != 0)
         vm->state.HL_BTNN_REG = link_values.data1 << 10;
+      if(vm->state.pgN == 1 || vm->state.pgc->pg_playback_mode != 0) {
+        /* No previous program (the first one, or a random / shuffle chain):
+         * go to the previous program chain, as LinkPrevPGC does. */
+        assert(vm->state.pgc->prev_pgc_nr != 0);
+        if(set_PGCN(vm, vm->state.pgc->prev_pgc_nr))
+          link_values = play_PGC(vm);
+        else
+          link_values.command = Exit;
+        break;
+      }
       if(!VM_CHECK(vm, vm->state.pgN > 1)) return 0;
       vm->state.pgN -= 1;
       link_values = play_PG(vm);
