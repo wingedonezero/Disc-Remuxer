@@ -185,6 +185,24 @@ dvd_reader_filesystem_h *ff_dvdvideo_source_files(DVDVideoSource *src);
  * set) in place when it is CSS-scrambled; the key is looked for at the first
  * scrambled block. 0 = not scrambled, 1 = descrambled, < 0 = error (logged). */
 int ff_dvdvideo_source_descramble(DVDVideoSource *src, int vtsn, int menu, uint8_t *block);
+/* The path of a DVD file ("VTS_01_0.IFO") as libdvdread finds it: in the root
+ * first, then in VIDEO_TS, names ignoring case. */
+int ff_dvdvideo_source_find(DVDVideoSource *src, const char *name, char *path, size_t size);
+/* A VOB group: the menu VOB of title set vtsn (menu set; VIDEO_TS.VOB for 0)
+ * or its title VOBs VTS_nn_1.VOB up to the first missing one, read one after
+ * the other as libdvdread does. Reads block `sector` of the group with the
+ * given read attempts (a partial last block of a file padded with zeros):
+ * 0, AVERROR(ENOENT) when the group has no file, AVERROR_EOF past its end, or
+ * a read error. */
+int ff_dvdvideo_source_vob_read(DVDVideoSource *src, int vtsn, int menu, int64_t sector, uint8_t *buf,
+                                int attempts);
+/* A VOB group's size in blocks and, on an image, the image block it starts at
+ * when the whole group is one run of image blocks (else -1; -1 for folders). */
+int ff_dvdvideo_source_vob_layout(DVDVideoSource *src, int vtsn, int menu, int64_t *sectors,
+                                  int64_t *image_sector);
+/* The image block a file of the disc starts at; -1 for folders, a missing file
+ * or one without recorded data. */
+int64_t ff_dvdvideo_source_file_sector(DVDVideoSource *src, const char *name);
 
 /* dvdvideo_css.c */
 /* Offset of the scrambled PES of a sector: an MPEG-2 pack whose first PES is
@@ -197,6 +215,46 @@ int ff_dvdvideo_css_content_valid(const uint8_t *sec);
 /* Whether ff_dvdvideo_css_content_valid() can tell anything about a sector:
  * what it reads from the clear bytes is in place. */
 int ff_dvdvideo_css_can_test(const uint8_t *sec);
+
+/* dvdvideo_scan.c */
+/* glibc's rand() sequence, as a source of random numbers of its own */
+typedef struct DVDVideoRand {
+    uint32_t state[31];
+    int      front;
+} DVDVideoRand;
+/* The sequence after srand(seed) (seed 0 counts as 1, as in glibc). */
+void ff_dvdvideo_rand_init(DVDVideoRand *r, uint32_t seed);
+/* The next value, 0..RAND_MAX (r is a DVDVideoRand); fits dvdnav_set_random_source(). */
+int ff_dvdvideo_rand_next(void *r);
+
+typedef struct DVDVideoScanResult {
+    char     name[16];      /* the start point: letters for the position, then the button / title number */
+    int      title;         /* title of the title search table (low byte) */
+    int      pgcn;          /* program chain of the title set (low byte) */
+    uint8_t *cells;         /* cell numbers in the order played, repeats removed */
+    int      nb_cells;
+} DVDVideoScanResult;
+
+typedef struct DVDVideoScan {
+    DVDVideoScanResult *results;    /* one per (title, pgcn), in that order */
+    int                 nb_results;
+    int                 failed;     /* a refused read or broken navigation data ended the scan */
+    char                failure[512];
+    uint8_t             entered[100]; /* title sets (and the VMG, [0]) whose cells the navigation played */
+} DVDVideoScan;
+
+/* Receives a trace of the scan: one line per result of a navigator call
+ * ("nav <n>" after a copy, "set", "ev <code> <time_ms> <title> <pgc> <vtsn>
+ * <cell> <still> <highlight> <vobu> <sprm flags>"), per sector read
+ * ("read <vob id> <sector>", before the result of the call that read it),
+ * per walker log line ("log pending <key>", "log path <key>") and
+ * "fail <reason>". */
+typedef void (*DVDVideoScanTrace)(void *opaque, const char *line);
+/* Scan the disc's navigation. A scan that failed is returned with failed set
+ * and no results; < 0 for an error that kept it from running. */
+int ff_dvdvideo_scan(void *log, DVDVideoSource *src, DVDVideoScanTrace trace, void *trace_opaque,
+                     DVDVideoScan **scan);
+void ff_dvdvideo_scan_free(DVDVideoScan **scan);
 
 /* dvdvideo_ifo.c */
 #define DVDVIDEO_VTS_MAP_DISTRUSTED  1  /* a cell does not start / end on a VOBU of the map */

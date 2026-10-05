@@ -214,6 +214,7 @@ OBJS-$(CONFIG_DVDVIDEO_DEMUXER)          += dvdvideodec.o dvdvideo_chapters.o \
                                             dvdvideo_ifo.o dvdvideo_play.o     \
                                             dvdvideo_source.o dvdvideo_css.o   \
                                             dvdvideo_streams.o dvdclut.o       \
+                                            dvdvideo_scan.o                    \
                                             discio_read.o discio_fs.o discio_iso9660.o \
                                             discio_udf_netbsd.o discio_udf_linux.o
 OBJS-$(CONFIG_DXA_DEMUXER)               += dxa.o
