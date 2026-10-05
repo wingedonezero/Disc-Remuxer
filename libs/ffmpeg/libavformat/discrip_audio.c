@@ -43,6 +43,7 @@ struct DRAudio {
 
     int64_t             expect;    /* end of the previous unit (continuity), 0 = none */
     unsigned            reviewed;  /* review kinds already reported */
+    void               *priv;      /* rule state */
     DRAudioStats        st;
 };
 
@@ -73,6 +74,10 @@ int ff_discrip_audio_open(DRAudio **audio, void *logctx, enum AVCodecID codec, i
     a->flags  = flags;
     a->cb     = cb;
     a->opaque = opaque;
+    if (a->rules->priv_size && !(a->priv = av_mallocz(a->rules->priv_size))) {
+        av_free(a);
+        return AVERROR(ENOMEM);
+    }
     *audio    = a;
     return 0;
 }
@@ -86,6 +91,9 @@ void ff_discrip_audio_close(DRAudio **audio)
     for (int i = 0; i < a->nb_wait; i++)
         ff_discrip_frame_unref(&a->wait[i]);
     av_freep(&a->wait);
+    if (a->priv && a->rules->close)
+        a->rules->close(a->priv);
+    av_freep(&a->priv);
     av_freep(audio);
 }
 
@@ -102,6 +110,16 @@ const DRAudioHeader *ff_discrip_audio_header(const DRAudio *a)
 int ff_discrip_audio_flags(const DRAudio *a)
 {
     return a->flags;
+}
+
+void *ff_discrip_audio_priv(DRAudio *a)
+{
+    return a->priv;
+}
+
+void *ff_discrip_audio_log(const DRAudio *a)
+{
+    return a->log;
 }
 
 void ff_discrip_audio_review(DRAudio *a, unsigned kind, const char *what)
@@ -122,6 +140,8 @@ static int unit_done(DRAudio *a, DRFrame *f)
 
     if (a->rules->sync && a->rules->sync(f->data, f->size))
         f->flags |= DR_F_SYNC;
+    if (!a->rules->key_on_sync || (f->flags & DR_F_SYNC))
+        f->flags |= DR_F_KEY;
     if (a->rules->duration) {
         int size = f->size;
         if ((ret = a->rules->duration(a, f)) < 0) {
@@ -158,7 +178,7 @@ static int unit_done(DRAudio *a, DRFrame *f)
 int ff_discrip_audio_unit(void *opaque, const DRUnit *u)
 {
     DRAudio *a = opaque;
-    DRFrame f = { .time = u->time, .pos = u->pos, .flags = DR_F_KEY };
+    DRFrame f = { .time = u->time, .pos = u->pos };
     int ret;
 
     if (!(f.buf = av_buffer_alloc(u->size + AV_INPUT_BUFFER_PADDING_SIZE)))
@@ -175,7 +195,7 @@ int ff_discrip_audio_unit(void *opaque, const DRUnit *u)
     /* The stream's values come from its first sync unit that gives them;
      * units before it wait and then get the same values. */
     if ((!a->rules->sync || a->rules->sync(f.data, f.size)) &&
-        a->rules->header(f.data, f.size, &a->hdr) >= 0) {
+        a->rules->header(a, f.data, f.size, &a->hdr) >= 0) {
         if (a->hdr.rate <= 0 || a->hdr.samples <= 0) {
             av_log(a->log, AV_LOG_ERROR, "Rip core: %s: unusable stream values (rate %d, %d samples)\n",
                    a->codec->name, a->hdr.rate, a->hdr.samples);

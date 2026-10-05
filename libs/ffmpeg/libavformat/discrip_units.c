@@ -78,6 +78,10 @@ int ff_discrip_cutter_open(DRCutter **cutter, void *logctx, enum AVCodecID codec
         av_free(c);
         return AVERROR(ENOSYS);
     }
+    if (c->codec->unit_size) {
+        *cutter = c;
+        return 0;
+    }
     c->parser = av_parser_init(codec);
     c->avctx  = avcodec_alloc_context3(NULL);
     if (!c->parser || !c->avctx) {
@@ -171,25 +175,11 @@ static int window_add(DRCutter *c, const uint8_t *data, int size)
     return 0;
 }
 
-/* One unit from the parser: check it, time it, give it out. */
-static int unit_out(DRCutter *c, const uint8_t *data, int size)
+/* One unit at stream offset off: check it, time it, give it out. */
+static int unit_take(DRCutter *c, const uint8_t *data, int size, int64_t off)
 {
-    int64_t off = c->parser->frame_offset, rel = off - c->win_pos;
     int64_t time = AV_NOPTS_VALUE;
     int unit, a;
-
-    /* Invariant: the unit is the stream's bytes at its offset, and units
-     * follow each other in the stream. */
-    if (rel < 0 || rel + size > c->win_len || memcmp(c->win + rel, data, size)) {
-        av_log(c->log, AV_LOG_ERROR, "Rip core: %s: unit check FAIL: %d bytes at stream offset %"PRId64
-               " are not the stream's bytes there (kept bytes %"PRId64"..%"PRId64")\n",
-               c->codec->name, size, off, c->win_pos, c->win_pos + c->win_len);
-        return AVERROR_BUG;
-    }
-    /* the bytes up to the end of this output are given out */
-    c->win_len -= rel + size;
-    memmove(c->win, c->win + rel + size, c->win_len);
-    c->win_pos  = off + size;
 
     unit = !c->codec->check || c->codec->check(data, size);
     if (!unit) {
@@ -211,6 +201,68 @@ static int unit_out(DRCutter *c, const uint8_t *data, int size)
     return c->cb(c->opaque, &(DRUnit){ data, size, time, off });
 }
 
+/* The bytes up to stream offset end are given out. */
+static void window_consume(DRCutter *c, int64_t end)
+{
+    int n = end - c->win_pos;
+
+    c->win_len -= n;
+    memmove(c->win, c->win + n, c->win_len);
+    c->win_pos  = end;
+}
+
+/* One unit from FFmpeg's parser. */
+static int unit_out(DRCutter *c, const uint8_t *data, int size)
+{
+    int64_t off = c->parser->frame_offset, rel = off - c->win_pos;
+
+    /* Invariant: the unit is the stream's bytes at its offset, and units
+     * follow each other in the stream. */
+    if (rel < 0 || rel + size > c->win_len || memcmp(c->win + rel, data, size)) {
+        av_log(c->log, AV_LOG_ERROR, "Rip core: %s: unit check FAIL: %d bytes at stream offset %"PRId64
+               " are not the stream's bytes there (kept bytes %"PRId64"..%"PRId64")\n",
+               c->codec->name, size, off, c->win_pos, c->win_pos + c->win_len);
+        return AVERROR_BUG;
+    }
+    window_consume(c, off + size);
+    return unit_take(c, data, size, off);
+}
+
+/* The core's own cutter (DRCodec.unit_size): units cut from the kept bytes;
+ * at the end of the stream (final) the bytes left are in no unit. */
+static int native_cut(DRCutter *c, int final)
+{
+    while (c->win_len > 0) {
+        int s = c->codec->unit_size(c->win, c->win_len), ret, k;
+
+        if (s > 0) {
+            if ((ret = unit_take(c, c->win, s, c->win_pos)) < 0)
+                return ret;
+            window_consume(c, c->win_pos + s);
+            continue;
+        }
+        if (s == 0 && !final)
+            break;
+        if (s == 0)
+            k = c->win_len;
+        else {
+            int r = c->codec->resync(c->win + 1, c->win_len - 1);
+            if (r >= 0)
+                k = r + 1;
+            else if (final)
+                k = c->win_len;
+            else
+                break;      /* a unit may start in the bytes still to come */
+        }
+        av_log(c->log, AV_LOG_WARNING, "Rip core: %s: %d bytes at stream offset %"PRId64" are not a unit "
+               "(damaged or cut stream): left out\n", c->codec->name, k, c->win_pos);
+        c->st.skipped++;
+        c->st.skipped_bytes += k;
+        window_consume(c, c->win_pos + k);
+    }
+    return 0;
+}
+
 int ff_discrip_cutter_write(DRCutter *c, const uint8_t *data, int size, int64_t time)
 {
     const uint8_t *p;
@@ -225,6 +277,11 @@ int ff_discrip_cutter_write(DRCutter *c, const uint8_t *data, int size, int64_t 
     }
     if ((ret = window_add(c, data, size)) < 0)
         return ret;
+    if (c->codec->unit_size) {
+        c->in_pos  += size;
+        c->st.bytes += size;
+        return native_cut(c, 0);
+    }
     av_fast_padded_malloc(&c->feed, &c->feed_cap, size);
     if (!c->feed)
         return AVERROR(ENOMEM);
@@ -250,7 +307,12 @@ int ff_discrip_cutter_write(DRCutter *c, const uint8_t *data, int size, int64_t 
 
 int ff_discrip_cutter_flush(DRCutter *c)
 {
-    for (;;) {
+    if (c->codec->unit_size) {
+        int ret = native_cut(c, 1);
+        if (ret < 0)
+            return ret;
+    }
+    while (c->parser) {
         uint8_t *out;
         int out_size, ret;
 

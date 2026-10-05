@@ -70,7 +70,7 @@ typedef struct DRAudioRules {
     /** The stream's values from a unit; < 0 when the unit gives none. The
      *  first unit that is a sync unit and gives them sets them for the
      *  segment. */
-    int  (*header)(const uint8_t *data, int size, DRAudioHeader *h);
+    int  (*header)(DRAudio *a, const uint8_t *data, int size, DRAudioHeader *h);
     /** 1 when the unit is a sync unit (DR_F_SYNC). NULL: never. */
     int  (*sync)(const uint8_t *data, int size);
     /** The unit's duration in ticks, and its final bytes (a core cut
@@ -80,6 +80,11 @@ typedef struct DRAudioRules {
     /** Checks a unit for features that are implemented but not met on real
      *  discs yet (ff_discrip_audio_review). NULL: none. */
     void (*inspect)(DRAudio *a, const DRFrame *frame);
+    /** 1: only sync units are key frames (DR_F_KEY); 0: every unit is. */
+    int    key_on_sync;
+    /** Rule state (ff_discrip_audio_priv), freed with close(). */
+    size_t priv_size;
+    void (*close)(void *priv);
 } DRAudioRules;
 
 /* One entry of the codec table: what the core needs to know about a codec.
@@ -100,6 +105,13 @@ typedef struct DRCodec {
     /** Audio rules; NULL for video / subtitles, or while not implemented
      *  (the track is then refused by ff_discrip_audio_open). */
     const DRAudioRules *audio;
+    /** The core's own unit cutter, used instead of FFmpeg's parser where the
+     *  parser drops bytes the reference keeps. unit_size: the size of the
+     *  unit at buf (> 0), 0 when more bytes are needed, < 0 when no unit
+     *  starts there; resync: the offset of the next possible unit start in
+     *  buf, -1 when none. NULL: FFmpeg's parser. */
+    int (*unit_size)(const uint8_t *buf, int avail);
+    int (*resync)(const uint8_t *buf, int avail);
 } DRCodec;
 
 /** The codec table entry of a codec, or NULL (the codec is not supported). */
@@ -197,5 +209,13 @@ void ff_discrip_audio_close(DRAudio **audio);
 /* the audio stream values the rules use (for rules that keep state) */
 const DRAudioHeader *ff_discrip_audio_header(const DRAudio *a);
 int ff_discrip_audio_flags(const DRAudio *a);
+void *ff_discrip_audio_priv(DRAudio *a);
+void *ff_discrip_audio_log(const DRAudio *a);
+
+/* rules of codecs in their own files */
+extern const DRAudioRules ff_discrip_audio_mlp;
+int ff_discrip_mlp_check(const uint8_t *data, int size);
+int ff_discrip_mlp_unit_size(const uint8_t *buf, int avail);
+int ff_discrip_mlp_resync(const uint8_t *buf, int avail);
 
 #endif /* AVFORMAT_DISCRIP_H */

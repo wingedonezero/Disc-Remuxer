@@ -91,7 +91,7 @@ static int check_eac3(const uint8_t *data, int size)
     return ac3_header(data, size, &h) >= 0 && is_eac3(&h);
 }
 
-static int header_ac3(const uint8_t *data, int size, DRAudioHeader *out)
+static int header_ac3(DRAudio *a, const uint8_t *data, int size, DRAudioHeader *out)
 {
     AC3HeaderInfo h;
 
@@ -183,8 +183,10 @@ static const DRCodec codecs[] = {
     { AV_CODEC_ID_VC1,          "vc1",          anchor_vc1       },
     { AV_CODEC_ID_AC3,          "ac3",          anchor_unit, check_ac3,  &audio_ac3  },
     { AV_CODEC_ID_EAC3,         "eac3",         anchor_unit, check_eac3, &audio_eac3 },
-    { AV_CODEC_ID_TRUEHD,       "truehd",       anchor_unit      },
-    { AV_CODEC_ID_MLP,          "mlp",          anchor_unit      },
+    { AV_CODEC_ID_TRUEHD,       "truehd",       anchor_unit, ff_discrip_mlp_check, &ff_discrip_audio_mlp,
+      ff_discrip_mlp_unit_size, ff_discrip_mlp_resync },
+    { AV_CODEC_ID_MLP,          "mlp",          anchor_unit, ff_discrip_mlp_check, &ff_discrip_audio_mlp,
+      ff_discrip_mlp_unit_size, ff_discrip_mlp_resync },
     { AV_CODEC_ID_DTS,          "dts",          anchor_unit, check_dts },
     { AV_CODEC_ID_PCM_DVD,      "pcm_dvd",      anchor_unit      },
     { AV_CODEC_ID_MP1,          "mp1",          anchor_unit, check_mpa },
