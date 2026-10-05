@@ -60,10 +60,24 @@ int ff_dvdvideo_ifo_open(AVFormatContext *s)
     DVDVideoDemuxContext *c = s->priv_data;
 
     dvd_logger_cb dvdread_log_cb;
+    dvd_reader_filesystem_h *files;
     title_info_t title_info;
 
+    if (!c->source) {
+        DiscIOImageOptions opts = { .udf_reader                = c->opt_udf_reader,
+                                    .prefer_iso_for_old_udf102 = c->opt_prefer_iso };
+        int ret = ff_dvdvideo_source_open(s, s->url, &opts, c->opt_read_attempts, &c->source);
+
+        if (ret < 0)
+            return ret;
+    }
+
     dvdread_log_cb = (dvd_logger_cb) { .pf_log = dvdvideo_libdvdread_log };
-    c->dvdread = DVDOpen2(s, &dvdread_log_cb, s->url);
+    if (!(files = ff_dvdvideo_source_files(c->source)))
+        return AVERROR(ENOMEM);
+    /* on failure the files stay with the caller */
+    if (!(c->dvdread = DVDOpenFiles(s, &dvdread_log_cb, "/", files)))
+        files->close(files);
 
     if (!c->dvdread) {
         av_log(s, AV_LOG_ERROR, "Unable to open the DVD-Video structure\n");

@@ -219,6 +219,13 @@ int ff_dvdvideo_menu_next_ps_block(AVFormatContext *s, DVDVideoPlaybackState *st
 
     /* we are in the middle of a VOBU, so pass on the PS packet */
     memcpy(buf, &read_buf, DVDVIDEO_BLOCK_SIZE);
+    {
+        DVDVideoDemuxContext *c = s->priv_data;
+        int ret = ff_dvdvideo_source_descramble(c->source, c->opt_menu_vts, 1, buf);
+
+        if (ret < 0)
+            return ret;
+    }
     state->sector_offset++;
     state->vobu_remaining--;
 
@@ -250,8 +257,13 @@ int ff_dvdvideo_play_open(AVFormatContext *s, DVDVideoPlaybackState *state)
     int cur_title, cur_pgcn, cur_pgn;
     pgc_t *pgc;
 
+    dvd_reader_filesystem_h *files;
+
     dvdnav_log_cb = (dvdnav_logger_cb) { .pf_log = dvdvideo_libdvdnav_log };
-    dvdnav_open_status = dvdnav_open2(&state->dvdnav, s, &dvdnav_log_cb, s->url);
+    if (!(files = ff_dvdvideo_source_files(c->source)))
+        return AVERROR(ENOMEM);
+    /* the navigator takes the files over in every case */
+    dvdnav_open_status = dvdnav_open_files(&state->dvdnav, s, &dvdnav_log_cb, "/", files);
 
     if (!state->dvdnav                                                          ||
         dvdnav_open_status != DVDNAV_STATUS_OK                                  ||
@@ -556,6 +568,12 @@ int ff_dvdvideo_play_next_ps_block(AVFormatContext *s, DVDVideoPlaybackState *st
                                               state->pgn, cur_pgn);
 
                 memcpy(buf, &nav_buf, nav_len);
+                {
+                    int ret = ff_dvdvideo_source_descramble(c->source, state->vtsn, 0, buf);
+
+                    if (ret < 0)
+                        return ret;
+                }
 
                 state->is_seeking = 0;
 

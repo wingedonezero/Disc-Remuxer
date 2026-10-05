@@ -44,6 +44,7 @@
 
 #include "avformat.h"
 #include "avio_internal.h"
+#include "discio.h"
 #include "avlanguage.h"
 #include "demux.h"
 #include "dvdclut.h"
@@ -144,6 +145,9 @@ typedef struct DVDVideoDemuxContext {
     int                         opt_region;         /* the user-provided region digit */
     int                         opt_title;          /* the user-provided title number (1-indexed) */
     int                         opt_trim;           /* trim padding cells at beginning */
+    int                         opt_read_attempts;  /* read attempts per request on the disc */
+    int                         opt_udf_reader;     /* enum DiscIOUDFReader */
+    int                         opt_prefer_iso;     /* DiscIOImageOptions.prefer_iso_for_old_udf102 */
 
     /* subdemux */
     AVFormatContext             *mpeg_ctx;          /* context for inner demuxer */
@@ -151,6 +155,7 @@ typedef struct DVDVideoDemuxContext {
     FFIOContext                 mpeg_pb;            /* buffer context for inner demuxer */
 
     /* volume */
+    struct DVDVideoSource       *source;            /* the disc: every read goes through it */
     dvd_reader_t                *dvdread;           /* handle to libdvdread */
     ifo_handle_t                *vmg_ifo;           /* handle to the VMG (VIDEO_TS.IFO) */
     ifo_handle_t                *vts_ifo;           /* handle to the active VTS (VTS_nn_n.IFO) */
@@ -165,6 +170,21 @@ typedef struct DVDVideoDemuxContext {
     int                         seek_warned;        /* signal that we warned about seeking limits */
     int                         subdemux_reset;     /* signal that subdemuxer should be reset */
 } DVDVideoDemuxContext;
+
+/* dvdvideo_source.c */
+typedef struct DVDVideoSource DVDVideoSource;
+/* Open the disc at path: a disc folder (holding VIDEO_TS, the VIDEO_TS folder,
+ * or holding the DVD files directly) or a DVD-Video image file. */
+int ff_dvdvideo_source_open(void *log, const char *path, const DiscIOImageOptions *opts, int attempts,
+                            DVDVideoSource **out);
+void ff_dvdvideo_source_close(DVDVideoSource **src);
+/* A new set of file callbacks for DVDOpenFiles / dvdnav_open_files (on the
+ * root "/"); the library that receives it closes it. NULL when out of memory. */
+dvd_reader_filesystem_h *ff_dvdvideo_source_files(DVDVideoSource *src);
+/* Descramble a 2048-byte block of title set vtsn (its menu VOBs when menu is
+ * set) in place when it is CSS-scrambled; the key is looked for at the first
+ * scrambled block. 0 = not scrambled, 1 = descrambled, < 0 = error (logged). */
+int ff_dvdvideo_source_descramble(DVDVideoSource *src, int vtsn, int menu, uint8_t *block);
 
 /* dvdvideo_ifo.c */
 void ff_dvdvideo_ifo_close(AVFormatContext *s);

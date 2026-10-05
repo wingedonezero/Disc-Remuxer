@@ -306,6 +306,7 @@ static int dvdvideo_close(AVFormatContext *s)
         ff_dvdvideo_play_close(s, &c->play_state);
 
     ff_dvdvideo_ifo_close(s);
+    ff_dvdvideo_source_close(&c->source);
 
     if (c->prev_pts)
         av_freep(&c->prev_pts);
@@ -419,6 +420,12 @@ static const AVOption dvdvideo_options[] = {
     {"region",          "playback region number (0=free)",                          OFFSET(opt_region),         AV_OPT_TYPE_INT,    { .i64=0 },     0,          8,         AV_OPT_FLAG_DECODING_PARAM },
     {"title",           "title number (0=auto)",                                    OFFSET(opt_title),          AV_OPT_TYPE_INT,    { .i64=0 },     0,          99,        AV_OPT_FLAG_DECODING_PARAM },
     {"trim",            "trim padding cells from start",                            OFFSET(opt_trim),           AV_OPT_TYPE_BOOL,   { .i64=1 },     0,          1,         AV_OPT_FLAG_DECODING_PARAM },
+    {"read_attempts",   "read attempts per request on the disc",                    OFFSET(opt_read_attempts),  AV_OPT_TYPE_INT,    { .i64=DISCIO_DEFAULT_ATTEMPTS }, 1, 100, AV_OPT_FLAG_DECODING_PARAM },
+    {"udf_reader",      "UDF reader for disc images",                               OFFSET(opt_udf_reader),     AV_OPT_TYPE_INT,    { .i64=DISCIO_UDF_NETBSD }, DISCIO_UDF_NETBSD, DISCIO_UDF_LINUX, AV_OPT_FLAG_DECODING_PARAM, .unit = "udf_reader" },
+        {"netbsd",      "based on NetBSD (default)",                                0,                          AV_OPT_TYPE_CONST,  { .i64=DISCIO_UDF_NETBSD }, 0, 0, AV_OPT_FLAG_DECODING_PARAM, .unit = "udf_reader" },
+        {"linux",       "based on Linux",                                           0,                          AV_OPT_TYPE_CONST,  { .i64=DISCIO_UDF_LINUX },  0, 0, AV_OPT_FLAG_DECODING_PARAM, .unit = "udf_reader" },
+    {"prefer_iso_old_udf102", "read UDF 1.02 images recorded before 2006 through ISO 9660 when it holds a valid DVD-Video structure",
+                                                                                    OFFSET(opt_prefer_iso),     AV_OPT_TYPE_BOOL,   { .i64=1 },     0,          1,         AV_OPT_FLAG_DECODING_PARAM },
     {NULL}
 };
 
