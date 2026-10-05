@@ -199,6 +199,13 @@ int ff_dvdvideo_css_content_valid(const uint8_t *sec);
 int ff_dvdvideo_css_can_test(const uint8_t *sec);
 
 /* dvdvideo_ifo.c */
+#define DVDVIDEO_VTS_MAP_DISTRUSTED  1  /* a cell does not start / end on a VOBU of the map */
+#define DVDVIDEO_VTS_CELL_PAST_VOBS  2  /* a cell ends past the end of the title VOBs */
+/* The checks of a title set's IFO: every cell of its PGCs must start
+ * (first_sector) and end (last_vobu_start_sector) on VOBUs its VOBU address map
+ * lists, and must end inside the title VOBs. Logs the first finding of each
+ * kind; returns the DVDVIDEO_VTS_* flags found. */
+int ff_dvdvideo_check_vts(void *log, dvd_reader_t *dvd, int vtsn, const ifo_handle_t *ifo);
 void ff_dvdvideo_ifo_close(AVFormatContext *s);
 int ff_dvdvideo_ifo_open(AVFormatContext *s);
 int ff_dvdvideo_is_cell_promising(AVFormatContext *s, pgc_t *pgc, int celln);
