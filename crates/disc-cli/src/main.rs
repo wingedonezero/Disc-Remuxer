@@ -3,7 +3,8 @@
 //! Commands so far: `version`, `settings`, `scan` (which discs are found under
 //! a path and where their job folders go) and `probe` (FFmpeg's DVD-Video
 //! demuxer, unchanged, on one title of each disc found; with an output folder
-//! every disc becomes a job with its own job folder and job log).
+//! every disc becomes a job with its own job folder and job log); `debug`
+//! runs single steps of the DVD processing.
 
 mod ffmpeg;
 mod jobs;
@@ -65,6 +66,27 @@ enum Command {
         /// Output folder for the job folders (overrides output.root).
         #[arg(long, value_name = "DIR")]
         out: Option<PathBuf>,
+    },
+    /// Developer tools: the steps of the DVD processing one at a time, with
+    /// their raw results on standard output.
+    Debug {
+        #[command(subcommand)]
+        what: DebugCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum DebugCommand {
+    /// Scan the navigation of one DVD (folder or image) and print the cell
+    /// sequence found for each title and program chain: `result <start>
+    /// title <n> pgc <n> cells <list>`, then `entered <title set>` for every
+    /// title set the navigation played, or `scan failed: <reason>`.
+    DvdScan {
+        /// The disc: a DVD folder or image.
+        source: PathBuf,
+        /// Print every navigator call, event and sector read before the results.
+        #[arg(long)]
+        trace: bool,
     },
 }
 
@@ -189,6 +211,7 @@ fn run(cli: &Cli, settings: &Settings, command_line: &str) -> Result<()> {
                 })
             })
         }
+        Command::Debug { what: DebugCommand::DvdScan { source, trace } } => ffmpeg::debug_dvd_scan(source, *trace, settings),
     }
 }
 

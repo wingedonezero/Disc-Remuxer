@@ -79,6 +79,45 @@ pub fn probe_dvdvideo(source: &Path, title: i32, settings: &Settings) -> Result<
     Ok(())
 }
 
+/// The read settings as disc-image options and read attempts.
+fn read_options(settings: &Settings) -> (ffmpeg_sys::discio::ImageOptions, c_int) {
+    let opts = ffmpeg_sys::discio::ImageOptions {
+        udf_reader: if settings.text("read.udf_reader") == Some("linux") {
+            ffmpeg_sys::discio::UDF_LINUX
+        } else {
+            ffmpeg_sys::discio::UDF_NETBSD
+        },
+        prefer_iso_for_old_udf102: c_int::from(settings.switch("read.prefer_iso_for_old_udf102")),
+    };
+    (opts, c_int::try_from(settings.number("read.attempts")).unwrap_or(5))
+}
+
+/// `debug dvd-scan`: the navigation scan of one DVD, its trace (when asked)
+/// and its results on standard output.
+pub fn debug_dvd_scan(source: &Path, trace: bool, settings: &Settings) -> anyhow::Result<()> {
+    use std::io::Write as _;
+
+    let (opts, attempts) = read_options(settings);
+    let mut out = std::io::stdout().lock();
+    let mut print = |line: &str| {
+        let _ = writeln!(out, "{line}");
+    };
+    let scan = ffmpeg_sys::dvdvideo::scan(source, &opts, attempts, if trace { Some(&mut print) } else { None })
+        .map_err(|e| anyhow::anyhow!("the navigation scan of {} could not run: {}", source.display(), ffmpeg_sys::error_text(e)))?;
+    let mut out = std::io::stdout().lock();
+    if let Some(reason) = &scan.failure {
+        writeln!(out, "scan failed: {reason}")?;
+    }
+    for r in &scan.results {
+        let cells: Vec<String> = r.cells.iter().map(ToString::to_string).collect();
+        writeln!(out, "result {} title {} pgc {} cells {}", r.name, r.title, r.pgcn, cells.join(","))?;
+    }
+    for t in scan.entered.iter().filter(|&&t| t != 0) {
+        writeln!(out, "entered {t}")?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

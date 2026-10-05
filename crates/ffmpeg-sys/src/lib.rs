@@ -207,3 +207,169 @@ pub mod discio {
         pub fn ff_discio_read_bytes(src: *mut Source, pos: i64, buf: *mut u8, len: c_int, attempts: c_int, quiet: c_int) -> c_int;
     }
 }
+
+/// The DVD-Video demuxer's disc source and navigation scan
+/// (`libavformat/dvdvideo_internal.h`).
+pub mod dvdvideo {
+    use std::ffi::{CStr, CString};
+    use std::os::raw::{c_char, c_int, c_void};
+    use std::path::Path;
+
+    use crate::discio::ImageOptions;
+
+    /// `DVDVideoSource` (only handled through pointers).
+    #[repr(C)]
+    pub struct Source {
+        _private: [u8; 0],
+    }
+
+    /// `DVDVideoRand`.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct Rand {
+        pub state: [u32; 31],
+        pub front: c_int,
+    }
+
+    /// `DVDVideoScanResult`.
+    #[repr(C)]
+    pub struct ScanResultC {
+        pub name: [c_char; 16],
+        pub title: c_int,
+        pub pgcn: c_int,
+        pub cells: *mut u8,
+        pub nb_cells: c_int,
+    }
+
+    /// `DVDVideoScan`.
+    #[repr(C)]
+    pub struct ScanC {
+        pub results: *mut ScanResultC,
+        pub nb_results: c_int,
+        pub failed: c_int,
+        pub failure: [c_char; 512],
+        pub entered: [u8; 100],
+    }
+
+    /// `DVDVideoScanTrace`.
+    pub type TraceCb = unsafe extern "C" fn(opaque: *mut c_void, line: *const c_char);
+
+    extern "C" {
+        pub fn ff_dvdvideo_source_open(
+            log: *mut c_void,
+            path: *const c_char,
+            opts: *const ImageOptions,
+            attempts: c_int,
+            out: *mut *mut Source,
+        ) -> c_int;
+        pub fn ff_dvdvideo_source_close(src: *mut *mut Source);
+        pub fn ff_dvdvideo_rand_init(r: *mut Rand, seed: u32);
+        pub fn ff_dvdvideo_rand_next(r: *mut c_void) -> c_int;
+        pub fn ff_dvdvideo_scan(
+            log: *mut c_void,
+            src: *mut Source,
+            trace: Option<TraceCb>,
+            trace_opaque: *mut c_void,
+            out: *mut *mut ScanC,
+        ) -> c_int;
+        pub fn ff_dvdvideo_scan_free(scan: *mut *mut ScanC);
+    }
+
+    /// One result of the navigation scan: the cells a title's program chain
+    /// played.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ScanResult {
+        /// The start point it was found from.
+        pub name: String,
+        /// Title of the title search table (low byte).
+        pub title: u8,
+        /// Program chain of the title set (low byte).
+        pub pgcn: u8,
+        /// Cell numbers in the order played, repeats removed.
+        pub cells: Vec<u8>,
+    }
+
+    /// What a navigation scan found.
+    #[derive(Debug, Clone, Default, PartialEq, Eq)]
+    pub struct Scan {
+        pub results: Vec<ScanResult>,
+        /// Why the scan failed (it then has no results).
+        pub failure: Option<String>,
+        /// Title sets (0 = the video manager) whose cells the navigation played.
+        pub entered: Vec<u8>,
+    }
+
+    unsafe extern "C" fn trace_line(opaque: *mut c_void, line: *const c_char) {
+        // SAFETY: opaque is the `&mut dyn FnMut(&str)` given to `scan`, line a
+        // NUL-terminated string.
+        let (f, line) = unsafe { (&mut *opaque.cast::<&mut dyn FnMut(&str)>(), CStr::from_ptr(line)) };
+        f(&line.to_string_lossy());
+    }
+
+    /// Opens the disc at `path` (a disc folder or image) and scans its
+    /// navigation; `trace` receives the scan's trace lines. The error is an
+    /// AVERROR code.
+    pub fn scan(
+        path: &Path,
+        opts: &ImageOptions,
+        attempts: c_int,
+        trace: Option<&mut dyn FnMut(&str)>,
+    ) -> Result<Scan, c_int> {
+        let c = CString::new(path.as_os_str().as_encoded_bytes()).map_err(|_| -22)?;
+        let mut src: *mut Source = std::ptr::null_mut();
+        // SAFETY: valid path and options; the source is closed below.
+        let ret = unsafe { ff_dvdvideo_source_open(std::ptr::null_mut(), c.as_ptr(), opts, attempts, &raw mut src) };
+        if ret < 0 {
+            return Err(ret);
+        }
+        let mut cb = trace;
+        let (tcb, topaque): (Option<TraceCb>, *mut c_void) = match cb.as_mut() {
+            Some(f) => (Some(trace_line), std::ptr::from_mut(f).cast()),
+            None => (None, std::ptr::null_mut()),
+        };
+        let mut out: *mut ScanC = std::ptr::null_mut();
+        // SAFETY: an open source; the trace pointer lives across the call.
+        let ret = unsafe { ff_dvdvideo_scan(std::ptr::null_mut(), src, tcb, topaque, &raw mut out) };
+        let result = if ret < 0 {
+            Err(ret)
+        } else {
+            // SAFETY: a scan made by ff_dvdvideo_scan.
+            Ok(unsafe { convert(&*out) })
+        };
+        // SAFETY: made by ff_dvdvideo_scan (NULL is accepted).
+        unsafe { ff_dvdvideo_scan_free(&raw mut out) };
+        // SAFETY: opened above.
+        unsafe { ff_dvdvideo_source_close(&raw mut src) };
+        result
+    }
+
+    unsafe fn convert(s: &ScanC) -> Scan {
+        let n = usize::try_from(s.nb_results).unwrap_or(0);
+        let results = if n == 0 {
+            Vec::new()
+        } else {
+            // SAFETY: nb_results results.
+            unsafe { std::slice::from_raw_parts(s.results, n) }
+                .iter()
+                .map(|r| ScanResult {
+                    // SAFETY: a NUL-terminated name.
+                    name: unsafe { CStr::from_ptr(r.name.as_ptr()) }.to_string_lossy().into_owned(),
+                    title: u8::try_from(r.title & 0xff).unwrap_or(0),
+                    pgcn: u8::try_from(r.pgcn & 0xff).unwrap_or(0),
+                    cells: if r.nb_cells > 0 {
+                        // SAFETY: nb_cells cells.
+                        unsafe { std::slice::from_raw_parts(r.cells, usize::try_from(r.nb_cells).unwrap_or(0)) }.to_vec()
+                    } else {
+                        Vec::new()
+                    },
+                })
+                .collect()
+        };
+        Scan {
+            results,
+            // SAFETY: a NUL-terminated text.
+            failure: (s.failed != 0).then(|| unsafe { CStr::from_ptr(s.failure.as_ptr()) }.to_string_lossy().into_owned()),
+            entered: (0..100u8).filter(|&i| s.entered[usize::from(i)] != 0).collect(),
+        }
+    }
+}
