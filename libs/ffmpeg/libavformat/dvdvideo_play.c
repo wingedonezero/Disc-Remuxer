@@ -234,8 +234,17 @@ int ff_dvdvideo_menu_next_ps_block(AVFormatContext *s, DVDVideoPlaybackState *st
 
 void ff_dvdvideo_play_close(AVFormatContext *s, DVDVideoPlaybackState *state)
 {
+    const char *first = NULL;
+    uint32_t nb_failures;
+
     if (!state->dvdnav)
         return;
+
+    /* the navigator records what it found broken in the disc's navigation
+     * data instead of stopping the program */
+    if ((nb_failures = dvdnav_get_vm_failures(state->dvdnav, &first)))
+        av_log(s, AV_LOG_WARNING, "libdvdnav met %"PRIu32" broken navigation assumption(s) on this disc; "
+               "the first: %s\n", nb_failures, first ? first : "(not recorded)");
 
     /* not allocated by av_malloc() */
     if (state->pgc_pg_times_est)
