@@ -454,6 +454,32 @@ fn title_set_cells_on_the_vobu_map_and_inside_the_vobs() {
     assert_eq!(check_vts("vts-both", &[(0, 10, 19), (25, 30, 45)], &VOBUS, 40), MAP_DISTRUSTED | CELL_PAST_VOBS);
 }
 
+#[test]
+fn a_duplicate_of_a_program_chain_that_cannot_be_read_is_left_out() {
+    // two program-chain entries naming the same start, past the end of the IFO:
+    // the first cannot be read, the second shares its start (crashed libdvdread)
+    let mut ifo = vts_ifo(&[(0, 10, 19)], &VOBUS, 40);
+    let t = 2 * S;
+    ifo[t..t + 2].copy_from_slice(&2u16.to_be_bytes());
+    for (k, id) in [(0usize, 0x81u8), (1, 0x82)] {
+        let e = t + 8 + 8 * k;
+        ifo[e..e + 4].copy_from_slice(&[id, 0, 0, 0]);
+        ifo[e + 4..e + 8].copy_from_slice(&0x8000u32.to_be_bytes());
+    }
+    let dir = scratch("dup-pgc").join("VIDEO_TS");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("VTS_01_0.IFO"), ifo).unwrap();
+    std::fs::write(dir.join("VTS_01_1.VOB"), vec![0u8; 40 * S]).unwrap();
+    let src = Src::open(dir.parent().unwrap()).unwrap();
+    let dvd = src.reader();
+    // SAFETY: the reader is open; the IFO handle is closed below.
+    unsafe {
+        let ifo = ifoOpen(dvd.0, 1);
+        assert!(!ifo.is_null(), "the title set opens; both program chains are left out");
+        ifoClose(ifo);
+    }
+}
+
 // ---- folders ----
 
 /// The files of a small DVD-Video folder: `VIDEO_TS.IFO` and two title VOBs.
