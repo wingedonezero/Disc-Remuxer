@@ -95,6 +95,12 @@ typedef struct DVDVideoPGCSubtitleStreamEntry {
     const char                          *lang_iso;
 } DVDVideoPGCSubtitleStreamEntry;
 
+/* glibc's rand() sequence, as a source of random numbers of its own (dvdvideo_scan.c) */
+typedef struct DVDVideoRand {
+    uint32_t state[31];
+    int      front;
+} DVDVideoRand;
+
 typedef struct DVDVideoPlaybackState {
     int                         celln;              /* ID of the active cell */
     int                         entry_pgn;          /* ID of the PG we are starting in */
@@ -118,6 +124,7 @@ typedef struct DVDVideoPlaybackState {
     uint64_t                    *pgc_pg_times_est;  /* PG start times as reported by IFO */
     pgc_t                       *pgc;               /* handle to the active PGC */
     dvdnav_t                    *dvdnav;            /* handle to the dvdnav VM */
+    DVDVideoRand                rand;               /* the VM's random numbers (Rnd) */
 
     /* the following fields are only used for menu playback */
     int                         celln_start;        /* starting cell number */
@@ -217,11 +224,6 @@ int ff_dvdvideo_css_content_valid(const uint8_t *sec);
 int ff_dvdvideo_css_can_test(const uint8_t *sec);
 
 /* dvdvideo_scan.c */
-/* glibc's rand() sequence, as a source of random numbers of its own */
-typedef struct DVDVideoRand {
-    uint32_t state[31];
-    int      front;
-} DVDVideoRand;
 /* The sequence after srand(seed) (seed 0 counts as 1, as in glibc). */
 void ff_dvdvideo_rand_init(DVDVideoRand *r, uint32_t seed);
 /* The next value, 0..RAND_MAX (r is a DVDVideoRand); fits dvdnav_set_random_source(). */

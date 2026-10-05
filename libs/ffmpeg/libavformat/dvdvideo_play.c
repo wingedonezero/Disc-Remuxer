@@ -294,6 +294,11 @@ int ff_dvdvideo_play_open(AVFormatContext *s, DVDVideoPlaybackState *state)
         goto end_dvdnav_error;
     }
 
+    /* the VM's Rnd operation draws from glibc's rand() sequence for seed 1,
+     * the navigator's own: the same disc plays the same way every time */
+    ff_dvdvideo_rand_init(&state->rand, 1);
+    dvdnav_set_random_source(state->dvdnav, ff_dvdvideo_rand_next, &state->rand);
+
     player_region_mask = c->opt_region > 0 ? (1 << (c->opt_region - 1)) : disc_region_mask;
     if (dvdnav_set_region_mask(state->dvdnav, player_region_mask) != DVDNAV_STATUS_OK) {
         av_log(s, AV_LOG_ERROR, "Unable to set the playback region code %d\n", c->opt_region);
