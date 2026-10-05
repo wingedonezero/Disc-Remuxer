@@ -196,8 +196,8 @@ int ff_hddvd_clip_load(void *logctx, DiscIOFS *fs, const char *folder, HDDVDClip
     snprintf(evo, sizeof(evo), "/%s/%s", folder, name);
     rm = fs->ops->open_file(fs, map, &m);
     re = fs->ops->open_file(fs, evo, &e);
-    ff_discio_file_free(&e);
     if (re < 0 || rm < 0) {
+        ff_discio_file_free(&e);
         av_log(logctx, AV_LOG_WARNING, "EVOB %s: %s%s%s; it cannot be used\n", name,
                re < 0 ? "no EVO file" : "", re < 0 && rm < 0 ? ", " : "", rm < 0 ? "no time map" : "");
         ff_discio_file_free(&m);
@@ -205,6 +205,7 @@ int ff_hddvd_clip_load(void *logctx, DiscIOFS *fs, const char *folder, HDDVDClip
     }
     if (!(r = av_mallocz(sizeof(*r)))) {
         ff_discio_file_free(&m);
+        ff_discio_file_free(&e);
         return AVERROR(ENOMEM);
     }
     r->fs = fs;
@@ -213,6 +214,8 @@ int ff_hddvd_clip_load(void *logctx, DiscIOFS *fs, const char *folder, HDDVDClip
     ret = read_map(logctx, r, map, c);
     av_free(r);
     ff_discio_file_free(&m);
+    if (ret <= 0)
+        ff_discio_file_free(&e);
     if (ret < 0)
         return ret;
     if (!ret) {
@@ -222,6 +225,7 @@ int ff_hddvd_clip_load(void *logctx, DiscIOFS *fs, const char *folder, HDDVDClip
         av_log(logctx, AV_LOG_WARNING, "EVOB %s: its time map is not usable; it cannot be used\n", name);
         return 0;
     }
+    c->evo   = e;
     c->state = 1;
     return 1;
 }
@@ -423,19 +427,83 @@ static HDDVDClip *clip_of(Planner *p, const HDDVDEvob *e, int *err)
             return NULL;
         }
         (*slot)->evob = e;
-        (*slot)->keybase = 0;           /* playlist marks: with AACS */
+        (*slot)->keybase = (uint32_t)e->playlist << 8;
     }
     if ((ret = ff_hddvd_clip_load(p->log, p->fs, p->vti->folder, *slot)) < 0)
         *err = ret;
     return ret > 0 ? *slot : NULL;
 }
 
-/* The Title of a playlist that plays EVOB evo: its name (displayName,
- * description, id, the first not empty, else ""), NULL when none plays it. */
-static const char *playlist_name(const HDDVDXpl *x, const char *evo)
+/* Whether a clip's src names EVOB evo ("file:///dvddisc/HVDVD_TS/" or
+ * "HDDVD_TS/" + evo's base name + ".map", case not regarded; evo ends ".evo"). */
+static int src_names_evob(void *logctx, const char *s, const char *evo)
 {
     size_t n = strlen(evo);
 
+    if (!s) {
+        av_log(logctx, AV_LOG_DEBUG, "XPL: a clip without src\n");
+        return 0;
+    }
+    if (n < 5) {
+        av_log(logctx, AV_LOG_DEBUG, "EVOB name \"%s\" is shorter than 5 characters\n", evo);
+        return 0;
+    }
+    if (!uri_prefix_ok(s))
+        return 0;
+    if (!ends_with_ci(s, ".map")) {
+        av_log(logctx, AV_LOG_DEBUG, "XPL: clip src \"%s\" does not end in .map\n", s);
+        return 0;
+    }
+    if (strlen(s + URI_PREFIX_LEN) != n)
+        return 0;
+    if (!ends_with_ci(evo, ".evo")) {
+        av_log(logctx, AV_LOG_DEBUG, "EVOB name \"%s\" does not end in .evo\n", evo);
+        return 0;
+    }
+    return !av_strncasecmp(evo, s + URI_PREFIX_LEN, n - 4);
+}
+
+void ff_hddvd_evob_marks(void *logctx, HDDVDVTI *vti, HDDVDXpl *const *xpls, int nb_xpls)
+{
+    for (int q = nb_xpls - 1; q > 0; q--) {
+        const HDDVDXplNode *root = &xpls[q]->root, *ts, *fpt;
+        int nts = ff_hddvd_xpl_count(root, HDDVD_XPL_TITLE_SET);
+
+        for (int x = 0; x < HDDVD_VTI_MAX_EVOBS; x++) {
+            HDDVDEvob *e = vti->evobs[x];
+            int found = 0;
+
+            if (!e || e->playlist >= q)
+                continue;
+            if (nts != 1) {
+                av_log(logctx, AV_LOG_DEBUG, "Playlist %d has %d TitleSets: not looked at for EVOB %s\n",
+                       q, nts, e->name);
+                continue;
+            }
+            ts = ff_hddvd_xpl_child(root, HDDVD_XPL_TITLE_SET, 0);
+            if ((fpt = ff_hddvd_xpl_child(ts, HDDVD_XPL_FIRST_PLAY_TITLE, 0)))
+                for (int c = 0; !found && c < ff_hddvd_xpl_count(fpt, HDDVD_XPL_PRIMARY_AUDIO_VIDEO_CLIP); c++)
+                    found = src_names_evob(logctx, ff_hddvd_xpl_str(ff_hddvd_xpl_child(fpt,
+                                           HDDVD_XPL_PRIMARY_AUDIO_VIDEO_CLIP, c), "src"), e->name);
+            for (int t = 0; !found && t < ff_hddvd_xpl_count(ts, HDDVD_XPL_TITLE); t++) {
+                const HDDVDXplNode *title = ff_hddvd_xpl_child(ts, HDDVD_XPL_TITLE, t);
+                for (int c = 0; !found && c < ff_hddvd_xpl_count(title, HDDVD_XPL_PRIMARY_AUDIO_VIDEO_CLIP); c++)
+                    found = src_names_evob(logctx, ff_hddvd_xpl_str(ff_hddvd_xpl_child(title,
+                                           HDDVD_XPL_PRIMARY_AUDIO_VIDEO_CLIP, c), "src"), e->name);
+            }
+            if (found) {
+                e->playlist = q;
+                av_log(logctx, AV_LOG_VERBOSE, "EVOB %s: named by playlist %d (title key ids from %d)\n",
+                       e->name, q, q << 8);
+            }
+        }
+    }
+}
+
+/* The Title of a playlist that plays EVOB evo: its name (displayName,
+ * description, id, the first not empty, else ""), NULL when none plays it. */
+static const char *playlist_name(void *logctx, const HDDVDXpl *x, const char *evo)
+{
     for (int a = 0; a < ff_hddvd_xpl_count(&x->root, HDDVD_XPL_TITLE_SET); a++) {
         const HDDVDXplNode *ts = ff_hddvd_xpl_child(&x->root, HDDVD_XPL_TITLE_SET, a);
         for (int b = 0; b < ff_hddvd_xpl_count(ts, HDDVD_XPL_TITLE); b++) {
@@ -444,9 +512,7 @@ static const char *playlist_name(const HDDVDXpl *x, const char *evo)
                 const char *s = ff_hddvd_xpl_str(ff_hddvd_xpl_child(t, HDDVD_XPL_PRIMARY_AUDIO_VIDEO_CLIP, c), "src");
                 static const char *const keys[] = { "displayName", "description", "id" };
 
-                if (!s || n < 5 || !uri_prefix_ok(s) || !ends_with_ci(s, ".map") ||
-                    strlen(s + URI_PREFIX_LEN) != n || !ends_with_ci(evo, ".evo") ||
-                    av_strncasecmp(evo, s + URI_PREFIX_LEN, n - 4))
+                if (!src_names_evob(logctx, s, evo))
                     continue;
                 for (int k = 0; k < 3; k++) {
                     const char *v = ff_hddvd_xpl_str(t, keys[k]);
@@ -467,7 +533,7 @@ static int finish_title(Planner *p, HDDVDTitle *t, int min_length)
     uint64_t secs;
 
     for (int i = 0; i < p->nb_xpls; i++)
-        if ((name = playlist_name(p->xpls[i], e0->name)))
+        if ((name = playlist_name(p->log, p->xpls[i], e0->name)))
             break;
     t->name = keep(p->plan, name && *name ? name : e0->base);
     for (int i = 0; i < t->nb_clips; i++) {
@@ -657,6 +723,11 @@ end:
     return ret;
 }
 
+HDDVDClip *ff_hddvd_titles_clip(const HDDVDTitlePlan *plan, int slot)
+{
+    return slot >= 1 && slot <= HDDVD_VTI_MAX_EVOBS ? plan->clips[slot - 1] : NULL;
+}
+
 void ff_hddvd_titles_free(HDDVDTitlePlan **pplan)
 {
     HDDVDTitlePlan *plan = *pplan;
@@ -669,8 +740,10 @@ void ff_hddvd_titles_free(HDDVDTitlePlan **pplan)
     }
     av_free(plan->titles);
     for (int i = 0; i < HDDVD_VTI_MAX_EVOBS; i++) {
-        if (plan->clips[i])
+        if (plan->clips[i]) {
             av_free(plan->clips[i]->extents);
+            ff_discio_file_free(&plan->clips[i]->evo);
+        }
         av_free(plan->clips[i]);
     }
     for (int i = 0; i < plan->nb_strings; i++)

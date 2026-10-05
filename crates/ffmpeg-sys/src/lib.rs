@@ -6,7 +6,8 @@
 
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 
-// Keeps the DVD libraries and expat linked after FFmpeg.
+// Keeps the DVD libraries, expat and libaacs linked after FFmpeg.
+use libaacs_sys as _;
 use libdvdnav_sys as _;
 use libexpat_sys as _;
 
@@ -672,6 +673,7 @@ pub mod hddvd {
     /// `HDDVDEvob`.
     #[repr(C)]
     pub struct Evob {
+        pub playlist: c_int,
         pub name: [c_char; 256],
         pub base: [c_char; 256],
         pub attr: c_int,
@@ -745,5 +747,47 @@ pub mod hddvd {
         /// Free the result with `av_free`.
         pub fn ff_hddvd_titles_dump(plan: *const TitlePlan) -> *mut c_char;
         pub fn ff_disc_lang_code(code: *const c_char) -> *const c_char;
+        pub fn ff_hddvd_titles_clip(plan: *const TitlePlan, slot: c_int) -> *mut Clip;
+        pub fn ff_hddvd_evob_marks(log: *mut c_void, vti: *mut Vti, xpls: *const *mut Xpl, nb_xpls: c_int);
+    }
+
+    /// `HDDVDClip` (only handled through pointers).
+    #[repr(C)]
+    pub struct Clip {
+        _private: [u8; 0],
+    }
+
+    /// `HDDVDAACS` (only handled through pointers).
+    #[repr(C)]
+    pub struct Aacs {
+        _private: [u8; 0],
+    }
+
+    extern "C" {
+        pub fn ff_hddvd_aacs_open(
+            log: *mut c_void,
+            fs: *mut Fs,
+            key_files: *const *const c_char,
+            nb_key_files: c_int,
+            nb_playlists: c_int,
+            out: *mut *mut Aacs,
+        ) -> c_int;
+        pub fn ff_hddvd_aacs_close(aacs: *mut *mut Aacs);
+        pub fn ff_hddvd_clip_block(log: *mut c_void, aacs: *mut Aacs, fs: *mut Fs, clip: *mut Clip, block: u32, buf: *mut u8) -> c_int;
+    }
+}
+
+/// libavutil's AES and SHA (used by the tests to build encrypted discs).
+pub mod avcrypto {
+    use std::os::raw::{c_int, c_void};
+
+    extern "C" {
+        pub fn av_aes_alloc() -> *mut c_void;
+        pub fn av_aes_init(a: *mut c_void, key: *const u8, key_bits: c_int, decrypt: c_int) -> c_int;
+        pub fn av_aes_crypt(a: *mut c_void, dst: *mut u8, src: *const u8, count: c_int, iv: *mut u8, decrypt: c_int);
+        pub fn av_sha_alloc() -> *mut c_void;
+        pub fn av_sha_init(ctx: *mut c_void, bits: c_int) -> c_int;
+        pub fn av_sha_update(ctx: *mut c_void, data: *const u8, len: usize);
+        pub fn av_sha_final(ctx: *mut c_void, digest: *mut u8);
     }
 }

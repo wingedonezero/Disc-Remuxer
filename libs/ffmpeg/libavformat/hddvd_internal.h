@@ -56,6 +56,7 @@ typedef struct HDDVDEvobAttr {
  * sectors * 2048 is the EVO file's size every time, and start_ptm <= end_ptm.
  */
 typedef struct HDDVDEvob {
+    int      playlist;     /**< the highest playlist (index) whose clips name it, 0 = none / the first */
     char     name[256];    /**< file name in the title-set folder, e.g. "FEATURE_1.EVO" */
     char     base[256];    /**< name without its last ".ext" */
     int      attr;         /**< 1-based index into HDDVDVTI.attrs */
@@ -218,6 +219,12 @@ typedef struct HDDVDExtent {
     uint32_t stream;                /**< first 2048-byte block in the EVOB's stream */
     uint32_t file;                  /**< first block in the EVO file */
     uint32_t count;                 /**< blocks */
+    /* AACS key information, from the first navigation pack found for it */
+    int      key_resolved;
+    int      key_mode;              /**< 1: its scrambled packs are decrypted */
+    uint8_t  key_offset;            /**< title key id - the clip's key base */
+    uint8_t  key_byte;              /**< navigation pack byte 0x0f (kept, not used) */
+    uint8_t  seed[12];              /**< 12 bytes of each pack's key seed */
 } HDDVDExtent;
 
 /**
@@ -227,7 +234,8 @@ typedef struct HDDVDExtent {
 typedef struct HDDVDClip {
     const HDDVDEvob *evob;
     int              state;         /**< 0 not read yet, 1 usable, -1 not usable */
-    uint32_t         keybase;       /**< playlist index << 8 (title keys) */
+    uint32_t         keybase;       /**< playlist index << 8: base of its title key ids */
+    DiscIOFile      *evo;           /**< its EVO file, open once usable */
     uint64_t         size;          /**< bytes of the stream: every count of the first table x 2048 */
     HDDVDExtent     *extents;       /**< sorted by stream block, unique */
     int              nb_extents;
@@ -261,6 +269,17 @@ typedef struct HDDVDTitlePlan {
 } HDDVDTitlePlan;
 
 /**
+ * Mark every EVOB with the highest playlist (index in xpls) one of whose
+ * clips names it: playlists from the last to the first, in each its
+ * FirstPlayTitle's clips, then every Title's clips (PrimaryAudioVideoClip src
+ * "file:///dvddisc/HVDVD_TS/" or "HDDVD_TS/" + the EVOB's base name + ".map",
+ * case not regarded; the EVOB's name must end in ".evo"). Each playlist must
+ * have exactly one TitleSet to count. The mark is the base of the EVOB's
+ * title key ids (mark * 0x100).
+ */
+void ff_hddvd_evob_marks(void *logctx, HDDVDVTI *vti, HDDVDXpl *const *xpls, int nb_xpls);
+
+/**
  * The titles of the disc:
  * 1. every playlist, from the last to the first, gives candidates: its
  *    FirstPlayTitle's clips and each Title's clips (PrimaryAudioVideoClip), split
@@ -284,6 +303,9 @@ int ff_hddvd_titles_plan(void *logctx, DiscIOFS *fs, const HDDVDVTI *vti, HDDVDX
                          int nb_xpls, int min_length, HDDVDTitlePlan **out);
 void ff_hddvd_titles_free(HDDVDTitlePlan **plan);
 
+/** The clip of EVOB slot (1..1998) when the plan looked at it, else NULL. */
+HDDVDClip *ff_hddvd_titles_clip(const HDDVDTitlePlan *plan, int slot);
+
 /**
  * Read an EVOB's time map and EVO file (once; later calls return the first
  * result). The time map must start "HDDVD_TMAP00", must not have bit 1 of byte
@@ -299,5 +321,39 @@ int ff_hddvd_clip_load(void *logctx, DiscIOFS *fs, const char *folder, HDDVDClip
  * @return a string to free with av_free(), NULL when out of memory
  */
 char *ff_hddvd_titles_dump(const HDDVDTitlePlan *plan);
+
+/* ---- AACS ---- */
+
+typedef struct HDDVDAACS HDDVDAACS;
+
+/**
+ * Open the disc's AACS layer when it has an /AACS directory (files read
+ * from /AACS, else /AACS_BAK): disc ID, title keys of the VTKF files of every
+ * playlist, the volume unique key from the key files (KEYDB.cfg) in order.
+ * Without /AACS: 0 and *out = NULL (the disc is not encrypted).
+ * @return 0, or a negative AVERROR code when the keys cannot be had
+ */
+int ff_hddvd_aacs_open(void *logctx, DiscIOFS *fs, const char *const *key_files, int nb_key_files,
+                       int nb_playlists, HDDVDAACS **out);
+void ff_hddvd_aacs_close(HDDVDAACS **aacs);
+
+/**
+ * Make a 2048-byte EVOB sector of clip usable, in place: a pack whose first
+ * PES packet is scrambled (not private stream 2) is decrypted with the key
+ * information of the clip's extent at byte position pos (from that extent's
+ * first navigation pack: this sector when it is one; with search, the
+ * extent's first EVO block, then up to 9999 blocks back from pos) and its
+ * scrambling bits cleared. aacs may be NULL (no decryption available).
+ * @return 1 usable, 0 not (logged)
+ */
+int ff_hddvd_aacs_sector(void *logctx, HDDVDAACS *aacs, DiscIOFS *fs, HDDVDClip *clip,
+                         int64_t pos, uint8_t *sec, int search);
+
+/**
+ * Read block (2048 bytes) of clip's stream from its EVO file (through its
+ * extents) and make it usable (ff_hddvd_aacs_sector, with search).
+ * @return 1 usable, 0 not usable (logged), < 0 read error / no such block
+ */
+int ff_hddvd_clip_block(void *logctx, HDDVDAACS *aacs, DiscIOFS *fs, HDDVDClip *clip, uint32_t block, uint8_t *buf);
 
 #endif /* AVFORMAT_HDDVD_INTERNAL_H */
