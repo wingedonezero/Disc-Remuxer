@@ -1010,6 +1010,10 @@ dvdnav_status_t dvdnav_get_next_cache_block(dvdnav_t *this, uint8_t **buf,
       if(!this->position_current.still || this->skip_still ) {
         /* no active cell still -> get us to the next cell */
         vm_get_next_cell(this->vm);
+        /* Always report the new cell, even when the VM lands on a cell with
+         * the same number, restart count and start sector (a cell that plays
+         * again): its VOBU state must be set up again from its start. */
+        this->position_current.cell = -1;
         this->position_current.still = 0; /* still gets activated at end of cell */
         this->skip_still = 0;
         this->sync_wait_skip = 0;
