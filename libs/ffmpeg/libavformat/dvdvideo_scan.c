@@ -1658,51 +1658,6 @@ end:
 
 /* ---- setting up ---- */
 
-/* The title VOBs' sector range of title set vts (from the title search
- * table's start of the title set + vtstt_vobs, up to where the backup IFO
- * starts); 0 when there is none. */
-static int title_vob_range(Scan *sc, int vts, uint32_t *s, uint32_t *e)
-{
-    const ifo_handle_t *o = sc->disc->vts[vts].ifo;
-    const tt_srpt_t *tt = sc->disc->vts[0].ifo->tt_srpt;
-    uint32_t tv, last, ifo_last, b, base = 0;
-
-    if (!o)
-        return 0;
-    tv       = o->vtsi_mat->vtstt_vobs;
-    last     = o->vtsi_mat->vts_last_sector;
-    ifo_last = o->vtsi_mat->vtsi_last_sector & 0x1ffff;
-    if (last <= ifo_last || (b = last - ifo_last) <= tv)
-        return 0;
-    /* the start of the title set: its first title that is not empty */
-    for (int i = 0; tt && i < tt->nr_of_srpts; i++) {
-        const title_info_t *t = &tt->title[i];
-
-        if (!t->title_set_nr || !t->vts_ttn || !t->nr_of_ptts)
-            continue;
-        if (t->title_set_nr == vts) {
-            base = t->title_set_sector;
-            break;
-        }
-    }
-    *s = base + tv;
-    *e = base + b;
-    return 1;
-}
-
-/* Whether the title VOBs of title set vts overlap those of another one. */
-static int title_vobs_overlap(Scan *sc, int vts)
-{
-    uint32_t s, e, s2, e2;
-
-    if (!title_vob_range(sc, vts, &s, &e))
-        return 0;
-    for (int k = 1; k <= sc->disc->nb_vts; k++)
-        if (k != vts && title_vob_range(sc, k, &s2, &e2) && ((s <= s2 && s2 < e) || (s2 <= s && s < e2)))
-            return 1;
-    return 0;
-}
-
 static void scan_close(Scan *sc)
 {
     /* copies share navigator 0's reader: they go first */
@@ -1749,7 +1704,7 @@ int ff_dvdvideo_scan(void *log, DVDVideoDisc *disc, DVDVideoScanTrace trace, voi
     ff_dvdvideo_rand_init(&sc.rand, 1);
 
     for (int n = 1; n < disc->nb_vts && !overlapping; n++)
-        overlapping = title_vobs_overlap(&sc, n);
+        overlapping = ff_dvdvideo_disc_title_vobs_overlap(disc, n);
     sc.no_snapshot = overlapping ? nr_of_titles(&sc) >= 16 : nr_of_titles(&sc) > 0x60;
 
     if ((ret = nav_open(&sc)) < 0 || (sc.root = nav_copy(&sc, 0)) < 0)

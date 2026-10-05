@@ -253,9 +253,14 @@ int ff_dvdvideo_disc_open(void *log, DVDVideoSource *src, DVDVideoDisc **disc);
 void ff_dvdvideo_disc_close(DVDVideoDisc **disc);
 /* Whether a block is a VOBU start of the title set's VOBU address map. */
 int ff_dvdvideo_disc_is_vobu_start(const DVDVideoTitleSet *ts, uint32_t sector);
+/* Program chain pgcn (by search pointer) of title set vtsn; NULL when none. */
+const pgc_t *ff_dvdvideo_disc_pgc(const DVDVideoDisc *d, int vtsn, int pgcn);
 /* Cell celln (1-based) of program chain pgcn (by search pointer) of title set
  * vtsn; NULL when there is none. */
 const cell_playback_t *ff_dvdvideo_disc_cell(const DVDVideoDisc *d, int vtsn, int pgcn, int celln);
+/* Whether the title VOBs of title set vts overlap those of another title set,
+ * by the title search table's title set starts. */
+int ff_dvdvideo_disc_title_vobs_overlap(const DVDVideoDisc *d, int vts);
 /* A cell's first playback byte: block mode << 6 | block type << 4 | seamless
  * play << 3 | interleaved << 2 | STC discontinuity << 1 | seamless angle. */
 int ff_dvdvideo_cell_flags(const pgc_t *pgc, int k);
@@ -295,6 +300,8 @@ typedef struct DVDVideoVobuStep {
 void ff_dvdvideo_vobu_free(DVDVideoDisc *d);
 /* The record of title-VOB block `sector` of title set vtsn: 1 found, 0 none. */
 int ff_dvdvideo_vobu_get(const DVDVideoDisc *d, int vtsn, uint32_t sector, DVDVideoVobu *rec);
+/* The first block above `sector` that has a record: 1 with *next, 0 none. */
+int ff_dvdvideo_vobu_next_recorded(const DVDVideoDisc *d, int vtsn, uint32_t sector, uint32_t *next);
 /* Store a record unless one is kept for the block. */
 int ff_dvdvideo_vobu_put(DVDVideoDisc *d, int vtsn, uint32_t sector, const DVDVideoVobu *rec);
 void ff_dvdvideo_nav_fields(const uint8_t *nav, DVDVideoNavFields *f);
@@ -329,6 +336,43 @@ int ff_dvdvideo_vobu_chain_usable(DVDVideoDisc *d, int vtsn, const cell_playback
  * last VOBU, blocks and interleaved cells the NAV packs. 1 = a step, 0 = none. */
 int ff_dvdvideo_vobu_step(DVDVideoDisc *d, int vtsn, const cell_playback_t *cell, uint32_t sector,
                           DVDVideoVobuStep *step);
+
+/* dvdvideo_cells.c */
+/* dvd_time_t as one 32-bit BCD value (hours in the top byte, the frame byte at
+ * the bottom) and its whole seconds (frames dropped, nibbles not checked). */
+uint32_t ff_dvdvideo_dvd_time(const dvd_time_t *t);
+uint32_t ff_dvdvideo_bcd_secs(uint32_t t);
+/* vobu_s_ptm / vobu_e_ptm of the VOBU at `sector` of cell i (index): from its
+ * record, or its NAV pack read now; unless force, none for a cell that the
+ * quick check rejects and the deep check fails. 1 / 0 none / < 0 error. */
+int ff_dvdvideo_vobu_ptm(DVDVideoDisc *d, int vtsn, const pgc_t *pgc, int i, uint32_t sector, int force,
+                         uint32_t *s_ptm, uint32_t *e_ptm);
+/* Duration of cell i by its NAV packs (vobu_e_ptm of its last VOBU minus
+ * vobu_s_ptm of its first, 90 kHz): 1 / 0 when a time is missing or out of
+ * order / < 0 error. */
+int ff_dvdvideo_cell_duration(DVDVideoDisc *d, int vtsn, const pgc_t *pgc, int i, int force, int quiet,
+                              uint32_t *ticks);
+/* The NAV-level check of cell i: its first, last and every VOBU between must be
+ * NAV packs, and the first and last VOBU times in order. 1 = failed. */
+int ff_dvdvideo_cell_deep_check_failed(DVDVideoDisc *d, int vtsn, const pgc_t *pgc, int i);
+/* Whether cell i (index) of pgc is rejected as content: sectors out of order or
+ * outside the title VOBs, a VOBU recorded as no NAV pack, no playback time,
+ * short cells with cell commands, a uniform filler cell, the deep check, no
+ * NAV times. quick leaves out the checks that read NAV packs; prev is the cell
+ * played before it (-1 none; used for a cell of one second or less). */
+int ff_dvdvideo_cell_rejected(DVDVideoDisc *d, int vtsn, const pgc_t *pgc, int i, int quick, int prev);
+/* Whether stepping interleaved unit by interleaved unit from `from` lands
+ * exactly on `to`. */
+int ff_dvdvideo_ilvu_chain_reaches(DVDVideoDisc *d, int vtsn, uint32_t from, uint32_t to);
+/* Whether cell command cmd_nr (1-based) of pgc may link or jump away (not a
+ * no-op link and not a compare that can never be true). */
+int ff_dvdvideo_cell_cmd_may_link(const pgc_t *pgc, int cmd_nr);
+/* Whether program chain pgcn of title set vtsn is rejected as not real
+ * content: 1 with *reason = no cells (0), a protection pattern of many
+ * discontinuous cells on shared title VOBs (1, 2), too little data per second
+ * of play (3, 4), a broken program map (5, 6), cells that should join
+ * seamlessly but do not (7, 8, 9); 0 accepted; < 0 error. */
+int ff_dvdvideo_pgc_rejection(DVDVideoDisc *d, int vtsn, int pgcn, const pgc_t *pgc, int *reason);
 
 /* dvdvideo_scan.c */
 /* Whether a 2048-byte block is a NAV pack (pack header, system header, PCI and

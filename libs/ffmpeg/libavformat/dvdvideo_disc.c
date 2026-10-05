@@ -199,15 +199,63 @@ int ff_dvdvideo_cell_flags(const pgc_t *pgc, int k)
            c->stc_discontinuity << 1 | c->seamless_angle;
 }
 
-const cell_playback_t *ff_dvdvideo_disc_cell(const DVDVideoDisc *d, int vtsn, int pgcn, int celln)
+const pgc_t *ff_dvdvideo_disc_pgc(const DVDVideoDisc *d, int vtsn, int pgcn)
 {
     const ifo_handle_t *ifo = vtsn >= 1 && vtsn <= d->nb_vts ? d->vts[vtsn].ifo : NULL;
-    const pgc_t *pgc;
 
     if (!ifo || !ifo->vts_pgcit || pgcn < 1 || pgcn > ifo->vts_pgcit->nr_of_pgci_srp)
         return NULL;
-    pgc = ifo->vts_pgcit->pgci_srp[pgcn - 1].pgc;
+    return ifo->vts_pgcit->pgci_srp[pgcn - 1].pgc;
+}
+
+const cell_playback_t *ff_dvdvideo_disc_cell(const DVDVideoDisc *d, int vtsn, int pgcn, int celln)
+{
+    const pgc_t *pgc = ff_dvdvideo_disc_pgc(d, vtsn, pgcn);
+
     if (!pgc || !pgc->cell_playback || celln < 1 || celln > pgc->nr_of_cells)
         return NULL;
     return &pgc->cell_playback[celln - 1];
+}
+
+/* The title VOBs' sector range of title set vts by the title search table
+ * (the title set's start: its first title that is not empty) + vtstt_vobs, up
+ * to where the backup IFO starts; 0 when there is none. */
+static int title_vob_range(const DVDVideoDisc *d, int vts, uint32_t *s, uint32_t *e)
+{
+    const ifo_handle_t *o = d->vts[vts].ifo;
+    const tt_srpt_t *tt = d->vts[0].ifo->tt_srpt;
+    uint32_t tv, last, ifo_last, b, base = 0;
+
+    if (!o)
+        return 0;
+    tv       = o->vtsi_mat->vtstt_vobs;
+    last     = o->vtsi_mat->vts_last_sector;
+    ifo_last = o->vtsi_mat->vtsi_last_sector & 0x1ffff;
+    if (last <= ifo_last || (b = last - ifo_last) <= tv)
+        return 0;
+    for (int i = 0; tt && i < tt->nr_of_srpts; i++) {
+        const title_info_t *t = &tt->title[i];
+
+        if (!t->title_set_nr || !t->vts_ttn || !t->nr_of_ptts)
+            continue;
+        if (t->title_set_nr == vts) {
+            base = t->title_set_sector;
+            break;
+        }
+    }
+    *s = base + tv;
+    *e = base + b;
+    return 1;
+}
+
+int ff_dvdvideo_disc_title_vobs_overlap(const DVDVideoDisc *d, int vts)
+{
+    uint32_t s, e, s2, e2;
+
+    if (!title_vob_range(d, vts, &s, &e))
+        return 0;
+    for (int k = 1; k <= d->nb_vts; k++)
+        if (k != vts && title_vob_range(d, k, &s2, &e2) && ((s <= s2 && s2 < e) || (s2 <= s && s < e2)))
+            return 1;
+    return 0;
 }

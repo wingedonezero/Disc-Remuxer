@@ -95,6 +95,21 @@ int ff_dvdvideo_vobu_get(const DVDVideoDisc *d, int vtsn, uint32_t sector, DVDVi
     return !!e;
 }
 
+int ff_dvdvideo_vobu_next_recorded(const DVDVideoDisc *d, int vtsn, uint32_t sector, uint32_t *out)
+{
+    uint64_t key = vobu_key(d, vtsn, sector);
+    void *next[2] = { NULL, NULL };
+    const VobuEntry *e;
+
+    if (sector == UINT32_MAX)
+        return 0;
+    av_tree_find(d->vobus, &key, map_cmp, next);
+    if (!(e = next[1]) || e->key >> 32 != key >> 32)
+        return 0;       /* none, or a record of another title set's blocks */
+    *out = (uint32_t)e->key - (d->vts[vtsn].title_vobs_base ? d->vts[vtsn].title_vobs_base : 0);
+    return 1;
+}
+
 int ff_dvdvideo_vobu_put(DVDVideoDisc *d, int vtsn, uint32_t sector, const DVDVideoVobu *rec)
 {
     struct AVTreeNode *node = av_tree_node_alloc();
