@@ -340,8 +340,10 @@ int vm_start(vm_t *vm) {
 
     vm->stopped = 0;
   }
-  /* Set pgc to FP (First Play) pgc */
-  set_FP_PGC(vm);
+  /* Set pgc to FP (First Play) pgc; without one, the first program chain of
+   * the video manager menus: a disc with neither cannot be started */
+  if (!set_FP_PGC(vm) || !(vm->state).pgc)
+    return vm_failed(vm, VM_WHERE("no first play program chain and no menu program chain 1"));
   process_command(vm, play_PGC(vm));
   return !vm->stopped;
 }
