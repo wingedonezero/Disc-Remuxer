@@ -205,7 +205,13 @@ pub fn vts_ifo(v: &Vts) -> Vec<u8> {
 fn pgc_bytes(p: &Pgc) -> Vec<u8> {
     let n = p.cells.len();
     let mut d = vec![0u8; 0xec];
-    d[2] = if p.programs.is_empty() { 1 } else { u8::try_from(p.programs.len()).unwrap() };
+    d[2] = if n == 0 {
+        0
+    } else if p.programs.is_empty() {
+        1
+    } else {
+        u8::try_from(p.programs.len()).unwrap()
+    };
     d[3] = u8::try_from(n).unwrap();
     let total: u32 = p.cells.iter().map(|c| bcd_secs(c.playback_time)).sum();
     d[4..8].copy_from_slice(&p.playback_time.unwrap_or_else(|| time(total)));
@@ -397,4 +403,72 @@ pub fn write_disc(dir: &Path, vmg: &[u8], title_sets: &[(Vec<u8>, Vec<u8>)]) {
         std::fs::write(v.join(format!("VTS_{:02}_0.BUP", k + 1)), ifo).unwrap();
         std::fs::write(v.join(format!("VTS_{:02}_1.VOB", k + 1)), vob).unwrap();
     }
+}
+
+/// A built disc opened as the DVD-Video demuxer opens it (`DVDVideoDisc`).
+pub struct OpenDisc {
+    pub src: *mut ffmpeg_sys::dvdvideo::Source,
+    pub disc: *mut ffmpeg_sys::dvdvideo::Disc,
+}
+
+impl OpenDisc {
+    /// Opens the disc folder `dir`.
+    #[must_use]
+    pub fn open(dir: &Path) -> Self {
+        use ffmpeg_sys::dvdvideo::{ff_dvdvideo_disc_open, ff_dvdvideo_source_open};
+        let c = std::ffi::CString::new(dir.to_str().unwrap()).unwrap();
+        let (mut src, mut disc) = (std::ptr::null_mut(), std::ptr::null_mut());
+        let opts = ffmpeg_sys::discio::ImageOptions::default();
+        // SAFETY: valid path, options and out pointers.
+        unsafe {
+            assert!(ff_dvdvideo_source_open(std::ptr::null_mut(), c.as_ptr(), &raw const opts, 1, &raw mut src) >= 0);
+            assert!(ff_dvdvideo_disc_open(std::ptr::null_mut(), src, &raw mut disc) >= 0, "the built disc opens");
+        }
+        OpenDisc { src, disc }
+    }
+
+    /// Writes a disc folder for test `test` (VMG with `titles`, the title
+    /// sets with their NAV packs) and opens it.
+    #[must_use]
+    pub fn build(test: &str, titles: &[Title], title_sets: &[(Vts, Vec<Nav>)]) -> Self {
+        let dir = std::env::temp_dir().join(format!("dvdvideo-{test}-{}", std::process::id()));
+        let vmg = vmg_ifo(titles, u16::try_from(title_sets.len()).unwrap());
+        let files: Vec<(Vec<u8>, Vec<u8>)> =
+            title_sets.iter().map(|(v, navs)| (vts_ifo(v), title_vobs(v.vob_sectors, navs))).collect();
+        write_disc(&dir, &vmg, &files);
+        Self::open(&dir)
+    }
+}
+
+impl Drop for OpenDisc {
+    fn drop(&mut self) {
+        // SAFETY: opened in `open`, closed once, the disc first.
+        unsafe {
+            ffmpeg_sys::dvdvideo::ff_dvdvideo_disc_close(&raw mut self.disc);
+            ffmpeg_sys::dvdvideo::ff_dvdvideo_source_close(&raw mut self.src);
+        }
+    }
+}
+
+/// A NAV pack at `lbn` of a VOBU of `len` blocks followed by the next one
+/// (`next` = None: the last VOBU of its cell), times in 90 kHz ticks.
+#[must_use]
+pub fn nav(lbn: u32, len: u32, next: Option<u32>) -> Nav {
+    Nav { lbn, vobu_ea: len - 1, next_vobu: next.map_or(END_OF_CELL, |n| n - lbn), ..Nav::default() }
+}
+
+/// NAV packs for the VOBUs `starts` (sorted) of a cell ending before block
+/// `end`, `ticks` apart (0.5 s each by default), times from `t0`.
+#[must_use]
+pub fn cell_navs(starts: &[u32], end: u32, t0: u32) -> Vec<Nav> {
+    starts
+        .iter()
+        .enumerate()
+        .map(|(k, &s)| {
+            let next = starts.get(k + 1).copied();
+            let len = next.unwrap_or(end) - s;
+            let t = t0 + 45_000 * u32::try_from(k).unwrap();
+            Nav { vobu_s_ptm: t, vobu_e_ptm: t + 45_000, ..nav(s, len, next) }
+        })
+        .collect()
 }

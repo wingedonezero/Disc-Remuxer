@@ -7,18 +7,13 @@
 //! pack pointing at itself; seamless-angle cells step by the map only when
 //! their VOBU chain checks out.
 
-use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_void};
-use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use ffmpeg_sys::discio::ImageOptions;
-use ffmpeg_sys::dvdvideo::{
-    ff_dvdvideo_disc_close, ff_dvdvideo_disc_open, ff_dvdvideo_source_close, ff_dvdvideo_source_open, Disc, Source,
-};
+use ffmpeg_sys::dvdvideo::Disc;
 
 mod common;
-use common::dvd::{flags, title_vobs, vmg_ifo, vts_ifo, write_disc, Cell, Nav, Pgc, Title, Vts, END_OF_CELL};
+use common::dvd::{flags, nav, Cell, Nav, OpenDisc, Pgc, Title, Vts};
 
 /// `DVDVIDEO_VOBU_END_OF_CELL`.
 const STEP_END_OF_CELL: u32 = 0xffff_fffe;
@@ -46,64 +41,31 @@ unsafe extern "C" fn log_sink(_level: c_int, line: *const c_char) {
 }
 
 /// An open disc built from one title set with one PGC of `cells`.
-struct TestDisc {
-    src: *mut Source,
-    disc: *mut Disc,
-}
+struct TestDisc(OpenDisc);
 
 impl TestDisc {
     fn new(test: &str, cells: Vec<Cell>, vobus: &[u32], vob_sectors: u32, navs: &[Nav]) -> Self {
         // SAFETY: log_sink is valid for the whole test run.
         unsafe { ffmpeg_sys::dr_log_install(log_sink, ffmpeg_sys::log_level::DEBUG) };
-        let dir: PathBuf = std::env::temp_dir().join(format!("dvdvideo-vobu-{test}-{}", std::process::id()));
         let vts = Vts { pgcs: vec![Pgc::new(cells)], ptts: vec![vec![(1, 1)]], vobus: vobus.to_vec(), vob_sectors };
-        let vmg = vmg_ifo(&[Title::new(1, 1, 1)], 1);
-        write_disc(&dir, &vmg, &[(vts_ifo(&vts), title_vobs(vob_sectors, navs))]);
-        open(&dir)
+        TestDisc(OpenDisc::build(&format!("vobu-{test}"), &[Title::new(1, 1, 1)], &[(vts, navs.to_vec())]))
     }
 
     fn step(&self, celln: c_int, sector: u32) -> Option<Step> {
         let mut st = Step::default();
         // SAFETY: an open disc; the cell pointer comes from it.
         let ret = unsafe {
-            let cell = ff_dvdvideo_disc_cell(self.disc, 1, 1, celln);
+            let cell = ff_dvdvideo_disc_cell(self.0.disc, 1, 1, celln);
             assert!(!cell.is_null());
-            ff_dvdvideo_vobu_step(self.disc, 1, cell, sector, &raw mut st)
+            ff_dvdvideo_vobu_step(self.0.disc, 1, cell, sector, &raw mut st)
         };
         assert!(ret >= 0, "error {ret}");
         (ret == 1).then_some(st)
     }
 }
 
-fn open(dir: &Path) -> TestDisc {
-    let c = CString::new(dir.to_str().unwrap()).unwrap();
-    let (mut src, mut disc) = (std::ptr::null_mut(), std::ptr::null_mut());
-    // SAFETY: valid path, options and out pointers.
-    unsafe {
-        assert!(ff_dvdvideo_source_open(std::ptr::null_mut(), c.as_ptr(), &ImageOptions::default(), 1, &raw mut src) >= 0);
-        assert!(ff_dvdvideo_disc_open(std::ptr::null_mut(), src, &raw mut disc) >= 0, "the built disc opens");
-    }
-    TestDisc { src, disc }
-}
-
-impl Drop for TestDisc {
-    fn drop(&mut self) {
-        // SAFETY: opened in `open`, closed once, the disc first.
-        unsafe {
-            ff_dvdvideo_disc_close(&raw mut self.disc);
-            ff_dvdvideo_source_close(&raw mut self.src);
-        }
-    }
-}
-
 fn logged(text: &str) -> bool {
     LOG.lock().unwrap().iter().any(|l| l.contains(text))
-}
-
-/// A NAV pack at `lbn` of a VOBU of `len` blocks followed by the next one
-/// (`next` = None: the last VOBU of its cell).
-fn nav(lbn: u32, len: u32, next: Option<u32>) -> Nav {
-    Nav { lbn, vobu_ea: len - 1, next_vobu: next.map_or(END_OF_CELL, |n| n - lbn), ..Nav::default() }
 }
 
 #[test]
