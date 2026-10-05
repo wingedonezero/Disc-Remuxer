@@ -15,3 +15,5 @@ Full command (TrueHD):
 
 - `sine_5120.dts`: `-c:a dca -strict -2 -f dts` from the same sine, 5120 samples
   (10 DTS core frames of 512 samples, 1884 bytes each, 48 kHz)
+- `sine_11520.mp2` (`-c:a mp2 -b:a 192k -f mp2`), `sine_11520.aac` (`-c:a aac -b:a 128k -f adts`),
+  `sine_11520.latm` (`-c:a aac -b:a 128k -f latm`): the same sine, 11520 samples

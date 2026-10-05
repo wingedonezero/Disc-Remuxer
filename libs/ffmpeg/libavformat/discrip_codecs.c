@@ -19,10 +19,14 @@
  */
 
 #include <stddef.h>
+#include <string.h>
 
 #include "libavcodec/ac3_parser_internal.h"
 #include "libavcodec/ac3defs.h"
 #include "libavcodec/dca.h"
+#include "libavcodec/mpegaudiodecheader.h"
+#include "libavcodec/avcodec.h"
+#include "libavutil/frame.h"
 #include "libavutil/intreadwrite.h"
 
 #include "discrip.h"
@@ -32,6 +36,9 @@ enum {
     REVIEW_DEPENDENT,          /* E-AC-3 dependent substream (extra channels) */
     REVIEW_SUBSTREAM,          /* E-AC-3 second program (independent substream > 0) */
     REVIEW_DTS_SUBSTREAM_ONLY, /* DTS-HD substream without a core (DTS Express / LBR) */
+    REVIEW_MPEG_AUDIO,         /* any MPEG audio track (user rule: look at it) */
+    REVIEW_AAC_MPEG4_ADTS,     /* ADTS with the MPEG-4 ID */
+    REVIEW_AAC_LATM,           /* any LATM / LOAS track */
 };
 
 /* Offset of the first start code 00 00 01 <code> in a unit, or -1. */
@@ -252,11 +259,168 @@ static const DRAudioRules audio_dts = {
     .duration = duration_dts,
 };
 
-/* MPEG audio frames start with the 11-bit frame sync (ISO/IEC 11172-3). */
+/* ---- MPEG-1 / MPEG-2 audio (ISO/IEC 11172-3, 13818-3) ----
+ * Every frame stands alone and lasts its own samples: 384 (Layer I), 1152
+ * (Layer II, Layer III of MPEG-1), 576 (Layer III of MPEG-2 / 2.5). Frames
+ * are never sync units (the reference never drops them for audio skew).
+ * Every MPEG audio track is reported for review (user rule 2026-10-05). */
+
+static int mpa_header(const uint8_t *d, int size, MPADecodeHeader *h)
+{
+    uint32_t head;
+
+    if (size < 4)
+        return -1;
+    head = AV_RB32(d);
+    if (ff_mpa_check_header(head) < 0 || avpriv_mpegaudio_decode_header(h, head) != 0)
+        return -1;
+    return 0;
+}
+
+static int mpa_samples(const MPADecodeHeader *h)
+{
+    return h->layer == 1 ? 384 : h->layer == 2 || !h->lsf ? 1152 : 576;
+}
+
 static int check_mpa(const uint8_t *data, int size)
 {
-    return size >= 2 && data[0] == 0xFF && (data[1] & 0xE0) == 0xE0;
+    MPADecodeHeader h;
+    return mpa_header(data, size, &h) >= 0;
 }
+
+static int header_mpa(DRAudio *a, const DRFrame *f, DRAudioHeader *out)
+{
+    MPADecodeHeader h;
+
+    if (mpa_header(f->data, f->size, &h) < 0)
+        return -1;
+    out->rate    = h.sample_rate;
+    out->samples = mpa_samples(&h);
+    return 0;
+}
+
+static int duration_mpa(DRAudio *a, DRFrame *f)
+{
+    MPADecodeHeader h;
+
+    if (mpa_header(f->data, f->size, &h) < 0 || !h.sample_rate)
+        return AVERROR_INVALIDDATA;
+    ff_discrip_audio_review(a, REVIEW_MPEG_AUDIO, "MPEG audio track");
+    f->dur = (int64_t)((uint64_t)mpa_samples(&h) * DR_TICKS_PER_SECOND / h.sample_rate);
+    return 0;
+}
+
+static const DRAudioRules audio_mpa = {
+    .header   = header_mpa,
+    .duration = duration_mpa,
+};
+
+/* ---- AAC (ISO/IEC 13818-7, 14496-3) ----
+ * ADTS: a frame of 1 + number_of_raw_data_blocks raw blocks of 1024 samples
+ * at the sampling frequency index's rate (HE-AAC doubles rate and samples,
+ * the duration stays). A sync unit is an ADTS frame whose channel
+ * configuration is set or whose first raw element is a program config
+ * element. The reference requires the MPEG-2 ID as well, so a stream with the
+ * MPEG-4 ID never gets its values there and its track stays empty; here such
+ * frames count the same (only the ID bit differs) and are reviewed. LATM / LOAS: a sync unit carries its
+ * StreamMuxConfig (useSameStreamMux 0); the stream's values come from FFmpeg's
+ * LATM decoder on that unit; every LATM track is reviewed. */
+
+static const int aac_rates[16] = { 96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050,
+                                   16000, 12000, 11025, 8000, 7350, 0, 0, 0 };
+
+static int adts(const uint8_t *d, int size)
+{
+    return size >= 7 && d[0] == 0xFF && (d[1] & 0xF6) == 0xF0;
+}
+
+static int check_adts(const uint8_t *d, int size)
+{
+    return adts(d, size) && aac_rates[(d[2] >> 2) & 0xF];
+}
+
+static int sync_adts(const uint8_t *d, int size)
+{
+    int chcfg = ((d[2] & 1) << 2) | (d[3] >> 6);
+    int raw   = (d[1] & 1) ? 7 : 9;   /* header without / with CRC */
+
+    if (!adts(d, size))
+        return 0;
+    return chcfg || (size > raw && (d[raw] >> 5) == 5);
+}
+
+static int header_adts(DRAudio *a, const DRFrame *f, DRAudioHeader *out)
+{
+    if (!check_adts(f->data, f->size))
+        return -1;
+    out->rate    = aac_rates[(f->data[2] >> 2) & 0xF];
+    out->samples = 1024 * ((f->data[6] & 3) + 1);
+    return 0;
+}
+
+static int duration_adts(DRAudio *a, DRFrame *f)
+{
+    int rate, samples;
+
+    if (!check_adts(f->data, f->size))
+        return AVERROR_INVALIDDATA;
+    if (!(f->data[1] & 0x08))
+        ff_discrip_audio_review(a, REVIEW_AAC_MPEG4_ADTS, "AAC ADTS frames with the MPEG-4 ID");
+    rate    = aac_rates[(f->data[2] >> 2) & 0xF];
+    samples = 1024 * ((f->data[6] & 3) + 1);
+    f->dur  = (int64_t)((uint64_t)samples * DR_TICKS_PER_SECOND / rate);
+    return 0;
+}
+
+static const DRAudioRules audio_adts = {
+    .header   = header_adts,
+    .sync     = sync_adts,
+    .duration = duration_adts,
+};
+
+static int loas(const uint8_t *d, int size)
+{
+    return size >= 4 && d[0] == 0x56 && (d[1] & 0xE0) == 0xE0;
+}
+
+static int sync_latm(const uint8_t *d, int size)
+{
+    return loas(d, size) && !(d[3] & 0x80);   /* useSameStreamMux */
+}
+
+static int header_latm(DRAudio *a, const DRFrame *f, DRAudioHeader *out)
+{
+    const AVCodec *dec = avcodec_find_decoder(AV_CODEC_ID_AAC_LATM);
+    AVCodecContext *ctx = dec ? avcodec_alloc_context3(dec) : NULL;
+    AVPacket *pkt = av_packet_alloc();
+    AVFrame *fr = av_frame_alloc();
+    int ret = -1;
+
+    if (ctx && pkt && fr && avcodec_open2(ctx, dec, NULL) >= 0 && av_new_packet(pkt, f->size) >= 0) {
+        memcpy(pkt->data, f->data, f->size);
+        if (avcodec_send_packet(ctx, pkt) >= 0 && avcodec_receive_frame(ctx, fr) >= 0 &&
+            fr->nb_samples > 0 && fr->sample_rate > 0) {
+            out->rate    = fr->sample_rate;
+            out->samples = fr->nb_samples;
+            ret = 0;
+        }
+    }
+    avcodec_free_context(&ctx);
+    av_packet_free(&pkt);
+    av_frame_free(&fr);
+    return ret;
+}
+
+static void inspect_latm(DRAudio *a, const DRFrame *f)
+{
+    ff_discrip_audio_review(a, REVIEW_AAC_LATM, "AAC LATM / LOAS track");
+}
+
+static const DRAudioRules audio_latm = {
+    .header  = header_latm,
+    .sync    = sync_latm,
+    .inspect = inspect_latm,
+};
 
 static const DRCodec codecs[] = {
     { AV_CODEC_ID_MPEG1VIDEO,   "mpeg1video",   anchor_mpegvideo },
@@ -270,9 +434,11 @@ static const DRCodec codecs[] = {
       ff_discrip_mlp_unit_size, ff_discrip_mlp_resync },
     { AV_CODEC_ID_DTS,          "dts",          anchor_unit, check_dts,  &audio_dts  },
     { AV_CODEC_ID_PCM_DVD,      "pcm_dvd",      anchor_unit      },
-    { AV_CODEC_ID_MP1,          "mp1",          anchor_unit, check_mpa },
-    { AV_CODEC_ID_MP2,          "mp2",          anchor_unit, check_mpa },
-    { AV_CODEC_ID_MP3,          "mp3",          anchor_unit, check_mpa },
+    { AV_CODEC_ID_MP1,          "mp1",          anchor_unit, check_mpa,  &audio_mpa  },
+    { AV_CODEC_ID_MP2,          "mp2",          anchor_unit, check_mpa,  &audio_mpa  },
+    { AV_CODEC_ID_MP3,          "mp3",          anchor_unit, check_mpa,  &audio_mpa  },
+    { AV_CODEC_ID_AAC,          "aac",          anchor_unit, check_adts, &audio_adts },
+    { AV_CODEC_ID_AAC_LATM,     "aac_latm",     anchor_unit, loas,       &audio_latm },
     { AV_CODEC_ID_DVD_SUBTITLE, "dvd_subtitle", anchor_unit      },
 };
 
