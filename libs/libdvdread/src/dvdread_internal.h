@@ -61,6 +61,8 @@ struct ifo_handle_private_s
     ifo_handle_t handle;
     dvd_reader_t *ctx;
     dvd_file_t *file;
+    /* References taken with ifoAddRef() on top of the opener's own one */
+    unsigned int extra_refs;
 };
 
 enum TagIdentifier {
