@@ -774,7 +774,12 @@ int vm_failed(vm_t *vm, const char *what) {
 
 /* link processing */
 
+/* Links followed by one process_command() before the VM is stopped: a
+ * disc whose links never reach something to play would loop forever. */
+#define VM_MAX_LINKS 2500
+
 static int process_command(vm_t *vm, link_t link_values) {
+  int links = 0;
 
   while(link_values.command != PlayThis) {
 
@@ -786,6 +791,12 @@ static int process_command(vm_t *vm, link_t link_values) {
     vm_print_current_domain_state(vm);
     Log3(vm, "Before printout ends.");
 #endif
+
+    if(links++ > VM_MAX_LINKS) {
+      Log1(vm, "More than %d links without anything to play, stopping", VM_MAX_LINKS);
+      vm->stopped = 1;
+      return 0;
+    }
 
     switch(link_values.command) {
 
