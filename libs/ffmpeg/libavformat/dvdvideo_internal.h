@@ -412,6 +412,133 @@ int ff_dvdvideo_scan(void *log, DVDVideoDisc *disc, DVDVideoScanTrace trace, voi
                      DVDVideoScan **scan);
 void ff_dvdvideo_scan_free(DVDVideoScan **scan);
 
+/* dvdvideo_titles.c */
+#define DVDVIDEO_INVALID_SEGMENT    0x7fffff01  /* DVDVideoChapter.segment of a chapter in no segment */
+
+enum DVDVideoCellMode {             /* how a title's cells are chosen */
+    DVDVIDEO_CELLS_AUTO,            /* cell walk with scan results, else cell trim */
+    DVDVIDEO_CELLS_WALK,            /* the cells the navigation scan played */
+    DVDVIDEO_CELLS_TRIM,            /* cells that do not look like content trimmed off (no scan) */
+    DVDVIDEO_CELLS_WALK_TRIM,       /* cell walk, cell trim where it fails */
+};
+
+enum DVDVideoTitleOrder {
+    DVDVIDEO_ORDER_AUTO,            /* scan-first with the automatic / cell-walk modes, else table */
+    DVDVIDEO_ORDER_SCAN_FIRST,      /* the titles the scan reached first, then the others */
+    DVDVIDEO_ORDER_TABLE,           /* the title search table's order */
+};
+
+enum DVDVideoTitleEventKind {       /* findings of the title stage */
+    DVDVIDEO_EV_PTT_NO_TITLE,       /* ttn, vtsn: the title set has no parts of title for its title */
+    DVDVIDEO_EV_PTT_UNRESOLVED,     /* vtsn, ttn, pgcn, pgn: a part of title is left out */
+    DVDVIDEO_EV_TOO_MANY_AUDIO,     /* n, vtsn */
+    DVDVIDEO_EV_TOO_MANY_SUBP,      /* n (the audio count), vtsn */
+    DVDVIDEO_EV_TITLE_EMPTY,        /* title index (0-based) */
+    DVDVIDEO_EV_TITLE_SET_MISSING,  /* title number */
+    DVDVIDEO_EV_NO_CELL_LIST,       /* name, declared time */
+    DVDVIDEO_EV_TITLE_UNUSABLE,     /* name */
+    DVDVIDEO_EV_ANGLE_BLOCK_BROKEN, /* cell */
+    DVDVIDEO_EV_ANGLE_COUNT,        /* cell, angles of the title, cells of the block */
+    DVDVIDEO_EV_VOBUS_TO_READ,      /* cells, VOBUs */
+    DVDVIDEO_EV_SHORT,              /* name, seconds, minimum */
+    DVDVIDEO_EV_FAKE_LENGTH,        /* name, declared, measured */
+    DVDVIDEO_EV_DUPLICATE,          /* vtsn, #kept, #dropped */
+    DVDVIDEO_EV_TITLE,              /* name, cells, declared time */
+    DVDVIDEO_EV_CELLWALK_FAILED,
+    DVDVIDEO_EV_CELLS_CUT_START,    /* cells left out at the start */
+    DVDVIDEO_EV_CELLS_CUT_END,      /* first cell left out at the end, cells of the chain */
+    DVDVIDEO_EV_FAKE_CELLS,         /* percent */
+    DVDVIDEO_EV_ANGLE,              /* angle, name */
+    DVDVIDEO_EV_ANGLE_FAILED,       /* angle, name */
+    DVDVIDEO_EV_NAV_INVALID,        /* playing time where it happens */
+};
+
+enum DVDVideoNotSelected {
+    DVDVIDEO_TITLE_SELECTABLE,
+    DVDVIDEO_TITLE_SHORT,           /* shorter than the minimum length */
+    DVDVIDEO_TITLE_FAKE,            /* declared and measured lengths far apart */
+};
+
+typedef struct DVDVideoChapter {
+    int      pgcn;
+    int      pgn;
+    int      cell;                  /* its first cell (index), -1 none */
+    uint32_t segment;               /* the segment it starts in, DVDVIDEO_INVALID_SEGMENT */
+    uint64_t offset;                /* byte offset of its start in that segment */
+    uint64_t time;                  /* from the title start, 1/1,080,000,000 s */
+} DVDVideoChapter;
+
+typedef struct DVDVideoExtent {
+    uint32_t logical;               /* block within the segment's data */
+    uint32_t sector;                /* title-VOB block */
+    uint32_t count;
+} DVDVideoExtent;
+
+/* One segment of a title: the title-VOB blocks played without a discontinuity. */
+typedef struct DVDVideoSegment {
+    DVDVideoExtent *extents;
+    int             nb_extents;
+    int             last_cell;      /* the last cell whose VOBUs were added */
+    int           (*runs)[2];       /* runs of cell numbers, while building */
+    int             nb_runs;
+    uint64_t        size;           /* bytes */
+    char            label[256];     /* the cells it plays: "1-19", "(1-3,5)" */
+} DVDVideoSegment;
+
+typedef struct DVDVideoTitle {
+    int              index;         /* title search table entry (0-based) */
+    char             name[16];      /* "3", or "3/1" for a further program chain of entry 3 */
+    int              title_type;    /* title_info_t pb_ty byte */
+    int              vtsn, vts_ttn;
+    int              angle;         /* 0-based */
+    int              angles;
+    int              pgcn;
+    DVDVideoChapter *chapters;
+    int              nb_chapters;
+    int              scan;          /* its result in the navigation scan, -1 none */
+    uint8_t          audio[8];      /* audio stream numbers */
+    int              nb_audio;
+    int              audio_mask;
+    uint8_t          subp[64];      /* subpicture stream numbers */
+    int              nb_subp;
+    int             *cells;         /* cells played (indices in the program chain) */
+    int              nb_cells;
+    DVDVideoSegment *segments;
+    int              nb_segments;
+    int              segments_built;
+    uint32_t         declared_secs; /* sum of the cells' playback times */
+    uint32_t         measured_secs; /* sum of the cells' NAV-pack durations */
+    uint32_t         nav_invalid_count;
+    int              not_selected;  /* enum DVDVideoNotSelected */
+} DVDVideoTitle;
+
+typedef struct DVDVideoTitleEvent {
+    int  kind;                      /* enum DVDVideoTitleEventKind */
+    char args[128];                 /* its arguments, tab-separated */
+} DVDVideoTitleEvent;
+
+typedef struct DVDVideoTitlePlan {
+    DVDVideoTitle      *titles;
+    int                 nb_titles;
+    DVDVideoTitleEvent *events;
+    int                 nb_events;
+} DVDVideoTitlePlan;
+
+typedef struct DVDVideoTitleOptions {
+    int cell_mode;                  /* enum DVDVideoCellMode */
+    int title_order;                /* enum DVDVideoTitleOrder */
+    int min_length;                 /* seconds; shorter titles are listed, not selected */
+} DVDVideoTitleOptions;
+
+/* The titles of the disc (scan: the navigation scan, NULL when none ran). */
+int ff_dvdvideo_titles_plan(void *log, DVDVideoDisc *disc, const DVDVideoScan *scan, const DVDVideoTitleOptions *opt,
+                            DVDVideoTitlePlan **plan);
+void ff_dvdvideo_titles_free(DVDVideoTitlePlan **plan);
+const char *ff_dvdvideo_event_name(int kind);
+/* Whether a title's declared and measured lengths are far apart: the declared
+ * length is 0, or they differ by more than 300 s and more than 30 % of it. */
+int ff_dvdvideo_lengths_disagree(uint32_t declared, uint32_t measured);
+
 /* dvdvideo_ifo.c */
 #define DVDVIDEO_VTS_MAP_DISTRUSTED  1  /* a cell does not start / end on a VOBU of the map */
 #define DVDVIDEO_VTS_CELL_PAST_VOBS  2  /* a cell ends past the end of the title VOBs */
