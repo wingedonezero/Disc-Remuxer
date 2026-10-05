@@ -12,8 +12,9 @@ libs/<name>` show every change we made.
 | `libdvdread/` | libdvdread 7.1.1 | https://download.videolan.org/pub/videolan/libdvdread/7.1.1/ | tarball sha256 `a0d47876548bec806774bbf8dbf20bb19ba139464383156b32eb8e59915b90a9` (= published .sha256) |
 | `libdvdnav/` | libdvdnav 7.0.0 | https://download.videolan.org/pub/videolan/libdvdnav/7.0.0/ | tarball sha256 `a2a18f5ad36d133c74bf9106b6445806fa253b09141a46392550394b647b221e` (= published .sha256) |
 | `libdvdcss/` | libdvdcss 1.6.0 | https://download.videolan.org/pub/videolan/libdvdcss/1.6.0/ | tarball sha256 `7ea556c846b7bfc32d47b41cae56d1863a6b6d5f706bb162778d6f298490977c` (= published .sha256) |
+| `expat/` | expat 2.9.0 | https://github.com/libexpat/libexpat/releases/tag/R_2_9_0 | tarball sha256 `1e6371862cc31999b368c3b89b49994f0677e1bab5f1b2b85ae3741f5d803051` (= published); signature good (Sebastian Pipping, CB8D E70A 90CF BF6C 3BF5 CC56 9626 2ACF FBD3 AEC6) |
 
-All four are GPL-2.0-or-later as built here (FFmpeg with `--enable-gpl`,
+FFmpeg and the three DVD libraries are GPL-2.0-or-later as built here (FFmpeg with `--enable-gpl`,
 which its DVD-Video demuxer requires). Our FFmpeg also holds a UDF reader
 derived from Linux fs/udf (`libavformat/discio_udf_linux.c`), which is
 GPL-2.0-only, so the program as built is GPL-2.0-only. The UDF reader derived
@@ -26,6 +27,9 @@ from NetBSD (`discio_udf_netbsd.c`) keeps NetBSD's BSD licence notice.
 - libdvdcss, libdvdread, libdvdnav: compiled with the `cc` crate; the
   `config.h` each one's `meson.build` would generate on Linux is written by
   the build script. libdvdread links libdvdcss directly (no `dlopen`).
+- expat: compiled with the `cc` crate; `expat_config.h` is written by the
+  build script with the values expat's `configure` gives on Linux / glibc
+  (its defaults: `XML_DTD`, `XML_GE`, `XML_NS`, `XML_CONTEXT_BYTES` 1024).
 - FFmpeg: its own `configure` + `make`, out of tree in Cargo's build folder,
   static libraries, autodetection off (every external library is enabled by
   name), DVD-Video demuxer on our libdvdnav / libdvdread. The `ffmpeg` and

@@ -1,0 +1,16 @@
+[package]
+name = "libexpat-sys"
+description = "Builds our expat and exposes its C API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT"
+publish = false
+links = "expat"
+build = "build.rs"
+
+[build-dependencies]
+cc.workspace = true
+
+[lints]
+workspace = true
