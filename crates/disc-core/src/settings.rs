@@ -156,6 +156,33 @@ pub const SETTINGS: &[Setting] = &[
                ISO 9660 file system, when that holds a valid DVD-Video structure.",
     },
     Setting {
+        group: "dvd",
+        key: "cell_mode",
+        kind: Kind::Choice(&["auto", "walk", "trim", "walk_trim"]),
+        default: DefaultValue::Text("auto"),
+        help: "How a DVD title's cells are chosen: walk = the cells the disc's navigation plays \
+               (found by playing the navigation through), trim = cells that do not look like content \
+               are trimmed off the program chain's ends (the navigation is not played), walk_trim = \
+               walk, trim where walk finds nothing, auto = walk when the navigation found titles, \
+               else trim.",
+    },
+    Setting {
+        group: "dvd",
+        key: "title_order",
+        kind: Kind::Choice(&["auto", "scan_first", "table"]),
+        default: DefaultValue::Text("auto"),
+        help: "Order of a DVD's titles: scan_first = the titles the disc's navigation leads to \
+               first, then the others; table = the disc's title table order; auto = scan_first with \
+               the cell modes auto and walk, table with trim and walk_trim.",
+    },
+    Setting {
+        group: "dvd",
+        key: "min_title_length",
+        kind: Kind::Number { min: 0, max: 86_400 },
+        default: DefaultValue::Number(120),
+        help: "Titles shorter than this many seconds are listed but not selected.",
+    },
+    Setting {
         group: "log",
         key: "console",
         kind: Kind::Choice(&["error", "warning", "info", "debug", "trace"]),
