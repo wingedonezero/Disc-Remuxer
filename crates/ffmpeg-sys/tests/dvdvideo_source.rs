@@ -3,7 +3,8 @@
 //! from the file system our choice rule picked (images) or from the disc folder,
 //! read through our disc readers; images that are not DVD-Video, or whose DVD
 //! files are scattered, are refused; an IFO block that cannot be read comes from
-//! its BUP; the IFO layout checks warn. With `DVDVIDEO_CSS_IMAGE` / `DVDVIDEO_CSS_FOLDER`
+//! its BUP; the IFO layout checks warn; the title-set checks (VOBU address map,
+//! cells inside the title VOBs) on built IFOs. With `DVDVIDEO_CSS_IMAGE` / `DVDVIDEO_CSS_FOLDER`
 //! (a CSS-scrambled disc as an image / as a folder of its files), blocks
 //! descrambled by the source equal libdvdcss's own decrypting read.
 
@@ -62,6 +63,9 @@ extern "C" {
     fn DVDCloseFile(file: *mut DvdFile);
     fn DVDReadBytes(file: *mut DvdFile, buf: *mut c_void, size: usize) -> isize;
     fn DVDReadBlocks(file: *mut DvdFile, offset: c_int, count: usize, buf: *mut u8) -> isize;
+    fn ifoOpen(dvd: *mut Reader, title: c_int) -> *mut c_void;
+    fn ifoClose(ifo: *mut c_void);
+    fn ff_dvdvideo_check_vts(log: *mut c_void, dvd: *mut Reader, vtsn: c_int, ifo: *const c_void) -> c_int;
 }
 
 // ---- running the C code ----
@@ -331,6 +335,118 @@ fn ifo_layout_warnings() {
     assert!(!logged("BUP) 5 sectors after the IFO", || {
         Src::open(&root).unwrap();
     }));
+}
+
+// ---- the title-set checks ----
+
+const MAP_DISTRUSTED: c_int = 1;
+const CELL_PAST_VOBS: c_int = 2;
+
+/// A cell: first sector, last VOBU start, last sector (title-VOB sectors).
+type Cell = (u32, u32, u32);
+
+/// VTS_01_0.IFO with one PGC of `cells` (one program), a cell address table of
+/// the same cells and a VOBU address map of `vobus`: VTSI_MAT in sector 0,
+/// VTS_PTT_SRPT in 1, VTS_PGCIT in 2, VTS_C_ADT in 3, VTS_VOBU_ADMAP in 4.
+fn vts_ifo(cells: &[Cell], vobus: &[u32], vob_sectors: u32) -> Vec<u8> {
+    let mut d = vec![0u8; 5 * S];
+    let be32 = |d: &mut Vec<u8>, at: usize, v: u32| d[at..at + 4].copy_from_slice(&v.to_be_bytes());
+    let be16 = |d: &mut Vec<u8>, at: usize, v: u16| d[at..at + 2].copy_from_slice(&v.to_be_bytes());
+    // VTSI_MAT
+    d[..12].copy_from_slice(b"DVDVIDEO-VTS");
+    be32(&mut d, 0x0c, 5 + vob_sectors + 5 - 1); // vts_last_sector: IFO, title VOBs, BUP
+    be32(&mut d, 0x1c, 4); // vtsi_last_sector
+    be32(&mut d, 0x80, 0x3ff); // vtsi_last_byte
+    be32(&mut d, 0xc4, 5); // vtstt_vobs
+    be32(&mut d, 0xc8, 1); // vts_ptt_srpt
+    be32(&mut d, 0xcc, 2); // vts_pgcit
+    be32(&mut d, 0xe0, 3); // vts_c_adt
+    be32(&mut d, 0xe4, 4); // vts_vobu_admap
+    // VTS_PTT_SRPT: one title, one chapter (PGC 1, program 1)
+    let p = S;
+    be16(&mut d, p, 1);
+    be32(&mut d, p + 4, 15);
+    be32(&mut d, p + 8, 12);
+    be16(&mut d, p + 12, 1);
+    be16(&mut d, p + 14, 1);
+    // VTS_PGCIT: one PGC at byte 16
+    let t = 2 * S;
+    let pgc = t + 16;
+    let n = u8::try_from(cells.len()).unwrap();
+    let (map_off, play_off) = (0xec, 0xee);
+    let pos_off = play_off + 24 * cells.len();
+    let pgc_len = pos_off + 4 * cells.len();
+    be16(&mut d, t, 1);
+    be32(&mut d, t + 4, u32::try_from(16 + pgc_len - 1).unwrap());
+    d[t + 8] = 0x81; // entry PGC of title 1
+    be32(&mut d, t + 12, 16);
+    d[pgc + 2] = 1; // nr_of_programs
+    d[pgc + 3] = n; // nr_of_cells
+    be16(&mut d, pgc + 0xe6, u16::try_from(map_off).unwrap());
+    be16(&mut d, pgc + 0xe8, u16::try_from(play_off).unwrap());
+    be16(&mut d, pgc + 0xea, u16::try_from(pos_off).unwrap());
+    d[pgc + map_off] = 1; // program 1 starts at cell 1
+    for (k, &(first, last_vobu, last)) in cells.iter().enumerate() {
+        let c = pgc + play_off + 24 * k;
+        be32(&mut d, c + 8, first);
+        be32(&mut d, c + 16, last_vobu);
+        be32(&mut d, c + 20, last);
+        let q = pgc + pos_off + 4 * k;
+        be16(&mut d, q, 1);
+        d[q + 3] = u8::try_from(k + 1).unwrap();
+    }
+    // VTS_C_ADT
+    let a = 3 * S;
+    be16(&mut d, a, 1);
+    be32(&mut d, a + 4, u32::try_from(8 + 12 * cells.len() - 1).unwrap());
+    for (k, &(first, _, last)) in cells.iter().enumerate() {
+        let e = a + 8 + 12 * k;
+        be16(&mut d, e, 1);
+        d[e + 2] = u8::try_from(k + 1).unwrap();
+        be32(&mut d, e + 4, first);
+        be32(&mut d, e + 8, last);
+    }
+    // VTS_VOBU_ADMAP
+    let m = 4 * S;
+    be32(&mut d, m, u32::try_from(4 + 4 * vobus.len() - 1).unwrap());
+    for (k, v) in vobus.iter().enumerate() {
+        be32(&mut d, m + 4 + 4 * k, *v);
+    }
+    d
+}
+
+/// The title-set checks on a folder holding `ifo` and title VOBs of `vob_sectors`.
+fn check_vts(test: &str, cells: &[Cell], vobus: &[u32], vob_sectors: u32) -> c_int {
+    let dir = scratch(test).join("VIDEO_TS");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("VTS_01_0.IFO"), vts_ifo(cells, vobus, vob_sectors)).unwrap();
+    std::fs::write(dir.join("VTS_01_1.VOB"), vec![0u8; vob_sectors as usize * S]).unwrap();
+    let src = Src::open(dir.parent().unwrap()).unwrap();
+    let dvd = src.reader();
+    // SAFETY: the reader is open; the IFO handle is closed below.
+    unsafe {
+        let ifo = ifoOpen(dvd.0, 1);
+        assert!(!ifo.is_null(), "libdvdread accepts the built IFO");
+        let r = ff_dvdvideo_check_vts(std::ptr::null_mut(), dvd.0, 1, ifo);
+        ifoClose(ifo);
+        r
+    }
+}
+
+const VOBUS: [u32; 4] = [0, 10, 20, 30];
+
+#[test]
+fn title_set_cells_on_the_vobu_map_and_inside_the_vobs() {
+    assert_eq!(check_vts("vts-ok", &[(0, 10, 19), (20, 30, 39)], &VOBUS, 40), 0);
+    // a cell that starts on no VOBU of the map
+    assert_eq!(check_vts("vts-first", &[(0, 10, 19), (21, 30, 39)], &VOBUS, 40), MAP_DISTRUSTED);
+    // a cell whose last VOBU is not in the map
+    assert_eq!(check_vts("vts-last", &[(0, 15, 19), (20, 30, 39)], &VOBUS, 40), MAP_DISTRUSTED);
+    // a cell that ends past the end of the title VOBs: its data is missing
+    assert_eq!(check_vts("vts-past", &[(0, 10, 19), (20, 30, 45)], &VOBUS, 40), CELL_PAST_VOBS);
+    // the last sector itself is the limit
+    assert_eq!(check_vts("vts-edge", &[(0, 10, 19), (20, 30, 40)], &VOBUS, 40), CELL_PAST_VOBS);
+    assert_eq!(check_vts("vts-both", &[(0, 10, 19), (25, 30, 45)], &VOBUS, 40), MAP_DISTRUSTED | CELL_PAST_VOBS);
 }
 
 // ---- folders ----
