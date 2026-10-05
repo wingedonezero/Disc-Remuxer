@@ -648,3 +648,53 @@ pub mod dvdvideo {
         }
     }
 }
+
+/// The HD DVD demuxer's parts (`libavformat/hddvd_*.c`).
+pub mod hddvd {
+    use super::discio::Fs;
+    use std::os::raw::{c_char, c_int, c_void};
+
+    /// `HDDVD_VTI_MAX_EVOBS`.
+    pub const VTI_MAX_EVOBS: usize = 1998;
+
+    /// `HDDVDEvobAttr`.
+    #[repr(C)]
+    pub struct EvobAttr {
+        pub raw: [u8; 0x186],
+        pub nb_audio: c_int,
+        pub nb_subpic: c_int,
+        pub words: [u32; 32],
+    }
+
+    /// `HDDVDEvob`.
+    #[repr(C)]
+    pub struct Evob {
+        pub name: [c_char; 256],
+        pub base: [c_char; 256],
+        pub attr: c_int,
+        pub start_ptm: u32,
+        pub end_ptm: u32,
+        pub sectors: u32,
+        pub slot: c_int,
+        pub raw: [u8; 0x140],
+    }
+
+    /// `HDDVDVTI`.
+    #[repr(C)]
+    pub struct Vti {
+        pub folder: [c_char; 9],
+        pub nb_attrs: c_int,
+        pub attrs: *mut EvobAttr,
+        pub nb_evobs: c_int,
+        pub evobs: [*mut Evob; VTI_MAX_EVOBS],
+    }
+
+    /// `HDDVDReadFn`.
+    pub type ReadFn = unsafe extern "C" fn(opaque: *mut c_void, pos: i64, buf: *mut u8, len: c_int) -> c_int;
+
+    extern "C" {
+        pub fn ff_hddvd_vti_parse(log: *mut c_void, read: ReadFn, opaque: *mut c_void, out: *mut *mut Vti) -> c_int;
+        pub fn ff_hddvd_vti_open(log: *mut c_void, fs: *mut Fs, out: *mut *mut Vti) -> c_int;
+        pub fn ff_hddvd_vti_free(vti: *mut *mut Vti);
+    }
+}

@@ -277,6 +277,9 @@ OBJS-$(CONFIG_H264_MUXER)                += rawenc.o
 OBJS-$(CONFIG_HASH_MUXER)                += hashenc.o
 OBJS-$(CONFIG_HCA_DEMUXER)               += hca.o
 OBJS-$(CONFIG_HCOM_DEMUXER)              += hcom.o pcm.o
+OBJS-$(CONFIG_HDDVD_DEMUXER)             += hddvddec.o hddvd_vti.o                \
+                                            discio_read.o discio_fs.o discio_iso9660.o \
+                                            discio_udf_netbsd.o discio_udf_linux.o
 OBJS-$(CONFIG_HDS_MUXER)                 += hdsenc.o
 OBJS-$(CONFIG_HEVC_DEMUXER)              += hevcdec.o rawdec.o
 OBJS-$(CONFIG_HEVC_MUXER)                += rawenc.o
