@@ -53,19 +53,22 @@ typedef struct CSSGroup {
     uint8_t key[DVDCSS_KEY_SIZE];
 } CSSGroup;
 
-/* One file of a VOB group */
+/* One file of a VOB group of a disc folder */
 typedef struct VOBPiece {
-    DiscIOSource *host;          /* disc folder: the host file */
-    DiscIOFile   *file;          /* disc image: the file in the image */
+    DiscIOSource *host;
     int64_t       sectors;       /* blocks, a partial last block counted whole */
 } VOBPiece;
 
 /* A VOB group: the menu VOB of a title set (VIDEO_TS.VOB for the VMG) or its
- * title VOBs VTS_nn_1.VOB .. VTS_nn_9.VOB read one after the other, as
- * libdvdread puts them together. */
+ * title VOBs. Disc folder: the files VTS_nn_1.VOB .. VTS_nn_9.VOB read one
+ * after the other, as libdvdread puts them together. Disc image: a range of
+ * image blocks placed by the IFO (see vob_group_open_image()). */
 typedef struct VOBGroup {
-    int      nb_pieces;          /* 0: the group has no file */
+    int      nb_pieces;          /* folder: 0 = the group has no file */
     VOBPiece pieces[9];
+    int      in_image;           /* image: the range below is set */
+    int64_t  image_start;        /* image: first block of the group */
+    int64_t  image_end;          /* image: block after its last one */
 } VOBGroup;
 
 struct DVDVideoSource {
@@ -91,10 +94,8 @@ static void source_unref(DVDVideoSource **psrc)
         for (int m = 0; m < 2; m++) {
             VOBGroup *g = src->vobs[n][m];
 
-            for (int i = 0; g && i < g->nb_pieces; i++) {
+            for (int i = 0; g && i < g->nb_pieces; i++)
                 ff_discio_source_free(&g->pieces[i].host);
-                ff_discio_file_free(&g->pieces[i].file);
-            }
             av_freep(&src->vobs[n][m]);
         }
     ff_discio_fs_close(&src->fs);
@@ -896,14 +897,14 @@ int ff_dvdvideo_source_find(DVDVideoSource *src, const char *name, char *path, s
     return find_vob(src, name, path, size);
 }
 
-/* Open the files of a VOB group, as libdvdread does: the menu VOB, or the
- * title VOBs from VTS_nn_1.VOB up to the first that is missing. */
-static int vob_group_open(DVDVideoSource *src, int vtsn, int menu, VOBGroup *g)
+/* Open the files of a VOB group of a disc folder, as libdvdread does: the menu
+ * VOB, or the title VOBs from VTS_nn_1.VOB up to the first that is missing. */
+static int vob_group_open_folder(DVDVideoSource *src, int vtsn, int menu, VOBGroup *g)
 {
     for (int k = menu ? 0 : 1; k <= (menu ? 0 : 9); k++) {
         VOBPiece *p = &g->pieces[g->nb_pieces];
-        char name[32], path[600];
-        int64_t size;
+        char name[32], path[600], *hp;
+        int ret;
 
         if (!vtsn)
             snprintf(name, sizeof(name), "VIDEO_TS.VOB");
@@ -911,30 +912,113 @@ static int vob_group_open(DVDVideoSource *src, int vtsn, int menu, VOBGroup *g)
             snprintf(name, sizeof(name), "VTS_%02d_%d.VOB", vtsn, k);
         if (find_vob(src, name, path, sizeof(path)) < 0)
             break;
-        if (src->folder) {
-            char *hp = host_path(src, path);
-            int ret = hp ? ff_discio_source_open_file(src->log, hp, &p->host) : AVERROR(ENOMEM);
-
-            av_free(hp);
-            if (ret < 0)
-                return ret;
-            size = p->host->size;
-        } else {
-            int ret = src->fs->ops->open_file(src->fs, path, &p->file);
-
-            if (ret < 0)
-                return ret;
-            if (p->file->data) {
-                av_log(src->log, AV_LOG_ERROR, "%s is stored inside its file entry, not as disc blocks\n", path);
-                ff_discio_file_free(&p->file);
-                return AVERROR_INVALIDDATA;
-            }
-            size = p->file->size;
-        }
-        p->sectors = (size + DISCIO_BLOCK_SIZE - 1) / DISCIO_BLOCK_SIZE;
+        hp  = host_path(src, path);
+        ret = hp ? ff_discio_source_open_file(src->log, hp, &p->host) : AVERROR(ENOMEM);
+        av_free(hp);
+        if (ret < 0)
+            return ret;
+        p->sectors = (p->host->size + DISCIO_BLOCK_SIZE - 1) / DISCIO_BLOCK_SIZE;
         g->nb_pieces++;
     }
     return 0;
+}
+
+/* The image block of a file recorded as exactly one extent; -1 otherwise
+ * (missing, or in several extents). A run that is not recorded counts as
+ * block 0xfffffffe, which lies past the end of any image. */
+static int64_t image_single_extent(DVDVideoSource *src, const char *name)
+{
+    DiscIOFile *f = NULL;
+    char path[600];
+    int64_t sector = -1;
+
+    if (find_vob(src, name, path, sizeof(path)) < 0 || src->fs->ops->open_file(src->fs, path, &f) < 0)
+        return -1;
+    if (f->nb_extents == 1)
+        sector = f->extents[0].sector == DISCIO_SECTOR_NOT_RECORDED ? 0xfffffffe : f->extents[0].sector;
+    ff_discio_file_free(&f);
+    return sector;
+}
+
+/* Whether the block at image block `at` is the first NAV pack of a VOB: a NAV
+ * pack whose PCI and DSI both name sector 0. */
+static int image_vob_starts_at(DVDVideoSource *src, int64_t at)
+{
+    uint8_t buf[DISCIO_BLOCK_SIZE];
+
+    return at >= 0 && ff_discio_read_blocks(src->image, at * DISCIO_BLOCK_SIZE, buf, sizeof(buf), 3, 1) >= 0 &&
+           ff_dvdvideo_is_nav_pack(buf) && !AV_RB32(buf + 0x2d) && !AV_RB32(buf + 0x40b);
+}
+
+/* A VOB group of a disc image, placed by its IFO: blocks are counted from the
+ * IFO's first block. The group starts at the IFO header's vmgm_vobs /
+ * vtsm_vobs (menu) or vtstt_vobs (title VOBs) when the file system puts the
+ * VOB file there too (or the file's position is the IFO's own); when the two
+ * disagree, at whichever of them holds the first NAV pack of a VOB, the IFO's
+ * first, else at vtstt_vobs. A title set's menu VOBs end where its title VOBs
+ * start (when the header gives them); everything else reaches to the end of
+ * the image, and so does a group whose start lies past its end. */
+static int vob_group_open_image(DVDVideoSource *src, int vtsn, int menu, VOBGroup *g)
+{
+    const char *what = menu ? "menu VOBs" : "title VOBs";
+    int64_t ifo_sector, vob_sector, image_end, start, end;
+    uint32_t title_start, ifo_value, fs_value, pick;
+    uint8_t hdr[DISCIO_BLOCK_SIZE];
+    char name[32], vob[32], path[600], set[32];
+
+    snprintf(name, sizeof(name), vtsn ? "VTS_%02d_0.IFO" : "VIDEO_TS.IFO", vtsn);
+    snprintf(set, sizeof(set), vtsn ? "Title set %d" : "The video manager", vtsn);
+    if ((ifo_sector = image_single_extent(src, name)) < 0) {
+        av_log(src->log, AV_LOG_DEBUG, "%s is missing or not one extent: its VOBs cannot be placed\n", name);
+        return 0;
+    }
+    if (find_vob(src, name, path, sizeof(path)) < 0 || read_ifo_header(src, path, hdr) < 0)
+        return 0;
+    title_start = AV_RB32(hdr + 0xc4);
+    ifo_value   = menu ? AV_RB32(hdr + 0xc0) : title_start;
+    if (menu)
+        snprintf(vob, sizeof(vob), vtsn ? "VTS_%02d_0.VOB" : "VIDEO_TS.VOB", vtsn);
+    else
+        snprintf(vob, sizeof(vob), "VTS_%02d_1.VOB", vtsn);
+    vob_sector = image_single_extent(src, vob);
+    fs_value   = (uint32_t)((vob_sector < 0 ? 0 : vob_sector) - ifo_sector);
+
+    pick = ifo_value;
+    if (ifo_value != fs_value && fs_value) {
+        av_log(src->log, AV_LOG_WARNING, "%s: the IFO puts its %s %"PRIu32" blocks after the IFO, the file system "
+               "%"PRIu32" blocks after it\n", set, what, ifo_value, fs_value);
+        if (image_vob_starts_at(src, ifo_sector + ifo_value)) {
+            av_log(src->log, AV_LOG_VERBOSE, "%s: the IFO's position of its %s starts a VOB: used\n", set, what);
+        } else if (image_vob_starts_at(src, ifo_sector + fs_value)) {
+            av_log(src->log, AV_LOG_VERBOSE, "%s: the file system's position of its %s starts a VOB: used\n",
+                   set, what);
+            pick = fs_value;
+        } else {
+            av_log(src->log, AV_LOG_WARNING, "%s: neither position starts a VOB; its %s are read from where its "
+                   "title VOBs start (%"PRIu32" blocks after the IFO)\n", set, what, title_start);
+            pick = title_start;
+        }
+    }
+    image_end = (src->image->size + DISCIO_BLOCK_SIZE - 1) / DISCIO_BLOCK_SIZE;
+    start     = ifo_sector + pick;
+    end       = menu && vtsn && title_start ? ifo_sector + title_start : image_end;
+    if (start > end) {
+        av_log(src->log, AV_LOG_WARNING, "%s: its %s start after their end (block %"PRId64" > %"PRId64"); they are "
+               "read up to the end of the image\n", set, what, start, end);
+        end = image_end;
+    }
+    g->in_image    = 1;
+    g->image_start = start;
+    g->image_end   = end;
+    av_log(src->log, AV_LOG_DEBUG, "%s: %s at image blocks %"PRId64" - %"PRId64"\n", set, what, start, end);
+    return 0;
+}
+
+static void vob_group_free(VOBGroup **g)
+{
+    for (int i = 0; *g && i < (*g)->nb_pieces; i++)
+        ff_discio_source_free(&(*g)->pieces[i].host);
+    av_freep(g);
 }
 
 static int vob_group(DVDVideoSource *src, int vtsn, int menu, VOBGroup **out)
@@ -948,52 +1032,14 @@ static int vob_group(DVDVideoSource *src, int vtsn, int menu, VOBGroup **out)
     if (!*slot) {
         if (!(*slot = av_mallocz(sizeof(**slot))))
             return AVERROR(ENOMEM);
-        if ((ret = vob_group_open(src, vtsn, menu, *slot)) < 0) {
-            for (int i = 0; i < (*slot)->nb_pieces; i++) {
-                ff_discio_source_free(&(*slot)->pieces[i].host);
-                ff_discio_file_free(&(*slot)->pieces[i].file);
-            }
-            av_freep(slot);
+        ret = src->folder ? vob_group_open_folder(src, vtsn, menu, *slot)
+                          : vob_group_open_image(src, vtsn, menu, *slot);
+        if (ret < 0) {
+            vob_group_free(slot);
             return ret;
         }
     }
     *out = *slot;
-    return 0;
-}
-
-int ff_dvdvideo_source_vob_layout(DVDVideoSource *src, int vtsn, int menu, int64_t *sectors,
-                                  int64_t *image_sector)
-{
-    VOBGroup *g;
-    int64_t next = -1;
-    int ret;
-
-    *sectors      = 0;
-    *image_sector = -1;
-    if ((ret = vob_group(src, vtsn, menu, &g)) < 0)
-        return ret;
-    if (!g->nb_pieces)
-        return AVERROR(ENOENT);
-    for (int i = 0; i < g->nb_pieces; i++)
-        *sectors += g->pieces[i].sectors;
-    if (src->folder)
-        return 0;
-    /* one run of image blocks: every extent follows the one before it */
-    for (int i = 0; i < g->nb_pieces; i++) {
-        const DiscIOFile *f = g->pieces[i].file;
-
-        for (int k = 0; k < f->nb_extents; k++) {
-            const DiscIOExtent *e = &f->extents[k];
-
-            if (e->sector == DISCIO_SECTOR_NOT_RECORDED || (next >= 0 && e->sector != next))
-                return 0;
-            if (next < 0)
-                *image_sector = e->sector;
-            next = e->sector + e->count;
-        }
-    }
-    if (*image_sector >= 0 && next - *image_sector < *sectors)
-        *image_sector = -1;
     return 0;
 }
 
@@ -1005,46 +1051,36 @@ int ff_dvdvideo_source_vob_read(DVDVideoSource *src, int vtsn, int menu, int64_t
 
     if ((ret = vob_group(src, vtsn, menu, &g)) < 0)
         return ret;
-    if (!g->nb_pieces)
-        return AVERROR(ENOENT);
     if (sector < 0)
         return AVERROR(EINVAL);
+    if (g->in_image) {
+        if (sector >= g->image_end - g->image_start)
+            return AVERROR_EOF;
+        return ff_discio_read_blocks(src->image, (g->image_start + sector) * DISCIO_BLOCK_SIZE, buf,
+                                     DISCIO_BLOCK_SIZE, attempts, 0);
+    }
+    if (!g->nb_pieces)
+        return AVERROR(ENOENT);
     for (int i = 0; i < g->nb_pieces; i++) {
         VOBPiece *p = &g->pieces[i];
+        int64_t pos;
+        int n;
 
         if (sector >= p->sectors) {
             sector -= p->sectors;
             continue;
         }
-        if (p->host) {
-            int64_t pos = sector * DISCIO_BLOCK_SIZE;
-            int n = FFMIN(DISCIO_BLOCK_SIZE, p->host->size - pos);
-
-            memset(buf + n, 0, DISCIO_BLOCK_SIZE - n);
-            return ff_discio_read_bytes(p->host, pos, buf, n, attempts, 0);
-        }
-        for (int k = 0; k < p->file->nb_extents; k++) {
-            const DiscIOExtent *e = &p->file->extents[k];
-
-            if (sector >= e->count) {
-                sector -= e->count;
-                continue;
-            }
-            if (e->sector == DISCIO_SECTOR_NOT_RECORDED) {
-                memset(buf, 0, DISCIO_BLOCK_SIZE);
-                return 0;
-            }
-            return ff_discio_read_blocks(src->image, (e->sector + sector) * DISCIO_BLOCK_SIZE, buf,
-                                         DISCIO_BLOCK_SIZE, attempts, 0);
-        }
-        return AVERROR_INVALIDDATA;   /* extents shorter than the file */
+        pos = sector * DISCIO_BLOCK_SIZE;
+        n   = FFMIN(DISCIO_BLOCK_SIZE, p->host->size - pos);
+        memset(buf + n, 0, DISCIO_BLOCK_SIZE - n);
+        return ff_discio_read_bytes(p->host, pos, buf, n, attempts, 0);
     }
     return AVERROR_EOF;
 }
 
 int64_t ff_dvdvideo_source_file_sector(DVDVideoSource *src, const char *name)
 {
-    return src->folder ? -1 : image_file_sector(src, name);
+    return src->folder ? -1 : image_single_extent(src, name);
 }
 
 int ff_dvdvideo_source_open(void *log, const char *path, const DiscIOImageOptions *opts, int attempts,

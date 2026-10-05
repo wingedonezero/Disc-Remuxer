@@ -35,7 +35,8 @@
  *
  * The navigators (libdvdnav) run in navigation-only mode on files this scan
  * serves: the IFOs come from the disc source, every VOB sector goes through the
- * scan's read service, once per sector. A read the service refuses, or a
+ * scan's read service, once per sector (VOB groups as the disc source places
+ * them: folder files, or on images the blocks the IFO puts them at). A read the service refuses, or a
  * broken assumption a navigator records about the navigation data, fails the
  * whole scan. The VM's Rnd operation draws from one sequence per scan (glibc's
  * rand() sequence for seed 1), shared by all navigators.
@@ -126,7 +127,7 @@ typedef struct ScanPCI {
     uint8_t  up[36], down[36], left[36], right[36];
 } ScanPCI;
 
-static int is_nav_pack(const uint8_t *s)
+int ff_dvdvideo_is_nav_pack(const uint8_t *s)
 {
     return AV_RB32(s) == 0x000001ba && (s[4] & 0xc0) == 0x40 && AV_RB32(s + 0x0e) == 0x000001bb &&
            AV_RB16(s + 0x12) == 0x0012 && AV_RB32(s + 0x26) == 0x000001bf &&
@@ -411,7 +412,7 @@ static int read_nav_pack(Scan *sc, int vtsn, uint32_t sector, NavFields *f)
     if (ret < 0) {
         av_log(sc->log, AV_LOG_DEBUG, "scan: title set %d: the NAV pack at sector %"PRIu32" could not be read\n",
                vtsn, sector);
-    } else if (is_nav_pack(buf)) {
+    } else if (ff_dvdvideo_is_nav_pack(buf)) {
         nav_fields(buf, f);
         return 1;
     } else {
@@ -533,7 +534,7 @@ static int fetch(Scan *sc, int id, uint32_t sector, uint8_t *buf)
     }
     sc->nb_reads++;
 
-    nav = is_nav_pack(buf);
+    nav = ff_dvdvideo_is_nav_pack(buf);
     if (nav) {
         ScanPCI pci;
 
@@ -1829,53 +1830,28 @@ end:
 
 /* ---- setting up ---- */
 
-/* Where the IFO puts a VOB group against the files on an image: a warning
- * when they start at different blocks, or when the files reach past the
- * backup IFO. Returns the absolute start of the title VOBs when both
- * agree (and they are one run of blocks), else 0. */
-static uint32_t check_vob_layout(Scan *sc, int vtsn)
+/* Images: the image block the title VOBs of title set vtsn start at by the IFO
+ * (the IFO's block + vtstt_vobs), unless the file system puts VTS_nn_1.VOB
+ * elsewhere; title sets with a known start share their NAV records by image
+ * block. 0 = unknown (folders): records are kept per title set. */
+static uint32_t title_vobs_base(Scan *sc, int vtsn)
 {
-    const ifo_handle_t *ifo = sc->ifo[vtsn];
-    char name[32], what_set[32];
-    int64_t ifo_sector, sectors, image_sector;
-    uint32_t base = 0;
+    char name[32];
+    int64_t ifo_sector, vob_sector;
+    uint32_t s;
 
-    snprintf(name, sizeof(name), vtsn ? "VTS_%02d_0.IFO" : "VIDEO_TS.IFO", vtsn);
-    snprintf(what_set, sizeof(what_set), vtsn ? "Title set %d" : "The video manager", vtsn);
+    snprintf(name, sizeof(name), "VTS_%02d_0.IFO", vtsn);
     if ((ifo_sector = ff_dvdvideo_source_file_sector(sc->src, name)) < 0)
-        return 0;   /* a folder: the files are all there is */
-    for (int menu = 1; menu >= (vtsn ? 0 : 1); menu--) {
-        uint32_t bup = vtsn ? ifo->vtsi_mat->vts_last_sector - (ifo->vtsi_mat->vtsi_last_sector & 0x1ffff)
-                            : ifo->vmgi_mat->vmg_last_sector - (ifo->vmgi_mat->vmgi_last_sector & 0x1ffff);
-        uint32_t from = vtsn ? (menu ? ifo->vtsi_mat->vtsm_vobs : ifo->vtsi_mat->vtstt_vobs)
-                             : ifo->vmgi_mat->vmgm_vobs;
-        uint32_t to   = vtsn && menu && ifo->vtsi_mat->vtstt_vobs > from ? ifo->vtsi_mat->vtstt_vobs : bup;
-        const char *what = menu ? "menu VOBs" : "title VOBs";
-        int ret = ff_dvdvideo_source_vob_layout(sc->src, vtsn, menu, &sectors, &image_sector);
-
-        if (!from || ret == AVERROR(ENOENT))
-            continue;
-        if (ret < 0 || image_sector < 0) {
-            av_log(sc->log, AV_LOG_WARNING, "%s: the %s are not stored as one run of image blocks\n",
-                   what_set, what);
-            continue;
-        }
-        if (ifo_sector + from != image_sector)
-            av_log(sc->log, AV_LOG_WARNING, "%s: the IFO puts its %s at image block %"PRId64", the file "
-                   "system at block %"PRId64"\n", what_set, what, ifo_sector + from, image_sector);
-        else if (!menu)
-            base = image_sector;
-        /* the IFO's range ends where the backup IFO starts; authoring can
-         * leave unrecorded blocks before it (16 or fewer on the corpus), so
-         * only files reaching past it are a disagreement */
-        if (to > from && sectors > to - from)
-            av_log(sc->log, AV_LOG_WARNING, "%s: the files of its %s hold %"PRId64" blocks, %"PRId64" more than "
-                   "the IFO leaves before the backup IFO\n", what_set, what, sectors, sectors - (to - from));
-        else if (to > from && sectors < to - from)
-            av_log(sc->log, AV_LOG_DEBUG, "scan: %s: %"PRId64" blocks between the end of its %s and the backup "
-                   "IFO\n", what_set, to - from - sectors, what);
+        return 0;
+    s = ifo_sector + sc->ifo[vtsn]->vtsi_mat->vtstt_vobs;
+    snprintf(name, sizeof(name), "VTS_%02d_1.VOB", vtsn);
+    vob_sector = ff_dvdvideo_source_file_sector(sc->src, name);
+    if (vob_sector > 0 && (uint32_t)vob_sector != s) {
+        av_log(sc->log, AV_LOG_DEBUG, "scan: title set %d: title VOBs at image block %"PRIu32" by the IFO, at "
+               "%"PRId64" by the file system\n", vtsn, s, vob_sector);
+        return 0;
     }
-    return base;
+    return s;
 }
 
 /* The title VOBs' sector range of title set vts (from the title search
@@ -2004,10 +1980,9 @@ int ff_dvdvideo_scan(void *log, DVDVideoSource *src, DVDVideoScanTrace trace, vo
     for (int n = 1; n <= sc.nb_vts; n++)
         if (!(sc.ifo[n] = ifoOpen(dvdread, n)))
             av_log(log, AV_LOG_DEBUG, "scan: VTS_%02d_0.IFO is not open, not given to the navigator\n", n);
-    check_vob_layout(&sc, 0);
     for (int n = 1; n <= sc.nb_vts; n++)
         if (sc.ifo[n])
-            sc.title_vobs_base[n] = check_vob_layout(&sc, n);
+            sc.title_vobs_base[n] = title_vobs_base(&sc, n);
     for (int n = 1; n < sc.nb_vts && !overlapping; n++)
         overlapping = title_vobs_overlap(&sc, n);
     sc.no_snapshot = overlapping ? nr_of_titles(&sc) >= 16 : nr_of_titles(&sc) > 0x60;

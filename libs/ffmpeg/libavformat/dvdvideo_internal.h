@@ -196,19 +196,17 @@ int ff_dvdvideo_source_descramble(DVDVideoSource *src, int vtsn, int menu, uint8
  * first, then in VIDEO_TS, names ignoring case. */
 int ff_dvdvideo_source_find(DVDVideoSource *src, const char *name, char *path, size_t size);
 /* A VOB group: the menu VOB of title set vtsn (menu set; VIDEO_TS.VOB for 0)
- * or its title VOBs VTS_nn_1.VOB up to the first missing one, read one after
- * the other as libdvdread does. Reads block `sector` of the group with the
- * given read attempts (a partial last block of a file padded with zeros):
- * 0, AVERROR(ENOENT) when the group has no file, AVERROR_EOF past its end, or
- * a read error. */
+ * or its title VOBs. Disc folder: the files (title VOBs VTS_nn_1.VOB up to the
+ * first missing one, read one after the other as libdvdread does). Disc image:
+ * the image blocks the IFO places them at (a title set's menu VOBs up to its
+ * title VOBs, the rest up to the end of the image). Reads block `sector` of the
+ * group with the given read attempts (a partial last block of a file padded
+ * with zeros): 0, AVERROR(ENOENT) when a folder has no file of the group,
+ * AVERROR_EOF past its end, or a read error. */
 int ff_dvdvideo_source_vob_read(DVDVideoSource *src, int vtsn, int menu, int64_t sector, uint8_t *buf,
                                 int attempts);
-/* A VOB group's size in blocks and, on an image, the image block it starts at
- * when the whole group is one run of image blocks (else -1; -1 for folders). */
-int ff_dvdvideo_source_vob_layout(DVDVideoSource *src, int vtsn, int menu, int64_t *sectors,
-                                  int64_t *image_sector);
-/* The image block a file of the disc starts at; -1 for folders, a missing file
- * or one without recorded data. */
+/* The image block of a file recorded as one extent (0xfffffffe for a run that
+ * is not recorded); -1 for folders, a missing file or one in several extents. */
 int64_t ff_dvdvideo_source_file_sector(DVDVideoSource *src, const char *name);
 
 /* dvdvideo_css.c */
@@ -224,6 +222,9 @@ int ff_dvdvideo_css_content_valid(const uint8_t *sec);
 int ff_dvdvideo_css_can_test(const uint8_t *sec);
 
 /* dvdvideo_scan.c */
+/* Whether a 2048-byte block is a NAV pack (pack header, system header, PCI and
+ * DSI packets where DVD-Video puts them). */
+int ff_dvdvideo_is_nav_pack(const uint8_t *block);
 /* The sequence after srand(seed) (seed 0 counts as 1, as in glibc). */
 void ff_dvdvideo_rand_init(DVDVideoRand *r, uint32_t seed);
 /* The next value, 0..RAND_MAX (r is a DVDVideoRand); fits dvdnav_set_random_source(). */
