@@ -120,6 +120,20 @@ DVDNAV_API dvdnav_status_t dvdnav_open_stream2(dvdnav_t **dest,
                                     void *priv, const dvdnav_logger_cb *,
                                     dvdnav_stream_cb *stream_cb);
 
+/*
+ * Opens a DVD whose files are served by the application: libdvdread reads
+ * the directory "path" through the callbacks in "fs" (see DVDOpenFiles() in
+ * <dvdread/dvd_reader.h>), so nothing is read from the real file system.
+ *
+ * The navigator takes "fs" over in every case: it is closed with fs->close()
+ * when the navigator is closed, or before this function returns an error.
+ * Copies made with dvdnav_dup() share it.
+ */
+DVDNAV_API dvdnav_status_t dvdnav_open_files(dvdnav_t **dest,
+                                  void *priv, const dvdnav_logger_cb *,
+                                  const char *path,
+                                  dvd_reader_filesystem_h *fs);
+
 DVDNAV_API dvdnav_status_t dvdnav_dup(dvdnav_t **dest, dvdnav_t *src);
 DVDNAV_API dvdnav_status_t dvdnav_free_dup(dvdnav_t * _this);
 
