@@ -186,6 +186,18 @@ dvd_reader_filesystem_h *ff_dvdvideo_source_files(DVDVideoSource *src);
  * scrambled block. 0 = not scrambled, 1 = descrambled, < 0 = error (logged). */
 int ff_dvdvideo_source_descramble(DVDVideoSource *src, int vtsn, int menu, uint8_t *block);
 
+/* dvdvideo_css.c */
+/* Offset of the scrambled PES of a sector: an MPEG-2 pack whose first PES is
+ * private stream 1, video 0xE0 or MPEG audio 0xC0-0xC7 with its
+ * PES_scrambling_control bits set; 0 for a usable pack that is not scrambled,
+ * -1 for a sector that is not a usable pack. */
+int ff_dvdvideo_css_scrambled_pes(const uint8_t *sec);
+/* Whether a descrambled sector holds well-formed AC-3 or MPEG-2 video content. */
+int ff_dvdvideo_css_content_valid(const uint8_t *sec);
+/* Whether ff_dvdvideo_css_content_valid() can tell anything about a sector:
+ * what it reads from the clear bytes is in place. */
+int ff_dvdvideo_css_can_test(const uint8_t *sec);
+
 /* dvdvideo_ifo.c */
 void ff_dvdvideo_ifo_close(AVFormatContext *s);
 int ff_dvdvideo_ifo_open(AVFormatContext *s);

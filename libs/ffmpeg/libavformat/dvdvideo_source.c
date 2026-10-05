@@ -422,8 +422,33 @@ static int find_vob(DVDVideoSource *src, const char *name, char *path, size_t si
     return 0;
 }
 
+/* Confirm a title key on sectors first..first + count - 1 of from: the first
+ * scrambled sector the content check can test must descramble to valid
+ * content. 1 = confirmed (*at = the sector), 0 = no sector could be tested,
+ * -1 = every tested sector failed (*tested of them). */
+static int css_confirm_key(DVDVideoSource *src, DiscIOSource *from, int64_t first, int64_t count,
+                           const uint8_t *key, int64_t *at, int *tested)
+{
+    uint8_t sec[DVDVIDEO_BLOCK_SIZE];
+
+    *tested = 0;
+    for (int64_t s = first; s < first + count; s++) {
+        if (ff_discio_read_blocks(from, s * DVDVIDEO_BLOCK_SIZE, sec, sizeof(sec), src->attempts, 1) < 0)
+            continue;
+        if (ff_dvdvideo_css_scrambled_pes(sec) != 14 || !ff_dvdvideo_css_can_test(sec))
+            continue;
+        (*tested)++;
+        if (dvdcss_unscramble_sector(key, sec) == 1 && ff_dvdvideo_css_content_valid(sec)) {
+            *at = s;
+            return 1;
+        }
+    }
+    return *tested ? -1 : 0;
+}
+
 /* Find the CSS key of a VOB group: libdvdcss reads the VOB data (from its first
- * block) through discio and returns the key, or finds the group unscrambled. */
+ * block) through discio and returns the key, which is then confirmed on the
+ * VOB's sectors by the content check. */
 static void css_find_key(DVDVideoSource *src, int vtsn, int menu, CSSGroup *g)
 {
     dvdcss_stream_cb cb = { .pf_seek = css_stream_seek, .pf_read = css_stream_read };
@@ -431,8 +456,9 @@ static void css_find_key(DVDVideoSource *src, int vtsn, int menu, CSSGroup *g)
     DiscIOSource *host = NULL;
     char name[32], path[600];
     const char *what = menu ? "menu" : "title";
+    int64_t count, at = 0;
     dvdcss_t css;
-    int block = 0, ret;
+    int block = 0, ret, tested;
 
     g->state = CSS_FAILED;
     if (menu)
@@ -453,6 +479,7 @@ static void css_find_key(DVDVideoSource *src, int vtsn, int menu, CSSGroup *g)
             return;
         host->attempts = src->attempts;
         st.src = host;
+        count  = host->size / DVDVIDEO_BLOCK_SIZE;
     } else {
         DiscIOFile *f = NULL;
 
@@ -463,6 +490,7 @@ static void css_find_key(DVDVideoSource *src, int vtsn, int menu, CSSGroup *g)
             return;
         }
         block = f->extents[0].sector;
+        count = f->extents[0].count;
         ff_discio_file_free(&f);
         st.src = src->image;
     }
@@ -471,34 +499,53 @@ static void css_find_key(DVDVideoSource *src, int vtsn, int menu, CSSGroup *g)
            vtsn, what, path, block);
     if (!(css = dvdcss_open_stream_uncached(&st, &cb))) {
         av_log(src->log, AV_LOG_ERROR, "CSS: libdvdcss could not be started on %s\n", path);
-        ff_discio_source_free(&host);
-        return;
+        goto end;
     }
     ret = dvdcss_title_key(css, block, g->key);
     dvdcss_close(css);
-    ff_discio_source_free(&host);
 
-    if (ret > 0) {
-        g->state = CSS_KEY;
-        av_log(src->log, AV_LOG_INFO, "CSS: title set %d (%s VOBs) is scrambled; its title key was found\n",
-               vtsn, what);
-        av_log(src->log, AV_LOG_DEBUG, "CSS: title key %02x:%02x:%02x:%02x:%02x\n",
-               g->key[0], g->key[1], g->key[2], g->key[3], g->key[4]);
-    } else if (!ret) {
+    if (!ret) {
         g->state = CSS_CLEAR;
         av_log(src->log, AV_LOG_WARNING, "CSS: libdvdcss found no scrambled sector in title set %d (%s VOBs), "
                "but one was met\n", vtsn, what);
-    } else {
+        goto end;
+    }
+    if (ret < 0) {
         av_log(src->log, AV_LOG_ERROR, "CSS: the title key of title set %d (%s VOBs) could not be found\n",
                vtsn, what);
+        goto end;
     }
+    av_log(src->log, AV_LOG_DEBUG, "CSS: title key %02x:%02x:%02x:%02x:%02x\n",
+           g->key[0], g->key[1], g->key[2], g->key[3], g->key[4]);
+
+    switch (css_confirm_key(src, st.src, block, count, g->key, &at, &tested)) {
+    case 1:
+        g->state = CSS_KEY;
+        av_log(src->log, AV_LOG_INFO, "CSS: title set %d (%s VOBs) is scrambled; its title key was found and "
+               "confirmed (block %"PRId64" of %s descrambles to valid content)\n", vtsn, what, at,
+               src->folder ? path : "the image");
+        break;
+    case 0:
+        g->state = CSS_KEY;
+        av_log(src->log, AV_LOG_WARNING, "CSS: title set %d (%s VOBs): title key found, but no block of %s can "
+               "confirm it; it is used unconfirmed\n", vtsn, what, path);
+        break;
+    default:
+        av_log(src->log, AV_LOG_ERROR, "CSS: title set %d (%s VOBs): the title key libdvdcss found is wrong: "
+               "none of %d scrambled blocks descrambles to valid content\n", vtsn, what, tested);
+        break;
+    }
+
+end:
+    ff_discio_source_free(&host);
 }
 
 int ff_dvdvideo_source_descramble(DVDVideoSource *src, int vtsn, int menu, uint8_t *block)
 {
     CSSGroup *g;
+    int pes = ff_dvdvideo_css_scrambled_pes(block);
 
-    if (!(block[0x14] & 0x30))   /* PES_scrambling_control */
+    if (pes <= 0)
         return 0;
     if (vtsn < 0 || vtsn > 99)
         return AVERROR(EINVAL);
@@ -512,7 +559,13 @@ int ff_dvdvideo_source_descramble(DVDVideoSource *src, int vtsn, int menu, uint8
         g->warned = 1;
         return AVERROR_INVALIDDATA;
     }
-    return dvdcss_unscramble_sector(g->key, block) < 0 ? AVERROR_BUG : 1;
+    if (pes != 14) {
+        /* the descrambler reads the scrambling flag at the usual place only */
+        av_log(src->log, AV_LOG_ERROR, "CSS: a scrambled sector whose PES starts at byte %d (after pack "
+               "stuffing) cannot be descrambled\n", pes);
+        return AVERROR_PATCHWELCOME;
+    }
+    return dvdcss_unscramble_sector(g->key, block) == 1 ? 1 : AVERROR_BUG;
 }
 
 /* ---- opening ---- */

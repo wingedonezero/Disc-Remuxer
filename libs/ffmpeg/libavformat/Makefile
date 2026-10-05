@@ -212,7 +212,7 @@ OBJS-$(CONFIG_DVBSUB_DEMUXER)            += dvbsub.o rawdec.o
 OBJS-$(CONFIG_DVBTXT_DEMUXER)            += dvbtxt.o rawdec.o
 OBJS-$(CONFIG_DVDVIDEO_DEMUXER)          += dvdvideodec.o dvdvideo_chapters.o \
                                             dvdvideo_ifo.o dvdvideo_play.o     \
-                                            dvdvideo_source.o                  \
+                                            dvdvideo_source.o dvdvideo_css.o   \
                                             dvdvideo_streams.o dvdclut.o       \
                                             discio_read.o discio_fs.o discio_iso9660.o \
                                             discio_udf_netbsd.o discio_udf_linux.o
