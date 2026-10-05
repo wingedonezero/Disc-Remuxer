@@ -3,9 +3,9 @@
 //! workspace, plus the `ffmpeg` and `ffprobe` programs, which are copied next
 //! to our binary in `target/<profile>/` for testing.
 //!
-//! FFmpeg finds libdvdread / libdvdnav / expat through pkg-config; the `.pc`
-//! files are written here and point at the static libraries the
-//! `libdvd*-sys` / `libexpat-sys` crates built. Autodetection is off, so the
+//! FFmpeg finds libdvdread / libdvdnav / expat / libaacs through pkg-config;
+//! the `.pc` files are written here and point at the static libraries the
+//! `libdvd*-sys` / `libexpat-sys` / `libaacs-sys` crates built. Autodetection is off, so the
 //! build never picks up whatever happens to be installed on the host: every
 //! external library is enabled by name.
 //!
@@ -46,6 +46,7 @@ fn main() {
 
     write_dvd_pc_files(&pc_dir);
     write_expat_pc_file(&pc_dir);
+    write_aacs_pc_file(&pc_dir);
 
     let args = [
         format!("--prefix={}", prefix.display()),
@@ -53,6 +54,7 @@ fn main() {
         "--enable-libdvdnav".into(),
         "--enable-libdvdread".into(),
         "--enable-libexpat".into(),
+        "--enable-libaacs".into(),
         "--disable-autodetect".into(),
         "--enable-static".into(),
         "--disable-shared".into(),
@@ -160,6 +162,23 @@ fn write_expat_pc_file(pc_dir: &Path) {
     .unwrap();
 }
 
+/// `libaacs.pc` for FFmpeg's configure: our `libaacs-sys` build with its
+/// libgcrypt / libgpg-error.
+fn write_aacs_pc_file(pc_dir: &Path) {
+    let dep = |name: &str| env::var(name).unwrap_or_else(|_| panic!("{name} not set"));
+    fs::write(
+        pc_dir.join("libaacs.pc"),
+        format!(
+            "Name: libaacs\nDescription: libaacs built by disc-remuxer\n\
+             Version: {}\nCflags: {}\nLibs: {}\n",
+            dep("DEP_AACS_VERSION"),
+            dep("DEP_AACS_CFLAGS"),
+            dep("DEP_AACS_LIBS")
+        ),
+    )
+    .unwrap();
+}
+
 /// System libraries FFmpeg's static libraries need (from the installed
 /// `.pc` files), minus the FFmpeg, DVD and expat libraries linked separately.
 fn system_libs(ffmpeg_pc: &Path, dvd_pc: &Path) -> Vec<String> {
@@ -180,7 +199,7 @@ fn system_libs(ffmpeg_pc: &Path, dvd_pc: &Path) -> Vec<String> {
     let ours: Vec<&str> = LIBS
         .iter()
         .copied()
-        .chain(["dvdnav", "dvdread", "dvdcss", "expat"])
+        .chain(["dvdnav", "dvdread", "dvdcss", "expat", "aacs", "gcrypt", "gpg-error"])
         .collect();
     let mut libs = Vec::new();
     for flag in String::from_utf8(output.stdout).unwrap().split_whitespace() {

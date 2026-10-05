@@ -193,6 +193,7 @@ name = "ffmpeg-sys"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "libaacs-sys",
  "libdvdcss-sys",
  "libdvdnav-sys",
  "libdvdread-sys",

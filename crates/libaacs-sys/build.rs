@@ -36,6 +36,20 @@ fn main() {
     println!("cargo:root={}", prefix.display());
     println!("cargo:include={}", prefix.join("include").display());
     println!("cargo:version=0.12.0");
+    // Compile and link flags of libaacs with its libgcrypt / libgpg-error, for
+    // dependents that only see this crate (DEP_AACS_CFLAGS, DEP_AACS_LIBS).
+    println!(
+        "cargo:cflags=-I{} -I{}/include -I{}/include",
+        prefix.join("include").display(),
+        dep("DEP_GCRYPT_ROOT"),
+        dep("DEP_GPG_ERROR_ROOT")
+    );
+    println!(
+        "cargo:libs=-L{} -laacs -L{}/lib -lgcrypt -L{}/lib -lgpg-error",
+        prefix.join("lib").display(),
+        dep("DEP_GCRYPT_ROOT"),
+        dep("DEP_GPG_ERROR_ROOT")
+    );
     println!("cargo:rerun-if-changed={}", src.display());
     println!("cargo:rerun-if-changed=build.rs");
 }
