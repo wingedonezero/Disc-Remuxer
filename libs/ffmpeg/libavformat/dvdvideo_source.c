@@ -124,7 +124,76 @@ typedef struct FileHandle {
     DiscIOSource   *host;     /* disc folder: the host file */
     int64_t         size;
     int64_t         pos;
+    char           *path;     /* as libdvdread named it (tidied) */
+    /* an IFO file: its backup copy, opened at the first block that cannot
+     * be read (a BUP holds the same bytes as its IFO) */
+    int             is_ifo;
+    int             bup_tried;
+    DiscIOFile     *bup_file;
+    DiscIOSource   *bup_host;
+    int64_t         bup_size;
 } FileHandle;
+
+/* Open the backup copy of an IFO (same name, .BUP for .IFO). */
+static void open_bup(FileHandle *h)
+{
+    DVDVideoSource *src = h->src;
+    size_t n = strlen(h->path);
+    char *bup;
+
+    h->bup_tried = 1;
+    if (!(bup = av_strdup(h->path)))
+        return;
+    memcpy(bup + n - 3, h->path[n - 3] == 'I' ? "BUP" : "bup", 3);
+    if (src->folder) {
+        char *p = host_path(src, bup);
+
+        if (p && ff_discio_source_open_file(src->log, p, &h->bup_host) >= 0) {
+            h->bup_host->attempts = src->attempts;
+            h->bup_size = h->bup_host->size;
+        }
+        av_free(p);
+    } else if (src->fs->ops->open_file(src->fs, bup, &h->bup_file) >= 0) {
+        h->bup_size = h->bup_file->size;
+    }
+    if (!h->bup_file && !h->bup_host)
+        av_log(src->log, AV_LOG_ERROR, "%s cannot be opened as the backup copy of %s\n", bup, h->path);
+    av_free(bup);
+}
+
+static int read_ifo_or_bup_part(FileHandle *h, int64_t pos, uint8_t *buf, int n, int bup)
+{
+    if (bup)
+        return h->bup_host ? ff_discio_read_bytes(h->bup_host, pos, buf, n, h->bup_host->attempts, 0)
+                           : ff_discio_file_read(h->src->fs, h->bup_file, pos, buf, n);
+    return h->host ? ff_discio_read_bytes(h->host, pos, buf, n, h->host->attempts, 0)
+                   : ff_discio_file_read(h->src->fs, h->file, pos, buf, n);
+}
+
+/* An IFO read that failed, again block by block: a block that cannot be
+ * read from the IFO is read from the same place of its BUP. */
+static int read_ifo_blocks(FileHandle *h, int64_t pos, uint8_t *buf, int len)
+{
+    for (int done = 0; done < len;) {
+        int64_t at = pos + done;
+        int n = FFMIN(len - done, DISCIO_BLOCK_SIZE - (int)(at % DISCIO_BLOCK_SIZE));
+
+        if (read_ifo_or_bup_part(h, at, buf + done, n, 0) < 0) {
+            if (!h->bup_tried)
+                open_bup(h);
+            if ((!h->bup_file && !h->bup_host) || at + n > h->bup_size ||
+                read_ifo_or_bup_part(h, at, buf + done, n, 1) < 0) {
+                av_log(h->src->log, AV_LOG_ERROR, "%s: block %"PRId64" can be read neither from the IFO nor from "
+                       "its backup copy\n", h->path, at / DISCIO_BLOCK_SIZE);
+                return AVERROR(EIO);
+            }
+            av_log(h->src->log, AV_LOG_WARNING, "%s: block %"PRId64" cannot be read; it was read from the "
+                   "backup copy (BUP) instead\n", h->path, at / DISCIO_BLOCK_SIZE);
+        }
+        done += n;
+    }
+    return 0;
+}
 
 static DVDVideoSource *source_of(dvd_reader_filesystem_h *fs)
 {
@@ -250,11 +319,18 @@ static void *fs_file_open(dvd_reader_filesystem_h *fs, const char *path)
     if (!h)
         return NULL;
     h->src = src;
+    tidy_path(path, tidy, sizeof(tidy));
+    if (!(h->path = av_strdup(tidy))) {
+        av_free(h);
+        return NULL;
+    }
+    h->is_ifo = strlen(tidy) > 4 && !av_strcasecmp(tidy + strlen(tidy) - 4, ".IFO");
     if (src->folder) {
         char *p = host_path(src, path);
 
         if (!p || ff_discio_source_open_file(src->log, p, &h->host) < 0) {
             av_free(p);
+            av_free(h->path);
             av_free(h);
             return NULL;
         }
@@ -263,8 +339,8 @@ static void *fs_file_open(dvd_reader_filesystem_h *fs, const char *path)
         h->size = h->host->size;
         return h;
     }
-    tidy_path(path, tidy, sizeof(tidy));
     if (src->fs->ops->open_file(src->fs, tidy, &h->file) < 0) {
+        av_free(h->path);
         av_free(h);
         return NULL;
     }
@@ -281,8 +357,9 @@ static ssize_t fs_file_read(void *file, char *buf, size_t size)
     n = FFMIN(n, INT_MAX & ~(DISCIO_BLOCK_SIZE - 1));
     if (!n)
         return 0;
-    ret = h->host ? ff_discio_read_bytes(h->host, h->pos, (uint8_t *)buf, n, h->host->attempts, 0)
-                  : ff_discio_file_read(h->src->fs, h->file, h->pos, (uint8_t *)buf, n);
+    ret = read_ifo_or_bup_part(h, h->pos, (uint8_t *)buf, n, 0);
+    if (ret < 0 && h->is_ifo)
+        ret = read_ifo_blocks(h, h->pos, (uint8_t *)buf, n);
     if (ret < 0)
         return -1;
     h->pos += n;
@@ -308,6 +385,9 @@ static int fs_file_close(void *file)
 
     ff_discio_file_free(&h->file);
     ff_discio_source_free(&h->host);
+    ff_discio_file_free(&h->bup_file);
+    ff_discio_source_free(&h->bup_host);
+    av_free(h->path);
     av_free(h);
     return 0;
 }
@@ -643,6 +723,146 @@ end:
     return ret;
 }
 
+/* ---- IFO layout checks ---- */
+
+/* The first block of an IFO (through the file callbacks: a block the IFO
+ * cannot give comes from its BUP). */
+static int read_ifo_header(DVDVideoSource *src, const char *path, uint8_t *buf)
+{
+    dvd_reader_filesystem_h fs = { .internal = src };
+    FileHandle *h = fs_file_open(&fs, path);
+    int ret;
+
+    if (!h)
+        return AVERROR(ENOENT);
+    ret = h->size >= DISCIO_BLOCK_SIZE && fs_file_read(h, (char *)buf, DISCIO_BLOCK_SIZE) == DISCIO_BLOCK_SIZE
+          ? 0 : AVERROR_INVALIDDATA;
+    fs_file_close(h);
+    return ret;
+}
+
+/* Sectors of a file of the disc folder (0 when it does not exist). */
+static int64_t folder_file_sectors(DVDVideoSource *src, const char *name)
+{
+    struct stat st;
+    char path[600], *p;
+    int64_t n = 0;
+
+    if (find_vob(src, name, path, sizeof(path)) < 0 || !(p = host_path(src, path)))
+        return 0;
+    if (!stat(p, &st) && S_ISREG(st.st_mode))
+        n = (st.st_size + DISCIO_BLOCK_SIZE - 1) / DISCIO_BLOCK_SIZE;
+    av_free(p);
+    return n;
+}
+
+/* First sector of a file of the image, -1 when it is missing or not recorded. */
+static int64_t image_file_sector(DVDVideoSource *src, const char *name)
+{
+    DiscIOFile *f = NULL;
+    char path[600];
+    int64_t sector = -1;
+
+    if (find_vob(src, name, path, sizeof(path)) < 0 || src->fs->ops->open_file(src->fs, path, &f) < 0)
+        return -1;
+    if (f->nb_extents > 0 && f->extents[0].sector != DISCIO_SECTOR_NOT_RECORDED)
+        sector = f->extents[0].sector;
+    ff_discio_file_free(&f);
+    return sector;
+}
+
+/* Where the IFO header puts the BUP (vmg/vts_last_sector minus
+ * vmgi/vtsi_last_sector, sectors after the IFO), against the disc: on an
+ * image the BUP's position; in a folder the IFO, menu VOB and title VOB files,
+ * which the BUP follows on the disc. Warnings only. */
+static void check_bup_position(DVDVideoSource *src, int vtsn, const uint8_t *hdr)
+{
+    char base[16], name[32];
+    uint32_t want = AV_RB32(hdr + 0x0c) - (AV_RB32(hdr + 0x1c) & 0x1ffff);
+
+    if (vtsn)
+        snprintf(base, sizeof(base), "VTS_%02d_0", vtsn);
+    else
+        snprintf(base, sizeof(base), "VIDEO_TS");
+    if (src->folder) {
+        int64_t have;
+
+        snprintf(name, sizeof(name), "%s.IFO", base);
+        have = folder_file_sectors(src, name);
+        snprintf(name, sizeof(name), "%s.VOB", base);
+        have += folder_file_sectors(src, name);
+        for (int k = 1; vtsn && k <= 9; k++) {
+            int64_t n;
+
+            snprintf(name, sizeof(name), "VTS_%02d_%d.VOB", vtsn, k);
+            if (!(n = folder_file_sectors(src, name)))
+                break;
+            have += n;
+        }
+        if (have != want)
+            av_log(src->log, AV_LOG_WARNING, "%s.IFO: its header puts the backup copy (BUP) %"PRIu32" sectors after "
+                   "the IFO; the IFO and VOB files before it hold %"PRId64" sectors (%s)\n", base, want, have,
+                   have < want ? "the rest lay outside the files on the disc, or a file is short"
+                               : "the files hold more than the header counts");
+    } else {
+        int64_t ifo, bup;
+
+        snprintf(name, sizeof(name), "%s.IFO", base);
+        ifo = image_file_sector(src, name);
+        snprintf(name, sizeof(name), "%s.BUP", base);
+        bup = image_file_sector(src, name);
+        if (ifo < 0)
+            return;
+        if (bup < 0)
+            av_log(src->log, AV_LOG_WARNING, "%s.BUP (the backup copy of %s.IFO) is missing on the image\n",
+                   base, base);
+        else if (bup - ifo != want)
+            av_log(src->log, AV_LOG_WARNING, "%s.IFO: its header puts the backup copy (BUP) %"PRIu32" sectors "
+                   "after the IFO; on the image it is %"PRId64" sectors after it\n", base, want, bup - ifo);
+    }
+}
+
+/* The IFO layout checks of the whole disc: the VMG and every title set. */
+static void check_ifo_layout(DVDVideoSource *src)
+{
+    uint8_t hdr[DISCIO_BLOCK_SIZE];
+    char path[600], name[32];
+    int nts;
+
+    if (find_vob(src, "VIDEO_TS.IFO", path, sizeof(path)) < 0 || read_ifo_header(src, path, hdr) < 0) {
+        av_log(src->log, AV_LOG_WARNING, "VIDEO_TS.IFO cannot be read for the layout checks\n");
+        return;
+    }
+    /* a provider identifier naming a ripping program that rewrites discs */
+    for (int i = 0x40; i <= 0x5c; i++)
+        if (!memcmp(hdr + i, "(Fab", 4)) {
+            av_log(src->log, AV_LOG_WARNING, "The disc was processed by DVDFab or MacTheRipper (provider "
+                   "identifier '%.32s'), which are known to produce damaged VOB files; the original disc is the "
+                   "better source\n", (const char *)hdr + 0x40);
+            break;
+        }
+    check_bup_position(src, 0, hdr);
+    nts = AV_RB16(hdr + 0x3e);   /* vmg_nr_of_title_sets */
+    if (nts < 1 || nts > 99) {
+        av_log(src->log, AV_LOG_WARNING, "VIDEO_TS.IFO gives %d title sets (DVD-Video allows 1 to 99); the title "
+               "sets are not checked\n", nts);
+        return;
+    }
+    for (int n = 1; n <= nts; n++) {
+        snprintf(name, sizeof(name), "VTS_%02d_0.IFO", n);
+        if (find_vob(src, name, path, sizeof(path)) < 0) {
+            av_log(src->log, AV_LOG_WARNING, "%s (title set %d of %d) is missing\n", name, n, nts);
+            continue;
+        }
+        if (read_ifo_header(src, path, hdr) < 0) {
+            av_log(src->log, AV_LOG_WARNING, "%s cannot be read for the layout checks\n", name);
+            continue;
+        }
+        check_bup_position(src, n, hdr);
+    }
+    av_log(src->log, AV_LOG_VERBOSE, "IFO layout checked: the VMG and %d title set(s)\n", nts);
+}
+
 int ff_dvdvideo_source_open(void *log, const char *path, const DiscIOImageOptions *opts, int attempts,
                             DVDVideoSource **out)
 {
@@ -676,6 +896,7 @@ int ff_dvdvideo_source_open(void *log, const char *path, const DiscIOImageOption
             goto fail;
         }
         av_log(log, AV_LOG_INFO, "Reading the disc folder '%s'\n", src->folder);
+        check_ifo_layout(src);
         *out = src;
         return 0;
     }
@@ -708,6 +929,7 @@ int ff_dvdvideo_source_open(void *log, const char *path, const DiscIOImageOption
     }
     if ((ret = check_files_in_one_piece(src)) < 0)
         goto fail;
+    check_ifo_layout(src);
     *out = src;
     return 0;
 

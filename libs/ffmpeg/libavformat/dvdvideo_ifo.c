@@ -41,6 +41,58 @@ static void dvdvideo_libdvdread_log(void *opaque, dvd_logger_level_t level,
     av_log(s, lavu_level, "libdvdread: %s\n", msg_buf);
 }
 
+static int cmp_u32(const void *a, const void *b)
+{
+    uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+
+    return (x > y) - (x < y);
+}
+
+/* Every cell of the title set's PGCs must start (first_sector) and end
+ * (last_vobu_start_sector) on a VOBU the VOBU address map lists; the first
+ * cell that does not is reported: the map cannot be trusted for this title
+ * set. */
+static void check_vobu_map(AVFormatContext *s, int vtsn, const ifo_handle_t *ifo)
+{
+    const pgcit_t *pgcit = ifo->vts_pgcit;
+    const vobu_admap_t *map = ifo->vts_vobu_admap;
+    uint32_t *starts;
+    size_t nb;
+    int nb_cells = 0;
+
+    if (!pgcit || !map || !map->vobu_start_sectors || map->last_byte + 1 < VOBU_ADMAP_SIZE)
+        return;
+    nb = (map->last_byte + 1 - VOBU_ADMAP_SIZE) / 4;
+    if (!(starts = av_memdup(map->vobu_start_sectors, nb * sizeof(*starts))))
+        return;
+    qsort(starts, nb, sizeof(*starts), cmp_u32);
+    for (int i = 0; i < pgcit->nr_of_pgci_srp; i++) {
+        const pgc_t *pgc = pgcit->pgci_srp[i].pgc;
+
+        if (!pgc || !pgc->cell_playback)
+            continue;
+        for (int j = 0; j < pgc->nr_of_cells; j++) {
+            const cell_playback_t *cell = &pgc->cell_playback[j];
+            uint32_t first = cell->first_sector, last = cell->last_vobu_start_sector;
+            const uint32_t *missing = !bsearch(&first, starts, nb, sizeof(*starts), cmp_u32) ? &first :
+                                      !bsearch(&last,  starts, nb, sizeof(*starts), cmp_u32) ? &last  : NULL;
+
+            if (missing) {
+                av_log(s, AV_LOG_WARNING, "VTS %d: cell %d of PGC %d %s at sector %"PRIu32", which the VOBU "
+                       "address map (VTS_VOBU_ADMAP) does not list as a VOBU start; the map cannot be trusted "
+                       "for this title set\n", vtsn, j + 1, i + 1,
+                       missing == &first ? "starts" : "has its last VOBU", *missing);
+                av_free(starts);
+                return;
+            }
+            nb_cells++;
+        }
+    }
+    av_log(s, AV_LOG_VERBOSE, "VTS %d: the first and last VOBU of all %d cells are in the VOBU address map "
+           "(%zu entries)\n", vtsn, nb_cells, nb);
+    av_free(starts);
+}
+
 void ff_dvdvideo_ifo_close(AVFormatContext *s)
 {
     DVDVideoDemuxContext *c = s->priv_data;
@@ -97,6 +149,8 @@ int ff_dvdvideo_ifo_open(AVFormatContext *s)
 
             return AVERROR_EXTERNAL;
         }
+        if (c->vts_ifo)
+            check_vobu_map(s, c->opt_menu_vts, c->vts_ifo);
 
         return 0;
     }
@@ -134,6 +188,7 @@ int ff_dvdvideo_ifo_open(AVFormatContext *s)
 
         return AVERROR_EXTERNAL;
     }
+    check_vobu_map(s, title_info.title_set_nr, c->vts_ifo);
 
     if (title_info.vts_ttn < 1                                      ||
         title_info.vts_ttn > 99                                     ||
