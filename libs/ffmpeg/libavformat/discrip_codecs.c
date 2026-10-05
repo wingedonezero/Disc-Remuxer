@@ -423,15 +423,15 @@ static const DRAudioRules audio_latm = {
 };
 
 static const DRCodec codecs[] = {
-    { AV_CODEC_ID_MPEG1VIDEO,   "mpeg1video",   anchor_mpegvideo },
-    { AV_CODEC_ID_MPEG2VIDEO,   "mpeg2video",   anchor_mpegvideo },
+    { AV_CODEC_ID_MPEG1VIDEO,   "mpeg1video",   anchor_mpegvideo, NULL, NULL, &ff_discrip_video_mpv },
+    { AV_CODEC_ID_MPEG2VIDEO,   "mpeg2video",   anchor_mpegvideo, NULL, NULL, &ff_discrip_video_mpv },
     { AV_CODEC_ID_VC1,          "vc1",          anchor_vc1       },
     { AV_CODEC_ID_AC3,          "ac3",          anchor_unit, check_ac3,  &audio_ac3  },
     { AV_CODEC_ID_EAC3,         "eac3",         anchor_unit, check_eac3, &audio_eac3 },
-    { AV_CODEC_ID_TRUEHD,       "truehd",       anchor_unit, ff_discrip_mlp_check, &ff_discrip_audio_mlp,
-      ff_discrip_mlp_unit_size, ff_discrip_mlp_resync },
-    { AV_CODEC_ID_MLP,          "mlp",          anchor_unit, ff_discrip_mlp_check, &ff_discrip_audio_mlp,
-      ff_discrip_mlp_unit_size, ff_discrip_mlp_resync },
+    { .id = AV_CODEC_ID_TRUEHD, .name = "truehd", .anchor = anchor_unit, .check = ff_discrip_mlp_check,
+      .audio = &ff_discrip_audio_mlp, .unit_size = ff_discrip_mlp_unit_size, .resync = ff_discrip_mlp_resync },
+    { .id = AV_CODEC_ID_MLP, .name = "mlp", .anchor = anchor_unit, .check = ff_discrip_mlp_check,
+      .audio = &ff_discrip_audio_mlp, .unit_size = ff_discrip_mlp_unit_size, .resync = ff_discrip_mlp_resync },
     { AV_CODEC_ID_DTS,          "dts",          anchor_unit, check_dts,  &audio_dts  },
     { AV_CODEC_ID_PCM_DVD,      "pcm_dvd",      anchor_unit      },
     { AV_CODEC_ID_MP1,          "mp1",          anchor_unit, check_mpa,  &audio_mpa  },

@@ -62,6 +62,31 @@ typedef int (*DRFrameCb)(void *opaque, DRFrame *frame);
 void ff_discrip_frame_unref(DRFrame *frame);
 
 typedef struct DRAudio DRAudio;
+typedef struct DRVideo DRVideo;
+
+/* A video unit as the video timing sees it. */
+enum DRPictureType {
+    DR_PIC_I     = 2,   /**< starts a group, key frame */
+    DR_PIC_P     = 3,   /**< reference picture shown after the B pictures before it */
+    DR_PIC_B     = 4,   /**< shown before the preceding reference picture */
+    DR_PIC_OTHER = 5,   /**< not a picture (left out of the video track) */
+};
+
+typedef struct DRPicture {
+    int type;           /**< DRPictureType */
+    int order;          /**< display-order number (wraps at the codec's period) */
+    int fields;         /**< duration in fields (2 = one frame) */
+} DRPicture;
+
+/* What the core needs to know about a video codec. */
+typedef struct DRVideoRules {
+    /** The unit's picture values; may set the frame rate
+     *  (ff_discrip_video_set_rate) from headers it carries; < 0 on failure. */
+    int  (*picture)(DRVideo *v, const DRFrame *unit, DRPicture *pic);
+    int    order_period;   /**< wrap period of the display-order number */
+    size_t priv_size;
+    void (*close)(void *priv);
+} DRVideoRules;
 
 /* The stream values every unit's duration is computed from. */
 typedef struct DRAudioHeader {
@@ -109,6 +134,8 @@ typedef struct DRCodec {
     /** Audio rules; NULL for video / subtitles, or while not implemented
      *  (the track is then refused by ff_discrip_audio_open). */
     const DRAudioRules *audio;
+    /** Video rules; NULL for audio / subtitles (or while not implemented). */
+    const DRVideoRules *video;
     /** The core's own unit cutter, used instead of FFmpeg's parser where the
      *  parser drops bytes the reference keeps. unit_size: the size of the
      *  unit at buf (> 0), 0 when more bytes are needed, < 0 when no unit
@@ -236,6 +263,10 @@ enum DREventKind {
     DR_EV_VIDEO_ENDED,     /**< the video ends before this frame: the rest of the track is left out */
     DR_EV_TIME_ORDER,      /**< a frame leaves at or before the previous one (logged only) */
     DR_EV_RETIME,          /**< joiner: a frame early by more than its duration moved to the expected time */
+    DR_EV_VIDEO_TIMECODE,  /**< a picture's PES time differs from its grid time by >= 0.1 ms (dur = difference) */
+    DR_EV_VIDEO_TIMECODE_LIMIT, /**< 40 different differences reported: no more */
+    DR_EV_VIDEO_INVALID,   /**< end of the segment: count = pictures whose PES time was off the grid */
+    DR_EV_VIDEO_REPAIR,    /**< the grid followed a jump of the PES times (count = placeholders) */
 };
 
 typedef struct DREvent {
@@ -323,8 +354,35 @@ int  ff_discrip_join_finish(DRJoin *j);
 void ff_discrip_join_stats(const DRJoin *j, DRJoinStats *st);
 void ff_discrip_join_close(DRJoin **j);
 
+/* ---- Stage 2, video: pictures timed on a fixed grid (discrip_video.c) ----
+ * Every picture's time is base + position x field duration; positions are
+ * sums of field durations in display order. The base is voted from the
+ * pictures' PES times; PES times then only check the grid (0.1 ms), and a
+ * jump that most pictures follow moves the grid (placeholders fill it). */
+
+typedef struct DRVideoStats {
+    int64_t units, pictures, out, placeholders, invalid;
+    int     num, den;          /**< frame rate */
+    int64_t base;              /**< grid base (ticks) */
+} DRVideoStats;
+
+/**
+ * Video timing of one track in one segment. Units come from the cutter
+ * (ff_discrip_video_unit as its callback); frames go to cb in decode order
+ * with grid times; the last frame of each batch carries DR_F_BATCH.
+ */
+int  ff_discrip_video_open(DRVideo **v, void *logctx, enum AVCodecID codec, int track,
+                           DRFrameCb cb, void *opaque, DREventCb event, void *event_opaque);
+int  ff_discrip_video_unit(void *video, const DRUnit *unit);
+int  ff_discrip_video_flush(DRVideo *v);
+void ff_discrip_video_set_rate(DRVideo *v, int num, int den);
+void *ff_discrip_video_priv(DRVideo *v);
+void ff_discrip_video_stats(const DRVideo *v, DRVideoStats *st);
+void ff_discrip_video_close(DRVideo **v);
+
 /* rules of codecs in their own files */
 extern const DRAudioRules ff_discrip_audio_mlp;
+extern const DRVideoRules ff_discrip_video_mpv;
 int ff_discrip_mlp_check(const uint8_t *data, int size);
 int ff_discrip_mlp_unit_size(const uint8_t *buf, int avail);
 int ff_discrip_mlp_resync(const uint8_t *buf, int avail);

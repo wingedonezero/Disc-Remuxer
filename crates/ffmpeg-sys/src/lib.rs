@@ -932,6 +932,32 @@ pub mod discrip {
     pub const EV_RETIME: c_int = 11;
     pub const F_CHAPTER: u32 = 0x0010;
     pub const F_BATCH: u32 = 0x0040;
+    pub const F_DISCARD: u32 = 0x0008;
+    pub const EV_VIDEO_TIMECODE: c_int = 12;
+    pub const EV_VIDEO_TIMECODE_LIMIT: c_int = 13;
+    pub const EV_VIDEO_INVALID: c_int = 14;
+    pub const EV_VIDEO_REPAIR: c_int = 15;
+
+    /// `DRVideoStats`.
+    #[repr(C)]
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct VideoStats {
+        pub units: i64,
+        pub pictures: i64,
+        pub out: i64,
+        pub placeholders: i64,
+        pub invalid: i64,
+        pub num: c_int,
+        pub den: c_int,
+        pub base: i64,
+    }
+
+    /// `DRVideo` (only handled through pointers).
+    #[repr(C)]
+    pub struct Video {
+        _private: [u8; 0],
+    }
+
     pub const KIND_VIDEO: c_int = 1;
     pub const KIND_AUDIO: c_int = 2;
     pub const KIND_SUBTITLE: c_int = 3;
@@ -1078,6 +1104,20 @@ pub mod discrip {
         pub fn ff_discrip_join_finish(j: *mut Join) -> c_int;
         pub fn ff_discrip_join_stats(j: *const Join, st: *mut JoinStats);
         pub fn ff_discrip_join_close(j: *mut *mut Join);
+        pub fn ff_discrip_video_open(
+            out: *mut *mut Video,
+            log: *mut c_void,
+            codec: c_int,
+            track: c_int,
+            cb: FrameCb,
+            opaque: *mut c_void,
+            event: Option<EventCb>,
+            event_opaque: *mut c_void,
+        ) -> c_int;
+        pub fn ff_discrip_video_unit(video: *mut c_void, unit: *const Unit) -> c_int;
+        pub fn ff_discrip_video_flush(v: *mut Video) -> c_int;
+        pub fn ff_discrip_video_stats(v: *const Video, st: *mut VideoStats);
+        pub fn ff_discrip_video_close(v: *mut *mut Video);
     }
 
     /// FFmpeg's codec id for a codec name (e.g. "ac3"), or None.
