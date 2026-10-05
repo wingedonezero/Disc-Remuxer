@@ -2,7 +2,8 @@
 //!
 //! A disc is one of: a folder holding `VIDEO_TS` (DVD) or `BDMV` (Blu-ray); a
 //! folder holding the DVD files directly (`VIDEO_TS.IFO`) or the Blu-ray files
-//! directly (`index.bdmv`); a disc image file (`.iso`, `.img`). A folder that is
+//! directly (`index.bdmv`); a disc image file (`.iso`, `.img`). A path to a
+//! `VIDEO_TS.IFO` file stands for the folder holding it. A folder that is
 //! a disc is not searched further. Other folders are searched in name order, up
 //! to a depth limit; a folder may hold disc images and disc folders side by side
 //! (e.g. extras as an image next to the volumes as folders).
@@ -76,6 +77,13 @@ pub fn find(path: &Path, depth: u32) -> (Vec<Disc>, Vec<Skipped>) {
             name: stem(path),
             relative: PathBuf::from("."),
         });
+    } else if let Some(dir) = vmg_ifo_folder(path) {
+        discs.push(Disc {
+            path: dir.to_path_buf(),
+            layout: Layout::DvdFilesFolder,
+            name: folder_name(dir),
+            relative: PathBuf::from("."),
+        });
     } else if path.is_dir() {
         search(path, path, 0, depth, &mut discs, &mut skipped);
     }
@@ -122,6 +130,12 @@ fn disc_layout(dir: &Path) -> Option<Layout> {
     } else {
         None
     }
+}
+
+/// The folder of `p` when `p` is a `VIDEO_TS.IFO` file.
+fn vmg_ifo_folder(p: &Path) -> Option<&Path> {
+    let named = p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.eq_ignore_ascii_case("VIDEO_TS.IFO"));
+    if named && p.is_file() { p.parent() } else { None }
 }
 
 fn is_image(p: &Path) -> bool {

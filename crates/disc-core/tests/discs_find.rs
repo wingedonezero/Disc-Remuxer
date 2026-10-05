@@ -41,6 +41,20 @@ fn finds_every_kind_in_name_order_within_the_depth() {
 }
 
 #[test]
+fn a_path_to_video_ts_ifo_is_the_folder_holding_it() {
+    let lib = tree("ifo-path");
+    fs::write(lib.join("Show/Vol 1/VIDEO_TS/VIDEO_TS.IFO"), b"").unwrap();
+    let (one, _) = find(&lib.join("Show/Vol 1/VIDEO_TS/VIDEO_TS.IFO"), 0);
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].path, lib.join("Show/Vol 1/VIDEO_TS"));
+    assert_eq!((one[0].layout, one[0].name.as_str()), (Layout::DvdFilesFolder, "Vol 1"));
+    let (one, _) = find(&lib.join("Bare/VIDEO_TS.IFO"), 0);
+    assert_eq!((one[0].path.clone(), one[0].name.as_str()), (lib.join("Bare"), "Bare"));
+    // any other file is not a disc
+    assert!(find(&lib.join("notes.txt"), 0).0.is_empty());
+}
+
+#[test]
 fn job_folders_keep_the_structure_and_never_reuse_a_folder() {
     let lib = tree("folders");
     let out = lib.parent().unwrap().join("out");
