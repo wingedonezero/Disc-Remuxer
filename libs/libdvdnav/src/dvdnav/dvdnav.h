@@ -205,6 +205,29 @@ DVDNAV_API dvdnav_status_t dvdnav_get_region_mask(dvdnav_t *self, int32_t *regio
 DVDNAV_API dvdnav_status_t dvdnav_set_readahead_flag(dvdnav_t *self, int32_t read_ahead_flag);
 
 /*
+ * Navigation-only mode, for following the navigation of a disc without its
+ * contents. When the flag is non-zero, data blocks are never read or
+ * returned: where the next block would be a data block, the rest of the
+ * current VOBU is skipped and DVDNAV_BLOCK_OK is returned with len 0. Every
+ * VOBU's NAV packet is still read (DVDNAV_NAV_PACKET), except that in a title
+ * cell played in sequence the navigator may also skip whole VOBUs forward:
+ *  - only in a VTS title, in a program chain with sequential playback
+ *    (pg_playback_mode 0), in a cell without per-VOBU stills (playback_mode 0),
+ *    and never from a VOBU whose PCI carries highlight (button) information;
+ *  - in a cell that is not part of a block, not interleaved and not a
+ *    seamless angle cell, it jumps straight to the cell's last VOBU when that
+ *    is at least 0x1000 sectors ahead;
+ *  - otherwise it takes the first of the DSI's forward VOBU pointers
+ *    (vobu_sri.fwda[0..15], farthest first) whose offset is below 0x20000
+ *    sectors;
+ *  - a jump is taken only when it is more than 0x20 sectors and the target
+ *    sector is a NAV packet whose PCI names that very sector (a NAV packet
+ *    that names another sector is not followed).
+ * The flag is cleared by dvdnav_reset() and copied by dvdnav_dup().
+ */
+DVDNAV_API dvdnav_status_t dvdnav_set_nav_only_flag(dvdnav_t *self, int32_t nav_only);
+
+/*
  * Sets where the VM's Rnd operation (a set command that picks a number from
  * 1 to N) takes its random numbers from: fn(priv) must return a value from 0
  * to RAND_MAX, like rand(). NULL restores the default, rand().

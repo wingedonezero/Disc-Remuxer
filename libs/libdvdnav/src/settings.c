@@ -60,6 +60,11 @@ dvdnav_status_t dvdnav_set_random_source(dvdnav_t *this,
   return DVDNAV_STATUS_OK;
 }
 
+dvdnav_status_t dvdnav_set_nav_only_flag(dvdnav_t *this, int32_t nav_only) {
+  this->nav_only = nav_only;
+  return DVDNAV_STATUS_OK;
+}
+
 dvdnav_status_t dvdnav_get_readahead_flag(dvdnav_t *this, int32_t *flag) {
   (*flag) = this->use_read_ahead;
   return DVDNAV_STATUS_OK;

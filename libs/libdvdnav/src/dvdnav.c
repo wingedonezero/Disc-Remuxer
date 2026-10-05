@@ -65,6 +65,7 @@ static dvdnav_status_t dvdnav_clear(dvdnav_t * this) {
   this->spu_clut_changed = 0;
   this->started = 0;
   this->cur_cell_time = 0;
+  this->nav_only = 0;
 
   dvdnav_read_cache_clear(this->cache);
   pthread_mutex_unlock(&this->vm_lock);
@@ -420,6 +421,96 @@ static int32_t dvdnav_decode_packet(dvdnav_t *this, uint8_t *p,
     return 1;
   }
   return 0;
+}
+
+/*
+ * Navigation-only mode: true when the given sector holds a NAV packet that
+ * describes this very sector. The packet is decoded into temporaries; the
+ * navigator's own PCI, DSI and VOBU state are not touched. A failure is not
+ * an error, it only means "do not jump there".
+ */
+static int dvdnav_check_vobu(dvdnav_t *this, uint32_t sector) {
+  uint8_t data[DVD_VIDEO_LB_LEN];
+  uint8_t *buf = data;
+  pci_t pci;
+  dsi_t dsi;
+
+  if(dvdnav_read_cache_block(this->cache, sector, 1, &buf) <= 0) {
+    Log1(this, "Error reading NAV packet at sector %u.", sector);
+    return 0;
+  }
+  /* A NAV packet without a PCI part leaves the PCI untouched: start from a
+   * sector number no real packet carries, so that case fails the check. */
+  memset(&pci, 0xff, sizeof(pci));
+  memset(&dsi, 0, sizeof(dsi));
+  if(!dvdnav_decode_packet(this, buf, &dsi, &pci)) {
+    Log1(this, "Expected NAV packet but none found at sector %u.", sector);
+    if(buf != data)
+      dvdnav_free_cache_block(this, buf);
+    return 0;
+  }
+  if(buf != data)
+    dvdnav_free_cache_block(this, buf);
+  if(pci.pci_gi.nv_pck_lbn != sector) {
+    Log2(this, "Fake NAV packet at sector %u (it names sector %u), not followed.",
+         sector, pci.pci_gi.nv_pck_lbn);
+    return 0;
+  }
+  return 1;
+}
+
+/*
+ * Navigation-only mode: called once per VOBU, where the first data block
+ * would be read. May set vobu.vobu_next to skip VOBUs forward (see
+ * dvdnav_set_nav_only_flag() in dvdnav.h for the rules).
+ */
+static void dvdnav_nav_only_skip(dvdnav_t *this) {
+  const vm_t *vm = this->vm;
+  const pgc_t *pgc = vm->state.pgc;
+  const cell_playback_t *cell;
+  uint32_t start = (uint32_t)this->vobu.vobu_start;
+  uint32_t distance = 0;
+  int i;
+
+  if(!pgc || pgc->pg_playback_mode != 0 || vm->state.domain != DVD_DOMAIN_VTSTitle)
+    return;
+
+  /* a VOBU with buttons is never skipped */
+  if(this->pci.pci_gi.nv_pck_lbn == start && this->pci.hli.hl_gi.hli_ss != 0)
+    return;
+
+  cell = &pgc->cell_playback[vm->state.cellN - 1];
+  if(cell->playback_mode != 0)
+    return;
+
+  /* a plain cell: straight to its last VOBU */
+  if(cell->block_type == BLOCK_TYPE_NONE &&
+     cell->block_mode == BLOCK_MODE_NOT_IN_BLOCK &&
+     !cell->interleaved && !cell->seamless_angle &&
+     cell->last_vobu_start_sector < cell->last_sector &&
+     cell->last_vobu_start_sector > cell->first_sector &&
+     cell->first_sector < cell->last_sector &&
+     start >= cell->first_sector &&
+     start < cell->last_vobu_start_sector) {
+    distance = cell->last_vobu_start_sector - start;
+    if(distance < 0x1000 || !dvdnav_check_vobu(this, cell->last_vobu_start_sector))
+      distance = 0;
+  }
+
+  /* otherwise the farthest forward pointer of this VOBU's DSI below 0x20000
+   * sectors; the first such pointer decides, even if it is too short */
+  if(distance == 0 && this->dsi.dsi_gi.nv_pck_lbn == start) {
+    for(i = 0; i < 16; i++) {
+      uint32_t offset = this->dsi.vobu_sri.fwda[i] & 0x3fffffff;
+      if(offset < 0x20000) {
+        distance = offset;
+        break;
+      }
+    }
+  }
+
+  if(distance > 0x20 && dvdnav_check_vobu(this, start + distance))
+    this->vobu.vobu_next = (int32_t)distance;
 }
 
 /* DSI is used for most angle stuff.
@@ -950,6 +1041,16 @@ dvdnav_status_t dvdnav_get_next_cache_block(dvdnav_t *this, uint8_t **buf,
     printerr("Attempting to read without opening file.");
     pthread_mutex_unlock(&this->vm_lock);
     return DVDNAV_STATUS_ERR;
+  }
+
+  if(this->nav_only) {
+    /* skip the data blocks of this VOBU, maybe more VOBUs */
+    dvdnav_nav_only_skip(this);
+    this->vobu.blockN = this->vobu.vobu_length;
+    (*event) = DVDNAV_BLOCK_OK;
+    (*len) = 0;
+    pthread_mutex_unlock(&this->vm_lock);
+    return DVDNAV_STATUS_OK;
   }
 
   this->vobu.blockN++;
