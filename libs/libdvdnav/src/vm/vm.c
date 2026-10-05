@@ -589,6 +589,9 @@ void vm_position_get(vm_t *vm, vm_position_t *position) {
   /* still already determined */
   if (position->still)
     return;
+#if 0
+  /* Disabled: it turns short regular cells into stills, and an invented
+   * still of 0xff is an infinite one that waits for the user. */
   /* This is a rough fix for some strange still situations on some strange DVDs.
    * There are discs (like the German "Back to the Future" RC2) where the only
    * indication of a still is a cell playback time higher than the time the frames
@@ -616,6 +619,7 @@ void vm_position_get(vm_t *vm, vm_position_t *position) {
     if (time > 0xff) time = 0xff;
     position->still = time;
   }
+#endif
 }
 
 void vm_get_next_cell(vm_t *vm) {
