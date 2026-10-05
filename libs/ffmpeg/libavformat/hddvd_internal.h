@@ -95,4 +95,120 @@ int ff_hddvd_vti_open(void *logctx, DiscIOFS *fs, HDDVDVTI **out);
 
 void ff_hddvd_vti_free(HDDVDVTI **vti);
 
+/* ---- the playlists (ADV_OBJ/VPLST###.XPL) ---- */
+
+/** Element types of a playlist (every element the reader knows). */
+enum HDDVDXplClass {
+    HDDVD_XPL_DOCUMENT = 0,     /**< the document itself (parent of the root) */
+    HDDVD_XPL_ADVANCED_SUBTITLE_SEGMENT,
+    HDDVD_XPL_APERTURE,
+    HDDVD_XPL_APPLICATION_RESOURCE,
+    HDDVD_XPL_APPLICATION_SEGMENT,
+    HDDVD_XPL_AUDIO,
+    HDDVD_XPL_AUDIO_ATTRIBUTE_ITEM,
+    HDDVD_XPL_AUDIO_TRACK,
+    HDDVD_XPL_CHAPTER,
+    HDDVD_XPL_CHAPTER_LIST,
+    HDDVD_XPL_CONFIGURATION,
+    HDDVD_XPL_EVENT,
+    HDDVD_XPL_FIRST_PLAY_TITLE,
+    HDDVD_XPL_MAIN_VIDEO_DEFAULT_COLOR,
+    HDDVD_XPL_MEDIA_ATTRIBUTE_LIST,
+    HDDVD_XPL_NETWORK_SOURCE,
+    HDDVD_XPL_NETWORK_TIMEOUT,
+    HDDVD_XPL_PAUSE_AT,
+    HDDVD_XPL_PLAYLIST,
+    HDDVD_XPL_PLAYLIST_APPLICATION,
+    HDDVD_XPL_PLAYLIST_APPLICATION_RESOURCE,
+    HDDVD_XPL_PRIMARY_AUDIO_VIDEO_CLIP,
+    HDDVD_XPL_SCHEDULED_CONTROL_LIST,
+    HDDVD_XPL_SECONDARY_AUDIO_VIDEO_CLIP,
+    HDDVD_XPL_STREAMING_BUFFER,
+    HDDVD_XPL_SUB_AUDIO,
+    HDDVD_XPL_SUBPICTURE_ATTRIBUTE_ITEM,
+    HDDVD_XPL_SUBSTITUTE_AUDIO_CLIP,
+    HDDVD_XPL_SUBSTITUTE_AUDIO_VIDEO_CLIP,
+    HDDVD_XPL_SUBTITLE,
+    HDDVD_XPL_SUBTITLE_TRACK,
+    HDDVD_XPL_SUB_VIDEO,
+    HDDVD_XPL_TITLE,
+    HDDVD_XPL_TITLE_RESOURCE,
+    HDDVD_XPL_TITLE_SET,
+    HDDVD_XPL_TRACK_NAVIGATION_LIST,
+    HDDVD_XPL_VIDEO,
+    HDDVD_XPL_VIDEO_ATTRIBUTE_ITEM,
+    HDDVD_XPL_VIDEO_TRACK,
+    HDDVD_XPL_NB_CLASSES
+};
+
+#define HDDVD_XPL_MAX_ATTRS 12
+#define HDDVD_XPL_MAX_FILES 1000        /* VPLST000 .. VPLST999 */
+
+/** One element of a playlist. */
+typedef struct HDDVDXplNode {
+    int                  cls;           /**< enum HDDVDXplClass */
+    struct HDDVDXplNode *parent;
+    const char          *text;          /**< collected character data, NULL = none */
+    /** attribute values in the order of the class's attribute table: strings
+     *  (NULL until the element starts), numbers for number / boolean attributes */
+    const char          *str[HDDVD_XPL_MAX_ATTRS];
+    uint32_t             num[HDDVD_XPL_MAX_ATTRS];
+    struct HDDVDXplNode **kids;         /**< child elements in document order */
+    int                  nb_kids, kids_size;
+} HDDVDXplNode;
+
+/** One parsed playlist file. */
+typedef struct HDDVDXpl {
+    int           file;                 /**< N of VPLSTNNN.XPL */
+    HDDVDXplNode  doc;                  /**< the document node */
+    HDDVDXplNode  root;                 /**< the <Playlist> element (exists even when the
+                                             root element is something else: then empty) */
+    char        **strings;              /**< every string the playlist owns */
+    int           nb_strings, strings_size;
+} HDDVDXpl;
+
+/**
+ * Parse length bytes from offset of a playlist file (read through read())
+ * as XML.
+ * @return 0, AVERROR_INVALIDDATA for XML that is not well-formed, the read
+ *         error, or AVERROR(ENOMEM)
+ */
+int ff_hddvd_xpl_parse(void *logctx, HDDVDReadFn read, void *opaque,
+                       int64_t offset, int64_t length, HDDVDXpl **out);
+
+/**
+ * Read /ADV_OBJ/VPLST000.XPL, VPLST001.XPL, ... up to the first missing file
+ * (at most 1000). A file that cannot be read or parsed is left out (logged);
+ * the others are kept in file order.
+ * @return 0 with at least one playlist, AVERROR_INVALIDDATA with none, or
+ *         AVERROR(ENOMEM)
+ */
+int ff_hddvd_xpl_load(void *logctx, DiscIOFS *fs, HDDVDXpl ***out, int *nb_out);
+
+void ff_hddvd_xpl_free(HDDVDXpl **xpl);
+void ff_hddvd_xpl_free_all(HDDVDXpl ***xpls, int nb);
+
+/** Name of an element type, e.g. "PrimaryAudioVideoClip". */
+const char *ff_hddvd_xpl_class_name(int cls);
+
+/** The value of attribute name of n (string attributes), NULL when n's type has none. */
+const char *ff_hddvd_xpl_str(const HDDVDXplNode *n, const char *name);
+
+/** The value of number / boolean attribute name of n, 0 when n's type has none. */
+uint32_t ff_hddvd_xpl_num(const HDDVDXplNode *n, const char *name);
+
+/** The i-th child of n of type cls (document order), NULL past the last. */
+HDDVDXplNode *ff_hddvd_xpl_child(const HDDVDXplNode *n, int cls, int i);
+
+/** The number of children of n of type cls. */
+int ff_hddvd_xpl_count(const HDDVDXplNode *n, int cls);
+
+/**
+ * The whole element tree as text, one element per line in document order:
+ * indentation, type name, every attribute of the type as name=value (with
+ * defaults; strings in quotes, (null) for none), then text="..." when set.
+ * @return a string to free with av_free(), NULL when out of memory
+ */
+char *ff_hddvd_xpl_dump(const HDDVDXpl *xpl);
+
 #endif /* AVFORMAT_HDDVD_INTERNAL_H */

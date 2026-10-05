@@ -1,7 +1,8 @@
 /*
  * HD DVD (Advanced Content) demuxer: the orchestrator. It opens a disc image
- * through the disc readers (discio) and reads the title set's structure;
- * titles, AACS and the EVOB reading follow in later steps.
+ * through the disc readers (discio) and reads the title set's structure
+ * (VTI) and the playlists; titles, AACS and the EVOB reading follow in
+ * later steps.
  *
  * This file is part of FFmpeg.
  *
@@ -37,12 +38,15 @@ typedef struct HDDVDDemuxContext {
     DiscIOSource  *image;
     DiscIOFS      *fs;
     HDDVDVTI      *vti;
+    HDDVDXpl     **xpls;
+    int            nb_xpls;
 } HDDVDDemuxContext;
 
 static int hddvd_close(AVFormatContext *s)
 {
     HDDVDDemuxContext *c = s->priv_data;
 
+    ff_hddvd_xpl_free_all(&c->xpls, c->nb_xpls);
     ff_hddvd_vti_free(&c->vti);
     ff_discio_fs_close(&c->fs);
     ff_discio_source_free(&c->image);
@@ -67,6 +71,8 @@ static int hddvd_read_header(AVFormatContext *s)
         return AVERROR_INVALIDDATA;
     }
     if ((ret = ff_hddvd_vti_open(s, c->fs, &c->vti)) < 0)
+        return ret;
+    if ((ret = ff_hddvd_xpl_load(s, c->fs, &c->xpls, &c->nb_xpls)) < 0)
         return ret;
 
     av_log(s, AV_LOG_ERROR, "HD DVD: reading titles is not implemented yet\n");

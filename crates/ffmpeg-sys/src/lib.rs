@@ -6,8 +6,9 @@
 
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 
-// Keeps the DVD libraries linked after FFmpeg.
+// Keeps the DVD libraries and expat linked after FFmpeg.
 use libdvdnav_sys as _;
+use libexpat_sys as _;
 
 /// FFmpeg log levels (`libavutil/log.h`).
 pub mod log_level {
@@ -41,6 +42,8 @@ extern "C" {
     pub fn avformat_version() -> c_uint;
     /// Describes an AVERROR code in `errbuf`; returns < 0 when it is unknown.
     pub fn av_strerror(errnum: c_int, errbuf: *mut c_char, errbuf_size: usize) -> c_int;
+    /// Frees memory FFmpeg allocated (`av_malloc` and friends).
+    pub fn av_free(ptr: *mut c_void);
 
     /// glue.c: routes FFmpeg's log (and through it libdvdread / libdvdnav's)
     /// to `sink`, for lines up to `max_level`.
@@ -696,5 +699,29 @@ pub mod hddvd {
         pub fn ff_hddvd_vti_parse(log: *mut c_void, read: ReadFn, opaque: *mut c_void, out: *mut *mut Vti) -> c_int;
         pub fn ff_hddvd_vti_open(log: *mut c_void, fs: *mut Fs, out: *mut *mut Vti) -> c_int;
         pub fn ff_hddvd_vti_free(vti: *mut *mut Vti);
+    }
+
+    /// `HDDVDXpl` (only handled through pointers; its first member is `file`,
+    /// the N of VPLSTNNN.XPL).
+    #[repr(C)]
+    pub struct Xpl {
+        pub file: c_int,
+        _rest: [u8; 0],
+    }
+
+    extern "C" {
+        pub fn ff_hddvd_xpl_parse(
+            log: *mut c_void,
+            read: ReadFn,
+            opaque: *mut c_void,
+            offset: i64,
+            length: i64,
+            out: *mut *mut Xpl,
+        ) -> c_int;
+        pub fn ff_hddvd_xpl_load(log: *mut c_void, fs: *mut Fs, out: *mut *mut *mut Xpl, nb: *mut c_int) -> c_int;
+        pub fn ff_hddvd_xpl_free(xpl: *mut *mut Xpl);
+        pub fn ff_hddvd_xpl_free_all(xpls: *mut *mut *mut Xpl, nb: c_int);
+        /// Free the result with `av_free`.
+        pub fn ff_hddvd_xpl_dump(xpl: *const Xpl) -> *mut c_char;
     }
 }
