@@ -29,3 +29,5 @@ link_t play_PG(vm_t *vm);
 link_t play_Cell(vm_t *vm);
 link_t play_Cell_post(vm_t *vm);
 
+/* Random / shuffle program chains: start a new cycle and pick its first program */
+void vm_random_start(vm_t *vm);

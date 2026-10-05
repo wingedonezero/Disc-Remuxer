@@ -167,23 +167,26 @@ int set_PGCN(vm_t *vm, int pgcN) {
   return 1;
 }
 
-/* Figure out the correct pgN from the cell and update (vm->state). */
-int set_PGN(vm_t *vm) {
-  int new_pgN = 0;
+/* The program the current cell belongs to: the number of programs that
+ * start at or before it (the last program for a cell past the end). */
+int get_PGN(vm_t *vm) {
+  int pgN = 0;
+
+  assert((vm->state).pgc != NULL);
+  while(pgN < (vm->state).pgc->nr_of_programs
+        && (vm->state).cellN >= (vm->state).pgc->program_map[pgN])
+    pgN++;
+  return pgN;
+}
+
+/* Make pgN the current program and update PTTN_REG (vm->state). */
+int set_PGN(vm_t *vm, int pgN) {
   int dummy, part = 0;
 
   if ((vm->state).pgc == NULL)
     return 0;
 
-  while(new_pgN < (vm->state).pgc->nr_of_programs
-        && (vm->state).cellN >= (vm->state).pgc->program_map[new_pgN])
-    new_pgN++;
-
-  if(new_pgN == (vm->state).pgc->nr_of_programs) /* We are at the last program */
-    if((vm->state).cellN > (vm->state).pgc->nr_of_cells)
-      return 0; /* We are past the last cell */
-
-  (vm->state).pgN = new_pgN;
+  (vm->state).pgN = pgN;
 
   if((vm->state).domain == DVD_DOMAIN_VTSTitle) {
     if((vm->state).TTN_REG > vm->vmgi->tt_srpt->nr_of_srpts)
