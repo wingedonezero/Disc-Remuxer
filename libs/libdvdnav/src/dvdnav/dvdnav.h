@@ -134,6 +134,12 @@ DVDNAV_API dvdnav_status_t dvdnav_open_files(dvdnav_t **dest,
                                   const char *path,
                                   dvd_reader_filesystem_h *fs);
 
+/*
+ * Makes a full copy of a navigator in its current state (VM state and
+ * registers, position, NAV data, flags), which can then be run on its own.
+ * Copies share the source's DVD reader and IFO data: free every copy with
+ * dvdnav_free_dup() before closing the navigator it was made from.
+ */
 DVDNAV_API dvdnav_status_t dvdnav_dup(dvdnav_t **dest, dvdnav_t *src);
 DVDNAV_API dvdnav_status_t dvdnav_free_dup(dvdnav_t * _this);
 

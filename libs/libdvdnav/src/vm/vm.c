@@ -518,44 +518,30 @@ int vm_reset(vm_t *vm, const char *dvdroot,
 
 /* copying and merging */
 
+/* A copy is a full snapshot of the VM in any state (also before a PGC is
+ * set). It shares the source's reader and IFO handles: the handles are
+ * reference counted (a copy that moves to another VTS releases its share
+ * and opens that VTSI for itself), the reader is not, so copies must be
+ * freed with vm_free_copy() before the original is freed. */
 vm_t *vm_new_copy(vm_t *source) {
   vm_t *target = vm_new_vm(source->priv, &source->logcb);
-  int vtsN;
-  int pgcN = get_PGCN(source);
-  int pgN  = (source->state).pgN;
 
-  if (target == NULL || pgcN == 0)
-    goto fail;
+  if (target == NULL)
+    return NULL;
 
   memcpy(target, source, sizeof(vm_t));
-
-  /* open a new vtsi handle, because the copy might switch to another VTS */
-  target->vtsi = NULL;
-  vtsN = (target->state).vtsN;
-  if (vtsN > 0) {
-    (target->state).vtsN = 0;
-    if (!ifoOpenNewVTSI(target, target->dvd, vtsN))
-      goto fail;
-
-    /* restore pgc pointer into the new vtsi */
-    if (!set_PGCN(target, pgcN))
-      goto fail;
-
-    (target->state).pgN = pgN;
-  }
+  ifoAddRef(target->vmgi);
+  ifoAddRef(target->vtsi);
 
   return target;
-
-fail:
-  if (target != NULL)
-    vm_free_vm(target);
-
-  return NULL;
 }
 
 void vm_merge(vm_t *target, vm_t *source) {
+  /* the target's shares are released, the source's move to the target */
   if(target->vtsi)
     ifoClose(target->vtsi);
+  if(target->vmgi)
+    ifoClose(target->vmgi);
   memcpy(target, source, sizeof(vm_t));
   memset(source, 0, sizeof(vm_t));
 }
@@ -563,6 +549,8 @@ void vm_merge(vm_t *target, vm_t *source) {
 void vm_free_copy(vm_t *vm) {
   if(vm->vtsi)
     ifoClose(vm->vtsi);
+  if(vm->vmgi)
+    ifoClose(vm->vmgi);
   free(vm);
 }
 
