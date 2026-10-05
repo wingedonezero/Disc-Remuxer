@@ -278,7 +278,7 @@ OBJS-$(CONFIG_HASH_MUXER)                += hashenc.o
 OBJS-$(CONFIG_HCA_DEMUXER)               += hca.o
 OBJS-$(CONFIG_HCOM_DEMUXER)              += hcom.o pcm.o
 OBJS-$(CONFIG_HDDVD_DEMUXER)             += hddvddec.o hddvd_vti.o hddvd_xpl.o    \
-                                            hddvd_titles.o hddvd_aacs.o disclang.o avlanguage.o \
+                                            hddvd_titles.o hddvd_aacs.o hddvd_tracks.o disclang.o avlanguage.o \
                                             discio_read.o discio_fs.o discio_iso9660.o \
                                             discio_udf_netbsd.o discio_udf_linux.o
 OBJS-$(CONFIG_HDS_MUXER)                 += hdsenc.o

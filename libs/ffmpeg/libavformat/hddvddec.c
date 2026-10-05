@@ -1,8 +1,9 @@
 /*
  * HD DVD (Advanced Content) demuxer: the orchestrator. It opens a disc image
  * through the disc readers (discio) and reads the title set's structure
- * (VTI), the playlists, the AACS keys and the title plan; the EVOB
- * reading follows in a later step.
+ * (VTI), the playlists, the AACS keys, the title plan and the titles'
+ * tracks; one title's tracks become the streams. The EVOB reading follows
+ * in a later step.
  *
  * This file is part of FFmpeg.
  *
@@ -23,6 +24,7 @@
 
 #include "libavutil/error.h"
 #include "libavutil/log.h"
+#include "libavutil/dict.h"
 #include "libavutil/opt.h"
 
 #include "avformat.h"
@@ -35,6 +37,7 @@ typedef struct HDDVDDemuxContext {
     int            opt_read_attempts;
     int            opt_udf_reader;
     int            opt_min_length;
+    int            opt_title;
     char         **opt_keydb;
     unsigned       nb_opt_keydb;
 
@@ -57,6 +60,27 @@ static int hddvd_close(AVFormatContext *s)
     ff_hddvd_vti_free(&c->vti);
     ff_discio_fs_close(&c->fs);
     ff_discio_source_free(&c->image);
+    return 0;
+}
+
+static int add_streams(AVFormatContext *s, const HDDVDTitle *t)
+{
+    for (int i = 0; i < t->nb_tracks; i++) {
+        const HDDVDTrack *k = &t->tracks[i];
+        AVStream *st = avformat_new_stream(s, NULL);
+
+        if (!st)
+            return AVERROR(ENOMEM);
+        st->id                    = k->index;
+        st->codecpar->codec_type  = k->type;
+        st->codecpar->codec_id    = k->codec;
+        if (k->type == AVMEDIA_TYPE_SUBTITLE) {
+            st->codecpar->width   = k->width;
+            st->codecpar->height  = k->height;
+        }
+        if (k->lang[0] && av_dict_set(&st->metadata, "language", k->lang, 0) < 0)
+            return AVERROR(ENOMEM);
+    }
     return 0;
 }
 
@@ -87,9 +111,17 @@ static int hddvd_read_header(AVFormatContext *s)
         return ret;
     if ((ret = ff_hddvd_titles_plan(s, c->fs, c->vti, c->xpls, c->nb_xpls, c->opt_min_length, &c->plan)) < 0)
         return ret;
-
-    av_log(s, AV_LOG_ERROR, "HD DVD: reading a title is not implemented yet\n");
-    return AVERROR_PATCHWELCOME;
+    if ((ret = ff_hddvd_tracks_build(s, c->fs, c->aacs, c->vti, c->xpls, c->nb_xpls, c->plan)) < 0)
+        return ret;
+    if (c->opt_title >= c->plan->nb_titles) {
+        av_log(s, AV_LOG_ERROR, "HD DVD: title %d does not exist (the disc has %d)\n", c->opt_title,
+               c->plan->nb_titles);
+        return AVERROR(EINVAL);
+    }
+    if ((ret = add_streams(s, &c->plan->titles[c->opt_title])) < 0)
+        return ret;
+    av_log(s, AV_LOG_WARNING, "HD DVD: reading the EVOBs is not implemented yet: no packets\n");
+    return 0;
 }
 
 static int hddvd_read_packet(AVFormatContext *s, AVPacket *pkt)
@@ -101,6 +133,7 @@ static int hddvd_read_packet(AVFormatContext *s, AVPacket *pkt)
 static const AVOption hddvd_options[] = {
     {"read_attempts",   "read attempts per request on the disc",                    OFFSET(opt_read_attempts),  AV_OPT_TYPE_INT,    { .i64=DISCIO_DEFAULT_ATTEMPTS }, 1, 100, AV_OPT_FLAG_DECODING_PARAM },
     {"keydb",           "AACS key files (KEYDB.cfg), read in this order",          OFFSET(opt_keydb),          AV_OPT_TYPE_STRING | AV_OPT_TYPE_FLAG_ARRAY, { .arr = NULL }, 0, 0, AV_OPT_FLAG_DECODING_PARAM },
+    {"title",           "the title to open (0 = the first of the disc's title list)", OFFSET(opt_title), AV_OPT_TYPE_INT, { .i64=0 }, 0, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
     {"min_length",      "titles shorter than this (seconds) are listed, not selected", OFFSET(opt_min_length), AV_OPT_TYPE_INT, { .i64=0 }, 0, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
     {"udf_reader",      "UDF reader for disc images",                               OFFSET(opt_udf_reader),     AV_OPT_TYPE_INT,    { .i64=DISCIO_UDF_NETBSD }, DISCIO_UDF_NETBSD, DISCIO_UDF_LINUX, AV_OPT_FLAG_DECODING_PARAM, .unit = "udf_reader" },
         {"netbsd",      "based on NetBSD (default)",                                0,                          AV_OPT_TYPE_CONST,  { .i64=DISCIO_UDF_NETBSD }, 0, 0, AV_OPT_FLAG_DECODING_PARAM, .unit = "udf_reader" },

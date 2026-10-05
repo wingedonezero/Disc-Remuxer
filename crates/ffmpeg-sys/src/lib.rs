@@ -774,6 +774,15 @@ pub mod hddvd {
         ) -> c_int;
         pub fn ff_hddvd_aacs_close(aacs: *mut *mut Aacs);
         pub fn ff_hddvd_clip_block(log: *mut c_void, aacs: *mut Aacs, fs: *mut Fs, clip: *mut Clip, block: u32, buf: *mut u8) -> c_int;
+        pub fn ff_hddvd_tracks_build(
+            log: *mut c_void,
+            fs: *mut Fs,
+            aacs: *mut Aacs,
+            vti: *const Vti,
+            xpls: *const *mut Xpl,
+            nb_xpls: c_int,
+            plan: *mut TitlePlan,
+        ) -> c_int;
     }
 }
 

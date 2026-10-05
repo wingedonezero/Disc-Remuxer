@@ -9,7 +9,7 @@ disc-remuxer (crates/disc-cli)     the caller: commands, options, settings, logg
        ├─ per-format demuxers      titles, tracks, segments, timing for one format:
        │    ├─ DVD-Video           FFmpeg's dvdvideo demuxer, to be extended
        │    ├─ Blu-ray             (to add) BD, UHD, 3D
-       │    └─ HD DVD              (to add)
+       │    └─ HD DVD              our hddvd demuxer (titles and tracks; EVOB reading to add)
        └─ sub-demuxers, parsers, codecs (MPEG-PS, MPEG-TS, ...), with disc-type
           specific handling where a codec behaves differently on a format
   └─ outputs                       (to add) elementary streams; Matroska
@@ -29,6 +29,20 @@ The DVD-Video demuxer (`libs/ffmpeg/libavformat/`) is split into files:
 
 DVD reading underneath FFmpeg: libdvdnav (navigation), libdvdread (file
 system, IFO, NAV packets), libdvdcss (CSS) — all from `libs/`.
+
+The HD DVD demuxer (`libs/ffmpeg/libavformat/`, Advanced Content images
+read through the disc readers `discio_*`):
+
+| File | Part |
+|---|---|
+| `hddvddec.c` | the orchestrator: open (VTI, playlists, AACS, title plan, tracks), options, the chosen title's streams |
+| `hddvd_internal.h` | structures and functions shared by the files |
+| `hddvd_vti.c` | the Advanced VTS information file: attribute and EVOB tables |
+| `hddvd_xpl.c` | the playlists (XML, through expat) |
+| `hddvd_titles.c` | the title plan: titles from the playlists' clip runs, time maps, chapters |
+| `hddvd_aacs.c` | AACS keys (through libaacs) and making EVOB sectors usable |
+| `hddvd_tracks.c` | the tracks of each title: attribute records, playlist languages, the Dolby Digital Plus probe |
+| `disclang.c` | language codes written on discs -> ISO 639-2 |
 
 ## Crates
 
