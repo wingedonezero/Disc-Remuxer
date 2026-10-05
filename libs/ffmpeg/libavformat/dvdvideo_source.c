@@ -25,6 +25,7 @@
  */
 
 #include <dirent.h>
+#include <stdarg.h>
 #include <dvdcss/dvdcss.h>
 #include <stdio.h>
 #include <string.h>
@@ -376,6 +377,16 @@ static int css_stream_read(void *opaque, void *buf, int len)
     return n;
 }
 
+/* libdvdcss's messages into the demuxer's log: its errors as warnings (the
+ * source logs what they lead to), the rest at verbose level. */
+static void css_log(void *opaque, int level, const char *fmt, va_list args)
+{
+    char msg[1024];
+
+    vsnprintf(msg, sizeof(msg), fmt, args);
+    av_log(opaque, level == DVDCSS_LOG_ERROR ? AV_LOG_WARNING : AV_LOG_VERBOSE, "libdvdcss: %s\n", msg);
+}
+
 /* The name of an entry of the directory at path (image: in the image; folder:
  * relative to the disc folder) that equals name ignoring case, in out. */
 static int find_entry(DVDVideoSource *src, const char *path, const char *name, char *out, size_t size)
@@ -497,7 +508,7 @@ static void css_find_key(DVDVideoSource *src, int vtsn, int menu, CSSGroup *g)
 
     av_log(src->log, AV_LOG_VERBOSE, "CSS: looking for the key of title set %d (%s VOBs) from %s, block %d\n",
            vtsn, what, path, block);
-    if (!(css = dvdcss_open_stream_uncached(&st, &cb))) {
+    if (!(css = dvdcss_open_stream_uncached(&st, &cb, css_log, src->log))) {
         av_log(src->log, AV_LOG_ERROR, "CSS: libdvdcss could not be started on %s\n", path);
         goto end;
     }
