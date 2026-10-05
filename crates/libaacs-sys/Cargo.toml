@@ -1,0 +1,20 @@
+[package]
+name = "libaacs-sys"
+description = "Builds our libaacs and exposes its C API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "LGPL-2.1-or-later"
+publish = false
+links = "aacs"
+build = "build.rs"
+
+[dependencies]
+libgcrypt-sys = { path = "../libgcrypt-sys" }
+libgpg-error-sys = { path = "../libgpg-error-sys" }
+
+[dev-dependencies]
+libgcrypt-sys = { path = "../libgcrypt-sys" }
+
+[lints]
+workspace = true

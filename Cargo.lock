@@ -193,9 +193,11 @@ name = "ffmpeg-sys"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "libaacs-sys",
  "libdvdcss-sys",
  "libdvdnav-sys",
  "libdvdread-sys",
+ "libexpat-sys",
 ]
 
 [[package]]
@@ -292,6 +294,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "libaacs-sys"
+version = "0.1.0"
+dependencies = [
+ "libgcrypt-sys",
+ "libgpg-error-sys",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.190"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -319,6 +329,24 @@ dependencies = [
  "cc",
  "libdvdcss-sys",
 ]
+
+[[package]]
+name = "libexpat-sys"
+version = "0.1.0"
+dependencies = [
+ "cc",
+]
+
+[[package]]
+name = "libgcrypt-sys"
+version = "0.1.0"
+dependencies = [
+ "libgpg-error-sys",
+]
+
+[[package]]
+name = "libgpg-error-sys"
+version = "0.1.0"
 
 [[package]]
 name = "log"

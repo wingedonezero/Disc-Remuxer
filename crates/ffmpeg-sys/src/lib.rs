@@ -6,8 +6,10 @@
 
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 
-// Keeps the DVD libraries linked after FFmpeg.
+// Keeps the DVD libraries, expat and libaacs linked after FFmpeg.
+use libaacs_sys as _;
 use libdvdnav_sys as _;
+use libexpat_sys as _;
 
 /// FFmpeg log levels (`libavutil/log.h`).
 pub mod log_level {
@@ -41,6 +43,8 @@ extern "C" {
     pub fn avformat_version() -> c_uint;
     /// Describes an AVERROR code in `errbuf`; returns < 0 when it is unknown.
     pub fn av_strerror(errnum: c_int, errbuf: *mut c_char, errbuf_size: usize) -> c_int;
+    /// Frees memory FFmpeg allocated (`av_malloc` and friends).
+    pub fn av_free(ptr: *mut c_void);
 
     /// glue.c: routes FFmpeg's log (and through it libdvdread / libdvdnav's)
     /// to `sink`, for lines up to `max_level`.
@@ -646,5 +650,144 @@ pub mod dvdvideo {
             failure: (s.failed != 0).then(|| unsafe { CStr::from_ptr(s.failure.as_ptr()) }.to_string_lossy().into_owned()),
             entered: (0..100u8).filter(|&i| s.entered[usize::from(i)] != 0).collect(),
         }
+    }
+}
+
+/// The HD DVD demuxer's parts (`libavformat/hddvd_*.c`).
+pub mod hddvd {
+    use super::discio::Fs;
+    use std::os::raw::{c_char, c_int, c_void};
+
+    /// `HDDVD_VTI_MAX_EVOBS`.
+    pub const VTI_MAX_EVOBS: usize = 1998;
+
+    /// `HDDVDEvobAttr`.
+    #[repr(C)]
+    pub struct EvobAttr {
+        pub raw: [u8; 0x186],
+        pub nb_audio: c_int,
+        pub nb_subpic: c_int,
+        pub words: [u32; 32],
+    }
+
+    /// `HDDVDEvob`.
+    #[repr(C)]
+    pub struct Evob {
+        pub playlist: c_int,
+        pub name: [c_char; 256],
+        pub base: [c_char; 256],
+        pub attr: c_int,
+        pub start_ptm: u32,
+        pub end_ptm: u32,
+        pub sectors: u32,
+        pub slot: c_int,
+        pub raw: [u8; 0x140],
+    }
+
+    /// `HDDVDVTI`.
+    #[repr(C)]
+    pub struct Vti {
+        pub folder: [c_char; 9],
+        pub nb_attrs: c_int,
+        pub attrs: *mut EvobAttr,
+        pub nb_evobs: c_int,
+        pub evobs: [*mut Evob; VTI_MAX_EVOBS],
+    }
+
+    /// `HDDVDReadFn`.
+    pub type ReadFn = unsafe extern "C" fn(opaque: *mut c_void, pos: i64, buf: *mut u8, len: c_int) -> c_int;
+
+    extern "C" {
+        pub fn ff_hddvd_vti_parse(log: *mut c_void, read: ReadFn, opaque: *mut c_void, out: *mut *mut Vti) -> c_int;
+        pub fn ff_hddvd_vti_open(log: *mut c_void, fs: *mut Fs, out: *mut *mut Vti) -> c_int;
+        pub fn ff_hddvd_vti_free(vti: *mut *mut Vti);
+    }
+
+    /// `HDDVDXpl` (only handled through pointers; its first member is `file`,
+    /// the N of VPLSTNNN.XPL).
+    #[repr(C)]
+    pub struct Xpl {
+        pub file: c_int,
+        _rest: [u8; 0],
+    }
+
+    extern "C" {
+        pub fn ff_hddvd_xpl_parse(
+            log: *mut c_void,
+            read: ReadFn,
+            opaque: *mut c_void,
+            offset: i64,
+            length: i64,
+            out: *mut *mut Xpl,
+        ) -> c_int;
+        pub fn ff_hddvd_xpl_load(log: *mut c_void, fs: *mut Fs, out: *mut *mut *mut Xpl, nb: *mut c_int) -> c_int;
+        pub fn ff_hddvd_xpl_free(xpl: *mut *mut Xpl);
+        pub fn ff_hddvd_xpl_free_all(xpls: *mut *mut *mut Xpl, nb: c_int);
+        /// Free the result with `av_free`.
+        pub fn ff_hddvd_xpl_dump(xpl: *const Xpl) -> *mut c_char;
+    }
+
+    /// `HDDVDTitlePlan` (only handled through pointers).
+    #[repr(C)]
+    pub struct TitlePlan {
+        _private: [u8; 0],
+    }
+
+    extern "C" {
+        pub fn ff_hddvd_titles_plan(
+            log: *mut c_void,
+            fs: *mut Fs,
+            vti: *const Vti,
+            xpls: *const *mut Xpl,
+            nb_xpls: c_int,
+            min_length: c_int,
+            out: *mut *mut TitlePlan,
+        ) -> c_int;
+        pub fn ff_hddvd_titles_free(plan: *mut *mut TitlePlan);
+        /// Free the result with `av_free`.
+        pub fn ff_hddvd_titles_dump(plan: *const TitlePlan) -> *mut c_char;
+        pub fn ff_disc_lang_code(code: *const c_char) -> *const c_char;
+        pub fn ff_hddvd_titles_clip(plan: *const TitlePlan, slot: c_int) -> *mut Clip;
+        pub fn ff_hddvd_evob_marks(log: *mut c_void, vti: *mut Vti, xpls: *const *mut Xpl, nb_xpls: c_int);
+    }
+
+    /// `HDDVDClip` (only handled through pointers).
+    #[repr(C)]
+    pub struct Clip {
+        _private: [u8; 0],
+    }
+
+    /// `HDDVDAACS` (only handled through pointers).
+    #[repr(C)]
+    pub struct Aacs {
+        _private: [u8; 0],
+    }
+
+    extern "C" {
+        pub fn ff_hddvd_aacs_open(
+            log: *mut c_void,
+            fs: *mut Fs,
+            key_files: *const *const c_char,
+            nb_key_files: c_int,
+            nb_playlists: c_int,
+            out: *mut *mut Aacs,
+        ) -> c_int;
+        pub fn ff_hddvd_aacs_close(aacs: *mut *mut Aacs);
+        pub fn ff_hddvd_clip_block(log: *mut c_void, aacs: *mut Aacs, fs: *mut Fs, clip: *mut Clip, block: u32, buf: *mut u8) -> c_int;
+    }
+}
+
+/// libavutil's AES and SHA (used by the tests to build encrypted discs).
+pub mod avcrypto {
+    use std::os::raw::{c_int, c_void};
+
+    extern "C" {
+        pub fn av_aes_alloc() -> *mut c_void;
+        pub fn av_aes_init(a: *mut c_void, key: *const u8, key_bits: c_int, decrypt: c_int) -> c_int;
+        pub fn av_aes_crypt(a: *mut c_void, dst: *mut u8, src: *const u8, count: c_int, iv: *mut u8, decrypt: c_int);
+        pub fn av_sha_alloc() -> *mut c_void;
+        pub fn av_sha_init(ctx: *mut c_void, bits: c_int) -> c_int;
+        pub fn av_sha_update(ctx: *mut c_void, data: *const u8, len: usize);
+        pub fn av_sha_final(ctx: *mut c_void, digest: *mut u8);
     }
 }

@@ -231,6 +231,10 @@ External library support:
                            and libraw1394 [no]
   --enable-libdvdnav       enable libdvdnav, needed for DVD demuxing [no]
   --enable-libdvdread      enable libdvdread, needed for DVD demuxing [no]
+  --enable-libaacs         enable AACS decryption via libaacs, needed for HD DVD
+                           demuxing [no]
+  --enable-libexpat        enable XML parsing using expat, needed for HD DVD
+                           demuxing [no]
   --enable-libfdk-aac      enable AAC de/encoding via libfdk-aac [no]
   --enable-libflite        enable flite (voice synthesis) support via libflite [no]
   --enable-libfontconfig   enable libfontconfig, useful for drawtext filter [no]
@@ -2083,7 +2087,9 @@ EXTERNAL_LIBRARY_LIST="
     libcaca
     libcodec2
     libdav1d
+    libaacs
     libdc1394
+    libexpat
     libflite
     libfontconfig
     libfreetype
@@ -3931,6 +3937,7 @@ dv_demuxer_select="dvprofile"
 dv_muxer_select="dvprofile"
 dvdvideo_demuxer_select="mpegps_demuxer"
 dvdvideo_demuxer_deps="libdvdnav libdvdread"
+hddvd_demuxer_deps="libaacs libexpat"
 dxa_demuxer_select="riffdec"
 eac3_demuxer_select="ac3_parser"
 evc_demuxer_select="evc_frame_merge_bsf evc_parser"
@@ -7337,6 +7344,8 @@ enabled libdc1394         && require_pkg_config libdc1394 libdc1394-2 dc1394/dc1
 enabled libdrm            && check_pkg_config libdrm libdrm xf86drm.h drmGetVersion
 enabled libdvdnav         && require_pkg_config libdvdnav "dvdnav >= 6.1.0" dvdnav/dvdnav.h dvdnav_open2
 enabled libdvdread        && require_pkg_config libdvdread "dvdread >= 6.1.1" dvdread/dvd_reader.h DVDOpen2
+enabled libaacs           && require_pkg_config libaacs "libaacs >= 0.12.0" libaacs/aacs.h aacs_hddvd_open
+enabled libexpat          && require_pkg_config libexpat "expat >= 2.9.0" expat.h XML_ParserCreate
 enabled libfdk_aac        && { check_pkg_config libfdk_aac fdk-aac "fdk-aac/aacenc_lib.h" aacEncOpen ||
                                { require libfdk_aac fdk-aac/aacenc_lib.h aacEncOpen -lfdk-aac &&
                                  warn "using libfdk without pkg-config"; } }

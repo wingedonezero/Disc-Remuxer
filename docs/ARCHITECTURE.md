@@ -38,6 +38,8 @@ system, IFO, NAV packets), libdvdcss (CSS) — all from `libs/`.
 | `disc-core` | settings (registry, settings file, values in effect), the message catalog, finding discs and choosing job folders |
 | `ffmpeg-sys` | builds `libs/ffmpeg`; C glue (`glue/glue.c`) + declarations |
 | `libdvdnav-sys`, `libdvdread-sys`, `libdvdcss-sys` | build `libs/libdvd*` |
+| `libexpat-sys` | builds `libs/expat` (XML parser for the HD DVD playlists) |
+| `libaacs-sys`, `libgcrypt-sys`, `libgpg-error-sys` | build `libs/libaacs` (AACS) on `libs/libgcrypt` and `libs/libgpg-error` |
 
 ## Commands so far
 
