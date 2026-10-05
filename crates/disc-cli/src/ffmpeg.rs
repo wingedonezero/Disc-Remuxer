@@ -79,6 +79,118 @@ pub fn probe_dvdvideo(source: &Path, title: i32, settings: &Settings) -> Result<
     Ok(())
 }
 
+/// The read settings as disc-image options and read attempts.
+fn read_options(settings: &Settings) -> (ffmpeg_sys::discio::ImageOptions, c_int) {
+    let opts = ffmpeg_sys::discio::ImageOptions {
+        udf_reader: if settings.text("read.udf_reader") == Some("linux") {
+            ffmpeg_sys::discio::UDF_LINUX
+        } else {
+            ffmpeg_sys::discio::UDF_NETBSD
+        },
+        prefer_iso_for_old_udf102: c_int::from(settings.switch("read.prefer_iso_for_old_udf102")),
+    };
+    (opts, c_int::try_from(settings.number("read.attempts")).unwrap_or(5))
+}
+
+/// `debug dvd-scan`: the navigation scan of one DVD, its trace (when asked)
+/// and its results on standard output.
+pub fn debug_dvd_scan(source: &Path, trace: bool, settings: &Settings) -> anyhow::Result<()> {
+    use std::io::Write as _;
+
+    let (opts, attempts) = read_options(settings);
+    let mut out = std::io::stdout().lock();
+    let mut print = |line: &str| {
+        let _ = writeln!(out, "{line}");
+    };
+    let scan = ffmpeg_sys::dvdvideo::scan(source, &opts, attempts, if trace { Some(&mut print) } else { None })
+        .map_err(|e| anyhow::anyhow!("the navigation scan of {} could not run: {}", source.display(), ffmpeg_sys::error_text(e)))?;
+    let mut out = std::io::stdout().lock();
+    if let Some(reason) = &scan.failure {
+        writeln!(out, "scan failed: {reason}")?;
+    }
+    for r in &scan.results {
+        let cells: Vec<String> = r.cells.iter().map(ToString::to_string).collect();
+        writeln!(out, "result {} title {} pgc {} cells {}", r.name, r.title, r.pgcn, cells.join(","))?;
+    }
+    for t in scan.entered.iter().filter(|&&t| t != 0) {
+        writeln!(out, "entered {t}")?;
+    }
+    Ok(())
+}
+
+/// The dvd.* settings as title-plan options.
+#[must_use]
+pub fn title_options(settings: &Settings) -> ffmpeg_sys::dvdvideo::TitleOptions {
+    use ffmpeg_sys::dvdvideo as d;
+    ffmpeg_sys::dvdvideo::TitleOptions {
+        cell_mode: match settings.text("dvd.cell_mode") {
+            Some("walk") => d::CELLS_WALK,
+            Some("trim") => d::CELLS_TRIM,
+            Some("walk_trim") => d::CELLS_WALK_TRIM,
+            _ => d::CELLS_AUTO,
+        },
+        title_order: match settings.text("dvd.title_order") {
+            Some("scan_first") => d::ORDER_SCAN_FIRST,
+            Some("table") => d::ORDER_TABLE,
+            _ => d::ORDER_AUTO,
+        },
+        min_length: c_int::try_from(settings.number("dvd.min_title_length")).unwrap_or(120),
+    }
+}
+
+/// "h:mm:ss" of `s` seconds.
+fn hms(s: u32) -> String {
+    format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+}
+
+/// `debug dvd-titles`: the title plan of one DVD on standard output.
+pub fn debug_dvd_titles(source: &Path, settings: &Settings) -> anyhow::Result<()> {
+    use std::io::Write as _;
+
+    let (opts, attempts) = read_options(settings);
+    let plan = ffmpeg_sys::dvdvideo::titles(source, &opts, attempts, &title_options(settings))
+        .map_err(|e| anyhow::anyhow!("the title plan of {} could not be built: {}", source.display(), ffmpeg_sys::error_text(e)))?;
+    let mut out = std::io::stdout().lock();
+    if let Some(reason) = plan.scan.as_ref().and_then(|s| s.failure.as_ref()) {
+        writeln!(out, "scan failed: {reason}")?;
+    }
+    for (name, args) in &plan.events {
+        if args.is_empty() {
+            writeln!(out, "event {name}")?;
+        } else {
+            writeln!(out, "event {name}\t{args}")?;
+        }
+    }
+    for t in &plan.titles {
+        let size: u64 = t.segments.iter().map(|s| s.size).sum();
+        let map: Vec<&str> = t.segments.iter().map(|s| s.label.as_str()).collect();
+        let selected = match t.not_selected {
+            ffmpeg_sys::dvdvideo::TITLE_SHORT => "short",
+            ffmpeg_sys::dvdvideo::TITLE_FAKE => "fake",
+            _ => "yes",
+        };
+        writeln!(
+            out,
+            "title {} vts {} pgc {} angle {}/{} cells {} chapters {} length {} measured {} size {} segments {} map {} scan {} selected {}",
+            t.name,
+            t.vtsn,
+            t.pgcn,
+            t.angle + 1,
+            t.angles,
+            t.cells.len(),
+            t.chapters.len(),
+            hms(t.declared_secs),
+            t.measured_secs,
+            size,
+            t.segments.len(),
+            if map.is_empty() { "-".to_string() } else { map.join(",") },
+            t.scan.as_deref().unwrap_or("-"),
+            selected
+        )?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

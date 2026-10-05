@@ -5,6 +5,8 @@
 #![allow(dead_code, reason = "each test file uses part of the builders")]
 #![allow(clippy::many_single_char_names, reason = "one short name per descriptor being built")]
 
+pub mod dvd;
+
 pub const S: usize = 2048;
 
 // ---- little helpers ----
