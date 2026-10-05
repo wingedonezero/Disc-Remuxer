@@ -929,6 +929,45 @@ pub mod discrip {
     pub const EV_GAP_MARKER: c_int = 8;
     pub const EV_VIDEO_ENDED: c_int = 9;
     pub const EV_TIME_ORDER: c_int = 10;
+    pub const EV_RETIME: c_int = 11;
+    pub const F_CHAPTER: u32 = 0x0010;
+    pub const F_BATCH: u32 = 0x0040;
+    pub const KIND_VIDEO: c_int = 1;
+    pub const KIND_AUDIO: c_int = 2;
+    pub const KIND_SUBTITLE: c_int = 3;
+
+    pub type JoinOutCb = unsafe extern "C" fn(opaque: *mut c_void, track: c_int, frame: *mut Frame) -> c_int;
+
+    /// `DRJoinConfig`.
+    #[repr(C)]
+    pub struct JoinConfig {
+        pub nb_tracks: c_int,
+        pub kinds: *const c_int,
+        pub marks: *const i64,
+        pub nb_marks: c_int,
+        pub out: JoinOutCb,
+        pub out_opaque: *mut c_void,
+        pub event: Option<EventCb>,
+        pub event_opaque: *mut c_void,
+    }
+
+    /// `DRJoinStats`.
+    #[repr(C)]
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct JoinStats {
+        pub segments: c_int,
+        pub frames: i64,
+        pub retimed: i64,
+        pub chapters: i64,
+        pub offset: i64,
+        pub start: i64,
+    }
+
+    /// `DRJoin` (only handled through pointers).
+    #[repr(C)]
+    pub struct Join {
+        _private: [u8; 0],
+    }
 
     /// `DREvent`.
     #[repr(C)]
@@ -1033,6 +1072,12 @@ pub mod discrip {
         pub fn ff_discrip_junction_finish(j: *mut Junction) -> c_int;
         pub fn ff_discrip_junction_stats(j: *const Junction, st: *mut JunctionStats);
         pub fn ff_discrip_junction_close(j: *mut *mut Junction);
+        pub fn ff_discrip_join_open(out: *mut *mut Join, log: *mut c_void, cfg: *const JoinConfig) -> c_int;
+        pub fn ff_discrip_join_segment(j: *mut Join) -> c_int;
+        pub fn ff_discrip_join_push(j: *mut Join, track: c_int, frame: *mut Frame) -> c_int;
+        pub fn ff_discrip_join_finish(j: *mut Join) -> c_int;
+        pub fn ff_discrip_join_stats(j: *const Join, st: *mut JoinStats);
+        pub fn ff_discrip_join_close(j: *mut *mut Join);
     }
 
     /// FFmpeg's codec id for a codec name (e.g. "ac3"), or None.

@@ -42,6 +42,7 @@
 #define DR_F_DISCARD  0x0008   /**< not referenced (B picture) */
 #define DR_F_CHAPTER  0x0010   /**< a chapter starts here */
 #define DR_F_TAIL     0x0020   /**< read from the last 64 MiB of its segment's source */
+#define DR_F_BATCH    0x0040   /**< video: the last frame of a batch the video timing handed on */
 
 typedef struct DRFrame {
     AVBufferRef *buf;      /**< owns the bytes (NULL for a marker) */
@@ -234,6 +235,7 @@ enum DREventKind {
     DR_EV_GAP_MARKER,      /**< a marker 1 s further into a long gap while the video goes on */
     DR_EV_VIDEO_ENDED,     /**< the video ends before this frame: the rest of the track is left out */
     DR_EV_TIME_ORDER,      /**< a frame leaves at or before the previous one (logged only) */
+    DR_EV_RETIME,          /**< joiner: a frame early by more than its duration moved to the expected time */
 };
 
 typedef struct DREvent {
@@ -282,6 +284,44 @@ int  ff_discrip_junction_push(DRJunction *j, DRFrame *frame);
 int  ff_discrip_junction_finish(DRJunction *j);
 void ff_discrip_junction_stats(const DRJunction *j, DRJunctionStats *st);
 void ff_discrip_junction_close(DRJunction **j);
+
+/* ---- Stage 3: the joiner (discrip_join.c) ----
+ * A title's segments one after another on the title timeline. Track 0 is the
+ * master video. Segment 0 starts the timeline at its first video time;
+ * segment k is placed where the video of segment k-1 really ended. Frames are
+ * given segment by segment, in order. */
+
+enum DRTrackKind { DR_KIND_VIDEO = 1, DR_KIND_AUDIO = 2, DR_KIND_SUBTITLE = 3 };
+
+/** Hands a joined frame of a track on (taken over). */
+typedef int (*DRJoinOutCb)(void *opaque, int track, DRFrame *frame);
+
+typedef struct DRJoinConfig {
+    int            nb_tracks;
+    const int     *kinds;        /**< DRTrackKind per track; track 0 must be video */
+    const int64_t *marks;        /**< chapter mark times, ascending (ticks), or NULL */
+    int            nb_marks;
+    DRJoinOutCb    out;   void *out_opaque;
+    DREventCb      event; void *event_opaque;
+} DRJoinConfig;
+
+typedef struct DRJoinStats {
+    int     segments;
+    int64_t frames, retimed, chapters;
+    int64_t offset, start;       /**< the current segment's place and first video time */
+} DRJoinStats;
+
+typedef struct DRJoin DRJoin;
+
+int  ff_discrip_join_open(DRJoin **j, void *logctx, const DRJoinConfig *cfg);
+/** The next segment begins (call before its first frame). */
+int  ff_discrip_join_segment(DRJoin *j);
+/** A frame of a track in the current segment (taken over). */
+int  ff_discrip_join_push(DRJoin *j, int track, DRFrame *frame);
+/** The end of the title. */
+int  ff_discrip_join_finish(DRJoin *j);
+void ff_discrip_join_stats(const DRJoin *j, DRJoinStats *st);
+void ff_discrip_join_close(DRJoin **j);
 
 /* rules of codecs in their own files */
 extern const DRAudioRules ff_discrip_audio_mlp;
