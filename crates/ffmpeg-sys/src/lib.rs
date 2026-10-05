@@ -838,3 +838,76 @@ pub mod avcrypto {
         pub fn av_sha_final(ctx: *mut c_void, digest: *mut u8);
     }
 }
+
+/// `libavformat/discrip.h`: the shared rip core.
+pub mod discrip {
+    use std::ffi::CStr;
+    use std::os::raw::{c_char, c_int, c_void};
+
+    /// Ticks per second of the core's time unit.
+    pub const TICKS_PER_SECOND: i64 = 1_080_000_000;
+    /// Ticks per 90 kHz PES clock tick.
+    pub const TICKS_PER_PTS: i64 = 12_000;
+
+    /// `DRUnit`.
+    #[repr(C)]
+    pub struct Unit {
+        pub data: *const u8,
+        pub size: c_int,
+        pub time: i64,
+        pub pos: i64,
+    }
+
+    /// `DRCutterStats`.
+    #[repr(C)]
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct CutterStats {
+        pub bytes: i64,
+        pub records: i64,
+        pub units: i64,
+        pub timed: i64,
+        pub records_unused: i64,
+        pub skipped: i64,
+        pub skipped_bytes: i64,
+    }
+
+    /// `DRCutter` (only handled through pointers).
+    #[repr(C)]
+    pub struct Cutter {
+        _private: [u8; 0],
+    }
+
+    pub type UnitCb = unsafe extern "C" fn(opaque: *mut c_void, unit: *const Unit) -> c_int;
+
+    /// The first members of `AVCodecDescriptor`.
+    #[repr(C)]
+    pub struct CodecDescriptor {
+        pub id: c_int,
+        pub kind: c_int,
+        pub name: *const c_char,
+    }
+
+    extern "C" {
+        pub fn avcodec_descriptor_get_by_name(name: *const c_char) -> *const CodecDescriptor;
+        pub fn ff_discrip_cutter_open(
+            out: *mut *mut Cutter,
+            log: *mut c_void,
+            codec: c_int,
+            cb: UnitCb,
+            opaque: *mut c_void,
+        ) -> c_int;
+        pub fn ff_discrip_cutter_write(c: *mut Cutter, data: *const u8, size: c_int, time: i64) -> c_int;
+        pub fn ff_discrip_cutter_flush(c: *mut Cutter) -> c_int;
+        pub fn ff_discrip_cutter_stats(c: *const Cutter, stats: *mut CutterStats);
+        pub fn ff_discrip_cutter_close(c: *mut *mut Cutter);
+    }
+
+    /// FFmpeg's codec id for a codec name (e.g. "ac3"), or None.
+    #[must_use]
+    pub fn codec_id(name: &CStr) -> Option<c_int> {
+        // SAFETY: name is a valid C string; the result is a static descriptor or NULL.
+        let d = unsafe { avcodec_descriptor_get_by_name(name.as_ptr()) };
+        // SAFETY: a non-NULL result points to a static descriptor.
+        (!d.is_null()).then(|| unsafe { (*d).id })
+    }
+}
