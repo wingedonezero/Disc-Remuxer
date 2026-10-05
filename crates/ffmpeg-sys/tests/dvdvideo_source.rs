@@ -2,7 +2,8 @@
 //! opens the disc through our file callbacks (`DVDOpenFiles`), so its files come
 //! from the file system our choice rule picked (images) or from the disc folder,
 //! read through our disc readers; images that are not DVD-Video, or whose DVD
-//! files are scattered, are refused. With `DVDVIDEO_CSS_IMAGE` / `DVDVIDEO_CSS_FOLDER`
+//! files are scattered, are refused; an IFO block that cannot be read comes from
+//! its BUP; the IFO layout checks warn. With `DVDVIDEO_CSS_IMAGE` / `DVDVIDEO_CSS_FOLDER`
 //! (a CSS-scrambled disc as an image / as a folder of its files), blocks
 //! descrambled by the source equal libdvdcss's own decrypting read.
 
@@ -216,6 +217,120 @@ fn images_that_are_not_dvd_video_are_refused() {
 fn paths_that_are_not_discs_are_refused() {
     assert_eq!(Src::open(&scratch("missing").join("nothing.iso")).err(), Some(ENOENT));
     assert_eq!(Src::open(Path::new("/dev/null")).err(), Some(EINVAL));
+}
+
+// ---- IFO blocks from the BUP ----
+
+/// Sector of the image's `VIDEO_TS.IFO` whose second block lies past the end of
+/// the image (the image is cut after it).
+const CUT_IFO: u32 = 449;
+
+fn image_with_a_cut_ifo(bup: bool) -> Img {
+    let mut files = vec![("VIDEO_TS.IFO", CUT_IFO, 4096), ("VTS_01_0.IFO", VTS1, 4096)];
+    if bup {
+        files.push(("VIDEO_TS.BUP", BUP, 4096));
+    }
+    let mut im = bridge(Some(&udf102(2009, files)), dvd_files(), None);
+    im.vmg(CUT_IFO, b"DVDVIDEO-VMG", 1);
+    for (i, b) in im.sector(CUT_IFO)[0x400..].iter_mut().enumerate() {
+        *b = u8::try_from(i % 241).unwrap();
+    }
+    fill(&mut im, BUP + 1, 1, 0x33);
+    im.d.truncate((CUT_IFO as usize + 1) * S);
+    im
+}
+
+#[test]
+fn an_unreadable_ifo_block_is_read_from_the_bup() {
+    let im = image_with_a_cut_ifo(true);
+    let src = Src::open(&write_image("cut-ifo", &im)).unwrap();
+    let got = src.reader().read_bytes(0, DVD_READ_INFO_FILE, 4096);
+    let mut want = sectors(&im, CUT_IFO, 1);
+    want.extend(sectors(&im, BUP + 1, 1));
+    assert_eq!(got, want, "block 0 from the IFO, block 1 from the BUP");
+}
+
+#[test]
+fn without_a_bup_the_unreadable_ifo_block_is_a_read_error() {
+    let im = image_with_a_cut_ifo(false);
+    let src = Src::open(&write_image("cut-ifo-no-bup", &im)).unwrap();
+    let dvd = src.reader();
+    // SAFETY: the reader is open; buf has room for 4096 bytes.
+    unsafe {
+        let f = DVDOpenFile(dvd.0, 0, DVD_READ_INFO_FILE);
+        assert!(!f.is_null());
+        let mut buf = vec![0u8; 4096];
+        assert!(DVDReadBytes(f, buf.as_mut_ptr().cast(), 4096) < 4096);
+        DVDCloseFile(f);
+    }
+}
+
+// ---- the IFO layout checks (warnings) ----
+
+static LOG: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+unsafe extern "C" fn log_sink(_level: c_int, line: *const c_char) {
+    // SAFETY: the glue passes a NUL-terminated line.
+    let text = unsafe { std::ffi::CStr::from_ptr(line) }.to_string_lossy().into_owned();
+    LOG.lock().unwrap().push(text);
+}
+
+/// Whether a log line containing `text` was written while `f` ran.
+fn logged(text: &str, f: impl FnOnce()) -> bool {
+    // SAFETY: log_sink is a valid callback for the whole test run.
+    unsafe { ffmpeg_sys::dr_log_install(log_sink, ffmpeg_sys::log_level::VERBOSE) };
+    f();
+    LOG.lock().unwrap().iter().any(|l| l.contains(text))
+}
+
+/// Sets `vmg/vts_last_sector` and `vmgi/vtsi_last_sector` of the IFO header at `sector`.
+fn ifo_sizes(im: &mut Img, sector: u32, last: u32, ifo_last: u32) {
+    let h = im.sector(sector);
+    h[0x0c..0x10].copy_from_slice(&last.to_be_bytes());
+    h[0x1c..0x20].copy_from_slice(&ifo_last.to_be_bytes());
+}
+
+#[test]
+fn ifo_layout_warnings() {
+    // image: the header puts the BUP 7 sectors after the IFO, the image 2
+    let mut im = bridge(Some(&udf102(2009, dvd_files())), dvd_files(), None);
+    ifo_sizes(&mut im, VMG, 8, 1);
+    let path = write_image("layout", &im);
+    assert!(logged("puts the backup copy (BUP) 7 sectors after the IFO; on the image it is 2 sectors", || {
+        Src::open(&path).unwrap();
+    }));
+    // ... and where they agree, no warning
+    let mut im = bridge(Some(&udf102(2009, dvd_files())), dvd_files(), None);
+    ifo_sizes(&mut im, VMG, 3, 1);
+    let path = write_image("layout-ok", &im);
+    assert!(!logged("VIDEO_TS.IFO: its header puts the backup copy (BUP) 2 sectors", || {
+        Src::open(&path).unwrap();
+    }));
+    // the provider identifier of a disc processed by DVDFab
+    let mut im = bridge(Some(&udf102(2009, dvd_files())), dvd_files(), None);
+    im.sector(VMG)[0x40..0x49].copy_from_slice(b"(Fab4321)");
+    let path = write_image("fab", &im);
+    assert!(logged("provider identifier '(Fab4321)'", || {
+        Src::open(&path).unwrap();
+    }));
+    // folder: IFO (2 sectors) + VIDEO_TS.VOB (3 sectors) before the BUP; a header saying 99
+    let dir = scratch("layout-folder").join("VIDEO_TS");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut ifo = vec![0u8; 2 * S];
+    ifo[..12].copy_from_slice(b"DVDVIDEO-VMG");
+    ifo[0x0c..0x10].copy_from_slice(&100u32.to_be_bytes());
+    ifo[0x1c..0x20].copy_from_slice(&1u32.to_be_bytes());
+    std::fs::write(dir.join("VIDEO_TS.IFO"), &ifo).unwrap();
+    std::fs::write(dir.join("VIDEO_TS.VOB"), vec![0u8; 3 * S]).unwrap();
+    let root = dir.parent().unwrap().to_path_buf();
+    assert!(logged("BUP) 99 sectors after the IFO; the IFO and VOB files before it hold 5 sectors", || {
+        Src::open(&root).unwrap();
+    }));
+    ifo[0x0c..0x10].copy_from_slice(&6u32.to_be_bytes());
+    std::fs::write(dir.join("VIDEO_TS.IFO"), &ifo).unwrap();
+    assert!(!logged("BUP) 5 sectors after the IFO", || {
+        Src::open(&root).unwrap();
+    }));
 }
 
 // ---- folders ----
