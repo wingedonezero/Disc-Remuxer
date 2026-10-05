@@ -57,7 +57,7 @@ extern "C" {
         cb: ParserFrameCb,
         opaque: *mut c_void,
     ) -> c_int;
-    /// glue.c: opens the DVD-Video demuxer with `options` (its AVOptions as
+    /// glue.c: opens the DVD-Video demuxer with `options` (its `AVOptions` as
     /// `key=value` pairs joined by `:`, e.g. `title=1:read_attempts=5`; may
     /// be NULL), reads stream information and logs FFmpeg's stream dump. 0 or
     /// a negative AVERROR.
