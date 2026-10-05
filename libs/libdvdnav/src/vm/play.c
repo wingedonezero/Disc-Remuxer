@@ -44,13 +44,15 @@
 
 /* Random / shuffle program chains: start a new cycle and pick its first
  * program (the order comes from rand.h). */
-void vm_random_start(vm_t *vm) {
+int vm_random_start(vm_t *vm) {
   vm_rand_next(&(vm->state).rnd);
   (vm->state).pgN_step = 0;
   /* a random chain without programs has no order to pick from */
-  assert((vm->state).pgc->nr_of_programs > 0);
+  if(!VM_CHECK(vm, (vm->state).pgc->nr_of_programs > 0))
+    return 0;
   (vm->state).pgN = 1 + vm_rand_shuffle((vm->state).rnd,
                                         (vm->state).pgc->nr_of_programs, 0);
+  return 1;
 }
 
 /* A broken assumption (see vm_failed() in vm.h): stop. */
@@ -85,8 +87,10 @@ link_t play_PGC(vm_t *vm) {
 
   /* Random and shuffle playback (treated alike, no program twice in a
    * cycle): a new cycle starts with a random program of the whole chain. */
-  if ((vm->state).pgc->pg_playback_mode != 0)
-    vm_random_start(vm);
+  if ((vm->state).pgc->pg_playback_mode != 0 && !vm_random_start(vm)) {
+    link_values.command = Exit;
+    return link_values;
+  }
 
   /* eval -> updates the state and returns either
      - some kind of jump (Jump(TT/SS/VTS_TTN/CallSS/link C/PG/PGC/PTTN)
@@ -369,7 +373,7 @@ static link_t play_PGN(vm_t *vm) {
   const pgc_t *pgc = (vm->state).pgc;
   int pgN;
 
-  assert(pgc != NULL);
+  PLAY_CHECK(vm, pgc != NULL);
   /* the program the new cell belongs to */
   pgN = get_PGN(vm);
 
@@ -388,7 +392,7 @@ static link_t play_PGN(vm_t *vm) {
 #endif
         return play_PGC_post(vm);
       }
-      assert(pgc->nr_of_programs > 0);
+      PLAY_CHECK(vm, pgc->nr_of_programs > 0);
       pgN = 1 + vm_rand_shuffle((vm->state).rnd, pgc->nr_of_programs,
                                 (unsigned int)(vm->state).pgN_step);
       (vm->state).cellN = pgc->program_map[pgN - 1];

@@ -850,7 +850,7 @@ static int process_command(vm_t *vm, link_t link_values) {
       if(vm->state.pgN == 1 || vm->state.pgc->pg_playback_mode != 0) {
         /* No previous program (the first one, or a random / shuffle chain):
          * go to the previous program chain, as LinkPrevPGC does. */
-        assert(vm->state.pgc->prev_pgc_nr != 0);
+        if(!VM_CHECK(vm, vm->state.pgc->prev_pgc_nr != 0)) return 0;
         if(set_PGCN(vm, vm->state.pgc->prev_pgc_nr))
           link_values = play_PGC(vm);
         else
@@ -976,8 +976,8 @@ static int process_command(vm_t *vm, link_t link_values) {
       else {
         /* in a random / shuffle chain the part's program is not used: a new
          * cycle starts with a random program */
-        if(vm->state.pgc->pg_playback_mode != 0)
-          vm_random_start(vm);
+        if(vm->state.pgc->pg_playback_mode != 0 && !vm_random_start(vm))
+          return 0;
         link_values = play_PG(vm);
       }
       break;
