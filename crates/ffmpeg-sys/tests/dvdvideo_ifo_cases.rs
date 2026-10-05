@@ -233,3 +233,72 @@ fn a_disc_without_a_first_play_program_chain_or_menus_fails_the_scan_not_the_pro
     let names: Vec<&str> = p.titles.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(names, ["1", "2", "3"]);
 }
+
+static LOG: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+unsafe extern "C" fn log_sink(_level: std::os::raw::c_int, line: *const std::os::raw::c_char) {
+    // SAFETY: the glue passes a NUL-terminated line.
+    let text = unsafe { std::ffi::CStr::from_ptr(line) }.to_string_lossy().into_owned();
+    LOG.lock().unwrap().push(text);
+}
+
+/// The selected titles, the findings (other than "title") and the log lines
+/// of case `name`.
+fn outcome(name: &str) -> (Vec<String>, Vec<String>, Vec<String>) {
+    // SAFETY: log_sink is a valid callback for the whole test run.
+    unsafe { ffmpeg_sys::dr_log_install(log_sink, ffmpeg_sys::log_level::VERBOSE) };
+    let p = plan_of(name).unwrap();
+    let titles = p.titles.iter().filter(|t| t.not_selected == 0).map(|t| t.name.clone()).collect();
+    let events = p.events.iter().filter(|e| e.0 != "title").map(|e| format!("{} {}", e.0, e.1)).collect();
+    let log = LOG.lock().unwrap().clone();
+    (titles, events, log)
+}
+
+#[test]
+fn every_case_gives_its_titles_and_findings() {
+    // (case, selected titles, findings, a log line that must appear)
+    let want: &[(&str, &[&str], &[&str], &str)] = &[
+        ("base", &["1", "2", "3"], &[], ""),
+        // VTS_ATRT is not needed to find or play titles
+        ("vmg_atrt_sector_0", &["1", "2", "3"], &[], "no readable title set attribute table (VTS_ATRT)"),
+        // entries past the title search table's recorded end are read
+        ("vmg_tt_srpt_short", &["1", "2", "3"], &[], "gives 3 titles, its recorded end (last_byte 31) covers 2"),
+        ("vmg_tt_srpt_last_byte_0", &["1", "2", "3"], &[], ""),
+        // a title naming a missing title set: left out, the others stay
+        ("vmg_title_bad_set", &["1", "2"], &["title-set-invalid 3\t5\t1"], ""),
+        // more than 99 title sets: the first 99 are used
+        ("vmg_100_title_sets", &["1", "2", "3"], &[], "gives 100 title sets"),
+        ("vmg_set_start_mismatch", &["1", "2", "3"],
+         &["title-set-start-mismatch 1\t200\t100", "title-set-start-mismatch 1\t0\t100",
+           "title-set-start-mismatch 1\t6\t100"], ""),
+        // the cell address table is not needed
+        ("vts_c_adt_sector_0", &["1", "2", "3"], &[], "no readable cell address table (VTS_C_ADT)"),
+        ("vts_c_adt_short", &["1", "2", "3"], &[], "no readable cell address table (VTS_C_ADT)"),
+        // no VOBU address map at all: the title set cannot be used
+        ("vts_vobu_admap_sector_0", &[],
+         &["title-set-missing 1", "title-set-missing 2", "title-set-missing 3"], ""),
+        // a map that cannot be read: not trusted, VOBUs from the NAV packs
+        ("vts_vobu_admap_short", &["1", "2", "3"], &[], "its VOBU address map (VTS_VOBU_ADMAP) cannot be read"),
+        ("vtsm_vobu_admap_unloadable", &["1", "2", "3"], &[], "its menu VOBU address map (VTSM_VOBU_ADMAP) cannot be read"),
+        // part-of-title tables: our reading keeps every title whose own entries are sound
+        ("vts_ptt_count_large", &["1", "2", "3"], &[], ""),
+        ("vts_ptt_misaligned", &["1", "3"], &[], ""),
+        ("vts_ptt_last_byte_plus_1", &["1", "2", "3"], &["ifo-corrupt VTS_01_0.IFO\t2052"], ""),
+        ("vts_pgcit_sector_0", &[], &["title-set-missing 1", "title-set-missing 2", "title-set-missing 3"], ""),
+        // program chains that cannot be used: their titles are left out
+        ("pgc_cells_offset_0", &["1", "3"], &["ptt-unresolved 1\t2\t2\t1"], ""),
+        ("pgc_129_commands", &["1", "3"], &["ptt-unresolved 1\t2\t2\t0"], ""),
+        ("pgc_command_table_past_pgcit", &["1", "2", "3"], &[], ""),
+        ("pgc_duplicate_of_unreadable", &["1"], &["ptt-unresolved 1\t2\t2\t0", "ptt-unresolved 1\t3\t3\t0"], ""),
+        ("vts_ifo_bad_signature", &["1", "2", "3"], &[], ""),
+    ];
+    assert_eq!(want.len(), cases().len(), "every case has its expectation");
+    let mut failed = Vec::new();
+    for &(name, titles, events, line) in want {
+        let (t, e, log) = outcome(name);
+        if t != titles || e != events || (!line.is_empty() && !log.iter().any(|l| l.contains(line))) {
+            failed.push(format!("{name}: titles {t:?} findings {e:?}"));
+        }
+    }
+    assert!(failed.is_empty(), "{failed:#?}");
+}

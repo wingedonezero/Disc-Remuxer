@@ -70,6 +70,7 @@ static const char *const event_names[] = {
     [DVDVIDEO_EV_NAV_INVALID]         = "nav-invalid",
     [DVDVIDEO_EV_TITLE_SET_INVALID]   = "title-set-invalid",
     [DVDVIDEO_EV_TITLE_SET_START]     = "title-set-start-mismatch",
+    [DVDVIDEO_EV_IFO_CORRUPT]         = "ifo-corrupt",
 };
 
 const char *ff_dvdvideo_event_name(int kind)
@@ -237,6 +238,16 @@ static int ptt_list(Plan *p, int t, DVDVideoChapter **out)
         event(p, AV_LOG_WARNING, DVDVIDEO_EV_PTT_NO_TITLE, args, "Title set %d has no part-of-title list for its "
               "title %d (title %d of the disc)", vtsn, ttn, t + 1);
         return 0;
+    }
+    /* the last title's entries run to the table's recorded end: a recorded
+     * length one byte past a whole entry is a known corruption (the last entry
+     * is read up to last_byte) */
+    if (ttn == srpt->nr_of_srpts && ((srpt->last_byte + 1) & 3) == 1) {
+        uint32_t at = ifo->vtsi_mat->vts_ptt_srpt * DVDVIDEO_BLOCK_SIZE + 4;
+
+        snprintf(args, sizeof(args), "VTS_%02d_0.IFO\t%"PRIu32, vtsn, at);
+        event(p, AV_LOG_WARNING, DVDVIDEO_EV_IFO_CORRUPT, args, "VTS_%02d_0.IFO is corrupt at byte %"PRIu32": its "
+              "part-of-title table (VTS_PTT_SRPT) ends one byte past a whole entry", vtsn, at);
     }
     tu = &srpt->title[ttn - 1];
     for (int k = 0; k < tu->nr_of_ptts; k++) {
@@ -1663,26 +1674,55 @@ static void add_title(Plan *p, int t, const DVDVideoChapter *chapters, int nb_ch
 
 /* Every title of a title set gives the set's start sector (title_set_sector);
  * the first non-zero one is the set's, a later title giving another one is
- * reported. */
+ * reported. Then each set's start is checked against the disc's layout: the
+ * set's IFO block in an image, else the sets one after the other behind the
+ * video manager (vmg_last_sector + 1, each set vts_last_sector + 1 long). */
 static void check_title_set_starts(Plan *p)
 {
-    const tt_srpt_t *tt = p->disc->vts[0].ifo->tt_srpt;
-    uint32_t first[100] = { 0 };
+    const DVDVideoDisc *d = p->disc;
+    const tt_srpt_t *tt = d->vts[0].ifo->tt_srpt;
+    int64_t vmg_at = ff_dvdvideo_source_file_sector(d->src, "VIDEO_TS.IFO");
+    uint32_t first[100] = { 0 }, expect;
     char args[48];
 
     for (int i = 0; tt && i < tt->nr_of_srpts; i++) {
         const title_info_t *e = &tt->title[i];
         int vtsn = e->title_set_nr;
 
-        if (!vtsn || !e->vts_ttn || !e->nr_of_ptts || vtsn > p->disc->nb_vts)
+        if (!vtsn || !e->vts_ttn || !e->nr_of_ptts || vtsn > d->nb_vts)
             continue;
         if (!first[vtsn]) {
             first[vtsn] = e->title_set_sector;
         } else if (e->title_set_sector != first[vtsn]) {
-            snprintf(args, sizeof(args), "%d\t%"PRIu32"\t%"PRIu32, vtsn, first[vtsn], e->title_set_sector);
+            snprintf(args, sizeof(args), "%d\t%"PRIu32"\t%"PRIu32, vtsn, e->title_set_sector, first[vtsn]);
             event(p, AV_LOG_WARNING, DVDVIDEO_EV_TITLE_SET_START, args, "Title %d puts title set %d at sector %"PRIu32
                   "; an earlier title put it at sector %"PRIu32, i + 1, vtsn, e->title_set_sector, first[vtsn]);
         }
+    }
+    expect = d->vts[0].ifo->vmgi_mat->vmg_last_sector + 1;
+    for (int n = 1; n <= d->nb_vts; n++) {
+        const ifo_handle_t *ifo = d->vts[n].ifo;
+        char name[32];
+
+        if (!ifo) {
+            /* a set that cannot be used: the next one is counted from its start */
+            if (first[n])
+                expect = first[n];
+            continue;
+        }
+        snprintf(name, sizeof(name), "VTS_%02d_0.IFO", n);
+        if (vmg_at > 0) {
+            int64_t at = ff_dvdvideo_source_file_sector(d->src, name);
+
+            if (at > 0)
+                expect = (uint32_t)(at - vmg_at);
+        }
+        if (first[n] && expect != first[n]) {
+            snprintf(args, sizeof(args), "%d\t%"PRIu32"\t%"PRIu32, n, expect, first[n]);
+            event(p, AV_LOG_WARNING, DVDVIDEO_EV_TITLE_SET_START, args, "Title set %d starts at sector %"PRIu32" by "
+                  "the disc's layout; the title search table puts it at sector %"PRIu32, n, expect, first[n]);
+        }
+        expect += 1 + ifo->vtsi_mat->vts_last_sector;
     }
 }
 

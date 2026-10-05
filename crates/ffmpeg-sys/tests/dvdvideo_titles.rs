@@ -244,12 +244,17 @@ fn a_title_naming_a_title_set_the_disc_does_not_have_is_left_out_with_a_warning(
 #[test]
 fn a_title_giving_another_start_for_its_title_set_is_reported() {
     let at = |ttn: u8, sector: u32| Title { title_set_starting_sector: sector, ..Title::new(1, ttn, 1) };
-    // the first non-zero start is the set's; a later different one (0 too) is reported
+    // the first non-zero start is the set's; a later different one (0 too) is
+    // reported (set, this start, the first); then the set's start by the
+    // disc's layout: the VMG (3 IFO blocks, vmg_last_sector 5) ends before
+    // block 6 (set, layout start, the first)
     for (test, starts, want) in [
-        ("titles-start-same", [100, 100], vec![]),
-        ("titles-start-zero-first", [0, 100], vec![]),
-        ("titles-start-differs", [100, 200], vec!["1\t100\t200"]),
-        ("titles-start-zero-later", [100, 0], vec!["1\t100\t0"]),
+        ("titles-start-layout", [6, 6], vec![]),
+        ("titles-start-same", [100, 100], vec!["1\t6\t100"]),
+        ("titles-start-zero-first", [0, 100], vec!["1\t6\t100"]),
+        ("titles-start-differs", [100, 200], vec!["1\t200\t100", "1\t6\t100"]),
+        ("titles-start-zero-later", [100, 0], vec!["1\t0\t100", "1\t6\t100"]),
+        ("titles-start-unset", [0, 0], vec![]),
     ] {
         let d = OpenDisc::build(test, &[at(1, starts[0]), at(2, starts[1])], &[two_title_set()]);
         let p = plan(&d, None, CELLS_AUTO, ORDER_TABLE, 0);

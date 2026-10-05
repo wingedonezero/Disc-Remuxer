@@ -453,7 +453,8 @@ enum DVDVideoTitleEventKind {       /* findings of the title stage */
     DVDVIDEO_EV_ANGLE_FAILED,       /* angle, name */
     DVDVIDEO_EV_NAV_INVALID,        /* playing time where it happens */
     DVDVIDEO_EV_TITLE_SET_INVALID,  /* title number, vtsn, title sets of the disc */
-    DVDVIDEO_EV_TITLE_SET_START,    /* vtsn, first start sector, this title's start sector */
+    DVDVIDEO_EV_TITLE_SET_START,    /* vtsn, this start sector (a title's, or the disc layout's), the first one */
+    DVDVIDEO_EV_IFO_CORRUPT,        /* IFO file name, byte offset */
 };
 
 enum DVDVideoNotSelected {
