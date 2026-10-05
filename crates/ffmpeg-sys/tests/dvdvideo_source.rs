@@ -8,6 +8,8 @@
 //! (a CSS-scrambled disc as an image / as a folder of its files), blocks
 //! descrambled by the source equal libdvdcss's own decrypting read.
 
+#![allow(clippy::many_single_char_names, reason = "one short name per descriptor being built")]
+
 use std::ffi::CString;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -345,9 +347,9 @@ const CELL_PAST_VOBS: c_int = 2;
 /// A cell: first sector, last VOBU start, last sector (title-VOB sectors).
 type Cell = (u32, u32, u32);
 
-/// VTS_01_0.IFO with one PGC of `cells` (one program), a cell address table of
-/// the same cells and a VOBU address map of `vobus`: VTSI_MAT in sector 0,
-/// VTS_PTT_SRPT in 1, VTS_PGCIT in 2, VTS_C_ADT in 3, VTS_VOBU_ADMAP in 4.
+/// `VTS_01_0.IFO` with one PGC of `cells` (one program), a cell address table
+/// of the same cells and a VOBU address map of `vobus`: `VTSI_MAT` in sector 0,
+/// `VTS_PTT_SRPT` in 1, `VTS_PGCIT` in 2, `VTS_C_ADT` in 3, `VTS_VOBU_ADMAP` in 4.
 fn vts_ifo(cells: &[Cell], vobus: &[u32], vob_sectors: u32) -> Vec<u8> {
     let mut d = vec![0u8; 5 * S];
     let be32 = |d: &mut Vec<u8>, at: usize, v: u32| d[at..at + 4].copy_from_slice(&v.to_be_bytes());
