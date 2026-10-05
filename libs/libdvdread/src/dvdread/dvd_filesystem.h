@@ -86,6 +86,16 @@ struct dvd_reader_filesystem_s
     ssize_t (*file_read) (void *file, char *buf, size_t size);
     off64_t (*file_seek) (void *file, off64_t offset, int whence);
     int     (*file_close)(void *file);
+    /* Optional (NULL = not used): the application serves the VOBs of a title
+     * set as one run of blocks; title = title set number (0 = the video
+     * manager), menu = 1 for its menu VOBs, 0 for its title VOBs.
+     * vob_blocks: their size in blocks, or < 0 when the application does not
+     * serve them (libdvdread then opens the VOB files itself).
+     * vob_read: as DVDReadBlocks, the number of blocks read (fewer past the
+     * end) or < 0 on a read error. */
+    int64_t (*vob_blocks)(dvd_reader_filesystem_h *fs, int title, int menu);
+    int     (*vob_read)  (dvd_reader_filesystem_h *fs, int title, int menu,
+                          uint32_t block, size_t count, unsigned char *data);
 };
 
 #endif /* DVDREAD_FILESYSTEM_H_ */

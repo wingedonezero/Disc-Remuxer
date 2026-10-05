@@ -91,5 +91,8 @@ fn command_line_overrides_the_file() {
 
     assert!(matches!(s.set_from_command_line("output.nope=1"), Err(SettingsError::Unknown { .. })));
     assert!(matches!(s.set_from_command_line("output.scan_depth=21"), Err(SettingsError::Invalid { .. })));
+    s.set_from_command_line("read.attempts=99").unwrap();
+    assert!(matches!(s.set_from_command_line("read.attempts=100"), Err(SettingsError::Invalid { .. })));
+    assert!(matches!(s.set_from_command_line("read.attempts=0"), Err(SettingsError::Invalid { .. })));
     assert!(matches!(s.set_from_command_line("no-equals"), Err(SettingsError::BadOverride(_))));
 }

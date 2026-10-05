@@ -225,6 +225,7 @@ int ff_dvdvideo_css_can_test(const uint8_t *sec);
 
 /* dvdvideo_disc.c */
 #define DVDVIDEO_NAV_READ_ATTEMPTS  3   /* read attempts of a NAV pack */
+#define DVDVIDEO_IFO_READ_TRIES    16   /* tries per IFO block, alternating IFO / BUP */
 
 typedef struct DVDVideoTitleSet {
     ifo_handle_t   *ifo;                /* NULL: not open (the title set cannot be used) */
@@ -451,6 +452,9 @@ enum DVDVideoTitleEventKind {       /* findings of the title stage */
     DVDVIDEO_EV_ANGLE,              /* angle, name */
     DVDVIDEO_EV_ANGLE_FAILED,       /* angle, name */
     DVDVIDEO_EV_NAV_INVALID,        /* playing time where it happens */
+    DVDVIDEO_EV_TITLE_SET_INVALID,  /* title number, vtsn, title sets of the disc */
+    DVDVIDEO_EV_TITLE_SET_START,    /* vtsn, this start sector (a title's, or the disc layout's), the first one */
+    DVDVIDEO_EV_IFO_CORRUPT,        /* IFO file name, byte offset */
 };
 
 enum DVDVideoNotSelected {

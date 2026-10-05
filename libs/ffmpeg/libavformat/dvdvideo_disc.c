@@ -157,6 +157,17 @@ int ff_dvdvideo_disc_open(void *log, DVDVideoSource *src, DVDVideoDisc **out)
         goto fail;
     }
     d->nb_vts = FFMIN(d->vts[0].ifo->vmgi_mat->vmg_nr_of_title_sets, 99);
+    if (!d->vts[0].ifo->vts_atrt)
+        av_log(log, AV_LOG_VERBOSE, "VIDEO_TS.IFO: no readable title set attribute table (VTS_ATRT); not needed\n");
+    {
+        const tt_srpt_t *tt = d->vts[0].ifo->tt_srpt;
+        uint32_t covered = tt->last_byte + 1 > TT_SRPT_SIZE ? (tt->last_byte + 1 - TT_SRPT_SIZE) / 12 : 0;
+
+        if (tt->nr_of_srpts > covered)
+            av_log(log, AV_LOG_WARNING, "VIDEO_TS.IFO: the title search table (TT_SRPT) gives %d titles, its recorded "
+                   "end (last_byte %"PRIu32") covers %"PRIu32"; all %d are read\n", tt->nr_of_srpts, tt->last_byte,
+                   covered, tt->nr_of_srpts);
+    }
     for (int n = 1; n <= d->nb_vts; n++) {
         DVDVideoTitleSet *ts = &d->vts[n];
         char name[32];
@@ -169,6 +180,20 @@ int ff_dvdvideo_disc_open(void *log, DVDVideoSource *src, DVDVideoDisc **out)
         if ((ret = read_vobu_map(ts)) < 0)
             goto fail;
         ts->map_distrusted = !!(ff_dvdvideo_check_vts(log, d->dvdread, n, ts->ifo) & DVDVIDEO_VTS_MAP_DISTRUSTED);
+        /* a VOBU address map that is named but cannot be read (or is shorter
+         * than its header): the menu map's failure distrusts the title map too */
+        if (ts->ifo->vtsi_mat->vtsm_vobu_admap && !ts->ifo->menu_vobu_admap) {
+            av_log(log, AV_LOG_WARNING, "Title set %d: its menu VOBU address map (VTSM_VOBU_ADMAP) cannot be read; "
+                   "the map cannot be trusted, VOBU starts are taken from the NAV packs\n", n);
+            ts->map_distrusted = 1;
+        }
+        if (!ts->ifo->vts_c_adt)
+            av_log(log, AV_LOG_VERBOSE, "VTS_%02d_0.IFO: no readable cell address table (VTS_C_ADT); not needed\n", n);
+        if (!ts->ifo->vts_vobu_admap) {
+            av_log(log, AV_LOG_WARNING, "Title set %d: its VOBU address map (VTS_VOBU_ADMAP) cannot be read; "
+                   "the map cannot be trusted, VOBU starts are taken from the NAV packs\n", n);
+            ts->map_distrusted = 1;
+        }
         snprintf(name, sizeof(name), "VTS_%02d_0.IFO", n);
         ifo_sector             = ff_dvdvideo_source_file_sector(src, name);
         ts->title_vobs_base    = title_vobs_base(d, n, ifo_sector);

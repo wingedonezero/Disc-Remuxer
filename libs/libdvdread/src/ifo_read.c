@@ -435,9 +435,10 @@ static ifo_handle_t *ifoOpenFileOrBackup(dvd_reader_t *ctx, int title,
     ifoRead_PGCI_UT(ifofile);
     ifoRead_PTL_MAIT(ifofile);
 
-    /* This is also mandatory. */
+    /* Not needed to find or play titles: a missing or unreadable table is
+     * logged and left out (vts_atrt NULL). */
     if(!ifoRead_VTS_ATRT(ifofile))
-      goto ifoOpen_fail;
+      Log1(ctx, "VTS_ATRT of %s cannot be read; left out", ifo_filename);
 
     ifoRead_TXTDT_MGI(ifofile);
     ifoRead_C_ADT(ifofile);
@@ -457,8 +458,18 @@ static ifo_handle_t *ifoOpenFileOrBackup(dvd_reader_t *ctx, int title,
     ifoRead_C_ADT(ifofile);
     ifoRead_VOBU_ADMAP(ifofile);
 
-    if(!ifoRead_TITLE_C_ADT(ifofile) || !ifoRead_TITLE_VOBU_ADMAP(ifofile))
-      goto ifoOpen_fail;
+    /* The cell address table is not needed to find or play titles: a missing
+     * or broken one is logged and left out (vts_c_adt NULL). */
+    if(!ifoRead_TITLE_C_ADT(ifofile))
+      Log1(ctx, "VTS_C_ADT of %s cannot be read; left out", ifo_filename);
+    /* A title set without a VOBU address map pointer is refused; a map that
+     * cannot be read (or is shorter than its header) is left out
+     * (vts_vobu_admap NULL): the caller decides how to find VOBUs. */
+    if(!ifoRead_TITLE_VOBU_ADMAP(ifofile)) {
+      if(!ifofile->vtsi_mat->vts_vobu_admap)
+        goto ifoOpen_fail;
+      Log1(ctx, "VTS_VOBU_ADMAP of %s cannot be read; left out", ifo_filename);
+    }
 
     return ifofile;
   }
@@ -2018,7 +2029,12 @@ static int ifoRead_PGC_COMMAND_TBL(ifo_handle_t *ifofile,
                    + (uint32_t)cmd_tbl->nr_of_post
                    + (uint32_t)cmd_tbl->nr_of_cell;
 
-  CHECK_VALUE(nr_cmds <= 255);
+  /* DVD-Video allows 128 commands per program chain: a table giving more
+   * is broken, and with it the program chain */
+  if(nr_cmds > 128) {
+    Log1(ifop->ctx, "PGC command table with %u commands (more than 128)", nr_cmds);
+    return 0;
+  }
   CHECK_VALUE(nr_cmds * COMMAND_DATA_SIZE + PGC_COMMAND_TBL_SIZE
               <= (uint32_t)cmd_tbl->last_byte + 1U);
 
@@ -2347,18 +2363,31 @@ int ifoRead_TT_SRPT(ifo_handle_t *ifofile) {
   if(tt_srpt->last_byte == 0) {
     tt_srpt->last_byte = tt_srpt->nr_of_srpts * sizeof(title_info_t) - 1 + TT_SRPT_SIZE;
   }
-  info_length = tt_srpt->last_byte + 1 - TT_SRPT_SIZE;
+  /* The entries are counted by nr_of_srpts (at most 99, the DVD-Video
+   * limit): entries stored past a too small last_byte are read too. When
+   * they cannot be read, what last_byte covers is read. */
+  {
+    unsigned int n = tt_srpt->nr_of_srpts > 99 ? 99 : tt_srpt->nr_of_srpts;
+    size_t by_count = n * sizeof(title_info_t);
+    size_t by_last  = tt_srpt->last_byte + 1 > TT_SRPT_SIZE ? tt_srpt->last_byte + 1 - TT_SRPT_SIZE : 0;
 
-  tt_srpt->title = calloc(1, info_length);
-  if(!tt_srpt->title) {
-    free(tt_srpt);
-    ifofile->tt_srpt = NULL;
-    return 0;
-  }
-  if(!(DVDReadBytes(ifop->file, tt_srpt->title, info_length))) {
-    Log0(ifop->ctx, "libdvdread: Unable to read read TT_SRPT.");
-    ifoFree_TT_SRPT(ifofile);
-    return 0;
+    info_length = by_count > by_last ? by_count : by_last;
+    tt_srpt->title = calloc(1, info_length ? info_length : 1);
+    if(!tt_srpt->title) {
+      free(tt_srpt);
+      ifofile->tt_srpt = NULL;
+      return 0;
+    }
+    if(info_length && !(DVDReadBytes(ifop->file, tt_srpt->title, info_length))) {
+      if(info_length == by_last || !DVDFileSeek_(ifop->file, ifofile->vmgi_mat->tt_srpt * DVD_BLOCK_LEN
+                                                 + TT_SRPT_SIZE) ||
+         !(DVDReadBytes(ifop->file, tt_srpt->title, by_last))) {
+        Log0(ifop->ctx, "libdvdread: Unable to read read TT_SRPT.");
+        ifoFree_TT_SRPT(ifofile);
+        return 0;
+      }
+      info_length = by_last;
+    }
   }
 
   if(tt_srpt->nr_of_srpts>info_length/sizeof(title_info_t)){
@@ -3071,6 +3100,9 @@ static int ifoRead_VOBU_ADMAP_internal(ifo_handle_t *ifofile,
 
   B2N_32(vobu_admap->last_byte);
 
+  /* shorter than its own header: no map */
+  if(vobu_admap->last_byte + 1 < VOBU_ADMAP_SIZE)
+    return 0;
   info_length = vobu_admap->last_byte + 1 - VOBU_ADMAP_SIZE;
   /* assert(info_length > 0);
      Magic Knight Rayearth Daybreak is mastered very strange and has
@@ -3211,8 +3243,12 @@ static int ifoRead_PGCIT_internal(ifo_handle_t *ifofile, pgcit_t *pgcit,
   for(i = 0; i < pgcit->nr_of_pgci_srp; i++) {
     int dup;
     if((dup = find_dup_pgc(pgcit->pgci_srp, pgcit->pgci_srp[i].pgc_start_byte, i)) >= 0) {
+      /* a duplicate of a PGC that could not be read is left out too */
       pgcit->pgci_srp[i].pgc = pgcit->pgci_srp[dup].pgc;
-      pgcit->pgci_srp[i].pgc->ref_count++;
+      if(pgcit->pgci_srp[i].pgc)
+        pgcit->pgci_srp[i].pgc->ref_count++;
+      else
+        Log0(ifop->ctx, "Unable to read invalid PCG (duplicate of PGC %d)", dup + 1);
       continue;
     }
     pgcit->pgci_srp[i].pgc = calloc(1, sizeof(pgc_t));

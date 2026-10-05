@@ -16,7 +16,7 @@ The settings file (`~/.config/disc-remuxer/settings.toml`, or `--settings FILE`)
 
 | Setting | Allowed | Default | What it does |
 |---|---|---|---|
-| `read.attempts` | 1 to 100 | `5` | How many times a read from a disc is tried before it counts as failed; after the first retry the rest of the read goes one sector at a time. |
+| `read.attempts` | 1 to 99 | `5` | How many times a read from a disc is tried before it counts as failed; after the first retry the rest of the read goes one sector at a time. |
 | `read.udf_reader` | netbsd, linux | `"netbsd"` | Which UDF reader opens disc images: netbsd (based on NetBSD's UDF code) or linux (based on Linux's). |
 | `read.prefer_iso_for_old_udf102` | true or false | `true` | Read a DVD image whose UDF 1.02 file system was recorded before 2006 through its ISO 9660 file system, when that holds a valid DVD-Video structure. |
 

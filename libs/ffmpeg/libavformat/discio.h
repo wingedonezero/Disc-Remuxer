@@ -204,6 +204,13 @@ int ff_discio_file_read(DiscIOFS *fs, const DiscIOFile *file, int64_t pos,
                         uint8_t *buf, int len);
 
 /**
+ * ff_discio_file_read() with its own attempt count; quiet: failed attempts
+ * logged at debug level only.
+ */
+int ff_discio_file_read_attempts(DiscIOFS *fs, const DiscIOFile *file, int64_t pos,
+                                 uint8_t *buf, int len, int attempts, int quiet);
+
+/**
  * Walk path from the root: calls subdir for every component but the last
  * (empty components skipped; '/' and '\\' separate, '/' wins while the rest
  * holds one; the path must start with a separator) and returns the last

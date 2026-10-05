@@ -203,6 +203,19 @@ fn host_file_source() {
 }
 
 #[test]
+fn only_regular_files_open_as_host_files() {
+    let dir = std::env::temp_dir().join(format!("discio-host-dir-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let cpath = CString::new(dir.to_str().unwrap()).unwrap();
+    let mut src: *mut Source = std::ptr::null_mut();
+    // SAFETY: valid path and out pointer.
+    let ret = unsafe { discio::ff_discio_source_open_file(std::ptr::null_mut(), cpath.as_ptr(), &raw mut src) };
+    assert_eq!(ret, -22, "a directory is refused (EINVAL)");
+    assert!(src.is_null());
+    let _ = std::fs::remove_dir(&dir);
+}
+
+#[test]
 fn file_reads_cross_extents_and_not_recorded_runs_read_as_zeros() {
     use discio::{Extent, File, Fs, LABEL_SIZE, SECTOR_NOT_RECORDED};
     let data = pattern(4 * 2048);

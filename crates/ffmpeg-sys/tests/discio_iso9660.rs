@@ -238,6 +238,31 @@ fn joliet_names_and_label() {
     assert_eq!(v.list("/").unwrap()[2], ("VIDEO_TS".into(), true));
 }
 
+/// Appends `recs` after the last record of the directory at `sector`.
+fn append_records(img: &mut [u8], sector: usize, recs: &[Vec<u8>]) {
+    let mut off = sector * 2048;
+    while img[off] != 0 {
+        off += usize::from(img[off]);
+    }
+    for r in recs {
+        img[off..off + r.len()].copy_from_slice(r);
+        off += r.len();
+    }
+}
+
+#[test]
+fn a_name_starting_with_nul_is_empty_and_only_a_name_of_no_characters_is_x() {
+    let mut img = image();
+    append_records(&mut img, 22, &[record(&[0, b'A'], 25, 1, 0), record(&[], 25, 1, 0)]);
+    append_records(&mut img, 23, &[record(&[0, 0, 0, b'A'], 25, 1, 0), record(&[], 25, 1, 0)]);
+    let img = Image::write("nul-names", &img);
+    for joliet in [false, true] {
+        let v = img.mount(joliet).unwrap();
+        let names: Vec<String> = v.list("/VIDEO_TS").unwrap().into_iter().map(|e| e.0).collect();
+        assert_eq!(names[names.len() - 2..], [String::new(), "x".to_owned()], "joliet {joliet}: {names:?}");
+    }
+}
+
 #[test]
 fn corrupt_and_missing_structures() {
     // zero record length at a directory's sector start: corrupt

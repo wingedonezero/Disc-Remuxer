@@ -390,18 +390,20 @@ static int iso_list_dir(DiscIOFS *fs, const char *path, DiscIODirCallback cb, vo
             strcpy(name, ".");
         } else if (lfi == 1 && id[0] == 1) {
             strcpy(name, "..");
-        } else if (!v->joliet) {
-            int n = lfi;
-            if (n >= 3 && id[n - 2] == ';' && id[n - 1] == '1')
-                n -= 2;
-            memcpy(name, id, n);
-            name[n] = 0;
         } else {
-            int n = joliet_name(id, lfi, (uint8_t *)name);
-            name[n] = 0;  /* a Joliet name is shown up to its first NUL */
+            int n;
+            if (!v->joliet) {
+                n = lfi;
+                if (n >= 3 && id[n - 2] == ';' && id[n - 1] == '1')
+                    n -= 2;
+                memcpy(name, id, n);
+            } else {
+                n = joliet_name(id, lfi, (uint8_t *)name);
+            }
+            name[n] = 0;  /* a name holding a NUL is shown up to it (an empty name then) */
+            if (!n)
+                strcpy(name, "x");  /* only a name of no characters at all is shown as "x" */
         }
-        if (!name[0])
-            strcpy(name, "x");
         if ((ret = cb(opaque, name, is_dir)))
             break;
         off += rl;

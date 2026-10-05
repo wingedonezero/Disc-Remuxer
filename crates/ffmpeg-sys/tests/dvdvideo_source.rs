@@ -244,6 +244,10 @@ fn image_with_a_cut_ifo(bup: bool) -> Img {
     for (i, b) in im.sector(CUT_IFO)[0x400..].iter_mut().enumerate() {
         *b = u8::try_from(i % 241).unwrap();
     }
+    // the BUP holds the IFO's bytes: its block 0 equals the IFO's, block 1 is
+    // the copy of the IFO block the cut image lost
+    let block0 = sectors(&im, CUT_IFO, 1);
+    im.sector(BUP).copy_from_slice(&block0);
     fill(&mut im, BUP + 1, 1, 0x33);
     im.d.truncate((CUT_IFO as usize + 1) * S);
     im
@@ -251,12 +255,32 @@ fn image_with_a_cut_ifo(bup: bool) -> Img {
 
 #[test]
 fn an_unreadable_ifo_block_is_read_from_the_bup() {
+    // the read of both blocks fails on the IFO (try 1); the next try reads the
+    // BUP, which then serves the rest
     let im = image_with_a_cut_ifo(true);
     let src = Src::open(&write_image("cut-ifo", &im)).unwrap();
-    let got = src.reader().read_bytes(0, DVD_READ_INFO_FILE, 4096);
     let mut want = sectors(&im, CUT_IFO, 1);
     want.extend(sectors(&im, BUP + 1, 1));
-    assert_eq!(got, want, "block 0 from the IFO, block 1 from the BUP");
+    assert!(logged("VIDEO_TS.IFO: read at byte 0 failed (try 1 of 16); the next try reads the backup copy (BUP)", || {
+        assert_eq!(src.reader().read_bytes(0, DVD_READ_INFO_FILE, 4096), want);
+    }));
+}
+
+#[test]
+fn after_a_failed_try_the_reads_stay_on_the_bup() {
+    // a BUP whose block 0 differs from the IFO's shows where each block came
+    // from: after the failed try on the IFO, block 0 too is read from the BUP
+    let mut im = image_with_a_cut_ifo(true);
+    let mut other = vec![0u8; 0];
+    for (i, b) in im.sector(BUP).iter_mut().enumerate() {
+        *b = u8::try_from(i % 239).unwrap();
+        other.push(*b);
+    }
+    let src = Src::open(&write_image("cut-ifo-stay", &im)).unwrap();
+    let dvd = src.reader();
+    let got = dvd.read_bytes(0, DVD_READ_INFO_FILE, 4096);
+    assert_eq!(&got[..S], other.as_slice(), "block 0 from the BUP");
+    assert_eq!(got[S..], sectors(&im, BUP + 1, 1)[..], "block 1 from the BUP");
 }
 
 #[test]
@@ -269,7 +293,9 @@ fn without_a_bup_the_unreadable_ifo_block_is_a_read_error() {
         let f = DVDOpenFile(dvd.0, 0, DVD_READ_INFO_FILE);
         assert!(!f.is_null());
         let mut buf = vec![0u8; 4096];
-        assert!(DVDReadBytes(f, buf.as_mut_ptr().cast(), 4096) < 4096);
+        assert!(logged("could not be read from the IFO or its backup copy in 16 tries", || {
+            assert!(DVDReadBytes(f, buf.as_mut_ptr().cast(), 4096) < 4096);
+        }));
         DVDCloseFile(f);
     }
 }
@@ -452,6 +478,32 @@ fn title_set_cells_on_the_vobu_map_and_inside_the_vobs() {
     // the last sector itself is the limit
     assert_eq!(check_vts("vts-edge", &[(0, 10, 19), (20, 30, 40)], &VOBUS, 40), CELL_PAST_VOBS);
     assert_eq!(check_vts("vts-both", &[(0, 10, 19), (25, 30, 45)], &VOBUS, 40), MAP_DISTRUSTED | CELL_PAST_VOBS);
+}
+
+#[test]
+fn a_duplicate_of_a_program_chain_that_cannot_be_read_is_left_out() {
+    // two program-chain entries naming the same start, past the end of the IFO:
+    // the first cannot be read, the second shares its start (crashed libdvdread)
+    let mut ifo = vts_ifo(&[(0, 10, 19)], &VOBUS, 40);
+    let t = 2 * S;
+    ifo[t..t + 2].copy_from_slice(&2u16.to_be_bytes());
+    for (k, id) in [(0usize, 0x81u8), (1, 0x82)] {
+        let e = t + 8 + 8 * k;
+        ifo[e..e + 4].copy_from_slice(&[id, 0, 0, 0]);
+        ifo[e + 4..e + 8].copy_from_slice(&0x8000u32.to_be_bytes());
+    }
+    let dir = scratch("dup-pgc").join("VIDEO_TS");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("VTS_01_0.IFO"), ifo).unwrap();
+    std::fs::write(dir.join("VTS_01_1.VOB"), vec![0u8; 40 * S]).unwrap();
+    let src = Src::open(dir.parent().unwrap()).unwrap();
+    let dvd = src.reader();
+    // SAFETY: the reader is open; the IFO handle is closed below.
+    unsafe {
+        let ifo = ifoOpen(dvd.0, 1);
+        assert!(!ifo.is_null(), "the title set opens; both program chains are left out");
+        ifoClose(ifo);
+    }
 }
 
 // ---- folders ----
@@ -692,7 +744,95 @@ fn folder_vob_groups_are_their_files() {
     std::fs::write(vts.join("VTS_01_4.VOB"), block(9)).unwrap();
     let src = Src::open(&dir).unwrap();
     assert_eq!(src.vob_block(1, false, 2).unwrap(), block(3), "VTS_01_2.VOB follows VTS_01_1.VOB");
-    assert_eq!(src.vob_block(1, false, 3).unwrap(), [vec![4; 100], vec![0; S - 100]].concat(), "padded with zeros");
+    assert_eq!(src.vob_block(1, false, 3).unwrap(), [vec![4; 100], vec![0xFF; S - 100]].concat(), "0xFF after the end");
     assert_eq!(src.vob_block(1, false, 4).err(), Some(EOF), "VTS_01_4.VOB is not reached: VTS_01_3.VOB is missing");
     assert_eq!(src.vob_block(1, true, 0).err(), Some(ENOENT), "no menu VOB");
+}
+
+/// A folder whose title VOBs are `parts` (in order, `VTS_01_1.VOB` on); a part
+/// `None` is a directory of that name.
+fn vob_folder(test: &str, parts: &[Option<Vec<u8>>]) -> PathBuf {
+    let dir = scratch(test);
+    let vts = dir.join("VIDEO_TS");
+    std::fs::create_dir_all(&vts).unwrap();
+    std::fs::write(vts.join("VIDEO_TS.IFO"), [b"DVDVIDEO-VMG".as_slice(), &[0; S - 12]].concat()).unwrap();
+    for (k, part) in parts.iter().enumerate() {
+        let path = vts.join(format!("VTS_01_{}.VOB", k + 1));
+        match part {
+            Some(data) => std::fs::write(path, data).unwrap(),
+            None => std::fs::create_dir(path).unwrap(),
+        }
+    }
+    dir
+}
+
+/// Blocks `from..from + n` of the joined bytes, 0xFF after their end.
+fn joined_blocks(bytes: &[u8], from: usize, n: usize) -> Vec<u8> {
+    let mut out = vec![0xFF; n * S];
+    let end = bytes.len().min((from + n) * S);
+    if from * S < end {
+        out[..end - from * S].copy_from_slice(&bytes[from * S..end]);
+    }
+    out
+}
+
+#[test]
+fn folder_vob_files_are_joined_as_bytes() {
+    // 7000 bytes of pattern split into files of 3000 (not whole blocks), 2500
+    // and 1500 bytes: the blocks are those of the bytes joined, a block may
+    // hold the end of one file and the start of the next; 0xFF after the end
+    let all: Vec<u8> = (0..7000).map(|i| u8::try_from(i % 251).unwrap()).collect();
+    let dir = vob_folder("vob-joined", &[Some(all[..3000].to_vec()), Some(all[3000..5500].to_vec()),
+                                         Some(all[5500..].to_vec())]);
+    let src = Src::open(&dir).unwrap();
+    for b in 0..4 {
+        assert_eq!(src.vob_block(1, false, b).unwrap(), joined_blocks(&all, usize::try_from(b).unwrap(), 1), "block {b}");
+    }
+    assert_eq!(src.vob_block(1, false, 4).err(), Some(EOF));
+    // libdvdread reads the title VOBs through the same blocks
+    let dvd = src.reader();
+    assert_eq!(dvd.read_title_blocks(1, 0, 4), joined_blocks(&all, 0, 4));
+    assert_eq!(dvd.read_title_blocks(1, 1, 2), joined_blocks(&all, 1, 2));
+}
+
+#[test]
+fn an_empty_vob_file_adds_nothing() {
+    let all: Vec<u8> = (0..5000).map(|i| u8::try_from(i % 249).unwrap()).collect();
+    let dir = vob_folder("vob-empty", &[Some(all[..2048].to_vec()), Some(vec![]), Some(all[2048..].to_vec())]);
+    let src = Src::open(&dir).unwrap();
+    assert!(logged("is empty: skipped", || {
+        assert_eq!(src.vob_block(1, false, 1).unwrap(), joined_blocks(&all, 1, 1), "VTS_01_3.VOB follows VTS_01_1.VOB");
+    }));
+    assert_eq!(src.reader().read_title_blocks(1, 0, 3), joined_blocks(&all, 0, 3));
+}
+
+#[test]
+fn a_vob_name_that_is_not_a_regular_file_ends_the_vob_files() {
+    let dir = vob_folder("vob-dir", &[Some(vec![1; S]), None, Some(vec![3; S])]);
+    let src = Src::open(&dir).unwrap();
+    assert!(logged("is not a regular file: the VOB files of the title set end before it", || {
+        assert_eq!(src.vob_block(1, false, 0).unwrap(), vec![1; S]);
+    }));
+    assert_eq!(src.vob_block(1, false, 1).err(), Some(EOF), "VTS_01_3.VOB is not reached");
+}
+
+#[test]
+fn a_vob_file_that_cannot_be_opened_makes_the_title_vobs_unreadable() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = vob_folder("vob-noread", &[Some(vec![1; S]), Some(vec![2; S])]);
+    let part2 = dir.join("VIDEO_TS").join("VTS_01_2.VOB");
+    std::fs::set_permissions(&part2, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if File::open(&part2).is_ok() {
+        eprintln!("skipped: the file stays readable (running as root?)");
+        return;
+    }
+    let src = Src::open(&dir).unwrap();
+    assert!(logged("the title VOBs of title set 1 cannot be read", || {
+        assert!(src.vob_block(1, false, 0).is_err(), "not even VTS_01_1.VOB is read");
+    }));
+    let dvd = src.reader();
+    // SAFETY: the reader is open.
+    let f = unsafe { DVDOpenFile(dvd.0, 1, DVD_READ_TITLE_VOBS) };
+    assert!(f.is_null(), "libdvdread has no title VOBs either");
+    std::fs::set_permissions(&part2, std::fs::Permissions::from_mode(0o644)).unwrap();
 }

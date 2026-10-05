@@ -116,6 +116,11 @@ int ff_discio_source_open_file(void *logctx, const char *path, DiscIOSource **ou
         close(fd);
         return ret;
     }
+    if (!S_ISREG(st.st_mode)) {
+        av_log(logctx, AV_LOG_ERROR, "Cannot open '%s': not a regular file\n", path);
+        close(fd);
+        return AVERROR(EINVAL);
+    }
     if (!(f = av_mallocz(sizeof(*f)))) {
         close(fd);
         return AVERROR(ENOMEM);

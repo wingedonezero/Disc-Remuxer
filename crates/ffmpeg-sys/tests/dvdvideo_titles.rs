@@ -218,3 +218,47 @@ fn one_title_per_angle() {
     assert_eq!((p.titles[1].angle, p.titles[1].cells.clone()), (1, vec![0, 2]));
     assert_eq!(events(&p, "angle"), ["2\t1"]);
 }
+
+/// One title set with two titles (program chains 1 and 2).
+fn two_title_set() -> (Vts, Vec<Nav>) {
+    let (mut navs, mut t0) = (Vec::new(), 0);
+    let a = cell(0, 4, 2, &mut navs, &mut t0);
+    let b = cell(40, 4, 3, &mut navs, &mut t0);
+    let vts = Vts {
+        pgcs: vec![Pgc::new(vec![a]), Pgc::new(vec![b])],
+        ptts: vec![vec![(1, 1)], vec![(2, 1)]],
+        vobus: vobus(&navs),
+        vob_sectors: 80,
+    };
+    (vts, navs)
+}
+
+#[test]
+fn a_title_naming_a_title_set_the_disc_does_not_have_is_left_out_with_a_warning() {
+    let d = OpenDisc::build("titles-bad-vts", &[Title::new(1, 1, 1), Title::new(5, 1, 1)], &[two_title_set()]);
+    let p = plan(&d, None, CELLS_AUTO, ORDER_TABLE, 0);
+    assert_eq!(names(&p), ["1"], "the rest of the disc stays usable");
+    assert_eq!(events(&p, "title-set-invalid"), ["2\t5\t1"]);
+}
+
+#[test]
+fn a_title_giving_another_start_for_its_title_set_is_reported() {
+    let at = |ttn: u8, sector: u32| Title { title_set_starting_sector: sector, ..Title::new(1, ttn, 1) };
+    // the first non-zero start is the set's; a later different one (0 too) is
+    // reported (set, this start, the first); then the set's start by the
+    // disc's layout: the VMG (3 IFO blocks, vmg_last_sector 5) ends before
+    // block 6 (set, layout start, the first)
+    for (test, starts, want) in [
+        ("titles-start-layout", [6, 6], vec![]),
+        ("titles-start-same", [100, 100], vec!["1\t6\t100"]),
+        ("titles-start-zero-first", [0, 100], vec!["1\t6\t100"]),
+        ("titles-start-differs", [100, 200], vec!["1\t200\t100", "1\t6\t100"]),
+        ("titles-start-zero-later", [100, 0], vec!["1\t0\t100", "1\t6\t100"]),
+        ("titles-start-unset", [0, 0], vec![]),
+    ] {
+        let d = OpenDisc::build(test, &[at(1, starts[0]), at(2, starts[1])], &[two_title_set()]);
+        let p = plan(&d, None, CELLS_AUTO, ORDER_TABLE, 0);
+        assert_eq!(events(&p, "title-set-start-mismatch"), want, "{test}");
+        assert_eq!(names(&p).len(), 2, "{test}: both titles stay");
+    }
+}
