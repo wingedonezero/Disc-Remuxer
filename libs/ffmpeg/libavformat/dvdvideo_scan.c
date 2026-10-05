@@ -106,7 +106,6 @@ int ff_dvdvideo_rand_next(void *r)
 #define SETTLE_MS               8200        /* played before a snapshot / button press */
 #define HIGHLIGHT_ACTIVE_TICKS  179910      /* 90 kHz, just under 2 s */
 #define HIGHLIGHT_KEY           0x63ULL
-#define NAV_READ_ATTEMPTS       3
 #define SCAN_FILE_SIZE          (1ULL << 42)
 #define MENU_VOB                0x100       /* VOB id bit: the menu VOB of the IFO */
 #define KEY_IN_VOB              (1ULL << 48)    /* above every VOB id << 32 */
@@ -209,22 +208,6 @@ typedef struct PCIEntry {
     ScanPCI  pci;
 } PCIEntry;
 
-/* What the NAV pack of a title-VOB sector said about its VOBU (or that the
- * sector holds no NAV pack) */
-#define VOBU_NOT_A_NAV_PACK 0xffffffffU
-#define VOBU_NO_NEXT        0x10000000U
-#define IN_ILVU             0x4000
-
-typedef struct VobuEntry {
-    uint64_t key;
-    uint16_t vobu_ea;
-    uint16_t ilvu_ea;
-    uint32_t next;              /* bits 28..0 distance to the next VOBU (VOBU_NO_NEXT: none),
-                                 * bits 30..29 sml_pbi.category bits 14..13; VOBU_NOT_A_NAV_PACK */
-    uint32_t vobu_s_ptm;
-    uint32_t vobu_e_ptm;
-} VobuEntry;
-
 typedef struct VisitedEntry {
     uint64_t ord;               /* the key in key order */
     uint64_t key;
@@ -268,14 +251,12 @@ typedef struct Scan {
     DVDVideoScanTrace trace;
     void            *trace_opaque;
 
-    ifo_handle_t    *ifo[100];          /* [0] = the VMG; NULL: not open (not given to the navigator) */
-    int              nb_vts;
-    uint32_t         title_vobs_base[100]; /* absolute sector of the title VOBs (images), 0 unknown */
+    DVDVideoDisc    *disc;              /* the IFOs (a title set whose IFO is not open is not given to the
+                                         * navigator) and the VOBU records */
 
     /* read service */
     struct AVTreeNode *sectors;
     struct AVTreeNode *pcis;
-    struct AVTreeNode *vobus;
     int              refused;
     char             refusal[256];
     uint64_t         nb_reads;
@@ -350,154 +331,9 @@ static int fail(Scan *sc, const char *fmt, ...)
 
 static uint64_t sector_key(Scan *sc, int id, uint32_t sector)
 {
-    uint32_t base = (id & MENU_VOB) ? 0 : sc->title_vobs_base[id & 0xff];
+    uint32_t base = (id & MENU_VOB) ? 0 : sc->disc->vts[id & 0xff].title_vobs_base;
 
     return base ? (uint32_t)(base + sector) : KEY_IN_VOB | (uint64_t)id << 32 | sector;
-}
-
-static VobuEntry *vobu_get(Scan *sc, int vtsn, uint32_t sector)
-{
-    return map_get(sc->vobus, sector_key(sc, vtsn, sector));
-}
-
-static int vobu_put(Scan *sc, int vtsn, uint32_t sector, const VobuEntry *rec)
-{
-    VobuEntry *e = av_memdup(rec, sizeof(*rec));
-    VobuEntry *kept;
-
-    if (!e)
-        return AVERROR(ENOMEM);
-    e->key = sector_key(sc, vtsn, sector);
-    if (!(kept = map_put(&sc->vobus, e))) {
-        av_free(e);
-        return AVERROR(ENOMEM);
-    }
-    if (kept != e)
-        av_free(e);
-    return 0;
-}
-
-/* The NAV pack fields a VOBU record keeps */
-typedef struct NavFields {
-    uint32_t next_vobu;         /* vobu_sri.next_vobu */
-    uint32_t vobu_ea;           /* dsi_gi.vobu_ea */
-    uint32_t ilvu_ea;           /* sml_pbi.ilvu_ea */
-    uint16_t category;          /* sml_pbi.category */
-    uint32_t vobu_s_ptm;
-    uint32_t vobu_e_ptm;
-} NavFields;
-
-static void nav_fields(const uint8_t *nav, NavFields *f)
-{
-    f->next_vobu  = AV_RB32(nav + 0x541);
-    f->vobu_ea    = AV_RB32(nav + 0x40f);
-    f->ilvu_ea    = AV_RB32(nav + 0x429);
-    f->category   = AV_RB16(nav + 0x427);
-    f->vobu_s_ptm = AV_RB32(nav + 0x39);
-    f->vobu_e_ptm = AV_RB32(nav + 0x3d);
-}
-
-/* Read the NAV pack at a title-VOB sector straight from the disc (not through
- * the read service). A sector whose first 32 bytes are 0xFF but whose PCI and
- * DSI still name the sector (a NAV pack blanked out) counts as the NAV pack of
- * a VOBU of vobu_ea + 1 sectors and half a second, followed directly by the
- * next VOBU. A sector that cannot be read or holds no NAV pack is recorded as
- * such. 1 = a NAV pack, 0 = none, < 0 = error. */
-static int read_nav_pack(Scan *sc, int vtsn, uint32_t sector, NavFields *f)
-{
-    VobuEntry none = { .next = VOBU_NOT_A_NAV_PACK };
-    uint8_t buf[DVDVIDEO_BLOCK_SIZE];
-    int ret = ff_dvdvideo_source_vob_read(sc->src, vtsn, 0, sector, buf, NAV_READ_ATTEMPTS);
-
-    if (ret < 0) {
-        av_log(sc->log, AV_LOG_DEBUG, "scan: title set %d: the NAV pack at sector %"PRIu32" could not be read\n",
-               vtsn, sector);
-    } else if (ff_dvdvideo_is_nav_pack(buf)) {
-        nav_fields(buf, f);
-        return 1;
-    } else {
-        int blanked = AV_RB32(buf + 0x2d) == sector && AV_RB32(buf + 0x40b) == sector &&
-                      AV_RB32(buf + 0x40f) <= 0xfffff;
-
-        for (int i = 0; i < 32 && blanked; i++)
-            blanked = buf[i] == 0xff;
-        if (blanked) {
-            av_log(sc->log, AV_LOG_DEBUG, "scan: title set %d: sector %"PRIu32" is a blanked NAV pack, taken as "
-                   "one\n", vtsn, sector);
-            memset(f, 0, sizeof(*f));
-            f->vobu_ea    = AV_RB32(buf + 0x40f);
-            f->next_vobu  = f->vobu_ea + 1;
-            f->vobu_e_ptm = 45000;
-            return 1;
-        }
-        av_log(sc->log, AV_LOG_TRACE, "scan: title set %d: sector %"PRIu32" is not a NAV pack\n", vtsn, sector);
-    }
-    return vobu_put(sc, vtsn, sector, &none);
-}
-
-/* Record the VOBU whose NAV pack was read at title-VOB sector `sector`. *ok is
- * set when the NAV pack is usable: not pointing at itself (allowed only with
- * allow_self, and then nothing is recorded) and, for a VOBU that ends its cell
- * inside an interleaved unit that goes on, the VOBU after it readable. */
-static int register_vobu(Scan *sc, int vtsn, const NavFields *f, uint32_t sector, int allow_self, int *ok)
-{
-    uint32_t nx = f->next_vobu & 0x7fffffff;
-    int64_t next = nx == SRI_END_OF_CELL ? -2 : (uint32_t)(sector + nx);
-    uint32_t distance;
-    int ret;
-
-    *ok = 0;
-    if (next == sector) {
-        if (!allow_self)
-            av_log(sc->log, AV_LOG_DEBUG, "scan: title set %d: the NAV pack at sector %"PRIu32" points at "
-                   "itself\n", vtsn, sector);
-        else
-            *ok = 1;
-        return 0;
-    }
-    if (next == -2 && (f->category & IN_ILVU) && f->vobu_ea != f->ilvu_ea) {
-        if (f->ilvu_ea < f->vobu_ea) {
-            av_log(sc->log, AV_LOG_WARNING, "Title set %d: the interleaved unit of the VOBU at sector %"PRIu32" "
-                   "of its title VOBs ends before the VOBU does; the disc data is damaged there\n", vtsn, sector);
-        } else {
-            /* the interleaved unit goes on after this VOBU */
-            uint32_t following = sector + f->vobu_ea + 1;
-
-            next = following;
-            if (!vobu_get(sc, vtsn, following)) {
-                NavFields f2;
-                int ok2;
-
-                if ((ret = read_nav_pack(sc, vtsn, following, &f2)) <= 0) {
-                    av_log(sc->log, AV_LOG_DEBUG, "scan: title set %d: the VOBU after sector %"PRIu32" (%"PRIu32") "
-                           "could not be read\n", vtsn, sector, following);
-                    return ret;
-                }
-                if ((ret = register_vobu(sc, vtsn, &f2, following, 0, &ok2)) < 0)
-                    return ret;
-                if (!ok2) {
-                    av_log(sc->log, AV_LOG_DEBUG, "scan: title set %d: the VOBU at sector %"PRIu32" could not "
-                           "be recorded\n", vtsn, following);
-                    return 0;
-                }
-            }
-        }
-    }
-    *ok = 1;
-    distance = next == -2 ? VOBU_NO_NEXT : (uint32_t)next - sector;
-    if ((next == -2 || distance < VOBU_NO_NEXT) && f->vobu_ea < 0x10000 && f->ilvu_ea < 0x10000) {
-        VobuEntry rec = {
-            .vobu_ea    = f->vobu_ea,
-            .ilvu_ea    = f->ilvu_ea,
-            .next       = (uint32_t)(f->category & 0x6000) << 16 | distance,
-            .vobu_s_ptm = f->vobu_s_ptm,
-            .vobu_e_ptm = f->vobu_e_ptm,
-        };
-        return vobu_put(sc, vtsn, sector, &rec);
-    }
-    av_log(sc->log, AV_LOG_DEBUG, "scan: title set %d: the VOBU at sector %"PRIu32" is too large to record\n",
-           vtsn, sector);
-    return 0;
 }
 
 static int refuse(Scan *sc, int id, uint32_t sector, const char *reason)
@@ -520,9 +356,9 @@ static int fetch(Scan *sc, int id, uint32_t sector, uint8_t *buf)
     int menu = !!(id & MENU_VOB), vtsn = id & 0xff, nav, ret;
     char reason[128];
 
-    if (!sc->ifo[vtsn])
+    if (!sc->disc->vts[vtsn].ifo)
         return refuse(sc, id, sector, "its IFO is not open");
-    ret = ff_dvdvideo_source_vob_read(sc->src, vtsn, menu, sector, buf, NAV_READ_ATTEMPTS);
+    ret = ff_dvdvideo_source_vob_read(sc->src, vtsn, menu, sector, buf, DVDVIDEO_NAV_READ_ATTEMPTS);
     if (ret < 0) {
         if (ret == AVERROR(ENOENT))
             snprintf(reason, sizeof(reason), "the VOB does not exist");
@@ -561,16 +397,17 @@ static int fetch(Scan *sc, int id, uint32_t sector, uint8_t *buf)
     }
     if (!menu && vtsn) {
         if (nav) {
-            NavFields f;
-            int ok;
+            DVDVideoNavFields f;
+            int64_t next;
+            uint32_t len;
 
-            nav_fields(buf, &f);
-            if ((ret = register_vobu(sc, vtsn, &f, sector, 1, &ok)) < 0)
+            ff_dvdvideo_nav_fields(buf, &f);
+            if ((ret = ff_dvdvideo_vobu_register(sc->disc, vtsn, &f, sector, 1, &next, &len)) < 0)
                 return ret;
         } else {
-            VobuEntry none = { .next = VOBU_NOT_A_NAV_PACK };
+            DVDVideoVobu none = { .next = DVDVIDEO_VOBU_NOT_A_NAV_PACK };
 
-            if ((ret = vobu_put(sc, vtsn, sector, &none)) < 0)
+            if ((ret = ff_dvdvideo_vobu_put(sc->disc, vtsn, sector, &none)) < 0)
                 return ret;
         }
     }
@@ -682,17 +519,17 @@ static int scan_file_kind(Scan *sc, const char *name, int *ifo, int *vob_id)
 
     if (!strcmp(name, "VIDEO_TS.IFO") || !strcmp(name, "VIDEO_TS.BUP")) {
         *ifo = 0;
-        return sc->ifo[0] ? 0 : -1;
+        return sc->disc->vts[0].ifo ? 0 : -1;
     }
     if (!strcmp(name, "VIDEO_TS.VOB")) {
         *vob_id = MENU_VOB;
-        return sc->ifo[0] ? 1 : -1;
+        return sc->disc->vts[0].ifo ? 1 : -1;
     }
     if (strlen(name) != 12 || strncmp(name, "VTS_", 4) || !av_isdigit(name[4]) || !av_isdigit(name[5]) ||
         name[6] != '_')
         return -1;
     n = (name[4] - '0') * 10 + name[5] - '0';
-    if (n < 1 || !sc->ifo[n])
+    if (n < 1 || !sc->disc->vts[n].ifo)
         return -1;
     if (!strcmp(name + 7, "0.IFO") || !strcmp(name + 7, "0.BUP")) {
         *ifo = n;
@@ -760,11 +597,11 @@ static void *scan_fs_dir_open(dvd_reader_filesystem_h *fs, const char *path)
         av_strlcpy(d->names[d->nb++], "VIDEO_TS", sizeof(d->names[0]));
         return d;
     }
-    for (int n = 0; n <= sc->nb_vts; n++) {
+    for (int n = 0; n <= sc->disc->nb_vts; n++) {
         static const char *const vmg[] = { "VIDEO_TS.IFO", "VIDEO_TS.BUP", "VIDEO_TS.VOB" };
         static const char *const vts[] = { "0.IFO", "0.BUP", "0.VOB", "1.VOB" };
 
-        if (!sc->ifo[n])
+        if (!sc->disc->vts[n].ifo)
             continue;
         if (!n)
             for (int i = 0; i < 3; i++)
@@ -1183,7 +1020,7 @@ static int add_pending(Scan *sc, uint64_t key, uint64_t parent, int nav)
  * title's own number in it; -1 when there is none. */
 static int tt_entry(Scan *sc, int t, int *vtsn)
 {
-    const tt_srpt_t *tt = sc->ifo[0]->tt_srpt;
+    const tt_srpt_t *tt = sc->disc->vts[0].ifo->tt_srpt;
 
     if (!tt || t < 1 || t > tt->nr_of_srpts)
         return -1;
@@ -1193,27 +1030,17 @@ static int tt_entry(Scan *sc, int t, int *vtsn)
 
 static int nr_of_titles(Scan *sc)
 {
-    return sc->ifo[0]->tt_srpt ? sc->ifo[0]->tt_srpt->nr_of_srpts : 0;
+    return sc->disc->vts[0].ifo->tt_srpt ? sc->disc->vts[0].ifo->tt_srpt->nr_of_srpts : 0;
 }
 
 /* Program chain pgcn (by search pointer) of title set vtsn. */
 static pgc_t *vts_pgc(Scan *sc, int vtsn, int pgcn)
 {
-    const ifo_handle_t *ifo = vtsn >= 0 && vtsn < 100 ? sc->ifo[vtsn] : NULL;
+    const ifo_handle_t *ifo = vtsn >= 0 && vtsn < 100 ? sc->disc->vts[vtsn].ifo : NULL;
 
     if (!ifo || !vtsn || !ifo->vts_pgcit || pgcn < 1 || pgcn > ifo->vts_pgcit->nr_of_pgci_srp)
         return NULL;
     return ifo->vts_pgcit->pgci_srp[pgcn - 1].pgc;
-}
-
-/* The first byte of a cell's playback information (block mode, block type,
- * seamless play, interleaved, STC discontinuity, seamless angle). */
-static int cell_flags(const pgc_t *pgc, int k)
-{
-    const cell_playback_t *c = &pgc->cell_playback[k];
-
-    return c->block_mode << 6 | c->block_type << 4 | c->seamless_play << 3 | c->interleaved << 2 |
-           c->stc_discontinuity << 1 | c->seamless_angle;
 }
 
 /* The cells of cell c's angle block (all angles), or just c. */
@@ -1228,7 +1055,7 @@ static void cell_range(Scan *sc, int t, int pgcn, int c, int *lo, int *hi)
     i = c - 1;
     if (i < 0 || i >= p->nr_of_cells)
         return;
-    f = cell_flags(p, i);
+    f = ff_dvdvideo_cell_flags(p, i);
     if ((f >> 4 & 3) != 1)
         return;
     /* back to the block's first cell */
@@ -1238,7 +1065,7 @@ static void cell_range(Scan *sc, int t, int pgcn, int c, int *lo, int *hi)
         if (b < 0x40 || (b & 0x30) != 0x10 || !(first & 0xff))
             return;
         first = (first & 0xff) - 1;
-        b = cell_flags(p, first);
+        b = ff_dvdvideo_cell_flags(p, first);
     }
     /* forward to its last cell */
     last = i;
@@ -1254,7 +1081,7 @@ static void cell_range(Scan *sc, int t, int pgcn, int c, int *lo, int *hi)
         if ((last & 0xff) + 1 >= p->nr_of_cells)
             return;
         last = (last & 0xff) + 1;
-        b = cell_flags(p, last);
+        b = ff_dvdvideo_cell_flags(p, last);
     }
 }
 
@@ -1355,18 +1182,19 @@ static int nav_record(Scan *sc, const ScanEvent *ev, int menu, ScanPCI *out)
 {
     int id = (menu ? MENU_VOB : 0) | ev->vtsn;
     PCIEntry *p = map_get(sc->pcis, (uint64_t)id << 32 | ev->vobu);
-    VobuEntry *v;
+    DVDVideoVobu v;
 
     if (p) {
         *out = p->pci;
         return 1;
     }
-    if (menu || !ev->vtsn || !sc->ifo[ev->vtsn] || !(v = vobu_get(sc, ev->vtsn, ev->vobu)))
+    if (menu || !ev->vtsn || ev->vtsn > sc->disc->nb_vts || !sc->disc->vts[ev->vtsn].ifo ||
+        !ff_dvdvideo_vobu_get(sc->disc, ev->vtsn, ev->vobu, &v))
         return 0;
     memset(out, 0, sizeof(*out));
     out->nv_pck_lbn = ev->vobu;
-    out->vobu_s_ptm = v->vobu_s_ptm;
-    out->vobu_e_ptm = v->vobu_e_ptm;
+    out->vobu_s_ptm = v.vobu_s_ptm;
+    out->vobu_e_ptm = v.vobu_e_ptm;
     return 1;
 }
 
@@ -1446,7 +1274,7 @@ static int maybe_snapshot(Scan *sc, int ctx, const ScanEvent *ev)
     if (vtsn != ev->vtsn)
         av_log(sc->log, AV_LOG_DEBUG, "scan: title %u is in title set %d, the navigator says %u\n",
                ev->title_id, vtsn, ev->vtsn);
-    if (!sc->ifo[vtsn] || !ev->pgc_id || !(p = vts_pgc(sc, vtsn, ev->pgc_id)))
+    if (!sc->disc->vts[vtsn].ifo || !ev->pgc_id || !(p = vts_pgc(sc, vtsn, ev->pgc_id)))
         return 0;
     if (!p->prohibited_ops.title_play && !sc->snapshot) {
         int n = nav_copy(sc, ctx);
@@ -1830,37 +1658,13 @@ end:
 
 /* ---- setting up ---- */
 
-/* Images: the image block the title VOBs of title set vtsn start at by the IFO
- * (the IFO's block + vtstt_vobs), unless the file system puts VTS_nn_1.VOB
- * elsewhere; title sets with a known start share their NAV records by image
- * block. 0 = unknown (folders): records are kept per title set. */
-static uint32_t title_vobs_base(Scan *sc, int vtsn)
-{
-    char name[32];
-    int64_t ifo_sector, vob_sector;
-    uint32_t s;
-
-    snprintf(name, sizeof(name), "VTS_%02d_0.IFO", vtsn);
-    if ((ifo_sector = ff_dvdvideo_source_file_sector(sc->src, name)) < 0)
-        return 0;
-    s = ifo_sector + sc->ifo[vtsn]->vtsi_mat->vtstt_vobs;
-    snprintf(name, sizeof(name), "VTS_%02d_1.VOB", vtsn);
-    vob_sector = ff_dvdvideo_source_file_sector(sc->src, name);
-    if (vob_sector > 0 && (uint32_t)vob_sector != s) {
-        av_log(sc->log, AV_LOG_DEBUG, "scan: title set %d: title VOBs at image block %"PRIu32" by the IFO, at "
-               "%"PRId64" by the file system\n", vtsn, s, vob_sector);
-        return 0;
-    }
-    return s;
-}
-
 /* The title VOBs' sector range of title set vts (from the title search
  * table's start of the title set + vtstt_vobs, up to where the backup IFO
  * starts); 0 when there is none. */
 static int title_vob_range(Scan *sc, int vts, uint32_t *s, uint32_t *e)
 {
-    const ifo_handle_t *o = sc->ifo[vts];
-    const tt_srpt_t *tt = sc->ifo[0]->tt_srpt;
+    const ifo_handle_t *o = sc->disc->vts[vts].ifo;
+    const tt_srpt_t *tt = sc->disc->vts[0].ifo->tt_srpt;
     uint32_t tv, last, ifo_last, b, base = 0;
 
     if (!o)
@@ -1893,7 +1697,7 @@ static int title_vobs_overlap(Scan *sc, int vts)
 
     if (!title_vob_range(sc, vts, &s, &e))
         return 0;
-    for (int k = 1; k <= sc->nb_vts; k++)
+    for (int k = 1; k <= sc->disc->nb_vts; k++)
         if (k != vts && title_vob_range(sc, k, &s2, &e2) && ((s <= s2 && s2 < e) || (s2 <= s && s < e2)))
             return 1;
     return 0;
@@ -1908,13 +1712,9 @@ static void scan_close(Scan *sc)
         dvdnav_close(sc->navs[0]);
     av_log(sc->log, AV_LOG_DEBUG, "scan ended: %d navigators, %"PRIu64" sectors read\n", sc->nb_navs, sc->nb_reads);
     av_freep(&sc->navs);
-    for (int i = 0; i < 100; i++)
-        if (sc->ifo[i])
-            ifoClose(sc->ifo[i]);
     trace_requests(sc);
     map_free(&sc->sectors);
     map_free(&sc->pcis);
-    map_free(&sc->vobus);
     map_free(&sc->visited);
     av_freep(&sc->pending);
     av_freep(&sc->cells);
@@ -1935,21 +1735,10 @@ void ff_dvdvideo_scan_free(DVDVideoScan **pscan)
     av_freep(pscan);
 }
 
-static void scan_libdvdread_log(void *opaque, dvd_logger_level_t level, const char *msg, va_list args)
-{
-    char buf[DVDVIDEO_LIBDVDX_LOG_BUFFER_SIZE];
-
-    vsnprintf(buf, sizeof(buf), msg, args);
-    av_log(opaque, level <= DVD_LOGGER_LEVEL_WARN ? AV_LOG_DEBUG : AV_LOG_TRACE, "scan: libdvdread: %s\n", buf);
-}
-
-int ff_dvdvideo_scan(void *log, DVDVideoSource *src, DVDVideoScanTrace trace, void *trace_opaque,
+int ff_dvdvideo_scan(void *log, DVDVideoDisc *disc, DVDVideoScanTrace trace, void *trace_opaque,
                      DVDVideoScan **out)
 {
-    Scan sc = { .log = log, .src = src, .trace = trace, .trace_opaque = trace_opaque };
-    dvd_logger_cb log_cb = { .pf_log = scan_libdvdread_log };
-    dvd_reader_filesystem_h *files;
-    dvd_reader_t *dvdread = NULL;
+    Scan sc = { .log = log, .src = disc->src, .disc = disc, .trace = trace, .trace_opaque = trace_opaque };
     DVDVideoScan *scan;
     uint32_t prohibited;
     int overlapping = 0, ret;
@@ -1959,37 +1748,13 @@ int ff_dvdvideo_scan(void *log, DVDVideoSource *src, DVDVideoScanTrace trace, vo
         return AVERROR(ENOMEM);
     ff_dvdvideo_rand_init(&sc.rand, 1);
 
-    /* the IFOs, read as the demuxer reads them */
-    if (!(files = ff_dvdvideo_source_files(src))) {
-        ret = AVERROR(ENOMEM);
-        goto end;
-    }
-    if (!(dvdread = DVDOpenFiles(log, &log_cb, "/", files))) {
-        files->close(files);
-        av_log(log, AV_LOG_ERROR, "The navigation scan cannot open the DVD-Video structure\n");
-        ret = AVERROR_EXTERNAL;
-        goto end;
-    }
-
-    if (!(sc.ifo[0] = ifoOpen(dvdread, 0))) {
-        av_log(log, AV_LOG_ERROR, "The navigation scan cannot open the VMG (VIDEO_TS.IFO)\n");
-        ret = AVERROR_EXTERNAL;
-        goto end;
-    }
-    sc.nb_vts = FFMIN(sc.ifo[0]->vmgi_mat->vmg_nr_of_title_sets, 99);
-    for (int n = 1; n <= sc.nb_vts; n++)
-        if (!(sc.ifo[n] = ifoOpen(dvdread, n)))
-            av_log(log, AV_LOG_DEBUG, "scan: VTS_%02d_0.IFO is not open, not given to the navigator\n", n);
-    for (int n = 1; n <= sc.nb_vts; n++)
-        if (sc.ifo[n])
-            sc.title_vobs_base[n] = title_vobs_base(&sc, n);
-    for (int n = 1; n < sc.nb_vts && !overlapping; n++)
+    for (int n = 1; n < disc->nb_vts && !overlapping; n++)
         overlapping = title_vobs_overlap(&sc, n);
     sc.no_snapshot = overlapping ? nr_of_titles(&sc) >= 16 : nr_of_titles(&sc) > 0x60;
 
     if ((ret = nav_open(&sc)) < 0 || (sc.root = nav_copy(&sc, 0)) < 0)
         goto done;
-    prohibited = sc.ifo[0]->vmgi_mat->vmg_category;
+    prohibited = disc->vts[0].ifo->vmgi_mat->vmg_category;
     for (int r = 0; r < 8; r++) {
         if (prohibited & (0x10000 << r))
             continue;
@@ -2010,10 +1775,7 @@ done:
         ret = 0;
     }
     memcpy(scan->entered, sc.entered, sizeof(scan->entered));
-end:
     scan_close(&sc);
-    if (dvdread)
-        DVDClose(dvdread);
     if (ret < 0)
         ff_dvdvideo_scan_free(&scan);
     *out = scan;

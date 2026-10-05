@@ -223,6 +223,12 @@ pub mod dvdvideo {
         _private: [u8; 0],
     }
 
+    /// `DVDVideoDisc` (only handled through pointers).
+    #[repr(C)]
+    pub struct Disc {
+        _private: [u8; 0],
+    }
+
     /// `DVDVideoRand`.
     #[repr(C)]
     #[derive(Debug, Clone, Copy, Default)]
@@ -265,9 +271,11 @@ pub mod dvdvideo {
         pub fn ff_dvdvideo_source_close(src: *mut *mut Source);
         pub fn ff_dvdvideo_rand_init(r: *mut Rand, seed: u32);
         pub fn ff_dvdvideo_rand_next(r: *mut c_void) -> c_int;
+        pub fn ff_dvdvideo_disc_open(log: *mut c_void, src: *mut Source, out: *mut *mut Disc) -> c_int;
+        pub fn ff_dvdvideo_disc_close(disc: *mut *mut Disc);
         pub fn ff_dvdvideo_scan(
             log: *mut c_void,
-            src: *mut Source,
+            disc: *mut Disc,
             trace: Option<TraceCb>,
             trace_opaque: *mut c_void,
             out: *mut *mut ScanC,
@@ -328,16 +336,24 @@ pub mod dvdvideo {
             None => (None, std::ptr::null_mut()),
         };
         let mut out: *mut ScanC = std::ptr::null_mut();
-        // SAFETY: an open source; the trace pointer lives across the call.
-        let ret = unsafe { ff_dvdvideo_scan(std::ptr::null_mut(), src, tcb, topaque, &raw mut out) };
+        let mut disc: *mut Disc = std::ptr::null_mut();
+        // SAFETY: an open source; the disc is closed below.
+        let mut ret = unsafe { ff_dvdvideo_disc_open(std::ptr::null_mut(), src, &raw mut disc) };
+        if ret >= 0 {
+            // SAFETY: an open disc; the trace pointer lives across the call.
+            ret = unsafe { ff_dvdvideo_scan(std::ptr::null_mut(), disc, tcb, topaque, &raw mut out) };
+        }
         let result = if ret < 0 {
             Err(ret)
         } else {
             // SAFETY: a scan made by ff_dvdvideo_scan.
             Ok(unsafe { convert(&*out) })
         };
-        // SAFETY: made by ff_dvdvideo_scan (NULL is accepted).
-        unsafe { ff_dvdvideo_scan_free(&raw mut out) };
+        // SAFETY: made by ff_dvdvideo_scan / ff_dvdvideo_disc_open (NULL is accepted).
+        unsafe {
+            ff_dvdvideo_scan_free(&raw mut out);
+            ff_dvdvideo_disc_close(&raw mut disc);
+        }
         // SAFETY: opened above.
         unsafe { ff_dvdvideo_source_close(&raw mut src) };
         result

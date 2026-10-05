@@ -1078,6 +1078,25 @@ int ff_dvdvideo_source_vob_read(DVDVideoSource *src, int vtsn, int menu, int64_t
     return AVERROR_EOF;
 }
 
+int ff_dvdvideo_source_vob_bytes(DVDVideoSource *src, int vtsn, int menu, int64_t *bytes)
+{
+    VOBGroup *g;
+    int ret;
+
+    *bytes = 0;
+    if ((ret = vob_group(src, vtsn, menu, &g)) < 0)
+        return ret;
+    if (g->in_image) {
+        *bytes = (g->image_end - g->image_start) * DISCIO_BLOCK_SIZE;
+        return 0;
+    }
+    if (!g->nb_pieces)
+        return AVERROR(ENOENT);
+    for (int i = 0; i < g->nb_pieces; i++)
+        *bytes += g->pieces[i].host->size;
+    return 0;
+}
+
 int64_t ff_dvdvideo_source_file_sector(DVDVideoSource *src, const char *name)
 {
     return src->folder ? -1 : image_single_extent(src, name);

@@ -205,6 +205,8 @@ int ff_dvdvideo_source_find(DVDVideoSource *src, const char *name, char *path, s
  * AVERROR_EOF past its end, or a read error. */
 int ff_dvdvideo_source_vob_read(DVDVideoSource *src, int vtsn, int menu, int64_t sector, uint8_t *buf,
                                 int attempts);
+/* The size in bytes of a VOB group (folder: its files; image: its range). */
+int ff_dvdvideo_source_vob_bytes(DVDVideoSource *src, int vtsn, int menu, int64_t *bytes);
 /* The image block of a file recorded as one extent (0xfffffffe for a run that
  * is not recorded); -1 for folders, a missing file or one in several extents. */
 int64_t ff_dvdvideo_source_file_sector(DVDVideoSource *src, const char *name);
@@ -220,6 +222,113 @@ int ff_dvdvideo_css_content_valid(const uint8_t *sec);
 /* Whether ff_dvdvideo_css_content_valid() can tell anything about a sector:
  * what it reads from the clear bytes is in place. */
 int ff_dvdvideo_css_can_test(const uint8_t *sec);
+
+/* dvdvideo_disc.c */
+#define DVDVIDEO_NAV_READ_ATTEMPTS  3   /* read attempts of a NAV pack */
+
+typedef struct DVDVideoTitleSet {
+    ifo_handle_t   *ifo;                /* NULL: not open (the title set cannot be used) */
+    uint32_t       *vobu_starts;        /* the VOBU address map of the title VOBs, sorted, distinct */
+    int             nb_vobu_starts;
+    int             map_distrusted;     /* a cell or a lookup found the map incomplete */
+    uint32_t        title_vobs_base;    /* images: image block of the title VOBs (0 = unknown, folders) */
+    uint32_t        title_vobs_sectors; /* blocks of the title VOBs */
+} DVDVideoTitleSet;
+
+/* The whole disc as the navigation scan and the title plan see it. */
+typedef struct DVDVideoDisc {
+    void                *log;
+    DVDVideoSource      *src;
+    dvd_reader_t        *dvdread;
+    DVDVideoTitleSet     vts[100];      /* [0] = the VMG (ifo only) */
+    int                  nb_vts;
+    struct AVTreeNode   *vobus;         /* VOBU records (dvdvideo_vobu.c) */
+    struct AVTreeNode   *chains;        /* seamless-angle cells checked (dvdvideo_vobu.c) */
+} DVDVideoDisc;
+
+/* Open the VMG and every title set's IFO through the disc source (a title set
+ * whose IFO cannot be opened is left out, with a warning), run the title-set
+ * checks and gather what the scan and the title plan need. */
+int ff_dvdvideo_disc_open(void *log, DVDVideoSource *src, DVDVideoDisc **disc);
+void ff_dvdvideo_disc_close(DVDVideoDisc **disc);
+/* Whether a block is a VOBU start of the title set's VOBU address map. */
+int ff_dvdvideo_disc_is_vobu_start(const DVDVideoTitleSet *ts, uint32_t sector);
+/* Cell celln (1-based) of program chain pgcn (by search pointer) of title set
+ * vtsn; NULL when there is none. */
+const cell_playback_t *ff_dvdvideo_disc_cell(const DVDVideoDisc *d, int vtsn, int pgcn, int celln);
+/* A cell's first playback byte: block mode << 6 | block type << 4 | seamless
+ * play << 3 | interleaved << 2 | STC discontinuity << 1 | seamless angle. */
+int ff_dvdvideo_cell_flags(const pgc_t *pgc, int k);
+
+/* dvdvideo_vobu.c */
+#define DVDVIDEO_VOBU_NOT_A_NAV_PACK    0xffffffffU /* DVDVideoVobu.next of a block without a NAV pack */
+#define DVDVIDEO_VOBU_NO_NEXT           0x10000000U /* distance part of next: the VOBU ends its cell */
+#define DVDVIDEO_VOBU_END_OF_CELL       0xfffffffeU /* DVDVideoVobuStep.next of a cell's last VOBU */
+#define DVDVIDEO_VOBU_ENDS_CELL         (-2)        /* ff_dvdvideo_vobu_register() next: end of cell */
+#define DVDVIDEO_VOBU_POINTS_AT_ITSELF  (-3)        /* ff_dvdvideo_vobu_register() next: points at itself */
+
+/* One VOBU as its NAV pack described it. */
+typedef struct DVDVideoVobu {
+    uint16_t vobu_ea;
+    uint16_t ilvu_ea;
+    uint32_t next;          /* bits 28..0 distance to the next VOBU (DVDVIDEO_VOBU_NO_NEXT: none), bits 30..29
+                             * sml_pbi.category bits 14..13; DVDVIDEO_VOBU_NOT_A_NAV_PACK */
+    uint32_t vobu_s_ptm;
+    uint32_t vobu_e_ptm;
+} DVDVideoVobu;
+
+/* The NAV pack fields a VOBU record is made from. */
+typedef struct DVDVideoNavFields {
+    uint32_t next_vobu;     /* vobu_sri.next_vobu */
+    uint32_t vobu_ea;       /* dsi_gi.vobu_ea */
+    uint32_t ilvu_ea;       /* sml_pbi.ilvu_ea */
+    uint16_t category;      /* sml_pbi.category */
+    uint32_t vobu_s_ptm;
+    uint32_t vobu_e_ptm;
+} DVDVideoNavFields;
+
+typedef struct DVDVideoVobuStep {
+    uint32_t next;          /* the next VOBU's first block, or DVDVIDEO_VOBU_END_OF_CELL */
+    uint32_t len;           /* blocks from this VOBU's start to the next */
+} DVDVideoVobuStep;
+
+void ff_dvdvideo_vobu_free(DVDVideoDisc *d);
+/* The record of title-VOB block `sector` of title set vtsn: 1 found, 0 none. */
+int ff_dvdvideo_vobu_get(const DVDVideoDisc *d, int vtsn, uint32_t sector, DVDVideoVobu *rec);
+/* Store a record unless one is kept for the block. */
+int ff_dvdvideo_vobu_put(DVDVideoDisc *d, int vtsn, uint32_t sector, const DVDVideoVobu *rec);
+void ff_dvdvideo_nav_fields(const uint8_t *nav, DVDVideoNavFields *f);
+/* Read the NAV pack at a title-VOB block from the disc (a blanked NAV pack that
+ * still names its block counts); a block without one is recorded as such.
+ * 1 = a NAV pack, 0 = none, < 0 = error. */
+int ff_dvdvideo_vobu_read_nav(DVDVideoDisc *d, int vtsn, uint32_t sector, DVDVideoNavFields *f);
+/* Record the VOBU whose NAV pack was read at `sector`: 1 with *next (the next
+ * VOBU, DVDVIDEO_VOBU_ENDS_CELL, or DVDVIDEO_VOBU_POINTS_AT_ITSELF, which is
+ * allowed only with allow_self and records nothing) and *len (vobu_ea + 1);
+ * 0 when the NAV pack cannot be used (pointing at itself, or the VOBU after
+ * one that ends its cell inside a continuing interleaved unit unreadable). */
+int ff_dvdvideo_vobu_register(DVDVideoDisc *d, int vtsn, const DVDVideoNavFields *f, uint32_t sector,
+                              int allow_self, int64_t *next, uint32_t *len);
+/* The VOBU after `sector`: the own map while trusted, else two or more other
+ * title sets covering the same VOB data when they agree, else the record, or
+ * the NAV packs of this VOBU and the one after it. -1 = none, < -1 = error. */
+int64_t ff_dvdvideo_vobu_next(DVDVideoDisc *d, int vtsn, uint32_t sector);
+/* Whether `sector` is a VOBU start: by the own map while trusted (the first
+ * miss makes it untrusted, with a warning), then by two or more covering title
+ * sets, else by the NAV pack itself. */
+int ff_dvdvideo_vobu_check_start(DVDVideoDisc *d, int vtsn, uint32_t sector);
+/* The step from VOBU `sector` of a cell to the next one from the NAV packs. */
+int ff_dvdvideo_vobu_step_from_nav(DVDVideoDisc *d, int vtsn, const cell_playback_t *cell, uint32_t sector,
+                                   DVDVideoVobuStep *step);
+/* For a plain seamless-angle cell: whether its first VOBUs follow each other
+ * without gaps by their NAV packs (up to 5) and its last VOBU's NAV pack
+ * reads; kept per cell. */
+int ff_dvdvideo_vobu_chain_usable(DVDVideoDisc *d, int vtsn, const cell_playback_t *cell);
+/* The step from VOBU `sector` of a cell to the next one: plain cells use the
+ * VOBU map (seamless-angle cells only when their VOBU chain checks out), the
+ * last VOBU, blocks and interleaved cells the NAV packs. 1 = a step, 0 = none. */
+int ff_dvdvideo_vobu_step(DVDVideoDisc *d, int vtsn, const cell_playback_t *cell, uint32_t sector,
+                          DVDVideoVobuStep *step);
 
 /* dvdvideo_scan.c */
 /* Whether a 2048-byte block is a NAV pack (pack header, system header, PCI and
@@ -255,7 +364,7 @@ typedef struct DVDVideoScan {
 typedef void (*DVDVideoScanTrace)(void *opaque, const char *line);
 /* Scan the disc's navigation. A scan that failed is returned with failed set
  * and no results; < 0 for an error that kept it from running. */
-int ff_dvdvideo_scan(void *log, DVDVideoSource *src, DVDVideoScanTrace trace, void *trace_opaque,
+int ff_dvdvideo_scan(void *log, DVDVideoDisc *disc, DVDVideoScanTrace trace, void *trace_opaque,
                      DVDVideoScan **scan);
 void ff_dvdvideo_scan_free(DVDVideoScan **scan);
 
