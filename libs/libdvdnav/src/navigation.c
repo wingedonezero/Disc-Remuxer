@@ -240,6 +240,27 @@ dvdnav_status_t dvdnav_current_title_program2(dvdnav_t *this, int32_t *title,
   return DVDNAV_STATUS_OK;
 }
 
+uint64_t dvdnav_get_absolute_time(dvdnav_t *this) {
+  return (uint64_t)this->vm->state.registers.time_counter << 9;
+}
+
+uint32_t dvdnav_get_prm(dvdnav_t *this, uint8_t type, uint8_t reg) {
+  const registers_t *registers = &this->vm->state.registers;
+
+  switch (type) {
+  case DVDNAV_PRM_GPRM:
+    return reg < 16 ? registers->GPRM[reg] : 0;
+  case DVDNAV_PRM_SPRM:
+    return reg < 24 ? registers->SPRM[reg] : 0;
+  case DVDNAV_PRM_GPRM_MODE:
+    return registers->GPRM_mode;
+  case DVDNAV_PRM_SPRM_FLAGS:
+    return registers->SPRM_flags;
+  default:
+    return 0;
+  }
+}
+
 dvdnav_status_t dvdnav_title_play(dvdnav_t *this, int32_t title) {
   return dvdnav_part_play(this, title, 1);
 }

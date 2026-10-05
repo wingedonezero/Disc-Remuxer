@@ -432,6 +432,25 @@ DVDNAV_API dvdnav_status_t dvdnav_current_title_program(dvdnav_t *self, int32_t 
                                           int32_t *pgcn, int32_t *pgn);
 
 /*
+ * Return the VM's playback clock in 90 kHz ticks: the time the disc has
+ * played since the VM was reset (NAV packet cell times and skipped stills,
+ * not wall-clock time). GPRM counters run on this clock.
+ */
+DVDNAV_API uint64_t dvdnav_get_absolute_time(dvdnav_t *self);
+
+/* Register sets for dvdnav_get_prm() */
+#define DVDNAV_PRM_GPRM       0 /* general register reg (0..15), as stored */
+#define DVDNAV_PRM_SPRM       1 /* system register reg (0..23) */
+#define DVDNAV_PRM_GPRM_MODE  2 /* bit r set: GPRM r is a counter (reg ignored) */
+#define DVDNAV_PRM_SPRM_FLAGS 3 /* bit n set: a command has read SPRM n since
+                                 * the VM was reset, n 0..31 (reg ignored) */
+
+/*
+ * Return a VM register value; 0 for an unknown set or register number.
+ */
+DVDNAV_API uint32_t dvdnav_get_prm(dvdnav_t *self, uint8_t type, uint8_t reg);
+
+/*
  * Return the position currently being played: title number, title set
  * (vtsn), program chain (pgcn), program (pgn) and cell (celln).
  * Unlike dvdnav_current_title_program(), it also reports positions that have
