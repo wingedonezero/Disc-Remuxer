@@ -74,6 +74,8 @@ struct dvdcss_s
     const char *psz_error;
     int    b_errors;
     int    b_debug;
+    dvdcss_log_cb pf_log;   /* when set, every message goes here (Disc-Remuxer) */
+    void  *p_log;
 
     /* struct to be used only internally in CPXM */
     p_cpxm cpxm;

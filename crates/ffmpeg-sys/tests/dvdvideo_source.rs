@@ -282,7 +282,7 @@ fn libdvdcss_read(path: &Path, start: c_int, n: usize) -> Vec<u8> {
     let mut out = vec![0u8; n * S];
     // SAFETY: file and cb outlive the handle; out has room for n blocks.
     unsafe {
-        let h = css::dvdcss_open_stream_uncached((&raw mut file).cast(), &raw mut cb);
+        let h = css::dvdcss_open_stream_uncached((&raw mut file).cast(), &raw mut cb, None, std::ptr::null_mut());
         assert!(!h.is_null());
         assert_eq!(css::dvdcss_seek(h, start, css::SEEK_KEY), start);
         let got = css::dvdcss_read(h, out.as_mut_ptr().cast(), c_int::try_from(n).unwrap(), css::READ_DECRYPT);

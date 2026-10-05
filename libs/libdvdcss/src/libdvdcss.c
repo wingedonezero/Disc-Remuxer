@@ -162,7 +162,8 @@ static int exists_or_mkdir( const char *path, int perm )
 }
 
 static dvdcss_t dvdcss_open_common ( const char *psz_target, void *p_stream,
-                                     dvdcss_stream_cb *p_stream_cb, int b_cache );
+                                     dvdcss_stream_cb *p_stream_cb, int b_cache,
+                                     dvdcss_log_cb pf_log, void *p_log );
 static void set_verbosity( dvdcss_t dvdcss )
 {
     const char *psz_verbose = getenv( "DVDCSS_VERBOSE" );
@@ -517,7 +518,7 @@ static void init_cache( dvdcss_t dvdcss )
  */
 LIBDVDCSS_EXPORT dvdcss_t dvdcss_open ( const char *psz_target )
 {
-    return dvdcss_open_common( psz_target, NULL, NULL, 1 );
+    return dvdcss_open_common( psz_target, NULL, NULL, 1, NULL, NULL );
 }
 
 /**
@@ -532,7 +533,7 @@ LIBDVDCSS_EXPORT dvdcss_t dvdcss_open ( const char *psz_target )
 LIBDVDCSS_EXPORT dvdcss_t dvdcss_open_stream ( void *p_stream,
                                                dvdcss_stream_cb *p_stream_cb )
 {
-    return dvdcss_open_common( NULL, p_stream, p_stream_cb, 1 );
+    return dvdcss_open_common( NULL, p_stream, p_stream_cb, 1, NULL, NULL );
 }
 
 /**
@@ -543,13 +544,15 @@ LIBDVDCSS_EXPORT dvdcss_t dvdcss_open_stream ( void *p_stream,
  * (Disc-Remuxer addition.)
  */
 LIBDVDCSS_EXPORT dvdcss_t dvdcss_open_stream_uncached ( void *p_stream,
-                                                        dvdcss_stream_cb *p_stream_cb )
+                                                        dvdcss_stream_cb *p_stream_cb,
+                                                        dvdcss_log_cb pf_log, void *p_log )
 {
-    return dvdcss_open_common( NULL, p_stream, p_stream_cb, 0 );
+    return dvdcss_open_common( NULL, p_stream, p_stream_cb, 0, pf_log, p_log );
 }
 
 static dvdcss_t dvdcss_open_common ( const char *psz_target, void *p_stream,
-                                     dvdcss_stream_cb *p_stream_cb, int b_cache )
+                                     dvdcss_stream_cb *p_stream_cb, int b_cache,
+                                     dvdcss_log_cb pf_log, void *p_log )
 {
     int i_ret;
 
@@ -559,6 +562,8 @@ static dvdcss_t dvdcss_open_common ( const char *psz_target, void *p_stream,
     {
         return NULL;
     }
+    dvdcss->pf_log = pf_log;
+    dvdcss->p_log = p_log;
 
     if( psz_target == NULL &&
       ( p_stream == NULL || p_stream_cb == NULL ) )

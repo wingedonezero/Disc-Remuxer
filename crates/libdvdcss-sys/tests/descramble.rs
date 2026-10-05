@@ -1,4 +1,5 @@
-//! Our libdvdcss additions: `dvdcss_unscramble_sector` on built sectors, and
+//! Our libdvdcss additions: `dvdcss_unscramble_sector` on built sectors, the
+//! log callback of `dvdcss_open_stream_uncached`, and
 //! with `DVDCSS_SCRAMBLED_IMAGE=<image>:<first block of a title>[,<block>...]`
 //! the title key and descrambler give the same sectors as libdvdcss's own
 //! `dvdcss_read` with `DVDCSS_READ_DECRYPT`.
@@ -51,6 +52,37 @@ fn a_scrambled_sector_is_descrambled_from_byte_128_and_its_bits_cleared() {
     assert_ne!(s[0x80..], before[0x80..]);
 }
 
+// ---- the log callback ----
+
+unsafe extern "C" fn record(p_log: *mut c_void, level: c_int, format: *const std::os::raw::c_char, _args: *mut c_void) {
+    // SAFETY: p_log is the Vec of the test; format is a NUL-terminated string.
+    let (out, text) = unsafe { (&mut *p_log.cast::<Vec<(c_int, String)>>(), std::ffi::CStr::from_ptr(format)) };
+    out.push((level, text.to_string_lossy().into_owned()));
+}
+
+#[test]
+fn messages_go_to_the_log_callback() {
+    let path = std::env::temp_dir().join(format!("dvdcss-log-{}.bin", std::process::id()));
+    std::fs::write(&path, vec![0u8; 64 * BLOCK_SIZE]).unwrap();
+    let mut file = Box::new(File::open(&path).unwrap());
+    let mut cb = Box::new(css::StreamCb { pf_seek: Some(file_seek), pf_read: Some(file_read), pf_readv: None });
+    let mut got: Vec<(c_int, String)> = Vec::new();
+    // SAFETY: file, cb and got outlive the handle.
+    let r = unsafe {
+        let h = css::dvdcss_open_stream_uncached((&raw mut *file).cast(), &raw mut *cb, Some(record), (&raw mut got).cast());
+        assert!(!h.is_null());
+        let mut key = [0u8; KEY_SIZE];
+        // zeros hold no MPEG pack: libdvdcss cannot crack a key there
+        let r = css::dvdcss_title_key(h, 0, key.as_mut_ptr());
+        css::dvdcss_close(h);
+        r
+    };
+    std::fs::remove_file(&path).unwrap();
+    assert!(got.iter().any(|(l, t)| *l == css::LOG_DEBUG && t.contains("stream API")), "{got:?}");
+    assert!(r < 0);
+    assert!(got.iter().any(|(l, _)| *l == css::LOG_ERROR), "the failure is reported as an error: {got:?}");
+}
+
 // ---- the corpus check ----
 
 unsafe extern "C" fn file_seek(p: *mut c_void, pos: u64) -> c_int {
@@ -86,7 +118,7 @@ impl Handle {
         let mut file = Box::new(File::open(path).unwrap());
         let mut cb = Box::new(css::StreamCb { pf_seek: Some(file_seek), pf_read: Some(file_read), pf_readv: None });
         // SAFETY: file and cb live as long as the handle.
-        let h = unsafe { css::dvdcss_open_stream_uncached((&raw mut *file).cast(), &raw mut *cb) };
+        let h = unsafe { css::dvdcss_open_stream_uncached((&raw mut *file).cast(), &raw mut *cb, None, std::ptr::null_mut()) };
         assert!(!h.is_null());
         Handle { css: h, _file: file, _cb: cb }
     }
