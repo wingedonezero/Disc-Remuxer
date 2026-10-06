@@ -53,7 +53,6 @@ typedef struct HDDVDDemuxContext {
     int            opt_udf_reader;
     int            opt_min_length;
     int            opt_title;
-    char          *opt_cc_helper;
     char         **opt_keydb;
     unsigned       nb_opt_keydb;
 
@@ -223,8 +222,6 @@ static int pes_id(const HDDVDTrack *k)
 {
     static const int audio_base[8] = { 0x80, 0xb0, 0x1c0, -1, 0xa0, 0xa0, 0x88, 0xc0 };
 
-    if (k->caption)
-        return -1;                      /* comes out of the video */
     switch (k->type) {
     case AVMEDIA_TYPE_VIDEO:
         return k->codec == AV_CODEC_ID_VC1 ? 0xfd55 : k->codec == AV_CODEC_ID_H264 ? 0x1e2 : 0x1e0;
@@ -239,24 +236,31 @@ static int pes_id(const HDDVDTrack *k)
 
 static int add_streams(AVFormatContext *s, const HDDVDTitle *t)
 {
+    HDDVDDemuxContext *c = s->priv_data;
+
     for (int i = 0; i < t->nb_tracks; i++) {
         const HDDVDTrack *k = &t->tracks[i];
         AVStream *st = avformat_new_stream(s, NULL);
 
         if (!st)
             return AVERROR(ENOMEM);
+        if (k->type == AVMEDIA_TYPE_VIDEO) {
+            /* the video attribute's line-21 caption marks (byte 0x03 bit 7:
+             * field 1, bit 6: field 2, laid out as in DVD-Video's video
+             * attributes; on the corpus they go with caption blocks in the
+             * video, which HD DVD titles do not keep) */
+            uint8_t v = c->vti->attrs[t->clips[t->segment]->evob->attr - 1].raw[3];
+            const char *l21 = (v & 0xC0) == 0xC0 ? "fields 1 and 2" : v & 0x80 ? "field 1" : v & 0x40 ? "field 2" : NULL;
+            if (l21 && av_dict_set(&st->metadata, "line21", l21, 0) < 0)
+                return AVERROR(ENOMEM);
+        }
         st->id                    = pes_id(k);
         st->codecpar->codec_type  = k->type;
         st->codecpar->codec_id    = k->codec;
         avpriv_set_pts_info(st, 64, 1, DR_TICKS_PER_SECOND);
         if (k->core == 2)
             st->disposition |= AV_DISPOSITION_DEPENDENT;
-        if (k->caption) {
-            int ret = av_dict_set(&st->metadata, "caption", "line-21 closed captions (CEA-608), made into text "
-                                  "by CCExtractor " DR_CCX_VERSION, 0);
-            if (ret < 0)
-                return ret;
-        } else if (k->type == AVMEDIA_TYPE_SUBTITLE) {
+        if (k->type == AVMEDIA_TYPE_SUBTITLE) {
             char idx[1024];
             int n = ff_discrip_vobsub_header(idx, sizeof(idx), k->width, k->height, k->palette);
             int ret;
@@ -368,19 +372,15 @@ static int rip_open(AVFormatContext *s)
         const HDDVDTrack *k = &t->tracks[i];
         tracks[i].codec       = k->codec;
         tracks[i].kind        = k->type == AVMEDIA_TYPE_VIDEO ? DR_KIND_VIDEO :
-                                k->type == AVMEDIA_TYPE_AUDIO ? DR_KIND_AUDIO :
-                                k->caption ? DR_KIND_CAPTION : DR_KIND_SUBTITLE;
+                                k->type == AVMEDIA_TYPE_AUDIO ? DR_KIND_AUDIO : DR_KIND_SUBTITLE;
         tracks[i].audio_flags = k->core == 2 ? DR_AUDIO_CORE_ONLY : 0;
         tracks[i].width       = k->width;
         tracks[i].height      = k->height;
     }
     {
-        char helper[4096];
         DRTitleConfig cfg = {
             .nb_tracks = t->nb_tracks, .tracks = tracks, .tolerance = LEAD_IN_TOLERANCE, .lpcm_hd = 1,
             .marks = c->chapter_plan.marks, .nb_marks = c->chapter_plan.nb_marks,
-            .cc_helper = c->opt_cc_helper && *c->opt_cc_helper ? c->opt_cc_helper :
-                         ff_discrip_ccx_default(helper, sizeof(helper)),
         };
         ret = ff_discrip_title_open(&c->rip, s, &cfg);
     }
@@ -587,6 +587,15 @@ static int hddvd_read_packet(AVFormatContext *s, AVPacket *pkt)
                     if ((ret = av_dict_set_int(&s->metadata, "untested", review, 0)) < 0)
                         return ret;
                 }
+                /* line-21 caption data the core took out of the video (HD DVD
+                 * keeps no caption track: the data is reported, not kept) */
+                {
+                    int64_t blocks, text;
+                    ff_discrip_title_cc_dropped(c->rip, &blocks, &text);
+                    if (blocks && ((ret = av_dict_set_int(&s->streams[0]->metadata, "cc_blocks", blocks, 0)) < 0 ||
+                                   (ret = av_dict_set_int(&s->streams[0]->metadata, "cc_text", text, 0)) < 0))
+                        return ret;
+                }
                 /* each track's result for the caller: frames, warnings, start delay (ms) */
                 for (int i = 0; i < s->nb_streams; i++) {
                     int64_t frames, warnings, delay;
@@ -600,10 +609,6 @@ static int hddvd_read_packet(AVFormatContext *s, AVPacket *pkt)
                     if (ff_discrip_title_spu_result(c->rip, i, &frames, &warnings) >= 0 &&
                         ((ret = av_dict_set_int(m, "no_stop", frames, 0)) < 0 ||
                          (ret = av_dict_set_int(m, "outside", warnings, 0)) < 0))
-                        return ret;
-                    if (ff_discrip_title_cc_result(c->rip, i, &frames, &warnings) >= 0 &&
-                        ((ret = av_dict_set_int(m, "cc_blocks", frames, 0)) < 0 ||
-                         (ret = av_dict_set_int(m, "cues", warnings, 0)) < 0))
                         return ret;
                 }
             }
@@ -623,7 +628,6 @@ static const AVOption hddvd_options[] = {
     {"title",           "the title to open (0 = the first of the disc's title list)", OFFSET(opt_title), AV_OPT_TYPE_INT, { .i64=0 }, 0, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
     {"progress",        "how far the title is read (1/10000), exported", OFFSET(progress), AV_OPT_TYPE_INT64, { .i64 = 0 }, 0, 10000, AV_OPT_FLAG_DECODING_PARAM | AV_OPT_FLAG_EXPORT | AV_OPT_FLAG_READONLY },
     {"min_length",      "titles shorter than this (seconds) are listed, not selected", OFFSET(opt_min_length), AV_OPT_TYPE_INT, { .i64=0 }, 0, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
-    {"cc_helper",       "the caption converter program (CCExtractor); default: the one next to the running program", OFFSET(opt_cc_helper), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, AV_OPT_FLAG_DECODING_PARAM },
     {"udf_reader",      "UDF reader for disc images",                               OFFSET(opt_udf_reader),     AV_OPT_TYPE_INT,    { .i64=DISCIO_UDF_NETBSD }, DISCIO_UDF_NETBSD, DISCIO_UDF_LINUX, AV_OPT_FLAG_DECODING_PARAM, .unit = "udf_reader" },
         {"netbsd",      "based on NetBSD (default)",                                0,                          AV_OPT_TYPE_CONST,  { .i64=DISCIO_UDF_NETBSD }, 0, 0, AV_OPT_FLAG_DECODING_PARAM, .unit = "udf_reader" },
         {"linux",       "based on Linux",                                           0,                          AV_OPT_TYPE_CONST,  { .i64=DISCIO_UDF_LINUX },  0, 0, AV_OPT_FLAG_DECODING_PARAM, .unit = "udf_reader" },

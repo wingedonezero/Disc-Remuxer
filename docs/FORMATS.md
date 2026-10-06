@@ -13,7 +13,7 @@ things. The program tries the demuxers in turn and shows what they report.
 | `title` | the title to open (index in the disc's title list, from 0) |
 | `read_attempts`, `udf_reader` | from the settings `read.attempts`, `read.udf_reader` |
 | `keydb` | key files (setting `aacs.key_files`), where the format has keys |
-| `cc_helper` | the caption converter (CCExtractor); unset: the `ccextractor` next to the running program |
+| `cc_helper` | formats with caption tracks: the caption converter (CCExtractor); unset: the `ccextractor` next to the running program |
 
 ## Metadata on open (`AVFormatContext.metadata`)
 
@@ -32,8 +32,10 @@ also carry `picture`: what the units are, in words for the log (e.g. `HD DVD
 sub-pictures: 256 colours, each with its own palette`); their
 `codecpar->width` / `height` is the canvas the units are drawn on. A
 closed-caption track (line-21 captions taken out of the MPEG-2 video, made
-into text: `AV_CODEC_ID_SUBRIP` packets, one per cue) carries `caption`
-instead, in words for the log. The title's duration is
+into text: `AV_CODEC_ID_SUBRIP` packets, one per cue; DVD) carries
+`caption` instead, in words for the log. The video stream carries `line21`
+when the disc marks line-21 captions (`field 1`, `field 2`, `fields 1 and
+2`). The title's duration is
 `AVFormatContext.duration`.
 
 ## While reading
@@ -49,6 +51,7 @@ title has been read.
 | each stream | `warnings` | warnings logged about the track |
 | each stream | `delay_us` | audio: its start delay (µs) |
 | subtitle streams | `no_stop` | units without a stop time, each shown until the next one starts (the title's last one: until the video's end) |
+| the video stream | `cc_blocks`, `cc_text` | a format without caption tracks (HD DVD): caption blocks taken out of the video and not kept, and their entries that carry caption bytes (0: the caption slot was empty; more: a warning) |
 | caption streams | `cc_blocks` | caption blocks given to the converter |
 | caption streams | `cues` | cues it made (0: the caption data carries no caption text) |
 | subtitle streams | `outside` | units drawn outside the canvas (each segment that has some also counts one warning) |

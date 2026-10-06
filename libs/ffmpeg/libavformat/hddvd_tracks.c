@@ -948,54 +948,6 @@ static int probe_dts(void *logctx, DiscIOFS *fs, HDDVDAACS *aacs, HDDVDClip *cli
     return ret;
 }
 
-/* ---- line-21 closed captions in the MPEG-2 video ---- */
-
-#define CC_SCAN_BYTES (8 << 20)    /* the caption search reads this much of the title's first clip */
-
-/* 1 when one of the first two packets of a pack of the first 8 MiB of clip
- * is MPEG-2 video (stream_id 0xE0) whose payload holds a DVD caption block
- * header (00 00 01 B2 'C' 'C' 01 F8, then a byte with bit 6 clear); 0 when
- * none does or a block cannot be read (logged). */
-static int cc_scan(void *logctx, DiscIOFS *fs, HDDVDAACS *aacs, HDDVDClip *clip)
-{
-    static const uint8_t cc[8] = { 0x00, 0x00, 0x01, 0xB2, 'C', 'C', 0x01, 0xF8 };
-    uint32_t n = FFMIN(clip->size, CC_SCAN_BYTES) / PACK;
-    uint8_t sec[PACK];
-
-    for (uint32_t i = 0; i < n; i++) {
-        int off = 0, ret = ff_hddvd_clip_block(logctx, aacs, fs, clip, i, sec);
-
-        if (ret < 0) {
-            av_log(logctx, AV_LOG_WARNING, "EVOB %s: block %"PRIu32" cannot be read for the caption search: %s\n",
-                   clip->evob->name, i, av_err2str(ret));
-            return 0;
-        }
-        for (int p = 0; p < 2 && off < PACK; p++) {
-            const uint8_t *d, *e, *f;
-            Pkt k;
-
-            if (!pack_packet(sec, &off, &k, 1))
-                break;
-            if (k.key != 0xe0)
-                continue;
-            d = sec + k.at + k.payload;
-            e = sec + FFMIN(k.at + k.len, PACK);
-            for (f = d; f + 8 < e; f++)
-                if (!memcmp(f, cc, 8)) {
-                    if (!(f[8] & 0x40)) {
-                        av_log(logctx, AV_LOG_VERBOSE, "EVOB %s: caption block in the video at block %"PRIu32
-                               ": the title has a caption track\n", clip->evob->name, i);
-                        return 1;
-                    }
-                    break;
-                }
-        }
-    }
-    av_log(logctx, AV_LOG_VERBOSE, "EVOB %s: no caption block in the video's first %"PRIu32" blocks\n",
-           clip->evob->name, n);
-    return 0;
-}
-
 /* ---- playlist metadata of a stream ---- */
 
 /* The language of audio (audio = 1) or sub-picture stream `number` (1-based)
@@ -1276,15 +1228,6 @@ static int build_title(Builder *b, HDDVDTitle *t)
     }
     if (t->tracks[0].codec == AV_CODEC_ID_H264)
         untested(b, 8, "AVC video");
-    /* line-21 captions in the MPEG-2 video of the title's first clip: a
-     * text track of their own (the reference takes them out of the video
-     * and leaves them out on HD DVD) */
-    if (t->tracks[0].codec == AV_CODEC_ID_MPEG2VIDEO && cc_scan(b->log, b->fs, b->aacs, t->clips[0])) {
-        k = (HDDVDTrack){ .type = AVMEDIA_TYPE_SUBTITLE, .codec = AV_CODEC_ID_SUBRIP, .index = -1, .caption = 1,
-                          .lang = "eng" };
-        if ((ret = add_track(t, &k)) < 0)
-            return ret;
-    }
     return 1;
 }
 

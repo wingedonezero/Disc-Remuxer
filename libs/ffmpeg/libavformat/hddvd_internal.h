@@ -272,8 +272,6 @@ typedef struct HDDVDTrack {
     const uint32_t  *palette;       /**< sub-pictures: 16 entries of the attribute record */
     int              core;          /**< audio: 1 = holds a core that the next track carries
                                          on its own (DTS-HD), 2 = that core track */
-    int              caption;       /**< line-21 closed captions taken out of the MPEG-2 video
-                                         (made into text cues; no stream of the EVOB) */
 } HDDVDTrack;
 
 typedef struct HDDVDTitle {

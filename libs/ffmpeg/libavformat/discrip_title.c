@@ -94,6 +94,7 @@ struct DRTitle {
     int           cc_track;      /* the caption track, -1 none */
     char         *cc_helper;     /* the caption converter's path (cfg.cc_helper points here) */
     int64_t       cc_dropped;    /* caption blocks in the video of a title without a caption track */
+    int64_t       cc_text;       /* and their entries that carry caption bytes (not the null code) */
     int64_t       user_data;     /* other GOP user data taken out of the video */
     Out          *q;             /* output frames ready */
     int           q_head, q_n, q_cap;
@@ -491,13 +492,18 @@ static int cc_side(void *opaque, DRFrame *f)
         ff_discrip_frame_unref(f);
         return 0;
     }
+    m = ff_discrip_cc_triplets(f->data, n, tri);
     if (t->cc_track < 0) {
+        /* left out: counted, with the entries that carry caption bytes
+         * (parity bits aside, not 0: the null code 80 80 and padding 00 00
+         * carry nothing) */
         t->cc_dropped++;
+        for (int i = 0; i < m; i++)
+            t->cc_text += (tri[3 * i + 1] & 0x7F) || (tri[3 * i + 2] & 0x7F);
         ff_discrip_frame_unref(f);
         return 0;
     }
     k = &t->t[t->cc_track];
-    m = ff_discrip_cc_triplets(f->data, n, tri);
     if (!m) {
         ff_discrip_frame_unref(f);
         return 0;
@@ -866,10 +872,14 @@ static int title_finish(DRTitle *t)
                 av_log(t->log, AV_LOG_VERBOSE, "Rip core: track %d: %"PRId64" %s events, the first %d logged\n",
                        i, t->ev_count[i * EVENT_KINDS + e], ff_discrip_event_name(e), EVENT_LOGGED);
     }
-    if (t->cc_dropped) {
-        av_log(t->log, AV_LOG_WARNING, "Captions: the title has no caption track, but its video carries %"PRId64
-               " caption blocks: left out\n", t->cc_dropped);
+    if (t->cc_text) {
+        av_log(t->log, AV_LOG_WARNING, "Captions: the video carries %"PRId64" caption blocks with %"PRId64" caption "
+               "byte pairs, and the title has no caption track: taken out of the video and left out\n",
+               t->cc_dropped, t->cc_text);
         t->t[0].warnings++;
+    } else if (t->cc_dropped) {
+        av_log(t->log, AV_LOG_VERBOSE, "Captions: the video carries %"PRId64" caption blocks without caption text: "
+               "taken out of the video\n", t->cc_dropped);
     }
     av_log(t->log, AV_LOG_DEBUG, "Rip core: GOP user data taken out of the video: %"PRId64" caption blocks, %"
            PRId64" other\n", t->cc_track >= 0 ? t->t[t->cc_track].cc_blocks : t->cc_dropped, t->user_data);
@@ -952,6 +962,12 @@ int ff_discrip_title_cc_result(const DRTitle *t, int track, int64_t *blocks, int
     *blocks = t->t[track].cc_blocks;
     *cues   = t->t[track].cc_cues;
     return 0;
+}
+
+void ff_discrip_title_cc_dropped(const DRTitle *t, int64_t *blocks, int64_t *text)
+{
+    *blocks = t->cc_dropped;
+    *text   = t->cc_text;
 }
 
 int ff_discrip_title_spu_result(const DRTitle *t, int track, int64_t *no_stop, int64_t *outside)

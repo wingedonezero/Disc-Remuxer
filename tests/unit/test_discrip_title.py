@@ -304,11 +304,34 @@ def test_captions_in_the_gop_user_data_become_a_text_track():
     assert review == 0
 
 
+def dropped(stream):
+    """(video frames out, caption blocks left out, their entries with caption
+    bytes) of a title with only a video track."""
+    tr = ffi.new("DRTitleTrack[]", [[codec_id("mpeg2video"), lib.DR_KIND_VIDEO, 0]])
+    cfg = ffi.new("DRTitleConfig *", {"nb_tracks": 1, "tracks": tr, "tolerance": 110160000, "lpcm_hd": 1})
+    t, f, k = ffi.new("DRTitle **"), ffi.new("DRFrame *"), ffi.new("int *")
+    b, x = ffi.new("int64_t *"), ffi.new("int64_t *")
+    n = 0
+    assert lib.ff_discrip_title_open(t, ffi.NULL, cfg) == 0
+    assert lib.ff_discrip_title_segment(t[0]) == 0
+    for p in video(BASE, stream):
+        assert lib.ff_discrip_title_payload(t[0], 0, p.data, len(p.data), p.time, 0) == 0
+    assert lib.ff_discrip_title_finish(t[0]) == 0
+    while lib.ff_discrip_title_frame(t[0], k, f) == 0:
+        n += 1
+        lib.ff_discrip_frame_unref(f)
+    lib.ff_discrip_title_cc_dropped(t[0], b, x)
+    lib.ff_discrip_title_close(t)
+    return n, b[0], x[0]
+
+
 def test_caption_blocks_without_a_caption_track_are_counted_and_left_out():
-    stream, first = with_captions(M2V, {2: load(b"HELLO"), 3: EOC})
-    outs, events, _, _ = run([[codec_id("mpeg2video"), lib.DR_KIND_VIDEO, 0]], 110160000, True,
-                             [video(BASE, stream)])
-    assert len(outs) == 1200
+    # caption text: counted (load: 6 control + 3 text pairs, EOC 2, EDM 2); the null code only
+    # (the HD DVD corpus): blocks counted, no text; the video keeps every picture
+    stream, first = with_captions(M2V, {2: load(b"HELLO"), 3: EOC, 4: EDM})
+    assert dropped(stream) == (1200, len(first), 6 + 3 + 2 + 2)
+    stream, first = with_captions(M2V, {})
+    assert dropped(stream) == (1200, len(first), 0)
 
 
 def test_a_failed_title_stays_failed():

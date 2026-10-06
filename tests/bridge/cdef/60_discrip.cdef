@@ -346,6 +346,7 @@ int  ff_discrip_title_chapters(const DRTitle *t, const DRChapterPlan *plan, DRCh
 int64_t ff_discrip_title_review(const DRTitle *t);
 int ff_discrip_title_spu_result(const DRTitle *t, int track, int64_t *no_stop, int64_t *outside);
 int ff_discrip_title_cc_result(const DRTitle *t, int track, int64_t *blocks, int64_t *cues);
+void ff_discrip_title_cc_dropped(const DRTitle *t, int64_t *blocks, int64_t *text);
 typedef struct DRCue { int64_t start_ms, end_ms; char *text; } DRCue;
 typedef struct DRCcx DRCcx;
 int  ff_discrip_ccx_start(DRCcx **c, void *logctx, const char *program);

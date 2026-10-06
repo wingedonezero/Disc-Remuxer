@@ -391,6 +391,26 @@ static int64_t meta_int(AVDictionary *m, const char *key)
     return e ? strtoll(e->value, NULL, 10) : 0;
 }
 
+/* A video track's details from the demuxer: line-21 caption data taken
+ * out of the video and not kept (a format without caption tracks), with
+ * the disc's caption marks. A warning when the data carried caption text. */
+static void video_detail(const AVStream *st, char *json, size_t size)
+{
+    const AVDictionaryEntry *l21 = av_dict_get(st->metadata, "line21", NULL, 0);
+    int64_t blocks = meta_int(st->metadata, "cc_blocks"), text = meta_int(st->metadata, "cc_text");
+    char jl[64];
+
+    if (blocks)
+        log_text(text ? LOG_WARNING : LOG_INFO, "      line-21 caption data taken out of the video, not kept: %"PRId64
+                 " caption blocks, %s%s%s%s", blocks, text ? "WITH caption text" : "no caption text",
+                 l21 ? " (the disc marks captions on " : "", l21 ? l21->value : "", l21 ? ")" : "");
+    else if (l21)
+        log_text(LOG_INFO, "      the disc marks line-21 captions on %s, but the video carries none", l21->value);
+    if (blocks || l21)
+        snprintf(json, size, ",\"line21\":%s,\"cc_blocks\":%"PRId64",\"cc_text\":%"PRId64,
+                 json_str(jl, sizeof(jl), l21 ? l21->value : ""), blocks, text);
+}
+
 /* A subtitle track's details from the demuxer: what the units are, the
  * canvas they are drawn on and whether every unit fits it, and how many had
  * no stop time (shown until the next one). One line in the log; the same
@@ -598,6 +618,8 @@ end:
                      i, what, frames, unit, state, delay);
             if (st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE)
                 subtitle_detail(st, o->opened, extra, sizeof(extra));
+            else if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
+                video_detail(st, extra, sizeof(extra));
             if (o->opened)
                 log_text(LOG_DETAIL, "      %s", o->name);
             res->warnings += warn;

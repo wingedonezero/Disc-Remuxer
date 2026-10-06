@@ -777,6 +777,10 @@ int ff_discrip_title_spu_result(const DRTitle *t, int track, int64_t *no_stop, i
 /** After finish, the caption track: caption blocks given to the converter,
  *  cues given out. */
 int ff_discrip_title_cc_result(const DRTitle *t, int track, int64_t *blocks, int64_t *cues);
+/** After finish, a title without a caption track: the caption blocks taken
+ *  out of its video and left out, and their entries that carry caption
+ *  bytes (0: the caption slot was empty). */
+void ff_discrip_title_cc_dropped(const DRTitle *t, int64_t *blocks, int64_t *text);
 /** After finish: the end of the video (title duration, ticks). */
 int64_t ff_discrip_title_duration(const DRTitle *t);
 /** An event kind's name. */
