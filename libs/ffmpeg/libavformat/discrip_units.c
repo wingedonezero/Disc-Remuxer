@@ -54,6 +54,7 @@ struct DRCutter {
     int64_t  win_pos;          /* stream offset of win[0] */
     int      win_len, win_cap;
 
+    void    *state;            /* the codec state of the unit rule */
     uint8_t *feed;             /* padded copy of the payload for the parser */
     unsigned feed_cap;
 
@@ -114,6 +115,11 @@ void ff_discrip_cutter_close(DRCutter **cutter)
 void ff_discrip_cutter_stats(const DRCutter *c, DRCutterStats *stats)
 {
     *stats = c->st;
+}
+
+void ff_discrip_cutter_set_state(DRCutter *c, void *state)
+{
+    c->state = state;
 }
 
 static int add_record(DRCutter *c, int64_t pos, int64_t span, int64_t time)
@@ -185,7 +191,10 @@ static int unit_take(DRCutter *c, const uint8_t *data, int size, int64_t off)
 
     unit = !c->codec->check || c->codec->check(data, size);
     if (!unit) {
-        av_log(c->log, AV_LOG_DEBUG, "Rip core: %s: %d bytes at stream offset %"PRId64" are not a unit: "
+        /* audio: bytes before the first sync word are expected; a
+         * sub-picture unit that does not parse is a lost subtitle */
+        int level = avcodec_get_type(c->codec->id) == AVMEDIA_TYPE_SUBTITLE ? AV_LOG_WARNING : AV_LOG_DEBUG;
+        av_log(c->log, level, "Rip core: %s: %d bytes at stream offset %"PRId64" are not a unit: "
                "left out\n", c->codec->name, size, off);
         c->st.skipped++;
         c->st.skipped_bytes += size;
@@ -235,7 +244,7 @@ static int unit_out(DRCutter *c, const uint8_t *data, int size)
 static int native_cut(DRCutter *c, int final)
 {
     while (c->win_len > 0) {
-        int s = c->codec->unit_size(c->win, c->win_len), ret, k;
+        int s = c->codec->unit_size(c->win, c->win_len, c->state), ret, k;
 
         if (s > 0) {
             if ((ret = unit_take(c, c->win, s, c->win_pos)) < 0)

@@ -50,6 +50,8 @@ struct DRJoin {
     int64_t      prev_e0, prev_start, prev_offset;
     int64_t      batch_min; /* earliest video time of the segment's first batch so far */
     int          mark;      /* next chapter mark */
+    int64_t     *chap;      /* times of the frames that start chapters */
+    int          nb_chap, chap_cap;
     DRJoinStats  st;
 };
 
@@ -68,12 +70,25 @@ static int wait_add(Track *t, DRFrame *f)
     return 0;
 }
 
-static int give(DRJoin *j, int track, DRFrame *f, int64_t ts)
+static int give(DRJoin *j, int track, DRFrame *f, int64_t ts, int64_t src)
 {
     f->time = ts + j->offset - j->start;
-    if (!track && (f->flags & DR_F_KEY) && j->mark < j->cfg.nb_marks) {
+    f->src  = src + j->offset - j->start;
+    /* an empty marker takes no chapter */
+    if (!track && (f->flags & DR_F_KEY) && (f->dur || f->size) && j->mark < j->cfg.nb_marks) {
         uint64_t m = j->cfg.marks[j->mark], o = f->time;
         if (m <= o || m - o < MARK_AHEAD) {
+            if (j->nb_chap == j->chap_cap) {
+                int cap = j->chap_cap ? 2 * j->chap_cap : 32;
+                int64_t *c = av_realloc_array(j->chap, cap, sizeof(*c));
+                if (!c) {
+                    ff_discrip_frame_unref(f);
+                    return AVERROR(ENOMEM);
+                }
+                j->chap     = c;
+                j->chap_cap = cap;
+            }
+            j->chap[j->nb_chap++] = f->time;
             f->flags |= DR_F_CHAPTER;
             j->mark++;
             j->st.chapters++;
@@ -93,10 +108,10 @@ static void event(DRJoin *j, int kind, int track, int64_t pos, int64_t dur, int6
 static int place_frame(DRJoin *j, int track, DRFrame *f)
 {
     Track *t = &j->t[track];
-    int64_t ts = f->time;
+    int64_t ts = f->time, src = ts;
 
     if (!f->dur && !f->size)                       /* an empty marker keeps its time */
-        return give(j, track, f, ts);
+        return give(j, track, f, ts, ts);
     if (t->kind == DR_KIND_VIDEO) {
         if (ts < 0) {
             av_log(j->log, AV_LOG_ERROR, "Rip core: joiner: a video frame without a time\n");
@@ -105,13 +120,21 @@ static int place_frame(DRJoin *j, int track, DRFrame *f)
         if (!t->seeded || t->e < ts + f->dur)
             t->e = ts + f->dur;                    /* running maximum of the frame ends */
         t->seeded = 1;
-        return give(j, track, f, ts);
+        return give(j, track, f, ts, ts);
     }
     if (ts == AV_NOPTS_VALUE) {
         ts = t->e;                                 /* no time of its own: where the track is */
+        src = ts;
     } else {
         int64_t gap = t->e - ts;
-        if (gap > 0 && gap > f->dur) {
+        if (gap > 0 && gap > f->dur && t->kind == DR_KIND_SUBTITLE) {
+            /* a sub-picture replaces the one shown before it: it keeps its
+             * time (the reference moves it to the end of the one before) */
+            av_log(j->log, AV_LOG_DEBUG, "Rip core: joiner: subtitle track %d: a unit at %"PRId64" ticks starts "
+                   "%"PRId64" ticks before the one before it ends: kept at its time\n", track,
+                   j->offset + ts - j->start, gap);
+            event(j, DR_EV_SUB_OVERLAP, track, j->offset + ts - j->start, gap, 0);
+        } else if (gap > 0 && gap > f->dur) {
             /* earlier than expected by more than its own duration */
             if (t->kind == DR_KIND_AUDIO && gap != t->last_gap) {
                 event(j, DR_EV_RETIME, track, j->offset + t->e - j->start, f->dur, -gap);
@@ -122,7 +145,7 @@ static int place_frame(DRJoin *j, int track, DRFrame *f)
         }
     }
     t->e = ts + f->dur;
-    return give(j, track, f, ts);
+    return give(j, track, f, ts, src);
 }
 
 /* The expected time of an audio / subtitle track at the start of its frames
@@ -299,6 +322,12 @@ void ff_discrip_join_stats(const DRJoin *j, DRJoinStats *st)
     *st = j->st;
 }
 
+int ff_discrip_join_chapters(const DRJoin *j, const int64_t **starts)
+{
+    *starts = j->chap;
+    return j->nb_chap;
+}
+
 void ff_discrip_join_close(DRJoin **jp)
 {
     DRJoin *j = *jp;
@@ -311,5 +340,6 @@ void ff_discrip_join_close(DRJoin **jp)
         av_freep(&j->t[k].wait);
     }
     av_freep(&j->t);
+    av_freep(&j->chap);
     av_freep(jp);
 }

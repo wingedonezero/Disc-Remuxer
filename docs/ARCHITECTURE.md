@@ -54,6 +54,7 @@ read through the disc readers `discio_*`):
 | `libdvdnav-sys`, `libdvdread-sys`, `libdvdcss-sys` | build `libs/libdvd*` |
 | `libexpat-sys` | builds `libs/expat` (XML parser for the HD DVD playlists) |
 | `libaacs-sys`, `libgcrypt-sys`, `libgpg-error-sys` | build `libs/libaacs` (AACS) on `libs/libgcrypt` and `libs/libgpg-error` |
+| `ccextractor-sys` | builds `libs/ccextractor` (C only, its own CMake) into the `ccextractor` helper program next to ours: CEA-608 closed captions in, SRT out, in its own process |
 
 ## Commands so far
 

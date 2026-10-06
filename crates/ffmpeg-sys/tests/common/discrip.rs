@@ -90,3 +90,38 @@ pub fn timed(frames: &[Vec<u8>]) -> Vec<(&[u8], Option<i64>)> {
     frames.iter().enumerate().map(|(k, f)| (f.as_slice(), Some(i64::try_from(k).unwrap() * 1000))).collect()
 }
 
+/// The pictures of an MPEG-2 video stream (ISO/IEC 13818-2): (payload
+/// start, payload end, display index, type 1..3). A payload starts at the
+/// sequence or GOP header before its picture, as PES packets on discs do.
+pub fn pictures(s: &[u8]) -> Vec<(usize, usize, i64, u8)> {
+    let mut sc = Vec::new();
+    for i in 0..s.len() - 3 {
+        if s[i] == 0 && s[i + 1] == 0 && s[i + 2] == 1 {
+            sc.push((i, s[i + 3]));
+        }
+    }
+    let mut out = Vec::new();
+    let (mut gop_start, mut in_gop, mut start) = (0i64, 0i64, None);
+    for &(i, code) in &sc {
+        match code {
+            0xB3 | 0xB8 => {
+                if code == 0xB8 {
+                    gop_start += in_gop;
+                    in_gop = 0;
+                }
+                start.get_or_insert(i);
+            }
+            0x00 => {
+                let tr = (i64::from(s[i + 4]) << 2) | i64::from(s[i + 5] >> 6);
+                out.push((start.take().unwrap_or(i), 0, gop_start + tr, (s[i + 5] >> 3) & 7));
+                in_gop += 1;
+            }
+            _ => {}
+        }
+    }
+    for k in 0..out.len() {
+        out[k].1 = if k + 1 < out.len() { out[k + 1].0 } else { s.len() };
+    }
+    out
+}
+

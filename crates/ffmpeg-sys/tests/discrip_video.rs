@@ -4,9 +4,12 @@
 //! display start + `temporal_reference`), independently of the code. Stream
 //! made by FFmpeg's MPEG-2 encoder (tests/data/README.md).
 
+mod common;
+
 use std::ffi::CString;
 use std::os::raw::{c_int, c_void};
 
+use common::discrip::pictures;
 use ffmpeg_sys::discrip::{
     codec_id, ff_discrip_cutter_close, ff_discrip_cutter_flush, ff_discrip_cutter_open, ff_discrip_cutter_write,
     ff_discrip_frame_unref, ff_discrip_video_close, ff_discrip_video_flush, ff_discrip_video_open,
@@ -34,41 +37,6 @@ unsafe extern "C" fn on_frame(o: *mut c_void, f: *mut Frame) -> c_int {
 unsafe extern "C" fn on_event(o: *mut c_void, e: *const Event) {
     // SAFETY: o is the &mut Sink; e valid during the call.
     unsafe { (*o.cast::<Sink>()).events.push(*e) };
-}
-
-/// The pictures of the stream: (payload start, payload end, display index,
-/// type 1..3). A payload starts at the sequence or GOP header before its
-/// picture, as PES packets on discs do.
-fn pictures(s: &[u8]) -> Vec<(usize, usize, i64, u8)> {
-    let mut sc = Vec::new();
-    for i in 0..s.len() - 3 {
-        if s[i] == 0 && s[i + 1] == 0 && s[i + 2] == 1 {
-            sc.push((i, s[i + 3]));
-        }
-    }
-    let mut out = Vec::new();
-    let (mut gop_start, mut in_gop, mut start) = (0i64, 0i64, None);
-    for &(i, code) in &sc {
-        match code {
-            0xB3 | 0xB8 => {
-                if code == 0xB8 {
-                    gop_start += in_gop;
-                    in_gop = 0;
-                }
-                start.get_or_insert(i);
-            }
-            0x00 => {
-                let tr = (i64::from(s[i + 4]) << 2) | i64::from(s[i + 5] >> 6);
-                out.push((start.take().unwrap_or(i), 0, gop_start + tr, (s[i + 5] >> 3) & 7));
-                in_gop += 1;
-            }
-            _ => {}
-        }
-    }
-    for k in 0..out.len() {
-        out[k].1 = if k + 1 < out.len() { out[k + 1].0 } else { s.len() };
-    }
-    out
 }
 
 /// The stream through the cutter and the video timing, each picture's

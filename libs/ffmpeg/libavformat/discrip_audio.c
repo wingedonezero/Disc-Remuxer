@@ -44,6 +44,7 @@ struct DRAudio {
     int64_t             expect;    /* end of the previous unit (continuity), 0 = none */
     unsigned            reviewed;  /* review kinds already reported */
     void               *priv;      /* rule state */
+    void               *state;     /* codec state owned by the caller */
     DRAudioStats        st;
 };
 
@@ -110,6 +111,16 @@ const DRAudioHeader *ff_discrip_audio_header(const DRAudio *a)
 int ff_discrip_audio_flags(const DRAudio *a)
 {
     return a->flags;
+}
+
+void ff_discrip_audio_set_state(DRAudio *a, void *state)
+{
+    a->state = state;
+}
+
+void *ff_discrip_audio_state(const DRAudio *a)
+{
+    return a->state;
 }
 
 void *ff_discrip_audio_priv(DRAudio *a)

@@ -26,6 +26,7 @@
 #include <stdint.h>
 
 #include "libavcodec/codec_id.h"
+#include "libavutil/channel_layout.h"
 #include "libavutil/buffer.h"
 
 /* Time: one unit = 1/1,080,000,000 s (27 MHz x 40). Exact for 90 kHz PES
@@ -43,6 +44,8 @@
 #define DR_F_CHAPTER  0x0010   /**< a chapter starts here */
 #define DR_F_TAIL     0x0020   /**< read from the last 64 MiB of its segment's source */
 #define DR_F_BATCH    0x0040   /**< video: the last frame of a batch the video timing handed on */
+#define DR_F_NO_STOP  0x0080   /**< sub-picture: shows a picture but has no stop time (its
+                                    duration is one delay step) */
 
 typedef struct DRFrame {
     AVBufferRef *buf;      /**< owns the bytes (NULL for a marker) */
@@ -54,6 +57,8 @@ typedef struct DRFrame {
     unsigned     flags;    /**< DR_F_* */
     int          samples;  /**< samples FFmpeg's parser gave the unit, 0 = none */
     int          rate;     /**< and their sample rate */
+    int64_t      src;      /**< from the joiner on: the frame's own time on the title timeline (its
+                                PES-derived time, before the joiner moves it or the junction shifts it) */
 } DRFrame;
 
 /** Hands a frame on; the callee owns it (ff_discrip_frame_unref). */
@@ -89,6 +94,10 @@ typedef struct DRVideoRules {
      *  pictures after a reference picture are numbered before it, I
      *  pictures restart the count (VC-1). */
     int    counted_order;
+    /** Takes bytes out of a unit before picture() sees it (shrinking
+     *  unit->size) and hands each piece to ff_discrip_video_side(); < 0 on
+     *  failure. NULL: none. */
+    int  (*split)(DRVideo *v, DRFrame *unit);
     size_t priv_size;
     void (*close)(void *priv);
 } DRVideoRules;
@@ -145,10 +154,17 @@ typedef struct DRCodec {
      *  parser drops bytes the reference keeps. unit_size: the size of the
      *  unit at buf (> 0), 0 when more bytes are needed, < 0 when no unit
      *  starts there; resync: the offset of the next possible unit start in
-     *  buf, -1 when none. NULL: FFmpeg's parser. */
-    int (*unit_size)(const uint8_t *buf, int avail);
+     *  buf, -1 when none. NULL: FFmpeg's parser. state: the cutter's codec
+     *  state (ff_discrip_cutter_set_state), NULL when none. */
+    int (*unit_size)(const uint8_t *buf, int avail, void *state);
     int (*resync)(const uint8_t *buf, int avail);
+    /** The check of an output unit (stage 5): DR_UNIT_OK, DR_UNIT_BAD (sync
+     *  word or size wrong), DR_UNIT_CRC (a checksum fails). NULL: not
+     *  checked. */
+    int (*verify)(const uint8_t *data, int size);
 } DRCodec;
+
+enum { DR_UNIT_OK = 0, DR_UNIT_BAD = 1, DR_UNIT_CRC = 2 };
 
 /** The codec table entry of a codec, or NULL (the codec is not supported). */
 const DRCodec *ff_discrip_codec(enum AVCodecID id);
@@ -202,6 +218,10 @@ int ff_discrip_cutter_flush(DRCutter *c);
 
 void ff_discrip_cutter_stats(const DRCutter *c, DRCutterStats *stats);
 
+/** A codec state the cutter's unit rule reads (LPCM: the DRLpcm of the
+ *  track); owned by the caller. */
+void ff_discrip_cutter_set_state(DRCutter *c, void *state);
+
 void ff_discrip_cutter_close(DRCutter **cutter);
 
 /* ---- Stage 2, audio: units timed within one segment (discrip_audio.c) ---- */
@@ -243,6 +263,10 @@ void ff_discrip_audio_review(DRAudio *a, unsigned kind, const char *what);
 void ff_discrip_audio_stats(const DRAudio *a, DRAudioStats *stats);
 
 void ff_discrip_audio_close(DRAudio **audio);
+/** A codec state the audio rules read (LPCM: the DRLpcm of the track);
+ *  owned by the caller. */
+void ff_discrip_audio_set_state(DRAudio *a, void *state);
+void *ff_discrip_audio_state(const DRAudio *a);
 
 /* the audio stream values the rules use (for rules that keep state) */
 const DRAudioHeader *ff_discrip_audio_header(const DRAudio *a);
@@ -273,6 +297,29 @@ enum DREventKind {
     DR_EV_VIDEO_INVALID,   /**< end of the segment: count = pictures whose PES time was off the grid */
     DR_EV_VIDEO_REPAIR,    /**< the grid followed a jump of the PES times (count = placeholders) */
     DR_EV_VIDEO_RATE_CHANGE, /**< a later header states another frame rate (count = num, dur = den): warning only */
+    DR_EV_SUB_UNTIMED,     /**< a sub-picture unit without a time of its own left out (pos = its byte offset) */
+    DR_EV_SUB_EARLY,       /**< a sub-picture unit before the video's first field left out (pos = its PES time) */
+    DR_EV_SUB_OVERLAP,     /**< joiner: a sub-picture starts before the one before it ends, by more than
+                                its own duration (dur = by how much): it keeps its time */
+    /* stage 5 checks (findings, nothing is changed) */
+    DR_EV_VERIFY_UNIT,     /**< an output unit does not parse (sync word, size) */
+    DR_EV_VERIFY_CRC,      /**< an output unit fails its checksum */
+    DR_EV_VERIFY_ORDER,    /**< a unit without a duration, or (audio, subtitles) not after the one before it */
+    DR_EV_VERIFY_HOLE,     /**< video in display order: no picture for dur from pos (count = placeholders in it) */
+    DR_EV_VERIFY_OVERLAP,  /**< video in display order: a picture starts dur before the one before it ends */
+    DR_EV_VERIFY_THD_TIMING, /**< TrueHD / MLP: an AU's input timing breaks (dur = samples off) */
+    DR_EV_SEAMLESS_SEARCH, /**< the overlap search at a join (pos = the next segment's first sync unit on
+                                the input clock): count = the best correlation of any candidate (Q32,
+                                0 = not compared), dur = that candidate's frame count, skew = 1 when a
+                                match was accepted */
+    DR_EV_SEAMLESS_DROP,   /**< a match: count frames (dur ticks) at the end of the earlier segment dropped,
+                                skew = the new skew */
+    DR_EV_PCM_SILENCE,     /**< PCM: a gap filled with silence (pos = the output time, dur = the gap in ticks,
+                                count = samples) */
+    DR_EV_PCM_SKIP,        /**< PCM: a start 5 s or more after the video skipped on the output clock (dur ticks,
+                                count samples), nothing written */
+    DR_EV_PCM_TIMECODE,    /**< PCM: frames with a broken time appended where they follow on (pos = the first
+                                one's time, dur = the apparent skew, count = frames) */
 };
 
 typedef struct DREvent {
@@ -303,6 +350,11 @@ typedef struct DRJunctionConfig {
     DRVideoRef video;
     DRFrameCb  out;  void *out_opaque;
     DREventCb  event; void *event_opaque;
+    /** The stream's codec and sample rate: the seamless overlap search
+     *  decodes TrueHD / MLP to compare the two sides of a join (other
+     *  codecs, or rate 0: no comparison, durations only). */
+    enum AVCodecID codec;
+    int        rate;
 } DRJunctionConfig;
 
 typedef struct DRJunctionStats {
@@ -326,7 +378,9 @@ void ff_discrip_junction_close(DRJunction **j);
  * A title's segments one after another on the title timeline. Track 0 is the
  * master video. Segment 0 starts the timeline at its first video time;
  * segment k is placed where the video of segment k-1 really ended. Frames are
- * given segment by segment, in order. */
+ * given segment by segment, in order. Audio earlier than expected by more
+ * than its duration is moved to the expected time; sub-pictures keep their
+ * times (a sub-picture replaces the one shown before it). */
 
 enum DRTrackKind { DR_KIND_VIDEO = 1, DR_KIND_AUDIO = 2, DR_KIND_SUBTITLE = 3 };
 
@@ -336,7 +390,7 @@ typedef int (*DRJoinOutCb)(void *opaque, int track, DRFrame *frame);
 typedef struct DRJoinConfig {
     int            nb_tracks;
     const int     *kinds;        /**< DRTrackKind per track; track 0 must be video */
-    const int64_t *marks;        /**< chapter mark times, ascending (ticks), or NULL */
+    const int64_t *marks;        /**< chapter mark times, ascending (ticks; DRChapterPlan.marks), or NULL */
     int            nb_marks;
     DRJoinOutCb    out;   void *out_opaque;
     DREventCb      event; void *event_opaque;
@@ -358,7 +412,51 @@ int  ff_discrip_join_push(DRJoin *j, int track, DRFrame *frame);
 /** The end of the title. */
 int  ff_discrip_join_finish(DRJoin *j);
 void ff_discrip_join_stats(const DRJoin *j, DRJoinStats *st);
+/** The times of the frames marked as chapter starts so far (valid until
+ *  the joiner is closed); returns their number. */
+int  ff_discrip_join_chapters(const DRJoin *j, const int64_t **starts);
 void ff_discrip_join_close(DRJoin **j);
+
+/* ---- Chapters (discrip_chapters.c) ----
+ * Time-mark chapters (HD DVD, Blu-ray): the disc's chapter records (ticks
+ * from the title start, in the disc's order) become the mark times the
+ * joiner puts on video key frames (DRJoinConfig.marks); the k-th marked
+ * frame starts the k-th chapter. */
+
+#define DR_CHAPTER_00 (-1)     /**< an added first chapter that is no record of the disc */
+
+typedef struct DRChapterPlan {
+    int64_t *marks;            /**< ascending mark times (ticks, title timeline) */
+    int      nb_marks;
+    int     *atoms;            /**< per mark: the record it comes from, or DR_CHAPTER_00 */
+    int      nb_atoms;
+} DRChapterPlan;
+
+/**
+ * The marks of a title's chapter records. A broken tail (a last record at 0
+ * after one that is not, or one earlier than the record before it) is cut
+ * off; a record earlier than the one before it otherwise refuses the title
+ * (AVERROR_INVALIDDATA). Records before skip (leading segments left out) are
+ * dropped, the others move back by skip; the first kept one within 0.1 s of
+ * the start is at 0; a record at the time of the one before it is dropped.
+ * When the first kept record does not start the title, a chapter at 0 is
+ * added: record 0 when it was dropped, else (chapter00 set) DR_CHAPTER_00.
+ */
+int  ff_discrip_chapter_plan(void *logctx, const int64_t *records, int nb_records, int64_t skip, int chapter00,
+                             DRChapterPlan *plan);
+void ff_discrip_chapter_plan_free(DRChapterPlan *plan);
+
+typedef struct DRChapter {
+    int64_t start, end;        /**< ticks, title timeline */
+    int     record;            /**< the disc's record, or DR_CHAPTER_00 */
+} DRChapter;
+
+/** The chapters of a ripped title: the k-th start time (of the k-th frame
+ *  the joiner marked) starts plan atom k; each ends where the next starts,
+ *  the last at duration. Fewer than two starts: no chapters (*nb_out = 0).
+ *  *out is freed with av_free(). */
+int  ff_discrip_chapter_list(const DRChapterPlan *plan, const int64_t *starts, int nb_starts, int64_t duration,
+                             DRChapter **out, int *nb_out);
 
 /* ---- Stage 2, video: pictures timed on a fixed grid (discrip_video.c) ----
  * Every picture's time is base + position x field duration; positions are
@@ -370,6 +468,7 @@ typedef struct DRVideoStats {
     int64_t units, pictures, out, placeholders, invalid;
     int     num, den;          /**< frame rate */
     int64_t base;              /**< grid base (ticks) */
+    int64_t side;              /**< side units handed on (or dropped without a side callback) */
 } DRVideoStats;
 
 /**
@@ -384,16 +483,207 @@ int  ff_discrip_video_flush(DRVideo *v);
 /** A frame rate a header states: the first one times the segment; a later
  *  different one is a warning (logged, event), the timing keeps the first. */
 void ff_discrip_video_set_rate(DRVideo *v, int num, int den);
+/** Bytes taken out of the unit being read (from DRVideoRules.split), at
+ *  stream byte pos: a side unit, handed on (ff_discrip_video_set_side) with
+ *  the grid time of the next picture after that unit in its batch, else of
+ *  the batch's last picture, lasting one field. */
+int  ff_discrip_video_side(DRVideo *v, const uint8_t *data, int size, int64_t pos);
+/** Where side units go; without a callback they are dropped. */
+void ff_discrip_video_set_side(DRVideo *v, DRFrameCb cb, void *opaque);
+/** The grid point nearest to a time t (ticks, the segment's own clock):
+ *  *out = that point, or AV_NOPTS_VALUE when t is more than 0.1 ms before
+ *  the grid base. AVERROR(EAGAIN) while the grid is not known yet. */
+int  ff_discrip_video_snap(const DRVideo *v, int64_t t, int64_t *out);
 void *ff_discrip_video_priv(DRVideo *v);
 void ff_discrip_video_stats(const DRVideo *v, DRVideoStats *st);
 void ff_discrip_video_close(DRVideo **v);
+
+/* ---- Stage 2, sub-pictures: units on the video grid (discrip_spu.c) ----
+ * DVD-Video / HD DVD sub-picture units. Each unit lasts until its stop
+ * command (STP_DSP delay x 1024 / 90000 s; one delay step when it has none),
+ * and is timed at the video grid point nearest to its PES time. Left out: a
+ * unit without a time of its own, a unit more than 0.1 ms before the
+ * video's first field. Units wait until the segment's video knows its grid:
+ * flush the video before the sub-pictures at the end of a segment. */
+
+typedef struct DRSpuStats {
+    int64_t units, out;
+    int64_t untimed;           /**< left out: no time of its own */
+    int64_t early;             /**< left out: before the video's first field */
+    int64_t no_stop;           /**< shown without a stop time (DR_F_NO_STOP) */
+    int64_t forced;            /**< with a forced start (FSTA_DSP) */
+    int64_t colcon;            /**< with a colour / contrast change (CHG_COLCON) */
+    int64_t max_shift;         /**< largest move to the video grid (ticks) */
+} DRSpuStats;
+
+typedef struct DRSpu DRSpu;
+
+/** Sub-picture timing of one track in one segment, on the grid of the
+ *  segment's video v (which must outlive it). */
+int  ff_discrip_spu_open(DRSpu **s, void *logctx, int track, DRVideo *v,
+                         DRFrameCb cb, void *opaque, DREventCb event, void *event_opaque);
+/** A DRUnitCb: opaque = the DRSpu. */
+int  ff_discrip_spu_unit(void *spu, const DRUnit *unit);
+/** The end of the segment (after the video's flush). */
+int  ff_discrip_spu_flush(DRSpu *s);
+void ff_discrip_spu_stats(const DRSpu *s, DRSpuStats *st);
+void ff_discrip_spu_close(DRSpu **s);
+
+/* ---- DVD-Video line-21 closed captions (discrip_cc.c) ----
+ * The captions travel as MPEG-2 GOP user data, which the MPEG-2 rules take
+ * out of the video as side units (ff_discrip_video_set_side). */
+
+/** The size of the caption block at data (9 + 3 x its entry count, the
+ *  bytes after it are not part of it), or 0 when the user data is not a
+ *  DVD caption block (00 00 01 B2 'C' 'C' 01 F8, then a count byte with
+ *  bit 6 clear) or is shorter than its count says. */
+int ff_discrip_cc_check(const uint8_t *data, int size);
+
+/** The block's CEA-608 entries as the caption decoder takes them: 3 bytes
+ *  each, a field marker (4 = field 1, 5 = field 2) and the byte pair, in
+ *  the block's order; out has room for 63 entries. Returns their number;
+ *  an entry whose markers are not a known pattern ends the block. */
+int ff_discrip_cc_triplets(const uint8_t *data, int size, uint8_t *out);
+
+/* ---- Stage 5: checks of a track's output (discrip_verify.c) ----
+ * Fed with every frame of a track as it leaves the core (in output order);
+ * nothing is changed, every finding is an event and counted. */
+
+typedef struct DRVerifyStats {
+    int64_t frames, markers;
+    int64_t unchecked;         /**< units of a codec that has no unit check */
+    int64_t bad_units;         /**< units that do not parse again (sync word, size) */
+    int64_t crc_errors;        /**< units that fail their checksum */
+    int64_t order_errors;      /**< units without a duration; audio / subtitles: not after the one before */
+    int64_t holes, hole_dur;   /**< video in display order: gaps and their total (ticks) */
+    int64_t overlaps, overlap_dur; /**< frames starting before the one before them ends; the largest (ticks) */
+    int64_t delay;             /**< audio: the first frame's output time (a stream file's start delay) */
+    int64_t es_err_max, es_err_at; /**< audio: stream-file position - own time, the largest by size (signed), and
+                                        the own time where it is */
+    int64_t es_err_end;        /**< audio: the same for the last frame */
+    int64_t mkv_err_max, mkv_err_at; /**< audio: output time - own time, the largest by size, where */
+    int64_t thd_breaks;        /**< TrueHD / MLP: input timing breaks */
+} DRVerifyStats;
+
+typedef struct DRVerify DRVerify;
+
+/** Checks of one output track (kind: DRTrackKind). */
+int  ff_discrip_verify_open(DRVerify **v, void *logctx, enum AVCodecID codec, int track, int kind,
+                            DREventCb event, void *event_opaque);
+/** A frame as it leaves the core (not taken over). */
+int  ff_discrip_verify_frame(DRVerify *v, const DRFrame *frame);
+/** The end of the track: the video order check and the summary lines. */
+int  ff_discrip_verify_finish(DRVerify *v);
+void ff_discrip_verify_stats(const DRVerify *v, DRVerifyStats *st);
+void ff_discrip_verify_close(DRVerify **v);
+
+/* ---- Stage 4 for PCM tracks (discrip_pcm.c) ----
+ * Instead of the junction: the samples of a track's frames (on the title
+ * timeline) leave in fixed frames (1/30 s at 48 / 44.1 kHz, else about
+ * 32 ms rounded up to a divisor of the rate) timed by a sample counter from
+ * 0. Frames more than 1 ms before the title start are dropped, a lead-in
+ * within it is taken as the origin; a later start below 5 s is filled with
+ * silence, from 5 s on skipped on the output clock. A frame more than 10800
+ * ticks and 2 samples off the sample count: if the frames after it go on
+ * from where it would end without the gap (within 32 frames), it carried a
+ * broken time and is appended; else silence fills the gap (at most two
+ * output frames per step, the rest pending). A frame that runs more than
+ * 10800 ticks and 2 samples into the next one is cut at its start; the next
+ * one starting before this frame: when it ends after it, its rest is kept
+ * for the next step; when inside, it is dropped. The video ending before a
+ * frame leaves the rest of the track out. */
+
+typedef struct DRPcmConfig {
+    int        track;
+    int        rate;                    /**< samples per second */
+    int        bits;                    /**< bits per sample (8-bit silence is 0x80) */
+    int        bytes_per_sample_frame;  /**< bytes of one sample of all channels */
+    DRVideoRef video;
+    DRFrameCb  out;  void *out_opaque;
+    DREventCb  event; void *event_opaque;
+} DRPcmConfig;
+
+typedef struct DRPcmStats {
+    int64_t in, out;          /**< frames in, frames out */
+    int64_t dropped;          /**< frames dropped at the start */
+    int64_t silence;          /**< silence samples written */
+    int64_t broken;           /**< frames appended over a broken time */
+    int64_t overlap;          /**< frames cut, held or dropped for overlapping */
+} DRPcmStats;
+
+typedef struct DRPcm DRPcm;
+
+int  ff_discrip_pcm_open(DRPcm **p, void *logctx, const DRPcmConfig *cfg);
+/** A frame of the track on the title timeline (taken over). */
+int  ff_discrip_pcm_push(DRPcm *p, DRFrame *frame);
+/** The end of the track: the rest, and the frame being filled. */
+int  ff_discrip_pcm_finish(DRPcm *p);
+void ff_discrip_pcm_stats(const DRPcm *p, DRPcmStats *st);
+void ff_discrip_pcm_close(DRPcm **p);
+
+/* ---- the seamless overlap search's audio (discrip_seamless.c, discrip_mix.c) ---- */
+
+/** Decodes TrueHD / MLP units (pre: decoded first and dropped) to one
+ *  channel of 32-bit samples: 16-bit samples x 65536; channels mixed by
+ *  ff_discrip_mix_matrix to front centre (centre 1, surround sqrt(2) / 8,
+ *  LFE 0, normalised; Q30 coefficients, 64-bit sums shifted down by 30,
+ *  clipped). Each unit must give one frame of its own duration; of each range
+ *  frame its first rate x duration samples are kept. Returns 1 with *out
+ *  (av_free()), 0 when the units do not decode as asked (logged), < 0 on
+ *  error. */
+int ff_discrip_seamless_decode(void *logctx, enum AVCodecID codec, int rate, const DRFrame *pre, int nb_pre,
+                               const DRFrame *range, int nb_range, int32_t **out, int *nb_out);
+/** How alike n samples of a and b are: the Pearson correlation in Q32
+ *  (0xFFFFFFFF = 1 or more), in integers; 0 when both are silent (no sample
+ *  beyond +-99), 1 when they do not correlate positively. */
+uint32_t ff_discrip_seamless_corr(const int32_t *a, const int32_t *b, uint32_t n);
+/** The channel mix matrix of FFmpeg 4.4's libavresample (out x in, row
+ *  stride). */
+int ff_discrip_mix_matrix(uint64_t in_layout, uint64_t out_layout, double center_mix_level,
+                          double surround_mix_level, double lfe_mix_level, int normalize,
+                          double *matrix, int stride, enum AVMatrixEncoding matrix_encoding);
+
+/* ---- Linear PCM of DVD-Video and HD DVD (discrip_lpcm.c) ----
+ * The packet source hands each PES packet's audio frame header to
+ * ff_discrip_lpcm_header() before its payload goes to the cutter; the same
+ * DRLpcm is the state of the track's cutter and audio stage. A unit is one
+ * frame; its samples become little-endian PCM (16 bits, or 24 bits for 20-
+ * and 24-bit samples). */
+
+typedef struct DRLpcm {
+    int      init;             /**< the first header was read */
+    uint8_t  b0, b1;           /**< the first header's bytes (DVD layout) */
+    int      bits, rate, channels;
+    int      spf;              /**< samples per frame (DVD rate / 600, HD DVD rate / 1200) */
+    int      frame_bytes;      /**< a frame on the disc */
+    int      out_frame_bytes;  /**< a frame converted */
+    uint64_t chmask;           /**< HD DVD: the channel mask of the channel assignment, 0 = none */
+    int      drc;              /**< the last header's dynamic range byte */
+    int      hd;
+} DRLpcm;
+
+/** A PES packet's audio frame header: DVD-Video 3 bytes, HD DVD 5 bytes (hd).
+ *  The first sets the format; a later one that differs in more than the
+ *  frame number and the dynamic range is an error (AVERROR_INVALIDDATA). */
+int ff_discrip_lpcm_header(DRLpcm *p, void *logctx, const uint8_t *hdr, int len, int hd);
+/** The samples of size disc bytes as little-endian PCM into out (room for
+ *  size x 6 / 5); returns the bytes written. */
+int ff_discrip_lpcm_convert(const DRLpcm *p, const uint8_t *in, int size, uint8_t *out);
 
 /* rules of codecs in their own files */
 extern const DRAudioRules ff_discrip_audio_mlp;
 extern const DRVideoRules ff_discrip_video_mpv;
 extern const DRVideoRules ff_discrip_video_vc1;
 int ff_discrip_mlp_check(const uint8_t *data, int size);
-int ff_discrip_mlp_unit_size(const uint8_t *buf, int avail);
+int ff_discrip_mlp_unit_size(const uint8_t *buf, int avail, void *state);
 int ff_discrip_mlp_resync(const uint8_t *buf, int avail);
+int ff_discrip_spu_check(const uint8_t *data, int size);
+int ff_discrip_spu_verify(const uint8_t *data, int size);
+int ff_discrip_mlp_verify(const uint8_t *data, int size);
+/** An AU's input timing (16 bits); returns the samples per AU its major
+ *  sync states, 0 when it has none. */
+int ff_discrip_mlp_timing(const uint8_t *data, int size, int *timing);
+int ff_discrip_spu_unit_size(const uint8_t *buf, int avail, void *state);
+int ff_discrip_spu_resync(const uint8_t *buf, int avail);
 
 #endif /* AVFORMAT_DISCRIP_H */

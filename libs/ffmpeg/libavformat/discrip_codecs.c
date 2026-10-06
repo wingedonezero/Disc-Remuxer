@@ -26,6 +26,7 @@
 #include "libavcodec/dca.h"
 #include "libavcodec/mpegaudiodecheader.h"
 #include "libavcodec/avcodec.h"
+#include "libavutil/crc.h"
 #include "libavutil/frame.h"
 #include "libavutil/intreadwrite.h"
 
@@ -422,24 +423,171 @@ static const DRAudioRules audio_latm = {
     .inspect = inspect_latm,
 };
 
+/* ---- DVD-Video / HD DVD linear PCM (DVD-Video audio_attr / the audio
+ * frame header of each packet; discrip_lpcm.c) ----
+ * A unit is one frame of the size the headers state (no sync word: the
+ * frames follow each other); every unit is a key frame and never a sync
+ * unit; it lasts its samples (rate / 600 on DVD-Video, rate / 1200 on HD
+ * DVD) and leaves as little-endian PCM. */
+
+static int lpcm_unit_size(const uint8_t *buf, int avail, void *state)
+{
+    const DRLpcm *p = state;
+
+    if (!p || !p->init)
+        return 0;
+    return avail >= p->frame_bytes ? p->frame_bytes : 0;
+}
+
+static int lpcm_resync(const uint8_t *buf, int avail)
+{
+    return avail;
+}
+
+static int header_lpcm(DRAudio *a, const DRFrame *f, DRAudioHeader *out)
+{
+    const DRLpcm *p = ff_discrip_audio_state(a);
+
+    if (!p || !p->init)
+        return -1;
+    out->rate    = p->rate;
+    out->samples = p->spf;
+    return 0;
+}
+
+static int duration_lpcm(DRAudio *a, DRFrame *f)
+{
+    const DRLpcm *p = ff_discrip_audio_state(a);
+    AVBufferRef *buf;
+    int n, bps;
+
+    if (!p || !p->init)
+        return AVERROR_INVALIDDATA;
+    if (!(buf = av_buffer_alloc(f->size * 6 / 5 + 16 + AV_INPUT_BUFFER_PADDING_SIZE)))
+        return AVERROR(ENOMEM);
+    n = ff_discrip_lpcm_convert(p, f->data, f->size, buf->data);
+    memset(buf->data + n, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+    av_buffer_unref(&f->buf);
+    f->buf  = buf;
+    f->data = buf->data;
+    f->size = n;
+    bps     = p->channels * (p->bits == 16 ? 2 : 3);
+    f->dur  = (int64_t)((uint64_t)(n / bps) * DR_TICKS_PER_SECOND / (uint64_t)p->rate);
+    return 0;
+}
+
+static const DRAudioRules audio_lpcm = {
+    .header   = header_lpcm,
+    .duration = duration_lpcm,
+};
+
+/* ---- output unit checks (stage 5) ---- */
+
+/* MPEG video: the unit starts with a start code and holds a picture start
+ * code. VC-1: a start code and a frame start code. */
+static int verify_mpegvideo(const uint8_t *d, int size)
+{
+    return size >= 4 && !d[0] && !d[1] && d[2] == 1 && anchor_mpegvideo(d, size) >= 0 ? DR_UNIT_OK : DR_UNIT_BAD;
+}
+
+static int verify_vc1(const uint8_t *d, int size)
+{
+    return size >= 4 && !d[0] && !d[1] && d[2] == 1 && anchor_vc1(d, size) >= 0 ? DR_UNIT_OK : DR_UNIT_BAD;
+}
+
+/* AC-3 / E-AC-3: the unit is whole syncframes; each one's CRC over the
+ * frame after its sync word comes out 0 (as FFmpeg's decoder checks it). */
+static int verify_ac3(const uint8_t *d, int size)
+{
+    const AVCRC *crc = av_crc_get_table(AV_CRC_16_ANSI);
+    int ret = DR_UNIT_OK;
+
+    if (!size)
+        return DR_UNIT_BAD;
+    for (int o = 0; o < size; ) {
+        AC3HeaderInfo h;
+        if (ac3_header(d + o, size - o, &h) < 0 || h.frame_size < 7 || h.frame_size > size - o)
+            return DR_UNIT_BAD;
+        if (av_crc(crc, 0, d + o + 2, h.frame_size - 2))
+            ret = DR_UNIT_CRC;
+        o += h.frame_size;
+    }
+    return ret;
+}
+
+/* DTS: a core frame whose size fits, the rest an extension substream; or
+ * an extension substream alone. */
+static int verify_dts(const uint8_t *d, int size)
+{
+    DCACoreFrameHeader h;
+
+    if (dts_core(d, size, &h) >= 0) {
+        if (h.frame_size > size)
+            return DR_UNIT_BAD;
+        return h.frame_size == size || dts_exss_sync(d + h.frame_size, size - h.frame_size) ? DR_UNIT_OK : DR_UNIT_BAD;
+    }
+    return dts_exss_sync(d, size) ? DR_UNIT_OK : DR_UNIT_BAD;
+}
+
+/* MPEG audio: one frame of its header's size (free format: not sized). */
+static int verify_mpa(const uint8_t *d, int size)
+{
+    MPADecodeHeader h;
+
+    if (mpa_header(d, size, &h) < 0)
+        return DR_UNIT_BAD;
+    return !h.frame_size || h.frame_size == size ? DR_UNIT_OK : DR_UNIT_BAD;
+}
+
+/* AAC ADTS: one frame of its header's frame_length. LATM / LOAS: one
+ * AudioMuxElement of its audioMuxLengthBytes + 3. */
+static int verify_adts(const uint8_t *d, int size)
+{
+    if (!check_adts(d, size))
+        return DR_UNIT_BAD;
+    return (((d[3] & 3) << 11) | (d[4] << 3) | (d[5] >> 5)) == size ? DR_UNIT_OK : DR_UNIT_BAD;
+}
+
+static int verify_latm(const uint8_t *d, int size)
+{
+    if (!loas(d, size))
+        return DR_UNIT_BAD;
+    return (((d[1] & 0x1F) << 8) | d[2]) + 3 == size ? DR_UNIT_OK : DR_UNIT_BAD;
+}
+
 static const DRCodec codecs[] = {
-    { AV_CODEC_ID_MPEG1VIDEO,   "mpeg1video",   anchor_mpegvideo, NULL, NULL, &ff_discrip_video_mpv },
-    { AV_CODEC_ID_MPEG2VIDEO,   "mpeg2video",   anchor_mpegvideo, NULL, NULL, &ff_discrip_video_mpv },
-    { AV_CODEC_ID_VC1,          "vc1",          anchor_vc1, NULL, NULL, &ff_discrip_video_vc1 },
-    { AV_CODEC_ID_AC3,          "ac3",          anchor_unit, check_ac3,  &audio_ac3  },
-    { AV_CODEC_ID_EAC3,         "eac3",         anchor_unit, check_eac3, &audio_eac3 },
+    { .id = AV_CODEC_ID_MPEG1VIDEO, .name = "mpeg1video", .anchor = anchor_mpegvideo, .video = &ff_discrip_video_mpv,
+      .verify = verify_mpegvideo },
+    { .id = AV_CODEC_ID_MPEG2VIDEO, .name = "mpeg2video", .anchor = anchor_mpegvideo, .video = &ff_discrip_video_mpv,
+      .verify = verify_mpegvideo },
+    { .id = AV_CODEC_ID_VC1, .name = "vc1", .anchor = anchor_vc1, .video = &ff_discrip_video_vc1, .verify = verify_vc1 },
+    { .id = AV_CODEC_ID_AC3, .name = "ac3", .anchor = anchor_unit, .check = check_ac3, .audio = &audio_ac3,
+      .verify = verify_ac3 },
+    { .id = AV_CODEC_ID_EAC3, .name = "eac3", .anchor = anchor_unit, .check = check_eac3, .audio = &audio_eac3,
+      .verify = verify_ac3 },
     { .id = AV_CODEC_ID_TRUEHD, .name = "truehd", .anchor = anchor_unit, .check = ff_discrip_mlp_check,
-      .audio = &ff_discrip_audio_mlp, .unit_size = ff_discrip_mlp_unit_size, .resync = ff_discrip_mlp_resync },
+      .audio = &ff_discrip_audio_mlp, .unit_size = ff_discrip_mlp_unit_size, .resync = ff_discrip_mlp_resync,
+      .verify = ff_discrip_mlp_verify },
     { .id = AV_CODEC_ID_MLP, .name = "mlp", .anchor = anchor_unit, .check = ff_discrip_mlp_check,
-      .audio = &ff_discrip_audio_mlp, .unit_size = ff_discrip_mlp_unit_size, .resync = ff_discrip_mlp_resync },
-    { AV_CODEC_ID_DTS,          "dts",          anchor_unit, check_dts,  &audio_dts  },
-    { AV_CODEC_ID_PCM_DVD,      "pcm_dvd",      anchor_unit      },
-    { AV_CODEC_ID_MP1,          "mp1",          anchor_unit, check_mpa,  &audio_mpa  },
-    { AV_CODEC_ID_MP2,          "mp2",          anchor_unit, check_mpa,  &audio_mpa  },
-    { AV_CODEC_ID_MP3,          "mp3",          anchor_unit, check_mpa,  &audio_mpa  },
-    { AV_CODEC_ID_AAC,          "aac",          anchor_unit, check_adts, &audio_adts },
-    { AV_CODEC_ID_AAC_LATM,     "aac_latm",     anchor_unit, loas,       &audio_latm },
-    { AV_CODEC_ID_DVD_SUBTITLE, "dvd_subtitle", anchor_unit      },
+      .audio = &ff_discrip_audio_mlp, .unit_size = ff_discrip_mlp_unit_size, .resync = ff_discrip_mlp_resync,
+      .verify = ff_discrip_mlp_verify },
+    { .id = AV_CODEC_ID_DTS, .name = "dts", .anchor = anchor_unit, .check = check_dts, .audio = &audio_dts,
+      .verify = verify_dts },
+    { .id = AV_CODEC_ID_PCM_DVD, .name = "pcm_dvd", .anchor = anchor_unit, .audio = &audio_lpcm,
+      .unit_size = lpcm_unit_size, .resync = lpcm_resync },
+    { .id = AV_CODEC_ID_MP1, .name = "mp1", .anchor = anchor_unit, .check = check_mpa, .audio = &audio_mpa,
+      .verify = verify_mpa },
+    { .id = AV_CODEC_ID_MP2, .name = "mp2", .anchor = anchor_unit, .check = check_mpa, .audio = &audio_mpa,
+      .verify = verify_mpa },
+    { .id = AV_CODEC_ID_MP3, .name = "mp3", .anchor = anchor_unit, .check = check_mpa, .audio = &audio_mpa,
+      .verify = verify_mpa },
+    { .id = AV_CODEC_ID_AAC, .name = "aac", .anchor = anchor_unit, .check = check_adts, .audio = &audio_adts,
+      .verify = verify_adts },
+    { .id = AV_CODEC_ID_AAC_LATM, .name = "aac_latm", .anchor = anchor_unit, .check = loas, .audio = &audio_latm,
+      .verify = verify_latm },
+    { .id = AV_CODEC_ID_DVD_SUBTITLE, .name = "dvd_subtitle", .anchor = anchor_unit,
+      .check = ff_discrip_spu_check, .unit_size = ff_discrip_spu_unit_size, .resync = ff_discrip_spu_resync,
+      .verify = ff_discrip_spu_verify },
 };
 
 const DRCodec *ff_discrip_codec(enum AVCodecID id)

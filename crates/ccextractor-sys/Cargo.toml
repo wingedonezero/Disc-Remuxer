@@ -1,0 +1,14 @@
+[package]
+name = "ccextractor-sys"
+description = "Builds our CCExtractor (the closed-caption helper program)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "GPL-2.0-or-later"
+publish = false
+build = "build.rs"
+
+[dependencies]
+
+[lints]
+workspace = true

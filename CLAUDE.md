@@ -11,8 +11,8 @@ A Rust CLI (`disc-remuxer`) that rips DVD, Blu-ray and HD DVD sources into
 Matroska files or elementary streams. Our own copy of FFmpeg is the processing
 layer; it is built with our copies of libdvdread, libdvdnav and libdvdcss;
 expat parses the HD DVD playlists; libaacs (on libgcrypt / libgpg-error)
-handles AACS. All live in `libs/` and are edited directly (see
-`libs/README.md`).
+handles AACS; CCExtractor (a helper program) turns closed captions into
+text. All live in `libs/` and are edited directly (see `libs/README.md`).
 
 ## Build and test
 
@@ -23,8 +23,9 @@ cargo clippy --workspace --all-targets
 ```
 
 The build compiles the DVD libraries and expat with the `cc` crate, FFmpeg,
-libaacs, libgcrypt and libgpg-error with their own configure + make (needs a
-C compiler, make, nasm, pkg-config).
+libaacs, libgcrypt and libgpg-error with their own configure + make,
+CCExtractor with its own CMake (needs a C compiler, make, nasm, pkg-config,
+cmake).
 
 ## Layout
 
@@ -35,6 +36,7 @@ See `docs/ARCHITECTURE.md` and `libs/README.md`.
 - `crates/libdvd*-sys` — build `libs/libdvd*`
 - `crates/libexpat-sys` — builds `libs/expat`
 - `crates/libaacs-sys`, `libgcrypt-sys`, `libgpg-error-sys` — build `libs/libaacs` and its crypto
+- `crates/ccextractor-sys` — builds `libs/ccextractor` into the `ccextractor` helper program
 
 ## Commits
 

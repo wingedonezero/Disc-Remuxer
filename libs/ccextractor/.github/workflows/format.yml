@@ -1,0 +1,51 @@
+name: Format sourcecode
+on:
+  push:
+    paths:
+    - '.github/workflows/format.yml'
+    - 'src/**.c'
+    - 'src/**.h'
+    - 'src/rust/**'
+    tags-ignore: # ignore push via new tag
+    - '*.*'
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+    - '.github/workflows/format.yml'
+    - 'src/**.c'
+    - 'src/**.h'
+    - 'src/rust/**'
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2.4.0
+      - name: Format code
+        run: |
+          find src/ -type f -not -path "src/thirdparty/*" -not -path "src/lib_ccx/zvbi/*" -name '*.c' -not -path "src/GUI/icon_data.c" | xargs clang-format -i
+          git diff-index --quiet HEAD -- || (git diff && exit 1)
+  format_rust:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./src/rust
+    steps:
+      - uses: actions/checkout@v2.4.0
+      - name: cache 
+        uses: actions/cache@v2
+        with:
+          path: |
+            src/rust/.cargo/registry
+            src/rust/.cargo/git
+            src/rust/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          components: rustfmt, clippy
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy -- -D warnings

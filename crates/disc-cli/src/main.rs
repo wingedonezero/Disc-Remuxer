@@ -267,6 +267,8 @@ fn print_versions() {
     println!("  libdvdread    {}", libdvdread_sys::VERSION);
     println!("  libdvdnav     {}", libdvdnav_sys::VERSION);
     println!("  libdvdcss     {}", libdvdcss_sys::VERSION);
+    let helper = ccextractor_sys::program().map_or_else(|| "missing".to_owned(), |p| p.display().to_string());
+    println!("  CCExtractor   {} (helper: {helper})", ccextractor_sys::VERSION);
 }
 
 /// `docs/CLI.md`: every command with its full help, generated from the

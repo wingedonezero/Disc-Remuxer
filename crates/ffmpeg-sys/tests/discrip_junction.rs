@@ -65,6 +65,9 @@ fn fr(time: i64, dur: i64, sync: bool) -> Frame {
         dur,
         pos: 0,
         flags: if sync { F_KEY | F_SYNC } else { 0 },
+        samples: 0,
+        rate: 0,
+        src: time,
     }
 }
 
@@ -84,6 +87,8 @@ fn junction(frames: Vec<Frame>, frame_dur: i64, tol: i64, video: &mut Video) -> 
         out_opaque: (&raw mut sink).cast(),
         event: Some(on_event),
         event_opaque: (&raw mut sink).cast(),
+        codec: 0,
+        rate: 0,
     };
     let mut j: *mut Junction = std::ptr::null_mut();
     let mut st = JunctionStats::default();

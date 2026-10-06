@@ -856,6 +856,8 @@ pub mod discrip {
         pub size: c_int,
         pub time: i64,
         pub pos: i64,
+        pub samples: c_int,
+        pub rate: c_int,
     }
 
     /// `DRCutterStats`.
@@ -869,6 +871,7 @@ pub mod discrip {
         pub records_unused: i64,
         pub skipped: i64,
         pub skipped_bytes: i64,
+        pub joined: i64,
     }
 
     pub const F_KEY: u32 = 0x0001;
@@ -885,6 +888,9 @@ pub mod discrip {
         pub dur: i64,
         pub pos: i64,
         pub flags: u32,
+        pub samples: c_int,
+        pub rate: c_int,
+        pub src: i64,
     }
 
     pub type FrameCb = unsafe extern "C" fn(opaque: *mut c_void, frame: *mut Frame) -> c_int;
@@ -938,6 +944,120 @@ pub mod discrip {
     pub const EV_VIDEO_INVALID: c_int = 14;
     pub const EV_VIDEO_REPAIR: c_int = 15;
     pub const EV_VIDEO_RATE_CHANGE: c_int = 16;
+    pub const EV_SUB_UNTIMED: c_int = 17;
+    pub const EV_SUB_EARLY: c_int = 18;
+    pub const EV_SUB_OVERLAP: c_int = 19;
+    pub const F_NO_STOP: u32 = 0x0080;
+    pub const EV_VERIFY_UNIT: c_int = 20;
+    pub const EV_VERIFY_CRC: c_int = 21;
+    pub const EV_VERIFY_ORDER: c_int = 22;
+    pub const EV_VERIFY_HOLE: c_int = 23;
+    pub const EV_VERIFY_OVERLAP: c_int = 24;
+    pub const EV_VERIFY_THD_TIMING: c_int = 25;
+    pub const EV_SEAMLESS_SEARCH: c_int = 26;
+    pub const EV_SEAMLESS_DROP: c_int = 27;
+    pub const EV_PCM_SILENCE: c_int = 28;
+    pub const EV_PCM_SKIP: c_int = 29;
+    pub const EV_PCM_TIMECODE: c_int = 30;
+
+    /// `DRPcmConfig`.
+    #[repr(C)]
+    pub struct PcmConfig {
+        pub track: c_int,
+        pub rate: c_int,
+        pub bits: c_int,
+        pub bytes_per_sample_frame: c_int,
+        pub video: VideoRef,
+        pub out: FrameCb,
+        pub out_opaque: *mut c_void,
+        pub event: Option<EventCb>,
+        pub event_opaque: *mut c_void,
+    }
+
+    /// `DRPcmStats`.
+    #[repr(C)]
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct PcmStats {
+        pub input: i64,
+        pub out: i64,
+        pub dropped: i64,
+        pub silence: i64,
+        pub broken: i64,
+        pub overlap: i64,
+    }
+
+    /// `DRPcm` (only handled through pointers).
+    #[repr(C)]
+    pub struct Pcm {
+        _private: [u8; 0],
+    }
+
+    /// `DRVerifyStats`.
+    #[repr(C)]
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct VerifyStats {
+        pub frames: i64,
+        pub markers: i64,
+        pub unchecked: i64,
+        pub bad_units: i64,
+        pub crc_errors: i64,
+        pub order_errors: i64,
+        pub holes: i64,
+        pub hole_dur: i64,
+        pub overlaps: i64,
+        pub overlap_dur: i64,
+        pub delay: i64,
+        pub es_err_max: i64,
+        pub es_err_at: i64,
+        pub es_err_end: i64,
+        pub mkv_err_max: i64,
+        pub mkv_err_at: i64,
+        pub thd_breaks: i64,
+    }
+
+    /// `DRLpcm`.
+    #[repr(C)]
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct Lpcm {
+        pub init: c_int,
+        pub b0: u8,
+        pub b1: u8,
+        pub bits: c_int,
+        pub rate: c_int,
+        pub channels: c_int,
+        pub spf: c_int,
+        pub frame_bytes: c_int,
+        pub out_frame_bytes: c_int,
+        pub chmask: u64,
+        pub drc: c_int,
+        pub hd: c_int,
+    }
+
+    /// `DRVerify` (only handled through pointers).
+    #[repr(C)]
+    pub struct Verify {
+        _private: [u8; 0],
+    }
+
+    /// `DRSpuStats`.
+    #[repr(C)]
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct SpuStats {
+        pub units: i64,
+        pub out: i64,
+        pub untimed: i64,
+        pub early: i64,
+        pub no_stop: i64,
+        pub forced: i64,
+        pub colcon: i64,
+        pub max_shift: i64,
+    }
+
+    /// `DRSpu` (only handled through pointers).
+    #[repr(C)]
+    pub struct Spu {
+        _private: [u8; 0],
+    }
 
     /// `DRVideoStats`.
     #[repr(C)]
@@ -951,6 +1071,7 @@ pub mod discrip {
         pub num: c_int,
         pub den: c_int,
         pub base: i64,
+        pub side: i64,
     }
 
     /// `DRVideo` (only handled through pointers).
@@ -988,6 +1109,26 @@ pub mod discrip {
         pub chapters: i64,
         pub offset: i64,
         pub start: i64,
+    }
+
+    pub const CHAPTER_00: c_int = -1;
+
+    /// `DRChapterPlan`.
+    #[repr(C)]
+    pub struct ChapterPlan {
+        pub marks: *mut i64,
+        pub nb_marks: c_int,
+        pub atoms: *mut c_int,
+        pub nb_atoms: c_int,
+    }
+
+    /// `DRChapter`.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Chapter {
+        pub start: i64,
+        pub end: i64,
+        pub record: c_int,
     }
 
     /// `DRJoin` (only handled through pointers).
@@ -1029,6 +1170,8 @@ pub mod discrip {
         pub out_opaque: *mut c_void,
         pub event: Option<EventCb>,
         pub event_opaque: *mut c_void,
+        pub codec: c_int,
+        pub rate: c_int,
     }
 
     /// `DRJunctionStats`.
@@ -1105,6 +1248,24 @@ pub mod discrip {
         pub fn ff_discrip_join_finish(j: *mut Join) -> c_int;
         pub fn ff_discrip_join_stats(j: *const Join, st: *mut JoinStats);
         pub fn ff_discrip_join_close(j: *mut *mut Join);
+        pub fn ff_discrip_join_chapters(j: *const Join, starts: *mut *const i64) -> c_int;
+        pub fn ff_discrip_chapter_plan(
+            log: *mut c_void,
+            records: *const i64,
+            nb_records: c_int,
+            skip: i64,
+            chapter00: c_int,
+            plan: *mut ChapterPlan,
+        ) -> c_int;
+        pub fn ff_discrip_chapter_plan_free(plan: *mut ChapterPlan);
+        pub fn ff_discrip_chapter_list(
+            plan: *const ChapterPlan,
+            starts: *const i64,
+            nb_starts: c_int,
+            duration: i64,
+            out: *mut *mut Chapter,
+            nb_out: *mut c_int,
+        ) -> c_int;
         pub fn ff_discrip_video_open(
             out: *mut *mut Video,
             log: *mut c_void,
@@ -1119,6 +1280,58 @@ pub mod discrip {
         pub fn ff_discrip_video_flush(v: *mut Video) -> c_int;
         pub fn ff_discrip_video_stats(v: *const Video, st: *mut VideoStats);
         pub fn ff_discrip_video_close(v: *mut *mut Video);
+        pub fn ff_discrip_video_snap(v: *const Video, t: i64, out: *mut i64) -> c_int;
+        pub fn ff_discrip_video_set_side(v: *mut Video, cb: Option<FrameCb>, opaque: *mut c_void);
+        pub fn ff_discrip_cc_check(data: *const u8, size: c_int) -> c_int;
+        pub fn ff_discrip_verify_open(
+            out: *mut *mut Verify,
+            log: *mut c_void,
+            codec: c_int,
+            track: c_int,
+            kind: c_int,
+            event: Option<EventCb>,
+            event_opaque: *mut c_void,
+        ) -> c_int;
+        pub fn ff_discrip_verify_frame(v: *mut Verify, frame: *const Frame) -> c_int;
+        pub fn ff_discrip_verify_finish(v: *mut Verify) -> c_int;
+        pub fn ff_discrip_verify_stats(v: *const Verify, st: *mut VerifyStats);
+        pub fn ff_discrip_verify_close(v: *mut *mut Verify);
+        pub fn ff_discrip_seamless_decode(
+            log: *mut c_void,
+            codec: c_int,
+            rate: c_int,
+            pre: *const Frame,
+            nb_pre: c_int,
+            range: *const Frame,
+            nb_range: c_int,
+            out: *mut *mut i32,
+            nb_out: *mut c_int,
+        ) -> c_int;
+        pub fn ff_discrip_seamless_corr(a: *const i32, b: *const i32, n: u32) -> u32;
+        pub fn ff_discrip_lpcm_header(p: *mut Lpcm, log: *mut c_void, hdr: *const u8, len: c_int, hd: c_int) -> c_int;
+        pub fn ff_discrip_lpcm_convert(p: *const Lpcm, input: *const u8, size: c_int, out: *mut u8) -> c_int;
+        pub fn ff_discrip_cutter_set_state(c: *mut Cutter, state: *mut c_void);
+        pub fn ff_discrip_pcm_open(out: *mut *mut Pcm, log: *mut c_void, cfg: *const PcmConfig) -> c_int;
+        pub fn ff_discrip_pcm_push(p: *mut Pcm, frame: *mut Frame) -> c_int;
+        pub fn ff_discrip_pcm_finish(p: *mut Pcm) -> c_int;
+        pub fn ff_discrip_pcm_stats(p: *const Pcm, st: *mut PcmStats);
+        pub fn ff_discrip_pcm_close(p: *mut *mut Pcm);
+        pub fn ff_discrip_audio_set_state(a: *mut Audio, state: *mut c_void);
+        pub fn ff_discrip_cc_triplets(data: *const u8, size: c_int, out: *mut u8) -> c_int;
+        pub fn ff_discrip_spu_open(
+            out: *mut *mut Spu,
+            log: *mut c_void,
+            track: c_int,
+            video: *mut Video,
+            cb: FrameCb,
+            opaque: *mut c_void,
+            event: Option<EventCb>,
+            event_opaque: *mut c_void,
+        ) -> c_int;
+        pub fn ff_discrip_spu_unit(spu: *mut c_void, unit: *const Unit) -> c_int;
+        pub fn ff_discrip_spu_flush(s: *mut Spu) -> c_int;
+        pub fn ff_discrip_spu_stats(s: *const Spu, st: *mut SpuStats);
+        pub fn ff_discrip_spu_close(s: *mut *mut Spu);
     }
 
     /// FFmpeg's codec id for a codec name (e.g. "ac3"), or None.

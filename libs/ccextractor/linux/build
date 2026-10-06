@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+BLD_FLAGS="$BLD_FLAGS -std=gnu99 -Wno-write-strings -Wno-pointer-sign -DGPAC_CONFIG_LINUX -D_FILE_OFFSET_BITS=64 -DVERSION_FILE_PRESENT -DENABLE_OCR -DFT2_BUILD_LIBRARY -DGPAC_DISABLE_VTT -DGPAC_DISABLE_OD_DUMP -DGPAC_DISABLE_REMOTERY -DNO_GZIP -DGPAC_HAVE_CONFIG_H"
+bit_os=$(getconf LONG_BIT)
+if [ "$bit_os"=="64" ]
+then
+    BLD_FLAGS="$BLD_FLAGS -DGPAC_64_BITS"
+fi
+BLD_INCLUDE="-I../src -I /usr/include/leptonica/ -I /usr/include/tesseract/ -I../src/lib_ccx/ -I../src/thirdparty/gpacmp4/ -I../src/thirdparty/libpng -I../src/thirdparty/zlib -I../src/lib_ccx/zvbi -I../src/thirdparty/lib_hash -I../src/thirdparty/protobuf-c -I../src/thirdparty -I../src/thirdparty/freetype/include"
+SRC_LIBPNG="$(find ../src/thirdparty/libpng/ -name '*.c')"
+SRC_ZLIB="$(find ../src/thirdparty/zlib/ -name '*.c')"
+SRC_CCX="$(find ../src/lib_ccx/ -name '*.c')"
+SRC_GPAC="$(find ../src/thirdparty/gpacmp4/ -name '*.c')"
+SRC_HASH="$(find ../src/thirdparty/lib_hash/ -name '*.c')"
+SRC_PROTOBUF="$(find ../src/thirdparty/protobuf-c/ -name '*.c')"
+SRC_UTF8PROC="../src/thirdparty/utf8proc/utf8proc.c"
+SRC_FREETYPE="../src/thirdparty/freetype/autofit/autofit.c
+        ../src/thirdparty/freetype/base/ftbase.c
+        ../src/thirdparty/freetype/base/ftbbox.c
+        ../src/thirdparty/freetype/base/ftbdf.c
+        ../src/thirdparty/freetype/base/ftbitmap.c
+        ../src/thirdparty/freetype/base/ftcid.c
+        ../src/thirdparty/freetype/base/ftfntfmt.c
+        ../src/thirdparty/freetype/base/ftfstype.c
+        ../src/thirdparty/freetype/base/ftgasp.c
+        ../src/thirdparty/freetype/base/ftglyph.c
+        ../src/thirdparty/freetype/base/ftgxval.c
+        ../src/thirdparty/freetype/base/ftinit.c
+        ../src/thirdparty/freetype/base/ftlcdfil.c
+        ../src/thirdparty/freetype/base/ftmm.c
+        ../src/thirdparty/freetype/base/ftotval.c
+        ../src/thirdparty/freetype/base/ftpatent.c
+        ../src/thirdparty/freetype/base/ftpfr.c
+        ../src/thirdparty/freetype/base/ftstroke.c
+        ../src/thirdparty/freetype/base/ftsynth.c
+        ../src/thirdparty/freetype/base/ftsystem.c
+        ../src/thirdparty/freetype/base/fttype1.c
+        ../src/thirdparty/freetype/base/ftwinfnt.c
+        ../src/thirdparty/freetype/bdf/bdf.c
+        ../src/thirdparty/freetype/bzip2/ftbzip2.c
+        ../src/thirdparty/freetype/cache/ftcache.c
+        ../src/thirdparty/freetype/cff/cff.c
+        ../src/thirdparty/freetype/cid/type1cid.c
+        ../src/thirdparty/freetype/gzip/ftgzip.c
+        ../src/thirdparty/freetype/lzw/ftlzw.c
+        ../src/thirdparty/freetype/pcf/pcf.c
+        ../src/thirdparty/freetype/pfr/pfr.c
+        ../src/thirdparty/freetype/psaux/psaux.c
+        ../src/thirdparty/freetype/pshinter/pshinter.c
+        ../src/thirdparty/freetype/psnames/psnames.c
+        ../src/thirdparty/freetype/raster/raster.c
+        ../src/thirdparty/freetype/sfnt/sfnt.c
+        ../src/thirdparty/freetype/smooth/smooth.c
+        ../src/thirdparty/freetype/truetype/truetype.c
+        ../src/thirdparty/freetype/type1/type1.c
+        ../src/thirdparty/freetype/type42/type42.c
+        ../src/thirdparty/freetype/winfonts/winfnt.c"
+BLD_SOURCES="../src/ccextractor.c $SRC_CCX $SRC_GPAC $SRC_ZLIB $SRC_LIBPNG $SRC_HASH $SRC_PROTOBUF $SRC_UTF8PROC $SRC_FREETYPE"
+BLD_LINKER="$BLD_LINKER -lm -zmuldefs -l tesseract -l lept -lpthread -ldl"
+
+echo "Running pre-build script..."
+./pre-build.sh
+echo "Trying to compile..."
+
+if [ "$1" = "-without-rust" ]; then
+    echo "Building without rust files..."
+    BLD_FLAGS="$BLD_FLAGS -DDISABLE_RUST"
+else 
+    BLD_LINKER="$BLD_LINKER ./libccx_rust.a"
+    echo "Checking for cargo..."
+    if ! [ -x "$(command -v cargo)" ]; then
+        echo 'Error: cargo is not installed.' >&2
+        exit 1
+    fi
+
+    rustc_version="$(rustc --version)"
+    semver=( ${rustc_version//./ } )
+    version="${semver[1]}.${semver[2]}.${semver[3]}"
+    MSRV="1.54.0"
+    if [ "$(printf '%s\n' "$MSRV" "$version" | sort -V | head -n1)" = "$MSRV" ]; then 
+        echo "rustc >= MSRV(${MSRV})"
+    else
+        echo "Minimum supported rust version(MSRV) is ${MSRV}, please upgrade rust"
+        exit 1
+    fi 
+    
+    echo "Building rust files..."
+    (cd ../src/rust && CARGO_TARGET_DIR=../../linux/rust cargo build) || { echo "Failed. " ; exit 1; }
+    cp rust/debug/libccx_rust.a ./libccx_rust.a
+fi
+
+echo "Building ccextractor"
+out=$((LC_ALL=C gcc $BLD_FLAGS $BLD_INCLUDE -o ccextractor $BLD_SOURCES $BLD_LINKER)2>&1)
+res=$?
+if [[ $out == *"gcc: command not found"* ]]
+then
+    echo "Error: please install gcc";
+    exit 1
+fi
+if [[ $out == *"curl.h: No such file or directory"* ]]
+then
+    echo "Error: please install curl development library (libcurl4-gnutls-dev for Debian/Ubuntu)";
+    exit 2
+fi
+if [[ $out == *"capi.h: No such file or directory"* ]]
+then
+    echo "Error: please install tesseract development library (libtesseract-dev for Debian/Ubuntu)";
+    exit 3
+fi
+if [[ $out == *"allheaders.h: No such file or directory"* ]]
+then
+    echo "Error: please install leptonica development library (libleptonica-dev for Debian/Ubuntu)";
+    exit 4
+fi
+if [[ $res -ne 0 ]]  # Unknown error
+then
+    echo "Compiled with errors"
+    >&2 echo "$out"
+    exit 5
+fi
+if [[ "$out" != "" ]] ; then
+    echo "$out"
+    echo "Compilation successful, compiler message shown in previous lines"
+else
+    echo "Compilation successful, no compiler messages."
+fi

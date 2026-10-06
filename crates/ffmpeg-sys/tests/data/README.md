@@ -19,3 +19,5 @@ Full command (TrueHD):
   `sine_11520.latm` (`-c:a aac -b:a 128k -f latm`): the same sine, 11520 samples
 - `testsrc_1200.m2v`: `-f lavfi -i testsrc=size=64x48:rate=30000/1001 -frames:v 1200 -c:v mpeg2video -g 12 -bf 2
   -q:v 20 -f mpeg2video` (MPEG-2, 29.97 fps, GOP of 12 with two B pictures between references)
+- `sine_7680.ac3`: the same sine (float planar), 7680 samples, `-c:a ac3 -b:a 192k -f ac3` (5 AC-3 frames of 768
+  bytes, 48 kHz)

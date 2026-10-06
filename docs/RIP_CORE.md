@@ -74,7 +74,7 @@ logged with the reason; nothing is guessed.
 | decoder | FFmpeg decoder for the overlap search, or none |
 | core cut | unit cut to its core frame (when the track is a derived core) |
 | video only | units per frame (2 = fields), frame-rate source, display-order number and its wrap period |
-| sub-picture only | duration from the display-stop command; snapped to the video grid |
+| sub-picture only | own cutter (unit size from its header); duration from the display-stop command; snapped to the video grid |
 
 ## 5. The format profile
 
@@ -100,8 +100,33 @@ logged with the reason; nothing is guessed.
   time). Non-picture units are not part of the video track.
 - **Audio (timed family):** the unit with a timestamp keeps it; others follow
   by duration. A zero-size unit becomes an empty marker that keeps its time.
-- **Audio (stream family), sub-pictures:** as above; sub-pictures snap to the
-  nearest video grid point (dropped when none within 0.1 s).
+- **Audio (stream family):** as above.
+- **Side units:** a codec rule may take bytes out of a unit before the
+  video sees it. MPEG-1 / 2: user data right after a GOP header (where
+  DVD-Video carries its line-21 captions) leaves the video; user data after
+  a sequence or picture header stays. Each piece is handed on with the time
+  of the next picture after its unit in the same batch (in an open GOP the
+  first B picture, the GOP's first picture on screen), else of the batch's
+  last picture (a closed GOP: the I picture), lasting one field.
+- **Closed captions** (DVD-Video): a side unit that is a caption block
+  (00 00 01 B2 'C' 'C' 01 F8, a count byte with bit 6 clear, 9 + 3 x count
+  bytes; the rest of the piece is not part of it) is a caption frame; its
+  CEA-608 entries get the field markers the caption decoder takes (from
+  their marker bytes and the odd-field-first bit; an unknown pattern ends
+  the block). The text comes from CCExtractor (`libs/ccextractor`, a helper
+  program: the frames in its raw caption format, SRT out).
+- **Sub-pictures** (DVD-Video, and HD DVD with 32-bit sizes and 8-bit
+  commands): units are cut from the byte stream by their own size (a header
+  stating less than 9 bytes, or a first control sequence that does not fit,
+  gives up the bytes kept so far; a unit whose control sequences do not parse
+  is left out, with a warning). A unit lasts until its stop command
+  (STP_DSP delay x 1024/90000 s); without one it lasts one delay step and is
+  marked when it shows a picture (`DR_F_NO_STOP`). Its time is the video grid
+  point nearest to its PES time (the video must know its grid first, so the
+  units wait for it). Left out, each with a warning and an event: a unit
+  without a time of its own (a second unit starting in the same PES packet),
+  a unit more than 0.1 ms before the video's first field. The bytes are never
+  changed.
 
 ## 7. Stage 3: joiner
 
@@ -109,11 +134,27 @@ logged with the reason; nothing is guessed.
   is placed where the master video of segment k-1 actually ended (its last
   frame's time + duration), not where the disc's tables say it ends.
 - Every unit: `out = time + offset(k) - start(k)`.
-- Audio / sub-picture units earlier than their track's expected time by more
-  than their own duration are moved to it; smaller overlaps pass to stage 4.
-- Chapter marks: the master's key frame at, or up to 0.4 s before, each mark
-  time carries the chapter flag; marks within 0.1 s of the title start become
-  0; fewer than two marks -> no chapters.
+- Audio units earlier than their track's expected time by more than their
+  own duration are moved to it; smaller overlaps pass to stage 4.
+- Sub-pictures keep their times: a sub-picture replaces the one shown
+  before it. One that starts before the previous one ends, by more than its
+  own duration, is reported (event); the reference moves it to the end of
+  the previous one instead.
+- Chapter marks (`discrip_chapters.c`; time marks: HD DVD, Blu-ray): the
+  disc's records are planned first: a broken tail (a last record at 0 after
+  one that is not, or earlier than the one before it) is cut off, a record
+  earlier than the one before it otherwise refuses the title; records in
+  leading segments left out are dropped and the rest move back by their
+  length; the first kept record within 0.1 s of the start is at 0; a record
+  at the time of the one before it is dropped (the reference keeps it, so
+  its later chapter names shift by one); when the first kept record does
+  not start the title, a chapter is added at 0 (record 0 when it was
+  dropped, else "Chapter 00" when the setting asks). The master's key frame
+  at, or up to 0.4 s before, each mark carries the chapter flag (one per
+  frame; empty markers take none); the k-th flagged frame starts chapter k,
+  which ends where the next starts, the last at the title's end; fewer than
+  two -> no chapters. DVD marks by byte position (the first picture past a
+  cell's position) come with the DVD wiring.
 
 ## 8. Stage 4: junction per output track
 
@@ -129,11 +170,40 @@ logged with the reason; nothing is guessed.
   - when skew >= shift + one unit: whole units dropped, only up to the next
     sync unit, with 1/16-unit tolerance;
   - every change > 1 ms (or |skew| > 1 ms) is an event.
-- **Seamless overlap search** (codecs with non-sync units and a decoder:
-  TrueHD): at the tail of a segment, decode both sides, find the duplicated
-  units by correlation (> 0.95), drop exactly those; else the skew rule.
-- **PCM tracks:** fixed output frames from a sample counter; gaps filled with
-  silence samples; a timestamp jump that returns within 32 frames is joined.
+- **Seamless overlap search** (`discrip_seamless.c`; entered by codecs with
+  non-sync units: TrueHD / MLP, compared only for those): at the tail of a
+  segment (frames from its last 64 MiB) a non-sync frame whose contiguous run
+  (at most 0.5 s, 99 frames) reaches past the start of the next segment's
+  first sync unit U. Candidate counts of duplicated frames: overlap / frame
+  duration +-5 (at least 1, at most the frames before U). Both sides are
+  decoded (side A after the frames handed on since the last sync unit;
+  side B = U and the frames after it, as many as side A + 2), turned into
+  32-bit samples, mixed to one channel (libavresample's matrix: centre 1,
+  surround sqrt(2)/8, LFE 0, normalised; Q30 integer mix), and for each
+  candidate the end of A from where its frames start is compared with the
+  start of B: the Pearson correlation in Q32, all integer (silence = 0); the
+  last candidate above 0.95 is the match. k = the smallest candidate whose
+  frames fit the overlap (within frame / 16). A match below k + 2 drops its
+  frames at the end of A (U's major sync is kept) and the skew becomes where
+  the frames before them ended against U; else k = 0: A goes on unchanged,
+  or the k frames are re-timed to end at U and the skew rule follows. Each
+  search is an event with its best correlation (for comparing it with other
+  ways of joining, Blu-ray).
+- **PCM tracks** (`discrip_pcm.c`, in place of the junction): the samples
+  leave in fixed frames (1/30 s at 48 / 44.1 kHz, else about 32 ms rounded up
+  to a divisor of the rate) timed by a sample counter from 0. Start: frames
+  more than 1 ms early are dropped, a lead-in within 1 ms is the origin; a
+  later start below 5 s is filled with silence, from 5 s on skipped on the
+  output clock. A frame more than 10800 ticks and 2 samples off the sample
+  count: when the frames after it (up to 32) go on from where it would end
+  without the gap, its time was broken and it is appended; else silence
+  fills the gap (two output frames per step, the rest pending). A frame
+  running more than 10800 ticks and 2 samples into the next is cut at the
+  next one's start; a next frame starting before this one: its rest past
+  this one is kept for the next step, or it is dropped when it lies inside.
+  The video ending before a frame leaves the rest out. LPCM units
+  (`discrip_lpcm.c`): one frame each, from the packets' audio frame headers,
+  converted to little-endian.
 - Video: passes unchanged (sets the highest video time the audio side uses).
 - Sub-pictures: no junction stage.
 
@@ -148,14 +218,31 @@ The rules above are the default policy. Around them:
   overlapping units are duplicates.
 - **Decide**: every action (drop, shift, absorb, repair, placeholder) is an
   event with its reason and values.
-- **Verify** (after the policy):
-  - every output unit re-parsed: sync word, size, CRC where the codec has one;
-  - per track: output times increase, durations > 0, skew within its bounds,
-    video frames on the grid;
-  - residual sync error per frame (stream-file position - source time):
-    maximum and where; joins where a different action would have given a
-    smaller error;
-  - TrueHD: the access units' own timing counter, every break and its size.
+- **Verify** (after the policy; `discrip_verify.c`, one checker per output
+  track, fed every frame as it leaves the core; nothing is changed, every
+  finding is an event and counted):
+  - every output unit re-parsed by its codec's check: MPEG video / VC-1 a
+    start code and a picture / frame start code; AC-3 / E-AC-3 whole
+    syncframes, each one's CRC (as FFmpeg's decoder checks it); DTS a core
+    frame that fits (the rest an extension substream) or an extension
+    substream; MPEG audio, ADTS, LOAS one frame of their header's size;
+    TrueHD / MLP the AU length field and the major-sync checksum;
+    sub-pictures their size and control sequences; a codec without a check
+    is counted as unchecked (LPCM so far);
+  - per track: durations > 0; audio / subtitles: each frame after the one
+    before it (overlaps counted with the largest); video in display order:
+    each picture starts where the one before it ends (within the 1-tick
+    truncation of grid times), holes with the placeholders in them,
+    overlaps;
+  - audio sync error per frame against its own time (`DRFrame.src`, set by
+    the joiner: the PES-derived time on the title timeline before any move):
+    as a stream file plays it (start delay + the durations before it) and by
+    the output times; the largest of each and where, the stream file's at
+    the end;
+  - TrueHD / MLP: each AU's input timing against the one before it (+ the
+    samples per AU), every break and its size;
+  - not yet: joins where a different action would have given a smaller
+    error.
 
 Events go to the log (messages 5xxx) and, at debug level, as one structured
 line each, so a run can be compared event by event with an expected list.
