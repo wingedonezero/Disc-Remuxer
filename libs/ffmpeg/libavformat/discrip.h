@@ -43,6 +43,8 @@
 #define DR_F_CHAPTER  0x0010   /**< a chapter starts here */
 #define DR_F_TAIL     0x0020   /**< read from the last 64 MiB of its segment's source */
 #define DR_F_BATCH    0x0040   /**< video: the last frame of a batch the video timing handed on */
+#define DR_F_NO_STOP  0x0080   /**< sub-picture: shows a picture but has no stop time (its
+                                    duration is one delay step) */
 
 typedef struct DRFrame {
     AVBufferRef *buf;      /**< owns the bytes (NULL for a marker) */
@@ -273,6 +275,10 @@ enum DREventKind {
     DR_EV_VIDEO_INVALID,   /**< end of the segment: count = pictures whose PES time was off the grid */
     DR_EV_VIDEO_REPAIR,    /**< the grid followed a jump of the PES times (count = placeholders) */
     DR_EV_VIDEO_RATE_CHANGE, /**< a later header states another frame rate (count = num, dur = den): warning only */
+    DR_EV_SUB_UNTIMED,     /**< a sub-picture unit without a time of its own left out (pos = its byte offset) */
+    DR_EV_SUB_EARLY,       /**< a sub-picture unit before the video's first field left out (pos = its PES time) */
+    DR_EV_SUB_OVERLAP,     /**< joiner: a sub-picture starts before the one before it ends, by more than
+                                its own duration (dur = by how much): it keeps its time */
 };
 
 typedef struct DREvent {
@@ -326,7 +332,9 @@ void ff_discrip_junction_close(DRJunction **j);
  * A title's segments one after another on the title timeline. Track 0 is the
  * master video. Segment 0 starts the timeline at its first video time;
  * segment k is placed where the video of segment k-1 really ended. Frames are
- * given segment by segment, in order. */
+ * given segment by segment, in order. Audio earlier than expected by more
+ * than its duration is moved to the expected time; sub-pictures keep their
+ * times (a sub-picture replaces the one shown before it). */
 
 enum DRTrackKind { DR_KIND_VIDEO = 1, DR_KIND_AUDIO = 2, DR_KIND_SUBTITLE = 3 };
 
@@ -384,9 +392,44 @@ int  ff_discrip_video_flush(DRVideo *v);
 /** A frame rate a header states: the first one times the segment; a later
  *  different one is a warning (logged, event), the timing keeps the first. */
 void ff_discrip_video_set_rate(DRVideo *v, int num, int den);
+/** The grid point nearest to a time t (ticks, the segment's own clock):
+ *  *out = that point, or AV_NOPTS_VALUE when t is more than 0.1 ms before
+ *  the grid base. AVERROR(EAGAIN) while the grid is not known yet. */
+int  ff_discrip_video_snap(const DRVideo *v, int64_t t, int64_t *out);
 void *ff_discrip_video_priv(DRVideo *v);
 void ff_discrip_video_stats(const DRVideo *v, DRVideoStats *st);
 void ff_discrip_video_close(DRVideo **v);
+
+/* ---- Stage 2, sub-pictures: units on the video grid (discrip_spu.c) ----
+ * DVD-Video / HD DVD sub-picture units. Each unit lasts until its stop
+ * command (STP_DSP delay x 1024 / 90000 s; one delay step when it has none),
+ * and is timed at the video grid point nearest to its PES time. Left out: a
+ * unit without a time of its own, a unit more than 0.1 ms before the
+ * video's first field. Units wait until the segment's video knows its grid:
+ * flush the video before the sub-pictures at the end of a segment. */
+
+typedef struct DRSpuStats {
+    int64_t units, out;
+    int64_t untimed;           /**< left out: no time of its own */
+    int64_t early;             /**< left out: before the video's first field */
+    int64_t no_stop;           /**< shown without a stop time (DR_F_NO_STOP) */
+    int64_t forced;            /**< with a forced start (FSTA_DSP) */
+    int64_t colcon;            /**< with a colour / contrast change (CHG_COLCON) */
+    int64_t max_shift;         /**< largest move to the video grid (ticks) */
+} DRSpuStats;
+
+typedef struct DRSpu DRSpu;
+
+/** Sub-picture timing of one track in one segment, on the grid of the
+ *  segment's video v (which must outlive it). */
+int  ff_discrip_spu_open(DRSpu **s, void *logctx, int track, DRVideo *v,
+                         DRFrameCb cb, void *opaque, DREventCb event, void *event_opaque);
+/** A DRUnitCb: opaque = the DRSpu. */
+int  ff_discrip_spu_unit(void *spu, const DRUnit *unit);
+/** The end of the segment (after the video's flush). */
+int  ff_discrip_spu_flush(DRSpu *s);
+void ff_discrip_spu_stats(const DRSpu *s, DRSpuStats *st);
+void ff_discrip_spu_close(DRSpu **s);
 
 /* rules of codecs in their own files */
 extern const DRAudioRules ff_discrip_audio_mlp;
@@ -395,5 +438,8 @@ extern const DRVideoRules ff_discrip_video_vc1;
 int ff_discrip_mlp_check(const uint8_t *data, int size);
 int ff_discrip_mlp_unit_size(const uint8_t *buf, int avail);
 int ff_discrip_mlp_resync(const uint8_t *buf, int avail);
+int ff_discrip_spu_check(const uint8_t *data, int size);
+int ff_discrip_spu_unit_size(const uint8_t *buf, int avail);
+int ff_discrip_spu_resync(const uint8_t *buf, int avail);
 
 #endif /* AVFORMAT_DISCRIP_H */

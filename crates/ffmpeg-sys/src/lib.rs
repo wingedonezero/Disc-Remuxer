@@ -856,6 +856,8 @@ pub mod discrip {
         pub size: c_int,
         pub time: i64,
         pub pos: i64,
+        pub samples: c_int,
+        pub rate: c_int,
     }
 
     /// `DRCutterStats`.
@@ -869,6 +871,7 @@ pub mod discrip {
         pub records_unused: i64,
         pub skipped: i64,
         pub skipped_bytes: i64,
+        pub joined: i64,
     }
 
     pub const F_KEY: u32 = 0x0001;
@@ -885,6 +888,8 @@ pub mod discrip {
         pub dur: i64,
         pub pos: i64,
         pub flags: u32,
+        pub samples: c_int,
+        pub rate: c_int,
     }
 
     pub type FrameCb = unsafe extern "C" fn(opaque: *mut c_void, frame: *mut Frame) -> c_int;
@@ -938,6 +943,30 @@ pub mod discrip {
     pub const EV_VIDEO_INVALID: c_int = 14;
     pub const EV_VIDEO_REPAIR: c_int = 15;
     pub const EV_VIDEO_RATE_CHANGE: c_int = 16;
+    pub const EV_SUB_UNTIMED: c_int = 17;
+    pub const EV_SUB_EARLY: c_int = 18;
+    pub const EV_SUB_OVERLAP: c_int = 19;
+    pub const F_NO_STOP: u32 = 0x0080;
+
+    /// `DRSpuStats`.
+    #[repr(C)]
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct SpuStats {
+        pub units: i64,
+        pub out: i64,
+        pub untimed: i64,
+        pub early: i64,
+        pub no_stop: i64,
+        pub forced: i64,
+        pub colcon: i64,
+        pub max_shift: i64,
+    }
+
+    /// `DRSpu` (only handled through pointers).
+    #[repr(C)]
+    pub struct Spu {
+        _private: [u8; 0],
+    }
 
     /// `DRVideoStats`.
     #[repr(C)]
@@ -1119,6 +1148,21 @@ pub mod discrip {
         pub fn ff_discrip_video_flush(v: *mut Video) -> c_int;
         pub fn ff_discrip_video_stats(v: *const Video, st: *mut VideoStats);
         pub fn ff_discrip_video_close(v: *mut *mut Video);
+        pub fn ff_discrip_video_snap(v: *const Video, t: i64, out: *mut i64) -> c_int;
+        pub fn ff_discrip_spu_open(
+            out: *mut *mut Spu,
+            log: *mut c_void,
+            track: c_int,
+            video: *mut Video,
+            cb: FrameCb,
+            opaque: *mut c_void,
+            event: Option<EventCb>,
+            event_opaque: *mut c_void,
+        ) -> c_int;
+        pub fn ff_discrip_spu_unit(spu: *mut c_void, unit: *const Unit) -> c_int;
+        pub fn ff_discrip_spu_flush(s: *mut Spu) -> c_int;
+        pub fn ff_discrip_spu_stats(s: *const Spu, st: *mut SpuStats);
+        pub fn ff_discrip_spu_close(s: *mut *mut Spu);
     }
 
     /// FFmpeg's codec id for a codec name (e.g. "ac3"), or None.

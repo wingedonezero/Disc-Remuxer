@@ -65,6 +65,8 @@ fn fr(time: i64, dur: i64, sync: bool) -> Frame {
         dur,
         pos: 0,
         flags: if sync { F_KEY | F_SYNC } else { 0 },
+        samples: 0,
+        rate: 0,
     }
 }
 

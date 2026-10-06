@@ -74,7 +74,7 @@ logged with the reason; nothing is guessed.
 | decoder | FFmpeg decoder for the overlap search, or none |
 | core cut | unit cut to its core frame (when the track is a derived core) |
 | video only | units per frame (2 = fields), frame-rate source, display-order number and its wrap period |
-| sub-picture only | duration from the display-stop command; snapped to the video grid |
+| sub-picture only | own cutter (unit size from its header); duration from the display-stop command; snapped to the video grid |
 
 ## 5. The format profile
 
@@ -100,8 +100,19 @@ logged with the reason; nothing is guessed.
   time). Non-picture units are not part of the video track.
 - **Audio (timed family):** the unit with a timestamp keeps it; others follow
   by duration. A zero-size unit becomes an empty marker that keeps its time.
-- **Audio (stream family), sub-pictures:** as above; sub-pictures snap to the
-  nearest video grid point (dropped when none within 0.1 s).
+- **Audio (stream family):** as above.
+- **Sub-pictures** (DVD-Video, and HD DVD with 32-bit sizes and 8-bit
+  commands): units are cut from the byte stream by their own size (a header
+  stating less than 9 bytes, or a first control sequence that does not fit,
+  gives up the bytes kept so far; a unit whose control sequences do not parse
+  is left out, with a warning). A unit lasts until its stop command
+  (STP_DSP delay x 1024/90000 s); without one it lasts one delay step and is
+  marked when it shows a picture (`DR_F_NO_STOP`). Its time is the video grid
+  point nearest to its PES time (the video must know its grid first, so the
+  units wait for it). Left out, each with a warning and an event: a unit
+  without a time of its own (a second unit starting in the same PES packet),
+  a unit more than 0.1 ms before the video's first field. The bytes are never
+  changed.
 
 ## 7. Stage 3: joiner
 
@@ -109,8 +120,12 @@ logged with the reason; nothing is guessed.
   is placed where the master video of segment k-1 actually ended (its last
   frame's time + duration), not where the disc's tables say it ends.
 - Every unit: `out = time + offset(k) - start(k)`.
-- Audio / sub-picture units earlier than their track's expected time by more
-  than their own duration are moved to it; smaller overlaps pass to stage 4.
+- Audio units earlier than their track's expected time by more than their
+  own duration are moved to it; smaller overlaps pass to stage 4.
+- Sub-pictures keep their times: a sub-picture replaces the one shown
+  before it. One that starts before the previous one ends, by more than its
+  own duration, is reported (event); the reference moves it to the end of
+  the previous one instead.
 - Chapter marks: the master's key frame at, or up to 0.4 s before, each mark
   time carries the chapter flag; marks within 0.1 s of the title start become
   0; fewer than two marks -> no chapters.

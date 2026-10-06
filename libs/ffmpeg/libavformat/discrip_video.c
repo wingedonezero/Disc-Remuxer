@@ -943,6 +943,17 @@ void ff_discrip_video_set_rate(DRVideo *v, int num, int den)
     v->warn_den = den;
 }
 
+int ff_discrip_video_snap(const DRVideo *v, int64_t t, int64_t *out)
+{
+    int64_t i;
+
+    if (!v->started)
+        return AVERROR(EAGAIN);
+    i    = time_to_unit(v, t);
+    *out = i < 0 ? AV_NOPTS_VALUE : grid(v, i);
+    return 0;
+}
+
 void *ff_discrip_video_priv(DRVideo *v)
 {
     return v->priv;

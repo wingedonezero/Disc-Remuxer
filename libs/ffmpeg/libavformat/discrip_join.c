@@ -111,7 +111,14 @@ static int place_frame(DRJoin *j, int track, DRFrame *f)
         ts = t->e;                                 /* no time of its own: where the track is */
     } else {
         int64_t gap = t->e - ts;
-        if (gap > 0 && gap > f->dur) {
+        if (gap > 0 && gap > f->dur && t->kind == DR_KIND_SUBTITLE) {
+            /* a sub-picture replaces the one shown before it: it keeps its
+             * time (the reference moves it to the end of the one before) */
+            av_log(j->log, AV_LOG_DEBUG, "Rip core: joiner: subtitle track %d: a unit at %"PRId64" ticks starts "
+                   "%"PRId64" ticks before the one before it ends: kept at its time\n", track,
+                   j->offset + ts - j->start, gap);
+            event(j, DR_EV_SUB_OVERLAP, track, j->offset + ts - j->start, gap, 0);
+        } else if (gap > 0 && gap > f->dur) {
             /* earlier than expected by more than its own duration */
             if (t->kind == DR_KIND_AUDIO && gap != t->last_gap) {
                 event(j, DR_EV_RETIME, track, j->offset + t->e - j->start, f->dur, -gap);

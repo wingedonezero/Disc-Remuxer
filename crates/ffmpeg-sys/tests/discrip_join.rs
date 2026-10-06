@@ -1,8 +1,8 @@
 //! `libavformat/discrip_join.c`: the rip core's joiner. Segment 0 starts the
 //! title timeline at its first video time (the earliest of the video timing's
 //! first batch); segment k is placed where the video of segment k-1 really
-//! ended. Audio without a time takes where its track is; audio or subtitles
-//! early by more than their duration are moved there; video keeps its times;
+//! ended. Audio without a time takes where its track is; audio early by
+//! more than its duration is moved there; subtitles and video keep their times;
 //! chapter marks go on the video key frame at or up to 0.4 s before them.
 
 use std::os::raw::{c_int, c_void};
@@ -10,7 +10,7 @@ use std::os::raw::{c_int, c_void};
 use ffmpeg_sys::discrip::{
     ff_discrip_frame_unref, ff_discrip_join_close, ff_discrip_join_finish, ff_discrip_join_open,
     ff_discrip_join_push, ff_discrip_join_segment, ff_discrip_join_stats, Event, Frame, Join, JoinConfig, JoinStats,
-    EV_RETIME, F_BATCH, F_CHAPTER, F_KEY, KIND_AUDIO, KIND_SUBTITLE, KIND_VIDEO,
+    EV_RETIME, EV_SUB_OVERLAP, F_BATCH, F_CHAPTER, F_KEY, KIND_AUDIO, KIND_SUBTITLE, KIND_VIDEO,
 };
 use ffmpeg_sys::AV_NOPTS_VALUE;
 
@@ -36,7 +36,7 @@ unsafe extern "C" fn on_event(o: *mut c_void, e: *const Event) {
 }
 
 fn fr(time: i64, dur: i64, flags: u32) -> Frame {
-    Frame { buf: std::ptr::null_mut(), data: std::ptr::null_mut(), size: 1, time, dur, pos: 0, flags }
+    Frame { buf: std::ptr::null_mut(), data: std::ptr::null_mut(), size: 1, time, dur, pos: 0, flags, samples: 0, rate: 0 }
 }
 
 /// Segments of (track, frame) in input order.
@@ -151,13 +151,22 @@ fn audio_early_by_more_than_its_duration_is_moved_and_reported_once() {
 }
 
 #[test]
-fn subtitles_are_moved_silently() {
+fn subtitles_keep_their_times() {
+    // the second starts 5 frames before the first ends (more than its own
+    // 1 frame): it keeps its time (a sub-picture replaces the one shown);
+    // the third overlaps the second by less than its duration: no event
     let mut s0 = gop(0, 0, 4);
     s0.push((1, fr(10 * FRAME, 3 * FRAME, F_KEY)));
     s0.push((1, fr(8 * FRAME, FRAME, F_KEY)));
-    let (s, _) = join(&[KIND_VIDEO, KIND_SUBTITLE], &[], vec![s0]).unwrap();
-    assert_eq!(track_times(&s, 1), vec![10 * FRAME, 13 * FRAME]);
-    assert!(s.events.is_empty());
+    s0.push((1, fr(8 * FRAME + FRAME / 2, 2 * FRAME, F_KEY)));
+    let (s, st) = join(&[KIND_VIDEO, KIND_SUBTITLE], &[], vec![s0]).unwrap();
+    assert_eq!(track_times(&s, 1), vec![10 * FRAME, 8 * FRAME, 8 * FRAME + FRAME / 2]);
+    assert_eq!(st.retimed, 0);
+    assert_eq!(s.events.len(), 1);
+    assert_eq!(
+        (s.events[0].kind, s.events[0].track, s.events[0].pos, s.events[0].dur),
+        (EV_SUB_OVERLAP, 1, 8 * FRAME, 5 * FRAME)
+    );
 }
 
 #[test]

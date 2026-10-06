@@ -185,7 +185,10 @@ static int unit_take(DRCutter *c, const uint8_t *data, int size, int64_t off)
 
     unit = !c->codec->check || c->codec->check(data, size);
     if (!unit) {
-        av_log(c->log, AV_LOG_DEBUG, "Rip core: %s: %d bytes at stream offset %"PRId64" are not a unit: "
+        /* audio: bytes before the first sync word are expected; a
+         * sub-picture unit that does not parse is a lost subtitle */
+        int level = avcodec_get_type(c->codec->id) == AVMEDIA_TYPE_SUBTITLE ? AV_LOG_WARNING : AV_LOG_DEBUG;
+        av_log(c->log, level, "Rip core: %s: %d bytes at stream offset %"PRId64" are not a unit: "
                "left out\n", c->codec->name, size, off);
         c->st.skipped++;
         c->st.skipped_bytes += size;

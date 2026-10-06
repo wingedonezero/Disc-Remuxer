@@ -439,7 +439,8 @@ static const DRCodec codecs[] = {
     { AV_CODEC_ID_MP3,          "mp3",          anchor_unit, check_mpa,  &audio_mpa  },
     { AV_CODEC_ID_AAC,          "aac",          anchor_unit, check_adts, &audio_adts },
     { AV_CODEC_ID_AAC_LATM,     "aac_latm",     anchor_unit, loas,       &audio_latm },
-    { AV_CODEC_ID_DVD_SUBTITLE, "dvd_subtitle", anchor_unit      },
+    { .id = AV_CODEC_ID_DVD_SUBTITLE, .name = "dvd_subtitle", .anchor = anchor_unit,
+      .check = ff_discrip_spu_check, .unit_size = ff_discrip_spu_unit_size, .resync = ff_discrip_spu_resync },
 };
 
 const DRCodec *ff_discrip_codec(enum AVCodecID id)
