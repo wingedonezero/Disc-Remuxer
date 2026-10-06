@@ -1,0 +1,39 @@
+/* FFmpeg basics and the bridge's own helpers (bridge.c). */
+
+#define AV_LOG_QUIET ...
+#define AV_LOG_PANIC ...
+#define AV_LOG_FATAL ...
+#define AV_LOG_ERROR ...
+#define AV_LOG_WARNING ...
+#define AV_LOG_INFO ...
+#define AV_LOG_VERBOSE ...
+#define AV_LOG_DEBUG ...
+#define AV_LOG_TRACE ...
+
+const char *av_version_info(void);
+unsigned avutil_version(void);
+unsigned avcodec_version(void);
+unsigned avformat_version(void);
+int av_strerror(int errnum, char *errbuf, size_t errbuf_size);
+void av_free(void *ptr);
+
+typedef void (*tb_log_sink)(int level, const char *line);
+void tb_log_install(tb_log_sink sink, int max_level);
+extern "Python" void tb_py_log(int level, const char *line);
+
+typedef void (*tb_parser_frame_cb)(void *opaque, int size, int64_t pts, int64_t dts);
+int tb_parser_run(const char *codec_name, const uint8_t *const *data,
+                  const int *sizes, const int64_t *pts, int nb,
+                  tb_parser_frame_cb cb, void *opaque);
+extern "Python" void tb_py_parser_frame(void *opaque, int size, int64_t pts, int64_t dts);
+
+/* the C library's own random numbers (stdlib.h) */
+void srand(unsigned seed);
+int rand(void);
+
+/* libavutil's AES (the tests build encrypted discs with it) */
+struct AVAES *av_aes_alloc(void);
+int av_aes_init(struct AVAES *a, const uint8_t *key, int key_bits, int decrypt);
+void av_aes_crypt(struct AVAES *a, uint8_t *dst, const uint8_t *src, int count, uint8_t *iv, int decrypt);
+
+const struct AVInputFormat *av_find_input_format(const char *short_name);

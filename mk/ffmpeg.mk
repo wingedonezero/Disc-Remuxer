@@ -13,6 +13,9 @@ FFMPEG_ARGS := --prefix=$(FFMPEG) --enable-gpl --enable-libdvdnav --enable-libdv
 ifeq ($(MODE),debug)
 FFMPEG_ARGS += --disable-stripping
 endif
+ifeq ($(MODE),coverage)
+FFMPEG_ARGS += --disable-stripping --disable-optimizations --extra-cflags=--coverage --extra-ldflags=--coverage
+endif
 $(call args_stamp,$(BUILD)/ffmpeg/args,$(FFMPEG_ARGS))
 
 $(BUILD)/ffmpeg/build/ffbuild/config.mak: $(BUILD)/ffmpeg/args $(FFMPEG_PCS) $(FFMPEG_SRC)/configure

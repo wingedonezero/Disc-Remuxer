@@ -1,0 +1,72 @@
+/* libavformat/hddvd_internal.h: the HD DVD title set information, the
+   playlists, the title plan, AACS and the tracks. */
+
+#define HDDVD_VTI_MAX_EVOBS ...
+
+typedef struct HDDVDEvobAttr {
+    uint8_t  raw[...];
+    int      nb_audio;
+    int      nb_subpic;
+    uint32_t words[32];
+} HDDVDEvobAttr;
+
+typedef struct HDDVDEvob {
+    int      playlist;
+    char     name[256];
+    char     base[256];
+    int      attr;
+    uint32_t start_ptm;
+    uint32_t end_ptm;
+    uint32_t sectors;
+    int      slot;
+    uint8_t  raw[...];
+} HDDVDEvob;
+
+typedef struct HDDVDVTI {
+    char           folder[9];
+    int            nb_attrs;
+    HDDVDEvobAttr *attrs;
+    int            nb_evobs;
+    HDDVDEvob     *evobs[1998];
+} HDDVDVTI;
+
+typedef int (*HDDVDReadFn)(void *opaque, int64_t pos, uint8_t *buf, int len);
+
+int ff_hddvd_vti_parse(void *logctx, HDDVDReadFn read, void *opaque, HDDVDVTI **out);
+int ff_hddvd_vti_open(void *logctx, DiscIOFS *fs, HDDVDVTI **out);
+void ff_hddvd_vti_free(HDDVDVTI **vti);
+
+typedef struct HDDVDXpl {
+    int file;
+    ...;
+} HDDVDXpl;
+
+int ff_hddvd_xpl_parse(void *logctx, HDDVDReadFn read, void *opaque,
+                       int64_t offset, int64_t length, HDDVDXpl **out);
+int ff_hddvd_xpl_load(void *logctx, DiscIOFS *fs, HDDVDXpl ***out, int *nb_out);
+void ff_hddvd_xpl_free(HDDVDXpl **xpl);
+void ff_hddvd_xpl_free_all(HDDVDXpl ***xpls, int nb);
+char *ff_hddvd_xpl_dump(const HDDVDXpl *xpl);
+
+typedef struct HDDVDClip HDDVDClip;
+typedef struct HDDVDTitlePlan HDDVDTitlePlan;
+
+void ff_hddvd_evob_marks(void *logctx, HDDVDVTI *vti, HDDVDXpl *const *xpls, int nb_xpls);
+int ff_hddvd_titles_plan(void *logctx, DiscIOFS *fs, const HDDVDVTI *vti, HDDVDXpl *const *xpls,
+                         int nb_xpls, int min_length, HDDVDTitlePlan **out);
+void ff_hddvd_titles_free(HDDVDTitlePlan **plan);
+HDDVDClip *ff_hddvd_titles_clip(const HDDVDTitlePlan *plan, int slot);
+char *ff_hddvd_titles_dump(const HDDVDTitlePlan *plan);
+const char *ff_disc_lang_code(const char *code);
+
+typedef struct HDDVDAACS HDDVDAACS;
+
+int ff_hddvd_aacs_open(void *logctx, DiscIOFS *fs, const char *const *key_files, int nb_key_files,
+                       int nb_playlists, HDDVDAACS **out);
+void ff_hddvd_aacs_close(HDDVDAACS **aacs);
+int ff_hddvd_clip_block(void *logctx, HDDVDAACS *aacs, DiscIOFS *fs, HDDVDClip *clip, uint32_t block, uint8_t *buf);
+
+int ff_hddvd_tracks_build(void *logctx, DiscIOFS *fs, HDDVDAACS *aacs, const HDDVDVTI *vti,
+                          HDDVDXpl *const *xpls, int nb_xpls, HDDVDTitlePlan *plan);
+
+extern "Python" int tb_py_hddvd_read(void *opaque, int64_t pos, uint8_t *buf, int len);

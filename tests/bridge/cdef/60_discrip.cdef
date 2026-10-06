@@ -1,0 +1,363 @@
+/* libavformat/discrip.h: the shared rip core. */
+
+#define DR_TICKS_PER_SECOND ...
+#define DR_TICKS_PER_PTS ...
+#define DR_F_KEY ...
+#define DR_F_SYNC ...
+#define DR_F_MARKER ...
+#define DR_F_DISCARD ...
+#define DR_F_CHAPTER ...
+#define DR_F_TAIL ...
+#define DR_F_BATCH ...
+#define DR_F_NO_STOP ...
+#define DR_AUDIO_CORE_ONLY ...
+#define DR_CHAPTER_00 ...
+
+typedef struct DRFrame {
+    struct AVBufferRef *buf;
+    uint8_t     *data;
+    int          size;
+    int64_t      time;
+    int64_t      dur;
+    int64_t      pos;
+    unsigned     flags;
+    int          samples;
+    int          rate;
+    int64_t      src;
+} DRFrame;
+
+typedef int (*DRFrameCb)(void *opaque, DRFrame *frame);
+void ff_discrip_frame_unref(DRFrame *frame);
+
+typedef struct DRAudio DRAudio;
+typedef struct DRVideo DRVideo;
+
+typedef struct DRAudioHeader {
+    int rate;
+    int samples;
+} DRAudioHeader;
+
+typedef struct DRUnit {
+    const uint8_t *data;
+    int            size;
+    int64_t        time;
+    int64_t        pos;
+    int            samples;
+    int            rate;
+} DRUnit;
+
+typedef int (*DRUnitCb)(void *opaque, const DRUnit *unit);
+
+typedef struct DRCutterStats {
+    int64_t bytes;
+    int64_t records;
+    int64_t units;
+    int64_t timed;
+    int64_t records_unused;
+    int64_t skipped;
+    int64_t skipped_bytes;
+    int64_t joined;
+} DRCutterStats;
+
+typedef struct DRCutter DRCutter;
+int ff_discrip_cutter_open(DRCutter **cutter, void *logctx, int codec, DRUnitCb cb, void *opaque);
+int ff_discrip_cutter_write(DRCutter *c, const uint8_t *data, int size, int64_t time);
+int ff_discrip_cutter_flush(DRCutter *c);
+void ff_discrip_cutter_stats(const DRCutter *c, DRCutterStats *stats);
+void ff_discrip_cutter_set_state(DRCutter *c, void *state);
+void ff_discrip_cutter_close(DRCutter **cutter);
+
+typedef struct DRAudioStats {
+    int64_t units;
+    int64_t frames;
+    int64_t markers;
+    int64_t cut_bytes;
+    int64_t review;
+    int64_t continuity;
+    DRAudioHeader header;
+} DRAudioStats;
+
+int ff_discrip_audio_open(DRAudio **audio, void *logctx, int codec, int flags, DRFrameCb cb, void *opaque);
+int ff_discrip_audio_unit(void *audio, const DRUnit *unit);
+int ff_discrip_audio_marker(DRAudio *a, int64_t time);
+int ff_discrip_audio_flush(DRAudio *a);
+void ff_discrip_audio_stats(const DRAudio *a, DRAudioStats *stats);
+void ff_discrip_audio_close(DRAudio **audio);
+void ff_discrip_audio_set_state(DRAudio *a, void *state);
+
+enum DREventKind {
+    DR_EV_START_GAP = 1,
+    DR_EV_START_DROP,
+    DR_EV_START_SHIFT,
+    DR_EV_OVERLAP,
+    DR_EV_GAP_ABSORBED,
+    DR_EV_GAP,
+    DR_EV_DROP,
+    DR_EV_GAP_MARKER,
+    DR_EV_VIDEO_ENDED,
+    DR_EV_TIME_ORDER,
+    DR_EV_RETIME,
+    DR_EV_VIDEO_TIMECODE,
+    DR_EV_VIDEO_TIMECODE_LIMIT,
+    DR_EV_VIDEO_INVALID,
+    DR_EV_VIDEO_REPAIR,
+    DR_EV_VIDEO_RATE_CHANGE,
+    DR_EV_SUB_UNTIMED,
+    DR_EV_SUB_EARLY,
+    DR_EV_SUB_OVERLAP,
+    DR_EV_VERIFY_UNIT,
+    DR_EV_VERIFY_CRC,
+    DR_EV_VERIFY_ORDER,
+    DR_EV_VERIFY_HOLE,
+    DR_EV_VERIFY_OVERLAP,
+    DR_EV_SEAMLESS_SEARCH,
+    DR_EV_SEAMLESS_DROP,
+    DR_EV_PCM_SILENCE,
+    DR_EV_PCM_SKIP,
+    DR_EV_PCM_TIMECODE,
+};
+
+typedef struct DREvent {
+    int     kind;
+    int     track;
+    int64_t pos;
+    int64_t dur;
+    int64_t skew;
+    int64_t count;
+} DREvent;
+
+typedef void (*DREventCb)(void *opaque, const DREvent *ev);
+
+typedef struct DRVideoRef {
+    void    *opaque;
+    int64_t (*max_time)(void *opaque);
+    int     (*advance)(void *opaque, int64_t target, int *ended);
+} DRVideoRef;
+
+typedef struct DRJunctionConfig {
+    int        track;
+    int64_t    frame_dur;
+    int64_t    tolerance;
+    DRVideoRef video;
+    DRFrameCb  out;
+    void      *out_opaque;
+    DREventCb  event;
+    void      *event_opaque;
+    int        codec;
+    int        rate;
+} DRJunctionConfig;
+
+typedef struct DRJunctionStats {
+    int64_t in, out, dropped, dropped_dur, markers;
+    int64_t skew, base;
+    int     ended;
+} DRJunctionStats;
+
+typedef struct DRJunction DRJunction;
+int  ff_discrip_junction_open(DRJunction **j, void *logctx, const DRJunctionConfig *cfg);
+int  ff_discrip_junction_push(DRJunction *j, DRFrame *frame);
+int  ff_discrip_junction_finish(DRJunction *j);
+void ff_discrip_junction_stats(const DRJunction *j, DRJunctionStats *st);
+void ff_discrip_junction_close(DRJunction **j);
+
+enum DRTrackKind { DR_KIND_VIDEO = 1, DR_KIND_AUDIO = 2, DR_KIND_SUBTITLE = 3 };
+
+typedef int (*DRJoinOutCb)(void *opaque, int track, DRFrame *frame);
+
+typedef struct DRJoinConfig {
+    int            nb_tracks;
+    const int     *kinds;
+    const int64_t *marks;
+    int            nb_marks;
+    DRJoinOutCb    out;
+    void          *out_opaque;
+    DREventCb      event;
+    void          *event_opaque;
+} DRJoinConfig;
+
+typedef struct DRJoinStats {
+    int     segments;
+    int64_t frames, retimed, chapters;
+    int64_t offset, start;
+    int     placed;
+} DRJoinStats;
+
+typedef struct DRJoin DRJoin;
+int  ff_discrip_join_open(DRJoin **j, void *logctx, const DRJoinConfig *cfg);
+int  ff_discrip_join_segment(DRJoin *j);
+int  ff_discrip_join_push(DRJoin *j, int track, DRFrame *frame);
+int  ff_discrip_join_finish(DRJoin *j);
+void ff_discrip_join_stats(const DRJoin *j, DRJoinStats *st);
+int  ff_discrip_join_chapters(const DRJoin *j, const int64_t **starts);
+void ff_discrip_join_close(DRJoin **j);
+
+typedef struct DRChapterPlan {
+    int64_t *marks;
+    int      nb_marks;
+    int     *atoms;
+    int      nb_atoms;
+} DRChapterPlan;
+
+int  ff_discrip_chapter_plan(void *logctx, const int64_t *records, int nb_records, int64_t skip, int chapter00,
+                             DRChapterPlan *plan);
+void ff_discrip_chapter_plan_free(DRChapterPlan *plan);
+
+typedef struct DRChapter {
+    int64_t start, end;
+    int     record;
+} DRChapter;
+
+int  ff_discrip_chapter_list(const DRChapterPlan *plan, const int64_t *starts, int nb_starts, int64_t duration,
+                             DRChapter **out, int *nb_out);
+
+typedef struct DRVideoStats {
+    int64_t units, pictures, out, placeholders, invalid;
+    int     num, den;
+    int64_t base;
+    int64_t side;
+} DRVideoStats;
+
+int  ff_discrip_video_open(DRVideo **v, void *logctx, int codec, int track,
+                           DRFrameCb cb, void *opaque, DREventCb event, void *event_opaque);
+int  ff_discrip_video_unit(void *video, const DRUnit *unit);
+int  ff_discrip_video_flush(DRVideo *v);
+void ff_discrip_video_set_side(DRVideo *v, DRFrameCb cb, void *opaque);
+int  ff_discrip_video_snap(const DRVideo *v, int64_t t, int64_t *out);
+void ff_discrip_video_stats(const DRVideo *v, DRVideoStats *st);
+void ff_discrip_video_close(DRVideo **v);
+
+typedef struct DRSpuStats {
+    int64_t units, out;
+    int64_t untimed;
+    int64_t early;
+    int64_t no_stop;
+    int64_t forced;
+    int64_t colcon;
+    int64_t max_shift;
+} DRSpuStats;
+
+typedef struct DRSpu DRSpu;
+int  ff_discrip_spu_open(DRSpu **s, void *logctx, int track, DRVideo *v,
+                         DRFrameCb cb, void *opaque, DREventCb event, void *event_opaque);
+int  ff_discrip_spu_unit(void *spu, const DRUnit *unit);
+int  ff_discrip_spu_flush(DRSpu *s);
+void ff_discrip_spu_stats(const DRSpu *s, DRSpuStats *st);
+void ff_discrip_spu_close(DRSpu **s);
+int  ff_discrip_vobsub_header(char *buf, int size, int width, int height, const uint32_t *ycrcb);
+
+int ff_discrip_cc_check(const uint8_t *data, int size);
+int ff_discrip_cc_triplets(const uint8_t *data, int size, uint8_t *out);
+
+typedef struct DRVerifyStats {
+    int64_t frames, markers;
+    int64_t unchecked;
+    int64_t bad_units;
+    int64_t crc_errors;
+    int64_t order_errors;
+    int64_t holes, hole_dur;
+    int64_t overlaps, overlap_dur;
+    int64_t delay;
+    int64_t es_err_max, es_err_at;
+    int64_t es_err_end;
+    int64_t mkv_err_max, mkv_err_at;
+} DRVerifyStats;
+
+typedef struct DRVerify DRVerify;
+int  ff_discrip_verify_open(DRVerify **v, void *logctx, int codec, int track, int kind,
+                            DREventCb event, void *event_opaque);
+int  ff_discrip_verify_frame(DRVerify *v, const DRFrame *frame);
+int  ff_discrip_verify_finish(DRVerify *v);
+void ff_discrip_verify_stats(const DRVerify *v, DRVerifyStats *st);
+void ff_discrip_verify_close(DRVerify **v);
+
+typedef struct DRPcmConfig {
+    int        track;
+    int        rate;
+    int        bits;
+    int        bytes_per_sample_frame;
+    DRVideoRef video;
+    DRFrameCb  out;
+    void      *out_opaque;
+    DREventCb  event;
+    void      *event_opaque;
+} DRPcmConfig;
+
+typedef struct DRPcmStats {
+    int64_t in, out;
+    int64_t dropped;
+    int64_t silence;
+    int64_t broken;
+    int64_t overlap;
+} DRPcmStats;
+
+typedef struct DRPcm DRPcm;
+int  ff_discrip_pcm_open(DRPcm **p, void *logctx, const DRPcmConfig *cfg);
+int  ff_discrip_pcm_push(DRPcm *p, DRFrame *frame);
+int  ff_discrip_pcm_finish(DRPcm *p);
+void ff_discrip_pcm_stats(const DRPcm *p, DRPcmStats *st);
+void ff_discrip_pcm_close(DRPcm **p);
+
+int ff_discrip_seamless_decode(void *logctx, int codec, int rate, const DRFrame *pre, int nb_pre,
+                               const DRFrame *range, int nb_range, int32_t **out, int *nb_out);
+uint32_t ff_discrip_seamless_corr(const int32_t *a, const int32_t *b, uint32_t n);
+
+typedef struct DRLpcm {
+    int      init;
+    uint8_t  b0, b1;
+    int      bits, rate, channels;
+    int      spf;
+    int      frame_bytes;
+    int      out_frame_bytes;
+    uint64_t chmask;
+    int      drc;
+    int      hd;
+} DRLpcm;
+
+int ff_discrip_lpcm_header(DRLpcm *p, void *logctx, const uint8_t *hdr, int len, int hd);
+int ff_discrip_lpcm_convert(const DRLpcm *p, const uint8_t *in, int size, uint8_t *out);
+
+typedef struct DRTitleTrack {
+    int codec;
+    int kind;
+    int audio_flags;
+} DRTitleTrack;
+
+typedef struct DRTitleConfig {
+    int                 nb_tracks;
+    const DRTitleTrack *tracks;
+    int64_t             tolerance;
+    int                 lpcm_hd;
+    const int64_t      *marks;
+    int                 nb_marks;
+    DREventCb           event;
+    void               *event_opaque;
+} DRTitleConfig;
+
+typedef struct DRTitle DRTitle;
+int  ff_discrip_title_open(DRTitle **t, void *logctx, const DRTitleConfig *cfg);
+int  ff_discrip_title_segment(DRTitle *t);
+int  ff_discrip_title_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time, int tail);
+int  ff_discrip_title_finish(DRTitle *t);
+int  ff_discrip_title_frame(DRTitle *t, int *track, DRFrame *frame);
+int  ff_discrip_title_chapters(const DRTitle *t, const DRChapterPlan *plan, DRChapter **out, int *nb_out);
+int64_t ff_discrip_title_review(const DRTitle *t);
+int64_t ff_discrip_title_duration(const DRTitle *t);
+const char *ff_discrip_event_name(int kind);
+void ff_discrip_title_close(DRTitle **t);
+
+/* the codec ids by name (codec_desc.h) */
+typedef struct AVCodecDescriptor {
+    int id;
+    int type;
+    const char *name;
+    ...;
+} AVCodecDescriptor;
+const AVCodecDescriptor *avcodec_descriptor_get_by_name(const char *name);
+
+/* bridge callbacks (tests/helpers/discrip.py) */
+extern "Python" int tb_py_unit(void *opaque, const DRUnit *unit);
+extern "Python" int tb_py_frame(void *opaque, DRFrame *frame);
+extern "Python" void tb_py_event(void *opaque, const DREvent *ev);
+extern "Python" int tb_py_join_out(void *opaque, int track, DRFrame *frame);
+extern "Python" int64_t tb_py_video_max_time(void *opaque);
+extern "Python" int tb_py_video_advance(void *opaque, int64_t target, int *ended);

@@ -1,0 +1,29 @@
+/* libdvdcss (dvdcss/dvdcss.h) with our additions. */
+
+typedef struct dvdcss_s *dvdcss_t;
+
+typedef struct dvdcss_stream_cb {
+    int (*pf_seek)(void *p_stream, uint64_t i_pos);
+    int (*pf_read)(void *p_stream, void *buffer, int i_read);
+    int (*pf_readv)(void *p_stream, const void *p_iovec, int i_blocks);
+} dvdcss_stream_cb;
+
+#define DVDCSS_BLOCK_SIZE ...
+#define DVDCSS_NOFLAGS ...
+#define DVDCSS_READ_DECRYPT ...
+#define DVDCSS_SEEK_KEY ...
+#define DVDCSS_KEY_SIZE ...
+#define DVDCSS_LOG_ERROR ...
+#define DVDCSS_LOG_DEBUG ...
+
+int dvdcss_close(dvdcss_t);
+int dvdcss_seek(dvdcss_t, int i_blocks, int i_flags);
+int dvdcss_read(dvdcss_t, void *p_buffer, int i_blocks, int i_flags);
+int dvdcss_title_key(dvdcss_t, int i_block, unsigned char p_key[5]);
+int dvdcss_unscramble_sector(const unsigned char p_key[5], unsigned char *p_sector);
+
+/* bridge.c */
+dvdcss_t tb_dvdcss_open_stream_uncached(void *p_stream, dvdcss_stream_cb *p_stream_cb, int with_log, void *p_log);
+extern "Python+C" void tb_py_css_log(void *p_log, int level, const char *format);
+extern "Python" int tb_py_css_seek(void *p_stream, uint64_t i_pos);
+extern "Python" int tb_py_css_read(void *p_stream, void *buffer, int i_read);

@@ -1,0 +1,13 @@
+/* libdvdnav's VM (src/vm/rand.h) and the self-test hooks (dvdnav_selftest.c). */
+
+uint32_t vm_rand_next(uint32_t *state);
+void vm_rand_seed(uint32_t *state, uint32_t value);
+int vm_rand_shuffle(uint32_t state, unsigned int bound, unsigned int step);
+
+int dr_selftest_vm_exec(const uint8_t command[8], int nr_of_programs, int pgN,
+                        unsigned *failures, const char **first);
+int dr_selftest_vm_run(const uint8_t *commands, int nb_commands, int nr_of_programs, int pgN,
+                       uint32_t ticks_between, int (*rnd)(void *), void *rnd_priv,
+                       uint16_t gprm[16], int *pg_n, unsigned *failures,
+                       unsigned *ignored, int *ign_reg, int *ign_value);
+extern "Python" int tb_py_rnd(void *priv);

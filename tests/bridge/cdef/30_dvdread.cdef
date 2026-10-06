@@ -1,0 +1,30 @@
+/* libdvdread (dvdread/dvd_reader.h, dvdread/dvd_udf.h). */
+
+typedef struct dvd_reader_s dvd_reader_t;
+
+dvd_reader_t *DVDOpen(const char *path);
+void DVDClose(dvd_reader_t *dvd);
+uint32_t UDFFindFile(dvd_reader_t *dvd, const char *filename, uint32_t *size);
+
+typedef struct dvd_file_s dvd_file_t;
+typedef struct dvd_reader_filesystem_s dvd_reader_filesystem_h;
+typedef ... dvd_logger_cb;
+typedef ... ifo_handle_t;
+typedef ... pgc_t;
+typedef ... cell_playback_t;
+
+typedef enum {
+    DVD_READ_INFO_FILE,
+    DVD_READ_INFO_BACKUP_FILE,
+    DVD_READ_MENU_VOBS,
+    DVD_READ_TITLE_VOBS,
+    ...
+} dvd_read_domain_t;
+
+dvd_reader_t *DVDOpenFiles(void *priv, const dvd_logger_cb *logcb, const char *path, dvd_reader_filesystem_h *fs);
+dvd_file_t *DVDOpenFile(dvd_reader_t *dvd, int title, dvd_read_domain_t domain);
+void DVDCloseFile(dvd_file_t *file);
+ssize_t DVDReadBlocks(dvd_file_t *file, int offset, size_t count, unsigned char *data);
+ssize_t DVDReadBytes(dvd_file_t *file, void *data, size_t size);
+ifo_handle_t *ifoOpen(dvd_reader_t *dvd, int title);
+void ifoClose(ifo_handle_t *ifo);

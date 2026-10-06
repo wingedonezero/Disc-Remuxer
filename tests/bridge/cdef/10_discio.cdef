@@ -1,0 +1,112 @@
+/* libavformat/discio.h: sources, block reads, file systems, disc images. */
+
+#define DISCIO_BLOCK_SIZE ...
+#define DISCIO_DEFAULT_ATTEMPTS ...
+#define DISCIO_LABEL_SIZE ...
+#define DISCIO_SECTOR_NOT_RECORDED ...
+
+typedef struct DiscIOSourceOps {
+    int  (*read_at)(void *opaque, int64_t pos, uint8_t *buf, int len);
+    void (*close)(void *opaque);
+} DiscIOSourceOps;
+
+typedef struct DiscIOSource {
+    const DiscIOSourceOps *ops;
+    void                  *opaque;
+    int64_t                size;
+    char                  *name;
+    void                  *logctx;
+    int                    attempts;
+} DiscIOSource;
+
+DiscIOSource *ff_discio_source_new(void *logctx, const char *name, int64_t size,
+                                   const DiscIOSourceOps *ops, void *opaque);
+int ff_discio_source_open_file(void *logctx, const char *path, DiscIOSource **out);
+void ff_discio_source_free(DiscIOSource **src);
+int ff_discio_read_blocks(DiscIOSource *src, int64_t pos, uint8_t *buf, int len,
+                          int attempts, int quiet);
+int ff_discio_read_bytes(DiscIOSource *src, int64_t pos, uint8_t *buf, int len,
+                         int attempts, int quiet);
+
+typedef struct DiscIOExtent {
+    int64_t sector;
+    int64_t count;
+} DiscIOExtent;
+
+typedef struct DiscIOFile {
+    int64_t       size;
+    int           nb_extents;
+    DiscIOExtent *extents;
+    uint8_t      *data;
+} DiscIOFile;
+
+struct DiscIOFS;
+
+enum DiscIOFSKind {
+    DISCIO_FS_ISO9660 = 1,
+    DISCIO_FS_JOLIET,
+    DISCIO_FS_UDF,
+};
+
+typedef int (*DiscIODirCallback)(void *opaque, const char *name, int is_dir);
+
+typedef struct DiscIOFSOps {
+    const char *name;
+    int  (*open_file)(struct DiscIOFS *fs, const char *path, DiscIOFile **out);
+    int  (*list_dir)(struct DiscIOFS *fs, const char *path, DiscIODirCallback cb, void *opaque);
+    void (*close)(struct DiscIOFS *fs);
+    int  (*find_dir)(struct DiscIOFS *fs, const char *path);
+    int  kind;
+} DiscIOFSOps;
+
+typedef struct DiscIOFS {
+    const DiscIOFSOps *ops;
+    void              *priv;
+    DiscIOSource      *src;
+    char               label[...];
+    uint16_t           udf_revision;
+    uint8_t            udf_recording_time[...];
+} DiscIOFS;
+
+void ff_discio_fs_close(DiscIOFS **fs);
+void ff_discio_file_free(DiscIOFile **file);
+int ff_discio_file_read(DiscIOFS *fs, const DiscIOFile *file, int64_t pos,
+                        uint8_t *buf, int len);
+int ff_discio_file_read_attempts(DiscIOFS *fs, const DiscIOFile *file, int64_t pos,
+                                 uint8_t *buf, int len, int attempts, int quiet);
+int ff_discio_walk_path(const char *path, void **dir,
+                        int (*subdir)(void *ctx, void **dir, const char *name, int name_len),
+                        void *ctx, const char **last);
+int ff_discio_udf_netbsd_mount(DiscIOSource *src, DiscIOFS **out);
+int ff_discio_udf_linux_mount(DiscIOSource *src, DiscIOFS **out);
+int ff_discio_iso9660_mount(DiscIOSource *src, int joliet, DiscIOFS **out);
+int ff_discio_iso9660_creation_date(const DiscIOFS *fs, char date[15]);
+
+enum DiscIOUDFReader {
+    DISCIO_UDF_NETBSD = 0,
+    DISCIO_UDF_LINUX,
+};
+
+typedef struct DiscIOImageOptions {
+    int udf_reader;
+    int prefer_iso_for_old_udf102;
+} DiscIOImageOptions;
+
+int ff_discio_mount_image(DiscIOSource *src, const DiscIOImageOptions *opts, DiscIOFS **out);
+int ff_discio_dvd_video_check(DiscIOFS *fs);
+void ff_discio_label_copy(char *dst, const char *src);
+
+enum DiscIODiscFormat {
+    DISCIO_DISC_NONE = 0,
+    DISCIO_DISC_DVD,
+    DISCIO_DISC_BLURAY,
+    DISCIO_DISC_HDDVD,
+};
+
+enum DiscIODiscFormat ff_discio_disc_format(DiscIOFS *fs);
+
+/* bridge: Python sources (tests/helpers/source.py) */
+extern "Python" int tb_py_read_at(void *opaque, int64_t pos, uint8_t *buf, int len);
+extern "Python" void tb_py_source_close(void *opaque);
+extern "Python" int tb_py_dir_entry(void *opaque, const char *name, int is_dir);
+extern "Python" int tb_py_dir_entry_raw(void *opaque, const char *name, int is_dir);

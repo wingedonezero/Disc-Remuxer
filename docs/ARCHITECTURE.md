@@ -3,7 +3,7 @@
 Status: skeleton. This file grows with the code.
 
 ```
-disc-remuxer (crates/disc-cli)     the caller: commands, options, settings, logging
+disc-remuxer (src/disc-remuxer)   the caller: commands, options, settings, logging
   └─ FFmpeg (libs/ffmpeg)          the processing layer, our edited copy
        ├─ disc detection           (to add) opens a source and picks the format's demuxer
        ├─ per-format demuxers      titles, tracks, segments, timing for one format:
@@ -44,58 +44,30 @@ read through the disc readers `discio_*`):
 | `hddvd_tracks.c` | the tracks of each title: attribute records, playlist languages, the Dolby Digital Plus probe |
 | `disclang.c` | language codes written on discs -> ISO 639-2 |
 
-## Crates
+## The program (`src/disc-remuxer/`, C)
 
-| Crate | Role |
+| File | Part |
 |---|---|
-| `disc-cli` | the `disc-remuxer` binary |
-| `disc-core` | settings (registry, settings file, values in effect), the message catalog, finding discs and choosing job folders |
-| `ffmpeg-sys` | builds `libs/ffmpeg`; C glue (`glue/glue.c`) + declarations |
-| `libdvdnav-sys`, `libdvdread-sys`, `libdvdcss-sys` | build `libs/libdvd*` |
-| `libexpat-sys` | builds `libs/expat` (XML parser for the HD DVD playlists) |
-| `libaacs-sys`, `libgcrypt-sys`, `libgpg-error-sys` | build `libs/libaacs` (AACS) on `libs/libgcrypt` and `libs/libgpg-error` |
-| `ccextractor-sys` | builds `libs/ccextractor` (C only, its own CMake) into the `ccextractor` helper program next to ours: CEA-608 closed captions in, SRT out, in its own process |
+| `main.c` | commands (`info`, `demux`, `settings`, `version`), options (`--config`, `--set`, `--json`, `-v`), the run |
+| `settings.c` | the settings registry and `disc-remuxer.toml` next to the program (written with every setting and its help; new settings added, unknown ones removed, values kept) |
+| `writer.c` | opening a title and writing its stream files, chapters and VobSub pairs |
+| `names.c` | file names from `output.file_name_template` |
+| `log.c` | the log: terminal (colours), `--json` records, a log file per disc in the output folder |
+| `msg.h` | the numbers of the program's own messages |
 
-## Commands so far
+The demuxer contract the program relies on: `docs/FORMATS.md`. Finding
+discs, job folders and batches are the GUI's job; the program handles one
+disc per run.
 
-- `disc-remuxer version` — program and library versions.
-- `disc-remuxer scan <path> [--out DIR]` — the discs found and their job
-  folders; creates nothing.
-- `disc-remuxer probe <path> [--title N] [--out DIR]` — FFmpeg's DVD-Video
-  demuxer as it is, one title of every disc found: stream list, chapters;
-  with an output folder each disc is a job with its job folder and logs.
-- `disc-remuxer settings [show|path]` — every setting with its value and
-  source; the settings file's path.
-- Global: `-v` / `-vv` (debug / trace; includes FFmpeg's, libdvdnav's and
-  libdvdread's log lines), `-q`, `--settings FILE`, `--set group.key=value`.
+## Tests (`tests/`, Python)
 
-## Commands, settings, messages, jobs
+`./build.sh test` builds the program and a bridge (cffi, compiled against
+our headers and linked with the static libraries of the mode), then runs
+pytest: `tests/unit/` calls our C code directly on data built byte by byte
+(`tests/synth/`, helpers in `tests/helpers/`); tests marked `disc` need a
+real disc named by an environment variable and show as skipped without one.
+`make coverage` and `tests/tools/coverage.py` show which lines a test run
+reaches.
 
-Commands and options: `docs/CLI.md`; settings: `docs/SETTINGS.md` (both
-generated from the code, kept in step by tests).
-
-Messages the program writes come from one catalog (`disc-core/src/msg.rs`):
-number, level, text with named fields, written as `[id] text`. Number areas:
-1xxx program / settings / jobs, 2xxx sources / discs, 3xxx titles, 4xxx
-reading, 5xxx streams / timeline, 6xxx output. Lines from FFmpeg and the
-libraries under it are written as they come, prefixed `ffmpeg:`.
-
-Discs are found under a given path (`output.scan_depth` levels deep: folders
-holding VIDEO_TS or BDMV, folders holding the disc files directly, `.iso` /
-`.img` images). With an output folder (`--out` or `output.root`) every disc is
-a job with its own job folder (named after the disc folder or image;
-`output.keep_structure` recreates the searched tree; `_001`, `_002`, ... on a
-clash) holding `<folder>_disc-remuxer.log` (info and up, timestamps, starting
-with the command and every setting in effect) and, with `log.debug_file`,
-`<folder>_disc-remuxer_debug.log` (everything). The console shows up to
-`log.console` (`-q` / `-v` override).
-
-### Settings file
-
-One registry in `disc-core` lists every setting (group, key, type, default,
-help). The settings file (`~/.config/disc-remuxer/settings.toml`, or
-`--settings`) always lists all of them with their help text. On every start it
-is brought in step with the registry: missing settings are added with their
-default, unknown entries removed, kept values never changed, the old file saved
-as a backup first. A wrong value stops the program and leaves the file as it
-is. Value in effect: default, then settings file, then command line.
+The Rust crates that came before the C program, and the tests still to port
+from them, are in `legacy/rust/` (see its `TODO.md`).
