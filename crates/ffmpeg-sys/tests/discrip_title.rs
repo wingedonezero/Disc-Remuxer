@@ -10,7 +10,7 @@ use std::os::raw::{c_int, c_void};
 use common::discrip::pictures;
 use ffmpeg_sys::discrip::{
     codec_id, ff_discrip_frame_unref, ff_discrip_title_close, ff_discrip_title_duration, ff_discrip_title_finish,
-    ff_discrip_title_frame, ff_discrip_title_open, ff_discrip_title_payload, ff_discrip_title_segment, Event, Frame,
+    ff_discrip_title_frame, ff_discrip_title_open, ff_discrip_title_payload, ff_discrip_title_review, ff_discrip_title_segment, Event, Frame,
     Title, TitleConfig, TitleTrack, EV_GAP, EV_OVERLAP, EV_START_SHIFT, F_TAIL, KIND_AUDIO, KIND_VIDEO,
 };
 use ffmpeg_sys::AV_NOPTS_VALUE;
@@ -89,7 +89,7 @@ fn interleave(mut a: Vec<Payload>, b: Vec<Payload>) -> Vec<Payload> {
     a
 }
 
-fn run(tracks: &[TitleTrack], tolerance: i64, lpcm_hd: bool, segments: &[Vec<Payload>]) -> (Vec<Out>, Sink, i64) {
+fn run(tracks: &[TitleTrack], tolerance: i64, lpcm_hd: bool, segments: &[Vec<Payload>]) -> (Vec<Out>, Sink, i64, i64) {
     let mut sink = Sink::default();
     let mut outs = Vec::new();
     let mut t: *mut Title = std::ptr::null_mut();
@@ -121,7 +121,7 @@ fn run(tracks: &[TitleTrack], tolerance: i64, lpcm_hd: bool, segments: &[Vec<Pay
         unsafe { ff_discrip_frame_unref(&raw mut f) };
     };
     // SAFETY: sink outlives the title; the title is closed below.
-    let duration = unsafe {
+    let (duration, review) = unsafe {
         let sp = (&raw mut sink).cast();
         let cfg = TitleConfig {
             nb_tracks: c_int::try_from(tracks.len()).unwrap(),
@@ -144,11 +144,11 @@ fn run(tracks: &[TitleTrack], tolerance: i64, lpcm_hd: bool, segments: &[Vec<Pay
         }
         assert_eq!(ff_discrip_title_finish(t), 0);
         assert_eq!(drain(t, &mut outs), -0x2046_4F45, "AVERROR_EOF after the last frame");
-        let d = ff_discrip_title_duration(t);
+        let d = (ff_discrip_title_duration(t), ff_discrip_title_review(t));
         ff_discrip_title_close(&raw mut t);
         d
     };
-    (outs, sink, duration)
+    (outs, sink, duration, review)
 }
 
 fn tracks(audio: &str) -> Vec<TitleTrack> {
@@ -172,12 +172,13 @@ fn one_segment_starts_at_its_video_and_audio_waits_for_the_video() {
     // and the whole track shifted by it
     let n = 1200 * 36_036 / 34_560;
     let seg = interleave(video(BASE), ac3(BASE - 5 * MS, AC3_DUR, n));
-    let (outs, sink, duration) = run(&tracks("ac3"), 110_160_000, true, &[seg]);
+    let (outs, sink, duration, review) = run(&tracks("ac3"), 110_160_000, true, &[seg]);
     let v: Vec<&Out> = outs.iter().filter(|o| o.track == 0).collect();
     let a: Vec<&Out> = outs.iter().filter(|o| o.track == 1).collect();
     assert_eq!(v.len(), 1200);
     assert_eq!(v.iter().map(|o| o.time).min(), Some(0), "the title starts at its first video time");
     assert_eq!(duration, 1200 * FRAME);
+    assert_eq!(review, 0, "nothing untested");
     assert_eq!(a.len(), n);
     assert_eq!(a[0].time, 0, "the lead-in became a shift");
     assert_eq!(kinds(&sink), vec![EV_START_SHIFT]);
@@ -204,10 +205,11 @@ fn the_second_segment_follows_the_video_of_the_first() {
     let s1 = interleave(video(BASE), ac3(BASE, AC3_DUR, n1));
     let base2 = 500 * 1_080_000_000;
     let s2 = interleave(video(base2), ac3(base2 - 20 * MS, AC3_DUR, 100));
-    let (outs, sink, duration) = run(&tracks("ac3"), 110_160_000, true, &[s1, s2]);
+    let (outs, sink, duration, review) = run(&tracks("ac3"), 110_160_000, true, &[s1, s2]);
     let v: Vec<&Out> = outs.iter().filter(|o| o.track == 0).collect();
     assert_eq!(v.len(), 2400);
     assert_eq!(duration, 2400 * FRAME, "segment 2 is placed where segment 1's video ended");
+    assert_eq!(review, 0);
     let ev = kinds(&sink);
     assert!(ev.contains(&EV_OVERLAP), "{:?}", sink.events);
     assert!(!ev.contains(&EV_GAP), "{:?}", sink.events);
@@ -224,7 +226,7 @@ fn payloads_from_the_source_tail_mark_their_frames() {
     for p in a.iter_mut().skip(n - 10) {
         p.tail = true;
     }
-    let (outs, _, _) = run(&tracks("ac3"), 110_160_000, true, &[interleave(video(BASE), a)]);
+    let (outs, _, _, _) = run(&tracks("ac3"), 110_160_000, true, &[interleave(video(BASE), a)]);
     let a: Vec<&Out> = outs.iter().filter(|o| o.track == 1).collect();
     assert_eq!(a.iter().filter(|o| o.flags & F_TAIL != 0).count(), 10);
     assert!(a[n - 10..].iter().all(|o| o.flags & F_TAIL != 0));
@@ -240,7 +242,7 @@ fn lpcm_payloads_carry_their_header_and_go_through_the_pcm_strategy() {
         d.extend(std::iter::repeat_n(0u8, 6 * 320));
         pay.push(Payload { track: 1, data: d, time: BASE + k * 10 * MS, tail: false, order: BASE + k * 10 * MS });
     }
-    let (outs, sink, _) = run(&tracks("pcm_dvd"), 1_080_000, false, &[interleave(video(BASE), pay)]);
+    let (outs, sink, _, _) = run(&tracks("pcm_dvd"), 1_080_000, false, &[interleave(video(BASE), pay)]);
     let a: Vec<&Out> = outs.iter().filter(|o| o.track == 1).collect();
     assert!(!a.is_empty());
     assert_eq!(a[0].time, 0);
@@ -250,4 +252,35 @@ fn lpcm_payloads_carry_their_header_and_go_through_the_pcm_strategy() {
     assert!(end <= 1200 * FRAME + 36_000_000, "{end}");
     assert!(sink.events.iter().all(|e| e.kind != EV_GAP));
     let _ = AV_NOPTS_VALUE;
+}
+
+#[test]
+fn untested_features_are_counted_for_the_caller() {
+    // E-AC-3 with dependent frames (extra channels) is implemented but not met
+    // on a real disc: every such unit is a review, which the demuxer reports
+    // so that the job is marked failed
+    let eac3 = |strmtyp: u16, tag: u8| -> Vec<u8> {
+        let mut f = vec![tag; 768];
+        let w = (strmtyp << 14) | u16::try_from(768 / 2 - 1).unwrap();
+        f[0] = 0x0B;
+        f[1] = 0x77;
+        f[2..4].copy_from_slice(&w.to_be_bytes());
+        f[4] = (3 << 4) | (2 << 1);
+        f[5] = 16 << 3;
+        f[6] = 0;
+        f[7] = 0;
+        f
+    };
+    let n = 1200 * 36_036 / 34_560;
+    let pay: Vec<Payload> = (0..n)
+        .map(|k| {
+            let time = BASE + i64::try_from(k).unwrap() * AC3_DUR;
+            let mut d = eac3(0, u8::try_from(k % 200).unwrap());
+            d.extend(eac3(1, 0x55));
+            Payload { track: 1, data: d, time, tail: false, order: time }
+        })
+        .collect();
+    let (outs, _, _, review) = run(&tracks("eac3"), 110_160_000, true, &[interleave(video(BASE), pay)]);
+    assert_eq!(outs.iter().filter(|o| o.track == 1).count(), n);
+    assert!(review > 0);
 }

@@ -41,12 +41,15 @@ fn demux(dir: &Path, format: &str, input: &Path, options: &str) -> Vec<String> {
     let p = CString::new(input.to_str().unwrap()).unwrap();
     let o = CString::new(options).unwrap();
     let mut nb: c_int = 0;
+    let mut untested = -1i64;
     // SAFETY: valid strings; run outlives the call; the callbacks match the glue's types.
     let ret = unsafe {
         let rp = (&raw mut run).cast();
-        dr_demux(f.as_ptr(), p.as_ptr(), o.as_ptr(), std::ptr::null(), name_cb, rp, &raw mut nb, stream_cb, rp)
+        dr_demux(f.as_ptr(), p.as_ptr(), o.as_ptr(), std::ptr::null(), name_cb, rp, &raw mut nb, &raw mut untested,
+            stream_cb, rp)
     };
     assert_eq!(ret, 0);
+    assert_eq!(untested, 0);
     run.files
 }
 

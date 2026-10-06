@@ -721,6 +721,9 @@ int  ff_discrip_title_frame(DRTitle *t, int *track, DRFrame *frame);
 int  ff_discrip_title_chapters(const DRTitle *t, const DRChapterPlan *plan, DRChapter **out, int *nb_out);
 /** A linear PCM track's format once its first header was read (else NULL). */
 const DRLpcm *ff_discrip_title_lpcm(const DRTitle *t, int track);
+/** Untested features met so far (audio reviews): the job must be checked,
+ *  so it is to be reported as failed. */
+int64_t ff_discrip_title_review(const DRTitle *t);
 /** After finish: the end of the video (title duration, ticks). */
 int64_t ff_discrip_title_duration(const DRTitle *t);
 /** An event kind's name. */

@@ -291,11 +291,12 @@ pub fn demux_hddvd(source: &Path, title: Option<i32>, folder: &Path, settings: &
             chosen: None,
         };
         let mut nb: c_int = -1;
+        let mut untested = 0i64;
         // SAFETY: every pointer is a valid NUL-terminated string; tf outlives the call; the callbacks
         // match the glue's types.
         let ret = unsafe {
             ffmpeg_sys::dr_demux(format.as_ptr(), path.as_ptr(), options.as_ptr(), keys.as_ptr(), demux_name,
-                (&raw mut tf).cast(), &raw mut nb, demux_stream, std::ptr::null_mut())
+                (&raw mut tf).cast(), &raw mut nb, &raw mut untested, demux_stream, std::ptr::null_mut())
         };
         if let Some(p) = &tf.chosen {
             emit!(msg::DEMUX_NAME, title = t, prefix = p.display());
@@ -304,6 +305,10 @@ pub fn demux_hddvd(source: &Path, title: Option<i32>, folder: &Path, settings: &
             let reason = ffmpeg_sys::error_text(ret);
             emit!(msg::DEMUX_FAILED, title = t, source = source.display(), reason = reason);
             anyhow::bail!("title {t}: {reason}");
+        }
+        if untested > 0 {
+            emit!(msg::DEMUX_UNTESTED, title = t, count = untested);
+            anyhow::bail!("title {t}: {untested} untested feature(s) met");
         }
         if title.is_none() && t == 0 {
             emit!(msg::DEMUX_TITLES, source = source.display(), count = nb);

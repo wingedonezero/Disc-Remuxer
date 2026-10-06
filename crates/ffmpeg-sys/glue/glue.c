@@ -463,10 +463,13 @@ static int es_flush_hold(const AVFormatContext *ctx, const AVStream *st, EsOut *
  * key_files set as the demuxer's keydb option when not NULL) and writes each
  * stream's packets back to back to its own file, the chapters to
  * <prefix>_chapters.xml; the prefix comes from name_cb. *nb_titles gets the
- * demuxer's "titles" metadata (or -1). cb gets each stream's result at the
- * end. Returns 0 or a negative AVERROR. */
+ * demuxer's "titles" metadata (or -1), *untested its "untested" metadata at
+ * the end (features no real disc has tested: the job is to be reported as
+ * failed). cb gets each stream's result at the end. Returns 0 or a negative
+ * AVERROR. */
 int dr_demux(const char *format, const char *path, const char *options, const char *key_files,
-             dr_demux_name_cb name_cb, void *name_opaque, int *nb_titles, dr_demux_stream_cb cb, void *opaque)
+             dr_demux_name_cb name_cb, void *name_opaque, int *nb_titles, int64_t *untested,
+             dr_demux_stream_cb cb, void *opaque)
 {
     const AVInputFormat *fmt = av_find_input_format(format);
     AVFormatContext *ctx = NULL;
@@ -478,6 +481,7 @@ int dr_demux(const char *format, const char *path, const char *options, const ch
     int ret;
 
     *nb_titles = -1;
+    *untested  = 0;
     if (!fmt)
         return AVERROR_DEMUXER_NOT_FOUND;
     if (options && (ret = av_dict_parse_string(&opts, options, "=", ":", 0)) < 0)
@@ -564,6 +568,8 @@ int dr_demux(const char *format, const char *path, const char *options, const ch
     }
     if (ret == AVERROR_EOF)
         ret = 0;
+    if ((e = av_dict_get(ctx->metadata, "untested", NULL, 0)))
+        *untested = strtoll(e->value, NULL, 10);
     for (unsigned i = 0; ret >= 0 && i < ctx->nb_streams; i++)
         ret = es_flush_hold(ctx, ctx->streams[i], &out[i], prefix);
     if (ret >= 0) {

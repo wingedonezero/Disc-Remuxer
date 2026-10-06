@@ -535,8 +535,19 @@ static int hddvd_read_packet(AVFormatContext *s, AVPacket *pkt)
             return 0;
         }
         if (ret == AVERROR_EOF) {
-            if (!c->chapters_set && (ret = set_chapters(s)) < 0)
-                return ret;
+            int64_t review = ff_discrip_title_review(c->rip);
+            if (!c->chapters_set) {
+                if ((ret = set_chapters(s)) < 0)
+                    return ret;
+                /* features met that no real disc has tested: the caller
+                 * reports the job as failed so that its log is looked at */
+                if (review) {
+                    av_log(s, AV_LOG_ERROR, "HD DVD: %"PRId64" untested feature(s) met in this title: "
+                           "check the log before using the output\n", review);
+                    if ((ret = av_dict_set_int(&s->metadata, "untested", review, 0)) < 0)
+                        return ret;
+                }
+            }
             return AVERROR_EOF;
         }
         if (ret != AVERROR(EAGAIN))

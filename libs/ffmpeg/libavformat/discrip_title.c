@@ -79,6 +79,7 @@ struct DRTitle {
     int64_t       vend;          /* end of the video (highest time + duration) */
     int           video_done;
     int           finished;
+    int64_t       review;        /* untested features met (audio reviews) */
     Out          *q;             /* output frames ready */
     int           q_head, q_n, q_cap;
 };
@@ -429,6 +430,11 @@ static int seg_end(DRTitle *t)
         ret = k->spu ? ff_discrip_spu_flush(k->spu) : ff_discrip_audio_flush(k->audio);
         if (ret < 0)
             return ret;
+        if (k->audio) {
+            DRAudioStats as;
+            ff_discrip_audio_stats(k->audio, &as);
+            t->review += as.review;
+        }
     }
     seg_close(t);
     /* a segment whose video gave no frame is never placed */
@@ -577,6 +583,11 @@ int ff_discrip_title_chapters(const DRTitle *t, const DRChapterPlan *plan, DRCha
     int n = ff_discrip_join_chapters(t->join, &starts);
 
     return ff_discrip_chapter_list(plan, starts, n, t->vend, out, nb_out);
+}
+
+int64_t ff_discrip_title_review(const DRTitle *t)
+{
+    return t->review;
 }
 
 const DRLpcm *ff_discrip_title_lpcm(const DRTitle *t, int track)
