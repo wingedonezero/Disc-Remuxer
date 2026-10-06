@@ -6,12 +6,13 @@ the video has been handed on past their time."""
 import dataclasses
 
 from helpers import DATA, ffi, lib
-from helpers.discrip import Handles, codec_id, events_into, pictures
+from helpers.discrip import Handles, codec_id, events_into, pictures, spu
 
 M2V = (DATA / "testsrc_1200.m2v").read_bytes()
 AC3 = (DATA / "sine_7680.ac3").read_bytes()
 FRAME = 36036000  # 1001/30000 s
 AC3_DUR = 34560000  # 1536 samples at 48 kHz
+STEP = 12288000  # one sub-picture delay step: 1024 / 90000 s
 MS = 1080000
 BASE = 10 * 1080000000
 EAGAIN = -11
@@ -196,3 +197,42 @@ def test_untested_features_are_counted_for_the_caller():
     outs, _, _, review = run(tracks("eac3"), 110160000, True, [interleave(video(BASE), pay)])
     assert sum(1 for o in outs if o.track == 1) == n
     assert review > 0
+
+
+def subs(units):
+    """Sub-picture payloads of track 1: (unit, display position in frames)."""
+    return [Payload(1, u, BASE + n * FRAME, False, BASE + n * FRAME) for u, n in units]
+
+
+def sub_tracks():
+    return [[codec_id("mpeg2video"), lib.DR_KIND_VIDEO, 0], [codec_id("dvd_subtitle"), lib.DR_KIND_SUBTITLE, 0]]
+
+
+def test_a_sub_picture_without_a_stop_time_lasts_until_the_next_one():
+    # stop times are kept; a unit that shows a picture without one stays until
+    # the next unit starts, across segments too; the title's last one until
+    # the video's end (untested on real discs: a review)
+    s1 = subs([(spu(100, True, [], 1), 10), (spu(None, True, [], 2), 20), (spu(None, True, [], 3), 30),
+               (spu(50, True, [], 4), 40), (spu(None, True, [], 5), 1190)])
+    base2 = 500 * 1080000000
+    s2 = [Payload(1, spu(None, True, [], 6), base2 + 5 * FRAME, False, base2 + 5 * FRAME)]
+    outs, events, duration, review = run(sub_tracks(), 110160000, True,
+                                         [interleave(video(BASE), s1), interleave(video(base2), s2)])
+    s = [(o.time, o.dur) for o in outs if o.track == 1]
+    assert s == [
+        (10 * FRAME, 100 * STEP),
+        (20 * FRAME, 10 * FRAME),
+        (30 * FRAME, 10 * FRAME),
+        (40 * FRAME, 50 * STEP),
+        (1190 * FRAME, 15 * FRAME),                  # until the next one, in segment 2 (at 1205)
+        (1205 * FRAME, duration - 1205 * FRAME),     # the last: until the video's end
+    ]
+    assert duration == 2400 * FRAME
+    assert review == 1
+
+
+def test_a_sub_picture_followed_by_one_at_the_same_time_keeps_its_step():
+    outs, _, _, review = run(sub_tracks(), 110160000, True,
+                             [interleave(video(BASE), subs([(spu(None, True, [], 1), 10), (spu(20, True, [], 2), 10)]))])
+    assert [(o.time, o.dur) for o in outs if o.track == 1] == [(10 * FRAME, STEP), (10 * FRAME, 20 * STEP)]
+    assert review == 0

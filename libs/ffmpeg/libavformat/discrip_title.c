@@ -59,6 +59,9 @@ typedef struct Track {
     DRJunction   *junction;
     DRPcm        *pcm;
     DRVerify     *verify;
+    DRFrame       held;          /* sub-pictures: a unit without a stop time, waiting for the next one */
+    int           holding;
+    int64_t       extended;      /* sub-pictures: units without a stop time shown until the next one */
     DRFrame      *wait;          /* audio frames waiting for the video */
     int           wait_head, nb_wait, wait_cap;
     int64_t       out;           /* frames given out */
@@ -402,6 +405,64 @@ static int wait_add(Track *k, DRFrame *f)
     return 0;
 }
 
+/* Sub-pictures: a unit without a stop time stays on screen until the next
+ * unit of its track replaces it (the disc's decoder model), so it waits for
+ * that unit and lasts until its start; a unit with a stop time keeps it. The
+ * last unit of the title without a stop time lasts until the video's end. */
+static int spu_held_out(DRTitle *t, Track *k, int64_t until)
+{
+    DRFrame *h = &k->held;
+    char b[32];
+
+    k->holding = 0;
+    if (until > h->time) {
+        h->dur = until - h->time;
+        k->extended++;
+    } else {
+        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: a sub-picture without a stop time is followed by one "
+               "that does not start later: it keeps its one delay step\n", k->index, hms(b, sizeof(b), h->time));
+        k->warnings++;
+    }
+    return emit(t, k, h);
+}
+
+static int spu_joined(DRTitle *t, Track *k, DRFrame *f)
+{
+    int ret;
+
+    if (k->holding && f->time != AV_NOPTS_VALUE && (ret = spu_held_out(t, k, f->time)) < 0) {
+        ff_discrip_frame_unref(f);
+        return ret;
+    }
+    if (!(f->flags & DR_F_NO_STOP) || f->time == AV_NOPTS_VALUE)
+        return emit(t, k, f);
+    if (k->holding && (ret = emit(t, k, &k->held)) < 0) {
+        ff_discrip_frame_unref(f);
+        return ret;
+    }
+    k->held    = *f;
+    k->holding = 1;
+    memset(f, 0, sizeof(*f));
+    return 0;
+}
+
+/* The end of the title: a sub-picture still waiting lasts until the video's end. */
+static int spu_finish(DRTitle *t, Track *k)
+{
+    char b[32], e[32];
+    int ret;
+
+    if (!k->holding)
+        return 0;
+    av_log(t->log, AV_LOG_WARNING, "Track %d at %s: the last sub-picture has no stop time: shown until the "
+           "video's end at %s [untested on real discs]\n", k->index, hms(b, sizeof(b), k->held.time),
+           hms(e, sizeof(e), t->vend));
+    t->review++;
+    if ((ret = spu_held_out(t, k, t->vend)) < 0)
+        return ret;
+    return 0;
+}
+
 /* A frame on the title timeline from the joiner. */
 static int joined(void *opaque, int track, DRFrame *f)
 {
@@ -426,7 +487,7 @@ static int joined(void *opaque, int track, DRFrame *f)
         }
         return release(t);
     default:
-        return emit(t, k, f);
+        return spu_joined(t, k, f);
     }
 }
 
@@ -636,6 +697,11 @@ int ff_discrip_title_finish(DRTitle *t)
             return ret;
         if (k->junction && (ret = ff_discrip_junction_finish(k->junction)) < 0)
             return ret;
+        if ((ret = spu_finish(t, k)) < 0)
+            return ret;
+        if (k->extended)
+            av_log(t->log, AV_LOG_VERBOSE, "Rip core: track %d: %"PRId64" sub-pictures without a stop time shown "
+                   "until the next one starts\n", i, k->extended);
     }
     for (int i = 0; i < t->cfg.nb_tracks; i++) {
         Track *k = &t->t[i];
@@ -716,6 +782,8 @@ void ff_discrip_title_close(DRTitle **tp)
             for (int j = 0; j < k->nb_wait; j++)
                 ff_discrip_frame_unref(&k->wait[k->wait_head + j]);
             av_free(k->wait);
+            if (k->holding)
+                ff_discrip_frame_unref(&k->held);
             ff_discrip_junction_close(&k->junction);
             ff_discrip_pcm_close(&k->pcm);
             ff_discrip_verify_close(&k->verify);

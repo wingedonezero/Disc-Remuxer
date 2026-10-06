@@ -44,8 +44,10 @@
 #define DR_F_CHAPTER  0x0010   /**< a chapter starts here */
 #define DR_F_TAIL     0x0020   /**< read from the last 64 MiB of its segment's source */
 #define DR_F_BATCH    0x0040   /**< video: the last frame of a batch the video timing handed on */
-#define DR_F_NO_STOP  0x0080   /**< sub-picture: shows a picture but has no stop time (its
-                                    duration is one delay step) */
+#define DR_F_NO_STOP  0x0080   /**< sub-picture: shows a picture but has no stop time: out of
+                                    its stage it lasts one delay step; the title pipeline makes
+                                    it last until the track's next unit starts (the last one:
+                                    until the video's end) */
 
 typedef struct DRFrame {
     AVBufferRef *buf;      /**< owns the bytes (NULL for a marker) */

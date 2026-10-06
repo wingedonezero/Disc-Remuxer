@@ -3,6 +3,7 @@ behind each opaque pointer), frames collected as Out values, the audio stage
 run over built payloads."""
 
 import dataclasses
+import struct
 
 from helpers import AV_NOPTS_VALUE, extern, ffi, lib
 
@@ -180,3 +181,22 @@ def video_ref(video, keep):
 def events_into(lst):
     """A DREventCb body appending every event to lst (as a dict)."""
     return lambda ev: lst.append(event_dict(ev))
+
+
+def spu(stop, dspxa, cmds, mark):
+    """A DVD-Video sub-picture unit: SPDSZ, SP_DCSQTA, 4 bytes of pixel data,
+    SP_DCSQ 1 (delay 0: STA_DSP, cmds, SET_DSPXA when dspxa), SP_DCSQ 2
+    (delay stop: STP_DSP) when there is a stop. mark makes units differ."""
+    u = bytearray([0, 0, 0, 0, mark, 0x22, 0x33, 0x44])
+    d1 = len(u)
+    seq = bytearray([0x01]) + bytes(cmds)
+    if dspxa:
+        seq += bytes([0x06, 0, 4, 0, 6])
+    seq.append(0xFF)
+    d2 = d1 + 4 + len(seq)
+    u += bytes([0, 0]) + struct.pack(">H", d2 if stop is not None else d1) + seq
+    if stop is not None:
+        u += struct.pack(">H", stop) + struct.pack(">H", d2) + bytes([0x02, 0xFF])
+    u[0:2] = struct.pack(">H", len(u))
+    u[2:4] = struct.pack(">H", d1)
+    return bytes(u)
