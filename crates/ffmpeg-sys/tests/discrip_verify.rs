@@ -2,8 +2,8 @@
 //! parsed again (AC-3 CRC, `TrueHD` length and major-sync checksum, MPEG-2
 //! start codes); times are checked (audio in order, video without holes in
 //! display order); the audio sync error is measured as a stream file plays
-//! the frames (back to back from the start delay) and by the output times;
-//! `TrueHD` input timing breaks are counted. Units from FFmpeg's encoders
+//! the frames (back to back from the start delay) and by the output times.
+//! Units from FFmpeg's encoders
 //! (tests/data/README.md).
 
 mod common;
@@ -15,7 +15,7 @@ use common::discrip::pictures;
 use ffmpeg_sys::discrip::{
     codec_id, ff_discrip_verify_close, ff_discrip_verify_finish, ff_discrip_verify_frame, ff_discrip_verify_open,
     ff_discrip_verify_stats, Event, Frame, Verify, VerifyStats, EV_VERIFY_CRC, EV_VERIFY_HOLE, EV_VERIFY_ORDER,
-    EV_VERIFY_OVERLAP, EV_VERIFY_THD_TIMING, EV_VERIFY_UNIT, F_KEY, F_MARKER, KIND_AUDIO, KIND_VIDEO,
+    EV_VERIFY_OVERLAP, EV_VERIFY_UNIT, F_KEY, F_MARKER, KIND_AUDIO, KIND_VIDEO,
 };
 
 const AC3: &[u8] = include_bytes!("data/sine_7680.ac3");
@@ -172,20 +172,12 @@ fn thd_frames<'a>(units: &[&'a [u8]], first: i64) -> Vec<In<'a>> {
 }
 
 #[test]
-fn truehd_input_timing_and_checksums() {
+fn truehd_checksums() {
     let units = thd_units();
     assert_eq!(units.len(), 121);
     let (st, ev) = check("truehd", KIND_AUDIO, &thd_frames(&units, 0));
     assert!(ev.is_empty(), "{ev:?}");
-    assert_eq!((st.bad_units, st.crc_errors, st.thd_breaks), (0, 0, 0));
-
-    // the stream twice in a row (as at a join): the second one's input
-    // timing starts again, one break
-    let mut both = units[..120].to_vec();
-    both.extend_from_slice(&units[..10]);
-    let (st, ev) = check("truehd", KIND_AUDIO, &thd_frames(&both, 0));
-    assert_eq!(st.thd_breaks, 1);
-    assert_eq!(kinds(&ev), vec![EV_VERIFY_THD_TIMING]);
+    assert_eq!((st.bad_units, st.crc_errors), (0, 0));
 
     // a damaged major sync
     let mut bad = units[0].to_vec();

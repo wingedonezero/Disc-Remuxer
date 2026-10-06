@@ -953,12 +953,11 @@ pub mod discrip {
     pub const EV_VERIFY_ORDER: c_int = 22;
     pub const EV_VERIFY_HOLE: c_int = 23;
     pub const EV_VERIFY_OVERLAP: c_int = 24;
-    pub const EV_VERIFY_THD_TIMING: c_int = 25;
-    pub const EV_SEAMLESS_SEARCH: c_int = 26;
-    pub const EV_SEAMLESS_DROP: c_int = 27;
-    pub const EV_PCM_SILENCE: c_int = 28;
-    pub const EV_PCM_SKIP: c_int = 29;
-    pub const EV_PCM_TIMECODE: c_int = 30;
+    pub const EV_SEAMLESS_SEARCH: c_int = 25;
+    pub const EV_SEAMLESS_DROP: c_int = 26;
+    pub const EV_PCM_SILENCE: c_int = 27;
+    pub const EV_PCM_SKIP: c_int = 28;
+    pub const EV_PCM_TIMECODE: c_int = 29;
 
     /// `DRPcmConfig`.
     #[repr(C)]
@@ -1012,7 +1011,6 @@ pub mod discrip {
         pub es_err_end: i64,
         pub mkv_err_max: i64,
         pub mkv_err_at: i64,
-        pub thd_breaks: i64,
     }
 
     /// `DRLpcm`.

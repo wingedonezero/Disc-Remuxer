@@ -108,7 +108,6 @@ static const char *const event_names[] = {
     [DR_EV_VERIFY_ORDER]         = "verify_order",
     [DR_EV_VERIFY_HOLE]          = "verify_hole",
     [DR_EV_VERIFY_OVERLAP]       = "verify_overlap",
-    [DR_EV_VERIFY_THD_TIMING]    = "verify_thd_timing",
     [DR_EV_SEAMLESS_SEARCH]      = "seamless_search",
     [DR_EV_SEAMLESS_DROP]        = "seamless_drop",
     [DR_EV_PCM_SILENCE]          = "pcm_silence",

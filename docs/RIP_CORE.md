@@ -261,8 +261,6 @@ The rules above are the default policy. Around them:
     as a stream file plays it (start delay + the durations before it) and by
     the output times; the largest of each and where, the stream file's at
     the end;
-  - TrueHD / MLP: each AU's input timing against the one before it (+ the
-    samples per AU), every break and its size;
   - not yet: joins where a different action would have given a smaller
     error.
 

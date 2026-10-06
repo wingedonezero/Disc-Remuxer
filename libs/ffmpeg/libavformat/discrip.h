@@ -316,7 +316,6 @@ enum DREventKind {
     DR_EV_VERIFY_ORDER,    /**< a unit without a duration, or (audio, subtitles) not after the one before it */
     DR_EV_VERIFY_HOLE,     /**< video in display order: no picture for dur from pos (count = placeholders in it) */
     DR_EV_VERIFY_OVERLAP,  /**< video in display order: a picture starts dur before the one before it ends */
-    DR_EV_VERIFY_THD_TIMING, /**< TrueHD / MLP: an AU's input timing breaks (dur = samples off) */
     DR_EV_SEAMLESS_SEARCH, /**< the overlap search at a join (pos = the next segment's first sync unit on
                                 the input clock): count = the best correlation of any candidate (Q32,
                                 0 = not compared), dur = that candidate's frame count, skew = 1 when a
@@ -572,7 +571,6 @@ typedef struct DRVerifyStats {
                                         the own time where it is */
     int64_t es_err_end;        /**< audio: the same for the last frame */
     int64_t mkv_err_max, mkv_err_at; /**< audio: output time - own time, the largest by size, where */
-    int64_t thd_breaks;        /**< TrueHD / MLP: input timing breaks */
 } DRVerifyStats;
 
 typedef struct DRVerify DRVerify;
@@ -737,9 +735,6 @@ int ff_discrip_mlp_resync(const uint8_t *buf, int avail);
 int ff_discrip_spu_check(const uint8_t *data, int size);
 int ff_discrip_spu_verify(const uint8_t *data, int size);
 int ff_discrip_mlp_verify(const uint8_t *data, int size);
-/** An AU's input timing (16 bits); returns the samples per AU its major
- *  sync states, 0 when it has none. */
-int ff_discrip_mlp_timing(const uint8_t *data, int size, int *timing);
 int ff_discrip_spu_unit_size(void *log, const uint8_t *buf, int avail, int final, void *state);
 int ff_discrip_vc1_unit_size(void *log, const uint8_t *buf, int avail, int final, void *state);
 int ff_discrip_vc1_resync(const uint8_t *buf, int avail);

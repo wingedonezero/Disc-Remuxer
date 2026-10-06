@@ -131,18 +131,6 @@ int ff_discrip_mlp_verify(const uint8_t *p, int n)
     return ff_discrip_mlp_check(p, n) ? DR_UNIT_OK : DR_UNIT_CRC;
 }
 
-int ff_discrip_mlp_timing(const uint8_t *p, int n, int *timing)
-{
-    if (n < 8) {
-        *timing = -1;
-        return 0;
-    }
-    *timing = AV_RB16(p + 2);
-    if (!major_sync(p, n) || n < 10)
-        return 0;
-    return 40 << (((p[7] == 0xBA ? p[8] : p[9]) >> 4) & 7);
-}
-
 /* The next AU that starts with a major sync (its sync word 4 bytes in). */
 int ff_discrip_mlp_resync(const uint8_t *p, int avail)
 {
