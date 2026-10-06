@@ -980,6 +980,24 @@ pub mod discrip {
         pub thd_breaks: i64,
     }
 
+    /// `DRLpcm`.
+    #[repr(C)]
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct Lpcm {
+        pub init: c_int,
+        pub b0: u8,
+        pub b1: u8,
+        pub bits: c_int,
+        pub rate: c_int,
+        pub channels: c_int,
+        pub spf: c_int,
+        pub frame_bytes: c_int,
+        pub out_frame_bytes: c_int,
+        pub chmask: u64,
+        pub drc: c_int,
+        pub hd: c_int,
+    }
+
     /// `DRVerify` (only handled through pointers).
     #[repr(C)]
     pub struct Verify {
@@ -1255,6 +1273,10 @@ pub mod discrip {
             nb_out: *mut c_int,
         ) -> c_int;
         pub fn ff_discrip_seamless_corr(a: *const i32, b: *const i32, n: u32) -> u32;
+        pub fn ff_discrip_lpcm_header(p: *mut Lpcm, log: *mut c_void, hdr: *const u8, len: c_int, hd: c_int) -> c_int;
+        pub fn ff_discrip_lpcm_convert(p: *const Lpcm, input: *const u8, size: c_int, out: *mut u8) -> c_int;
+        pub fn ff_discrip_cutter_set_state(c: *mut Cutter, state: *mut c_void);
+        pub fn ff_discrip_audio_set_state(a: *mut Audio, state: *mut c_void);
         pub fn ff_discrip_cc_triplets(data: *const u8, size: c_int, out: *mut u8) -> c_int;
         pub fn ff_discrip_spu_open(
             out: *mut *mut Spu,

@@ -154,8 +154,9 @@ typedef struct DRCodec {
      *  parser drops bytes the reference keeps. unit_size: the size of the
      *  unit at buf (> 0), 0 when more bytes are needed, < 0 when no unit
      *  starts there; resync: the offset of the next possible unit start in
-     *  buf, -1 when none. NULL: FFmpeg's parser. */
-    int (*unit_size)(const uint8_t *buf, int avail);
+     *  buf, -1 when none. NULL: FFmpeg's parser. state: the cutter's codec
+     *  state (ff_discrip_cutter_set_state), NULL when none. */
+    int (*unit_size)(const uint8_t *buf, int avail, void *state);
     int (*resync)(const uint8_t *buf, int avail);
     /** The check of an output unit (stage 5): DR_UNIT_OK, DR_UNIT_BAD (sync
      *  word or size wrong), DR_UNIT_CRC (a checksum fails). NULL: not
@@ -217,6 +218,10 @@ int ff_discrip_cutter_flush(DRCutter *c);
 
 void ff_discrip_cutter_stats(const DRCutter *c, DRCutterStats *stats);
 
+/** A codec state the cutter's unit rule reads (LPCM: the DRLpcm of the
+ *  track); owned by the caller. */
+void ff_discrip_cutter_set_state(DRCutter *c, void *state);
+
 void ff_discrip_cutter_close(DRCutter **cutter);
 
 /* ---- Stage 2, audio: units timed within one segment (discrip_audio.c) ---- */
@@ -258,6 +263,10 @@ void ff_discrip_audio_review(DRAudio *a, unsigned kind, const char *what);
 void ff_discrip_audio_stats(const DRAudio *a, DRAudioStats *stats);
 
 void ff_discrip_audio_close(DRAudio **audio);
+/** A codec state the audio rules read (LPCM: the DRLpcm of the track);
+ *  owned by the caller. */
+void ff_discrip_audio_set_state(DRAudio *a, void *state);
+void *ff_discrip_audio_state(const DRAudio *a);
 
 /* the audio stream values the rules use (for rules that keep state) */
 const DRAudioHeader *ff_discrip_audio_header(const DRAudio *a);
@@ -584,12 +593,39 @@ int ff_discrip_mix_matrix(uint64_t in_layout, uint64_t out_layout, double center
                           double surround_mix_level, double lfe_mix_level, int normalize,
                           double *matrix, int stride, enum AVMatrixEncoding matrix_encoding);
 
+/* ---- Linear PCM of DVD-Video and HD DVD (discrip_lpcm.c) ----
+ * The packet source hands each PES packet's audio frame header to
+ * ff_discrip_lpcm_header() before its payload goes to the cutter; the same
+ * DRLpcm is the state of the track's cutter and audio stage. A unit is one
+ * frame; its samples become little-endian PCM (16 bits, or 24 bits for 20-
+ * and 24-bit samples). */
+
+typedef struct DRLpcm {
+    int      init;             /**< the first header was read */
+    uint8_t  b0, b1;           /**< the first header's bytes (DVD layout) */
+    int      bits, rate, channels;
+    int      spf;              /**< samples per frame (DVD rate / 600, HD DVD rate / 1200) */
+    int      frame_bytes;      /**< a frame on the disc */
+    int      out_frame_bytes;  /**< a frame converted */
+    uint64_t chmask;           /**< HD DVD: the channel mask of the channel assignment, 0 = none */
+    int      drc;              /**< the last header's dynamic range byte */
+    int      hd;
+} DRLpcm;
+
+/** A PES packet's audio frame header: DVD-Video 3 bytes, HD DVD 5 bytes (hd).
+ *  The first sets the format; a later one that differs in more than the
+ *  frame number and the dynamic range is an error (AVERROR_INVALIDDATA). */
+int ff_discrip_lpcm_header(DRLpcm *p, void *logctx, const uint8_t *hdr, int len, int hd);
+/** The samples of size disc bytes as little-endian PCM into out (room for
+ *  size x 6 / 5); returns the bytes written. */
+int ff_discrip_lpcm_convert(const DRLpcm *p, const uint8_t *in, int size, uint8_t *out);
+
 /* rules of codecs in their own files */
 extern const DRAudioRules ff_discrip_audio_mlp;
 extern const DRVideoRules ff_discrip_video_mpv;
 extern const DRVideoRules ff_discrip_video_vc1;
 int ff_discrip_mlp_check(const uint8_t *data, int size);
-int ff_discrip_mlp_unit_size(const uint8_t *buf, int avail);
+int ff_discrip_mlp_unit_size(const uint8_t *buf, int avail, void *state);
 int ff_discrip_mlp_resync(const uint8_t *buf, int avail);
 int ff_discrip_spu_check(const uint8_t *data, int size);
 int ff_discrip_spu_verify(const uint8_t *data, int size);
@@ -597,7 +633,7 @@ int ff_discrip_mlp_verify(const uint8_t *data, int size);
 /** An AU's input timing (16 bits); returns the samples per AU its major
  *  sync states, 0 when it has none. */
 int ff_discrip_mlp_timing(const uint8_t *data, int size, int *timing);
-int ff_discrip_spu_unit_size(const uint8_t *buf, int avail);
+int ff_discrip_spu_unit_size(const uint8_t *buf, int avail, void *state);
 int ff_discrip_spu_resync(const uint8_t *buf, int avail);
 
 #endif /* AVFORMAT_DISCRIP_H */

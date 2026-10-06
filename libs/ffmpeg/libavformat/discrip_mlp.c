@@ -110,7 +110,7 @@ int ff_discrip_mlp_check(const uint8_t *p, int n)
 /* The core's cutter for AUs: an AU is as long as its length field says;
  * FFmpeg's parser instead drops every AU up to the next major sync when one
  * AU's parity or checksum fails. */
-int ff_discrip_mlp_unit_size(const uint8_t *p, int avail)
+int ff_discrip_mlp_unit_size(const uint8_t *p, int avail, void *state)
 {
     int len;
 

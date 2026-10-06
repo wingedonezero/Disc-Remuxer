@@ -423,6 +423,64 @@ static const DRAudioRules audio_latm = {
     .inspect = inspect_latm,
 };
 
+/* ---- DVD-Video / HD DVD linear PCM (DVD-Video audio_attr / the audio
+ * frame header of each packet; discrip_lpcm.c) ----
+ * A unit is one frame of the size the headers state (no sync word: the
+ * frames follow each other); every unit is a key frame and never a sync
+ * unit; it lasts its samples (rate / 600 on DVD-Video, rate / 1200 on HD
+ * DVD) and leaves as little-endian PCM. */
+
+static int lpcm_unit_size(const uint8_t *buf, int avail, void *state)
+{
+    const DRLpcm *p = state;
+
+    if (!p || !p->init)
+        return 0;
+    return avail >= p->frame_bytes ? p->frame_bytes : 0;
+}
+
+static int lpcm_resync(const uint8_t *buf, int avail)
+{
+    return avail;
+}
+
+static int header_lpcm(DRAudio *a, const DRFrame *f, DRAudioHeader *out)
+{
+    const DRLpcm *p = ff_discrip_audio_state(a);
+
+    if (!p || !p->init)
+        return -1;
+    out->rate    = p->rate;
+    out->samples = p->spf;
+    return 0;
+}
+
+static int duration_lpcm(DRAudio *a, DRFrame *f)
+{
+    const DRLpcm *p = ff_discrip_audio_state(a);
+    AVBufferRef *buf;
+    int n, bps;
+
+    if (!p || !p->init)
+        return AVERROR_INVALIDDATA;
+    if (!(buf = av_buffer_alloc(f->size * 6 / 5 + 16 + AV_INPUT_BUFFER_PADDING_SIZE)))
+        return AVERROR(ENOMEM);
+    n = ff_discrip_lpcm_convert(p, f->data, f->size, buf->data);
+    memset(buf->data + n, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+    av_buffer_unref(&f->buf);
+    f->buf  = buf;
+    f->data = buf->data;
+    f->size = n;
+    bps     = p->channels * (p->bits == 16 ? 2 : 3);
+    f->dur  = (int64_t)((uint64_t)(n / bps) * DR_TICKS_PER_SECOND / (uint64_t)p->rate);
+    return 0;
+}
+
+static const DRAudioRules audio_lpcm = {
+    .header   = header_lpcm,
+    .duration = duration_lpcm,
+};
+
 /* ---- output unit checks (stage 5) ---- */
 
 /* MPEG video: the unit starts with a start code and holds a picture start
@@ -515,7 +573,8 @@ static const DRCodec codecs[] = {
       .verify = ff_discrip_mlp_verify },
     { .id = AV_CODEC_ID_DTS, .name = "dts", .anchor = anchor_unit, .check = check_dts, .audio = &audio_dts,
       .verify = verify_dts },
-    { .id = AV_CODEC_ID_PCM_DVD, .name = "pcm_dvd", .anchor = anchor_unit },
+    { .id = AV_CODEC_ID_PCM_DVD, .name = "pcm_dvd", .anchor = anchor_unit, .audio = &audio_lpcm,
+      .unit_size = lpcm_unit_size, .resync = lpcm_resync },
     { .id = AV_CODEC_ID_MP1, .name = "mp1", .anchor = anchor_unit, .check = check_mpa, .audio = &audio_mpa,
       .verify = verify_mpa },
     { .id = AV_CODEC_ID_MP2, .name = "mp2", .anchor = anchor_unit, .check = check_mpa, .audio = &audio_mpa,
