@@ -221,6 +221,7 @@ static int place_segment(DRJoin *j)
     j->start  = j->batch_min;
     j->offset = j->seg ? j->prev_e0 - j->prev_start + j->prev_offset : 0;
     j->placed = 1;
+    j->st.placed = 1;
     j->st.start  = j->start;
     j->st.offset = j->offset;
     av_log(j->log, AV_LOG_DEBUG, "Rip core: joiner: segment %d starts at %"PRId64" ticks, placed at %"PRId64"\n",
@@ -258,6 +259,7 @@ int ff_discrip_join_segment(DRJoin *j)
         return ret;
     j->seg++;
     j->placed    = 0;
+    j->st.placed = 0;
     j->batch_min = AV_NOPTS_VALUE;
     for (int k = 0; k < j->cfg.nb_tracks; k++)
         j->t[k].seeded = 0;

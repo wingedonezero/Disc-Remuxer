@@ -117,7 +117,7 @@ int ff_hddvd_aacs_open(void *logctx, DiscIOFS *fs, const char *const *key_files,
 
     *out = NULL;
     if (fs->ops->find_dir(fs, "/AACS") < 0) {
-        av_log(logctx, AV_LOG_INFO, "No /AACS directory: the disc is not encrypted\n");
+        av_log(logctx, AV_LOG_VERBOSE, "No /AACS directory: the disc is not encrypted\n");
         return 0;
     }
     if (!nb_key_files)

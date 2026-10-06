@@ -17,15 +17,17 @@ text. All live in `libs/` and are edited directly (see `libs/README.md`).
 ## Build and test
 
 ```bash
-cargo build
+./build.sh            # debug build -> dist/debug/ (./build.sh release -> dist/release/)
 cargo test --workspace
 cargo clippy --workspace --all-targets
 ```
 
-The build compiles the DVD libraries and expat with the `cc` crate, FFmpeg,
-libaacs, libgcrypt and libgpg-error with their own configure + make,
-CCExtractor with its own CMake (needs a C compiler, make, nasm, pkg-config,
-cmake).
+`./build.sh` (the top `Makefile` and `mk/*.mk`) compiles the DVD libraries
+and expat directly, FFmpeg, libaacs, libgcrypt and libgpg-error with their own
+configure + make, CCExtractor with its own CMake (needs a C compiler, make,
+nasm, pkg-config, cmake, rsync), all into `build/<mode>/`, and copies only the
+finished programs into `dist/<mode>/`. The Rust crates (moving to C) still
+build the current CLI and run the tests.
 
 ## Layout
 

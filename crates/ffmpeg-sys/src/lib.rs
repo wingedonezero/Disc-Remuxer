@@ -75,16 +75,17 @@ extern "C" {
         path: *const c_char,
         options: *const c_char,
         key_files: *const c_char,
-        outdir: *const c_char,
-        prefix: *const c_char,
+        name_cb: DemuxNameCb,
+        name_opaque: *mut c_void,
         nb_titles: *mut c_int,
+        untested: *mut i64,
         cb: DemuxStreamCb,
         opaque: *mut c_void,
     ) -> c_int;
 }
 
 /// `DrStreamStats` of the C glue: one stream's statistics after demuxing
-/// (timestamps in 90 kHz for the disc demuxers; `AV_NOPTS_VALUE` = none).
+/// (times in ms on the title timeline; `AV_NOPTS_VALUE` = none).
 #[repr(C)]
 pub struct DemuxStreamStats {
     pub index: c_int,
@@ -94,17 +95,17 @@ pub struct DemuxStreamStats {
     pub file: *const c_char,
     pub packets: i64,
     pub bytes: i64,
-    pub no_ts: i64,
-    pub first_ts: i64,
-    pub end_ts: i64,
-    pub overlaps: i64,
-    pub max_overlap: i64,
-    pub gaps: i64,
-    pub max_gap: i64,
+    pub first_ms: i64,
+    pub end_ms: i64,
+    pub delay_ms: i64,
 }
 
 /// Receives one stream's statistics from [`dr_demux`].
 pub type DemuxStreamCb = unsafe extern "C" fn(opaque: *mut c_void, stats: *const DemuxStreamStats);
+/// Gives [`dr_demux`] the path prefix (folder and base name) of a title's
+/// files from its name (NULL when none); returns 0 or a negative AVERROR.
+pub type DemuxNameCb =
+    unsafe extern "C" fn(opaque: *mut c_void, title_name: *const c_char, prefix: *mut c_char, size: c_int) -> c_int;
 
 /// Splits a packed library version (`AV_VERSION_INT`) into major.minor.micro.
 #[must_use]
@@ -953,12 +954,11 @@ pub mod discrip {
     pub const EV_VERIFY_ORDER: c_int = 22;
     pub const EV_VERIFY_HOLE: c_int = 23;
     pub const EV_VERIFY_OVERLAP: c_int = 24;
-    pub const EV_VERIFY_THD_TIMING: c_int = 25;
-    pub const EV_SEAMLESS_SEARCH: c_int = 26;
-    pub const EV_SEAMLESS_DROP: c_int = 27;
-    pub const EV_PCM_SILENCE: c_int = 28;
-    pub const EV_PCM_SKIP: c_int = 29;
-    pub const EV_PCM_TIMECODE: c_int = 30;
+    pub const EV_SEAMLESS_SEARCH: c_int = 25;
+    pub const EV_SEAMLESS_DROP: c_int = 26;
+    pub const EV_PCM_SILENCE: c_int = 27;
+    pub const EV_PCM_SKIP: c_int = 28;
+    pub const EV_PCM_TIMECODE: c_int = 29;
 
     /// `DRPcmConfig`.
     #[repr(C)]
@@ -1012,7 +1012,6 @@ pub mod discrip {
         pub es_err_end: i64,
         pub mkv_err_max: i64,
         pub mkv_err_at: i64,
-        pub thd_breaks: i64,
     }
 
     /// `DRLpcm`.
@@ -1109,6 +1108,7 @@ pub mod discrip {
         pub chapters: i64,
         pub offset: i64,
         pub start: i64,
+        pub placed: c_int,
     }
 
     pub const CHAPTER_00: c_int = -1;
@@ -1332,6 +1332,55 @@ pub mod discrip {
         pub fn ff_discrip_spu_flush(s: *mut Spu) -> c_int;
         pub fn ff_discrip_spu_stats(s: *const Spu, st: *mut SpuStats);
         pub fn ff_discrip_spu_close(s: *mut *mut Spu);
+    }
+
+    /// `DRTitleTrack`.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct TitleTrack {
+        pub codec: c_int,
+        pub kind: c_int,
+        pub audio_flags: c_int,
+    }
+
+    /// `DRTitleConfig`.
+    #[repr(C)]
+    pub struct TitleConfig {
+        pub nb_tracks: c_int,
+        pub tracks: *const TitleTrack,
+        pub tolerance: i64,
+        pub lpcm_hd: c_int,
+        pub marks: *const i64,
+        pub nb_marks: c_int,
+        pub event: Option<EventCb>,
+        pub event_opaque: *mut c_void,
+    }
+
+    /// `DRTitle` (only handled through pointers).
+    #[repr(C)]
+    pub struct Title {
+        _private: [u8; 0],
+    }
+
+    extern "C" {
+        pub fn ff_discrip_title_open(out: *mut *mut Title, log: *mut c_void, cfg: *const TitleConfig) -> c_int;
+        pub fn ff_discrip_title_segment(t: *mut Title) -> c_int;
+        pub fn ff_discrip_title_payload(t: *mut Title, track: c_int, data: *const u8, size: c_int, time: i64, tail: c_int)
+            -> c_int;
+        pub fn ff_discrip_title_finish(t: *mut Title) -> c_int;
+        pub fn ff_discrip_title_frame(t: *mut Title, track: *mut c_int, frame: *mut Frame) -> c_int;
+        pub fn ff_discrip_title_chapters(
+            t: *const Title,
+            plan: *const ChapterPlan,
+            out: *mut *mut Chapter,
+            nb_out: *mut c_int,
+        ) -> c_int;
+        pub fn ff_discrip_title_duration(t: *const Title) -> i64;
+        pub fn ff_discrip_title_review(t: *const Title) -> i64;
+        pub fn ff_discrip_event_name(kind: c_int) -> *const c_char;
+        pub fn ff_discrip_vobsub_header(buf: *mut c_char, size: c_int, width: c_int, height: c_int, ycrcb: *const u32)
+            -> c_int;
+        pub fn ff_discrip_title_close(t: *mut *mut Title);
     }
 
     /// FFmpeg's codec id for a codec name (e.g. "ac3"), or None.

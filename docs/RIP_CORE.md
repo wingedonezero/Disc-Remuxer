@@ -1,7 +1,8 @@
 # The shared rip core
 
-Status: design, before code. One module for every disc format (HD DVD first,
-then DVD, then Blu-ray / UHD). It turns a title's segments into timed, joined,
+Status: built (stages 1-5) and wired into the HD DVD demuxer; DVD and
+Blu-ray follow. One module for every disc format (HD DVD first, then DVD,
+then Blu-ray / UHD). It turns a title's segments into timed, joined,
 checked frames per track. The outputs (elementary streams, later Matroska)
 only write what it gives them.
 
@@ -28,10 +29,24 @@ format demuxer read_packet -> outputs (stream files; Matroska later)
 The format demuxer keeps everything format-specific: opening the disc, the
 title plan, the track list, decryption, and the packet source. It hands the
 core raw PES payloads: its sub-demuxer runs with `AVFMT_FLAG_NOPARSE |
-AVFMT_FLAG_NOFILLIN`, so FFmpeg's generic layer neither cuts frames nor fills
-in timestamps. Where a sub-demuxer must strip a header differently on one
-format (HD DVD LPCM, for example), it is copied under the format prefix
-(`hddvd_ps.c` from `mpeg.c`).
+AVFMT_FLAG_NOFILLIN` and `correct_ts_overflow` off, so FFmpeg's generic layer
+neither cuts frames nor fills in or corrects timestamps. FFmpeg's MPEG-PS
+demuxer gives the HD DVD payloads as needed (LPCM keeps its audio frame
+header, which the core reads); a sub-demuxer is copied under the format
+prefix only where it must differ.
+
+`discrip_title.c` puts the stages together for one title: the demuxer calls
+`ff_discrip_title_segment()` at each segment, `ff_discrip_title_payload()`
+for each payload (track, bytes, PES time, from the last 64 MiB of the
+segment's source or not) and `ff_discrip_title_finish()` at the end, and
+takes the output frames with `ff_discrip_title_frame()`. Per segment each
+track has a cutter and its timing stage; the joiner's frames go to the
+junction (or the PCM strategy), every output frame to the checks. Audio
+frames wait until the video has been handed on past their time (the
+junction compares them with the video). Events of the video and
+sub-picture stages wait until the joiner has placed their segment and then
+move onto the title timeline; every event is one debug line (the first 50
+of each kind and track; the rest are counted).
 
 The demuxer's packets out of `read_packet` are the core's frames: final
 time, duration and flags, already joined. Outer streams have no parser
@@ -46,7 +61,9 @@ Durations are `samples * 1,080,000,000 / rate` in unsigned 64-bit integers
 (truncated), always computed the same way so results are reproducible.
 
 PES PTS wrap: the reference time of a source is the first PTS of the master
-track within its first 2000 sectors minus 300 s; a PTS below it gets +2^33.
+track within its first 2000 sectors (a packet that starts a sector) minus
+300 s; a PTS below it gets +2^33. Packets before the reference is found
+wait for it; none in those sectors fails the title.
 
 ## 3. Stage 1: units and timestamp records
 
@@ -56,9 +73,14 @@ track within its first 2000 sectors minus 300 s; a PTS below it gets +2^33.
 - A unit gets a record's PTS when it is the FIRST unit that starts inside
   that record's bytes. Every later unit of the same payload has no
   timestamp. A record that ends before the next unit starts is dropped.
-- The cutter is FFmpeg's parser where it cuts the same; a prefixed copy where
-  it must differ (e.g. MPEG-2 GOP user data as a separate unit, VC-1 field
-  pictures paired).
+- The cutter is FFmpeg's parser where it cuts the same; the core's own unit
+  rule where it must differ (TrueHD / MLP, LPCM, sub-pictures, VC-1). VC-1:
+  a unit is one frame with the headers before it and the user data after it
+  (frame / field user data stays with its frame; FFmpeg's parser starts the
+  next unit there); an end of sequence stays only after a second field; an
+  end of sequence without one, and headers not followed by a frame, are units
+  without a frame, left out; a slice, a field or user data where none can be
+  stops the track.
 
 ## 4. The codec table
 
@@ -239,8 +261,6 @@ The rules above are the default policy. Around them:
     as a stream file plays it (start delay + the durations before it) and by
     the output times; the largest of each and where, the stream file's at
     the end;
-  - TrueHD / MLP: each AU's input timing against the one before it (+ the
-    samples per AU), every break and its size;
   - not yet: joins where a different action would have given a smaller
     error.
 
@@ -251,7 +271,23 @@ line each, so a run can be compared event by event with an expected list.
 
 - **Stream files:** each track's output frames written back to back (the
   same frame set as the Matroska path), plus the chapters. Gaps and the
-  start shift are logged per track; a stream file cannot hold them.
+  start shift are logged per track; a stream file cannot hold them. Names:
+  the title's name from the file-name template (`<title name>_t<NN>`), then
+  `_<track>_<language>_<codec>[_<channel layout>]`, audio with ` DELAY <ms>ms`
+  (its first frame's time against the title start, which is the video's,
+  rounded to ms; MKVToolNix reads it). Codec words and layout names are the
+  ones the reference's info output uses (`DD`, `DDplus`, `TrueHD`,
+  `5.1(side)`, ...; the layout from FFmpeg's decoder on the first frames).
+  LPCM leaves as little-endian PCM in a RIFF WAVE file (EXTENSIBLE with the
+  channel mask above two channels or 16 bits). Sub-pictures as a VobSub
+  pair: the units unchanged (DVD-Video and HD DVD forms) in MPEG-2 program
+  stream packs of 2048 bytes (`.sub`, private stream 1 sub-stream 0x20, the
+  PTS in each unit's first packet), and the `.idx`: the track's index header
+  (frame size; the 16 palette entries converted to RGB as the reference
+  converts them) and one `timestamp: ..., filepos: ...` line per unit.
+  FFmpeg reads both forms; MKVToolNix 2026's VobSub reader cuts HD DVD units
+  (32-bit size) to their first packet. Every title of a disc: one folder per
+  title, named like its files.
 - **Matroska** (later, libebml + libmatroska): frame times as given; cluster
   cuts placed on every audio / video track at the same time (first master
   sync unit 0.4-32.4 s after the previous cut).

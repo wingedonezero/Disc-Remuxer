@@ -65,9 +65,10 @@ catalog! {
     // 6000-6999 output
     DEMUX_TITLE = 6001, Info, "Writing the streams of title {title} of {source} to {folder}";
     DEMUX_STREAM = 6002, Info, "Stream {index} ({kind}, {codec}, language {lang}): {packets} packets, {bytes} bytes, {start} to {end}: {file}";
-    DEMUX_CONTINUITY = 6003, Warn, "Stream {index}: {overlaps} packet(s) start before the previous one ended (largest {max_overlap} ms), {gaps} start after a gap (largest {max_gap} ms)";
-    DEMUX_NO_TIMESTAMP = 6004, Warn, "Stream {index}: {count} packet(s) without a timestamp";
-    DEMUX_CARRIED = 6005, Info, "Stream {index} ({kind}, {codec}, language {lang}) is carried in another stream's packets: not written separately yet";
+    DEMUX_EMPTY = 6005, Info, "Stream {index} ({kind}, {codec}, language {lang}) has no packets: no file";
+    DEMUX_NAME = 6006, Info, "Title {title}: files named {prefix}_*";
+    DEMUX_FOLDER_FAILED = 6007, Error, "The folder {folder} could not be created: {reason}";
+    DEMUX_UNTESTED = 6008, Error, "Title {title}: {count} feature(s) met that no real disc has tested: its files are written, but check the log before using them";
     DEMUX_FAILED = 6010, Error, "Title {title} of {source} could not be demuxed: {reason}";
     DEMUX_TITLES = 6011, Info, "{source}: {count} title(s)";
 }

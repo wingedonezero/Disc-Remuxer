@@ -151,13 +151,19 @@ typedef struct DRCodec {
     /** Video rules; NULL for audio / subtitles (or while not implemented). */
     const DRVideoRules *video;
     /** The core's own unit cutter, used instead of FFmpeg's parser where the
-     *  parser drops bytes the reference keeps. unit_size: the size of the
-     *  unit at buf (> 0), 0 when more bytes are needed, < 0 when no unit
-     *  starts there; resync: the offset of the next possible unit start in
-     *  buf, -1 when none. NULL: FFmpeg's parser. state: the cutter's codec
-     *  state (ff_discrip_cutter_set_state), NULL when none. */
-    int (*unit_size)(const uint8_t *buf, int avail, void *state);
+     *  parser drops bytes the reference keeps or groups them differently.
+     *  unit_size: the size of the unit at buf (> 0), 0 when more bytes are
+     *  needed, DR_CUT_NONE when no unit starts there, another negative
+     *  AVERROR when the stream cannot be cut (logged; the track fails);
+     *  final: no more bytes will come. resync: the offset of the next
+     *  possible unit start in buf, -1 when none. NULL: FFmpeg's parser.
+     *  state: the cutter's codec state (ff_discrip_cutter_set_state, or the
+     *  cutter's own one of cut_state_size bytes), NULL when none. */
+    int (*unit_size)(void *log, const uint8_t *buf, int avail, int final, void *state);
     int (*resync)(const uint8_t *buf, int avail);
+    /** > 0: the cutter keeps a zeroed state of this size for unit_size
+     *  (which resets it when it returns anything but 0). */
+    int cut_state_size;
     /** The check of an output unit (stage 5): DR_UNIT_OK, DR_UNIT_BAD (sync
      *  word or size wrong), DR_UNIT_CRC (a checksum fails). NULL: not
      *  checked. */
@@ -165,6 +171,9 @@ typedef struct DRCodec {
 } DRCodec;
 
 enum { DR_UNIT_OK = 0, DR_UNIT_BAD = 1, DR_UNIT_CRC = 2 };
+
+/** DRCodec.unit_size: no unit starts at buf. */
+#define DR_CUT_NONE (-1)
 
 /** The codec table entry of a codec, or NULL (the codec is not supported). */
 const DRCodec *ff_discrip_codec(enum AVCodecID id);
@@ -307,7 +316,6 @@ enum DREventKind {
     DR_EV_VERIFY_ORDER,    /**< a unit without a duration, or (audio, subtitles) not after the one before it */
     DR_EV_VERIFY_HOLE,     /**< video in display order: no picture for dur from pos (count = placeholders in it) */
     DR_EV_VERIFY_OVERLAP,  /**< video in display order: a picture starts dur before the one before it ends */
-    DR_EV_VERIFY_THD_TIMING, /**< TrueHD / MLP: an AU's input timing breaks (dur = samples off) */
     DR_EV_SEAMLESS_SEARCH, /**< the overlap search at a join (pos = the next segment's first sync unit on
                                 the input clock): count = the best correlation of any candidate (Q32,
                                 0 = not compared), dur = that candidate's frame count, skew = 1 when a
@@ -400,6 +408,7 @@ typedef struct DRJoinStats {
     int     segments;
     int64_t frames, retimed, chapters;
     int64_t offset, start;       /**< the current segment's place and first video time */
+    int     placed;              /**< the current segment's place is known */
 } DRJoinStats;
 
 typedef struct DRJoin DRJoin;
@@ -562,7 +571,6 @@ typedef struct DRVerifyStats {
                                         the own time where it is */
     int64_t es_err_end;        /**< audio: the same for the last frame */
     int64_t mkv_err_max, mkv_err_at; /**< audio: output time - own time, the largest by size, where */
-    int64_t thd_breaks;        /**< TrueHD / MLP: input timing breaks */
 } DRVerifyStats;
 
 typedef struct DRVerify DRVerify;
@@ -670,20 +678,87 @@ int ff_discrip_lpcm_header(DRLpcm *p, void *logctx, const uint8_t *hdr, int len,
  *  size x 6 / 5); returns the bytes written. */
 int ff_discrip_lpcm_convert(const DRLpcm *p, const uint8_t *in, int size, uint8_t *out);
 
+/* ---- One title through all stages (discrip_title.c) ----
+ * The format demuxer hands over each segment's payloads (per track, with the
+ * PES time and whether they come from the last 64 MiB of the segment's
+ * source); the title runs the cutters, the timing stages, the joiner, the
+ * junction (or the PCM strategy) and the checks, and gives the output frames
+ * back. Track 0 is the master video. Audio frames wait until the video has
+ * been handed on past their time (the junction compares them with it). */
+
+typedef struct DRTitleTrack {
+    enum AVCodecID codec;
+    int            kind;           /**< DRTrackKind */
+    int            audio_flags;    /**< DR_AUDIO_CORE_ONLY */
+} DRTitleTrack;
+
+typedef struct DRTitleConfig {
+    int                 nb_tracks;
+    const DRTitleTrack *tracks;    /**< track 0: the master video */
+    int64_t             tolerance; /**< audio lead-in tolerance (ticks; the format profile) */
+    int                 lpcm_hd;   /**< LPCM payloads start with HD DVD's 5-byte header (else DVD-Video's 3) */
+    const int64_t      *marks;     /**< chapter marks (DRChapterPlan.marks) or NULL */
+    int                 nb_marks;
+    DREventCb           event; void *event_opaque;   /**< every event (also logged at debug level) */
+} DRTitleConfig;
+
+typedef struct DRTitle DRTitle;
+
+int  ff_discrip_title_open(DRTitle **t, void *logctx, const DRTitleConfig *cfg);
+/** The next segment begins (ends the one before). */
+int  ff_discrip_title_segment(DRTitle *t);
+/** A payload of a track in the current segment: time in ticks or
+ *  AV_NOPTS_VALUE; tail = read from the last 64 MiB of the segment's source.
+ *  LPCM payloads start with their audio frame header. */
+int  ff_discrip_title_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time, int tail);
+/** The end of the title: every stage finishes. */
+int  ff_discrip_title_finish(DRTitle *t);
+/** The next output frame (taken over by the caller): 0, AVERROR(EAGAIN)
+ *  when none is ready yet, AVERROR_EOF after the last one. */
+int  ff_discrip_title_frame(DRTitle *t, int *track, DRFrame *frame);
+/** After finish: the chapters of the plan the marks came from (*out freed
+ *  with av_free()). */
+int  ff_discrip_title_chapters(const DRTitle *t, const DRChapterPlan *plan, DRChapter **out, int *nb_out);
+/** A linear PCM track's format once its first header was read (else NULL). */
+const DRLpcm *ff_discrip_title_lpcm(const DRTitle *t, int track);
+/** Untested features met so far (audio reviews): the job must be checked,
+ *  so it is to be reported as failed. */
+int64_t ff_discrip_title_review(const DRTitle *t);
+/** After finish: a track's frames given out, the warnings logged about it
+ *  (junction events, grid findings, checks) and (audio) its start delay. */
+int ff_discrip_title_track_result(const DRTitle *t, int track, int64_t *frames, int64_t *warnings, int64_t *delay);
+/** After finish: the end of the video (title duration, ticks). */
+int64_t ff_discrip_title_duration(const DRTitle *t);
+/** An event kind's name. */
+const char *ff_discrip_event_name(int kind);
+void ff_discrip_title_close(DRTitle **t);
+
 /* rules of codecs in their own files */
 extern const DRAudioRules ff_discrip_audio_mlp;
 extern const DRVideoRules ff_discrip_video_mpv;
 extern const DRVideoRules ff_discrip_video_vc1;
 int ff_discrip_mlp_check(const uint8_t *data, int size);
-int ff_discrip_mlp_unit_size(const uint8_t *buf, int avail, void *state);
+int ff_discrip_mlp_unit_size(void *log, const uint8_t *buf, int avail, int final, void *state);
 int ff_discrip_mlp_resync(const uint8_t *buf, int avail);
 int ff_discrip_spu_check(const uint8_t *data, int size);
 int ff_discrip_spu_verify(const uint8_t *data, int size);
+/** The VobSub index header of a sub-picture track (frame size, the 16
+ *  palette entries 0x00 Y Cr Cb converted to RGB; NULL = all black) into buf;
+ *  returns its length as snprintf does. FFmpeg's DVD subtitle decoder reads
+ *  it as extradata; it is the head of a .idx file and of a Matroska S_VOBSUB
+ *  track's codec private data. */
+int ff_discrip_vobsub_header(char *buf, int size, int width, int height, const uint32_t *ycrcb);
 int ff_discrip_mlp_verify(const uint8_t *data, int size);
-/** An AU's input timing (16 bits); returns the samples per AU its major
- *  sync states, 0 when it has none. */
-int ff_discrip_mlp_timing(const uint8_t *data, int size, int *timing);
-int ff_discrip_spu_unit_size(const uint8_t *buf, int avail, void *state);
+int ff_discrip_spu_unit_size(void *log, const uint8_t *buf, int avail, int final, void *state);
+int ff_discrip_vc1_unit_size(void *log, const uint8_t *buf, int avail, int final, void *state);
+int ff_discrip_vc1_resync(const uint8_t *buf, int avail);
+/** The VC-1 cutter's state: where its scan of the unit at the window's
+ *  start stands. */
+typedef struct DRVc1Cut {
+    int scan;              /**< next offset to look for a start code at */
+    int part;              /**< the part of the unit the last start code began */
+    int stage;             /**< the header stage reached (part 0) */
+} DRVc1Cut;
 int ff_discrip_spu_resync(const uint8_t *buf, int avail);
 
 #endif /* AVFORMAT_DISCRIP_H */

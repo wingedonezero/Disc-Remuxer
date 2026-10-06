@@ -49,13 +49,12 @@ struct DRVerify {
     int            have_prev;
     int64_t        prev_time, prev_end;
     int64_t        es_pos;       /* audio: where the next frame starts in a stream file */
-    int            thd_timing, thd_samples;   /* TrueHD / MLP: the last AU's input timing and AU samples */
 
     VTime         *v;            /* video frames (display order is checked at the end) */
     int64_t       *ph;           /* video placeholders' times */
     int            nb_v, cap_v, nb_ph, cap_ph;
 
-    int            logged[DR_EV_VERIFY_THD_TIMING - DR_EV_VERIFY_UNIT + 1];
+    int            logged[DR_EV_VERIFY_OVERLAP - DR_EV_VERIFY_UNIT + 1];
     DRVerifyStats  st;
 };
 
@@ -99,7 +98,6 @@ int ff_discrip_verify_open(DRVerify **vp, void *logctx, enum AVCodecID codec, in
     v->kind  = kind;
     v->event = ev;
     v->event_opaque = ev_opaque;
-    v->thd_timing   = -1;
     v->st.es_err_at = v->st.mkv_err_at = AV_NOPTS_VALUE;
     *vp = v;
     return 0;
@@ -134,26 +132,6 @@ static void sync_error(DRVerify *v, const DRFrame *f)
         v->st.mkv_err_at  = f->src;
     }
     v->st.es_err_end = es;
-}
-
-static void thd_timing(DRVerify *v, const DRFrame *f)
-{
-    int timing, samples = ff_discrip_mlp_timing(f->data, f->size, &timing);
-
-    if (samples)
-        v->thd_samples = samples;
-    if (timing < 0)
-        return;
-    if (v->thd_timing >= 0 && v->thd_samples) {
-        int want = (v->thd_timing + v->thd_samples) & 0xFFFF;
-        if (timing != want) {
-            int d = (int16_t)(timing - want);
-            v->st.thd_breaks++;
-            finding(v, DR_EV_VERIFY_THD_TIMING, f->time, d, 1, "the access unit at %.3f ms has input timing %d "
-                    "where the one before it leads to %d (%+d samples)", ms(f->time), timing, want, d);
-        }
-    }
-    v->thd_timing = timing;
 }
 
 int ff_discrip_verify_frame(DRVerify *v, const DRFrame *f)
@@ -212,8 +190,6 @@ int ff_discrip_verify_frame(DRVerify *v, const DRFrame *f)
         }
         sync_error(v, f);
         v->es_pos += f->dur;
-        if (v->codec->id == AV_CODEC_ID_TRUEHD || v->codec->id == AV_CODEC_ID_MLP)
-            thd_timing(v, f);
     }
     v->have_prev = 1;
     v->prev_time = f->time;
@@ -272,20 +248,18 @@ int ff_discrip_verify_finish(DRVerify *v)
 
     if (v->kind == DR_KIND_VIDEO)
         video_order(v);
-    av_log(v->log, s->bad_units || s->crc_errors || s->order_errors || s->holes ? AV_LOG_WARNING : AV_LOG_INFO,
+    /* the summary goes to the debug log; every finding was a warning already */
+    av_log(v->log, AV_LOG_VERBOSE,
            "Rip core: check: track %d (%s): %"PRId64" frames, %"PRId64" units that do not parse, %"PRId64
            " checksum failures, %"PRId64" time-order errors, %"PRId64" holes (%.3f ms), %"PRId64" overlaps "
            "(largest %.3f ms)%s\n", v->track, v->codec->name, s->frames - s->markers, s->bad_units, s->crc_errors,
            s->order_errors, s->holes, ms(s->hole_dur), s->overlaps, ms(s->overlap_dur),
            s->unchecked ? ", units not checked (no check for this codec)" : "");
     if (v->kind == DR_KIND_AUDIO && v->have_prev) {
-        av_log(v->log, AV_LOG_INFO, "Rip core: check: track %d (%s): start delay %.3f ms; sync error as a stream "
+        av_log(v->log, AV_LOG_VERBOSE, "Rip core: check: track %d (%s): start delay %.3f ms; sync error as a stream "
                "file %+.3f ms at its largest (at %.3f ms), %+.3f ms at the end; by the output times %+.3f ms at "
                "its largest (at %.3f ms)\n", v->track, v->codec->name, ms(s->delay), ms(s->es_err_max),
                ms(s->es_err_at), ms(s->es_err_end), ms(s->mkv_err_max), ms(s->mkv_err_at));
-        if (v->codec->id == AV_CODEC_ID_TRUEHD || v->codec->id == AV_CODEC_ID_MLP)
-            av_log(v->log, AV_LOG_INFO, "Rip core: check: track %d (%s): %"PRId64" breaks of the access units' "
-                   "input timing\n", v->track, v->codec->name, s->thd_breaks);
     }
     return 0;
 }

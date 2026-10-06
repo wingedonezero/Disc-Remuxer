@@ -20,6 +20,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
+#include <stdio.h>
 #include <string.h>
 
 #include "libavcodec/defs.h"
@@ -145,14 +146,14 @@ static int control(const uint8_t *b, int64_t len, Control *c)
 /* The cutter (DRCodec.unit_size): with 10 bytes or more, a unit starts only
  * where the header states a size of at least 9 and a first control sequence
  * that leaves 5 bytes; the unit is as long as its size. */
-int ff_discrip_spu_unit_size(const uint8_t *buf, int avail, void *state)
+int ff_discrip_spu_unit_size(void *log, const uint8_t *buf, int avail, int final, void *state)
 {
     Header h;
 
     if (avail >= 10) {
         header(buf, avail, &h);
         if (h.size < 9 || h.dcsq > h.size - 5)
-            return -1;
+            return DR_CUT_NONE;
     }
     if (!header(buf, avail, &h) || h.size > avail)
         return 0;
@@ -353,4 +354,46 @@ void ff_discrip_spu_close(DRSpu **sp)
         ff_discrip_frame_unref(&s->q[s->head + i].f);
     av_freep(&s->q);
     av_freep(sp);
+}
+
+/* A palette entry 0x00 Y Cr Cb as RGB, the way the reference converts it:
+ * Y scaled from 16..235 (integer division), 16.16 fixed-point products, each
+ * sum clamped to 0..0xff0000; green takes 0.714 x Cb and 0.346 x Cr (the
+ * reverse of ITU-R BT.601, which takes 0.344 x Cb and 0.714 x Cr). */
+static uint32_t ycrcb_to_rgb(uint32_t e)
+{
+    int y = (e >> 16) & 0xff, cr = ((e >> 8) & 0xff) - 128, cb = (e & 0xff) - 128;
+    int32_t yf = (255 * (y - 16) / 219) * 65536;
+    int32_t v[3] = { yf + 91894 * cr, yf - 46825 * cb - 22655 * cr, yf + 116064 * cb };
+
+    for (int i = 0; i < 3; i++)
+        v[i] = v[i] <= 0 ? 0 : v[i] >= 0xff0000 ? 0xff0000 : v[i];
+    return (uint32_t)(v[0] >> 16) << 16 | (uint32_t)(v[1] >> 16) << 8 | (uint32_t)(v[2] >> 16);
+}
+
+int ff_discrip_vobsub_header(char *buf, int size, int width, int height, const uint32_t *ycrcb)
+{
+    uint32_t p[16];
+
+    for (int i = 0; i < 16; i++)
+        p[i] = ycrcb ? ycrcb_to_rgb(ycrcb[i]) : 0;
+    return snprintf(buf, size,
+                    "# VobSub index file, v7 (do not modify this line!)\n"
+                    "#\n"
+                    "# Written by disc-remuxer.\n"
+                    "#\n"
+                    "size: %ux%u\n"
+                    "org: 0, 0\n"
+                    "alpha: 100%%\n"
+                    "smooth: OFF\n"
+                    "fadein/out: 50, 50\n"
+                    "align: OFF at LEFT TOP\n"
+                    "time offset: 0\n"
+                    "forced subs: OFF\n"
+                    "langidx: 0\n"
+                    "palette: %06x, %06x, %06x, %06x, %06x, %06x, %06x, %06x, "
+                    "%06x, %06x, %06x, %06x, %06x, %06x, %06x, %06x\n"
+                    "#\n",
+                    width, height, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7],
+                    p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]);
 }

@@ -55,6 +55,7 @@ struct DRCutter {
     int      win_len, win_cap;
 
     void    *state;            /* the codec state of the unit rule */
+    void    *own_state;        /* the cutter's own state (DRCodec.cut_state_size) */
     uint8_t *feed;             /* padded copy of the payload for the parser */
     unsigned feed_cap;
 
@@ -80,6 +81,10 @@ int ff_discrip_cutter_open(DRCutter **cutter, void *logctx, enum AVCodecID codec
         return AVERROR(ENOSYS);
     }
     if (c->codec->unit_size) {
+        if (c->codec->cut_state_size > 0 && !(c->state = c->own_state = av_mallocz(c->codec->cut_state_size))) {
+            av_free(c);
+            return AVERROR(ENOMEM);
+        }
         *cutter = c;
         return 0;
     }
@@ -109,6 +114,7 @@ void ff_discrip_cutter_close(DRCutter **cutter)
     av_freep(&c->rec);
     av_freep(&c->win);
     av_freep(&c->feed);
+    av_freep(&c->own_state);
     av_freep(cutter);
 }
 
@@ -240,12 +246,18 @@ static int unit_out(DRCutter *c, const uint8_t *data, int size)
 }
 
 /* The core's own cutter (DRCodec.unit_size): units cut from the kept bytes;
- * at the end of the stream (final) the bytes left are in no unit. */
+ * at the end of the stream (final) the bytes the rule does not take as a
+ * unit are in no unit. */
 static int native_cut(DRCutter *c, int final)
 {
     while (c->win_len > 0) {
-        int s = c->codec->unit_size(c->win, c->win_len, c->state), ret, k;
+        int s = c->codec->unit_size(c->log, c->win, c->win_len, final, c->state), ret, k;
 
+        if (s < 0 && s != DR_CUT_NONE) {
+            av_log(c->log, AV_LOG_ERROR, "Rip core: %s: the stream cannot be cut into units at stream offset %"
+                   PRId64"\n", c->codec->name, c->win_pos);
+            return s;
+        }
         if (s > 0) {
             if ((ret = unit_take(c, c->win, s, c->win_pos)) < 0)
                 return ret;

@@ -14,7 +14,7 @@ Commands:
   settings  The settings in effect, or where the settings file is
   scan      List the discs found under a path and the job folder each would get. Creates nothing
   probe     Open one title of every disc found with FFmpeg's DVD-Video demuxer as it is and log the streams it finds. With an output folder, every disc is a job with its own job folder and job log
-  demux     Write the streams of HD DVD titles as elementary-stream files, one file per track, and the chapters as Matroska XML, into each disc's job folder (files <title>_<stream>_<language>.<ext>, <title>_chapters.xml)
+  demux     Write the streams of HD DVD titles as elementary-stream files, one file per track, and the chapters as Matroska XML, into each disc's job folder. A title's name comes from `output.file_name_template` (default <title name>_t<NN>); its files are <name>_<track>_<language>_<codec> [_<channels>][ DELAY <ms>ms].<ext> and <name>_chapters.xml (LPCM as .wav). With every title, each title's files go in a folder of its name
   debug     Developer tools: the steps of the DVD processing one at a time, with their raw results on standard output
   help      Print this message or the help of the given subcommand(s)
 
@@ -209,7 +209,7 @@ Options:
 ## `disc-remuxer demux`
 
 ```text
-Write the streams of HD DVD titles as elementary-stream files, one file per track, and the chapters as Matroska XML, into each disc's job folder (files <title>_<stream>_<language>.<ext>, <title>_chapters.xml)
+Write the streams of HD DVD titles as elementary-stream files, one file per track, and the chapters as Matroska XML, into each disc's job folder. A title's name comes from `output.file_name_template` (default <title name>_t<NN>); its files are <name>_<track>_<language>_<codec> [_<channels>][ DELAY <ms>ms].<ext> and <name>_chapters.xml (LPCM as .wav). With every title, each title's files go in a folder of its name
 
 Usage: disc-remuxer demux [OPTIONS] <SOURCE>
 

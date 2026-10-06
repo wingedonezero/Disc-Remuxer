@@ -1,172 +1,42 @@
 /*
- * C glue between FFmpeg and the Rust side, for the parts that are awkward to
- * call from Rust directly (varargs log callback, option dictionaries).
+ * disc-remuxer: the stream files of a title (see writer.h). Each track's
+ * packets back to back in a file named <name>_<NN>_<lang>_<codec>
+ * [_<channel layout>][ DELAY <ms>ms].<ext>; PCM as RIFF WAVE; sub-pictures
+ * as a VobSub pair (.sub packs + .idx); the chapters as Matroska XML.
  */
 
 #include <errno.h>
 #include <inttypes.h>
-#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/avstring.h>
+#include <libavutil/bprint.h>
+#include <libavutil/channel_layout.h>
 #include <libavutil/dict.h>
 #include <libavutil/intreadwrite.h>
-#include <libavutil/log.h>
 #include <libavutil/mathematics.h>
 #include <libavutil/mem.h>
+#include <libavutil/opt.h>
 
-typedef void (*dr_log_sink)(int level, const char *line);
+#include "log.h"
+#include "msg.h"
+#include "names.h"
+#include "settings.h"
+#include "writer.h"
 
-static pthread_mutex_t log_lock = PTHREAD_MUTEX_INITIALIZER;
-static dr_log_sink log_sink;
-static int log_max_level = AV_LOG_INFO;
-static char log_pending[4096];
-static size_t log_pending_len;
-static int log_print_prefix = 1;
-
-/* FFmpeg writes a line in several calls (av_dump_format, ...): pieces are
- * collected until the newline, then the whole line goes to the sink with the
- * level of its last piece. */
-static void log_callback(void *avcl, int level, const char *fmt, va_list vl)
-{
-    char part[2048];
-    size_t len;
-
-    if (level > log_max_level)
-        return;
-    pthread_mutex_lock(&log_lock);
-    av_log_format_line2(avcl, level, fmt, vl, part, sizeof(part), &log_print_prefix);
-    len = strlen(part);
-    if (len > sizeof(log_pending) - 1 - log_pending_len)
-        len = sizeof(log_pending) - 1 - log_pending_len;
-    memcpy(log_pending + log_pending_len, part, len);
-    log_pending_len += len;
-    log_pending[log_pending_len] = 0;
-    if (log_pending_len > 0 && log_pending[log_pending_len - 1] == '\n') {
-        log_pending[--log_pending_len] = 0;
-        if (log_sink)
-            log_sink(level, log_pending);
-        log_pending_len = 0;
-    }
-    pthread_mutex_unlock(&log_lock);
-}
-
-void dr_log_install(dr_log_sink sink, int max_level)
-{
-    pthread_mutex_lock(&log_lock);
-    log_sink = sink;
-    log_max_level = max_level;
-    pthread_mutex_unlock(&log_lock);
-    av_log_set_level(max_level);
-    av_log_set_callback(log_callback);
-}
-
-typedef void (*dr_parser_frame_cb)(void *opaque, int size, int64_t pts, int64_t dts);
-
-/* Runs FFmpeg's parser for the codec named `codec_name` (a codec descriptor
- * name such as "ac3") over `nb` packets the way libavformat does: each
- * packet's timestamp is passed on its first parser call only, the rest of the
- * packet follows without one, and the parser is flushed at the end. `cb` gets
- * every frame the parser returns with the timestamps the parser gave it.
- * Returns 0 or a negative AVERROR. */
-int dr_parser_run(const char *codec_name, const uint8_t *const *data,
-                  const int *sizes, const int64_t *pts, int nb,
-                  dr_parser_frame_cb cb, void *opaque)
-{
-    const AVCodecDescriptor *desc = avcodec_descriptor_get_by_name(codec_name);
-    AVCodecParserContext *parser;
-    AVCodecContext *avctx;
-    int64_t pos = 0;
-    uint8_t *out;
-    int out_size;
-
-    if (!desc)
-        return AVERROR_DECODER_NOT_FOUND;
-    parser = av_parser_init(desc->id);
-    if (!parser)
-        return AVERROR(ENOSYS);
-    avctx = avcodec_alloc_context3(NULL);
-    if (!avctx) {
-        av_parser_close(parser);
-        return AVERROR(ENOMEM);
-    }
-    avctx->codec_id   = desc->id;
-    avctx->codec_type = desc->type;
-
-    for (int i = 0; i < nb; i++) {
-        const uint8_t *p = data[i];
-        int left = sizes[i];
-        int64_t t = pts[i], packet_pos = pos;
-
-        pos += sizes[i];
-        while (left > 0) {
-            int used = av_parser_parse2(parser, avctx, &out, &out_size, p, left,
-                                        t, t, packet_pos);
-            t          = AV_NOPTS_VALUE;
-            packet_pos = -1;
-            p    += used;
-            left -= used;
-            if (out_size)
-                cb(opaque, out_size, parser->pts, parser->dts);
-        }
-    }
-    do {
-        av_parser_parse2(parser, avctx, &out, &out_size, NULL, 0,
-                         AV_NOPTS_VALUE, AV_NOPTS_VALUE, -1);
-        if (out_size)
-            cb(opaque, out_size, parser->pts, parser->dts);
-    } while (out_size);
-
-    av_parser_close(parser);
-    avcodec_free_context(&avctx);
-    return 0;
-}
-
-/* Opens one title with FFmpeg's DVD-Video demuxer, reads stream information
- * and logs FFmpeg's stream dump. Returns 0 or a negative AVERROR. */
-int dr_probe_dvdvideo(const char *path, const char *options)
-{
-    const AVInputFormat *fmt = av_find_input_format("dvdvideo");
-    AVFormatContext *ctx = NULL;
-    AVDictionary *opts = NULL;
-    int ret;
-
-    if (!fmt)
-        return AVERROR_DEMUXER_NOT_FOUND;
-    if (options && (ret = av_dict_parse_string(&opts, options, "=", ":", 0)) < 0)
-        return ret;
-    ret = avformat_open_input(&ctx, path, fmt, &opts);
-    av_dict_free(&opts);
-    if (ret < 0)
-        return ret;
-    ret = avformat_find_stream_info(ctx, NULL);
-    if (ret >= 0) {
-        av_dump_format(ctx, 0, path, 0);
-        ret = 0;
-    }
-    avformat_close_input(&ctx);
-    return ret;
-}
-
-/* ---- elementary-stream output ---- */
-
-/* One stream's result after demuxing (times in ms on the title timeline). */
-typedef struct DrStreamStats {
+/* One stream's result (times in ms on the title timeline). */
+typedef struct StreamResult {
     int         index;
     const char *kind, *codec, *lang, *file;     /* file "" = not written */
     int64_t     packets, bytes;
-    int64_t     first_ms, end_ms;               /* first packet's time, last packet's end */
+    int64_t     first_ms, end_ms;
     int64_t     delay_ms;                       /* audio: the start delay in the file name */
-} DrStreamStats;
-
-typedef void (*dr_demux_stream_cb)(void *opaque, const DrStreamStats *st);
-/* The path prefix (folder and base name) of a title's files from its name
- * (NULL when the demuxer gives none); returns 0 or a negative AVERROR. */
-typedef int (*dr_demux_name_cb)(void *opaque, const char *title_name, char *prefix, int size);
+} StreamResult;
 
 /* The file extension and the codec's short name in file names. */
 static const char *es_extension(enum AVCodecID id)
@@ -193,7 +63,7 @@ static const char *es_extension(enum AVCodecID id)
     }
 }
 
-static const char *es_label(enum AVCodecID id, int profile)
+const char *codec_label(enum AVCodecID id, int profile)
 {
     switch (id) {
     case AV_CODEC_ID_MPEG1VIDEO:   return "Mpeg1";
@@ -222,13 +92,14 @@ static const char *es_label(enum AVCodecID id, int profile)
 #define HOLD_MAX 64   /* audio packets kept while their channel layout is not known yet */
 
 typedef struct EsOut {
-    DrStreamStats st;
+    StreamResult st;
     char         *name;
     FILE         *f;
     FILE         *idx;              /* sub-pictures: the VobSub index next to the .sub */
     int64_t       sub_pos;          /* bytes written to the .sub */
     int           wav;              /* a WAV header to complete at the end */
     int           opened;           /* the file name is chosen */
+    char            layout[64];     /* audio: the channel layout in the name ("" unknown) */
     AVCodecContext *avctx;          /* audio: FFmpeg's decoder, for the channel layout */
     AVFrame        *frame;
     int             layout_done;    /* a frame was decoded (or decoding gave up) */
@@ -398,14 +269,15 @@ static int es_open(const AVFormatContext *ctx, const AVStream *st, EsOut *o, con
         if (cl) {
             layout[0] = '_';
             av_channel_layout_describe(cl, layout + 1, sizeof(layout) - 1);
+            snprintf(o->layout, sizeof(o->layout), "%s", layout + 1);
         } else {
-            av_log(NULL, AV_LOG_WARNING, "stream %d: channel layout not known: not in the file name\n", st->index);
+            log_text(LOG_WARNING, "Track %d: channel layout not known: not in the file name", st->index);
         }
         o->st.delay_ms = av_rescale_q_rnd(first, st->time_base, (AVRational){ 1, 1000 }, AV_ROUND_NEAR_INF);
         snprintf(delay, sizeof(delay), " DELAY %"PRId64"ms", o->st.delay_ms);
     }
     if (!(o->name = av_asprintf("%s_%02d_%s_%s%s%s.%s", prefix, st->index, *o->st.lang ? o->st.lang : "und",
-                                es_label(par->codec_id, profile), layout, delay, es_extension(par->codec_id))))
+                                codec_label(par->codec_id, profile), layout, delay, es_extension(par->codec_id))))
         return AVERROR(ENOMEM);
     o->st.file = o->name;
     if (!(o->f = fopen(o->name, "wb")))
@@ -459,42 +331,77 @@ static int es_flush_hold(const AVFormatContext *ctx, const AVStream *st, EsOut *
     return ret;
 }
 
-/* Opens title `title` of path with demuxer `format` (options "k=v:k=v",
- * key_files set as the demuxer's keydb option when not NULL) and writes each
- * stream's packets back to back to its own file, the chapters to
- * <prefix>_chapters.xml; the prefix comes from name_cb. *nb_titles gets the
- * demuxer's "titles" metadata (or -1), *untested its "untested" metadata at
- * the end (features no real disc has tested: the job is to be reported as
- * failed). cb gets each stream's result at the end. Returns 0 or a negative
- * AVERROR. */
-int dr_demux(const char *format, const char *path, const char *options, const char *key_files,
-             dr_demux_name_cb name_cb, void *name_opaque, int *nb_titles, int64_t *untested,
-             dr_demux_stream_cb cb, void *opaque)
+int open_title(const char *format, const char *source, int title, AVFormatContext **ctx)
 {
     const AVInputFormat *fmt = av_find_input_format(format);
-    AVFormatContext *ctx = NULL;
     AVDictionary *opts = NULL;
+    const char *const *keys;
+    int nb_keys = setting_list("aacs.key_files", &keys), ret;
+
+    *ctx = NULL;
+    if (!fmt)
+        return AVERROR_DEMUXER_NOT_FOUND;
+    av_dict_set_int(&opts, "title", title, 0);
+    av_dict_set_int(&opts, "read_attempts", setting_int("read.attempts"), 0);
+    av_dict_set(&opts, "udf_reader", setting_text("read.udf_reader"), 0);
+    if (nb_keys) {
+        AVBPrint bp;
+        av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
+        for (int i = 0; i < nb_keys; i++)
+            av_bprintf(&bp, "%s%s", i ? "," : "", keys[i]);
+        av_dict_set(&opts, "keydb", bp.str, 0);
+        av_bprint_finalize(&bp, NULL);
+    }
+    ret = avformat_open_input(ctx, source, fmt, &opts);
+    av_dict_free(&opts);
+    return ret;
+}
+
+static int64_t meta_int(AVDictionary *m, const char *key)
+{
+    const AVDictionaryEntry *e = av_dict_get(m, key, NULL, 0);
+    return e ? strtoll(e->value, NULL, 10) : 0;
+}
+
+static void hms(char *buf, size_t size, double s)
+{
+    int64_t t = (int64_t)(s + 0.5);
+    snprintf(buf, size, "%d:%02d:%02d", (int)(t / 3600), (int)(t / 60 % 60), (int)(t % 60));
+}
+
+int demux_title(const TitleJob *job, TitleOutcome *res)
+{
+    AVFormatContext *ctx = NULL;
     const AVDictionaryEntry *e;
     EsOut *out = NULL;
     AVPacket *pkt = NULL;
-    char prefix[4096];
+    char dir[4096], prefix[4200], dur[32], js[4300];
     int ret;
 
-    *nb_titles = -1;
-    *untested  = 0;
-    if (!fmt)
-        return AVERROR_DEMUXER_NOT_FOUND;
-    if (options && (ret = av_dict_parse_string(&opts, options, "=", ":", 0)) < 0)
+    memset(res, 0, sizeof(*res));
+    if ((ret = open_title(job->format, job->source, job->title, &ctx)) < 0) {
+        log_step("=== Title %d/%d: #%d ===", job->ordinal, job->count, job->title);
+        log_msg(MSG_TITLE_OPEN_FAILED, LOG_ERROR, "Title #%d cannot be opened: %s", job->title, av_err2str(ret));
+        res->failed = 1;
         return ret;
-    if (key_files && *key_files && (ret = av_dict_set(&opts, "keydb", key_files, 0)) < 0)
-        goto end;
-    if ((ret = avformat_open_input(&ctx, path, fmt, &opts)) < 0)
-        goto end;
-    if ((e = av_dict_get(ctx->metadata, "titles", NULL, 0)))
-        *nb_titles = atoi(e->value);
+    }
     e = av_dict_get(ctx->metadata, "title", NULL, 0);
-    if ((ret = name_cb(name_opaque, e ? e->value : NULL, prefix, sizeof(prefix))) < 0)
+    title_name(setting_text("output.file_name_template"), e ? e->value : NULL, NULL, NULL, job->title,
+               res->name, sizeof(res->name));
+    hms(dur, sizeof(dur), ctx->duration > 0 ? ctx->duration / (double)AV_TIME_BASE : 0);
+    log_step("=== Title %d/%d: #%d %s (%s) ===", job->ordinal, job->count, job->title, e ? e->value : "", dur);
+    log_json("title_start", "\"title\":%d,\"name\":%s,\"ordinal\":%d,\"count\":%d", job->title,
+             json_str(js, sizeof(js), res->name), job->ordinal, job->count);
+
+    snprintf(dir, sizeof(dir), "%s%s%s", job->out_dir, job->sub_folder ? "/" : "", job->sub_folder ? res->name : "");
+    if (mkdir(dir, 0777) < 0 && errno != EEXIST) {
+        ret = AVERROR(errno);
+        log_msg(MSG_FOLDER_FAILED, LOG_ERROR, "The folder %s cannot be created: %s", dir, strerror(errno));
         goto end;
+    }
+    snprintf(prefix, sizeof(prefix), "%s/%s", dir, res->name);
+    log_text(LOG_DETAIL, "Files: %s_*", prefix);
+
     out = av_calloc(ctx->nb_streams, sizeof(*out));
     pkt = av_packet_alloc();
     if (!out || !pkt) {
@@ -514,24 +421,27 @@ int dr_demux(const char *format, const char *path, const char *options, const ch
         o->st.first_ms = AV_NOPTS_VALUE;
         if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && !st->codecpar->ch_layout.nb_channels) {
             const AVCodec *dec = avcodec_find_decoder(st->codecpar->codec_id);
-            o->hold = av_calloc(HOLD_MAX, sizeof(*o->hold));
-            if (!o->hold) {
+            if (!(o->hold = av_calloc(HOLD_MAX, sizeof(*o->hold)))) {
                 ret = AVERROR(ENOMEM);
                 goto end;
             }
             if (!dec || !(o->avctx = avcodec_alloc_context3(dec)) || !(o->frame = av_frame_alloc()) ||
                 avcodec_open2(o->avctx, dec, NULL) < 0) {
-                av_log(NULL, AV_LOG_WARNING, "stream %u: no decoder for %s: its channel layout is not known\n",
-                       i, avcodec_get_name(st->codecpar->codec_id));
+                log_text(LOG_DETAIL, "Track %u: no decoder for %s: its channel layout is not known", i,
+                         avcodec_get_name(st->codecpar->codec_id));
                 avcodec_free_context(&o->avctx);
                 o->layout_done = 1;
             }
         }
     }
+
     while ((ret = av_read_frame(ctx, pkt)) >= 0) {
         const AVStream *st = ctx->streams[pkt->stream_index];
         EsOut *o = &out[pkt->stream_index];
+        int64_t progress;
 
+        if (av_opt_get_int(ctx, "progress", AV_OPT_SEARCH_CHILDREN, &progress) >= 0)
+            log_progress(job->title, progress / 10000.0);
         o->st.packets++;
         if (pkt->pts != AV_NOPTS_VALUE) {
             int64_t ms  = av_rescale_q(pkt->pts, st->time_base, (AVRational){ 1, 1000 });
@@ -541,7 +451,6 @@ int dr_demux(const char *format, const char *path, const char *options, const ch
             o->st.end_ms = FFMAX(o->st.end_ms, end);
         }
         if (!o->opened && o->hold) {
-            /* the channel layout of the first decoded frame, before the name */
             if (!o->layout_done && avcodec_send_packet(o->avctx, pkt) >= 0 &&
                 avcodec_receive_frame(o->avctx, o->frame) >= 0)
                 o->layout_done = 1;
@@ -568,8 +477,6 @@ int dr_demux(const char *format, const char *path, const char *options, const ch
     }
     if (ret == AVERROR_EOF)
         ret = 0;
-    if ((e = av_dict_get(ctx->metadata, "untested", NULL, 0)))
-        *untested = strtoll(e->value, NULL, 10);
     for (unsigned i = 0; ret >= 0 && i < ctx->nb_streams; i++)
         ret = es_flush_hold(ctx, ctx->streams[i], &out[i], prefix);
     if (ret >= 0) {
@@ -577,6 +484,7 @@ int dr_demux(const char *format, const char *path, const char *options, const ch
         ret = chap ? write_chapters(ctx, chap) : AVERROR(ENOMEM);
         av_free(chap);
     }
+
 end:
     for (unsigned i = 0; ctx && out && i < ctx->nb_streams; i++) {
         EsOut *o = &out[i];
@@ -591,8 +499,54 @@ end:
         if (o->idx && fclose(o->idx) && ret >= 0)
             ret = AVERROR(errno);
     }
-    for (unsigned i = 0; ctx && out && ret >= 0 && i < ctx->nb_streams; i++)
-        cb(opaque, &out[i].st);
+    if (ret < 0) {
+        log_msg(MSG_TITLE_FAILED, LOG_ERROR, "Title #%d failed: %s", job->title, av_err2str(ret));
+        res->failed = 1;
+    } else {
+        int64_t untested = meta_int(ctx->metadata, "untested");
+        log_text(LOG_INFO, "Tracks:");
+        for (unsigned i = 0; i < ctx->nb_streams; i++) {
+            const AVStream *st = ctx->streams[i];
+            EsOut *o = &out[i];
+            int64_t frames = meta_int(st->metadata, "frames"), warn = meta_int(st->metadata, "warnings");
+            char what[160], state[96], delay[48] = "", jc[64], jl[32], jy[96], jf[4300];
+            const char *unit = st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE ? "subtitles" : "frames";
+
+            snprintf(what, sizeof(what), "%s %s%s%s", *o->st.lang ? o->st.lang : "   ",
+                     codec_label(st->codecpar->codec_id, st->codecpar->profile), *o->layout ? " " : "", o->layout);
+            if (!o->opened)
+                snprintf(state, sizeof(state), "no data: no file");
+            else if (warn)
+                snprintf(state, sizeof(state), "%"PRId64" warning%s", warn, warn == 1 ? "" : "s");
+            else
+                snprintf(state, sizeof(state), "OK");
+            if (o->opened && st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
+                snprintf(delay, sizeof(delay), ", delay %"PRId64" ms", o->st.delay_ms);
+            log_text(!o->opened ? LOG_WARNING : warn ? LOG_INFO : LOG_OK, "  %02u  %-30s %8"PRId64" %-9s  %s%s",
+                     i, what, frames, unit, state, delay);
+            if (o->opened)
+                log_text(LOG_DETAIL, "      %s", o->name);
+            res->warnings += warn;
+            log_json("track", "\"title\":%d,\"index\":%u,\"codec\":%s,\"language\":%s,\"layout\":%s,"
+                     "\"frames\":%"PRId64",\"warnings\":%"PRId64",\"delay_ms\":%"PRId64",\"file\":%s", job->title, i,
+                     json_str(jc, sizeof(jc), codec_label(st->codecpar->codec_id, st->codecpar->profile)),
+                     json_str(jl, sizeof(jl), o->st.lang), json_str(jy, sizeof(jy), o->layout), frames, warn,
+                     o->st.delay_ms, json_str(jf, sizeof(jf), o->opened ? o->name : ""));
+        }
+        log_msg(MSG_CHAPTERS, LOG_INFO, "Chapters: %u", ctx->nb_chapters);
+        if (untested) {
+            log_msg(MSG_UNTESTED, LOG_ERROR, "Title #%d: %"PRId64" feature(s) met that no real disc has tested: "
+                    "its files are written, but check the log before using them", job->title, untested);
+            res->failed = 1;
+        } else if (res->warnings) {
+            log_msg(MSG_TITLE_DONE, LOG_INFO, "Title #%d: done with %"PRId64" warning%s", job->title, res->warnings,
+                    res->warnings == 1 ? "" : "s");
+        } else {
+            log_msg(MSG_TITLE_DONE, LOG_OK, "Title #%d: done", job->title);
+        }
+    }
+    log_json("title_result", "\"title\":%d,\"status\":\"%s\",\"warnings\":%"PRId64",\"folder\":%s", job->title,
+             res->failed ? "failed" : "ok", res->warnings, json_str(js, sizeof(js), dir));
     for (unsigned i = 0; ctx && out && i < ctx->nb_streams; i++) {
         EsOut *o = &out[i];
         for (int k = 0; k < o->nb_hold; k++)
@@ -604,7 +558,6 @@ end:
     }
     av_free(out);
     av_packet_free(&pkt);
-    av_dict_free(&opts);
     avformat_close_input(&ctx);
     return ret;
 }
