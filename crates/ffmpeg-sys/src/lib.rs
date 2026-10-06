@@ -890,6 +890,7 @@ pub mod discrip {
         pub flags: u32,
         pub samples: c_int,
         pub rate: c_int,
+        pub src: i64,
     }
 
     pub type FrameCb = unsafe extern "C" fn(opaque: *mut c_void, frame: *mut Frame) -> c_int;
@@ -947,6 +948,41 @@ pub mod discrip {
     pub const EV_SUB_EARLY: c_int = 18;
     pub const EV_SUB_OVERLAP: c_int = 19;
     pub const F_NO_STOP: u32 = 0x0080;
+    pub const EV_VERIFY_UNIT: c_int = 20;
+    pub const EV_VERIFY_CRC: c_int = 21;
+    pub const EV_VERIFY_ORDER: c_int = 22;
+    pub const EV_VERIFY_HOLE: c_int = 23;
+    pub const EV_VERIFY_OVERLAP: c_int = 24;
+    pub const EV_VERIFY_THD_TIMING: c_int = 25;
+
+    /// `DRVerifyStats`.
+    #[repr(C)]
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct VerifyStats {
+        pub frames: i64,
+        pub markers: i64,
+        pub unchecked: i64,
+        pub bad_units: i64,
+        pub crc_errors: i64,
+        pub order_errors: i64,
+        pub holes: i64,
+        pub hole_dur: i64,
+        pub overlaps: i64,
+        pub overlap_dur: i64,
+        pub delay: i64,
+        pub es_err_max: i64,
+        pub es_err_at: i64,
+        pub es_err_end: i64,
+        pub mkv_err_max: i64,
+        pub mkv_err_at: i64,
+        pub thd_breaks: i64,
+    }
+
+    /// `DRVerify` (only handled through pointers).
+    #[repr(C)]
+    pub struct Verify {
+        _private: [u8; 0],
+    }
 
     /// `DRSpuStats`.
     #[repr(C)]
@@ -1190,6 +1226,19 @@ pub mod discrip {
         pub fn ff_discrip_video_snap(v: *const Video, t: i64, out: *mut i64) -> c_int;
         pub fn ff_discrip_video_set_side(v: *mut Video, cb: Option<FrameCb>, opaque: *mut c_void);
         pub fn ff_discrip_cc_check(data: *const u8, size: c_int) -> c_int;
+        pub fn ff_discrip_verify_open(
+            out: *mut *mut Verify,
+            log: *mut c_void,
+            codec: c_int,
+            track: c_int,
+            kind: c_int,
+            event: Option<EventCb>,
+            event_opaque: *mut c_void,
+        ) -> c_int;
+        pub fn ff_discrip_verify_frame(v: *mut Verify, frame: *const Frame) -> c_int;
+        pub fn ff_discrip_verify_finish(v: *mut Verify) -> c_int;
+        pub fn ff_discrip_verify_stats(v: *const Verify, st: *mut VerifyStats);
+        pub fn ff_discrip_verify_close(v: *mut *mut Verify);
         pub fn ff_discrip_cc_triplets(data: *const u8, size: c_int, out: *mut u8) -> c_int;
         pub fn ff_discrip_spu_open(
             out: *mut *mut Spu,

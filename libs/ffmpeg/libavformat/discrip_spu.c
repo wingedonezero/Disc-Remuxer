@@ -174,6 +174,17 @@ int ff_discrip_spu_check(const uint8_t *data, int size)
     return control(data, size, &c);
 }
 
+/* An output unit: as long as its header says, its control sequences
+ * parse. */
+int ff_discrip_spu_verify(const uint8_t *data, int size)
+{
+    Header h;
+
+    if (!header(data, size, &h) || h.size != size)
+        return DR_UNIT_BAD;
+    return ff_discrip_spu_check(data, size) ? DR_UNIT_OK : DR_UNIT_BAD;
+}
+
 /* ---- timing ---- */
 
 typedef struct Held {

@@ -70,9 +70,10 @@ static int wait_add(Track *t, DRFrame *f)
     return 0;
 }
 
-static int give(DRJoin *j, int track, DRFrame *f, int64_t ts)
+static int give(DRJoin *j, int track, DRFrame *f, int64_t ts, int64_t src)
 {
     f->time = ts + j->offset - j->start;
+    f->src  = src + j->offset - j->start;
     /* an empty marker takes no chapter */
     if (!track && (f->flags & DR_F_KEY) && (f->dur || f->size) && j->mark < j->cfg.nb_marks) {
         uint64_t m = j->cfg.marks[j->mark], o = f->time;
@@ -107,10 +108,10 @@ static void event(DRJoin *j, int kind, int track, int64_t pos, int64_t dur, int6
 static int place_frame(DRJoin *j, int track, DRFrame *f)
 {
     Track *t = &j->t[track];
-    int64_t ts = f->time;
+    int64_t ts = f->time, src = ts;
 
     if (!f->dur && !f->size)                       /* an empty marker keeps its time */
-        return give(j, track, f, ts);
+        return give(j, track, f, ts, ts);
     if (t->kind == DR_KIND_VIDEO) {
         if (ts < 0) {
             av_log(j->log, AV_LOG_ERROR, "Rip core: joiner: a video frame without a time\n");
@@ -119,10 +120,11 @@ static int place_frame(DRJoin *j, int track, DRFrame *f)
         if (!t->seeded || t->e < ts + f->dur)
             t->e = ts + f->dur;                    /* running maximum of the frame ends */
         t->seeded = 1;
-        return give(j, track, f, ts);
+        return give(j, track, f, ts, ts);
     }
     if (ts == AV_NOPTS_VALUE) {
         ts = t->e;                                 /* no time of its own: where the track is */
+        src = ts;
     } else {
         int64_t gap = t->e - ts;
         if (gap > 0 && gap > f->dur && t->kind == DR_KIND_SUBTITLE) {
@@ -143,7 +145,7 @@ static int place_frame(DRJoin *j, int track, DRFrame *f)
         }
     }
     t->e = ts + f->dur;
-    return give(j, track, f, ts);
+    return give(j, track, f, ts, src);
 }
 
 /* The expected time of an audio / subtitle track at the start of its frames

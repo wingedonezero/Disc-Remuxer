@@ -56,6 +56,8 @@ typedef struct DRFrame {
     unsigned     flags;    /**< DR_F_* */
     int          samples;  /**< samples FFmpeg's parser gave the unit, 0 = none */
     int          rate;     /**< and their sample rate */
+    int64_t      src;      /**< from the joiner on: the frame's own time on the title timeline (its
+                                PES-derived time, before the joiner moves it or the junction shifts it) */
 } DRFrame;
 
 /** Hands a frame on; the callee owns it (ff_discrip_frame_unref). */
@@ -154,7 +156,13 @@ typedef struct DRCodec {
      *  buf, -1 when none. NULL: FFmpeg's parser. */
     int (*unit_size)(const uint8_t *buf, int avail);
     int (*resync)(const uint8_t *buf, int avail);
+    /** The check of an output unit (stage 5): DR_UNIT_OK, DR_UNIT_BAD (sync
+     *  word or size wrong), DR_UNIT_CRC (a checksum fails). NULL: not
+     *  checked. */
+    int (*verify)(const uint8_t *data, int size);
 } DRCodec;
+
+enum { DR_UNIT_OK = 0, DR_UNIT_BAD = 1, DR_UNIT_CRC = 2 };
 
 /** The codec table entry of a codec, or NULL (the codec is not supported). */
 const DRCodec *ff_discrip_codec(enum AVCodecID id);
@@ -283,6 +291,13 @@ enum DREventKind {
     DR_EV_SUB_EARLY,       /**< a sub-picture unit before the video's first field left out (pos = its PES time) */
     DR_EV_SUB_OVERLAP,     /**< joiner: a sub-picture starts before the one before it ends, by more than
                                 its own duration (dur = by how much): it keeps its time */
+    /* stage 5 checks (findings, nothing is changed) */
+    DR_EV_VERIFY_UNIT,     /**< an output unit does not parse (sync word, size) */
+    DR_EV_VERIFY_CRC,      /**< an output unit fails its checksum */
+    DR_EV_VERIFY_ORDER,    /**< a unit without a duration, or (audio, subtitles) not after the one before it */
+    DR_EV_VERIFY_HOLE,     /**< video in display order: no picture for dur from pos (count = placeholders in it) */
+    DR_EV_VERIFY_OVERLAP,  /**< video in display order: a picture starts dur before the one before it ends */
+    DR_EV_VERIFY_THD_TIMING, /**< TrueHD / MLP: an AU's input timing breaks (dur = samples off) */
 };
 
 typedef struct DREvent {
@@ -503,6 +518,38 @@ int ff_discrip_cc_check(const uint8_t *data, int size);
  *  an entry whose markers are not a known pattern ends the block. */
 int ff_discrip_cc_triplets(const uint8_t *data, int size, uint8_t *out);
 
+/* ---- Stage 5: checks of a track's output (discrip_verify.c) ----
+ * Fed with every frame of a track as it leaves the core (in output order);
+ * nothing is changed, every finding is an event and counted. */
+
+typedef struct DRVerifyStats {
+    int64_t frames, markers;
+    int64_t unchecked;         /**< units of a codec that has no unit check */
+    int64_t bad_units;         /**< units that do not parse again (sync word, size) */
+    int64_t crc_errors;        /**< units that fail their checksum */
+    int64_t order_errors;      /**< units without a duration; audio / subtitles: not after the one before */
+    int64_t holes, hole_dur;   /**< video in display order: gaps and their total (ticks) */
+    int64_t overlaps, overlap_dur; /**< frames starting before the one before them ends; the largest (ticks) */
+    int64_t delay;             /**< audio: the first frame's output time (a stream file's start delay) */
+    int64_t es_err_max, es_err_at; /**< audio: stream-file position - own time, the largest by size (signed), and
+                                        the own time where it is */
+    int64_t es_err_end;        /**< audio: the same for the last frame */
+    int64_t mkv_err_max, mkv_err_at; /**< audio: output time - own time, the largest by size, where */
+    int64_t thd_breaks;        /**< TrueHD / MLP: input timing breaks */
+} DRVerifyStats;
+
+typedef struct DRVerify DRVerify;
+
+/** Checks of one output track (kind: DRTrackKind). */
+int  ff_discrip_verify_open(DRVerify **v, void *logctx, enum AVCodecID codec, int track, int kind,
+                            DREventCb event, void *event_opaque);
+/** A frame as it leaves the core (not taken over). */
+int  ff_discrip_verify_frame(DRVerify *v, const DRFrame *frame);
+/** The end of the track: the video order check and the summary lines. */
+int  ff_discrip_verify_finish(DRVerify *v);
+void ff_discrip_verify_stats(const DRVerify *v, DRVerifyStats *st);
+void ff_discrip_verify_close(DRVerify **v);
+
 /* rules of codecs in their own files */
 extern const DRAudioRules ff_discrip_audio_mlp;
 extern const DRVideoRules ff_discrip_video_mpv;
@@ -511,6 +558,11 @@ int ff_discrip_mlp_check(const uint8_t *data, int size);
 int ff_discrip_mlp_unit_size(const uint8_t *buf, int avail);
 int ff_discrip_mlp_resync(const uint8_t *buf, int avail);
 int ff_discrip_spu_check(const uint8_t *data, int size);
+int ff_discrip_spu_verify(const uint8_t *data, int size);
+int ff_discrip_mlp_verify(const uint8_t *data, int size);
+/** An AU's input timing (16 bits); returns the samples per AU its major
+ *  sync states, 0 when it has none. */
+int ff_discrip_mlp_timing(const uint8_t *data, int size, int *timing);
 int ff_discrip_spu_unit_size(const uint8_t *buf, int avail);
 int ff_discrip_spu_resync(const uint8_t *buf, int avail);
 

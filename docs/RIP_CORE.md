@@ -189,14 +189,31 @@ The rules above are the default policy. Around them:
   overlapping units are duplicates.
 - **Decide**: every action (drop, shift, absorb, repair, placeholder) is an
   event with its reason and values.
-- **Verify** (after the policy):
-  - every output unit re-parsed: sync word, size, CRC where the codec has one;
-  - per track: output times increase, durations > 0, skew within its bounds,
-    video frames on the grid;
-  - residual sync error per frame (stream-file position - source time):
-    maximum and where; joins where a different action would have given a
-    smaller error;
-  - TrueHD: the access units' own timing counter, every break and its size.
+- **Verify** (after the policy; `discrip_verify.c`, one checker per output
+  track, fed every frame as it leaves the core; nothing is changed, every
+  finding is an event and counted):
+  - every output unit re-parsed by its codec's check: MPEG video / VC-1 a
+    start code and a picture / frame start code; AC-3 / E-AC-3 whole
+    syncframes, each one's CRC (as FFmpeg's decoder checks it); DTS a core
+    frame that fits (the rest an extension substream) or an extension
+    substream; MPEG audio, ADTS, LOAS one frame of their header's size;
+    TrueHD / MLP the AU length field and the major-sync checksum;
+    sub-pictures their size and control sequences; a codec without a check
+    is counted as unchecked (LPCM so far);
+  - per track: durations > 0; audio / subtitles: each frame after the one
+    before it (overlaps counted with the largest); video in display order:
+    each picture starts where the one before it ends (within the 1-tick
+    truncation of grid times), holes with the placeholders in them,
+    overlaps;
+  - audio sync error per frame against its own time (`DRFrame.src`, set by
+    the joiner: the PES-derived time on the title timeline before any move):
+    as a stream file plays it (start delay + the durations before it) and by
+    the output times; the largest of each and where, the stream file's at
+    the end;
+  - TrueHD / MLP: each AU's input timing against the one before it (+ the
+    samples per AU), every break and its size;
+  - not yet: joins where a different action would have given a smaller
+    error.
 
 Events go to the log (messages 5xxx) and, at debug level, as one structured
 line each, so a run can be compared event by event with an expected list.

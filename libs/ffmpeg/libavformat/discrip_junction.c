@@ -123,7 +123,7 @@ static int out_head(DRJunction *j, int64_t time)
 
 static int marker(DRJunction *j, int64_t time)
 {
-    DRFrame f = { .time = time, .flags = DR_F_KEY | DR_F_MARKER, .pos = -1 };
+    DRFrame f = { .time = time, .flags = DR_F_KEY | DR_F_MARKER, .pos = -1, .src = time };
 
     j->st.markers++;
     return j->cfg.out(j->cfg.out_opaque, &f);

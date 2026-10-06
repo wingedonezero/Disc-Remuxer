@@ -87,7 +87,7 @@ unsafe extern "C" fn drop_out(_: *mut c_void, _: c_int, f: *mut Frame) -> c_int 
 }
 
 fn fr(time: i64, dur: i64, flags: u32, size: c_int) -> Frame {
-    Frame { buf: std::ptr::null_mut(), data: std::ptr::null_mut(), size, time, dur, pos: 0, flags, samples: 0, rate: 0 }
+    Frame { buf: std::ptr::null_mut(), data: std::ptr::null_mut(), size, time, dur, pos: 0, flags, samples: 0, rate: 0, src: time }
 }
 
 /// A title of `frames` 25 fps video frames, a key frame every 12, an empty

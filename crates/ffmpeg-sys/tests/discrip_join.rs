@@ -36,7 +36,7 @@ unsafe extern "C" fn on_event(o: *mut c_void, e: *const Event) {
 }
 
 fn fr(time: i64, dur: i64, flags: u32) -> Frame {
-    Frame { buf: std::ptr::null_mut(), data: std::ptr::null_mut(), size: 1, time, dur, pos: 0, flags, samples: 0, rate: 0 }
+    Frame { buf: std::ptr::null_mut(), data: std::ptr::null_mut(), size: 1, time, dur, pos: 0, flags, samples: 0, rate: 0, src: time }
 }
 
 /// Segments of (track, frame) in input order.
