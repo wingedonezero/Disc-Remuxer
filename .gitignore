@@ -30,8 +30,9 @@ build/
 dist/
 *.egg-info/
 
-# Rust / Cargo
+# Rust / Cargo (legacy/rust)
 /target/
+legacy/rust/target/
 **/*.rs.bk
 *.orig
 

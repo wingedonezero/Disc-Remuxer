@@ -299,6 +299,6 @@ line each, so a run can be compared event by event with an expected list.
 check, repair); 6. sub-picture snap; 7. checks; 8. seamless overlap search;
 9. PCM tracks.
 
-Each rule gets a test on built payload streams (`crates/ffmpeg-sys/tests/`).
+Each rule gets a test on built payload streams (`tests/unit/test_discrip_*.py`).
 With the corpus variables set, whole titles are run and their event lists
 compared with expected lists (HD DVD first, then DVD).

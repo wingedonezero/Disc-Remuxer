@@ -36,9 +36,15 @@ changes one for a single run. Anything the libraries keep (key caches, AACS
 key files) goes into `.config/` next to the program. Only HD DVD images so
 far.
 
-While the program moves from Rust to C, the Rust crates still build the
-current `disc-remuxer` and run the tests (`cargo build`, `cargo test
---workspace`).
+## Testing
+
+```
+./build.sh test           # the debug build, then every test (pytest)
+./build.sh test -k vc1    # arguments go to pytest
+```
+
+Needs `python3` with `venv` and its headers; the test tools are installed
+into `build/venv` on the first run.
 
 ## Layout
 
