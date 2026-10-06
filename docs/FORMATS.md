@@ -1,10 +1,11 @@
 # What every format demuxer gives the program
 
-`disc-remuxer` has no format-specific code. Each disc format has one
-orchestrator demuxer in our FFmpeg (HD DVD: `hddvd`; DVD: `dvdvideo`;
-Blu-ray, UHD and 3D: one Blu-ray demuxer), runs its titles through the
-shared rip core (`libavformat/discrip_*.c`) and gives the program the same
-things. The program tries the demuxers in turn and shows what they report.
+`disc-remuxer` has no format-specific code. It opens every source with one
+demuxer of our FFmpeg, `disc` (the disc layer, `libavformat/discdec.c`): it
+tells the kind of disc and hands it to that kind's format part (HD DVD now;
+DVD-Video and Blu-ray, UHD and 3D to come), which runs its titles through
+the shared rip core (`libavformat/discrip_*.c`). Every format part gives the
+program the same things, listed here.
 
 ## Options the program sets
 
@@ -16,6 +17,9 @@ things. The program tries the demuxers in turn and shows what they report.
 | `cc_helper` | formats with caption tracks: the caption converter (CCExtractor); unset: the `ccextractor` next to the running program |
 
 ## Metadata on open (`AVFormatContext.metadata`)
+
+The disc layer sets `disc`, `label`, `filesystem` and `udf_revision`; the
+format part the rest.
 
 | Key | Value |
 |---|---|
@@ -62,7 +66,7 @@ them on the video's key frames).
 
 ## Log
 
-Everything the demuxer and the rip core have to say goes through
+Everything the disc layer, the format part and the rip core have to say goes through
 `av_log`: errors and warnings a reader must see at `AV_LOG_ERROR` /
 `AV_LOG_WARNING` in plain language, normal steps at `AV_LOG_INFO`, details
 at `AV_LOG_VERBOSE` / `AV_LOG_DEBUG`. Messages that come again on every title

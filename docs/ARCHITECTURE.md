@@ -1,8 +1,8 @@
 # Architecture
 
-Status: **plan agreed, being carried out** (the order of work is below).
-Today's code is still laid out the old way; each step of the order moves a
-part to its place and is checked against the output from before the move.
+Status: **plan agreed, being carried out** (the order of work is below;
+done: step 1). Each step moves a part to its place and is checked against
+the output from before the move.
 
 ## Words
 
@@ -12,7 +12,7 @@ One name per job, used everywhere (code comments, logs, docs):
 |---|---|---|
 | reader | gets bytes off the source: opens the image or folder, reads its file system, reads sectors with retries | `discio_*` |
 | decryption | makes encrypted sectors usable | libdvdcss (DVD), libaacs (HD DVD, Blu-ray) |
-| disc layer | opens a source once, tells which kind of disc it is, gives the title list, opens a title | `discdec.c` (to add) |
+| disc layer | opens a source once, tells which kind of disc it is, gives the title list, opens a title | `discdec.c`, `disc.h` |
 | format part | knows one disc format's structure: titles, clips, tracks, chapters, keys; runs the line below for a title | DVD (`dvdvideo*`), HD DVD (`hddvd*`), Blu-ray (to add) |
 | demuxer | splits a container into packets, one pile per stream | FFmpeg's `mpeg.c` (VOB / EVOB packs), `mpegts.c` (Blu-ray) |
 | parser | cuts a stream's packets into whole frames, each with its time | FFmpeg's `*_parser.c` |
@@ -60,9 +60,9 @@ Rules:
 |---|---|
 | `discio_*.c`, `discio.h` | stay: the readers |
 | `disclang.c` | stays: language codes for every format part |
-| (new) `discdec.c` | the disc layer, the only disc demuxer the program opens |
+| `discdec.c`, `disc.h` (step 1, done) | the disc layer, the only disc demuxer the program opens; `disc.h` is what a format part gives it |
 | `dvdvideodec.c`, `dvdvideo_*.c` | the DVD format part (no longer a demuxer of its own); its playback reading through libdvdnav (`dvdvideo_play.c`) gives way to the navigation scan + title plan, with sectors fed into `mpeg.c` |
-| `hddvddec.c`, `hddvd_*.c` | the HD DVD format part (no longer a demuxer of its own) |
+| `hddvddec.c`, `hddvd_*.c` | the HD DVD format part `ff_disc_hddvd` (step 1, done: no demuxer of its own any more) |
 | `hddvd_tracks.c` | stays (stream table, languages); its content probe reads through the line instead of its own pack reader and frame cutter |
 | `discrip_pack.c`, `discrip_ps.c` | into `mpeg.c`: option for disc sectors (one pack per 2048-byte sector, the sector rules) and the LPCM header length (3 / 5 bytes, always LPCM) |
 | `discrip_units.c` (the cutter stage) | goes: FFmpeg's read loop (`demux.c`) runs the parsers; where the frame / timestamp pairing must differ for discs, that goes into `demux.c` / `parser.c` behind the disc flag |
@@ -86,9 +86,10 @@ their logs for changed warnings).
 
 0. **Baseline:** today's program kept, and its output for the corpus HD DVD
    titles recorded, as the reference for every later comparison.
-1. **Disc layer:** `discdec.c` opens the source once, tells the disc kind,
-   lists titles and opens one through its format part; the program opens
-   only "disc"; HD DVD plugged in as the first format part.
+1. **Disc layer (done):** `discdec.c` opens the source once, tells the disc
+   kind and opens a title through its format part; the program opens only
+   "disc"; HD DVD is the first format part. Still to come with it: the whole
+   title list in one open (today `info` opens the disc once per title).
 2. **Demuxer:** `mpeg.c` gets the disc options; the HD DVD part feeds it
    directly; `discrip_pack.c` and `discrip_ps.c` go.
 3. **Parsers, one codec at a time:** AC-3, E-AC-3, DTS, MPEG audio (FFmpeg's
@@ -111,8 +112,8 @@ left.
 
 ## How a disc is read today (before the order above)
 
-The program tries the demuxers in turn (today only `hddvd`). The HD DVD
-demuxer reads a title's blocks through the readers and decryption, feeds
+The program opens `disc`, which hands HD DVD images to the HD DVD part. The
+HD DVD part reads a title's blocks through the readers and decryption, feeds
 them into `discrip_ps` (its own MPEG-PS demuxer on `discrip_pack`), and runs
 the packets through the rip core (`discrip_*`: its cutter stage runs FFmpeg's
 parsers for MPEG video, AC-3 / E-AC-3, DTS, MPEG audio and AAC, its own

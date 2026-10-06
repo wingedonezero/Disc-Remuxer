@@ -78,21 +78,20 @@ static int64_t meta_int(AVDictionary *m, const char *key, int64_t def)
     return e ? strtoll(e->value, NULL, 10) : def;
 }
 
-/* The format demuxers, tried in this order. Each one follows the same
- * contract (docs/FORMATS.md): the disc and its titles in the metadata on
- * open, each track's result at the end, read progress as an option. */
-static const char *const formats[] = { "hddvd", NULL };
+/* The disc demuxer: it tells the kind of disc and follows the contract of
+ * docs/FORMATS.md (the disc and its titles in the metadata on open, each
+ * track's result at the end, read progress as an option). */
+#define DISC_FORMAT "disc"
 
-/* Which demuxer reads source (NULL: none, logged); logs the disc line. */
+/* Opens source as a disc (NULL: it cannot be, logged); logs the disc line. */
 static const char *source_format(const char *source, int *nb_titles)
 {
     AVFormatContext *ctx = NULL;
     const char *format = NULL;
-    int ret = AVERROR_INVALIDDATA;
+    int ret;
 
-    for (int i = 0; formats[i] && !format; i++)
-        if ((ret = open_title(formats[i], source, 0, &ctx)) >= 0)
-            format = formats[i];
+    if ((ret = open_title(DISC_FORMAT, source, 0, &ctx)) >= 0)
+        format = DISC_FORMAT;
     if (!format) {
         log_msg(MSG_SOURCE_UNSUPPORTED, LOG_ERROR, "%s cannot be read as a disc this program supports (%s); "
                 "only HD DVD images are wired so far", source, av_err2str(ret));

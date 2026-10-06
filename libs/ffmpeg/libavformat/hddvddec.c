@@ -1,6 +1,6 @@
 /*
- * HD DVD (Advanced Content) demuxer: the orchestrator. It opens a disc image
- * through the disc readers (discio) and reads the title set's structure
+ * HD DVD (Advanced Content): the format part of the disc layer (disc.h).
+ * On the disc the disc layer opened it reads the title set's structure
  * (VTI), the playlists, the AACS keys, the title plan and the titles'
  * tracks; one title's tracks become the streams. Its EVOB clips are read in
  * order through the disc formats' copy of FFmpeg's MPEG-PS demuxer
@@ -32,11 +32,11 @@
 #include "libavutil/log.h"
 #include "libavutil/mem.h"
 #include "libavutil/dict.h"
-#include "libavutil/opt.h"
 
 #include "avformat.h"
 #include "avio_internal.h"
 #include "demux.h"
+#include "disc.h"
 #include "discio.h"
 #include "discrip.h"
 #include "hddvd_internal.h"
@@ -49,16 +49,7 @@
 #define LEAD_IN_TOLERANCE 110160000LL     /* HD DVD audio lead-in tolerance: 102 ms (ticks) */
 
 typedef struct HDDVDDemuxContext {
-    const AVClass *class;
-    int            opt_read_attempts;
-    int            opt_udf_reader;
-    int            opt_min_length;
-    int            opt_title;
-    char         **opt_keydb;
-    unsigned       nb_opt_keydb;
-
-    DiscIOSource  *image;
-    DiscIOFS      *fs;
+    DiscIOFS      *fs;              /**< the disc layer's */
     HDDVDVTI      *vti;
     HDDVDXpl     **xpls;
     int            nb_xpls;
@@ -87,7 +78,6 @@ typedef struct HDDVDDemuxContext {
     int            rip_done;        /**< every clip was read, the core finished */
     int64_t        blocks_total;    /**< blocks of all the title's clips */
     int64_t        blocks_done;     /**< blocks read so far */
-    int64_t        progress;        /**< exported option: blocks_done / blocks_total in 1/10000 */
     int            chapters_set;
     AVPacket      *in;
 } HDDVDDemuxContext;
@@ -102,7 +92,7 @@ static void subdemux_close(HDDVDDemuxContext *c)
 static int subdemux_read(void *opaque, uint8_t *buf, int buf_size)
 {
     AVFormatContext *s = opaque;
-    HDDVDDemuxContext *c = s->priv_data;
+    HDDVDDemuxContext *c = ff_disc_part(s);
     HDDVDClip *clip = c->title->clips[c->clip];
     int ret;
 
@@ -120,7 +110,7 @@ static int subdemux_read(void *opaque, uint8_t *buf, int buf_size)
         }
         c->blocks_done++;
         if (c->blocks_total)
-            c->progress = c->blocks_done * 10000 / c->blocks_total;
+            ((DiscContext *)s->priv_data)->progress = c->blocks_done * 10000 / c->blocks_total;
         if (!ret) {
             av_log(s, AV_LOG_WARNING, "EVOB %s: block %"PRIu32" is not usable: left out\n", clip->evob->name, b);
             c->skipped++;
@@ -134,7 +124,7 @@ static int subdemux_read(void *opaque, uint8_t *buf, int buf_size)
 
 static int subdemux_open(AVFormatContext *s)
 {
-    HDDVDDemuxContext *c = s->priv_data;
+    HDDVDDemuxContext *c = ff_disc_part(s);
     extern const FFInputFormat ff_discrip_ps_demuxer;
     AVDictionary *opts = NULL;
     int ret;
@@ -179,7 +169,7 @@ static void held_free(HDDVDDemuxContext *c)
  * where its last 64 MiB begin, its PTS wrap reference still to be found. */
 static int clip_start(AVFormatContext *s, int k)
 {
-    HDDVDDemuxContext *c = s->priv_data;
+    HDDVDDemuxContext *c = ff_disc_part(s);
     const HDDVDTitle *t = c->title;
     const HDDVDClip *clip = t->clips[k];
     int ret;
@@ -201,9 +191,9 @@ static int clip_start(AVFormatContext *s, int k)
     return ff_discrip_title_segment(c->rip);
 }
 
-static int hddvd_close(AVFormatContext *s)
+static void hddvd_close(AVFormatContext *s)
 {
-    HDDVDDemuxContext *c = s->priv_data;
+    HDDVDDemuxContext *c = ff_disc_part(s);
 
     subdemux_close(c);
     held_free(c);
@@ -215,9 +205,6 @@ static int hddvd_close(AVFormatContext *s)
     ff_hddvd_aacs_close(&c->aacs);
     ff_hddvd_xpl_free_all(&c->xpls, c->nb_xpls);
     ff_hddvd_vti_free(&c->vti);
-    ff_discio_fs_close(&c->fs);
-    ff_discio_source_free(&c->image);
-    return 0;
 }
 
 /* The id the disc pack reader (discrip_ps.c) gives a track's packets: video stream_id
@@ -243,7 +230,7 @@ static int pes_id(const HDDVDTrack *k)
 
 static int add_streams(AVFormatContext *s, const HDDVDTitle *t)
 {
-    HDDVDDemuxContext *c = s->priv_data;
+    HDDVDDemuxContext *c = ff_disc_part(s);
 
     for (int i = 0; i < t->nb_tracks; i++) {
         const HDDVDTrack *k = &t->tracks[i];
@@ -298,49 +285,33 @@ static int add_streams(AVFormatContext *s, const HDDVDTitle *t)
 
 static int rip_open(AVFormatContext *s);
 
-static int hddvd_read_header(AVFormatContext *s)
+static int hddvd_open(AVFormatContext *s)
 {
-    HDDVDDemuxContext *c = s->priv_data;
-    DiscIOImageOptions opts = DISCIO_IMAGE_OPTIONS_DEFAULT;
+    DiscContext *d = s->priv_data;
+    HDDVDDemuxContext *c = ff_disc_part(s);
     int ret;
 
-    opts.udf_reader = c->opt_udf_reader;
-    if ((ret = ff_discio_source_open_file(s, s->url, &c->image)) < 0)
-        return ret;
-    c->image->attempts = c->opt_read_attempts;
-    if ((ret = ff_discio_mount_image(c->image, &opts, &c->fs)) < 0)
-        return ret;
-    if (ff_discio_disc_format(c->fs) != DISCIO_DISC_HDDVD) {
-        av_log(s, AV_LOG_ERROR, "'%s' is not an HD DVD image (no /HVDVD_TS/HVA00001.VTI "
-               "or /HDDVD_TS/HVA00001.VTI with /ADV_OBJ/DISCID.DAT)\n", s->url);
-        return AVERROR_INVALIDDATA;
-    }
+    c->fs = d->fs;
     if ((ret = ff_hddvd_vti_open(s, c->fs, &c->vti)) < 0)
         return ret;
     if ((ret = ff_hddvd_xpl_load(s, c->fs, &c->xpls, &c->nb_xpls)) < 0)
         return ret;
     ff_hddvd_evob_marks(s, c->vti, c->xpls, c->nb_xpls);
-    if ((ret = ff_hddvd_aacs_open(s, c->fs, (const char *const *)c->opt_keydb, c->nb_opt_keydb,
+    if ((ret = ff_hddvd_aacs_open(s, c->fs, (const char *const *)d->opt_keydb, d->nb_opt_keydb,
                                   c->nb_xpls, &c->aacs)) < 0)
         return ret;
-    if ((ret = ff_hddvd_titles_plan(s, c->fs, c->vti, c->xpls, c->nb_xpls, c->opt_min_length, &c->plan)) < 0)
+    if ((ret = ff_hddvd_titles_plan(s, c->fs, c->vti, c->xpls, c->nb_xpls, d->opt_min_length, &c->plan)) < 0)
         return ret;
     if ((ret = ff_hddvd_tracks_build(s, c->fs, c->aacs, c->vti, c->xpls, c->nb_xpls, c->plan)) < 0)
         return ret;
-    if (c->opt_title >= c->plan->nb_titles) {
-        av_log(s, AV_LOG_ERROR, "HD DVD: title %d does not exist (the disc has %d)\n", c->opt_title,
+    if (d->opt_title >= c->plan->nb_titles) {
+        av_log(s, AV_LOG_ERROR, "HD DVD: title %d does not exist (the disc has %d)\n", d->opt_title,
                c->plan->nb_titles);
         return AVERROR(EINVAL);
     }
     av_dict_set_int(&s->metadata, "titles", c->plan->nb_titles, 0);
-    /* the disc as a whole, for the caller's overview */
-    av_dict_set(&s->metadata, "disc", "HD DVD", 0);
-    av_dict_set(&s->metadata, "label", c->fs->label, 0);
-    av_dict_set(&s->metadata, "filesystem", c->fs->ops->name, 0);
-    if (c->fs->udf_revision)
-        av_dict_set_int(&s->metadata, "udf_revision", c->fs->udf_revision, 0);
     av_dict_set_int(&s->metadata, "encrypted", c->aacs != NULL, 0);
-    c->title = &c->plan->titles[c->opt_title];
+    c->title = &c->plan->titles[d->opt_title];
     if (c->title->name && *c->title->name && av_dict_set(&s->metadata, "title", c->title->name, 0) < 0)
         return AVERROR(ENOMEM);
     /* the disc's chapter records (the ripped title's chapters are known at its end) */
@@ -358,7 +329,7 @@ static int hddvd_read_header(AVFormatContext *s)
  * (track 0 is the title's video). */
 static int rip_open(AVFormatContext *s)
 {
-    HDDVDDemuxContext *c = s->priv_data;
+    HDDVDDemuxContext *c = ff_disc_part(s);
     const HDDVDTitle *t = c->title;
     DRTitleTrack *tracks;
     int64_t *records;
@@ -406,7 +377,7 @@ static int rip_open(AVFormatContext *s)
  * reference, in ticks; whether it lies in the clip's last 64 MiB. */
 static int feed(AVFormatContext *s, const AVPacket *pkt)
 {
-    HDDVDDemuxContext *c = s->priv_data;
+    HDDVDDemuxContext *c = ff_disc_part(s);
     const AVStream *sub = c->mpeg_ctx->streams[pkt->stream_index];
     int64_t time = AV_NOPTS_VALUE;
     int tail = (uint64_t)pkt->pos + (uint64_t)c->skipped * HDDVD_BLOCK >= c->tail_start, n = 0, ret;
@@ -448,7 +419,7 @@ static int hold(HDDVDDemuxContext *c, AVPacket *pkt)
  * time below the reference has wrapped (+2^33). */
 static int read_input(AVFormatContext *s)
 {
-    HDDVDDemuxContext *c = s->priv_data;
+    HDDVDDemuxContext *c = ff_disc_part(s);
     AVPacket *pkt = c->in;
     const AVStream *sub;
     int64_t sector;
@@ -506,7 +477,7 @@ static int read_input(AVFormatContext *s)
 /* The chapters of the ripped title, once the core finished. */
 static int set_chapters(AVFormatContext *s)
 {
-    HDDVDDemuxContext *c = s->priv_data;
+    HDDVDDemuxContext *c = ff_disc_part(s);
     DRChapter *ch;
     int n, ret;
 
@@ -530,7 +501,7 @@ static int set_chapters(AVFormatContext *s)
  * format of the first audio frame header. */
 static int lpcm_params(AVFormatContext *s, int k)
 {
-    HDDVDDemuxContext *c = s->priv_data;
+    HDDVDDemuxContext *c = ff_disc_part(s);
     AVCodecParameters *par = s->streams[k]->codecpar;
     const DRLpcm *p;
 
@@ -550,7 +521,7 @@ static int lpcm_params(AVFormatContext *s, int k)
  * s); empty markers carry no bytes and are not given out. */
 static int hddvd_read_packet(AVFormatContext *s, AVPacket *pkt)
 {
-    HDDVDDemuxContext *c = s->priv_data;
+    HDDVDDemuxContext *c = ff_disc_part(s);
     int ret;
 
     for (;;) {
@@ -628,35 +599,11 @@ static int hddvd_read_packet(AVFormatContext *s, AVPacket *pkt)
     }
 }
 
-#define OFFSET(x) offsetof(HDDVDDemuxContext, x)
-static const AVOption hddvd_options[] = {
-    {"read_attempts",   "read attempts per request on the disc",                    OFFSET(opt_read_attempts),  AV_OPT_TYPE_INT,    { .i64=DISCIO_DEFAULT_ATTEMPTS }, 1, 100, AV_OPT_FLAG_DECODING_PARAM },
-    {"keydb",           "AACS key files (KEYDB.cfg), read in this order",          OFFSET(opt_keydb),          AV_OPT_TYPE_STRING | AV_OPT_TYPE_FLAG_ARRAY, { .arr = NULL }, 0, 0, AV_OPT_FLAG_DECODING_PARAM },
-    {"title",           "the title to open (0 = the first of the disc's title list)", OFFSET(opt_title), AV_OPT_TYPE_INT, { .i64=0 }, 0, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
-    {"progress",        "how far the title is read (1/10000), exported", OFFSET(progress), AV_OPT_TYPE_INT64, { .i64 = 0 }, 0, 10000, AV_OPT_FLAG_DECODING_PARAM | AV_OPT_FLAG_EXPORT | AV_OPT_FLAG_READONLY },
-    {"min_length",      "titles shorter than this (seconds) are listed, not selected", OFFSET(opt_min_length), AV_OPT_TYPE_INT, { .i64=0 }, 0, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
-    {"udf_reader",      "UDF reader for disc images",                               OFFSET(opt_udf_reader),     AV_OPT_TYPE_INT,    { .i64=DISCIO_UDF_NETBSD }, DISCIO_UDF_NETBSD, DISCIO_UDF_LINUX, AV_OPT_FLAG_DECODING_PARAM, .unit = "udf_reader" },
-        {"netbsd",      "based on NetBSD (default)",                                0,                          AV_OPT_TYPE_CONST,  { .i64=DISCIO_UDF_NETBSD }, 0, 0, AV_OPT_FLAG_DECODING_PARAM, .unit = "udf_reader" },
-        {"linux",       "based on Linux",                                           0,                          AV_OPT_TYPE_CONST,  { .i64=DISCIO_UDF_LINUX },  0, 0, AV_OPT_FLAG_DECODING_PARAM, .unit = "udf_reader" },
-    {NULL}
-};
-
-static const AVClass hddvd_class = {
-    .class_name = "HD DVD demuxer",
-    .item_name  = av_default_item_name,
-    .option     = hddvd_options,
-    .version    = LIBAVUTIL_VERSION_INT
-};
-
-const FFInputFormat ff_hddvd_demuxer = {
-    .p.name         = "hddvd",
-    .p.long_name    = NULL_IF_CONFIG_SMALL("HD DVD (Advanced Content)"),
-    .p.priv_class   = &hddvd_class,
-    .p.flags        = AVFMT_SHOW_IDS | AVFMT_NOFILE | AVFMT_NO_BYTE_SEEK |
-                      AVFMT_NOGENSEARCH | AVFMT_NOBINSEARCH,
-    .priv_data_size = sizeof(HDDVDDemuxContext),
-    .flags_internal = FF_INFMT_FLAG_INIT_CLEANUP,
-    .read_close     = hddvd_close,
-    .read_header    = hddvd_read_header,
-    .read_packet    = hddvd_read_packet,
+const DiscFormat ff_disc_hddvd = {
+    .name        = "HD DVD",
+    .kind        = DISCIO_DISC_HDDVD,
+    .priv_size   = sizeof(HDDVDDemuxContext),
+    .open        = hddvd_open,
+    .read_packet = hddvd_read_packet,
+    .close       = hddvd_close,
 };
