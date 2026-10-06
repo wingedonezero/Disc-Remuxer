@@ -153,35 +153,112 @@ int dr_probe_dvdvideo(const char *path, const char *options)
 
 /* ---- elementary-stream output ---- */
 
-/* One stream's statistics after demuxing (timestamps in the stream's time
- * base, 90 kHz for the disc demuxers; decode timestamps where given). */
+/* One stream's result after demuxing (times in ms on the title timeline). */
 typedef struct DrStreamStats {
     int         index;
-    const char *kind, *codec, *lang, *file;     /* file "" = not written (a track carried by another) */
-    int64_t     packets, bytes, no_ts;
-    int64_t     first_ts, end_ts;               /* first timestamp, last timestamp + duration */
-    int64_t     overlaps, max_overlap;          /* packets starting before the previous one ended */
-    int64_t     gaps, max_gap;                  /* packets starting after the previous one ended */
+    const char *kind, *codec, *lang, *file;     /* file "" = not written */
+    int64_t     packets, bytes;
+    int64_t     first_ms, end_ms;               /* first packet's time, last packet's end */
+    int64_t     delay_ms;                       /* audio: the start delay in the file name */
 } DrStreamStats;
 
 typedef void (*dr_demux_stream_cb)(void *opaque, const DrStreamStats *st);
+/* The path prefix (folder and base name) of a title's files from its name
+ * (NULL when the demuxer gives none); returns 0 or a negative AVERROR. */
+typedef int (*dr_demux_name_cb)(void *opaque, const char *title_name, char *prefix, int size);
 
+/* The file extension and the codec's short name in file names. */
 static const char *es_extension(enum AVCodecID id)
 {
     switch (id) {
+    case AV_CODEC_ID_MPEG1VIDEO:   return "m1v";
     case AV_CODEC_ID_MPEG2VIDEO:   return "m2v";
     case AV_CODEC_ID_VC1:          return "vc1";
     case AV_CODEC_ID_H264:         return "h264";
+    case AV_CODEC_ID_HEVC:         return "hevc";
     case AV_CODEC_ID_AC3:          return "ac3";
     case AV_CODEC_ID_EAC3:         return "eac3";
     case AV_CODEC_ID_TRUEHD:       return "thd";
     case AV_CODEC_ID_MLP:          return "mlp";
     case AV_CODEC_ID_DTS:          return "dts";
+    case AV_CODEC_ID_MP1:          return "mp1";
     case AV_CODEC_ID_MP2:          return "mp2";
-    case AV_CODEC_ID_PCM_DVD:      return "lpcm";
+    case AV_CODEC_ID_MP3:          return "mp3";
+    case AV_CODEC_ID_AAC:          return "aac";
+    case AV_CODEC_ID_PCM_S16LE:
+    case AV_CODEC_ID_PCM_S24LE:    return "wav";
     case AV_CODEC_ID_DVD_SUBTITLE: return "spu";
     default:                       return "bin";
     }
+}
+
+static const char *es_label(enum AVCodecID id, int profile)
+{
+    switch (id) {
+    case AV_CODEC_ID_MPEG1VIDEO:   return "Mpeg1";
+    case AV_CODEC_ID_MPEG2VIDEO:   return "Mpeg2";
+    case AV_CODEC_ID_VC1:          return "VC-1";
+    case AV_CODEC_ID_H264:         return "Mpeg4";
+    case AV_CODEC_ID_HEVC:         return "MpegH";
+    case AV_CODEC_ID_AC3:          return "DD";
+    case AV_CODEC_ID_EAC3:         return "DDplus";
+    case AV_CODEC_ID_TRUEHD:       return "TrueHD";
+    case AV_CODEC_ID_MLP:          return "MLP";
+    case AV_CODEC_ID_DTS:          return profile == AV_PROFILE_DTS_HD_MA ? "DTS-HD MA" :
+                                          profile == AV_PROFILE_DTS_HD_HRA ? "DTS-HD HR" : "DTS";
+    case AV_CODEC_ID_MP1:
+    case AV_CODEC_ID_MP2:
+    case AV_CODEC_ID_MP3:          return "MPEG audio";
+    case AV_CODEC_ID_AAC:          return "AAC";
+    case AV_CODEC_ID_PCM_DVD:
+    case AV_CODEC_ID_PCM_S16LE:
+    case AV_CODEC_ID_PCM_S24LE:    return "LPCM";
+    case AV_CODEC_ID_DVD_SUBTITLE: return "VobSub";
+    default:                       return avcodec_get_name(id);
+    }
+}
+
+#define HOLD_MAX 64   /* audio packets kept while their channel layout is not known yet */
+
+typedef struct EsOut {
+    DrStreamStats st;
+    char         *name;
+    FILE         *f;
+    int           wav;              /* a WAV header to complete at the end */
+    int           opened;           /* the file name is chosen */
+    AVCodecContext *avctx;          /* audio: FFmpeg's decoder, for the channel layout */
+    AVFrame        *frame;
+    int             layout_done;    /* a frame was decoded (or decoding gave up) */
+    AVPacket    **hold;
+    int           nb_hold;
+} EsOut;
+
+static void put_le(FILE *f, uint64_t v, int n)
+{
+    for (int i = 0; i < n; i++)
+        fputc((v >> (8 * i)) & 0xFF, f);
+}
+
+/* RIFF WAVE header: WAVE_FORMAT_PCM for up to 2 channels of 16 bits, else
+ * WAVE_FORMAT_EXTENSIBLE with the channel mask; sizes filled in at the end. */
+static void wav_header(FILE *f, const AVCodecParameters *par, int64_t data)
+{
+    int ch = par->ch_layout.nb_channels, bits = par->codec_id == AV_CODEC_ID_PCM_S24LE ? 24 : 16;
+    int ext = ch > 2 || bits > 16, fmt = ext ? 40 : 16;
+    uint64_t riff = 4 + 8 + fmt + 8 + data;
+
+    fputs("RIFF", f); put_le(f, riff > 0xFFFFFFFFu ? 0xFFFFFFFFu : riff, 4); fputs("WAVE", f);
+    fputs("fmt ", f); put_le(f, fmt, 4);
+    put_le(f, ext ? 0xFFFE : 1, 2); put_le(f, ch, 2); put_le(f, par->sample_rate, 4);
+    put_le(f, (uint64_t)par->sample_rate * ch * bits / 8, 4); put_le(f, ch * bits / 8, 2); put_le(f, bits, 2);
+    if (ext) {
+        static const uint8_t pcm_guid[14] = { 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00,
+                                              0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71 };
+        put_le(f, 22, 2); put_le(f, bits, 2);
+        put_le(f, par->ch_layout.order == AV_CHANNEL_ORDER_NATIVE ? par->ch_layout.u.mask : 0, 4);
+        put_le(f, 1, 2); fwrite(pcm_guid, 1, sizeof(pcm_guid), f);
+    }
+    fputs("data", f); put_le(f, data > 0xFFFFFFFFu ? 0xFFFFFFFFu : data, 4);
 }
 
 /* Matroska chapter XML (mkvmerge --chapters). */
@@ -219,23 +296,82 @@ static int write_chapters(const AVFormatContext *ctx, const char *path)
     return fclose(f) ? AVERROR(errno) : 0;
 }
 
+/* Chooses the stream's file name and opens it: <prefix>_<NN>_<lang>_<codec>
+ * [_<channel layout>][ DELAY <ms>ms].<ext>; audio carries its start delay
+ * (its first time against the title start, which is the video's). */
+static int es_open(const AVFormatContext *ctx, const AVStream *st, EsOut *o, const char *prefix, int64_t first)
+{
+    const AVCodecParameters *par = st->codecpar;
+    char layout[64] = "", delay[32] = "";
+    int audio = par->codec_type == AVMEDIA_TYPE_AUDIO;
+    int profile = o->avctx ? o->avctx->profile : par->profile;
+
+    o->opened = 1;
+    if (audio) {
+        const AVChannelLayout *cl = par->ch_layout.nb_channels ? &par->ch_layout :
+                                    o->frame && o->frame->ch_layout.nb_channels ? &o->frame->ch_layout : NULL;
+        if (cl) {
+            layout[0] = '_';
+            av_channel_layout_describe(cl, layout + 1, sizeof(layout) - 1);
+        } else {
+            av_log(NULL, AV_LOG_WARNING, "stream %d: channel layout not known: not in the file name\n", st->index);
+        }
+        o->st.delay_ms = av_rescale_q_rnd(first, st->time_base, (AVRational){ 1, 1000 }, AV_ROUND_NEAR_INF);
+        snprintf(delay, sizeof(delay), " DELAY %"PRId64"ms", o->st.delay_ms);
+    }
+    if (!(o->name = av_asprintf("%s_%02d_%s_%s%s%s.%s", prefix, st->index, *o->st.lang ? o->st.lang : "und",
+                                es_label(par->codec_id, profile), layout, delay, es_extension(par->codec_id))))
+        return AVERROR(ENOMEM);
+    o->st.file = o->name;
+    if (!(o->f = fopen(o->name, "wb")))
+        return AVERROR(errno);
+    if (par->codec_id == AV_CODEC_ID_PCM_S16LE || par->codec_id == AV_CODEC_ID_PCM_S24LE) {
+        o->wav = 1;
+        wav_header(o->f, par, 0);
+    }
+    (void)ctx;
+    return 0;
+}
+
+static int es_write(EsOut *o, const AVPacket *pkt)
+{
+    if (fwrite(pkt->data, 1, pkt->size, o->f) != (size_t)pkt->size)
+        return AVERROR(EIO);
+    o->st.bytes += pkt->size;
+    return 0;
+}
+
+static int es_flush_hold(const AVFormatContext *ctx, const AVStream *st, EsOut *o, const char *prefix)
+{
+    int ret = 0;
+
+    if (!o->opened && o->nb_hold && (ret = es_open(ctx, st, o, prefix, o->hold[0]->pts)) < 0)
+        return ret;
+    for (int i = 0; i < o->nb_hold; i++) {
+        if (ret >= 0)
+            ret = es_write(o, o->hold[i]);
+        av_packet_free(&o->hold[i]);
+    }
+    o->nb_hold = 0;
+    return ret;
+}
+
 /* Opens title `title` of path with demuxer `format` (options "k=v:k=v",
- * key_files set as the demuxer's keydb option when not NULL) and writes every
- * stream's packets as they come to <outdir>/<prefix><index>_<lang>.<ext>, the
- * chapters to <outdir>/<prefix>chapters.xml. *nb_titles gets the demuxer's
- * "titles" metadata (or -1). cb gets each stream's statistics at the end.
- * Returns 0 or a negative AVERROR. */
+ * key_files set as the demuxer's keydb option when not NULL) and writes each
+ * stream's packets back to back to its own file, the chapters to
+ * <prefix>_chapters.xml; the prefix comes from name_cb. *nb_titles gets the
+ * demuxer's "titles" metadata (or -1). cb gets each stream's result at the
+ * end. Returns 0 or a negative AVERROR. */
 int dr_demux(const char *format, const char *path, const char *options, const char *key_files,
-             const char *outdir, const char *prefix, int *nb_titles, dr_demux_stream_cb cb, void *opaque)
+             dr_demux_name_cb name_cb, void *name_opaque, int *nb_titles, dr_demux_stream_cb cb, void *opaque)
 {
     const AVInputFormat *fmt = av_find_input_format(format);
     AVFormatContext *ctx = NULL;
     AVDictionary *opts = NULL;
     const AVDictionaryEntry *e;
-    FILE **files = NULL;
-    DrStreamStats *stats = NULL;
-    char **names = NULL;
+    EsOut *out = NULL;
     AVPacket *pkt = NULL;
+    char prefix[4096];
     int ret;
 
     *nb_titles = -1;
@@ -249,88 +385,113 @@ int dr_demux(const char *format, const char *path, const char *options, const ch
         goto end;
     if ((e = av_dict_get(ctx->metadata, "titles", NULL, 0)))
         *nb_titles = atoi(e->value);
-    files = av_calloc(ctx->nb_streams, sizeof(*files));
-    stats = av_calloc(ctx->nb_streams, sizeof(*stats));
-    names = av_calloc(ctx->nb_streams, sizeof(*names));
-    pkt   = av_packet_alloc();
-    if (!files || !stats || !names || !pkt) {
+    e = av_dict_get(ctx->metadata, "title", NULL, 0);
+    if ((ret = name_cb(name_opaque, e ? e->value : NULL, prefix, sizeof(prefix))) < 0)
+        goto end;
+    out = av_calloc(ctx->nb_streams, sizeof(*out));
+    pkt = av_packet_alloc();
+    if (!out || !pkt) {
         ret = AVERROR(ENOMEM);
         goto end;
     }
     for (unsigned i = 0; i < ctx->nb_streams; i++) {
         const AVStream *st = ctx->streams[i];
         const AVDictionaryEntry *lang = av_dict_get(st->metadata, "language", NULL, 0);
-        DrStreamStats *s = &stats[i];
+        EsOut *o = &out[i];
 
-        s->index     = i;
-        s->kind      = av_get_media_type_string(st->codecpar->codec_type);
-        s->codec     = avcodec_get_name(st->codecpar->codec_id);
-        s->lang      = lang ? lang->value : "";
-        s->first_ts  = s->end_ts = AV_NOPTS_VALUE;
-        if (st->disposition & AV_DISPOSITION_DEPENDENT) {
-            s->file = "";       /* a track carried by another one's packets */
-            continue;
-        }
-        if (!(names[i] = av_asprintf("%s/%s%02u_%s.%s", outdir, prefix, i, lang ? lang->value : "und",
-                                     es_extension(st->codecpar->codec_id)))) {
-            ret = AVERROR(ENOMEM);
-            goto end;
-        }
-        s->file = names[i];
-        if (!(files[i] = fopen(names[i], "wb"))) {
-            ret = AVERROR(errno);
-            goto end;
+        o->st.index    = i;
+        o->st.kind     = av_get_media_type_string(st->codecpar->codec_type);
+        o->st.codec    = avcodec_get_name(st->codecpar->codec_id);
+        o->st.lang     = lang ? lang->value : "";
+        o->st.file     = "";
+        o->st.first_ms = AV_NOPTS_VALUE;
+        if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && !st->codecpar->ch_layout.nb_channels) {
+            const AVCodec *dec = avcodec_find_decoder(st->codecpar->codec_id);
+            o->hold = av_calloc(HOLD_MAX, sizeof(*o->hold));
+            if (!o->hold) {
+                ret = AVERROR(ENOMEM);
+                goto end;
+            }
+            if (!dec || !(o->avctx = avcodec_alloc_context3(dec)) || !(o->frame = av_frame_alloc()) ||
+                avcodec_open2(o->avctx, dec, NULL) < 0) {
+                av_log(NULL, AV_LOG_WARNING, "stream %u: no decoder for %s: its channel layout is not known\n",
+                       i, avcodec_get_name(st->codecpar->codec_id));
+                avcodec_free_context(&o->avctx);
+                o->layout_done = 1;
+            }
         }
     }
     while ((ret = av_read_frame(ctx, pkt)) >= 0) {
-        DrStreamStats *s = &stats[pkt->stream_index];
-        int64_t ts = pkt->dts != AV_NOPTS_VALUE ? pkt->dts : pkt->pts;
+        const AVStream *st = ctx->streams[pkt->stream_index];
+        EsOut *o = &out[pkt->stream_index];
 
-        s->packets++;
-        s->bytes += pkt->size;
-        if (files[pkt->stream_index] && fwrite(pkt->data, 1, pkt->size, files[pkt->stream_index]) != (size_t)pkt->size) {
-            ret = AVERROR(EIO);
+        o->st.packets++;
+        if (pkt->pts != AV_NOPTS_VALUE) {
+            int64_t ms  = av_rescale_q(pkt->pts, st->time_base, (AVRational){ 1, 1000 });
+            int64_t end = av_rescale_q(pkt->pts + pkt->duration, st->time_base, (AVRational){ 1, 1000 });
+            if (o->st.first_ms == AV_NOPTS_VALUE)
+                o->st.first_ms = ms;
+            o->st.end_ms = FFMAX(o->st.end_ms, end);
+        }
+        if (!o->opened && o->hold) {
+            /* the channel layout of the first decoded frame, before the name */
+            if (!o->layout_done && avcodec_send_packet(o->avctx, pkt) >= 0 &&
+                avcodec_receive_frame(o->avctx, o->frame) >= 0)
+                o->layout_done = 1;
+            if (!(o->hold[o->nb_hold++] = av_packet_clone(pkt))) {
+                ret = AVERROR(ENOMEM);
+                av_packet_unref(pkt);
+                goto end;
+            }
+            if ((o->layout_done || o->nb_hold == HOLD_MAX) && (ret = es_flush_hold(ctx, st, o, prefix)) < 0) {
+                av_packet_unref(pkt);
+                goto end;
+            }
+            av_packet_unref(pkt);
+            continue;
+        }
+        if (!o->opened && (ret = es_open(ctx, st, o, prefix, pkt->pts)) < 0) {
             av_packet_unref(pkt);
             goto end;
         }
-        if (ts == AV_NOPTS_VALUE) {
-            s->no_ts++;
-        } else {
-            if (s->first_ts == AV_NOPTS_VALUE)
-                s->first_ts = ts;
-            else if (ts < s->end_ts) {
-                av_log(ctx, AV_LOG_VERBOSE, "stream %d: packet at %.3f s starts %.3f ms before the previous one ended\n",
-                       pkt->stream_index, ts / 90000.0, (s->end_ts - ts) / 90.0);
-                s->overlaps++;
-                s->max_overlap = FFMAX(s->max_overlap, s->end_ts - ts);
-            } else if (ts > s->end_ts && pkt->duration > 0) {
-                av_log(ctx, AV_LOG_VERBOSE, "stream %d: packet at %.3f s starts %.3f ms after the previous one ended\n",
-                       pkt->stream_index, ts / 90000.0, (ts - s->end_ts) / 90.0);
-                s->gaps++;
-                s->max_gap = FFMAX(s->max_gap, ts - s->end_ts);
-            }
-            s->end_ts = ts + FFMAX(pkt->duration, 0);
-        }
+        ret = es_write(o, pkt);
         av_packet_unref(pkt);
+        if (ret < 0)
+            goto end;
     }
     if (ret == AVERROR_EOF)
         ret = 0;
+    for (unsigned i = 0; ret >= 0 && i < ctx->nb_streams; i++)
+        ret = es_flush_hold(ctx, ctx->streams[i], &out[i], prefix);
     if (ret >= 0) {
-        char *chap = av_asprintf("%s/%schapters.xml", outdir, prefix);
+        char *chap = av_asprintf("%s_chapters.xml", prefix);
         ret = chap ? write_chapters(ctx, chap) : AVERROR(ENOMEM);
         av_free(chap);
     }
 end:
-    for (unsigned i = 0; ctx && files && i < ctx->nb_streams; i++)
-        if (files[i] && fclose(files[i]) && ret >= 0)
+    for (unsigned i = 0; ctx && out && i < ctx->nb_streams; i++) {
+        EsOut *o = &out[i];
+        if (o->f && o->wav && ret >= 0) {
+            if (fseek(o->f, 0, SEEK_SET) == 0)
+                wav_header(o->f, ctx->streams[i]->codecpar, o->st.bytes);
+            else
+                ret = AVERROR(errno);
+        }
+        if (o->f && fclose(o->f) && ret >= 0)
             ret = AVERROR(errno);
-    for (unsigned i = 0; ctx && stats && ret >= 0 && i < ctx->nb_streams; i++)
-        cb(opaque, &stats[i]);
-    for (unsigned i = 0; ctx && names && i < ctx->nb_streams; i++)
-        av_free(names[i]);
-    av_free(names);
-    av_free(files);
-    av_free(stats);
+    }
+    for (unsigned i = 0; ctx && out && ret >= 0 && i < ctx->nb_streams; i++)
+        cb(opaque, &out[i].st);
+    for (unsigned i = 0; ctx && out && i < ctx->nb_streams; i++) {
+        EsOut *o = &out[i];
+        for (int k = 0; k < o->nb_hold; k++)
+            av_packet_free(&o->hold[k]);
+        av_free(o->hold);
+        av_frame_free(&o->frame);
+        avcodec_free_context(&o->avctx);
+        av_free(o->name);
+    }
+    av_free(out);
     av_packet_free(&pkt);
     av_dict_free(&opts);
     avformat_close_input(&ctx);

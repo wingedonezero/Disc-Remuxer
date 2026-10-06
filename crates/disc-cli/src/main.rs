@@ -69,7 +69,10 @@ enum Command {
     },
     /// Write the streams of HD DVD titles as elementary-stream files, one file
     /// per track, and the chapters as Matroska XML, into each disc's job
-    /// folder (files <title>_<stream>_<language>.<ext>, <title>_chapters.xml).
+    /// folder. A title's name comes from `output.file_name_template` (default
+    /// <title name>_t<NN>); its files are <name>_<track>_<language>_<codec>
+    /// [_<channels>][ DELAY <ms>ms].<ext> and <name>_chapters.xml (LPCM as
+    /// .wav). With every title, each title's files go in a folder of its name.
     Demux {
         /// A disc image or a folder holding disc images.
         source: PathBuf,

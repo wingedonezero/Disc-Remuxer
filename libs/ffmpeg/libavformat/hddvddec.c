@@ -23,6 +23,8 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
+#include "libavutil/channel_layout.h"
+#include "libavutil/common.h"
 #include "libavutil/error.h"
 #include "libavutil/log.h"
 #include "libavutil/mem.h"
@@ -286,6 +288,8 @@ static int hddvd_read_header(AVFormatContext *s)
     }
     av_dict_set_int(&s->metadata, "titles", c->plan->nb_titles, 0);
     c->title = &c->plan->titles[c->opt_title];
+    if (c->title->name && *c->title->name && av_dict_set(&s->metadata, "title", c->title->name, 0) < 0)
+        return AVERROR(ENOMEM);
     if ((ret = add_streams(s, c->title)) < 0)
         return ret;
     s->duration = av_rescale(c->title->duration, AV_TIME_BASE, 90000);
@@ -462,6 +466,26 @@ static int set_chapters(AVFormatContext *s)
     return 0;
 }
 
+/* A linear PCM track leaves as little-endian PCM: its stream takes the
+ * format of the first audio frame header. */
+static int lpcm_params(AVFormatContext *s, int k)
+{
+    HDDVDDemuxContext *c = s->priv_data;
+    AVCodecParameters *par = s->streams[k]->codecpar;
+    const DRLpcm *p;
+
+    if (par->codec_id != AV_CODEC_ID_PCM_DVD || !(p = ff_discrip_title_lpcm(c->rip, k)))
+        return 0;
+    par->codec_id              = p->bits > 16 ? AV_CODEC_ID_PCM_S24LE : AV_CODEC_ID_PCM_S16LE;
+    par->sample_rate           = p->rate;
+    par->bits_per_coded_sample = p->bits;
+    av_channel_layout_uninit(&par->ch_layout);
+    if (p->chmask && av_popcount64(p->chmask) == p->channels)
+        return av_channel_layout_from_mask(&par->ch_layout, p->chmask);
+    av_channel_layout_default(&par->ch_layout, p->channels);
+    return 0;
+}
+
 /* The rip core's next output frame as a packet (time base 1/1,080,000,000
  * s); empty markers carry no bytes and are not given out. */
 static int hddvd_read_packet(AVFormatContext *s, AVPacket *pkt)
@@ -478,6 +502,10 @@ static int hddvd_read_packet(AVFormatContext *s, AVPacket *pkt)
             if (!f.size) {
                 ff_discrip_frame_unref(&f);
                 continue;
+            }
+            if ((ret = lpcm_params(s, k)) < 0) {
+                ff_discrip_frame_unref(&f);
+                return ret;
             }
             pkt->buf          = f.buf;
             pkt->data         = f.data;

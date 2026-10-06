@@ -719,6 +719,8 @@ int  ff_discrip_title_frame(DRTitle *t, int *track, DRFrame *frame);
 /** After finish: the chapters of the plan the marks came from (*out freed
  *  with av_free()). */
 int  ff_discrip_title_chapters(const DRTitle *t, const DRChapterPlan *plan, DRChapter **out, int *nb_out);
+/** A linear PCM track's format once its first header was read (else NULL). */
+const DRLpcm *ff_discrip_title_lpcm(const DRTitle *t, int track);
 /** After finish: the end of the video (title duration, ticks). */
 int64_t ff_discrip_title_duration(const DRTitle *t);
 /** An event kind's name. */

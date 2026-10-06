@@ -75,8 +75,8 @@ extern "C" {
         path: *const c_char,
         options: *const c_char,
         key_files: *const c_char,
-        outdir: *const c_char,
-        prefix: *const c_char,
+        name_cb: DemuxNameCb,
+        name_opaque: *mut c_void,
         nb_titles: *mut c_int,
         cb: DemuxStreamCb,
         opaque: *mut c_void,
@@ -84,7 +84,7 @@ extern "C" {
 }
 
 /// `DrStreamStats` of the C glue: one stream's statistics after demuxing
-/// (timestamps in 90 kHz for the disc demuxers; `AV_NOPTS_VALUE` = none).
+/// (times in ms on the title timeline; `AV_NOPTS_VALUE` = none).
 #[repr(C)]
 pub struct DemuxStreamStats {
     pub index: c_int,
@@ -94,17 +94,17 @@ pub struct DemuxStreamStats {
     pub file: *const c_char,
     pub packets: i64,
     pub bytes: i64,
-    pub no_ts: i64,
-    pub first_ts: i64,
-    pub end_ts: i64,
-    pub overlaps: i64,
-    pub max_overlap: i64,
-    pub gaps: i64,
-    pub max_gap: i64,
+    pub first_ms: i64,
+    pub end_ms: i64,
+    pub delay_ms: i64,
 }
 
 /// Receives one stream's statistics from [`dr_demux`].
 pub type DemuxStreamCb = unsafe extern "C" fn(opaque: *mut c_void, stats: *const DemuxStreamStats);
+/// Gives [`dr_demux`] the path prefix (folder and base name) of a title's
+/// files from its name (NULL when none); returns 0 or a negative AVERROR.
+pub type DemuxNameCb =
+    unsafe extern "C" fn(opaque: *mut c_void, title_name: *const c_char, prefix: *mut c_char, size: c_int) -> c_int;
 
 /// Splits a packed library version (`AV_VERSION_INT`) into major.minor.micro.
 #[must_use]

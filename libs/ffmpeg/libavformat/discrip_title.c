@@ -579,6 +579,14 @@ int ff_discrip_title_chapters(const DRTitle *t, const DRChapterPlan *plan, DRCha
     return ff_discrip_chapter_list(plan, starts, n, t->vend, out, nb_out);
 }
 
+const DRLpcm *ff_discrip_title_lpcm(const DRTitle *t, int track)
+{
+    if (track < 0 || track >= t->cfg.nb_tracks || t->t[track].cfg.codec != AV_CODEC_ID_PCM_DVD ||
+        !t->t[track].lpcm.init)
+        return NULL;
+    return &t->t[track].lpcm;
+}
+
 int64_t ff_discrip_title_duration(const DRTitle *t)
 {
     return t->vend;

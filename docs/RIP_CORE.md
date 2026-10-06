@@ -271,7 +271,16 @@ line each, so a run can be compared event by event with an expected list.
 
 - **Stream files:** each track's output frames written back to back (the
   same frame set as the Matroska path), plus the chapters. Gaps and the
-  start shift are logged per track; a stream file cannot hold them.
+  start shift are logged per track; a stream file cannot hold them. Names:
+  the title's name from the file-name template (`<title name>_t<NN>`), then
+  `_<track>_<language>_<codec>[_<channel layout>]`, audio with ` DELAY <ms>ms`
+  (its first frame's time against the title start, which is the video's,
+  rounded to ms; MKVToolNix reads it). Codec words and layout names are the
+  ones the reference's info output uses (`DD`, `DDplus`, `TrueHD`,
+  `5.1(side)`, ...; the layout from FFmpeg's decoder on the first frames).
+  LPCM leaves as little-endian PCM in a RIFF WAVE file (EXTENSIBLE with the
+  channel mask above two channels or 16 bits). Every title of a disc: one
+  folder per title, named like its files.
 - **Matroska** (later, libebml + libmatroska): frame times as given; cluster
   cuts placed on every audio / video track at the same time (first master
   sync unit 0.4-32.4 s after the previous cut).

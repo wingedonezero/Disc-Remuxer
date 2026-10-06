@@ -3,4 +3,5 @@
 
 pub mod discs;
 pub mod msg;
+pub mod names;
 pub mod settings;

@@ -11,6 +11,7 @@ The settings file (`~/.config/disc-remuxer/settings.toml`, or `--settings FILE`)
 | `output.root` | a folder; empty = not set | `""` | Folder the job folders are created in. Not set: the output folder must be given on the command line (--out). |
 | `output.keep_structure` | true or false | `true` | When a folder holding several discs is given, recreate its sub-folders under the output root, so each disc's job folder sits where the disc sat. |
 | `output.scan_depth` | 0 to 20 | `5` | How many folder levels below a given folder are searched for discs (VIDEO_TS folders, BDMV folders, disc images). |
+| `output.file_name_template` | text; empty = not set | `""` | How a title's output files are named. Fields: {NAME1} the title's name, {CMNT1} its comment, {DT} its date, {N2} its number (two digits), {prefix:VAR} writes the prefix only after other text; empty = {NAME1}{-:CMNT1}{-:DT}{title:+DFLT}{_t:N2}. |
 
 ## [read]
 

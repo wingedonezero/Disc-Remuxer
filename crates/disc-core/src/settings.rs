@@ -132,6 +132,15 @@ pub const SETTINGS: &[Setting] = &[
                folders, BDMV folders, disc images).",
     },
     Setting {
+        group: "output",
+        key: "file_name_template",
+        kind: Kind::Text,
+        default: DefaultValue::Text(""),
+        help: "How a title's output files are named. Fields: {NAME1} the title's name, {CMNT1} its \
+               comment, {DT} its date, {N2} its number (two digits), {prefix:VAR} writes the prefix \
+               only after other text; empty = {NAME1}{-:CMNT1}{-:DT}{title:+DFLT}{_t:N2}.",
+    },
+    Setting {
         group: "read",
         key: "attempts",
         kind: Kind::Number { min: 1, max: 99 },

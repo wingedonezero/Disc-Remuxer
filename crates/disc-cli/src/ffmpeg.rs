@@ -5,7 +5,7 @@ use disc_core::{emit, msg};
 use ffmpeg_sys::log_level;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub fn version() -> String {
     // SAFETY: av_version_info returns a static NUL-terminated string.
@@ -201,19 +201,14 @@ fn hddvd_options(settings: &Settings, title: i32) -> String {
     )
 }
 
-fn ms(ts: i64) -> String {
-    if ts == ffmpeg_sys::AV_NOPTS_VALUE {
+/// Milliseconds as h:mm:ss.mmm.
+fn ms(v: i64) -> String {
+    if v == ffmpeg_sys::AV_NOPTS_VALUE {
         return "-".into();
     }
-    let sign = if ts < 0 { "-" } else { "" };
-    let total = ts.unsigned_abs() / 90; // 90 kHz -> ms
-    format!("{sign}{}:{:02}:{:02}.{:03}", total / 3_600_000, total / 60_000 % 60, total / 1000 % 60, total % 1000)
-}
-
-/// 90 kHz ticks as milliseconds with three decimals.
-fn ms3(ticks: i64) -> String {
-    let us = ticks * 1000 / 90;
-    format!("{}.{:03}", us / 1000, (us % 1000).abs())
+    let sign = if v < 0 { "-" } else { "" };
+    let t = v.unsigned_abs();
+    format!("{sign}{}:{:02}:{:02}.{:03}", t / 3_600_000, t / 60_000 % 60, t / 1000 % 60, t % 1000)
 }
 
 fn text(p: *const c_char) -> String {
@@ -230,18 +225,50 @@ unsafe extern "C" fn demux_stream(_opaque: *mut c_void, st: *const ffmpeg_sys::D
     let (kind, codec, lang, file) = (text(s.kind), text(s.codec), text(s.lang), text(s.file));
     let lang = if lang.is_empty() { "-".to_string() } else { lang };
     if file.is_empty() {
-        disc_core::emit!(disc_core::msg::DEMUX_CARRIED, index = s.index, kind = kind, codec = codec, lang = lang);
+        disc_core::emit!(disc_core::msg::DEMUX_EMPTY, index = s.index, kind = kind, codec = codec, lang = lang);
         return;
     }
     disc_core::emit!(disc_core::msg::DEMUX_STREAM, index = s.index, kind = kind, codec = codec, lang = lang,
-        packets = s.packets, bytes = s.bytes, start = ms(s.first_ts), end = ms(s.end_ts), file = file);
-    if s.overlaps > 0 || s.gaps > 0 {
-        disc_core::emit!(disc_core::msg::DEMUX_CONTINUITY, index = s.index, overlaps = s.overlaps,
-            max_overlap = ms3(s.max_overlap), gaps = s.gaps, max_gap = ms3(s.max_gap));
+        packets = s.packets, bytes = s.bytes, start = ms(s.first_ms), end = ms(s.end_ms), file = file);
+}
+
+/// Where a title's files go: its name from the template; with `sub_folder`
+/// (every title of the disc) in a folder of that name.
+struct TitleFiles<'a> {
+    folder: &'a Path,
+    sub_folder: bool,
+    template: &'a str,
+    index: u32,
+    chosen: Option<PathBuf>,
+}
+
+unsafe extern "C" fn demux_name(opaque: *mut c_void, title_name: *const c_char, out: *mut c_char, size: c_int) -> c_int {
+    // SAFETY: opaque is the TitleFiles of the call; out has size bytes.
+    let tf = unsafe { &mut *opaque.cast::<TitleFiles<'_>>() };
+    let name = (!title_name.is_null()).then(|| text(title_name));
+    let base = disc_core::names::title_name(tf.template, &disc_core::names::TitleNaming {
+        name: name.as_deref(),
+        index: tf.index,
+        ..Default::default()
+    });
+    let dir = if tf.sub_folder { tf.folder.join(&base) } else { tf.folder.to_path_buf() };
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        emit!(msg::DEMUX_FOLDER_FAILED, folder = dir.display(), reason = e);
+        return -e.raw_os_error().unwrap_or(5);
     }
-    if s.no_ts > 0 {
-        disc_core::emit!(disc_core::msg::DEMUX_NO_TIMESTAMP, index = s.index, count = s.no_ts);
+    let prefix = dir.join(&base);
+    let bytes = prefix.to_string_lossy().into_owned().into_bytes();
+    let Ok(cap) = usize::try_from(size) else { return -22 };
+    if bytes.len() >= cap || bytes.contains(&0) {
+        return -36; // ENAMETOOLONG
     }
+    // SAFETY: out has room for size bytes; bytes.len() + 1 <= size.
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out.cast::<u8>(), bytes.len());
+        *out.add(bytes.len()) = 0;
+    }
+    tf.chosen = Some(prefix);
+    0
 }
 
 /// `demux`: every title (or one) of an HD DVD image as elementary streams and
@@ -249,20 +276,30 @@ unsafe extern "C" fn demux_stream(_opaque: *mut c_void, st: *const ffmpeg_sys::D
 pub fn demux_hddvd(source: &Path, title: Option<i32>, folder: &Path, settings: &Settings) -> anyhow::Result<()> {
     let c = |s: &str| CString::new(s).map_err(|_| anyhow::anyhow!("a path contains a NUL byte"));
     let path = c(&source.to_string_lossy())?;
-    let dir = c(&folder.to_string_lossy())?;
     let keys = c(settings.text("aacs.key_files").unwrap_or(""))?;
     let format = c("hddvd")?;
+    let template = settings.text("output.file_name_template").unwrap_or("");
     let mut t = title.unwrap_or(0);
     loop {
         emit!(msg::DEMUX_TITLE, title = t, source = source.display(), folder = folder.display());
         let options = c(&hddvd_options(settings, t))?;
-        let prefix = c(&format!("t{t:02}_"))?;
-        let mut nb: c_int = -1;
-        // SAFETY: every pointer is a valid NUL-terminated string; the callback matches the glue's type.
-        let ret = unsafe {
-            ffmpeg_sys::dr_demux(format.as_ptr(), path.as_ptr(), options.as_ptr(), keys.as_ptr(), dir.as_ptr(),
-                prefix.as_ptr(), &raw mut nb, demux_stream, std::ptr::null_mut())
+        let mut tf = TitleFiles {
+            folder,
+            sub_folder: title.is_none(),
+            template,
+            index: u32::try_from(t).unwrap_or(0),
+            chosen: None,
         };
+        let mut nb: c_int = -1;
+        // SAFETY: every pointer is a valid NUL-terminated string; tf outlives the call; the callbacks
+        // match the glue's types.
+        let ret = unsafe {
+            ffmpeg_sys::dr_demux(format.as_ptr(), path.as_ptr(), options.as_ptr(), keys.as_ptr(), demux_name,
+                (&raw mut tf).cast(), &raw mut nb, demux_stream, std::ptr::null_mut())
+        };
+        if let Some(p) = &tf.chosen {
+            emit!(msg::DEMUX_NAME, title = t, prefix = p.display());
+        }
         if ret < 0 {
             let reason = ffmpeg_sys::error_text(ret);
             emit!(msg::DEMUX_FAILED, title = t, source = source.display(), reason = reason);
