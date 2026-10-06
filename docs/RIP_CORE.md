@@ -1,7 +1,8 @@
 # The shared rip core
 
-Status: design, before code. One module for every disc format (HD DVD first,
-then DVD, then Blu-ray / UHD). It turns a title's segments into timed, joined,
+Status: built (stages 1-5) and wired into the HD DVD demuxer; DVD and
+Blu-ray follow. One module for every disc format (HD DVD first, then DVD,
+then Blu-ray / UHD). It turns a title's segments into timed, joined,
 checked frames per track. The outputs (elementary streams, later Matroska)
 only write what it gives them.
 
@@ -28,10 +29,24 @@ format demuxer read_packet -> outputs (stream files; Matroska later)
 The format demuxer keeps everything format-specific: opening the disc, the
 title plan, the track list, decryption, and the packet source. It hands the
 core raw PES payloads: its sub-demuxer runs with `AVFMT_FLAG_NOPARSE |
-AVFMT_FLAG_NOFILLIN`, so FFmpeg's generic layer neither cuts frames nor fills
-in timestamps. Where a sub-demuxer must strip a header differently on one
-format (HD DVD LPCM, for example), it is copied under the format prefix
-(`hddvd_ps.c` from `mpeg.c`).
+AVFMT_FLAG_NOFILLIN` and `correct_ts_overflow` off, so FFmpeg's generic layer
+neither cuts frames nor fills in or corrects timestamps. FFmpeg's MPEG-PS
+demuxer gives the HD DVD payloads as needed (LPCM keeps its audio frame
+header, which the core reads); a sub-demuxer is copied under the format
+prefix only where it must differ.
+
+`discrip_title.c` puts the stages together for one title: the demuxer calls
+`ff_discrip_title_segment()` at each segment, `ff_discrip_title_payload()`
+for each payload (track, bytes, PES time, from the last 64 MiB of the
+segment's source or not) and `ff_discrip_title_finish()` at the end, and
+takes the output frames with `ff_discrip_title_frame()`. Per segment each
+track has a cutter and its timing stage; the joiner's frames go to the
+junction (or the PCM strategy), every output frame to the checks. Audio
+frames wait until the video has been handed on past their time (the
+junction compares them with the video). Events of the video and
+sub-picture stages wait until the joiner has placed their segment and then
+move onto the title timeline; every event is one debug line (the first 50
+of each kind and track; the rest are counted).
 
 The demuxer's packets out of `read_packet` are the core's frames: final
 time, duration and flags, already joined. Outer streams have no parser
@@ -46,7 +61,9 @@ Durations are `samples * 1,080,000,000 / rate` in unsigned 64-bit integers
 (truncated), always computed the same way so results are reproducible.
 
 PES PTS wrap: the reference time of a source is the first PTS of the master
-track within its first 2000 sectors minus 300 s; a PTS below it gets +2^33.
+track within its first 2000 sectors (a packet that starts a sector) minus
+300 s; a PTS below it gets +2^33. Packets before the reference is found
+wait for it; none in those sectors fails the title.
 
 ## 3. Stage 1: units and timestamp records
 

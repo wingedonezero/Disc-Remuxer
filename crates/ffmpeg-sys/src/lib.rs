@@ -1109,6 +1109,7 @@ pub mod discrip {
         pub chapters: i64,
         pub offset: i64,
         pub start: i64,
+        pub placed: c_int,
     }
 
     pub const CHAPTER_00: c_int = -1;
@@ -1332,6 +1333,52 @@ pub mod discrip {
         pub fn ff_discrip_spu_flush(s: *mut Spu) -> c_int;
         pub fn ff_discrip_spu_stats(s: *const Spu, st: *mut SpuStats);
         pub fn ff_discrip_spu_close(s: *mut *mut Spu);
+    }
+
+    /// `DRTitleTrack`.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct TitleTrack {
+        pub codec: c_int,
+        pub kind: c_int,
+        pub audio_flags: c_int,
+    }
+
+    /// `DRTitleConfig`.
+    #[repr(C)]
+    pub struct TitleConfig {
+        pub nb_tracks: c_int,
+        pub tracks: *const TitleTrack,
+        pub tolerance: i64,
+        pub lpcm_hd: c_int,
+        pub marks: *const i64,
+        pub nb_marks: c_int,
+        pub event: Option<EventCb>,
+        pub event_opaque: *mut c_void,
+    }
+
+    /// `DRTitle` (only handled through pointers).
+    #[repr(C)]
+    pub struct Title {
+        _private: [u8; 0],
+    }
+
+    extern "C" {
+        pub fn ff_discrip_title_open(out: *mut *mut Title, log: *mut c_void, cfg: *const TitleConfig) -> c_int;
+        pub fn ff_discrip_title_segment(t: *mut Title) -> c_int;
+        pub fn ff_discrip_title_payload(t: *mut Title, track: c_int, data: *const u8, size: c_int, time: i64, tail: c_int)
+            -> c_int;
+        pub fn ff_discrip_title_finish(t: *mut Title) -> c_int;
+        pub fn ff_discrip_title_frame(t: *mut Title, track: *mut c_int, frame: *mut Frame) -> c_int;
+        pub fn ff_discrip_title_chapters(
+            t: *const Title,
+            plan: *const ChapterPlan,
+            out: *mut *mut Chapter,
+            nb_out: *mut c_int,
+        ) -> c_int;
+        pub fn ff_discrip_title_duration(t: *const Title) -> i64;
+        pub fn ff_discrip_event_name(kind: c_int) -> *const c_char;
+        pub fn ff_discrip_title_close(t: *mut *mut Title);
     }
 
     /// FFmpeg's codec id for a codec name (e.g. "ac3"), or None.

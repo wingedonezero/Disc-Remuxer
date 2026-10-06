@@ -409,6 +409,7 @@ typedef struct DRJoinStats {
     int     segments;
     int64_t frames, retimed, chapters;
     int64_t offset, start;       /**< the current segment's place and first video time */
+    int     placed;              /**< the current segment's place is known */
 } DRJoinStats;
 
 typedef struct DRJoin DRJoin;
@@ -678,6 +679,53 @@ int ff_discrip_lpcm_header(DRLpcm *p, void *logctx, const uint8_t *hdr, int len,
 /** The samples of size disc bytes as little-endian PCM into out (room for
  *  size x 6 / 5); returns the bytes written. */
 int ff_discrip_lpcm_convert(const DRLpcm *p, const uint8_t *in, int size, uint8_t *out);
+
+/* ---- One title through all stages (discrip_title.c) ----
+ * The format demuxer hands over each segment's payloads (per track, with the
+ * PES time and whether they come from the last 64 MiB of the segment's
+ * source); the title runs the cutters, the timing stages, the joiner, the
+ * junction (or the PCM strategy) and the checks, and gives the output frames
+ * back. Track 0 is the master video. Audio frames wait until the video has
+ * been handed on past their time (the junction compares them with it). */
+
+typedef struct DRTitleTrack {
+    enum AVCodecID codec;
+    int            kind;           /**< DRTrackKind */
+    int            audio_flags;    /**< DR_AUDIO_CORE_ONLY */
+} DRTitleTrack;
+
+typedef struct DRTitleConfig {
+    int                 nb_tracks;
+    const DRTitleTrack *tracks;    /**< track 0: the master video */
+    int64_t             tolerance; /**< audio lead-in tolerance (ticks; the format profile) */
+    int                 lpcm_hd;   /**< LPCM payloads start with HD DVD's 5-byte header (else DVD-Video's 3) */
+    const int64_t      *marks;     /**< chapter marks (DRChapterPlan.marks) or NULL */
+    int                 nb_marks;
+    DREventCb           event; void *event_opaque;   /**< every event (also logged at debug level) */
+} DRTitleConfig;
+
+typedef struct DRTitle DRTitle;
+
+int  ff_discrip_title_open(DRTitle **t, void *logctx, const DRTitleConfig *cfg);
+/** The next segment begins (ends the one before). */
+int  ff_discrip_title_segment(DRTitle *t);
+/** A payload of a track in the current segment: time in ticks or
+ *  AV_NOPTS_VALUE; tail = read from the last 64 MiB of the segment's source.
+ *  LPCM payloads start with their audio frame header. */
+int  ff_discrip_title_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time, int tail);
+/** The end of the title: every stage finishes. */
+int  ff_discrip_title_finish(DRTitle *t);
+/** The next output frame (taken over by the caller): 0, AVERROR(EAGAIN)
+ *  when none is ready yet, AVERROR_EOF after the last one. */
+int  ff_discrip_title_frame(DRTitle *t, int *track, DRFrame *frame);
+/** After finish: the chapters of the plan the marks came from (*out freed
+ *  with av_free()). */
+int  ff_discrip_title_chapters(const DRTitle *t, const DRChapterPlan *plan, DRChapter **out, int *nb_out);
+/** After finish: the end of the video (title duration, ticks). */
+int64_t ff_discrip_title_duration(const DRTitle *t);
+/** An event kind's name. */
+const char *ff_discrip_event_name(int kind);
+void ff_discrip_title_close(DRTitle **t);
 
 /* rules of codecs in their own files */
 extern const DRAudioRules ff_discrip_audio_mlp;
