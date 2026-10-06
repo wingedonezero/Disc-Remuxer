@@ -314,6 +314,12 @@ enum DREventKind {
                                 match was accepted */
     DR_EV_SEAMLESS_DROP,   /**< a match: count frames (dur ticks) at the end of the earlier segment dropped,
                                 skew = the new skew */
+    DR_EV_PCM_SILENCE,     /**< PCM: a gap filled with silence (pos = the output time, dur = the gap in ticks,
+                                count = samples) */
+    DR_EV_PCM_SKIP,        /**< PCM: a start 5 s or more after the video skipped on the output clock (dur ticks,
+                                count samples), nothing written */
+    DR_EV_PCM_TIMECODE,    /**< PCM: frames with a broken time appended where they follow on (pos = the first
+                                one's time, dur = the apparent skew, count = frames) */
 };
 
 typedef struct DREvent {
@@ -570,6 +576,50 @@ int  ff_discrip_verify_frame(DRVerify *v, const DRFrame *frame);
 int  ff_discrip_verify_finish(DRVerify *v);
 void ff_discrip_verify_stats(const DRVerify *v, DRVerifyStats *st);
 void ff_discrip_verify_close(DRVerify **v);
+
+/* ---- Stage 4 for PCM tracks (discrip_pcm.c) ----
+ * Instead of the junction: the samples of a track's frames (on the title
+ * timeline) leave in fixed frames (1/30 s at 48 / 44.1 kHz, else about
+ * 32 ms rounded up to a divisor of the rate) timed by a sample counter from
+ * 0. Frames more than 1 ms before the title start are dropped, a lead-in
+ * within it is taken as the origin; a later start below 5 s is filled with
+ * silence, from 5 s on skipped on the output clock. A frame more than 10800
+ * ticks and 2 samples off the sample count: if the frames after it go on
+ * from where it would end without the gap (within 32 frames), it carried a
+ * broken time and is appended; else silence fills the gap (at most two
+ * output frames per step, the rest pending). A frame that runs more than
+ * 10800 ticks and 2 samples into the next one is cut at its start; the next
+ * one starting before this frame: when it ends after it, its rest is kept
+ * for the next step; when inside, it is dropped. The video ending before a
+ * frame leaves the rest of the track out. */
+
+typedef struct DRPcmConfig {
+    int        track;
+    int        rate;                    /**< samples per second */
+    int        bits;                    /**< bits per sample (8-bit silence is 0x80) */
+    int        bytes_per_sample_frame;  /**< bytes of one sample of all channels */
+    DRVideoRef video;
+    DRFrameCb  out;  void *out_opaque;
+    DREventCb  event; void *event_opaque;
+} DRPcmConfig;
+
+typedef struct DRPcmStats {
+    int64_t in, out;          /**< frames in, frames out */
+    int64_t dropped;          /**< frames dropped at the start */
+    int64_t silence;          /**< silence samples written */
+    int64_t broken;           /**< frames appended over a broken time */
+    int64_t overlap;          /**< frames cut, held or dropped for overlapping */
+} DRPcmStats;
+
+typedef struct DRPcm DRPcm;
+
+int  ff_discrip_pcm_open(DRPcm **p, void *logctx, const DRPcmConfig *cfg);
+/** A frame of the track on the title timeline (taken over). */
+int  ff_discrip_pcm_push(DRPcm *p, DRFrame *frame);
+/** The end of the track: the rest, and the frame being filled. */
+int  ff_discrip_pcm_finish(DRPcm *p);
+void ff_discrip_pcm_stats(const DRPcm *p, DRPcmStats *st);
+void ff_discrip_pcm_close(DRPcm **p);
 
 /* ---- the seamless overlap search's audio (discrip_seamless.c, discrip_mix.c) ---- */
 

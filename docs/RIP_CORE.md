@@ -189,8 +189,21 @@ logged with the reason; nothing is guessed.
   or the k frames are re-timed to end at U and the skew rule follows. Each
   search is an event with its best correlation (for comparing it with other
   ways of joining, Blu-ray).
-- **PCM tracks:** fixed output frames from a sample counter; gaps filled with
-  silence samples; a timestamp jump that returns within 32 frames is joined.
+- **PCM tracks** (`discrip_pcm.c`, in place of the junction): the samples
+  leave in fixed frames (1/30 s at 48 / 44.1 kHz, else about 32 ms rounded up
+  to a divisor of the rate) timed by a sample counter from 0. Start: frames
+  more than 1 ms early are dropped, a lead-in within 1 ms is the origin; a
+  later start below 5 s is filled with silence, from 5 s on skipped on the
+  output clock. A frame more than 10800 ticks and 2 samples off the sample
+  count: when the frames after it (up to 32) go on from where it would end
+  without the gap, its time was broken and it is appended; else silence
+  fills the gap (two output frames per step, the rest pending). A frame
+  running more than 10800 ticks and 2 samples into the next is cut at the
+  next one's start; a next frame starting before this one: its rest past
+  this one is kept for the next step, or it is dropped when it lies inside.
+  The video ending before a frame leaves the rest out. LPCM units
+  (`discrip_lpcm.c`): one frame each, from the packets' audio frame headers,
+  converted to little-endian.
 - Video: passes unchanged (sets the highest video time the audio side uses).
 - Sub-pictures: no junction stage.
 

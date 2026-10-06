@@ -956,6 +956,41 @@ pub mod discrip {
     pub const EV_VERIFY_THD_TIMING: c_int = 25;
     pub const EV_SEAMLESS_SEARCH: c_int = 26;
     pub const EV_SEAMLESS_DROP: c_int = 27;
+    pub const EV_PCM_SILENCE: c_int = 28;
+    pub const EV_PCM_SKIP: c_int = 29;
+    pub const EV_PCM_TIMECODE: c_int = 30;
+
+    /// `DRPcmConfig`.
+    #[repr(C)]
+    pub struct PcmConfig {
+        pub track: c_int,
+        pub rate: c_int,
+        pub bits: c_int,
+        pub bytes_per_sample_frame: c_int,
+        pub video: VideoRef,
+        pub out: FrameCb,
+        pub out_opaque: *mut c_void,
+        pub event: Option<EventCb>,
+        pub event_opaque: *mut c_void,
+    }
+
+    /// `DRPcmStats`.
+    #[repr(C)]
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct PcmStats {
+        pub input: i64,
+        pub out: i64,
+        pub dropped: i64,
+        pub silence: i64,
+        pub broken: i64,
+        pub overlap: i64,
+    }
+
+    /// `DRPcm` (only handled through pointers).
+    #[repr(C)]
+    pub struct Pcm {
+        _private: [u8; 0],
+    }
 
     /// `DRVerifyStats`.
     #[repr(C)]
@@ -1276,6 +1311,11 @@ pub mod discrip {
         pub fn ff_discrip_lpcm_header(p: *mut Lpcm, log: *mut c_void, hdr: *const u8, len: c_int, hd: c_int) -> c_int;
         pub fn ff_discrip_lpcm_convert(p: *const Lpcm, input: *const u8, size: c_int, out: *mut u8) -> c_int;
         pub fn ff_discrip_cutter_set_state(c: *mut Cutter, state: *mut c_void);
+        pub fn ff_discrip_pcm_open(out: *mut *mut Pcm, log: *mut c_void, cfg: *const PcmConfig) -> c_int;
+        pub fn ff_discrip_pcm_push(p: *mut Pcm, frame: *mut Frame) -> c_int;
+        pub fn ff_discrip_pcm_finish(p: *mut Pcm) -> c_int;
+        pub fn ff_discrip_pcm_stats(p: *const Pcm, st: *mut PcmStats);
+        pub fn ff_discrip_pcm_close(p: *mut *mut Pcm);
         pub fn ff_discrip_audio_set_state(a: *mut Audio, state: *mut c_void);
         pub fn ff_discrip_cc_triplets(data: *const u8, size: c_int, out: *mut u8) -> c_int;
         pub fn ff_discrip_spu_open(
