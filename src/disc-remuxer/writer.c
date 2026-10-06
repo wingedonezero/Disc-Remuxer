@@ -363,6 +363,35 @@ static int64_t meta_int(AVDictionary *m, const char *key)
     return e ? strtoll(e->value, NULL, 10) : 0;
 }
 
+/* A subtitle track's details from the demuxer: what the units are, the
+ * canvas they are drawn on and whether every unit fits it, and how many had
+ * no stop time (shown until the next one). One line in the log; the same
+ * as JSON fields appended to the track's record (json, starting with a comma). */
+static void subtitle_detail(const AVStream *st, int opened, char *json, size_t size)
+{
+    const AVDictionaryEntry *pic = av_dict_get(st->metadata, "picture", NULL, 0);
+    int64_t no_stop = meta_int(st->metadata, "no_stop"), outside = meta_int(st->metadata, "outside");
+    int w = st->codecpar->width, h = st->codecpar->height;
+    char jp[256];
+    AVBPrint b;
+
+    av_bprint_init(&b, 0, AV_BPRINT_SIZE_AUTOMATIC);
+    av_bprintf(&b, "%s", pic ? pic->value : "sub-pictures");
+    if (w > 0 && h > 0) {
+        av_bprintf(&b, "; drawn on %dx%d", w, h);
+        if (opened && outside)
+            av_bprintf(&b, ", %"PRId64" outside it", outside);
+        else if (opened)
+            av_bprintf(&b, ", all inside it");
+    }
+    if (no_stop)
+        av_bprintf(&b, "; %"PRId64" without a stop time, each shown until the next one", no_stop);
+    log_text(outside ? LOG_WARNING : LOG_INFO, "      %s", b.str);
+    av_bprint_finalize(&b, NULL);
+    snprintf(json, size, ",\"picture\":%s,\"width\":%d,\"height\":%d,\"no_stop\":%"PRId64",\"outside\":%"PRId64,
+             json_str(jp, sizeof(jp), pic ? pic->value : ""), w, h, no_stop, outside);
+}
+
 static void hms(char *buf, size_t size, double s)
 {
     int64_t t = (int64_t)(s + 0.5);
@@ -509,7 +538,7 @@ end:
             const AVStream *st = ctx->streams[i];
             EsOut *o = &out[i];
             int64_t frames = meta_int(st->metadata, "frames"), warn = meta_int(st->metadata, "warnings");
-            char what[160], state[96], delay[48] = "", jc[64], jl[32], jy[96], jf[4300];
+            char what[160], state[96], delay[48] = "", jc[64], jl[32], jy[96], jf[4300], extra[512] = "";
             const char *unit = st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE ? "subtitles" : "frames";
 
             snprintf(what, sizeof(what), "%s %s%s%s", *o->st.lang ? o->st.lang : "   ",
@@ -524,14 +553,16 @@ end:
                 snprintf(delay, sizeof(delay), ", delay %"PRId64" ms", o->st.delay_ms);
             log_text(!o->opened ? LOG_WARNING : warn ? LOG_INFO : LOG_OK, "  %02u  %-30s %8"PRId64" %-9s  %s%s",
                      i, what, frames, unit, state, delay);
+            if (st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE)
+                subtitle_detail(st, o->opened, extra, sizeof(extra));
             if (o->opened)
                 log_text(LOG_DETAIL, "      %s", o->name);
             res->warnings += warn;
             log_json("track", "\"title\":%d,\"index\":%u,\"codec\":%s,\"language\":%s,\"layout\":%s,"
-                     "\"frames\":%"PRId64",\"warnings\":%"PRId64",\"delay_ms\":%"PRId64",\"file\":%s", job->title, i,
-                     json_str(jc, sizeof(jc), codec_label(st->codecpar->codec_id, st->codecpar->profile)),
+                     "\"frames\":%"PRId64",\"warnings\":%"PRId64",\"delay_ms\":%"PRId64",\"file\":%s%s", job->title,
+                     i, json_str(jc, sizeof(jc), codec_label(st->codecpar->codec_id, st->codecpar->profile)),
                      json_str(jl, sizeof(jl), o->st.lang), json_str(jy, sizeof(jy), o->layout), frames, warn,
-                     o->st.delay_ms, json_str(jf, sizeof(jf), o->opened ? o->name : ""));
+                     o->st.delay_ms, json_str(jf, sizeof(jf), o->opened ? o->name : ""), extra);
         }
         log_msg(MSG_CHAPTERS, LOG_INFO, "Chapters: %u", ctx->nb_chapters);
         if (untested) {

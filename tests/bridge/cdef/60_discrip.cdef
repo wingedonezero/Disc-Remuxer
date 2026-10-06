@@ -343,6 +343,7 @@ int  ff_discrip_title_finish(DRTitle *t);
 int  ff_discrip_title_frame(DRTitle *t, int *track, DRFrame *frame);
 int  ff_discrip_title_chapters(const DRTitle *t, const DRChapterPlan *plan, DRChapter **out, int *nb_out);
 int64_t ff_discrip_title_review(const DRTitle *t);
+int ff_discrip_title_spu_result(const DRTitle *t, int track, int64_t *no_stop, int64_t *outside);
 int64_t ff_discrip_title_duration(const DRTitle *t);
 const char *ff_discrip_event_name(int kind);
 void ff_discrip_title_close(DRTitle **t);

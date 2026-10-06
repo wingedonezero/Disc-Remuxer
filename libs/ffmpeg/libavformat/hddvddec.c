@@ -255,6 +255,14 @@ static int add_streams(AVFormatContext *s, const HDDVDTitle *t)
 
             st->codecpar->width   = k->width;
             st->codecpar->height  = k->height;
+            char kind[96];
+            /* what the units are, for the caller's log */
+            if (k->coding == HDDVD_SUBPIC_CODING_HD)
+                snprintf(kind, sizeof(kind), "HD DVD sub-pictures: 256 colours, each with its own palette");
+            else
+                snprintf(kind, sizeof(kind), "HD DVD sub-pictures of coding %d (not met on a real disc)", k->coding);
+            if ((ret = av_dict_set(&st->metadata, "picture", kind, 0)) < 0)
+                return ret;
             /* the VobSub index header (FFmpeg's DVD subtitle decoder reads
              * size and palette from it) */
             if (n < 0 || n >= sizeof(idx))
@@ -576,6 +584,10 @@ static int hddvd_read_packet(AVFormatContext *s, AVPacket *pkt)
                     if ((ret = av_dict_set_int(m, "frames", frames, 0)) < 0 ||
                         (ret = av_dict_set_int(m, "warnings", warnings, 0)) < 0 ||
                         (ret = av_dict_set_int(m, "delay_us", delay / (DR_TICKS_PER_SECOND / 1000000), 0)) < 0)
+                        return ret;
+                    if (ff_discrip_title_spu_result(c->rip, i, &frames, &warnings) >= 0 &&
+                        ((ret = av_dict_set_int(m, "no_stop", frames, 0)) < 0 ||
+                         (ret = av_dict_set_int(m, "outside", warnings, 0)) < 0))
                         return ret;
                 }
             }

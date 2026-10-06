@@ -733,6 +733,9 @@ int64_t ff_discrip_title_review(const DRTitle *t);
 /** After finish: a track's frames given out, the warnings logged about it
  *  (junction events, grid findings, checks) and (audio) its start delay. */
 int ff_discrip_title_track_result(const DRTitle *t, int track, int64_t *frames, int64_t *warnings, int64_t *delay);
+/** After finish, a sub-picture track: units without a stop time shown until
+ *  the next one, units drawn outside the track's canvas. */
+int ff_discrip_title_spu_result(const DRTitle *t, int track, int64_t *no_stop, int64_t *outside);
 /** After finish: the end of the video (title duration, ticks). */
 int64_t ff_discrip_title_duration(const DRTitle *t);
 /** An event kind's name. */

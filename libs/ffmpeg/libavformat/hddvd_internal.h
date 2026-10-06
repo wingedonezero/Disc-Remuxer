@@ -254,6 +254,13 @@ typedef struct HDDVDChapterMark {
 } HDDVDChapterMark;
 
 /** A track of a title: one stream of its EVOBs. */
+/* Sub-picture coding 4 (attribute record entry byte 0 bits 7..5): units of
+ * 8-bit pixels with their own 256-entry palette and contrast table
+ * (commands 0x83 / 0x84), drawn on a 1920x1080 canvas whatever the video's
+ * frame size (on 720x480 MPEG-2 titles too). Codings 0 and 1 are drawn on
+ * the video's frame size. */
+#define HDDVD_SUBPIC_CODING_HD 4
+
 typedef struct HDDVDTrack {
     enum AVMediaType type;
     enum AVCodecID   codec;
@@ -261,7 +268,7 @@ typedef struct HDDVDTrack {
     int              number;        /**< audio: stream number 0..7; sub-picture: stream number 0..31 */
     int              coding;        /**< audio / sub-picture coding mode from the attribute record */
     char             lang[4];       /**< ISO 639-2 when known, else as written; "" none */
-    int              width, height; /**< sub-pictures */
+    int              width, height; /**< sub-pictures: the canvas (HDDVD_SUBPIC_CODING_HD: 1920x1080) */
     const uint32_t  *palette;       /**< sub-pictures: 16 entries of the attribute record */
     int              core;          /**< audio: 1 = holds a core that the next track carries
                                          on its own (DTS-HD), 2 = that core track */

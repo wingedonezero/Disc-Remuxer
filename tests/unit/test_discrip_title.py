@@ -61,8 +61,9 @@ def interleave(a, b):
     return sorted(a + b, key=lambda p: p.order)
 
 
-def run(tracks, tolerance, lpcm_hd, segments):
-    """(outputs, events, duration, review)."""
+def run(tracks, tolerance, lpcm_hd, segments, spu=None):
+    """(outputs, events, duration, review); spu: a list that gets track 1's
+    sub-picture result (no stop time, outside the canvas)."""
     events = []
     outs = []
     vmax = [-(1 << 63)]
@@ -93,6 +94,11 @@ def run(tracks, tolerance, lpcm_hd, segments):
     assert lib.ff_discrip_title_finish(t[0]) == 0
     assert drain() == EOF_, "AVERROR_EOF after the last frame"
     duration, review = lib.ff_discrip_title_duration(t[0]), lib.ff_discrip_title_review(t[0])
+    if spu is not None:
+        n, o = ffi.new("int64_t *"), ffi.new("int64_t *")
+        assert lib.ff_discrip_title_spu_result(t[0], 1, n, o) == 0
+        assert lib.ff_discrip_title_spu_result(t[0], 0, n, o) < 0, "not a sub-picture track"
+        spu += [n[0], o[0]]
     lib.ff_discrip_title_close(t)
     return outs, events, duration, review
 
@@ -216,8 +222,9 @@ def test_a_sub_picture_without_a_stop_time_lasts_until_the_next_one():
                (spu(50, True, [], 4), 40), (spu(None, True, [], 5), 1190)])
     base2 = 500 * 1080000000
     s2 = [Payload(1, spu(None, True, [], 6), base2 + 5 * FRAME, False, base2 + 5 * FRAME)]
+    res = []
     outs, events, duration, review = run(sub_tracks(), 110160000, True,
-                                         [interleave(video(BASE), s1), interleave(video(base2), s2)])
+                                         [interleave(video(BASE), s1), interleave(video(base2), s2)], res)
     s = [(o.time, o.dur) for o in outs if o.track == 1]
     assert s == [
         (10 * FRAME, 100 * STEP),
@@ -229,6 +236,7 @@ def test_a_sub_picture_without_a_stop_time_lasts_until_the_next_one():
     ]
     assert duration == 2400 * FRAME
     assert review == 1
+    assert res == [4, 0], "four units without a stop time, none outside (no canvas given)"
 
 
 def test_a_sub_picture_followed_by_one_at_the_same_time_keeps_its_step():

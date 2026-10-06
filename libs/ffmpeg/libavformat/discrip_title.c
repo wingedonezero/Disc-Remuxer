@@ -62,6 +62,7 @@ typedef struct Track {
     DRFrame       held;          /* sub-pictures: a unit without a stop time, waiting for the next one */
     int           holding;
     int64_t       extended;      /* sub-pictures: units without a stop time shown until the next one */
+    int64_t       outside;       /* sub-pictures: units drawn outside the canvas */
     DRFrame      *wait;          /* audio frames waiting for the video */
     int           wait_head, nb_wait, wait_cap;
     int64_t       out;           /* frames given out */
@@ -578,6 +579,12 @@ static int seg_end(DRTitle *t)
         ret = k->spu ? ff_discrip_spu_flush(k->spu) : ff_discrip_audio_flush(k->audio);
         if (ret < 0)
             return ret;
+        if (k->spu) {
+            DRSpuStats ss;
+            ff_discrip_spu_stats(k->spu, &ss);
+            k->outside  += ss.outside;
+            k->warnings += ss.outside > 0;  /* the stage warns once per segment */
+        }
         if (k->audio) {
             DRAudioStats as;
             ff_discrip_audio_stats(k->audio, &as);
@@ -753,6 +760,15 @@ int ff_discrip_title_track_result(const DRTitle *t, int track, int64_t *frames, 
     *frames   = st.frames - st.markers;
     *warnings = t->t[track].warnings;
     *delay    = st.frames ? st.delay : 0;
+    return 0;
+}
+
+int ff_discrip_title_spu_result(const DRTitle *t, int track, int64_t *no_stop, int64_t *outside)
+{
+    if (track < 0 || track >= t->cfg.nb_tracks || t->t[track].cfg.kind != DR_KIND_SUBTITLE)
+        return AVERROR(EINVAL);
+    *no_stop = t->t[track].extended;
+    *outside = t->t[track].outside;
     return 0;
 }
 
