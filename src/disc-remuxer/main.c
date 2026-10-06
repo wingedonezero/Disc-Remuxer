@@ -47,7 +47,7 @@ static void usage(FILE *f)
           "  --json               JSON records on stdout, one per line, instead of text\n"
           "  -v, -vv              more detail on the terminal\n"
           "\n"
-          "Only HD DVD images are supported so far; DVD and Blu-ray follow.\n", f);
+          "Only HD DVD images are wired so far; DVD and Blu-ray follow.\n", f);
 }
 
 /* Library state (key caches, key files) stays next to the program. */
@@ -78,31 +78,46 @@ static int64_t meta_int(AVDictionary *m, const char *key, int64_t def)
     return e ? strtoll(e->value, NULL, 10) : def;
 }
 
-/* Which demuxer reads source (NULL: none supported). */
+/* The format demuxers, tried in this order. Each one follows the same
+ * contract (docs/FORMATS.md): the disc and its titles in the metadata on
+ * open, each track's result at the end, read progress as an option. */
+static const char *const formats[] = { "hddvd", NULL };
+
+/* Which demuxer reads source (NULL: none, logged); logs the disc line. */
 static const char *source_format(const char *source, int *nb_titles)
 {
     AVFormatContext *ctx = NULL;
-    int ret = open_title("hddvd", source, 0, &ctx);
+    const char *format = NULL;
+    int ret = AVERROR_INVALIDDATA;
 
-    if (ret < 0) {
-        log_msg(MSG_SOURCE_UNSUPPORTED, LOG_ERROR, "%s cannot be read as an HD DVD image (%s); DVD and Blu-ray "
-                "sources are not supported yet", source, av_err2str(ret));
+    for (int i = 0; formats[i] && !format; i++)
+        if ((ret = open_title(formats[i], source, 0, &ctx)) >= 0)
+            format = formats[i];
+    if (!format) {
+        log_msg(MSG_SOURCE_UNSUPPORTED, LOG_ERROR, "%s cannot be read as a disc this program supports (%s); "
+                "only HD DVD images are wired so far", source, av_err2str(ret));
         return NULL;
     }
     *nb_titles = (int)meta_int(ctx->metadata, "titles", 0);
     {
+        const AVDictionaryEntry *disc  = av_dict_get(ctx->metadata, "disc", NULL, 0);
         const AVDictionaryEntry *label = av_dict_get(ctx->metadata, "label", NULL, 0);
         const AVDictionaryEntry *fs    = av_dict_get(ctx->metadata, "filesystem", NULL, 0);
         int64_t rev = meta_int(ctx->metadata, "udf_revision", 0);
-        char revs[32] = "";
+        char revs[32] = "", js1[64], js2[256], js3[64];
         if (rev)
             snprintf(revs, sizeof(revs), " %x.%02x", (unsigned)(rev >> 8), (unsigned)(rev & 0xff));
-        log_msg(MSG_SOURCE, LOG_INFO, "Disc: HD DVD '%s', %s%s, %s, %d title%s", label ? label->value : "",
-                fs ? fs->value : "?", revs, meta_int(ctx->metadata, "encrypted", 0) ? "AACS encrypted" : "not encrypted",
+        log_msg(MSG_SOURCE, LOG_INFO, "Disc: %s '%s', %s%s, %s, %d title%s", disc ? disc->value : format,
+                label ? label->value : "", fs ? fs->value : "?", revs,
+                meta_int(ctx->metadata, "encrypted", 0) ? "encrypted" : "not encrypted",
                 *nb_titles, *nb_titles == 1 ? "" : "s");
+        log_json("disc", "\"kind\":%s,\"label\":%s,\"filesystem\":%s,\"encrypted\":%s,\"titles\":%d",
+                 json_str(js1, sizeof(js1), disc ? disc->value : format), json_str(js2, sizeof(js2), label ? label->value : ""),
+                 json_str(js3, sizeof(js3), fs ? fs->value : ""), meta_int(ctx->metadata, "encrypted", 0) ? "true" : "false",
+                 *nb_titles);
     }
     avformat_close_input(&ctx);
-    return "hddvd";
+    return format;
 }
 
 /* The overview of a disc's titles (and JSON title records). */
