@@ -589,6 +589,8 @@ static const DRCodec codecs[] = {
     { .id = AV_CODEC_ID_DVD_SUBTITLE, .name = "dvd_subtitle", .anchor = anchor_unit,
       .check = ff_discrip_spu_check, .unit_size = ff_discrip_spu_unit_size, .resync = ff_discrip_spu_resync,
       .verify = ff_discrip_spu_verify },
+    /* closed captions as text cues (made by the caption converter) */
+    { .id = AV_CODEC_ID_SUBRIP, .name = "subrip", .anchor = anchor_unit },
 };
 
 const DRCodec *ff_discrip_codec(enum AVCodecID id)

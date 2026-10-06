@@ -392,7 +392,9 @@ void ff_discrip_junction_close(DRJunction **j);
  * than its duration is moved to the expected time; sub-pictures keep their
  * times (a sub-picture replaces the one shown before it). */
 
-enum DRTrackKind { DR_KIND_VIDEO = 1, DR_KIND_AUDIO = 2, DR_KIND_SUBTITLE = 3 };
+/** DR_KIND_CAPTION: line-21 closed captions taken out of the title's MPEG-2
+ *  video (no payloads of its own), given out as text cues. */
+enum DRTrackKind { DR_KIND_VIDEO = 1, DR_KIND_AUDIO = 2, DR_KIND_SUBTITLE = 3, DR_KIND_CAPTION = 4 };
 
 /** Hands a joined frame of a track on (taken over). */
 typedef int (*DRJoinOutCb)(void *opaque, int track, DRFrame *frame);
@@ -559,6 +561,38 @@ int ff_discrip_cc_check(const uint8_t *data, int size);
  *  an entry whose markers are not a known pattern ends the block. */
 int ff_discrip_cc_triplets(const uint8_t *data, int size, uint8_t *out);
 
+/* ---- Closed captions to text (discrip_ccx.c) ----
+ * CCExtractor runs as a helper program next to ours: the caption blocks go
+ * in as its raw caption format (each block: a time in milliseconds and its
+ * CEA-608 entries), SRT text comes out and is read back strictly. */
+
+#define DR_CCX_PROGRAM "ccextractor"
+#define DR_CCX_VERSION "0.94"
+
+typedef struct DRCue {
+    int64_t start_ms, end_ms;
+    char   *text;             /**< the cue's lines joined by \n (no \n at the end) */
+} DRCue;
+
+typedef struct DRCcx DRCcx;
+
+/** The helper next to the running program (buf), or NULL when it is not
+ *  there. */
+const char *ff_discrip_ccx_default(char *buf, int size);
+int  ff_discrip_ccx_start(DRCcx **c, void *logctx, const char *program);
+/** One caption block at ms: count entries of 3 bytes (field marker 4 / 5,
+ *  the byte pair). A block without entries is not written. */
+int  ff_discrip_ccx_block(DRCcx *c, int64_t ms, const uint8_t *triplets, int count);
+/** The end of the caption data: waits for the helper and reads its SRT
+ *  (fails when the helper fails or its SRT does not parse). */
+int  ff_discrip_ccx_finish(DRCcx *c, DRCue **cues, int *nb_cues);
+void ff_discrip_ccx_close(DRCcx **c);
+/** SRT as the helper writes it: an optional BOM, cues numbered from 1
+ *  without a gap, a timing line of exactly HH:MM:SS,mmm --> HH:MM:SS,mmm,
+ *  text lines up to an empty line; CR LF or LF. Anything else fails. */
+int  ff_discrip_srt_parse(void *logctx, const char *srt, int size, DRCue **cues, int *nb_cues);
+void ff_discrip_cues_free(DRCue **cues, int nb);
+
 /* ---- Stage 5: checks of a track's output (discrip_verify.c) ----
  * Fed with every frame of a track as it leaves the core (in output order);
  * nothing is changed, every finding is an event and counted. */
@@ -706,10 +740,14 @@ typedef struct DRTitleConfig {
     const int64_t      *marks;     /**< chapter marks (DRChapterPlan.marks) or NULL */
     int                 nb_marks;
     DREventCb           event; void *event_opaque;   /**< every event (also logged at debug level) */
+    const char         *cc_helper; /**< the caption converter program (for a DR_KIND_CAPTION track) */
 } DRTitleConfig;
 
 typedef struct DRTitle DRTitle;
 
+/** Once segment / payload / finish fail (not EAGAIN / EINVAL), the title
+ *  stays failed: those calls and ff_discrip_title_frame return the same
+ *  error from then on. */
 int  ff_discrip_title_open(DRTitle **t, void *logctx, const DRTitleConfig *cfg);
 /** The next segment begins (ends the one before). */
 int  ff_discrip_title_segment(DRTitle *t);
@@ -736,6 +774,9 @@ int ff_discrip_title_track_result(const DRTitle *t, int track, int64_t *frames, 
 /** After finish, a sub-picture track: units without a stop time shown until
  *  the next one, units drawn outside the track's canvas. */
 int ff_discrip_title_spu_result(const DRTitle *t, int track, int64_t *no_stop, int64_t *outside);
+/** After finish, the caption track: caption blocks given to the converter,
+ *  cues given out. */
+int ff_discrip_title_cc_result(const DRTitle *t, int track, int64_t *blocks, int64_t *cues);
 /** After finish: the end of the video (title duration, ticks). */
 int64_t ff_discrip_title_duration(const DRTitle *t);
 /** An event kind's name. */

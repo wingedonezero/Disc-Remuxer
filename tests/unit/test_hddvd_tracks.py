@@ -36,6 +36,8 @@ def track_lines(dump):
         elif line.startswith("  track "):
             # k|type|codec|index|number|lang[|WxH]
             f = line[8:].split("|")
+            if f[-1] == "caption":
+                continue        # caption tracks are ours: the reference leaves HD DVD captions out
             kind = {"video": "Video", "audio": "Audio", "subtitle": "Subtitles"}.get(f[1], f[1])
             if not out[-1].endswith("|"):
                 out[-1] += ","

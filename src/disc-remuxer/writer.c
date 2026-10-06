@@ -59,6 +59,7 @@ static const char *es_extension(enum AVCodecID id)
     case AV_CODEC_ID_PCM_S16LE:
     case AV_CODEC_ID_PCM_S24LE:    return "wav";
     case AV_CODEC_ID_DVD_SUBTITLE: return "sub";
+    case AV_CODEC_ID_SUBRIP:       return "srt";
     default:                       return "bin";
     }
 }
@@ -85,6 +86,7 @@ const char *codec_label(enum AVCodecID id, int profile)
     case AV_CODEC_ID_PCM_S16LE:
     case AV_CODEC_ID_PCM_S24LE:    return "LPCM";
     case AV_CODEC_ID_DVD_SUBTITLE: return "VobSub";
+    case AV_CODEC_ID_SUBRIP:       return "CC";      /* closed captions made into text */
     default:                       return avcodec_get_name(id);
     }
 }
@@ -97,6 +99,7 @@ typedef struct EsOut {
     FILE         *f;
     FILE         *idx;              /* sub-pictures: the VobSub index next to the .sub */
     int64_t       sub_pos;          /* bytes written to the .sub */
+    int64_t       cues;             /* captions: SRT cues written */
     int           wav;              /* a WAV header to complete at the end */
     int           opened;           /* the file name is chosen */
     char            layout[64];     /* audio: the channel layout in the name ("" unknown) */
@@ -306,6 +309,31 @@ static int es_open(const AVFormatContext *ctx, const AVStream *st, EsOut *o, con
     return 0;
 }
 
+/* HH:MM:SS,mmm of a time in ms. */
+static void srt_time(FILE *f, int64_t ms)
+{
+    fprintf(f, "%02"PRId64":%02"PRId64":%02"PRId64",%03"PRId64, ms / 3600000, ms / 60000 % 60, ms / 1000 % 60,
+            ms % 1000);
+}
+
+/* A caption cue as SRT: its number, start --> end, its text lines, an
+ * empty line. */
+static int srt_write(EsOut *o, const AVStream *st, const AVPacket *pkt)
+{
+    int64_t start = av_rescale_q(pkt->pts, st->time_base, (AVRational){ 1, 1000 });
+    int64_t end   = av_rescale_q(pkt->pts + pkt->duration, st->time_base, (AVRational){ 1, 1000 });
+
+    fprintf(o->f, "%"PRId64"\n", ++o->cues);
+    srt_time(o->f, start);
+    fputs(" --> ", o->f);
+    srt_time(o->f, end);
+    fputc('\n', o->f);
+    if (fwrite(pkt->data, 1, pkt->size, o->f) != (size_t)pkt->size || fputs("\n\n", o->f) < 0)
+        return AVERROR(EIO);
+    o->st.bytes += pkt->size;
+    return 0;
+}
+
 static int es_write(EsOut *o, const AVPacket *pkt)
 {
     if (o->idx)
@@ -369,7 +397,17 @@ static int64_t meta_int(AVDictionary *m, const char *key)
  * as JSON fields appended to the track's record (json, starting with a comma). */
 static void subtitle_detail(const AVStream *st, int opened, char *json, size_t size)
 {
+    const AVDictionaryEntry *cap = av_dict_get(st->metadata, "caption", NULL, 0);
     const AVDictionaryEntry *pic = av_dict_get(st->metadata, "picture", NULL, 0);
+    if (cap) {
+        int64_t blocks = meta_int(st->metadata, "cc_blocks"), cues = meta_int(st->metadata, "cues");
+        char jp[256];
+        log_text(LOG_INFO, "      %s; %"PRId64" caption blocks -> %"PRId64" cues%s", cap->value, blocks, cues,
+                 blocks && !cues ? " (the caption data carries no caption text)" : "");
+        snprintf(json, size, ",\"caption\":%s,\"cc_blocks\":%"PRId64",\"cues\":%"PRId64,
+                 json_str(jp, sizeof(jp), cap->value), blocks, cues);
+        return;
+    }
     int64_t no_stop = meta_int(st->metadata, "no_stop"), outside = meta_int(st->metadata, "outside");
     int w = st->codecpar->width, h = st->codecpar->height;
     char jp[256];
@@ -499,7 +537,8 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
             av_packet_unref(pkt);
             goto end;
         }
-        ret = o->idx ? vobsub_write(o, st, pkt) : es_write(o, pkt);
+        ret = o->idx ? vobsub_write(o, st, pkt) :
+              st->codecpar->codec_id == AV_CODEC_ID_SUBRIP ? srt_write(o, st, pkt) : es_write(o, pkt);
         av_packet_unref(pkt);
         if (ret < 0)
             goto end;
@@ -540,10 +579,13 @@ end:
             int64_t frames = meta_int(st->metadata, "frames"), warn = meta_int(st->metadata, "warnings");
             char what[160], state[96], delay[48] = "", jc[64], jl[32], jy[96], jf[4300], extra[512] = "";
             const char *unit = st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE ? "subtitles" : "frames";
+            int empty_cc = !o->opened && av_dict_get(st->metadata, "caption", NULL, 0);
 
             snprintf(what, sizeof(what), "%s %s%s%s", *o->st.lang ? o->st.lang : "   ",
                      codec_label(st->codecpar->codec_id, st->codecpar->profile), *o->layout ? " " : "", o->layout);
-            if (!o->opened)
+            if (empty_cc)
+                snprintf(state, sizeof(state), "no caption text: no file");
+            else if (!o->opened)
                 snprintf(state, sizeof(state), "no data: no file");
             else if (warn)
                 snprintf(state, sizeof(state), "%"PRId64" warning%s", warn, warn == 1 ? "" : "s");
@@ -551,7 +593,8 @@ end:
                 snprintf(state, sizeof(state), "OK");
             if (o->opened && st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
                 snprintf(delay, sizeof(delay), ", delay %"PRId64" ms", o->st.delay_ms);
-            log_text(!o->opened ? LOG_WARNING : warn ? LOG_INFO : LOG_OK, "  %02u  %-30s %8"PRId64" %-9s  %s%s",
+            log_text(!o->opened && !empty_cc ? LOG_WARNING : warn || empty_cc ? LOG_INFO : LOG_OK,
+                     "  %02u  %-30s %8"PRId64" %-9s  %s%s",
                      i, what, frames, unit, state, delay);
             if (st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE)
                 subtitle_detail(st, o->opened, extra, sizeof(extra));

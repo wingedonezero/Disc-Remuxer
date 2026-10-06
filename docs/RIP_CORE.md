@@ -135,15 +135,26 @@ logged with the reason; nothing is guessed.
   bytes; the rest of the piece is not part of it) is a caption frame; its
   CEA-608 entries get the field markers the caption decoder takes (from
   their marker bytes and the odd-field-first bit; an unknown pattern ends
-  the block). The text comes from CCExtractor (`libs/ccextractor`, a helper
-  program: the frames in its raw caption format, SRT out).
+  the block). It goes to the title's caption track (a track of its own, not
+  in the video): placed on the title timeline like a subtitle, then sent to
+  CCExtractor (`libs/ccextractor`, a helper program next to ours,
+  `discrip_ccx.c`) in its raw caption format at its time in ms (truncated).
+  At the end of the title an erase-displayed-memory pair at the video's end
+  ends a caption still shown; the helper's SRT is read back strictly and its
+  cues leave as text frames (codec `subrip`). The helper keeps 1 ms off both
+  ends of each cue. Caption data without caption text (null pairs only, as on
+  the HD DVD corpus) gives no cues. A title without a caption track counts
+  the caption blocks in its video and warns (left out).
 - **Sub-pictures** (DVD-Video, and HD DVD with 32-bit sizes and 8-bit
   commands): units are cut from the byte stream by their own size (a header
   stating less than 9 bytes, or a first control sequence that does not fit,
   gives up the bytes kept so far; a unit whose control sequences do not parse
   is left out, with a warning). A unit lasts until its stop command
-  (STP_DSP delay x 1024/90000 s); without one it lasts one delay step and is
-  marked when it shows a picture (`DR_F_NO_STOP`). Its time is the video grid
+  (STP_DSP delay x 1024/90000 s); a unit that shows a picture without one
+  (`DR_F_NO_STOP`) lasts until the next unit of its track starts (across
+  segments; the title's last one until the video's end, untested on real
+  discs). A unit drawn outside the track's canvas (SET_DAREA) is counted and
+  warned about. Its time is the video grid
   point nearest to its PES time (the video must know its grid first, so the
   units wait for it). Left out, each with a warning and an event: a unit
   without a time of its own (a second unit starting in the same PES packet),
@@ -286,7 +297,9 @@ line each, so a run can be compared event by event with an expected list.
   (frame size; the 16 palette entries converted to RGB as the reference
   converts them) and one `timestamp: ..., filepos: ...` line per unit.
   FFmpeg reads both forms; MKVToolNix 2026's VobSub reader cuts HD DVD units
-  (32-bit size) to their first packet. Every title of a disc: one folder per
+  (32-bit size) to their first packet. HD DVD units of coding 4 are drawn on
+  1920x1080 whatever the video's size: that is the frame size in the index.
+  Closed captions as SRT (`_CC.srt`; numbered cues, `HH:MM:SS,mmm`, LF). Every title of a disc: one folder per
   title, named like its files.
 - **Matroska** (later, libebml + libmatroska): frame times as given; cluster
   cuts placed on every audio / video track at the same time (first master

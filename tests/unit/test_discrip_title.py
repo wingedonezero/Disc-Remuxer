@@ -5,8 +5,9 @@ the video has been handed on past their time."""
 
 import dataclasses
 
-from helpers import DATA, ffi, lib
+from helpers import DATA, DIST, ffi, lib
 from helpers.discrip import Handles, codec_id, events_into, pictures, spu
+from test_helper import EDM, EOC, load, parity
 
 M2V = (DATA / "testsrc_1200.m2v").read_bytes()
 AC3 = (DATA / "sine_7680.ac3").read_bytes()
@@ -39,13 +40,14 @@ class Out:
     dur: int
     flags: int
     vmax_before: int
+    data: bytes = b""
 
 
-def video(base):
+def video(base, stream=M2V):
     """The video payloads of one segment: every picture of the test stream
     with its PES time on the grid from base."""
-    return [Payload(0, M2V[a:b], base + disp * FRAME, False, base + (k - 1) * FRAME)
-            for k, (a, b, disp, _) in enumerate(pictures(M2V))]
+    return [Payload(0, stream[a:b], base + disp * FRAME, False, base + (k - 1) * FRAME)
+            for k, (a, b, disp, _) in enumerate(pictures(stream))]
 
 
 def ac3(start, step, n):
@@ -61,7 +63,7 @@ def interleave(a, b):
     return sorted(a + b, key=lambda p: p.order)
 
 
-def run(tracks, tolerance, lpcm_hd, segments, spu=None):
+def run(tracks, tolerance, lpcm_hd, segments, spu=None, cc_helper=None):
     """(outputs, events, duration, review); spu: a list that gets track 1's
     sub-picture result (no stop time, outside the canvas)."""
     events = []
@@ -69,9 +71,10 @@ def run(tracks, tolerance, lpcm_hd, segments, spu=None):
     vmax = [-(1 << 63)]
     keep = Handles()
     tr = ffi.new("DRTitleTrack[]", tracks)
+    helper = ffi.new("char[]", cc_helper.encode()) if cc_helper else ffi.NULL
     cfg = ffi.new("DRTitleConfig *", {"nb_tracks": len(tracks), "tracks": tr, "tolerance": tolerance,
                                       "lpcm_hd": int(lpcm_hd), "event": lib.tb_py_event,
-                                      "event_opaque": keep(events_into(events))})
+                                      "event_opaque": keep(events_into(events)), "cc_helper": helper})
     t = ffi.new("DRTitle **")
 
     def drain():
@@ -81,7 +84,8 @@ def run(tracks, tolerance, lpcm_hd, segments, spu=None):
             r = lib.ff_discrip_title_frame(t[0], k, f)
             if r != 0:
                 return r
-            outs.append(Out(k[0], f.time, f.dur, f.flags, vmax[0]))
+            outs.append(Out(k[0], f.time, f.dur, f.flags, vmax[0],
+                            bytes(ffi.buffer(f.data, f.size)) if k[0] and f.size else b""))
             if k[0] == 0:
                 vmax[0] = max(vmax[0], f.time)
             lib.ff_discrip_frame_unref(f)
@@ -99,6 +103,10 @@ def run(tracks, tolerance, lpcm_hd, segments, spu=None):
         assert lib.ff_discrip_title_spu_result(t[0], 1, n, o) == 0
         assert lib.ff_discrip_title_spu_result(t[0], 0, n, o) < 0, "not a sub-picture track"
         spu += [n[0], o[0]]
+    if cc_helper:
+        b, c = ffi.new("int64_t *"), ffi.new("int64_t *")
+        assert lib.ff_discrip_title_cc_result(t[0], len(tracks) - 1, b, c) == 0
+        events.append({"kind": "cc_result", "blocks": b[0], "cues": c[0]})
     lib.ff_discrip_title_close(t)
     return outs, events, duration, review
 
@@ -244,3 +252,90 @@ def test_a_sub_picture_followed_by_one_at_the_same_time_keeps_its_step():
                              [interleave(video(BASE), subs([(spu(None, True, [], 1), 10), (spu(20, True, [], 2), 10)]))])
     assert [(o.time, o.dur) for o in outs if o.track == 1] == [(10 * FRAME, STEP), (10 * FRAME, 20 * STEP)]
     assert review == 0
+
+
+def cc_block(pairs):
+    """A DVD caption block (GOP user data): odd field first, each field-1
+    byte pair followed by a field-2 null pair."""
+    head = bytes([0, 0, 1, 0xB2, 0x43, 0x43, 0x01, 0xF8, 0x80 | 2 * len(pairs)])
+    return head + b"".join(bytes([0xFF, parity(a), parity(b), 0xFE, 0x80, 0x80]) for a, b in pairs)
+
+
+def with_captions(stream, per_gop):
+    """The stream with a caption block after each GOP header: per_gop[g]
+    (default one null pair) for GOP g. Returns it and each GOP's first
+    displayed picture (its display index)."""
+    out, g, i = bytearray(), 0, 0
+    while True:
+        j = stream.find(b"\x00\x00\x01\xb8", i)
+        if j < 0:
+            out += stream[i:]
+            break
+        out += stream[i:j + 8] + cc_block(per_gop.get(g, [(0x00, 0x00)]))
+        i = j + 8
+        g += 1
+    s = bytes(out)
+    gops = [p for p in range(len(s)) if s.startswith(b"\x00\x00\x01\xb8", p)]
+    first = []
+    for k, start in enumerate(gops):
+        end = gops[k + 1] if k + 1 < len(gops) else len(s)
+        first.append(min(d for a, b, d, _ in pictures(s) if start <= a < end or (a < start < b)))
+    return s, first
+
+
+def test_captions_in_the_gop_user_data_become_a_text_track():
+    # GOP 2 loads a caption, GOP 3 shows it, GOP 10 erases it; GOP 90 loads
+    # one more, GOP 91 shows it and nothing erases it: it lasts until the
+    # end of the video. Each block is timed on its GOP's first picture.
+    per_gop = {2: load(b"HELLO"), 3: EOC, 10: EDM, 90: load(b"LAST"), 91: EOC}
+    stream, first = with_captions(M2V, per_gop)
+    tracks = [[codec_id("mpeg2video"), lib.DR_KIND_VIDEO, 0], [codec_id("subrip"), lib.DR_KIND_CAPTION, 0]]
+    outs, events, duration, review = run(tracks, 110160000, True, [video(BASE, stream)],
+                                         cc_helper=str(DIST / "ccextractor"))
+    ms = lambda d: d * FRAME // MS                      # noqa: E731  (a display index in ms, truncated)
+    cues = [(o.time // MS, (o.time + o.dur) // MS, o.data.decode()) for o in outs if o.track == 1]
+    assert cues == [
+        (ms(first[3]) + 1, ms(first[10]) - 1, "HELLO" + " " * 27),
+        (ms(first[91]) + 1, duration // MS - 1, "LAST" + " " * 28),
+    ]
+    assert len([o for o in outs if o.track == 0]) == 1200, "the video keeps every picture"
+    res = [e for e in events if e.get("kind") == "cc_result"][0]
+    assert (res["blocks"], res["cues"]) == (len(first), 2)
+    assert review == 0
+
+
+def test_caption_blocks_without_a_caption_track_are_counted_and_left_out():
+    stream, first = with_captions(M2V, {2: load(b"HELLO"), 3: EOC})
+    outs, events, _, _ = run([[codec_id("mpeg2video"), lib.DR_KIND_VIDEO, 0]], 110160000, True,
+                             [video(BASE, stream)])
+    assert len(outs) == 1200
+
+
+def test_a_failed_title_stays_failed():
+    # the caption converter cannot start: the payload that brings the first
+    # caption block fails, and every later call returns the same error (a
+    # cutter left with half a payload must not go on)
+    stream, _ = with_captions(M2V, {2: load(b"HELLO"), 3: EOC})
+    tr = ffi.new("DRTitleTrack[]", [[codec_id("mpeg2video"), lib.DR_KIND_VIDEO, 0],
+                                    [codec_id("subrip"), lib.DR_KIND_CAPTION, 0]])
+    helper = ffi.new("char[]", b"/nonexistent/ccextractor")
+    cfg = ffi.new("DRTitleConfig *", {"nb_tracks": 2, "tracks": tr, "tolerance": 110160000, "lpcm_hd": 1,
+                                      "cc_helper": helper})
+    t = ffi.new("DRTitle **")
+    f, k = ffi.new("DRFrame *"), ffi.new("int *")
+    assert lib.ff_discrip_title_open(t, ffi.NULL, cfg) == 0
+    assert lib.ff_discrip_title_segment(t[0]) == 0
+    err = 0
+    for p in video(BASE, stream):
+        err = lib.ff_discrip_title_payload(t[0], 0, p.data, len(p.data), p.time, 0)
+        if err:
+            break
+        while lib.ff_discrip_title_frame(t[0], k, f) == 0:
+            lib.ff_discrip_frame_unref(f)
+    assert err < 0
+    p = video(BASE, stream)[-1]
+    assert lib.ff_discrip_title_payload(t[0], 0, p.data, len(p.data), p.time, 0) == err
+    assert lib.ff_discrip_title_segment(t[0]) == err
+    assert lib.ff_discrip_title_finish(t[0]) == err
+    assert lib.ff_discrip_title_frame(t[0], k, f) == err
+    lib.ff_discrip_title_close(t)

@@ -30,17 +30,6 @@ program's `writer.c` does the same job, so these become whole-tool tests
 
 Already ported: `the_index_header_converts_the_palette_as_the_reference_does`.
 
-### Closed captions: 2 tests, when captions are wired into the C program
-
-`crates/ccextractor-sys/tests/helper.rs`: the two tests of the real helper
-program are ported (`tests/unit/test_helper.py`). These two test the Rust SRT
-reader. They come back with the C code that reads the helper's SRT:
-
-- `the_srt_reader_takes_cues_as_the_helper_writes_them`: a BOM, CRLF lines,
-  numbered cues, times as `HH:MM:SS,mmm`.
-- `the_srt_reader_refuses_what_the_helper_does_not_write`: numbers not from 1,
-  a wrong arrow, a short timing line, non-ASCII times.
-
 ### Settings and file names: whole-tool tests of the C program
 
 The Rust settings and names code is replaced by `settings.c` and `names.c`.

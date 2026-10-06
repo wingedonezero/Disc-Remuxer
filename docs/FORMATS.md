@@ -13,6 +13,7 @@ things. The program tries the demuxers in turn and shows what they report.
 | `title` | the title to open (index in the disc's title list, from 0) |
 | `read_attempts`, `udf_reader` | from the settings `read.attempts`, `read.udf_reader` |
 | `keydb` | key files (setting `aacs.key_files`), where the format has keys |
+| `cc_helper` | the caption converter (CCExtractor); unset: the `ccextractor` next to the running program |
 
 ## Metadata on open (`AVFormatContext.metadata`)
 
@@ -29,8 +30,11 @@ things. The program tries the demuxers in turn and shows what they report.
 Streams carry `language` (ISO 639-2) in their metadata. Subtitle streams
 also carry `picture`: what the units are, in words for the log (e.g. `HD DVD
 sub-pictures: 256 colours, each with its own palette`); their
-`codecpar->width` / `height` is the canvas the units are drawn on. The
-title's duration is `AVFormatContext.duration`.
+`codecpar->width` / `height` is the canvas the units are drawn on. A
+closed-caption track (line-21 captions taken out of the MPEG-2 video, made
+into text: `AV_CODEC_ID_SUBRIP` packets, one per cue) carries `caption`
+instead, in words for the log. The title's duration is
+`AVFormatContext.duration`.
 
 ## While reading
 
@@ -45,6 +49,8 @@ title has been read.
 | each stream | `warnings` | warnings logged about the track |
 | each stream | `delay_us` | audio: its start delay (µs) |
 | subtitle streams | `no_stop` | units without a stop time, each shown until the next one starts (the title's last one: until the video's end) |
+| caption streams | `cc_blocks` | caption blocks given to the converter |
+| caption streams | `cues` | cues it made (0: the caption data carries no caption text) |
 | subtitle streams | `outside` | units drawn outside the canvas (each segment that has some also counts one warning) |
 | the context | `untested` | features met that no real disc has tested (the job is reported failed) |
 

@@ -775,7 +775,9 @@ char *ff_hddvd_titles_dump(const HDDVDTitlePlan *plan)
                        avcodec_get_name(r->codec), r->index, r->number, r->lang);
             if (r->core)
                 av_bprintf(&bp, "|%s", r->core == 1 ? "with core" : "core");
-            if (r->type == AVMEDIA_TYPE_SUBTITLE)
+            if (r->caption)
+                av_bprintf(&bp, "|caption");
+            else if (r->type == AVMEDIA_TYPE_SUBTITLE)
                 av_bprintf(&bp, "|%dx%d|%08"PRIx32, r->width, r->height, r->palette ? r->palette[0] : 0);
             av_bprintf(&bp, "\n");
         }
