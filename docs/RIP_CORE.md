@@ -101,6 +101,20 @@ logged with the reason; nothing is guessed.
 - **Audio (timed family):** the unit with a timestamp keeps it; others follow
   by duration. A zero-size unit becomes an empty marker that keeps its time.
 - **Audio (stream family):** as above.
+- **Side units:** a codec rule may take bytes out of a unit before the
+  video sees it. MPEG-1 / 2: user data right after a GOP header (where
+  DVD-Video carries its line-21 captions) leaves the video; user data after
+  a sequence or picture header stays. Each piece is handed on with the time
+  of the next picture after its unit in the same batch (in an open GOP the
+  first B picture, the GOP's first picture on screen), else of the batch's
+  last picture (a closed GOP: the I picture), lasting one field.
+- **Closed captions** (DVD-Video): a side unit that is a caption block
+  (00 00 01 B2 'C' 'C' 01 F8, a count byte with bit 6 clear, 9 + 3 x count
+  bytes; the rest of the piece is not part of it) is a caption frame; its
+  CEA-608 entries get the field markers the caption decoder takes (from
+  their marker bytes and the odd-field-first bit; an unknown pattern ends
+  the block). The text comes from CCExtractor (`libs/ccextractor`, a helper
+  program: the frames in its raw caption format, SRT out).
 - **Sub-pictures** (DVD-Video, and HD DVD with 32-bit sizes and 8-bit
   commands): units are cut from the byte stream by their own size (a header
   stating less than 9 bytes, or a first control sequence that does not fit,

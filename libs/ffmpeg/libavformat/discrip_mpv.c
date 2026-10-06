@@ -19,6 +19,8 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
+#include <string.h>
+
 #include "libavutil/log.h"
 
 #include "discrip.h"
@@ -41,6 +43,40 @@ static int next_sc(const uint8_t *p, int n, int i)
         if (!p[i] && !p[i + 1] && p[i + 2] == 1)
             return i;
     return -1;
+}
+
+/* User data right after a GOP header (ISO/IEC 13818-2 6.2.2.6: user_data
+ * at the GOP level; DVD-Video line-21 captions are carried there) leaves
+ * the video: each user_data from its start code up to the next start code
+ * becomes a side unit. User data after a sequence header or a picture
+ * header stays in the video. */
+static int split_mpv(DRVideo *v, DRFrame *f)
+{
+    uint8_t *p = f->data;
+    int n = f->size, i = 0, ret;
+
+    while ((i = next_sc(p, n, i)) >= 0) {
+        int e;
+
+        if (p[i + 3] != 0xB8) {
+            i += 4;
+            continue;
+        }
+        i += 8;                                  /* group_of_pictures_header: 8 bytes */
+        while ((i = next_sc(p, n, i)) >= 0 && p[i + 3] == 0xB2) {
+            e = next_sc(p, n, i + 4);
+            if (e < 0)
+                e = n;
+            if ((ret = ff_discrip_video_side(v, p + i, e - i, f->pos + i)) < 0)
+                return ret;
+            memmove(p + i, p + e, n - e);
+            n -= e - i;
+        }
+        if (i < 0)
+            break;
+    }
+    f->size = n;
+    return 0;
 }
 
 /* A unit as FFmpeg's parser cuts it: sequence header (with its extension and
@@ -123,6 +159,7 @@ static int picture_mpv(DRVideo *v, const DRFrame *f, DRPicture *pic)
 
 const DRVideoRules ff_discrip_video_mpv = {
     .picture      = picture_mpv,
+    .split        = split_mpv,
     .order_period = 0x400,
     .priv_size    = sizeof(MpvState),
 };

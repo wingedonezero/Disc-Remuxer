@@ -46,7 +46,15 @@ typedef struct VUnit {
     int64_t  rank;
     int      adjusted;              /* position already includes the offset (repair) */
     int      key;                   /* key frame by the codec's own rule */
+    int64_t  seq;                   /* the unit's number in the segment */
 } VUnit;
+
+/* Bytes a codec rule took out of a unit (DRVideoRules.split): handed on
+ * with the time of the next picture after their unit. */
+typedef struct Side {
+    DRFrame  f;
+    int64_t  tag;                   /* seq of the unit they came with */
+} Side;
 
 typedef struct VQ {
     VUnit *u;
@@ -86,6 +94,10 @@ struct DRVideo {
     uint32_t            invalid, ndiff;
     int64_t             lastdiff;
     int                 have_lastdiff;
+    int64_t             seq;       /* the unit being read */
+    DRFrameCb           side_cb;   void *side_opaque;
+    Side               *side;      /* side[side_head .. side_head + side_n) wait for their picture */
+    int                 side_head, side_n, side_cap;
     DRVideoStats        st;
 };
 
@@ -472,13 +484,52 @@ static void timecode(DRVideo *v, int64_t t_ref, int64_t t_other)
     }
 }
 
+/* Side units tagged before `before` (< before) leave with the time t. */
+static int side_out(DRVideo *v, int64_t before, int64_t t)
+{
+    while (v->side_n && v->side[v->side_head].tag < before) {
+        Side *sd = &v->side[v->side_head++];
+        int ret;
+
+        v->side_n--;
+        sd->f.time  = t;
+        sd->f.dur   = (int64_t)(v->v70 / v->v78);     /* one field */
+        sd->f.flags = DR_F_KEY;
+        v->st.side++;
+        if (!v->side_cb) {
+            ff_discrip_frame_unref(&sd->f);
+            continue;
+        }
+        if ((ret = v->side_cb(v->side_opaque, &sd->f)) < 0)
+            return ret;
+    }
+    if (!v->side_n)
+        v->side_head = 0;
+    return 0;
+}
+
+/* Side units left without a picture to take a time from. */
+static void side_drop(DRVideo *v, int64_t before, const char *why)
+{
+    while (v->side_n && v->side[v->side_head].tag < before) {
+        Side *sd = &v->side[v->side_head++];
+
+        v->side_n--;
+        av_log(v->log, AV_LOG_WARNING, "Rip core: video: %d bytes taken out of the unit at byte %"PRId64" have no "
+               "picture to take a time from (%s): left out\n", sd->f.size, sd->f.pos, why);
+        ff_discrip_frame_unref(&sd->f);
+    }
+    if (!v->side_n)
+        v->side_head = 0;
+}
+
 /* Hands n units on: pictures with their grid times and durations (key / B
  * flags), the last one marked as the end of the batch; other units are left
  * out. The run is first extended by the units shown before its end. */
 static int assign(DRVideo *v, int n, int no_check)
 {
     VUnit *prev = at(&v->q, n - 1);
-    int64_t lim = prev->pos + offset_of(v, prev);
+    int64_t lim = prev->pos + offset_of(v, prev), batch_end, last_time = AV_NOPTS_VALUE;
     int last_pic = -1, r;
 
     if (n < GROUP_MAX) {
@@ -505,6 +556,7 @@ static int assign(DRVideo *v, int n, int no_check)
     for (int k = 0; k < n; k++)
         if (at(&v->q, k)->type != DR_PIC_OTHER)
             last_pic = k;
+    batch_end = at(&v->q, n - 1)->seq + 1;
     for (int k = 0; k < n; k++) {
         VUnit u = *at(&v->q, 0);
         int ret = 0;
@@ -533,7 +585,14 @@ static int assign(DRVideo *v, int n, int no_check)
             u.f.flags |= DR_F_BATCH;
         v->emitted++;
         v->st.out++;
-        if ((ret = v->cb(v->opaque, &u.f)) < 0) {
+        /* side units of earlier units take this picture's time (the next
+         * picture after their unit in the batch) */
+        last_time = u.f.time;
+        if ((ret = side_out(v, u.seq, u.f.time)) < 0)
+            ff_discrip_frame_unref(&u.f);
+        else
+            ret = v->cb(v->opaque, &u.f);         /* the callee owns the frame */
+        if (ret < 0) {
             for (k++; k < n; k++) {
                 ff_discrip_frame_unref(&at(&v->q, 0)->f);
                 q_pop(&v->q);
@@ -541,6 +600,12 @@ static int assign(DRVideo *v, int n, int no_check)
             return ret;
         }
     }
+    /* no later picture in the batch: the batch's last picture */
+    if (last_time != AV_NOPTS_VALUE) {
+        if ((r = side_out(v, batch_end, last_time)) < 0)
+            return r;
+    } else
+        side_drop(v, batch_end, "a batch without pictures");
     return HAVE;
 }
 
@@ -837,10 +902,45 @@ static int unit_in(DRVideo *v, VUnit *u)
     return 0;
 }
 
+int ff_discrip_video_side(DRVideo *v, const uint8_t *data, int size, int64_t pos)
+{
+    Side sd = { .f = { .time = AV_NOPTS_VALUE, .pos = pos }, .tag = v->seq };
+
+    if (!(sd.f.buf = av_buffer_alloc(size + AV_INPUT_BUFFER_PADDING_SIZE)))
+        return AVERROR(ENOMEM);
+    memcpy(sd.f.buf->data, data, size);
+    memset(sd.f.buf->data + size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+    sd.f.data = sd.f.buf->data;
+    sd.f.size = size;
+    if (v->side_head && v->side_head + v->side_n == v->side_cap) {
+        memmove(v->side, v->side + v->side_head, v->side_n * sizeof(*v->side));
+        v->side_head = 0;
+    }
+    if (v->side_head + v->side_n == v->side_cap) {
+        int cap = v->side_cap ? 2 * v->side_cap : 16;
+        Side *n = av_realloc_array(v->side, cap, sizeof(*n));
+        if (!n) {
+            ff_discrip_frame_unref(&sd.f);
+            return AVERROR(ENOMEM);
+        }
+        v->side     = n;
+        v->side_cap = cap;
+    }
+    v->side[v->side_head + v->side_n++] = sd;
+    return 0;
+}
+
+void ff_discrip_video_set_side(DRVideo *v, DRFrameCb cb, void *opaque)
+{
+    v->side_cb     = cb;
+    v->side_opaque = opaque;
+}
+
 int ff_discrip_video_unit(void *opaque, const DRUnit *du)
 {
     DRVideo *v = opaque;
-    VUnit u = { .f = { .time = du->time, .pos = du->pos, .samples = du->samples, .rate = du->rate } };
+    VUnit u = { .f = { .time = du->time, .pos = du->pos, .samples = du->samples, .rate = du->rate },
+                .seq = v->st.units };
     DRPicture pic = { 0 };
     int ret;
 
@@ -850,6 +950,11 @@ int ff_discrip_video_unit(void *opaque, const DRUnit *du)
     memset(u.f.buf->data + du->size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
     u.f.data = u.f.buf->data;
     u.f.size = du->size;
+    v->seq   = u.seq;
+    if (v->rules->split && (ret = v->rules->split(v, &u.f)) < 0) {
+        ff_discrip_frame_unref(&u.f);
+        return ret;
+    }
     if ((ret = v->rules->picture(v, &u.f, &pic)) < 0) {
         ff_discrip_frame_unref(&u.f);
         return ret;
@@ -886,6 +991,7 @@ int ff_discrip_video_flush(DRVideo *v)
     if (v->q.n || v->g.n || v->c.n)
         av_log(v->log, AV_LOG_WARNING, "Rip core: video: %d units left at the end of the segment\n",
                v->q.n + v->g.n + v->c.n);
+    side_drop(v, INT64_MAX, "the end of the segment");
     if (v->invalid && v->started)
         event(v, DR_EV_VIDEO_INVALID, grid(v, v->e8), 0, v->invalid);
     v->st.invalid = v->invalid;
@@ -975,6 +1081,9 @@ void ff_discrip_video_close(DRVideo **vp)
     q_free(&v->c);
     q_free(&v->g);
     q_free(&v->q);
+    for (int i = 0; i < v->side_n; i++)
+        ff_discrip_frame_unref(&v->side[v->side_head + i].f);
+    av_freep(&v->side);
     if (v->priv && v->rules->close)
         v->rules->close(v->priv);
     av_freep(&v->priv);

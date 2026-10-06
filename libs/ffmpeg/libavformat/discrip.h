@@ -91,6 +91,10 @@ typedef struct DRVideoRules {
      *  pictures after a reference picture are numbered before it, I
      *  pictures restart the count (VC-1). */
     int    counted_order;
+    /** Takes bytes out of a unit before picture() sees it (shrinking
+     *  unit->size) and hands each piece to ff_discrip_video_side(); < 0 on
+     *  failure. NULL: none. */
+    int  (*split)(DRVideo *v, DRFrame *unit);
     size_t priv_size;
     void (*close)(void *priv);
 } DRVideoRules;
@@ -378,6 +382,7 @@ typedef struct DRVideoStats {
     int64_t units, pictures, out, placeholders, invalid;
     int     num, den;          /**< frame rate */
     int64_t base;              /**< grid base (ticks) */
+    int64_t side;              /**< side units handed on (or dropped without a side callback) */
 } DRVideoStats;
 
 /**
@@ -392,6 +397,13 @@ int  ff_discrip_video_flush(DRVideo *v);
 /** A frame rate a header states: the first one times the segment; a later
  *  different one is a warning (logged, event), the timing keeps the first. */
 void ff_discrip_video_set_rate(DRVideo *v, int num, int den);
+/** Bytes taken out of the unit being read (from DRVideoRules.split), at
+ *  stream byte pos: a side unit, handed on (ff_discrip_video_set_side) with
+ *  the grid time of the next picture after that unit in its batch, else of
+ *  the batch's last picture, lasting one field. */
+int  ff_discrip_video_side(DRVideo *v, const uint8_t *data, int size, int64_t pos);
+/** Where side units go; without a callback they are dropped. */
+void ff_discrip_video_set_side(DRVideo *v, DRFrameCb cb, void *opaque);
 /** The grid point nearest to a time t (ticks, the segment's own clock):
  *  *out = that point, or AV_NOPTS_VALUE when t is more than 0.1 ms before
  *  the grid base. AVERROR(EAGAIN) while the grid is not known yet. */
@@ -430,6 +442,22 @@ int  ff_discrip_spu_unit(void *spu, const DRUnit *unit);
 int  ff_discrip_spu_flush(DRSpu *s);
 void ff_discrip_spu_stats(const DRSpu *s, DRSpuStats *st);
 void ff_discrip_spu_close(DRSpu **s);
+
+/* ---- DVD-Video line-21 closed captions (discrip_cc.c) ----
+ * The captions travel as MPEG-2 GOP user data, which the MPEG-2 rules take
+ * out of the video as side units (ff_discrip_video_set_side). */
+
+/** The size of the caption block at data (9 + 3 x its entry count, the
+ *  bytes after it are not part of it), or 0 when the user data is not a
+ *  DVD caption block (00 00 01 B2 'C' 'C' 01 F8, then a count byte with
+ *  bit 6 clear) or is shorter than its count says. */
+int ff_discrip_cc_check(const uint8_t *data, int size);
+
+/** The block's CEA-608 entries as the caption decoder takes them: 3 bytes
+ *  each, a field marker (4 = field 1, 5 = field 2) and the byte pair, in
+ *  the block's order; out has room for 63 entries. Returns their number;
+ *  an entry whose markers are not a known pattern ends the block. */
+int ff_discrip_cc_triplets(const uint8_t *data, int size, uint8_t *out);
 
 /* rules of codecs in their own files */
 extern const DRAudioRules ff_discrip_audio_mlp;

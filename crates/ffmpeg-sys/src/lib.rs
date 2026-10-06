@@ -980,6 +980,7 @@ pub mod discrip {
         pub num: c_int,
         pub den: c_int,
         pub base: i64,
+        pub side: i64,
     }
 
     /// `DRVideo` (only handled through pointers).
@@ -1149,6 +1150,9 @@ pub mod discrip {
         pub fn ff_discrip_video_stats(v: *const Video, st: *mut VideoStats);
         pub fn ff_discrip_video_close(v: *mut *mut Video);
         pub fn ff_discrip_video_snap(v: *const Video, t: i64, out: *mut i64) -> c_int;
+        pub fn ff_discrip_video_set_side(v: *mut Video, cb: Option<FrameCb>, opaque: *mut c_void);
+        pub fn ff_discrip_cc_check(data: *const u8, size: c_int) -> c_int;
+        pub fn ff_discrip_cc_triplets(data: *const u8, size: c_int, out: *mut u8) -> c_int;
         pub fn ff_discrip_spu_open(
             out: *mut *mut Spu,
             log: *mut c_void,
