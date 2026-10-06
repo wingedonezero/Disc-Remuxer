@@ -6,6 +6,8 @@
 #   make release    the same into build/release/ and dist/release/
 #   make test       the debug build, then every test (tests/, pytest);
 #                   PYTEST_ARGS="-k vc1" passes arguments to pytest
+#   make coverage   the libraries, program and test bridge with gcov counters
+#                   (build/coverage/, dist/coverage/; tests/tools/coverage.py)
 #   make clean      remove build/ and dist/
 #
 # Every library is built from libs/ and linked statically, so dist/<mode>/
@@ -17,7 +19,7 @@
 
 MODE ?= debug
 
-.PHONY: all debug release test clean
+.PHONY: all debug release test coverage clean
 all: debug
 
 debug:
@@ -26,9 +28,11 @@ release:
 	@$(MAKE) --no-print-directory MODE=release dist
 test:
 	@$(MAKE) --no-print-directory MODE=debug check
+coverage:
+	@$(MAKE) --no-print-directory MODE=coverage dist bridge
 clean:
 	rm -rf build dist
 
-ifneq ($(filter dist libs check,$(MAKECMDGOALS)),)
+ifneq ($(filter dist libs check bridge,$(MAKECMDGOALS)),)
 include mk/build.mk
 endif

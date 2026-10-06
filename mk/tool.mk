@@ -10,6 +10,8 @@ TOOL_VERSION := 0.2.0
 
 ifeq ($(MODE),debug)
 TOOL_CFLAGS := -O0 -g
+else ifeq ($(MODE),coverage)
+TOOL_CFLAGS := -O0 -g --coverage
 else
 TOOL_CFLAGS := -O2
 endif
@@ -26,7 +28,7 @@ $(TOOL_OBJ)/tomlc17.o: $(LIBS)/tomlc17/tomlc17.c
 
 $(BUILD)/bin/disc-remuxer: $(TOOL_OBJS) $(BUILD)/ffmpeg/.installed
 	@mkdir -p $(BUILD)/bin
-	$(CC) -o $@ $(TOOL_OBJS) $$($(TOOL_PC) pkg-config --static --libs libavformat libavcodec libswresample libavutil) -lpthread
+	$(CC) $(COV_LDFLAGS) -o $@ $(TOOL_OBJS) $$($(TOOL_PC) pkg-config --static --libs libavformat libavcodec libswresample libavutil) -lpthread
 ifeq ($(MODE),release)
 	strip $@
 endif

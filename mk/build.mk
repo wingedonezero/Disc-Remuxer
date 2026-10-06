@@ -1,4 +1,4 @@
-# The build of one mode (MODE = debug or release), included by the top
+# The build of one mode (MODE = debug, release or coverage), included by the top
 # Makefile. Layout:
 #
 #   build/<mode>/<lib>/       objects, generated headers, the library
@@ -8,8 +8,8 @@
 # Sub-builds (autotools, FFmpeg's configure, CMake) are configured again only
 # when their arguments change; their own make rebuilds only what changed.
 
-ifeq ($(filter $(MODE),debug release),)
-$(error MODE must be debug or release, not '$(MODE)')
+ifeq ($(filter $(MODE),debug release coverage),)
+$(error MODE must be debug, release or coverage, not '$(MODE)')
 endif
 
 # No built-in suffix rules: the source trees are prerequisites, and make's
@@ -29,10 +29,15 @@ AR ?= ar
 
 ifeq ($(MODE),debug)
 LIB_CFLAGS := -O1 -g
+else ifeq ($(MODE),coverage)
+LIB_CFLAGS := -O0 -g --coverage
 else
 LIB_CFLAGS := -O2
 endif
 LIB_CFLAGS += -fPIC -w
+
+# coverage: every program and the test bridge link the gcov runtime
+COV_LDFLAGS := $(if $(filter coverage,$(MODE)),--coverage)
 
 # A file holding the arguments a sub-build was configured with; rewritten
 # (so newer) only when they change.
