@@ -2,8 +2,8 @@
  * The disc layer: the one demuxer for discs. It opens the source once
  * through the disc readers (an image file or a folder), tells which kind of
  * disc it is from its file system and hands it to that kind's format part
- * (disc.h). The disc's own details (label, file system) are metadata here;
- * everything about titles and tracks comes from the format part.
+ * (disc.h). The disc's own details (kind, label, file system) go into the
+ * disc info (discinfo.h) here; its titles come from the format part.
  *
  * This file is part of FFmpeg.
  *
@@ -23,6 +23,7 @@
  */
 
 #include <limits.h>
+#include <string.h>
 
 #include "libavutil/dict.h"
 #include "libavutil/error.h"
@@ -33,6 +34,7 @@
 #include "avformat.h"
 #include "demux.h"
 #include "disc.h"
+#include "discinfo.h"
 #include "discio.h"
 
 /* The format parts, by the disc kind the readers tell. */
@@ -51,6 +53,46 @@ static const char *kind_name(enum DiscIODiscFormat k)
     }
 }
 
+DiscTitleInfo *ff_disc_add_title(AVFormatContext *s)
+{
+    DiscContext *d = s->priv_data;
+    DiscTitleInfo *t = av_dynarray2_add((void **)&d->info.titles, &d->info.nb_titles, sizeof(*t), NULL);
+
+    if (t) {
+        memset(t, 0, sizeof(*t));
+        t->index = d->info.nb_titles - 1;
+    }
+    return t;
+}
+
+DiscStreamInfo *ff_disc_title_add_stream(DiscTitleInfo *t)
+{
+    DiscStreamInfo *k = av_dynarray2_add((void **)&t->streams, &t->nb_streams, sizeof(*k), NULL);
+    if (k)
+        memset(k, 0, sizeof(*k));
+    return k;
+}
+
+DiscChapterInfo *ff_disc_title_add_chapter(DiscTitleInfo *t)
+{
+    DiscChapterInfo *c = av_dynarray2_add((void **)&t->chapters, &t->nb_chapters, sizeof(*c), NULL);
+    if (c)
+        memset(c, 0, sizeof(*c));
+    return c;
+}
+
+int ff_disc_title_add_file(DiscTitleInfo *t, const char *name)
+{
+    return av_dynarray_add_nofree(&t->files, &t->nb_files, (void *)name);
+}
+
+extern const FFInputFormat ff_disc_demuxer;
+
+const DiscInfo *disc_info(const AVFormatContext *s)
+{
+    return s && s->iformat == &ff_disc_demuxer.p ? &((const DiscContext *)s->priv_data)->info : NULL;
+}
+
 static int disc_close(AVFormatContext *s)
 {
     DiscContext *d = s->priv_data;
@@ -58,6 +100,13 @@ static int disc_close(AVFormatContext *s)
     if (d->fmt && d->part)
         d->fmt->close(s);
     av_freep(&d->part);
+    for (int i = 0; i < d->info.nb_titles; i++) {
+        av_freep(&d->info.titles[i].streams);
+        av_freep(&d->info.titles[i].chapters);
+        av_freep(&d->info.titles[i].files);
+    }
+    av_freep(&d->info.titles);
+    d->info.nb_titles = 0;
     ff_discio_fs_close(&d->fs);
     ff_discio_source_free(&d->image);
     return 0;
@@ -91,11 +140,10 @@ static int disc_read_header(AVFormatContext *s)
         return AVERROR_PATCHWELCOME;
     }
     av_log(s, AV_LOG_VERBOSE, "'%s': %s disc\n", s->url, d->fmt->name);
-    if ((ret = av_dict_set(&s->metadata, "disc", d->fmt->name, 0)) < 0 ||
-        (ret = av_dict_set(&s->metadata, "label", d->fs->label, 0)) < 0 ||
-        (ret = av_dict_set(&s->metadata, "filesystem", d->fs->ops->name, 0)) < 0 ||
-        (d->fs->udf_revision && (ret = av_dict_set_int(&s->metadata, "udf_revision", d->fs->udf_revision, 0)) < 0))
-        return ret;
+    d->info.kind         = d->fmt->name;
+    d->info.label        = d->fs->label;
+    d->info.filesystem   = d->fs->ops->name;
+    d->info.udf_revision = d->fs->udf_revision;
     if (!(d->part = av_mallocz(d->fmt->priv_size)))
         return AVERROR(ENOMEM);
     return d->fmt->open(s);
@@ -109,7 +157,7 @@ static int disc_read_packet(AVFormatContext *s, AVPacket *pkt)
 
 #define OFFSET(x) offsetof(DiscContext, x)
 static const AVOption disc_options[] = {
-    {"title",           "the title to open (0 = the first of the disc's title list)", OFFSET(opt_title), AV_OPT_TYPE_INT, { .i64=0 }, 0, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
+    {"title",           "the title to open (0 = the first of the disc's title list; -1 = none: only the disc info)", OFFSET(opt_title), AV_OPT_TYPE_INT, { .i64=0 }, -1, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
     {"min_length",      "titles shorter than this (seconds) are listed, not selected", OFFSET(opt_min_length), AV_OPT_TYPE_INT, { .i64=0 }, 0, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
     {"keydb",           "AACS key files (KEYDB.cfg), read in this order",          OFFSET(opt_keydb),          AV_OPT_TYPE_STRING | AV_OPT_TYPE_FLAG_ARRAY, { .arr = NULL }, 0, 0, AV_OPT_FLAG_DECODING_PARAM },
     {"read_attempts",   "read attempts per request on the disc",                    OFFSET(opt_read_attempts),  AV_OPT_TYPE_INT,    { .i64=DISCIO_DEFAULT_ATTEMPTS }, 1, 100, AV_OPT_FLAG_DECODING_PARAM },

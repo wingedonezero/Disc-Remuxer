@@ -14,6 +14,7 @@
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavformat/discinfo.h>
 #include <libavutil/avstring.h>
 #include <libavutil/bprint.h>
 #include <libavutil/channel_layout.h>
@@ -489,7 +490,8 @@ static void hms(char *buf, size_t size, double s)
 int demux_title(const TitleJob *job, TitleOutcome *res)
 {
     AVFormatContext *ctx = NULL;
-    const AVDictionaryEntry *e;
+    const DiscInfo *info;
+    const char *tname;
     EsOut *out = NULL;
     AVPacket *pkt = NULL;
     char dir[4096], prefix[4200], dur[32], js[4300];
@@ -502,11 +504,12 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         res->failed = 1;
         return ret;
     }
-    e = av_dict_get(ctx->metadata, "title", NULL, 0);
-    title_name(setting_text("output.file_name_template"), e ? e->value : NULL, NULL, NULL, job->title,
+    info = disc_info(ctx);
+    tname = info && job->title < info->nb_titles ? info->titles[job->title].name : NULL;
+    title_name(setting_text("output.file_name_template"), tname, NULL, NULL, job->title,
                res->name, sizeof(res->name));
     hms(dur, sizeof(dur), ctx->duration > 0 ? ctx->duration / (double)AV_TIME_BASE : 0);
-    log_step("=== Title %d/%d: #%d %s (%s) ===", job->ordinal, job->count, job->title, e ? e->value : "", dur);
+    log_step("=== Title %d/%d: #%d %s (%s) ===", job->ordinal, job->count, job->title, tname ? tname : "", dur);
     log_json("title_start", "\"title\":%d,\"name\":%s,\"ordinal\":%d,\"count\":%d", job->title,
              json_str(js, sizeof(js), res->name), job->ordinal, job->count);
 

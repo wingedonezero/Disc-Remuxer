@@ -27,6 +27,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "discinfo.h"
 #include "avformat.h"
 #include "discio.h"
 
@@ -36,7 +37,9 @@ typedef struct DiscFormat {
     enum DiscIODiscFormat   kind;
     size_t                  priv_size;  /**< the part's own context, zeroed before open */
     /** Read the disc's structure from DiscContext.fs, open the title of
-     *  option title: the title's streams, metadata (docs/FORMATS.md). */
+     *  option title: its streams (docs/FORMATS.md); and in any case the
+     *  disc info's titles (DiscContext.info, ff_disc_add_title...).
+     *  Title -1: only the disc info, no packets. */
     int  (*open)(AVFormatContext *s);
     int  (*read_packet)(AVFormatContext *s, AVPacket *pkt);
     /** Also after a failed open (the context as far as open came). */
@@ -50,7 +53,7 @@ typedef struct DiscContext {
     /* options, for every format part */
     int               opt_read_attempts;
     int               opt_udf_reader;
-    int               opt_title;
+    int               opt_title;        /**< -1: every title listed, none read */
     int               opt_min_length;
     char            **opt_keydb;
     unsigned          nb_opt_keydb;
@@ -61,6 +64,7 @@ typedef struct DiscContext {
     DiscIOFS         *fs;
     const DiscFormat *fmt;
     void             *part;             /**< the format part's context */
+    DiscInfo          info;             /**< the disc info (disc_info()) */
 } DiscContext;
 
 /** The format part's context of s. */
@@ -68,6 +72,15 @@ static inline void *ff_disc_part(AVFormatContext *s)
 {
     return ((DiscContext *)s->priv_data)->part;
 }
+
+/** A new title at the end of the disc info (zeroed but for its index);
+ *  NULL: out of memory. Strings are the format part's, kept until close;
+ *  a title is finished before the next one is added. */
+DiscTitleInfo *ff_disc_add_title(AVFormatContext *s);
+/** A new stream / chapter / file at the end of title t (zeroed); NULL / < 0: out of memory. */
+DiscStreamInfo *ff_disc_title_add_stream(DiscTitleInfo *t);
+DiscChapterInfo *ff_disc_title_add_chapter(DiscTitleInfo *t);
+int ff_disc_title_add_file(DiscTitleInfo *t, const char *name);
 
 extern const DiscFormat ff_disc_hddvd;
 

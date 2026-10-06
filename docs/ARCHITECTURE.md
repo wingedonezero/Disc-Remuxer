@@ -12,7 +12,8 @@ One name per job, used everywhere (code comments, logs, docs):
 |---|---|---|
 | reader | gets bytes off the source: opens the image or folder, reads its file system, reads sectors with retries | `discio_*` |
 | decryption | makes encrypted sectors usable | libdvdcss (DVD), libaacs (HD DVD, Blu-ray) |
-| disc layer | opens a source once, tells which kind of disc it is, gives the title list, opens a title | `discdec.c`, `disc.h` |
+| disc layer | opens a source once, tells which kind of disc it is, gives the disc info (every title, its streams and chapters), opens a title | `discdec.c`, `disc.h`, `discinfo.h` |
+| disc info | the description of a disc for the caller's overview (not the streams a title is ripped from) | `discinfo.h` |
 | format part | knows one disc format's structure: titles, clips, tracks, chapters, keys; runs the line below for a title | DVD (`dvdvideo*`), HD DVD (`hddvd*`), Blu-ray (to add) |
 | demuxer | splits a container into packets, one pile per stream | FFmpeg's `mpeg.c` (VOB / EVOB packs), `mpegts.c` (Blu-ray) |
 | parser | cuts a stream's packets into whole frames, each with its time | FFmpeg's `*_parser.c` |
@@ -88,8 +89,10 @@ their logs for changed warnings).
    titles recorded, as the reference for every later comparison.
 1. **Disc layer (done):** `discdec.c` opens the source once, tells the disc
    kind and opens a title through its format part; the program opens only
-   "disc"; HD DVD is the first format part. Still to come with it: the whole
-   title list in one open (today `info` opens the disc once per title).
+   "disc"; HD DVD is the first format part. The disc info (`discinfo.h`: the
+   disc, every title, its streams and chapters) comes from one open; the
+   stream details in it (bit rate, channels, frame size, ...) are filled once
+   the start of each title is read for them.
 2. **Demuxer:** `mpeg.c` gets the disc options; the HD DVD part feeds it
    directly; `discrip_pack.c` and `discrip_ps.c` go.
 3. **Parsers, one codec at a time:** AC-3, E-AC-3, DTS, MPEG audio (FFmpeg's

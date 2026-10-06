@@ -2,6 +2,7 @@ NAME = avformat
 DESC = FFmpeg container format library
 
 HEADERS = avformat.h                                                    \
+          discinfo.h                                                    \
           avio.h                                                        \
           version.h                                                     \
           version_major.h                                               \

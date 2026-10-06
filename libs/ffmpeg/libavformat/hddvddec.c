@@ -26,6 +26,7 @@
 
 #include <string.h>
 
+#include "libavutil/avstring.h"
 #include "libavutil/channel_layout.h"
 #include "libavutil/common.h"
 #include "libavutil/error.h"
@@ -37,6 +38,7 @@
 #include "avio_internal.h"
 #include "demux.h"
 #include "disc.h"
+#include "discinfo.h"
 #include "discio.h"
 #include "discrip.h"
 #include "hddvd_internal.h"
@@ -285,6 +287,54 @@ static int add_streams(AVFormatContext *s, const HDDVDTitle *t)
 
 static int rip_open(AVFormatContext *s);
 
+/* The disc info's titles: name, language, duration, size, whether
+ * selected, the EVOB files, chapter records, streams (their details are not
+ * known before the title is read). */
+static int describe_titles(AVFormatContext *s)
+{
+    HDDVDDemuxContext *c = ff_disc_part(s);
+
+    ((DiscContext *)s->priv_data)->info.encrypted = c->aacs != NULL;
+    for (int i = 0; i < c->plan->nb_titles; i++) {
+        const HDDVDTitle *t = &c->plan->titles[i];
+        DiscTitleInfo *dt = ff_disc_add_title(s);
+
+        if (!dt)
+            return AVERROR(ENOMEM);
+        dt->name     = t->name && *t->name ? t->name : NULL;
+        dt->duration = av_rescale(t->duration, AV_TIME_BASE, 90000);
+        dt->size     = t->size;
+        dt->selected = !t->not_selected;
+        if (t->lang)
+            av_strlcpy(dt->language, t->lang, sizeof(dt->language));
+        for (int k = 0; k < t->nb_clips; k++)
+            if (ff_disc_title_add_file(dt, t->clips[k]->evob->name) < 0)
+                return AVERROR(ENOMEM);
+        for (int k = 0; k < t->nb_marks; k++) {
+            DiscChapterInfo *ch = ff_disc_title_add_chapter(dt);
+            if (!ch)
+                return AVERROR(ENOMEM);
+            ch->start = (int64_t)t->marks[k].ms * (AV_TIME_BASE / 1000);
+            ch->name  = t->marks[k].name && *t->marks[k].name ? t->marks[k].name : NULL;
+        }
+        for (int k = 0; k < t->nb_tracks; k++) {
+            const HDDVDTrack *tk = &t->tracks[k];
+            DiscStreamInfo *ds = ff_disc_title_add_stream(dt);
+            if (!ds)
+                return AVERROR(ENOMEM);
+            ds->type   = tk->type;
+            ds->codec  = tk->codec;
+            ds->core   = tk->core;
+            if (tk->type == AVMEDIA_TYPE_SUBTITLE) {
+                ds->width  = tk->width;
+                ds->height = tk->height;
+            }
+            memcpy(ds->language, tk->lang, sizeof(ds->language));
+        }
+    }
+    return 0;
+}
+
 static int hddvd_open(AVFormatContext *s)
 {
     DiscContext *d = s->priv_data;
@@ -304,19 +354,16 @@ static int hddvd_open(AVFormatContext *s)
         return ret;
     if ((ret = ff_hddvd_tracks_build(s, c->fs, c->aacs, c->vti, c->xpls, c->nb_xpls, c->plan)) < 0)
         return ret;
+    if ((ret = describe_titles(s)) < 0)
+        return ret;
+    if (d->opt_title < 0)               /* only the disc info, no title opened */
+        return 0;
     if (d->opt_title >= c->plan->nb_titles) {
         av_log(s, AV_LOG_ERROR, "HD DVD: title %d does not exist (the disc has %d)\n", d->opt_title,
                c->plan->nb_titles);
         return AVERROR(EINVAL);
     }
-    av_dict_set_int(&s->metadata, "titles", c->plan->nb_titles, 0);
-    av_dict_set_int(&s->metadata, "encrypted", c->aacs != NULL, 0);
     c->title = &c->plan->titles[d->opt_title];
-    if (c->title->name && *c->title->name && av_dict_set(&s->metadata, "title", c->title->name, 0) < 0)
-        return AVERROR(ENOMEM);
-    /* the disc's chapter records (the ripped title's chapters are known at its end) */
-    if (av_dict_set_int(&s->metadata, "chapters", c->title->nb_marks, 0) < 0)
-        return AVERROR(ENOMEM);
     if ((ret = add_streams(s, c->title)) < 0)
         return ret;
     s->duration = av_rescale(c->title->duration, AV_TIME_BASE, 90000);
@@ -524,6 +571,8 @@ static int hddvd_read_packet(AVFormatContext *s, AVPacket *pkt)
     HDDVDDemuxContext *c = ff_disc_part(s);
     int ret;
 
+    if (!c->rip)                        /* only the disc info: nothing to read */
+        return AVERROR_EOF;
     for (;;) {
         DRFrame f;
         int k;

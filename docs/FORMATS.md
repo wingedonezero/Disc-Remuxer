@@ -11,25 +11,25 @@ program the same things, listed here.
 
 | Option | Meaning |
 |---|---|
-| `title` | the title to open (index in the disc's title list, from 0) |
+| `title` | the title to open (index in the disc's title list, from 0); -1: only the disc info |
 | `read_attempts`, `udf_reader` | from the settings `read.attempts`, `read.udf_reader` |
 | `keydb` | key files (setting `aacs.key_files`), where the format has keys |
 | `cc_helper` | formats with caption tracks: the caption converter (CCExtractor); unset: the `ccextractor` next to the running program |
 
-## Metadata on open (`AVFormatContext.metadata`)
+## The disc info (`libavformat/discinfo.h`, `disc_info(ctx)`)
 
-The disc layer sets `disc`, `label`, `filesystem` and `udf_revision`; the
-format part the rest.
+Filled on open, whichever title is opened; with `title` -1 the disc is only
+described (no title opened, nothing read): the program's `info` and the
+overview at the start of `demux` come from that one open. The disc layer
+fills the disc, the format part its titles.
 
-| Key | Value |
+| Level | Fields |
 |---|---|
-| `disc` | the disc's kind, e.g. `HD DVD`, `DVD`, `Blu-ray`, `UHD Blu-ray` |
-| `label` | the volume label |
-| `filesystem` | the file system read (e.g. `UDF (NetBSD)`); `udf_revision` its UDF revision when UDF |
-| `encrypted` | 1 / 0 |
-| `titles` | the number of titles in the disc's title list |
-| `title` | the opened title's name (the file-name template's `NAME`) |
-| `chapters` | the opened title's chapter records |
+| disc (`DiscInfo`) | kind (`HD DVD`, ...), volume label, file system and UDF revision, encrypted, the titles |
+| title (`DiscTitleInfo`) | number in the title list, name, language, duration, size in bytes, selected (0: shorter than the minimum length, listed only), the disc's files it plays in order, chapters (start, name), streams |
+| stream (`DiscStreamInfo`) | kind, codec, language, core (1: carries a core that is also a stream, 2: is that core), frame / canvas size; the stream details (aspect, frame rate, channels, sample rate, bits, bit rate) are 0 until the start of each title is read for them (to come) |
+
+## The opened title
 
 Streams carry `language` (ISO 639-2) in their metadata. Subtitle streams
 also carry `picture`: what the units are, in words for the log (e.g. `HD DVD
