@@ -26,6 +26,7 @@
 #include "log.h"
 #include "msg.h"
 #include "names.h"
+#include "check.h"
 #include "settings.h"
 #include "writer.h"
 
@@ -108,7 +109,36 @@ typedef struct EsOut {
     int             layout_done;    /* a frame was decoded (or decoding gave up) */
     AVPacket    **hold;
     int           nb_hold;
+    DetailsProbe *probe;            /* video / audio: the disc stream's details for the end check */
+    int           checked;          /* the end check ran: 1 pass, -1 fail, 0 not run */
+    char          problems[1024];   /* its findings */
 } EsOut;
+
+/* The end check of a written file: its details (read back with FFmpeg's
+ * decoders) against the disc stream's, read while ripping. */
+static void end_check(const AVStream *st, EsOut *o)
+{
+    Details disc, file;
+    int n;
+
+    if (!o->probe || !o->opened)
+        return;
+    details_probe_get(o->probe, &disc);
+    if (!disc.valid) {
+        o->checked = -1;
+        snprintf(o->problems, sizeof(o->problems), "the disc stream's first frame could not be decoded");
+        return;
+    }
+    if (details_of_file(o->name, st->codecpar->codec_type, &file) < 0 || !file.valid) {
+        o->checked = -1;
+        snprintf(o->problems, sizeof(o->problems), "the written file cannot be read back");
+        return;
+    }
+    n = details_compare(&disc, &file, o->problems, sizeof(o->problems));
+    o->checked = n ? -1 : 1;
+    if (!n)
+        snprintf(o->problems, sizeof(o->problems), "%d fields", disc.n);
+}
 
 static void put_le(FILE *f, uint64_t v, int n)
 {
@@ -522,10 +552,20 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         }
     }
 
+    for (unsigned i = 0; i < ctx->nb_streams; i++) {
+        enum AVMediaType t = ctx->streams[i]->codecpar->codec_type;
+        if ((t == AVMEDIA_TYPE_VIDEO || t == AVMEDIA_TYPE_AUDIO) &&
+            details_probe_open(&out[i].probe, ctx->streams[i]->codecpar) < 0)
+            log_text(LOG_DETAIL, "Track %u: no decoder for %s: its details are not checked", i,
+                     avcodec_get_name(ctx->streams[i]->codecpar->codec_id));
+    }
     while ((ret = av_read_frame(ctx, pkt)) >= 0) {
         const AVStream *st = ctx->streams[pkt->stream_index];
         EsOut *o = &out[pkt->stream_index];
         int64_t progress;
+
+        if (o->probe)
+            details_probe_packet(o->probe, pkt);
 
         if (av_opt_get_int(ctx, "progress", AV_OPT_SEARCH_CHILDREN, &progress) >= 0)
             log_progress(job->title, progress / 10000.0);
@@ -592,12 +632,21 @@ end:
         res->failed = 1;
     } else {
         int64_t untested = meta_int(ctx->metadata, "untested");
+        int checked = 0, check_failed = 0, unchecked = 0;
+
+        for (unsigned i = 0; i < ctx->nb_streams; i++) {
+            enum AVMediaType t = ctx->streams[i]->codecpar->codec_type;
+            end_check(ctx->streams[i], &out[i]);
+            checked      += out[i].checked != 0;
+            check_failed += out[i].checked < 0;
+            unchecked    += out[i].opened && !out[i].probe && (t == AVMEDIA_TYPE_VIDEO || t == AVMEDIA_TYPE_AUDIO);
+        }
         log_text(LOG_INFO, "Tracks:");
         for (unsigned i = 0; i < ctx->nb_streams; i++) {
             const AVStream *st = ctx->streams[i];
             EsOut *o = &out[i];
             int64_t frames = meta_int(st->metadata, "frames"), warn = meta_int(st->metadata, "warnings");
-            char what[160], state[96], delay[48] = "", jc[64], jl[32], jy[96], jf[4300], extra[512] = "";
+            char what[160], state[96], delay[48] = "", jc[64], jl[32], jy[96], jf[4300], extra[2048] = "";
             const char *unit = st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE ? "subtitles" : "frames";
             int empty_cc = !o->opened && av_dict_get(st->metadata, "caption", NULL, 0);
 
@@ -620,6 +669,14 @@ end:
                 subtitle_detail(st, o->opened, extra, sizeof(extra));
             else if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
                 video_detail(st, extra, sizeof(extra));
+            if (o->checked < 0)
+                log_text(LOG_ERROR, "      the file's stream details differ from the disc stream's: %s", o->problems);
+            if (o->checked) {
+                char jp[1100];
+                size_t l = strlen(extra);
+                snprintf(extra + l, sizeof(extra) - l, ",\"details_check\":\"%s\",\"details\":%s",
+                         o->checked > 0 ? "pass" : "fail", json_str(jp, sizeof(jp), o->problems));
+            }
             if (o->opened)
                 log_text(LOG_DETAIL, "      %s", o->name);
             res->warnings += warn;
@@ -629,8 +686,20 @@ end:
                      json_str(jl, sizeof(jl), o->st.lang), json_str(jy, sizeof(jy), o->layout), frames, warn,
                      o->st.delay_ms, json_str(jf, sizeof(jf), o->opened ? o->name : ""), extra);
         }
+        if (checked)
+            log_text(check_failed ? LOG_ERROR : LOG_OK, "Stream details (read back from the files): %d of %d "
+                     "video / audio track%s match the disc streams%s", checked - check_failed, checked,
+                     checked == 1 ? "" : "s", check_failed ? "" : ": PASS");
+        if (unchecked)
+            log_text(LOG_WARNING, "Stream details: %d video / audio track%s not checked (no decoder)", unchecked,
+                     unchecked == 1 ? "" : "s");
+        res->warnings += unchecked;
         log_msg(MSG_CHAPTERS, LOG_INFO, "Chapters: %u", ctx->nb_chapters);
-        if (untested) {
+        if (check_failed) {
+            log_msg(MSG_DETAILS_DIFFER, LOG_ERROR, "Title #%d: its files are written, but %d of them do not keep "
+                    "the disc stream's details (see above)", job->title, check_failed);
+            res->failed = 1;
+        } else if (untested) {
             log_msg(MSG_UNTESTED, LOG_ERROR, "Title #%d: %"PRId64" feature(s) met that no real disc has tested: "
                     "its files are written, but check the log before using them", job->title, untested);
             res->failed = 1;
@@ -650,6 +719,7 @@ end:
         av_free(o->hold);
         av_frame_free(&o->frame);
         avcodec_free_context(&o->avctx);
+        details_probe_close(&o->probe);
         av_free(o->name);
     }
     av_free(out);

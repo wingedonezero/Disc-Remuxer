@@ -51,6 +51,7 @@ read through the disc readers `discio_*`):
 | `main.c` | commands (`info`, `demux`, `settings`, `version`), options (`--config`, `--set`, `--json`, `-v`), the run |
 | `settings.c` | the settings registry and `disc-remuxer.toml` next to the program (written with every setting and its help; new settings added, unknown ones removed, values kept) |
 | `writer.c` | opening a title and writing its stream files, chapters and VobSub pairs |
+| `check.c` | the end check: each written video / audio file is read back with FFmpeg's decoders and its stream details (format, profile, size, aspect, frame rate, scan, colour, HDR; audio format, channels, layout, rate, depth, ...) must equal those read from the disc's stream while ripping; a missing or different field fails the title |
 | `names.c` | file names from `output.file_name_template` |
 | `log.c` | the log: terminal (colours), `--json` records, a log file per disc in the output folder |
 | `msg.h` | the numbers of the program's own messages |
