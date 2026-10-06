@@ -3,8 +3,9 @@
  * through the disc readers (discio) and reads the title set's structure
  * (VTI), the playlists, the AACS keys, the title plan and the titles'
  * tracks; one title's tracks become the streams. Its EVOB clips are read in
- * order through FFmpeg's MPEG-PS demuxer (raw PES payloads) into the shared
- * rip core, whose output frames are the packets.
+ * order through the disc formats' copy of FFmpeg's MPEG-PS demuxer
+ * (discrip_ps.c; raw PES payloads) into the shared rip core, whose output
+ * frames are the packets.
  *
  * This file is part of FFmpeg.
  *
@@ -134,7 +135,7 @@ static int subdemux_read(void *opaque, uint8_t *buf, int buf_size)
 static int subdemux_open(AVFormatContext *s)
 {
     HDDVDDemuxContext *c = s->priv_data;
-    extern const FFInputFormat ff_mpegps_demuxer;
+    extern const FFInputFormat ff_discrip_ps_demuxer;
     int ret;
 
     if (!(c->mpeg_buf = av_mallocz(HDDVD_BLOCK)))
@@ -158,7 +159,7 @@ static int subdemux_open(AVFormatContext *s)
     c->mpeg_ctx->interrupt_callback = s->interrupt_callback;
     c->mpeg_ctx->pb = &c->mpeg_pb.pub;
     c->mpeg_ctx->io_open = NULL;
-    return avformat_open_input(&c->mpeg_ctx, "", &ff_mpegps_demuxer.p, NULL);
+    return avformat_open_input(&c->mpeg_ctx, "", &ff_discrip_ps_demuxer.p, NULL);
 }
 
 static void held_free(HDDVDDemuxContext *c)
@@ -213,7 +214,7 @@ static int hddvd_close(AVFormatContext *s)
     return 0;
 }
 
-/* The id FFmpeg's MPEG-PS demuxer gives a track's packets: video stream_id
+/* The id the MPEG-PS demuxer (discrip_ps.c) gives a track's packets: video stream_id
  * 0xE0 (MPEG-2) / 0xE2 (AVC) / 0xFD with extension 0x55 (VC-1); private
  * stream 1 sub-streams AC-3 0x80+n, DTS 0x88+n, LPCM 0xA0+n, MLP 0xB0+n,
  * Dolby Digital Plus 0xC0+n, sub-pictures 0x20+n; MPEG audio stream_id
