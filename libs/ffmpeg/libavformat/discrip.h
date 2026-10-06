@@ -513,7 +513,8 @@ void ff_discrip_video_close(DRVideo **v);
  * and is timed at the video grid point nearest to its PES time. Left out: a
  * unit without a time of its own, a unit more than 0.1 ms before the
  * video's first field. Units wait until the segment's video knows its grid:
- * flush the video before the sub-pictures at the end of a segment. */
+ * flush the video before the sub-pictures at the end of a segment. A unit
+ * drawn outside the track's canvas is counted and warned about (kept). */
 
 typedef struct DRSpuStats {
     int64_t units, out;
@@ -523,13 +524,15 @@ typedef struct DRSpuStats {
     int64_t forced;            /**< with a forced start (FSTA_DSP) */
     int64_t colcon;            /**< with a colour / contrast change (CHG_COLCON) */
     int64_t max_shift;         /**< largest move to the video grid (ticks) */
+    int64_t outside;           /**< drawn outside the canvas (SET_DAREA beyond width x height) */
 } DRSpuStats;
 
 typedef struct DRSpu DRSpu;
 
 /** Sub-picture timing of one track in one segment, on the grid of the
- *  segment's video v (which must outlive it). */
-int  ff_discrip_spu_open(DRSpu **s, void *logctx, int track, DRVideo *v,
+ *  segment's video v (which must outlive it); width x height the canvas the
+ *  units are drawn on (0 x 0: not known, not checked). */
+int  ff_discrip_spu_open(DRSpu **s, void *logctx, int track, DRVideo *v, int width, int height,
                          DRFrameCb cb, void *opaque, DREventCb event, void *event_opaque);
 /** A DRUnitCb: opaque = the DRSpu. */
 int  ff_discrip_spu_unit(void *spu, const DRUnit *unit);
@@ -690,6 +693,7 @@ typedef struct DRTitleTrack {
     enum AVCodecID codec;
     int            kind;           /**< DRTrackKind */
     int            audio_flags;    /**< DR_AUDIO_CORE_ONLY */
+    int            width, height;  /**< sub-pictures: the canvas they are drawn on (0 x 0: not known) */
 } DRTitleTrack;
 
 typedef struct DRTitleConfig {

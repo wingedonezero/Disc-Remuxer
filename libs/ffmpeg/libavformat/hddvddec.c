@@ -354,6 +354,8 @@ static int rip_open(AVFormatContext *s)
         tracks[i].kind        = k->type == AVMEDIA_TYPE_VIDEO ? DR_KIND_VIDEO :
                                 k->type == AVMEDIA_TYPE_AUDIO ? DR_KIND_AUDIO : DR_KIND_SUBTITLE;
         tracks[i].audio_flags = k->core == 2 ? DR_AUDIO_CORE_ONLY : 0;
+        tracks[i].width       = k->width;
+        tracks[i].height      = k->height;
     }
     {
         DRTitleConfig cfg = {

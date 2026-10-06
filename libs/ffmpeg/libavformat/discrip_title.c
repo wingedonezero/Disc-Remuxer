@@ -473,7 +473,7 @@ static int seg_open(DRTitle *t)
             stage = k->audio;
             break;
         default:
-            ret   = ff_discrip_spu_open(&k->spu, t->log, i, t->t[0].video, seg_frame, k, on_seg_event, t);
+            ret   = ff_discrip_spu_open(&k->spu, t->log, i, t->t[0].video, k->cfg.width, k->cfg.height, seg_frame, k, on_seg_event, t);
             unit  = ff_discrip_spu_unit;
             stage = k->spu;
             break;

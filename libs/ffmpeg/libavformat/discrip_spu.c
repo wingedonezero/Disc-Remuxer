@@ -52,6 +52,8 @@ typedef struct Control {
     int dspxa;                   /* SET_DSPXA seen: the unit shows a picture */
     int forced;                  /* FSTA_DSP seen */
     int colcon;                  /* CHG_COLCON seen */
+    int area;                    /* SET_DAREA seen: x2 / y2 the largest end column / line */
+    int x2, y2;
 } Control;
 
 /* 1 when the header can be read from avail bytes. */
@@ -77,7 +79,8 @@ static int header(const uint8_t *b, int64_t avail, Header *h)
  * unit), CHG_COLCON its 16-bit size + 3; the HD DVD commands SET_COLOR 0x83
  * 769, SET_CONTR 0x84 257, SET_DAREA 0x85 7, SET_DSPXA 0x86 9 (32-bit
  * addresses inside the unit), CHG_COLCON 0x87 as 0x07. STP_DSP takes its
- * sequence's delay (the last one counts). */
+ * sequence's delay (the last one counts). SET_DAREA: start and end column
+ * (12 bits each), start and end line (12 bits each). */
 static int control(const uint8_t *b, int64_t len, Control *c)
 {
     Header h;
@@ -106,7 +109,14 @@ static int control(const uint8_t *b, int64_t len, Control *c)
             case 0x03:
             case 0x04:                k = 3; break;
             case 0x05:
-            case 0x85:                k = 7; break;
+            case 0x85:
+                if (len - p < 7)
+                    return 0;
+                c->area = 1;
+                c->x2 = FFMAX(c->x2, (b[p + 2] & 0x0F) << 8 | b[p + 3]);
+                c->y2 = FFMAX(c->y2, (b[p + 5] & 0x0F) << 8 | b[p + 6]);
+                k = 7;
+                break;
             case 0x06:
                 c->dspxa = 1;
                 if (len - p < 5 || AV_RB16(b + p + 1) >= len || AV_RB16(b + p + 3) >= len)
@@ -196,12 +206,13 @@ typedef struct Held {
 struct DRSpu {
     void       *log;
     int         track;
+    int         width, height;   /* the canvas the units are drawn on, 0 = not known */
     DRVideo    *video;
     DRFrameCb   cb;    void *opaque;
     DREventCb   event; void *event_opaque;
     Held       *q;               /* units waiting for the video's grid */
     int         head, n, cap;
-    int         warned_colcon;
+    int         warned_colcon, warned_outside;
     DRSpuStats  st;
 };
 
@@ -263,6 +274,14 @@ int ff_discrip_spu_unit(void *opaque, const DRUnit *u)
         s->warned_colcon = 1;
     }
     s->st.colcon += c.colcon;
+    if (s->width && c.area && (c.x2 >= s->width || c.y2 >= s->height)) {
+        if (!s->warned_outside)
+            av_log(s->log, AV_LOG_WARNING, "Rip core: sub-picture track %d: the unit at byte %"PRId64" is drawn "
+                   "up to column %d, line %d, outside the track's %dx%d canvas\n", s->track, u->pos, c.x2, c.y2,
+                   s->width, s->height);
+        s->warned_outside = 1;
+        s->st.outside++;
+    }
     s->st.forced += c.forced;
     h.f.dur = (c.stop ? c.stop : 1) * DELAY_TICKS;
     if (c.dspxa && !c.stop) {
@@ -315,10 +334,14 @@ int ff_discrip_spu_flush(DRSpu *s)
            " without a time, %"PRId64" before the video, %"PRId64" without a stop time), largest move to the "
            "video grid %"PRId64" ticks\n", s->track, s->st.units, s->st.out, s->st.untimed, s->st.early,
            s->st.no_stop, s->st.max_shift);
+    if (s->width)
+        av_log(s->log, AV_LOG_VERBOSE, "Rip core: sub-picture track %d: units inside the %dx%d canvas: "
+               "%"PRId64" of %"PRId64": %s\n", s->track, s->width, s->height, s->st.units - s->st.outside,
+               s->st.units, s->st.outside ? "FAIL" : "PASS");
     return 0;
 }
 
-int ff_discrip_spu_open(DRSpu **sp, void *logctx, int track, DRVideo *video,
+int ff_discrip_spu_open(DRSpu **sp, void *logctx, int track, DRVideo *video, int width, int height,
                         DRFrameCb cb, void *opaque, DREventCb ev, void *ev_opaque)
 {
     DRSpu *s;
@@ -330,6 +353,8 @@ int ff_discrip_spu_open(DRSpu **sp, void *logctx, int track, DRVideo *video,
         return AVERROR(ENOMEM);
     s->log    = logctx;
     s->track  = track;
+    s->width  = width;
+    s->height = height;
     s->video  = video;
     s->cb     = cb;
     s->opaque = opaque;

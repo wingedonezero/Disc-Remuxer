@@ -234,10 +234,11 @@ typedef struct DRSpuStats {
     int64_t forced;
     int64_t colcon;
     int64_t max_shift;
+    int64_t outside;
 } DRSpuStats;
 
 typedef struct DRSpu DRSpu;
-int  ff_discrip_spu_open(DRSpu **s, void *logctx, int track, DRVideo *v,
+int  ff_discrip_spu_open(DRSpu **s, void *logctx, int track, DRVideo *v, int width, int height,
                          DRFrameCb cb, void *opaque, DREventCb event, void *event_opaque);
 int  ff_discrip_spu_unit(void *spu, const DRUnit *unit);
 int  ff_discrip_spu_flush(DRSpu *s);
@@ -320,6 +321,7 @@ typedef struct DRTitleTrack {
     int codec;
     int kind;
     int audio_flags;
+    int width, height;
 } DRTitleTrack;
 
 typedef struct DRTitleConfig {

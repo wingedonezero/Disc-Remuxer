@@ -1071,6 +1071,12 @@ static int probe_clip(Builder *b, HDDVDClip *clip, const HDDVDEvobAttr *a)
     return 1;
 }
 
+/* Sub-picture coding 4: units of 8-bit pixels with their own 256-entry
+ * palette and contrast table (commands 0x83 / 0x84), drawn on a 1920x1080
+ * canvas whatever the video's frame size (on 720x480 MPEG-2 titles too).
+ * Codings 0 and 1 are drawn on the video's frame size. */
+#define SUBPIC_CODING_HD 4
+
 /* Frame size of sub-pictures from the video attribute (bytes 0x02..0x04). */
 static void subpic_size(const uint8_t *v, int *w, int *h)
 {
@@ -1129,8 +1135,14 @@ static int describe(Builder *b, const HDDVDClip *clip, const HDDVDEvobAttr *a, i
             t->coding = p[0] >> 5;
             if (t->coding == 0 || t->coding == 1 || t->coding == 4) {
                 t->codec   = AV_CODEC_ID_DVD_SUBTITLE;
-                subpic_size(a->raw + 2, &t->width, &t->height);
                 t->palette = a->words + ((p[1] & 0x20) ? 16 : 0);
+                if (t->coding == SUBPIC_CODING_HD) {
+                    t->width  = 1920;
+                    t->height = 1080;
+                } else {
+                    subpic_size(a->raw + 2, &t->width, &t->height);
+                    untested(b, 16, "sub-picture stream of coding 0 or 1: drawn on the video's frame size");
+                }
             }
         }
         stream_lang(b->log, b->xpls, b->nb_xpls, clip->evob->name, 0, t->number + 1, t->lang);
