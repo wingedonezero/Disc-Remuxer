@@ -25,6 +25,11 @@ def tb_py_dir_entry(opaque, name, is_dir):
     return ffi.from_handle(opaque)(ffi.string(name).decode("utf-8", "replace"), bool(is_dir))
 
 
+@ffi.def_extern()
+def tb_py_dir_entry_raw(opaque, name, is_dir):
+    return ffi.from_handle(opaque)(ffi.string(name), bool(is_dir))
+
+
 class Source:
     """A DiscIOSource over reader.read_at(pos, length) -> bytes, or a
     negative AVERROR code. size: bytes (len(reader.data) when not given).
@@ -64,9 +69,10 @@ class Memory:
         return self.data[pos:pos + length]
 
 
-def list_dir(fs, path):
+def list_dir(fs, path, raw=False):
     """The entries of a directory of a mounted DiscIOFS: (return code,
-    [(name, is_dir)])."""
+    [(name, is_dir)]); names as bytes with raw, else decoded (UTF-8, bad
+    bytes replaced). path: str or bytes."""
     entries = []
 
     def cb(name, is_dir):
@@ -74,5 +80,7 @@ def list_dir(fs, path):
         return 0
 
     h = ffi.new_handle(cb)
-    ret = fs.ops.list_dir(fs, path.encode(), lib.tb_py_dir_entry, h)
+    if isinstance(path, str):
+        path = path.encode()
+    ret = fs.ops.list_dir(fs, path, lib.tb_py_dir_entry_raw if raw else lib.tb_py_dir_entry, h)
     return ret, entries

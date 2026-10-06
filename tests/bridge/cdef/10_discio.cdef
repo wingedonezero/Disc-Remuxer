@@ -109,3 +109,4 @@ enum DiscIODiscFormat ff_discio_disc_format(DiscIOFS *fs);
 extern "Python" int tb_py_read_at(void *opaque, int64_t pos, uint8_t *buf, int len);
 extern "Python" void tb_py_source_close(void *opaque);
 extern "Python" int tb_py_dir_entry(void *opaque, const char *name, int is_dir);
+extern "Python" int tb_py_dir_entry_raw(void *opaque, const char *name, int is_dir);

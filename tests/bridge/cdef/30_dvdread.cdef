@@ -1,0 +1,7 @@
+/* libdvdread (dvdread/dvd_reader.h, dvdread/dvd_udf.h). */
+
+typedef struct dvd_reader_s dvd_reader_t;
+
+dvd_reader_t *DVDOpen(const char *path);
+void DVDClose(dvd_reader_t *dvd);
+uint32_t UDFFindFile(dvd_reader_t *dvd, const char *filename, uint32_t *size);

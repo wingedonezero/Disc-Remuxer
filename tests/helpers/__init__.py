@@ -21,7 +21,7 @@ for _name in _typedefs + [f"struct {n}" for n in _structs] + [f"union {n}" for n
     try:
         ffi.sizeof(_name)
     except ffi.error as e:  # declared only by name (opaque): nothing to check
-        if "incomplete" not in str(e) and "opaque" not in str(e):
+        if "know the size" not in str(e):
             raise
 
 AV_NOPTS_VALUE = -(1 << 63)

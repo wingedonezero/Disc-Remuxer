@@ -17,6 +17,8 @@
 #include "libavformat/dvdvideo_internal.h"
 #include "libavformat/hddvd_internal.h"
 
+#include <dvdread/dvd_udf.h>
+
 typedef void (*tb_log_sink)(int level, const char *line);
 
 static pthread_mutex_t log_lock = PTHREAD_MUTEX_INITIALIZER;
