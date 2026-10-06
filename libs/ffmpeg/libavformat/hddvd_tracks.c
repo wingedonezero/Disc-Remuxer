@@ -159,8 +159,8 @@ static int stream_header(const uint8_t *b, int len)
     channels = acmod_channels[acmod] + lfeon;
     expect = 0;
     for (int i = 0; i < 16; i++) {
-        /* bit 0 (first) .. 15: L C R Ls Rs Lc/Rc Lrs/Rrs Cs Ts Lsd/Rsd Lw/Rw Lvh/Rvh Cvh - LFE2 LFE */
-        static const uint8_t weight[16] = { 1, 1, 1, 1, 1, 2, 2, 1, 1, 2, 2, 2, 1, 0, 1, 1 };
+        /* bit 0 (first) .. 15: L C R Ls Rs Lc/Rc Lrs/Rrs Cs Ts Lsd/Rsd Lw/Rw Lvh/Rvh Cvh Lts/Rts LFE2 LFE */
+        static const uint8_t weight[16] = { 1, 1, 1, 1, 1, 2, 2, 1, 1, 2, 2, 2, 1, 2, 1, 1 };
         if (chanmap & (0x8000 >> i))
             expect += weight[i];
     }
@@ -181,7 +181,9 @@ static int frame_sync(const uint8_t *b, int len)
     return frame_header(&h, b, len);
 }
 
-/* Bytes to skip to the next frame start: -2 need more data, -1 give up. */
+/* Bytes to skip to the next frame start: -2 need more data, -1 give up. A
+ * frame start found here also needs a valid stream header (E-AC-3: through
+ * its channel map) and, for AC-3, both CRCs. */
 static int frame_resync(const uint8_t *b, int len)
 {
     if (len < 7)
@@ -198,6 +200,8 @@ static int frame_resync(const uint8_t *b, int len)
             return pos + 1;
         if (rem < h.size)
             return -2;
+        if (!stream_header(b + pos, h.size))
+            return pos + 1;
         if (is_eac3(h.bsid))
             return pos;
         return pos + !ac3_crc_ok(b + pos, h.size);

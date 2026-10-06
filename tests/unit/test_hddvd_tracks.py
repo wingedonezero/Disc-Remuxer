@@ -283,6 +283,17 @@ def test_the_first_frame_must_be_a_valid_header():
     assert ddplus([pack([ps1_packet(0xc0, 90000, bad + e() * 3)])]) == []
     good = eac3_frame(256, 1, 0xa000)  # L, R
     assert ddplus([pack([ps1_packet(0xc0, 90000, good + e() * 3)])]) == EAC3
+    # channel map bit 13 is a speaker pair (top back left / right): 2 channels
+    pair = eac3_frame(256, 1, 0x0004)
+    assert ddplus([pack([ps1_packet(0xc0, 90000, pair + e() * 3)])]) == EAC3
+    assert ddplus([pack([ps1_packet(0xc0, 90000, eac3_frame(256, 1, 0xa004) + e() * 3)])]) == []
+
+
+def test_a_frame_start_found_after_other_data_needs_a_valid_header():
+    # the dependent stream frame after the 100 bytes has a channel map that does
+    # not fit its mode: the search moves on to the next frame start
+    bad = eac3_frame(256, 1, 0x8000)
+    assert ddplus([pack([ps1_packet(0xc0, 90000, bytes(100) + bad + e() * 4)])]) == EAC3
 
 
 def test_a_pack_with_more_than_two_packets_fails_the_probe():
