@@ -220,6 +220,32 @@ fn repeated_fields_lengthen_frames() {
     assert!(s.events.is_empty());
 }
 
+#[test]
+fn skipped_frames_repeat_fields_too() {
+    // 3:2 pulldown in RFF flags where every second P frame is skipped (PTYPE
+    // 1111): the skipped frame still carries TFF / RFF (no TFCNTR), as Blu-ray
+    // and HD DVD streams have it; 2 + 3 fields per pair of frames
+    const SKIPPED: (u32, u8) = (0b1111, 4);
+    let f = Flags { interlace: true, pulldown: true };
+    let mut units = Vec::new();
+    let mut pos = 0i64;
+    for k in 0..120 {
+        let rff = u32::from(k % 2 == 1);
+        let pt = if k % 12 == 0 { I } else if k % 4 == 3 { SKIPPED } else { P };
+        let mut u = if k % 12 == 0 { seq(&f) } else { Vec::new() };
+        u.extend(frame(&[(0, 1), pt, (1, 1), (rff, 1)], false));
+        units.push((u, BASE + pos * FIELD));
+        pos += 2 + i64::from(rff);
+    }
+    let (s, _) = run(&units);
+    assert_eq!(s.out.len(), units.len());
+    for (k, (o, u)) in s.out.iter().zip(&units).enumerate() {
+        assert_eq!(o.0, u.1, "frame {k}");
+        assert_eq!(o.1, if k % 2 == 1 { 3 * FIELD } else { 2 * FIELD }, "frame {k}");
+    }
+    assert!(s.events.is_empty(), "{:?}", s.events);
+}
+
 /// A stream through the cutter (fed `chunk` bytes at a time, no PES times)
 /// and the video stage: the frames' bytes in decode order, or the first
 /// error the cutter returned.

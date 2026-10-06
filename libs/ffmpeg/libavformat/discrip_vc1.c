@@ -39,6 +39,7 @@ typedef struct Vc1State {
     int64_t ends_dropped;      /* units of end-of-sequence codes only, left out */
     int64_t headers_dropped;   /* units of headers without a frame, left out */
     int     said_user_data;    /* the untested note on frame user data was logged */
+    int     said_skipped_tfcntr; /* the untested note on skipped frames with TFCNTR was logged */
 } Vc1State;
 
 /* MSB-first bit reader over one start-code unit's bytes after its start
@@ -381,17 +382,22 @@ static int picture_vc1(DRVideo *v, const DRFrame *f, DRPicture *pic)
                 type = DR_PIC_B;
             else
                 type = DR_PIC_I;                /* 6 */
-            if (ptype != 0x0F) {
-                if (s->tfcntr)
-                    u(&b, 8);
-                if (s->pulldown) {
-                    if (s->interlace && !s->psf) {
-                        u1(&b);                 /* TFF */
-                        if (u1(&b))             /* RFF */
-                            fields = 3;
-                    } else
-                        fields *= u(&b, 2) + 1; /* RPTFRM */
-                }
+            /* a skipped frame has no TFCNTR here (FFmpeg's decoder reads
+             * one), but its repeat fields like every frame picture */
+            if (ptype != 0x0F && s->tfcntr)
+                u(&b, 8);
+            else if (ptype == 0x0F && s->tfcntr && !s->said_skipped_tfcntr) {
+                s->said_skipped_tfcntr = 1;
+                av_log(NULL, AV_LOG_WARNING, "Rip core: VC-1: a skipped frame in a stream with frame counters, "
+                       "read without one [untested on real discs]\n");
+            }
+            if (s->pulldown) {
+                if (s->interlace && !s->psf) {
+                    u1(&b);                     /* TFF */
+                    if (u1(&b))                 /* RFF */
+                        fields = 3;
+                } else
+                    fields *= u(&b, 2) + 1;     /* RPTFRM */
             }
         }
         if (b.over) {
