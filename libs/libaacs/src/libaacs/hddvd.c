@@ -281,8 +281,8 @@ static int _read_tkf(AACS_HDDVD *h, const uint8_t *d, size_t size, unsigned n, c
     }
     if (size >= 0x24 && MKINT_BE32(d + 0x20) != 0)
         _log(l, AACS_HDDVD_LOG_WARNING, "%s: bytes 0x20..0x23 are 0x%08x, not 0", name, (unsigned)MKINT_BE32(d + 0x20));
-    if (size < TKF_KEY_AT(TKF_KEYS - 1) + 16) {
-        _log(l, AACS_HDDVD_LOG_ERROR, "%s: %zu bytes, too short for %d title keys", name, size, TKF_KEYS);
+    if (size < TKF_SIZE) {
+        _log(l, AACS_HDDVD_LOG_ERROR, "%s: %zu bytes, shorter than its recorded length 0x%x", name, size, TKF_SIZE);
         return 0;
     }
     keys = realloc(h->keys, (h->nb_keys + TKF_KEYS) * sizeof(*keys));

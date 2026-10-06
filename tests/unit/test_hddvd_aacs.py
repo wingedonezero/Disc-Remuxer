@@ -148,6 +148,9 @@ def test_a_bad_title_key_file_fails_the_open():
     t[:12] = b"DVD_HD_V_TKF"
     t[12:16] = (0x9b1).to_bytes(4, "big")
     assert open_image(disc_with(b.disc, [("AACS", "VTKF000.AACS", bytes(t))], 1), []).error == INVALIDDATA
+    # shorter than its recorded 0x9b0 bytes, though it holds all 64 keys (they end at 0x970)
+    t[12:16] = (0x9b0).to_bytes(4, "big")
+    assert open_image(disc_with(b.disc, [("AACS", "VTKF000.AACS", bytes(t[:0x970]))], 1), []).error == INVALIDDATA
     # no VTKF000.AACS: no disc identifier
     assert open_image(disc_with(b.disc, [("AACS", "DKF.AACS", bytes(64))], 1), []).error == INVALIDDATA
 
