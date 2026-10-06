@@ -10,6 +10,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 MODE = os.environ.get("DR_MODE", "debug")
 BUILD = ROOT / "build" / MODE
 DIST = ROOT / "dist" / MODE
+DATA = ROOT / "tests" / "data"
 
 sys.path.insert(0, str(BUILD / "pytest"))
 from _bridge import ffi, lib  # noqa: E402  (built by make test)
@@ -77,7 +78,7 @@ def error_text(code):
 # Every module that attaches Python code to the bridge's callbacks: a
 # callback without its code would silently return 0, so every extern "Python"
 # of the declarations must have its code once these are loaded.
-from helpers import css, dvd, hddvd, parser, source, vm, xml  # noqa: E402,F401
+from helpers import css, discrip, dvd, hddvd, parser, source, vm, xml  # noqa: E402,F401
 
 _DECLARED = set()
 for _f in (ROOT / "tests" / "bridge" / "cdef").glob("*.cdef"):
