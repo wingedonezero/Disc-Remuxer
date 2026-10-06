@@ -14,6 +14,7 @@
 #include <libavformat/avformat.h>
 #include <libavutil/avstring.h>
 #include <libavutil/dict.h>
+#include <libavutil/intreadwrite.h>
 #include <libavutil/log.h>
 #include <libavutil/mathematics.h>
 #include <libavutil/mem.h>
@@ -187,7 +188,7 @@ static const char *es_extension(enum AVCodecID id)
     case AV_CODEC_ID_AAC:          return "aac";
     case AV_CODEC_ID_PCM_S16LE:
     case AV_CODEC_ID_PCM_S24LE:    return "wav";
-    case AV_CODEC_ID_DVD_SUBTITLE: return "spu";
+    case AV_CODEC_ID_DVD_SUBTITLE: return "sub";
     default:                       return "bin";
     }
 }
@@ -224,6 +225,8 @@ typedef struct EsOut {
     DrStreamStats st;
     char         *name;
     FILE         *f;
+    FILE         *idx;              /* sub-pictures: the VobSub index next to the .sub */
+    int64_t       sub_pos;          /* bytes written to the .sub */
     int           wav;              /* a WAV header to complete at the end */
     int           opened;           /* the file name is chosen */
     AVCodecContext *avctx;          /* audio: FFmpeg's decoder, for the channel layout */
@@ -296,6 +299,88 @@ static int write_chapters(const AVFormatContext *ctx, const char *path)
     return fclose(f) ? AVERROR(errno) : 0;
 }
 
+/* ---- VobSub (.sub: the sub-picture units in MPEG-2 program stream packs
+ * of 2048 bytes, private stream 1 sub-stream 0x20; .idx: the index header
+ * and one "timestamp: ..., filepos: ..." line per unit) ---- */
+
+#define PACK 2048
+
+static void put_ts(uint8_t *p, int marker, int64_t ts)
+{
+    p[0] = marker << 4 | ((ts >> 29) & 0x0E) | 1;
+    p[1] = ts >> 22;
+    p[2] = ((ts >> 14) & 0xFE) | 1;
+    p[3] = ts >> 7;
+    p[4] = (ts << 1) | 1;
+}
+
+/* One unit (PTS in 90 kHz) as packs: the PTS in the first packet; the last
+ * pack is filled with stuffing bytes in its PES header (fewer than 6
+ * bytes left) or a padding packet. */
+static int vobsub_unit(EsOut *o, const uint8_t *data, int size, int64_t pts)
+{
+    int first = 1;
+
+    while (size > 0 || first) {
+        uint8_t pk[PACK];
+        int64_t scr = FFMAX(pts, 0);
+        int hdr = first ? 5 : 0, room, n, left, stuff = 0, i = 0;
+
+        memset(pk, 0xFF, sizeof(pk));
+        pk[i++] = 0; pk[i++] = 0; pk[i++] = 1; pk[i++] = 0xBA;
+        pk[i++] = 0x44 | ((scr >> 27) & 0x38) | ((scr >> 28) & 0x03);
+        pk[i++] = scr >> 20;
+        pk[i++] = ((scr >> 12) & 0xF8) | 0x04 | ((scr >> 13) & 0x03);
+        pk[i++] = scr >> 5;
+        pk[i++] = ((scr << 3) & 0xF8) | 0x04;
+        pk[i++] = 0x01;                                  /* SCR extension 0, marker */
+        pk[i++] = 0x01; pk[i++] = 0x89; pk[i++] = 0xC3;  /* program mux rate 25200 (x 50 bytes/s) */
+        pk[i++] = 0xF8;                                  /* no pack stuffing */
+        room = PACK - i - 6 - 3 - hdr - 1;
+        n    = FFMIN(size, room);
+        left = room - n;
+        if (left > 0 && left < 6)                        /* too little for a padding packet */
+            stuff = left;
+        pk[i++] = 0; pk[i++] = 0; pk[i++] = 1; pk[i++] = 0xBD;
+        AV_WB16(pk + i, 3 + hdr + stuff + 1 + n); i += 2;
+        pk[i++] = 0x81;
+        pk[i++] = first ? 0x80 : 0x00;
+        pk[i++] = hdr + stuff;
+        if (first) {
+            put_ts(pk + i, 2, pts);
+            i += 5;
+        }
+        i += stuff;                                      /* 0xFF stuffing bytes */
+        pk[i++] = 0x20;
+        memcpy(pk + i, data, n);
+        i += n;
+        if (PACK - i >= 6) {                             /* padding packet */
+            pk[i] = 0; pk[i + 1] = 0; pk[i + 2] = 1; pk[i + 3] = 0xBE;
+            AV_WB16(pk + i + 4, PACK - i - 6);
+        }
+        if (fwrite(pk, 1, PACK, o->f) != PACK)
+            return AVERROR(EIO);
+        o->sub_pos += PACK;
+        data  += n;
+        size  -= n;
+        first  = 0;
+    }
+    return 0;
+}
+
+static int vobsub_write(EsOut *o, const AVStream *st, const AVPacket *pkt)
+{
+    int64_t pts = pkt->pts == AV_NOPTS_VALUE ? 0 : av_rescale_q(pkt->pts, st->time_base, (AVRational){ 1, 90000 });
+    int64_t ms  = pkt->pts == AV_NOPTS_VALUE ? 0 : av_rescale_q(pkt->pts, st->time_base, (AVRational){ 1, 1000 });
+
+    if (ms < 0)
+        ms = 0;
+    fprintf(o->idx, "timestamp: %02"PRId64":%02"PRId64":%02"PRId64":%03"PRId64", filepos: %09"PRIx64"\n",
+            ms / 3600000, ms / 60000 % 60, ms / 1000 % 60, ms % 1000, (uint64_t)o->sub_pos);
+    o->st.bytes += pkt->size;
+    return vobsub_unit(o, pkt->data, pkt->size, pts);
+}
+
 /* Chooses the stream's file name and opens it: <prefix>_<NN>_<lang>_<codec>
  * [_<channel layout>][ DELAY <ms>ms].<ext>; audio carries its start delay
  * (its first time against the title start, which is the video's). */
@@ -329,12 +414,30 @@ static int es_open(const AVFormatContext *ctx, const AVStream *st, EsOut *o, con
         o->wav = 1;
         wav_header(o->f, par, 0);
     }
+    if (par->codec_id == AV_CODEC_ID_DVD_SUBTITLE) {
+        char *idx = av_strdup(o->name);
+        if (!idx)
+            return AVERROR(ENOMEM);
+        memcpy(idx + strlen(idx) - 3, "idx", 3);
+        o->idx = fopen(idx, "w");
+        av_free(idx);
+        if (!o->idx)
+            return AVERROR(errno);
+        /* a VobSub index starts with its format line (readers check it) */
+        if (par->extradata_size < 22 || memcmp(par->extradata, "# VobSub index file, v", 22))
+            fputs("# VobSub index file, v7 (do not modify this line!)\n", o->idx);
+        if (par->extradata_size)
+            fwrite(par->extradata, 1, par->extradata_size, o->idx);
+        fprintf(o->idx, "\n# %s\nid: %s, index: 0\n", *o->st.lang ? o->st.lang : "und", *o->st.lang ? o->st.lang : "und");
+    }
     (void)ctx;
     return 0;
 }
 
 static int es_write(EsOut *o, const AVPacket *pkt)
 {
+    if (o->idx)
+        return AVERROR_BUG;   /* sub-pictures go through vobsub_write() */
     if (fwrite(pkt->data, 1, pkt->size, o->f) != (size_t)pkt->size)
         return AVERROR(EIO);
     o->st.bytes += pkt->size;
@@ -454,7 +557,7 @@ int dr_demux(const char *format, const char *path, const char *options, const ch
             av_packet_unref(pkt);
             goto end;
         }
-        ret = es_write(o, pkt);
+        ret = o->idx ? vobsub_write(o, st, pkt) : es_write(o, pkt);
         av_packet_unref(pkt);
         if (ret < 0)
             goto end;
@@ -478,6 +581,8 @@ end:
                 ret = AVERROR(errno);
         }
         if (o->f && fclose(o->f) && ret >= 0)
+            ret = AVERROR(errno);
+        if (o->idx && fclose(o->idx) && ret >= 0)
             ret = AVERROR(errno);
     }
     for (unsigned i = 0; ctx && out && ret >= 0 && i < ctx->nb_streams; i++)

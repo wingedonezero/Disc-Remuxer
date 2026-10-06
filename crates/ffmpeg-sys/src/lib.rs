@@ -1376,6 +1376,8 @@ pub mod discrip {
         ) -> c_int;
         pub fn ff_discrip_title_duration(t: *const Title) -> i64;
         pub fn ff_discrip_event_name(kind: c_int) -> *const c_char;
+        pub fn ff_discrip_vobsub_header(buf: *mut c_char, size: c_int, width: c_int, height: c_int, ycrcb: *const u32)
+            -> c_int;
         pub fn ff_discrip_title_close(t: *mut *mut Title);
     }
 

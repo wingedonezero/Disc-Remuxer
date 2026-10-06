@@ -736,6 +736,12 @@ int ff_discrip_mlp_unit_size(void *log, const uint8_t *buf, int avail, int final
 int ff_discrip_mlp_resync(const uint8_t *buf, int avail);
 int ff_discrip_spu_check(const uint8_t *data, int size);
 int ff_discrip_spu_verify(const uint8_t *data, int size);
+/** The VobSub index header of a sub-picture track (frame size, the 16
+ *  palette entries 0x00 Y Cr Cb converted to RGB; NULL = all black) into buf;
+ *  returns its length as snprintf does. FFmpeg's DVD subtitle decoder reads
+ *  it as extradata; it is the head of a .idx file and of a Matroska S_VOBSUB
+ *  track's codec private data. */
+int ff_discrip_vobsub_header(char *buf, int size, int width, int height, const uint32_t *ycrcb);
 int ff_discrip_mlp_verify(const uint8_t *data, int size);
 int ff_discrip_spu_unit_size(void *log, const uint8_t *buf, int avail, int final, void *state);
 int ff_discrip_vc1_unit_size(void *log, const uint8_t *buf, int avail, int final, void *state);

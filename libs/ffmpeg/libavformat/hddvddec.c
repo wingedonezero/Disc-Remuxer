@@ -23,6 +23,8 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
+#include <string.h>
+
 #include "libavutil/channel_layout.h"
 #include "libavutil/common.h"
 #include "libavutil/error.h"
@@ -241,8 +243,19 @@ static int add_streams(AVFormatContext *s, const HDDVDTitle *t)
         if (k->core == 2)
             st->disposition |= AV_DISPOSITION_DEPENDENT;
         if (k->type == AVMEDIA_TYPE_SUBTITLE) {
+            char idx[1024];
+            int n = ff_discrip_vobsub_header(idx, sizeof(idx), k->width, k->height, k->palette);
+            int ret;
+
             st->codecpar->width   = k->width;
             st->codecpar->height  = k->height;
+            /* the VobSub index header (FFmpeg's DVD subtitle decoder reads
+             * size and palette from it) */
+            if (n < 0 || n >= sizeof(idx))
+                return AVERROR_BUG;
+            if ((ret = ff_alloc_extradata(st->codecpar, n)) < 0)
+                return ret;
+            memcpy(st->codecpar->extradata, idx, n);
         }
         if (k->lang[0] && av_dict_set(&st->metadata, "language", k->lang, 0) < 0)
             return AVERROR(ENOMEM);

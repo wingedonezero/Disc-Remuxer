@@ -279,8 +279,15 @@ line each, so a run can be compared event by event with an expected list.
   ones the reference's info output uses (`DD`, `DDplus`, `TrueHD`,
   `5.1(side)`, ...; the layout from FFmpeg's decoder on the first frames).
   LPCM leaves as little-endian PCM in a RIFF WAVE file (EXTENSIBLE with the
-  channel mask above two channels or 16 bits). Every title of a disc: one
-  folder per title, named like its files.
+  channel mask above two channels or 16 bits). Sub-pictures as a VobSub
+  pair: the units unchanged (DVD-Video and HD DVD forms) in MPEG-2 program
+  stream packs of 2048 bytes (`.sub`, private stream 1 sub-stream 0x20, the
+  PTS in each unit's first packet), and the `.idx`: the track's index header
+  (frame size; the 16 palette entries converted to RGB as the reference
+  converts them) and one `timestamp: ..., filepos: ...` line per unit.
+  FFmpeg reads both forms; MKVToolNix 2026's VobSub reader cuts HD DVD units
+  (32-bit size) to their first packet. Every title of a disc: one folder per
+  title, named like its files.
 - **Matroska** (later, libebml + libmatroska): frame times as given; cluster
   cuts placed on every audio / video track at the same time (first master
   sync unit 0.4-32.4 s after the previous cut).
