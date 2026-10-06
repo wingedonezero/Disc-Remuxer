@@ -1,0 +1,158 @@
+name: Build CCExtractor on Windows
+
+on:
+  push:
+    paths:
+      - ".github/workflows/build_windows.yml"
+      - "**.c"
+      - "**.h"
+      - "windows/**"
+    tags-ignore: # ignore push via new tag
+      - "*.*"
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - ".github/workflows/build_windows.yml"
+      - "**.c"
+      - "**.h"
+      - "windows/**"
+
+jobs:
+  build_non_ocr_release:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v2.4.0
+      - name: Setup MSBuild.exe
+        uses: microsoft/setup-msbuild@v1.0.2
+      - name: Install llvm and clang
+        run: choco install llvm
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: 1.56.0
+          override: true
+      - name: Install Win 10 SDK
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: build Release
+        env:
+          LIBCLANG_PATH: "C:\\Program Files\\LLVM\\lib"
+          LLVM_CONFIG_PATH: "C:\\Program Files\\LLVM\\bin\\llvm-config"
+          CARGO_TARGET_DIR: "..\\..\\windows"
+          BINDGEN_EXTRA_CLANG_ARGS: -fmsc-version=0
+        run: msbuild ccextractor.sln /p:Configuration=Release /p:Platform=x64
+        working-directory: ./windows
+      - name: Display version information
+        run: ./ccextractorwin.exe --version
+        working-directory: ./windows/x64/Release
+      - uses: actions/upload-artifact@v2
+        with:
+          name: CCExtractor Windows Non-OCR Release build
+          path: |
+            ./windows/x64/Release/ccextractorwin.exe
+            ./windows/x64/Release/*.dll
+  build_non_ocr_debug:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v2.4.0
+      - name: Setup MSBuild.exe
+        uses: microsoft/setup-msbuild@v1.0.2
+      - name: Install llvm and clang
+        run: choco install llvm
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: 1.56.0
+          override: true
+      - name: Install Win 10 SDK
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: build Debug
+        env:
+          LIBCLANG_PATH: "C:\\Program Files\\LLVM\\lib"
+          LLVM_CONFIG_PATH: "C:\\Program Files\\LLVM\\bin\\llvm-config"
+          CARGO_TARGET_DIR: "..\\..\\windows"
+          BINDGEN_EXTRA_CLANG_ARGS: -fmsc-version=0
+        run: msbuild ccextractor.sln /p:Configuration=Debug /p:Platform=x64
+        working-directory: ./windows
+      - name: Display version information
+        run: ./ccextractorwin.exe --version
+        working-directory: ./windows/x64/Debug
+      - uses: actions/upload-artifact@v2
+        with:
+          name: CCExtractor Windows Non-OCR Debug build
+          path: |
+            ./windows/x64/Debug/ccextractorwin.exe
+            ./windows/x64/Debug/ccextractorwin.pdb
+            ./windows/x64/Debug/*.dll
+  build_ocr_hardsubx_release:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v2.4.0
+      - name: Setup MSBuild.exe
+        uses: microsoft/setup-msbuild@v1.0.2
+      - name: Install llvm and clang
+        uses: egor-tensin/setup-clang@v1
+        with:
+          version: latest
+          platform: x86
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: 1.56.0
+          override: true
+          target: i686-pc-windows-msvc
+      - name: Install Win 10 SDK
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: build Release-Full
+        env:
+          LIBCLANG_PATH: "C:\\Program Files\\LLVM\\lib"
+          LLVM_CONFIG_PATH: "C:\\Program Files\\LLVM\\bin\\llvm-config"
+          CARGO_TARGET_DIR: "..\\..\\windows"
+          BINDGEN_EXTRA_CLANG_ARGS: -fmsc-version=0
+        run: msbuild ccextractor.sln /p:Configuration=Release-Full /p:Platform=Win32
+        working-directory: ./windows
+      - name: Display version information
+        run: ./ccextractorwinfull.exe --version
+        working-directory: ./windows/Release-Full
+      - uses: actions/upload-artifact@v2
+        with:
+          name: CCExtractor Windows OCR and HardSubX Release build
+          path: |
+            ./windows/Release-Full/ccextractorwinfull.exe
+            ./windows/Release-Full/*.dll
+  build_ocr_hardsubx_debug:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v2.4.0
+      - name: Setup MSBuild.exe
+        uses: microsoft/setup-msbuild@v1.0.2
+      - name: Install llvm and clang
+        uses: egor-tensin/setup-clang@v1
+        with:
+          version: latest
+          platform: x86
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: 1.56.0
+          override: true
+          target: i686-pc-windows-msvc
+      - name: Install Win 10 SDK
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: build Debug-Full
+        env:
+          LIBCLANG_PATH: "C:\\Program Files\\LLVM\\lib"
+          LLVM_CONFIG_PATH: "C:\\Program Files\\LLVM\\bin\\llvm-config"
+          CARGO_TARGET_DIR: "..\\..\\windows"
+          BINDGEN_EXTRA_CLANG_ARGS: -fmsc-version=0
+        run: msbuild ccextractor.sln /p:Configuration=Debug-Full /p:Platform=Win32
+        working-directory: ./windows
+      - name: Display version information
+        run: ./ccextractorwinfull.exe --version
+        working-directory: ./windows/Debug-Full
+      - uses: actions/upload-artifact@v2
+        with:
+          name: CCExtractor Windows OCR and HardSubX Debug build
+          path: |
+            ./windows/Debug-Full/ccextractorwinfull.exe
+            ./windows/Debug-Full/ccextractorwinfull.pdb
+            ./windows/Debug-Full/*.dll

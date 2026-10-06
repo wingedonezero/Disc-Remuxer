@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+export BLD_FLAGS="-g"
+./build

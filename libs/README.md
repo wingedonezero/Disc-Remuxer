@@ -16,8 +16,10 @@ libs/<name>` show every change we made.
 | `libaacs/` | libaacs 0.12.0 | https://download.videolan.org/pub/videolan/libaacs/0.12.0/ | tarball sha512 = published `.sha512` (sha256 `1996673a9fc45ee4a364c66ffa84756629bf3923e52346c7358b71becb8e4419`) |
 | `libgcrypt/` | libgcrypt 1.12.4 | https://gnupg.org/ftp/gcrypt/libgcrypt/ | tarball sha256 `d77f68f48879510e79a2f65977ccc68981781ea0923e5bdffac2a193ea3d660e`; signatures good (Werner Koch 6DAA 6E64 A76D 2840 571B 4902 5288 97B8 2640 3ADA, Niibe Yutaka AC8E 115B F73E 2D8D 47FA 9908 E98E 9B2D 19C6 C8BD; gnupg.org's list) |
 | `libgpg-error/` | libgpg-error 1.61 | https://gnupg.org/ftp/gcrypt/libgpg-error/ | tarball sha256 `7a85413f2bc354f4f8aa832b718af122e48965e9e0eb9012ee659c13c6385c93`; signatures as libgcrypt |
+| `ccextractor/` | CCExtractor 0.94 | https://github.com/CCExtractor/ccextractor/releases/tag/v0.94 (`archive/refs/tags/v0.94.tar.gz`) | tarball sha256 `9c7be386257c69b5d8cd9d7466dbf20e3a45cea950cc8ca7486a956c3be54a42` (GitHub tag archive; no signature published). Left out of the tarball: `windows/` and `mac/` (prebuilt binaries and IDE projects), `src/GUI/`, `src/rust/` (the optional Rust part; we build C only) |
 
-FFmpeg and the three DVD libraries are GPL-2.0-or-later as built here (FFmpeg with `--enable-gpl`,
+CCExtractor is GPL-2.0-or-later (its bundled zlib, libpng, gpac, freetype,
+protobuf-c and utf8proc keep their own notices). FFmpeg and the three DVD libraries are GPL-2.0-or-later as built here (FFmpeg with `--enable-gpl`,
 which its DVD-Video demuxer requires). Our FFmpeg also holds a UDF reader
 derived from Linux fs/udf (`libavformat/discio_udf_linux.c`), which is
 GPL-2.0-only, so the program as built is GPL-2.0-only. The UDF reader derived
@@ -37,6 +39,12 @@ from NetBSD (`discio_udf_netbsd.c`) keeps NetBSD's BSD licence notice.
   install`, out of tree in Cargo's build folder, static libraries; libgcrypt on
   our libgpg-error, libaacs on both (their install folders given to the next
   `configure`); the autotools are never run again.
+- CCExtractor: its own CMake (`WITHOUT_RUST=ON`: C only, no OCR / FFmpeg /
+  sharing), on a copy of `ccextractor/src` in Cargo's build folder (its CMake
+  writes a header into the source tree); the `ccextractor` program is copied
+  to `target/<profile>/`, next to ours, and runs as a helper process for
+  closed captions (its error path ends its process, and its decoder state is
+  global).
 - FFmpeg: its own `configure` + `make`, out of tree in Cargo's build folder,
   static libraries, autodetection off (every external library is enabled by
   name), DVD-Video demuxer on our libdvdnav / libdvdread. The `ffmpeg` and

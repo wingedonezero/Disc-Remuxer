@@ -1,0 +1,82 @@
+name: Upload releases
+
+on:
+  release:
+    types:
+      - created
+
+jobs:
+  build_windows:
+    runs-on: windows-latest
+    steps:
+    - name: Check out repository
+      uses: actions/checkout@v2.4.0
+    - name: Get the version
+      id: get_version
+      run: echo ::set-output name=VERSION::${GITHUB_REF/refs\/tags\/v/}
+      shell: bash
+    - name: Setup MSBuild.exe
+      uses: microsoft/setup-msbuild@v1.0.2
+    - name: Install llvm and clang
+      uses: egor-tensin/setup-clang@v1
+      with:
+        version: latest
+        platform: x86
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: 1.56.0
+        override: true
+        target: i686-pc-windows-msvc
+    - name: Install Win 10 SDK
+      uses: ilammy/msvc-dev-cmd@v1
+    - name: build Release-Full
+      env:
+        LIBCLANG_PATH: "C:\\Program Files\\LLVM\\lib"
+        LLVM_CONFIG_PATH: "C:\\Program Files\\LLVM\\bin\\llvm-config"
+        CARGO_TARGET_DIR: "..\\..\\windows"
+        BINDGEN_EXTRA_CLANG_ARGS: -fmsc-version=0
+      run: msbuild ccextractor.sln /p:Configuration=Release-Full /p:Platform=Win32
+      working-directory: ./windows
+    - name: Copy files to directory for installer
+      run: mkdir installer; cp ./Release-Full/ccextractorwinfull.exe ./installer; cp ./Release-Full/*.dll ./installer
+      working-directory: ./windows
+    - name: install WiX
+      run: dotnet tool install --global wix --version 4.0.0-preview.0 &&  wix extension -g add WixToolset.UI.wixext
+    - name: Make sure WiX works
+      run: wix --version && wix extension -g list
+    - name: Download Flutter GUI
+      run: ((Invoke-WebRequest -UseBasicParsing https://api.github.com/repos/CCExtractor/ccextractorfluttergui/releases/latest).Content | ConvertFrom-Json).assets | ForEach-Object {if ($_.name -eq "windows.zip") { Invoke-WebRequest -UseBasicParsing -Uri $_.browser_download_url -OutFile windows.zip}}
+      working-directory: ./windows
+    - name: Display contents of dir
+      run: ls
+      working-directory: ./windows
+    - name: Unzip Flutter GUI
+      run: Expand-Archive -Path ./windows.zip -DestinationPath ./installer
+      working-directory: ./windows
+    - name: Display installer folder contents
+      run: Get-ChildItem -Recurse ./installer
+      working-directory: ./windows
+    - name: Create portable zip
+      run: Compress-Archive -Path ./installer/* -DestinationPath ./CCExtractor_win_portable.zip
+      working-directory: ./windows
+    - name: Build installer
+      run:  wix build -ext "$HOME\.wix\extensions\WixToolset.UI.wixext\4.0.0-preview.0\tools\WixToolset.UI.wixext.dll" -d "AppVersion=${{ steps.get_version.outputs.VERSION }}.0.0" -o CCExtractor.msi installer.wxs
+      working-directory: ./windows
+    - name: Upload as asset
+      uses: AButler/upload-release-assets@v2.0
+      with:
+        files: './windows/CCExtractor.msi;./windows/CCExtractor_win_portable.zip'
+        repo-token: ${{ secrets.GITHUB_TOKEN }} 
+  create_linux_package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2.4.0
+        with:
+          path: ./ccextractor
+      - name: Create .tar.gz without git and windows folders
+        run: tar -pczf ./ccextractor_minimal.tar.gz --exclude "ccextractor/windows" --exclude "ccextractor/.git" ccextractor
+      - name: Upload as asset
+        uses: AButler/upload-release-assets@v2.0
+        with:
+          files: './ccextractor_minimal.tar.gz'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
