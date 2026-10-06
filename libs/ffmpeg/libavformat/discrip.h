@@ -26,6 +26,7 @@
 #include <stdint.h>
 
 #include "libavcodec/codec_id.h"
+#include "libavutil/channel_layout.h"
 #include "libavutil/buffer.h"
 
 /* Time: one unit = 1/1,080,000,000 s (27 MHz x 40). Exact for 90 kHz PES
@@ -298,6 +299,12 @@ enum DREventKind {
     DR_EV_VERIFY_HOLE,     /**< video in display order: no picture for dur from pos (count = placeholders in it) */
     DR_EV_VERIFY_OVERLAP,  /**< video in display order: a picture starts dur before the one before it ends */
     DR_EV_VERIFY_THD_TIMING, /**< TrueHD / MLP: an AU's input timing breaks (dur = samples off) */
+    DR_EV_SEAMLESS_SEARCH, /**< the overlap search at a join (pos = the next segment's first sync unit on
+                                the input clock): count = the best correlation of any candidate (Q32,
+                                0 = not compared), dur = that candidate's frame count, skew = 1 when a
+                                match was accepted */
+    DR_EV_SEAMLESS_DROP,   /**< a match: count frames (dur ticks) at the end of the earlier segment dropped,
+                                skew = the new skew */
 };
 
 typedef struct DREvent {
@@ -328,6 +335,11 @@ typedef struct DRJunctionConfig {
     DRVideoRef video;
     DRFrameCb  out;  void *out_opaque;
     DREventCb  event; void *event_opaque;
+    /** The stream's codec and sample rate: the seamless overlap search
+     *  decodes TrueHD / MLP to compare the two sides of a join (other
+     *  codecs, or rate 0: no comparison, durations only). */
+    enum AVCodecID codec;
+    int        rate;
 } DRJunctionConfig;
 
 typedef struct DRJunctionStats {
@@ -549,6 +561,28 @@ int  ff_discrip_verify_frame(DRVerify *v, const DRFrame *frame);
 int  ff_discrip_verify_finish(DRVerify *v);
 void ff_discrip_verify_stats(const DRVerify *v, DRVerifyStats *st);
 void ff_discrip_verify_close(DRVerify **v);
+
+/* ---- the seamless overlap search's audio (discrip_seamless.c, discrip_mix.c) ---- */
+
+/** Decodes TrueHD / MLP units (pre: decoded first and dropped) to one
+ *  channel of 32-bit samples: 16-bit samples x 65536; channels mixed by
+ *  ff_discrip_mix_matrix to front centre (centre 1, surround sqrt(2) / 8,
+ *  LFE 0, normalised; Q30 coefficients, 64-bit sums shifted down by 30,
+ *  clipped). Each unit must give one frame of its own duration; of each range
+ *  frame its first rate x duration samples are kept. Returns 1 with *out
+ *  (av_free()), 0 when the units do not decode as asked (logged), < 0 on
+ *  error. */
+int ff_discrip_seamless_decode(void *logctx, enum AVCodecID codec, int rate, const DRFrame *pre, int nb_pre,
+                               const DRFrame *range, int nb_range, int32_t **out, int *nb_out);
+/** How alike n samples of a and b are: the Pearson correlation in Q32
+ *  (0xFFFFFFFF = 1 or more), in integers; 0 when both are silent (no sample
+ *  beyond +-99), 1 when they do not correlate positively. */
+uint32_t ff_discrip_seamless_corr(const int32_t *a, const int32_t *b, uint32_t n);
+/** The channel mix matrix of FFmpeg 4.4's libavresample (out x in, row
+ *  stride). */
+int ff_discrip_mix_matrix(uint64_t in_layout, uint64_t out_layout, double center_mix_level,
+                          double surround_mix_level, double lfe_mix_level, int normalize,
+                          double *matrix, int stride, enum AVMatrixEncoding matrix_encoding);
 
 /* rules of codecs in their own files */
 extern const DRAudioRules ff_discrip_audio_mlp;

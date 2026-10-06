@@ -170,9 +170,25 @@ logged with the reason; nothing is guessed.
   - when skew >= shift + one unit: whole units dropped, only up to the next
     sync unit, with 1/16-unit tolerance;
   - every change > 1 ms (or |skew| > 1 ms) is an event.
-- **Seamless overlap search** (codecs with non-sync units and a decoder:
-  TrueHD): at the tail of a segment, decode both sides, find the duplicated
-  units by correlation (> 0.95), drop exactly those; else the skew rule.
+- **Seamless overlap search** (`discrip_seamless.c`; entered by codecs with
+  non-sync units: TrueHD / MLP, compared only for those): at the tail of a
+  segment (frames from its last 64 MiB) a non-sync frame whose contiguous run
+  (at most 0.5 s, 99 frames) reaches past the start of the next segment's
+  first sync unit U. Candidate counts of duplicated frames: overlap / frame
+  duration +-5 (at least 1, at most the frames before U). Both sides are
+  decoded (side A after the frames handed on since the last sync unit;
+  side B = U and the frames after it, as many as side A + 2), turned into
+  32-bit samples, mixed to one channel (libavresample's matrix: centre 1,
+  surround sqrt(2)/8, LFE 0, normalised; Q30 integer mix), and for each
+  candidate the end of A from where its frames start is compared with the
+  start of B: the Pearson correlation in Q32, all integer (silence = 0); the
+  last candidate above 0.95 is the match. k = the smallest candidate whose
+  frames fit the overlap (within frame / 16). A match below k + 2 drops its
+  frames at the end of A (U's major sync is kept) and the skew becomes where
+  the frames before them ended against U; else k = 0: A goes on unchanged,
+  or the k frames are re-timed to end at U and the skew rule follows. Each
+  search is an event with its best correlation (for comparing it with other
+  ways of joining, Blu-ray).
 - **PCM tracks:** fixed output frames from a sample counter; gaps filled with
   silence samples; a timestamp jump that returns within 32 frames is joined.
 - Video: passes unchanged (sets the highest video time the audio side uses).

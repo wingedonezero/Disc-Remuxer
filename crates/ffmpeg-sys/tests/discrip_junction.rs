@@ -87,6 +87,8 @@ fn junction(frames: Vec<Frame>, frame_dur: i64, tol: i64, video: &mut Video) -> 
         out_opaque: (&raw mut sink).cast(),
         event: Some(on_event),
         event_opaque: (&raw mut sink).cast(),
+        codec: 0,
+        rate: 0,
     };
     let mut j: *mut Junction = std::ptr::null_mut();
     let mut st = JunctionStats::default();

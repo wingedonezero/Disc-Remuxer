@@ -954,6 +954,8 @@ pub mod discrip {
     pub const EV_VERIFY_HOLE: c_int = 23;
     pub const EV_VERIFY_OVERLAP: c_int = 24;
     pub const EV_VERIFY_THD_TIMING: c_int = 25;
+    pub const EV_SEAMLESS_SEARCH: c_int = 26;
+    pub const EV_SEAMLESS_DROP: c_int = 27;
 
     /// `DRVerifyStats`.
     #[repr(C)]
@@ -1115,6 +1117,8 @@ pub mod discrip {
         pub out_opaque: *mut c_void,
         pub event: Option<EventCb>,
         pub event_opaque: *mut c_void,
+        pub codec: c_int,
+        pub rate: c_int,
     }
 
     /// `DRJunctionStats`.
@@ -1239,6 +1243,18 @@ pub mod discrip {
         pub fn ff_discrip_verify_finish(v: *mut Verify) -> c_int;
         pub fn ff_discrip_verify_stats(v: *const Verify, st: *mut VerifyStats);
         pub fn ff_discrip_verify_close(v: *mut *mut Verify);
+        pub fn ff_discrip_seamless_decode(
+            log: *mut c_void,
+            codec: c_int,
+            rate: c_int,
+            pre: *const Frame,
+            nb_pre: c_int,
+            range: *const Frame,
+            nb_range: c_int,
+            out: *mut *mut i32,
+            nb_out: *mut c_int,
+        ) -> c_int;
+        pub fn ff_discrip_seamless_corr(a: *const i32, b: *const i32, n: u32) -> u32;
         pub fn ff_discrip_cc_triplets(data: *const u8, size: c_int, out: *mut u8) -> c_int;
         pub fn ff_discrip_spu_open(
             out: *mut *mut Spu,
