@@ -58,8 +58,9 @@ their bridge (`mk/test.mk`).
 ## Our changes
 
 Every change to a file that comes from upstream is listed here (newest last).
-Format-specific copies of FFmpeg components (`dvdvideo_*`, `hddvd_*`,
-`bluray_*`) are listed with the file they were copied from.
+From now on FFmpeg's own files are fixed in place, behind an option or flag
+that is off for ordinary files (see `docs/ARCHITECTURE.md`, "The shape");
+the earlier format-prefixed copies are being folded back in that way.
 
 | # | File | Change | Why | Test |
 |---|---|---|---|---|
