@@ -54,6 +54,7 @@ include mk/aacs.mk
 include mk/ffmpeg.mk
 include mk/ccextractor.mk
 include mk/tool.mk
+include mk/test.mk
 
 $(DIST)/%: $(BUILD)/bin/%
 	@mkdir -p $(DIST)

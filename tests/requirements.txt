@@ -1,0 +1,4 @@
+# The test tools, installed into build/venv by `make test` (./build.sh test).
+pytest==9.1.1
+cffi==2.1.1
+setuptools==84.0.0
