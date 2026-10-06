@@ -27,7 +27,11 @@ from NetBSD (`discio_udf_netbsd.c`) keeps NetBSD's BSD licence notice.
 
 ## How they are built
 
-`cargo build` builds everything; see the `crates/*-sys` build scripts.
+`./build.sh [debug|release]` builds everything (the top `Makefile`, the rules
+in `mk/*.mk`): every library into `build/<mode>/`, only the finished programs
+(`ffmpeg`, `ffprobe`, `ccextractor`, our program) into `dist/<mode>/`.
+The `crates/*-sys` build scripts do the same for the Rust tests while the
+program moves to C; the notes below hold for both.
 
 - libdvdcss, libdvdread, libdvdnav: compiled with the `cc` crate; the
   `config.h` each one's `meson.build` would generate on Linux is written by

@@ -7,17 +7,22 @@ Early development, DVD first.
 
 ## Building
 
-Needs a Rust toolchain (1.85 or later), a C compiler, `make`, `nasm` and
-`pkg-config`. Everything, including our copies of FFmpeg, libdvdread,
-libdvdnav and libdvdcss in `libs/`, is built by:
+Needs a C compiler, `make`, `nasm`, `pkg-config`, `cmake` and `rsync`.
+Everything, including our copies of FFmpeg and every library in `libs/`, is
+built by:
 
 ```
-cargo build --release
-cargo test --workspace
+./build.sh            # debug   -> dist/debug/
+./build.sh release    # release -> dist/release/
 ```
 
-The binary is `target/release/disc-remuxer`; the libraries are linked
-statically. Linux is the only configured platform so far.
+`dist/<mode>/` holds only the finished programs (all libraries linked in);
+the intermediate files stay in `build/<mode>/`. Linux is the only configured
+platform so far.
+
+While the program moves from Rust to C, the Rust crates still build the
+current `disc-remuxer` and run the tests (`cargo build`, `cargo test
+--workspace`).
 
 ## Layout
 
