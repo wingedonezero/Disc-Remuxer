@@ -248,14 +248,15 @@ int ff_discrip_verify_finish(DRVerify *v)
 
     if (v->kind == DR_KIND_VIDEO)
         video_order(v);
-    av_log(v->log, s->bad_units || s->crc_errors || s->order_errors || s->holes ? AV_LOG_WARNING : AV_LOG_INFO,
+    /* the summary goes to the debug log; every finding was a warning already */
+    av_log(v->log, AV_LOG_VERBOSE,
            "Rip core: check: track %d (%s): %"PRId64" frames, %"PRId64" units that do not parse, %"PRId64
            " checksum failures, %"PRId64" time-order errors, %"PRId64" holes (%.3f ms), %"PRId64" overlaps "
            "(largest %.3f ms)%s\n", v->track, v->codec->name, s->frames - s->markers, s->bad_units, s->crc_errors,
            s->order_errors, s->holes, ms(s->hole_dur), s->overlaps, ms(s->overlap_dur),
            s->unchecked ? ", units not checked (no check for this codec)" : "");
     if (v->kind == DR_KIND_AUDIO && v->have_prev) {
-        av_log(v->log, AV_LOG_INFO, "Rip core: check: track %d (%s): start delay %.3f ms; sync error as a stream "
+        av_log(v->log, AV_LOG_VERBOSE, "Rip core: check: track %d (%s): start delay %.3f ms; sync error as a stream "
                "file %+.3f ms at its largest (at %.3f ms), %+.3f ms at the end; by the output times %+.3f ms at "
                "its largest (at %.3f ms)\n", v->track, v->codec->name, ms(s->delay), ms(s->es_err_max),
                ms(s->es_err_at), ms(s->es_err_end), ms(s->mkv_err_max), ms(s->mkv_err_at));

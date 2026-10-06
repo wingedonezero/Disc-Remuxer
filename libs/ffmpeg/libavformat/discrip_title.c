@@ -22,6 +22,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
+#include <stdio.h>
 #include <string.h>
 
 #include "libavcodec/avcodec.h"
@@ -61,6 +62,7 @@ typedef struct Track {
     DRFrame      *wait;          /* audio frames waiting for the video */
     int           wait_head, nb_wait, wait_cap;
     int64_t       out;           /* frames given out */
+    int64_t       warnings;      /* warnings logged about the track */
 } Track;
 
 #define EVENT_KINDS  64
@@ -121,8 +123,89 @@ const char *ff_discrip_event_name(int kind)
     return kind > 0 && kind < FF_ARRAY_ELEMS(event_names) && event_names[kind] ? event_names[kind] : "unknown";
 }
 
+/* A time on the title timeline as h:mm:ss.mmm (truncated). */
+static const char *hms(char *buf, int size, int64_t t)
+{
+    int64_t ms = t < 0 ? 0 : t / (DR_TICKS_PER_SECOND / 1000);
+
+    snprintf(buf, size, "%d:%02d:%02d.%03d", (int)(ms / 3600000), (int)(ms / 60000 % 60), (int)(ms / 1000 % 60),
+             (int)(ms % 1000));
+    return buf;
+}
+
+/* Ticks as milliseconds with three decimals (truncated toward zero). */
+static const char *msec(char *buf, int size, int64_t t, int sign)
+{
+    int64_t us = (t < 0 ? -t : t) * 1000 / (DR_TICKS_PER_SECOND / 1000);
+
+    snprintf(buf, size, "%s%"PRId64".%03d", t < 0 ? "-" : sign ? "+" : "", us / 1000, (int)(us % 1000));
+    return buf;
+}
+
+/* The events a reader of the log must see, as one warning each: what the
+ * junction did to the audio (skew, gaps, drops), the video grid's findings,
+ * PCM silence. */
+static void event_text(DRTitle *t, const DREvent *e)
+{
+    char a[32], b[32], c[32];
+    int k = e->track;
+
+    switch (e->kind) {
+    case DR_EV_START_SHIFT:
+        av_log(t->log, AV_LOG_WARNING, "Track %d: the audio starts %s ms before the video: kept, the track "
+               "delayed by it\n", k, msec(a, 32, e->dur, 0));
+        break;
+    case DR_EV_START_DROP:
+    case DR_EV_DROP:
+        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: %"PRId64" frame(s) (%s ms) dropped to bring the audio skew "
+               "to %s ms\n", k, hms(a, 32, e->pos), e->count, msec(b, 32, e->dur, 0), msec(c, 32, e->skew, 1));
+        break;
+    case DR_EV_OVERLAP:
+        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: frames overlap by %s ms; audio skew now %s ms\n", k,
+               hms(a, 32, e->pos), msec(b, 32, e->dur, 0), msec(c, 32, e->skew, 1));
+        break;
+    case DR_EV_GAP_ABSORBED:
+        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: short audio gap of %s ms closed; audio skew now %s ms\n", k,
+               hms(a, 32, e->pos), msec(b, 32, e->dur, 0), msec(c, 32, e->skew, 1));
+        break;
+    case DR_EV_GAP:
+        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: audio gap of %s ms (%"PRId64".%03d frames missing), "
+               "left open\n", k, hms(a, 32, e->pos), msec(b, 32, e->dur, 0), e->count / 1000, (int)(e->count % 1000));
+        break;
+    case DR_EV_VIDEO_ENDED:
+        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: the video ends before this audio: the rest of the track is "
+               "left out\n", k, hms(a, 32, e->pos));
+        break;
+    case DR_EV_VIDEO_TIMECODE:
+        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: a picture's disc time is %s ms off the frame grid\n", k,
+               hms(a, 32, e->pos), msec(b, 32, e->dur, 1));
+        break;
+    case DR_EV_VIDEO_INVALID:
+        av_log(t->log, AV_LOG_WARNING, "Track %d: %"PRId64" picture(s) with disc times off the frame grid\n", k,
+               e->count);
+        break;
+    case DR_EV_VIDEO_REPAIR:
+        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: the frame grid follows a jump of the disc times (%"PRId64
+               " placeholder(s))\n", k, hms(a, 32, e->pos), e->count);
+        break;
+    case DR_EV_PCM_SILENCE:
+        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: a gap of %s ms filled with silence\n", k,
+               hms(a, 32, e->pos), msec(b, 32, e->dur, 0));
+        break;
+    case DR_EV_PCM_SKIP:
+        av_log(t->log, AV_LOG_WARNING, "Track %d: the audio starts %s ms after the video: skipped on the output "
+               "clock\n", k, msec(b, 32, e->dur, 0));
+        break;
+    default:
+        return;
+    }
+    if (k >= 0 && k < t->cfg.nb_tracks)
+        t->t[k].warnings++;
+}
+
 /* Every event: one structured line at debug level (the first ones of each
- * kind and track), then the caller's callback. */
+ * kind and track), the readable warning where there is one, then the
+ * caller's callback. */
 static void on_event(void *opaque, const DREvent *e)
 {
     DRTitle *t = opaque;
@@ -132,6 +215,10 @@ static void on_event(void *opaque, const DREvent *e)
     if (!n || ++*n <= EVENT_LOGGED)
         av_log(t->log, AV_LOG_DEBUG, "Rip core: event %s track=%d pos=%"PRId64" dur=%"PRId64" skew=%"PRId64
                " count=%"PRId64"\n", ff_discrip_event_name(e->kind), e->track, e->pos, e->dur, e->skew, e->count);
+    event_text(t, e);
+    if (e->kind >= DR_EV_VERIFY_UNIT && e->kind <= DR_EV_VERIFY_OVERLAP && e->track >= 0 &&
+        e->track < t->cfg.nb_tracks)
+        t->t[e->track].warnings++;
     if (t->cfg.event)
         t->cfg.event(t->cfg.event_opaque, e);
 }
@@ -588,6 +675,19 @@ int ff_discrip_title_chapters(const DRTitle *t, const DRChapterPlan *plan, DRCha
 int64_t ff_discrip_title_review(const DRTitle *t)
 {
     return t->review;
+}
+
+int ff_discrip_title_track_result(const DRTitle *t, int track, int64_t *frames, int64_t *warnings, int64_t *delay)
+{
+    DRVerifyStats st;
+
+    if (track < 0 || track >= t->cfg.nb_tracks)
+        return AVERROR(EINVAL);
+    ff_discrip_verify_stats(t->t[track].verify, &st);
+    *frames   = st.frames - st.markers;
+    *warnings = t->t[track].warnings;
+    *delay    = st.frames ? st.delay : 0;
+    return 0;
 }
 
 const DRLpcm *ff_discrip_title_lpcm(const DRTitle *t, int track)

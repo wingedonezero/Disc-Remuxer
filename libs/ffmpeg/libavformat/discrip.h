@@ -724,6 +724,9 @@ const DRLpcm *ff_discrip_title_lpcm(const DRTitle *t, int track);
 /** Untested features met so far (audio reviews): the job must be checked,
  *  so it is to be reported as failed. */
 int64_t ff_discrip_title_review(const DRTitle *t);
+/** After finish: a track's frames given out, the warnings logged about it
+ *  (junction events, grid findings, checks) and (audio) its start delay. */
+int ff_discrip_title_track_result(const DRTitle *t, int track, int64_t *frames, int64_t *warnings, int64_t *delay);
 /** After finish: the end of the video (title duration, ticks). */
 int64_t ff_discrip_title_duration(const DRTitle *t);
 /** An event kind's name. */

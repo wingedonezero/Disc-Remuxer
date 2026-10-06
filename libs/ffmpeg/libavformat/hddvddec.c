@@ -84,6 +84,9 @@ typedef struct HDDVDDemuxContext {
     DRTitle       *rip;
     DRChapterPlan  chapter_plan;
     int            rip_done;        /**< every clip was read, the core finished */
+    int64_t        blocks_total;    /**< blocks of all the title's clips */
+    int64_t        blocks_done;     /**< blocks read so far */
+    int64_t        progress;        /**< exported option: blocks_done / blocks_total in 1/10000 */
     int            chapters_set;
     AVPacket      *in;
 } HDDVDDemuxContext;
@@ -114,6 +117,9 @@ static int subdemux_read(void *opaque, uint8_t *buf, int buf_size)
             c->block = c->nb_blocks;
             break;
         }
+        c->blocks_done++;
+        if (c->blocks_total)
+            c->progress = c->blocks_done * 10000 / c->blocks_total;
         if (!ret) {
             av_log(s, AV_LOG_WARNING, "EVOB %s: block %"PRIu32" is not usable: left out\n", clip->evob->name, b);
             c->skipped++;
@@ -300,8 +306,18 @@ static int hddvd_read_header(AVFormatContext *s)
         return AVERROR(EINVAL);
     }
     av_dict_set_int(&s->metadata, "titles", c->plan->nb_titles, 0);
+    /* the disc as a whole, for the caller's overview */
+    av_dict_set(&s->metadata, "disc", "HD DVD", 0);
+    av_dict_set(&s->metadata, "label", c->fs->label, 0);
+    av_dict_set(&s->metadata, "filesystem", c->fs->ops->name, 0);
+    if (c->fs->udf_revision)
+        av_dict_set_int(&s->metadata, "udf_revision", c->fs->udf_revision, 0);
+    av_dict_set_int(&s->metadata, "encrypted", c->aacs != NULL, 0);
     c->title = &c->plan->titles[c->opt_title];
     if (c->title->name && *c->title->name && av_dict_set(&s->metadata, "title", c->title->name, 0) < 0)
+        return AVERROR(ENOMEM);
+    /* the disc's chapter records (the ripped title's chapters are known at its end) */
+    if (av_dict_set_int(&s->metadata, "chapters", c->title->nb_marks, 0) < 0)
         return AVERROR(ENOMEM);
     if ((ret = add_streams(s, c->title)) < 0)
         return ret;
@@ -351,6 +367,8 @@ static int rip_open(AVFormatContext *s)
         return ret;
     if (!(c->in = av_packet_alloc()))
         return AVERROR(ENOMEM);
+    for (int i = 0; i < t->nb_clips; i++)
+        c->blocks_total += t->clips[i]->size / HDDVD_BLOCK;
     return 0;
 }
 
@@ -547,6 +565,17 @@ static int hddvd_read_packet(AVFormatContext *s, AVPacket *pkt)
                     if ((ret = av_dict_set_int(&s->metadata, "untested", review, 0)) < 0)
                         return ret;
                 }
+                /* each track's result for the caller: frames, warnings, start delay (ms) */
+                for (int i = 0; i < s->nb_streams; i++) {
+                    int64_t frames, warnings, delay;
+                    AVDictionary **m = &s->streams[i]->metadata;
+                    if (ff_discrip_title_track_result(c->rip, i, &frames, &warnings, &delay) < 0)
+                        continue;
+                    if ((ret = av_dict_set_int(m, "frames", frames, 0)) < 0 ||
+                        (ret = av_dict_set_int(m, "warnings", warnings, 0)) < 0 ||
+                        (ret = av_dict_set_int(m, "delay_us", delay / (DR_TICKS_PER_SECOND / 1000000), 0)) < 0)
+                        return ret;
+                }
             }
             return AVERROR_EOF;
         }
@@ -562,6 +591,7 @@ static const AVOption hddvd_options[] = {
     {"read_attempts",   "read attempts per request on the disc",                    OFFSET(opt_read_attempts),  AV_OPT_TYPE_INT,    { .i64=DISCIO_DEFAULT_ATTEMPTS }, 1, 100, AV_OPT_FLAG_DECODING_PARAM },
     {"keydb",           "AACS key files (KEYDB.cfg), read in this order",          OFFSET(opt_keydb),          AV_OPT_TYPE_STRING | AV_OPT_TYPE_FLAG_ARRAY, { .arr = NULL }, 0, 0, AV_OPT_FLAG_DECODING_PARAM },
     {"title",           "the title to open (0 = the first of the disc's title list)", OFFSET(opt_title), AV_OPT_TYPE_INT, { .i64=0 }, 0, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
+    {"progress",        "how far the title is read (1/10000), exported", OFFSET(progress), AV_OPT_TYPE_INT64, { .i64 = 0 }, 0, 10000, AV_OPT_FLAG_DECODING_PARAM | AV_OPT_FLAG_EXPORT | AV_OPT_FLAG_READONLY },
     {"min_length",      "titles shorter than this (seconds) are listed, not selected", OFFSET(opt_min_length), AV_OPT_TYPE_INT, { .i64=0 }, 0, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
     {"udf_reader",      "UDF reader for disc images",                               OFFSET(opt_udf_reader),     AV_OPT_TYPE_INT,    { .i64=DISCIO_UDF_NETBSD }, DISCIO_UDF_NETBSD, DISCIO_UDF_LINUX, AV_OPT_FLAG_DECODING_PARAM, .unit = "udf_reader" },
         {"netbsd",      "based on NetBSD (default)",                                0,                          AV_OPT_TYPE_CONST,  { .i64=DISCIO_UDF_NETBSD }, 0, 0, AV_OPT_FLAG_DECODING_PARAM, .unit = "udf_reader" },
