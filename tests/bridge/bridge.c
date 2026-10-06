@@ -11,8 +11,10 @@
 #include "libavcodec/avcodec.h"
 #include "libavcodec/codec_desc.h"
 #include "libavformat/avformat.h"
+#include "libavutil/aes.h"
 #include "libavutil/log.h"
 
+#include "libavformat/disclang.h"
 #include "libavformat/discio.h"
 #include "libavformat/discrip.h"
 #include "libavformat/dvdvideo_internal.h"
@@ -20,6 +22,10 @@
 
 #include <dvdread/dvd_udf.h>
 #include <dvdcss/dvdcss.h>
+#include <expat.h>
+#include <gcrypt.h>
+#include <libaacs/aacs.h>
+#include <libaacs/aacs-version.h>
 
 /* dvdnav_selftest.c and libdvdnav's VM (src/vm/rand.h) */
 uint32_t vm_rand_next(uint32_t *state);
@@ -157,3 +163,7 @@ static dvdcss_t tb_dvdcss_open_stream_uncached(void *p_stream, dvdcss_stream_cb 
 {
     return dvdcss_open_stream_uncached(p_stream, p_stream_cb, with_log ? css_log : NULL, p_log);
 }
+
+/* The versions our library headers give (the linked libraries must match). */
+static const char *tb_gcrypt_header_version(void) { return GCRYPT_VERSION; }
+static const char *tb_aacs_header_version(void) { return AACS_VERSION_STRING; }

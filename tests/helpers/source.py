@@ -1,11 +1,11 @@
 """DiscIOSource objects whose reads are answered by Python."""
 
-from helpers import ffi, lib
+from helpers import extern, ffi, lib
 
 _OPS = ffi.new("DiscIOSourceOps *", {"read_at": lib.tb_py_read_at, "close": ffi.NULL})
 
 
-@ffi.def_extern()
+@extern
 def tb_py_read_at(opaque, pos, buf, length):
     reader = ffi.from_handle(opaque)
     data = reader.read_at(pos, length)
@@ -15,17 +15,17 @@ def tb_py_read_at(opaque, pos, buf, length):
     return len(data)
 
 
-@ffi.def_extern()
+@extern
 def tb_py_source_close(opaque):
     pass
 
 
-@ffi.def_extern()
+@extern
 def tb_py_dir_entry(opaque, name, is_dir):
     return ffi.from_handle(opaque)(ffi.string(name).decode("utf-8", "replace"), bool(is_dir))
 
 
-@ffi.def_extern()
+@extern
 def tb_py_dir_entry_raw(opaque, name, is_dir):
     return ffi.from_handle(opaque)(ffi.string(name), bool(is_dir))
 

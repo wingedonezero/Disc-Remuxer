@@ -3,6 +3,7 @@ lib) and FFmpeg's log."""
 
 import os
 import pathlib
+import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -24,6 +25,16 @@ for _name in _typedefs + [f"struct {n}" for n in _structs] + [f"union {n}" for n
         if "know the size" not in str(e):
             raise
 
+_ATTACHED = set()
+
+
+def extern(fn):
+    """@ffi.def_extern() that also records the name (checked at the end of
+    this module)."""
+    _ATTACHED.add(fn.__name__)
+    return ffi.def_extern()(fn)
+
+
 AV_NOPTS_VALUE = -(1 << 63)
 EIO = 5
 EINVAL = 22
@@ -40,7 +51,7 @@ def averror(errno):
 LOG = []
 
 
-@ffi.def_extern()
+@extern
 def tb_py_log(level, line):
     LOG.append(ffi.string(line).decode("utf-8", "replace"))
 
@@ -61,3 +72,15 @@ def error_text(code):
     buf = ffi.new("char[]", 256)
     lib.av_strerror(code, buf, 256)
     return ffi.string(buf).decode()
+
+
+# Every module that attaches Python code to the bridge's callbacks: a
+# callback without its code would silently return 0, so every extern "Python"
+# of the declarations must have its code once these are loaded.
+from helpers import css, dvd, hddvd, parser, source, vm, xml  # noqa: E402,F401
+
+_DECLARED = set()
+for _f in (ROOT / "tests" / "bridge" / "cdef").glob("*.cdef"):
+    _DECLARED |= set(re.findall(r'extern "Python(?:\+C)?"[^;(]*?(\w+)\s*\(', _f.read_text()))
+if _DECLARED - _ATTACHED:
+    raise RuntimeError(f"bridge callbacks without Python code: {sorted(_DECLARED - _ATTACHED)}")

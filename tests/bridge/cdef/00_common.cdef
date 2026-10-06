@@ -30,3 +30,8 @@ extern "Python" void tb_py_parser_frame(void *opaque, int size, int64_t pts, int
 /* the C library's own random numbers (stdlib.h) */
 void srand(unsigned seed);
 int rand(void);
+
+/* libavutil's AES (the tests build encrypted discs with it) */
+struct AVAES *av_aes_alloc(void);
+int av_aes_init(struct AVAES *a, const uint8_t *key, int key_bits, int decrypt);
+void av_aes_crypt(struct AVAES *a, uint8_t *dst, const uint8_t *src, int count, uint8_t *iv, int decrypt);

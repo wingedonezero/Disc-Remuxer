@@ -1,9 +1,9 @@
 """libdvdcss handles reading a host file through its stream callbacks."""
 
-from helpers import ffi, lib
+from helpers import extern, ffi, lib
 
 
-@ffi.def_extern()
+@extern
 def tb_py_css_seek(p, pos):
     try:
         ffi.from_handle(p).seek(pos)
@@ -12,7 +12,7 @@ def tb_py_css_seek(p, pos):
         return -1
 
 
-@ffi.def_extern()
+@extern
 def tb_py_css_read(p, buf, length):
     try:
         data = ffi.from_handle(p).read(length)
@@ -22,7 +22,7 @@ def tb_py_css_read(p, buf, length):
     return len(data)
 
 
-@ffi.def_extern()
+@extern
 def tb_py_css_log(p_log, level, fmt):
     ffi.from_handle(p_log).append((level, ffi.string(fmt).decode("utf-8", "replace")))
 

@@ -3,7 +3,7 @@ them, the navigation scan and the title plan as Python values."""
 
 import dataclasses
 
-from helpers import ffi, lib
+from helpers import extern, ffi, lib
 
 
 @dataclasses.dataclass
@@ -133,7 +133,7 @@ def titles(path, opts=None, attempts=5, cell_mode=0, title_order=0, min_length=0
         lib.ff_dvdvideo_source_close(src)
 
 
-@ffi.def_extern()
+@extern
 def tb_py_scan_trace(opaque, line):
     ffi.from_handle(opaque)(ffi.string(line).decode("utf-8", "replace"))
 

@@ -7,6 +7,7 @@ import dataclasses
 import struct
 
 from helpers import ffi, lib
+from helpers.vm import RND
 
 
 @dataclasses.dataclass
@@ -19,14 +20,6 @@ class Run:
     ignored: int
     ign_reg: int
     ign_value: int
-
-
-RND = {}
-
-
-@ffi.def_extern()
-def tb_py_rnd(priv):
-    return RND["fn"]()
 
 
 def run(commands, ticks_between, rnd=None):
