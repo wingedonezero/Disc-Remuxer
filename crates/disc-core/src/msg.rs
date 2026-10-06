@@ -61,6 +61,15 @@ catalog! {
     SCAN_UNREADABLE = 2004, Warn, "Folder skipped, cannot be read: {path}: {reason}";
     PROBE_TITLE = 2100, Info, "Probing title {title} of {source} with the DVD-Video demuxer";
     PROBE_FAILED = 2101, Error, "Title {title} of {source} could not be opened: {reason}";
+
+    // 6000-6999 output
+    DEMUX_TITLE = 6001, Info, "Writing the streams of title {title} of {source} to {folder}";
+    DEMUX_STREAM = 6002, Info, "Stream {index} ({kind}, {codec}, language {lang}): {packets} packets, {bytes} bytes, {start} to {end}: {file}";
+    DEMUX_CONTINUITY = 6003, Warn, "Stream {index}: {overlaps} packet(s) start before the previous one ended (largest {max_overlap} ms), {gaps} start after a gap (largest {max_gap} ms)";
+    DEMUX_NO_TIMESTAMP = 6004, Warn, "Stream {index}: {count} packet(s) without a timestamp";
+    DEMUX_CARRIED = 6005, Info, "Stream {index} ({kind}, {codec}, language {lang}) is carried in another stream's packets: not written separately yet";
+    DEMUX_FAILED = 6010, Error, "Title {title} of {source} could not be demuxed: {reason}";
+    DEMUX_TITLES = 6011, Info, "{source}: {count} title(s)";
 }
 
 /// The text of `msg` with its fields filled in from `fields` (`name`, value).

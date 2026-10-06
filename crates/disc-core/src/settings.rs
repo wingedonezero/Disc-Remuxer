@@ -183,6 +183,14 @@ pub const SETTINGS: &[Setting] = &[
         help: "Titles shorter than this many seconds are listed but not selected.",
     },
     Setting {
+        group: "aacs",
+        key: "key_files",
+        kind: Kind::Text,
+        default: DefaultValue::Text(""),
+        help: "AACS key files (KEYDB.cfg format), separated by commas, read in this order; the first \
+               one holding a key for the disc is used. Needed for encrypted HD DVD images.",
+    },
+    Setting {
         group: "log",
         key: "console",
         kind: Kind::Choice(&["error", "warning", "info", "debug", "trace"]),

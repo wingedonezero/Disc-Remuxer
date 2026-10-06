@@ -24,6 +24,9 @@
 
 #include <stdint.h>
 
+#include "libavcodec/codec_id.h"
+#include "libavutil/avutil.h"
+
 #include "discio.h"
 
 /* ---- the Advanced VTS information file (HVDVD_TS/HVA00001.VTI) ---- */
@@ -239,12 +242,30 @@ typedef struct HDDVDClip {
     uint64_t         size;          /**< bytes of the stream: every count of the first table x 2048 */
     HDDVDExtent     *extents;       /**< sorted by stream block, unique */
     int              nb_extents;
+    /* audio streams whose content was probed: their codec (NONE: left out) */
+    uint8_t          probed[HDDVD_VTI_MAX_AUDIO];
+    enum AVCodecID   probe_codec[HDDVD_VTI_MAX_AUDIO];
+    uint8_t          probe_core[HDDVD_VTI_MAX_AUDIO];   /**< DTS-HD: also carries a DTS core */
 } HDDVDClip;
 
 typedef struct HDDVDChapterMark {
     const char *name;               /**< the chapter's displayName ("" when not given) */
     uint32_t    ms;                 /**< from the title's start */
 } HDDVDChapterMark;
+
+/** A track of a title: one stream of its EVOBs. */
+typedef struct HDDVDTrack {
+    enum AVMediaType type;
+    enum AVCodecID   codec;
+    int              index;         /**< stream index in the EVOB: 0 video, 1.. audio, then sub-pictures */
+    int              number;        /**< audio: stream number 0..7; sub-picture: stream number 0..31 */
+    int              coding;        /**< audio / sub-picture coding mode from the attribute record */
+    char             lang[4];       /**< ISO 639-2 when known, else as written; "" none */
+    int              width, height; /**< sub-pictures */
+    const uint32_t  *palette;       /**< sub-pictures: 16 entries of the attribute record */
+    int              core;          /**< audio: 1 = holds a core that the next track carries
+                                         on its own (DTS-HD), 2 = that core track */
+} HDDVDTrack;
 
 typedef struct HDDVDTitle {
     HDDVDClip       **clips;        /**< its EVOBs, in playing order */
@@ -258,6 +279,9 @@ typedef struct HDDVDTitle {
     uint64_t          size;         /**< bytes: the clips' sizes added up */
     int               from_playlist;/**< 1: a playlist title, 0: an EVOB no playlist title uses */
     int               not_selected; /**< 1: shorter than the minimum length */
+    HDDVDTrack       *tracks;       /**< video, audio, sub-pictures (ff_hddvd_tracks_build) */
+    int               nb_tracks;
+    int               segment;      /**< the clip the tracks come from */
 } HDDVDTitle;
 
 typedef struct HDDVDTitlePlan {
@@ -305,6 +329,13 @@ void ff_hddvd_titles_free(HDDVDTitlePlan **plan);
 
 /** The clip of EVOB slot (1..1998) when the plan looked at it, else NULL. */
 HDDVDClip *ff_hddvd_titles_clip(const HDDVDTitlePlan *plan, int slot);
+
+/**
+ * Whether a clip's src names EVOB evo ("file:///dvddisc/HVDVD_TS/" or
+ * "HDDVD_TS/" + evo's base name + ".map", case not regarded; evo must end in
+ * ".evo").
+ */
+int ff_hddvd_src_names_evob(void *logctx, const char *src, const char *evo);
 
 /**
  * Read an EVOB's time map and EVO file (once; later calls return the first
@@ -355,5 +386,22 @@ int ff_hddvd_aacs_sector(void *logctx, HDDVDAACS *aacs, DiscIOFS *fs, HDDVDClip 
  * @return 1 usable, 0 not usable (logged), < 0 read error / no such block
  */
 int ff_hddvd_clip_block(void *logctx, HDDVDAACS *aacs, DiscIOFS *fs, HDDVDClip *clip, uint32_t block, uint8_t *buf);
+
+/* ---- tracks ---- */
+
+/**
+ * The tracks of every title, from the attribute record of its clip with the
+ * most bytes (the first on a tie): the video stream, then the audio streams,
+ * then the sub-picture streams (a stream of the same codec and number as an
+ * earlier one is left out), languages from the playlists. Dolby Digital Plus
+ * streams are probed (from the clip's start: a PES packet with a PTS must
+ * start one of its first 2000 packs, the first frame must be a valid header;
+ * 4 E-AC-3 frames -> E-AC-3, 4 AC-3 frames -> AC-3, else the stream is left
+ * out). A title whose probe fails or that has no video stream is taken out
+ * of the plan.
+ * @return 0 or a negative AVERROR code (out of memory)
+ */
+int ff_hddvd_tracks_build(void *logctx, DiscIOFS *fs, HDDVDAACS *aacs, const HDDVDVTI *vti,
+                          HDDVDXpl *const *xpls, int nb_xpls, HDDVDTitlePlan *plan);
 
 #endif /* AVFORMAT_HDDVD_INTERNAL_H */

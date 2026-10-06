@@ -66,7 +66,45 @@ extern "C" {
     /// be NULL), reads stream information and logs FFmpeg's stream dump. 0 or
     /// a negative AVERROR.
     pub fn dr_probe_dvdvideo(path: *const c_char, options: *const c_char) -> c_int;
+    /// Opens a title with demuxer `format`, writes every stream to its own file
+    /// in `outdir` (`<prefix><index>_<lang>.<ext>`) and the chapters as
+    /// Matroska XML (`<prefix>chapters.xml`); `cb` gets each stream's
+    /// statistics. `nb_titles` gets the demuxer's title count (or -1).
+    pub fn dr_demux(
+        format: *const c_char,
+        path: *const c_char,
+        options: *const c_char,
+        key_files: *const c_char,
+        outdir: *const c_char,
+        prefix: *const c_char,
+        nb_titles: *mut c_int,
+        cb: DemuxStreamCb,
+        opaque: *mut c_void,
+    ) -> c_int;
 }
+
+/// `DrStreamStats` of the C glue: one stream's statistics after demuxing
+/// (timestamps in 90 kHz for the disc demuxers; `AV_NOPTS_VALUE` = none).
+#[repr(C)]
+pub struct DemuxStreamStats {
+    pub index: c_int,
+    pub kind: *const c_char,
+    pub codec: *const c_char,
+    pub lang: *const c_char,
+    pub file: *const c_char,
+    pub packets: i64,
+    pub bytes: i64,
+    pub no_ts: i64,
+    pub first_ts: i64,
+    pub end_ts: i64,
+    pub overlaps: i64,
+    pub max_overlap: i64,
+    pub gaps: i64,
+    pub max_gap: i64,
+}
+
+/// Receives one stream's statistics from [`dr_demux`].
+pub type DemuxStreamCb = unsafe extern "C" fn(opaque: *mut c_void, stats: *const DemuxStreamStats);
 
 /// Splits a packed library version (`AV_VERSION_INT`) into major.minor.micro.
 #[must_use]
@@ -774,6 +812,15 @@ pub mod hddvd {
         ) -> c_int;
         pub fn ff_hddvd_aacs_close(aacs: *mut *mut Aacs);
         pub fn ff_hddvd_clip_block(log: *mut c_void, aacs: *mut Aacs, fs: *mut Fs, clip: *mut Clip, block: u32, buf: *mut u8) -> c_int;
+        pub fn ff_hddvd_tracks_build(
+            log: *mut c_void,
+            fs: *mut Fs,
+            aacs: *mut Aacs,
+            vti: *const Vti,
+            xpls: *const *mut Xpl,
+            nb_xpls: c_int,
+            plan: *mut TitlePlan,
+        ) -> c_int;
     }
 }
 
@@ -789,5 +836,297 @@ pub mod avcrypto {
         pub fn av_sha_init(ctx: *mut c_void, bits: c_int) -> c_int;
         pub fn av_sha_update(ctx: *mut c_void, data: *const u8, len: usize);
         pub fn av_sha_final(ctx: *mut c_void, digest: *mut u8);
+    }
+}
+
+/// `libavformat/discrip.h`: the shared rip core.
+pub mod discrip {
+    use std::ffi::CStr;
+    use std::os::raw::{c_char, c_int, c_void};
+
+    /// Ticks per second of the core's time unit.
+    pub const TICKS_PER_SECOND: i64 = 1_080_000_000;
+    /// Ticks per 90 kHz PES clock tick.
+    pub const TICKS_PER_PTS: i64 = 12_000;
+
+    /// `DRUnit`.
+    #[repr(C)]
+    pub struct Unit {
+        pub data: *const u8,
+        pub size: c_int,
+        pub time: i64,
+        pub pos: i64,
+    }
+
+    /// `DRCutterStats`.
+    #[repr(C)]
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct CutterStats {
+        pub bytes: i64,
+        pub records: i64,
+        pub units: i64,
+        pub timed: i64,
+        pub records_unused: i64,
+        pub skipped: i64,
+        pub skipped_bytes: i64,
+    }
+
+    pub const F_KEY: u32 = 0x0001;
+    pub const F_SYNC: u32 = 0x0002;
+    pub const F_MARKER: u32 = 0x0004;
+
+    /// `DRFrame`.
+    #[repr(C)]
+    pub struct Frame {
+        pub buf: *mut c_void,
+        pub data: *mut u8,
+        pub size: c_int,
+        pub time: i64,
+        pub dur: i64,
+        pub pos: i64,
+        pub flags: u32,
+    }
+
+    pub type FrameCb = unsafe extern "C" fn(opaque: *mut c_void, frame: *mut Frame) -> c_int;
+
+    /// `DRAudioHeader`.
+    #[repr(C)]
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+    pub struct AudioHeader {
+        pub rate: c_int,
+        pub samples: c_int,
+    }
+
+    /// `DRAudioStats`.
+    #[repr(C)]
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct AudioStats {
+        pub units: i64,
+        pub frames: i64,
+        pub markers: i64,
+        pub cut_bytes: i64,
+        pub review: i64,
+        pub continuity: i64,
+        pub header: AudioHeader,
+    }
+
+    /// `DRAudio` (only handled through pointers).
+    #[repr(C)]
+    pub struct Audio {
+        _private: [u8; 0],
+    }
+
+    pub const AUDIO_CORE_ONLY: c_int = 0x0001;
+    pub const F_TAIL: u32 = 0x0020;
+
+    pub const EV_START_GAP: c_int = 1;
+    pub const EV_START_DROP: c_int = 2;
+    pub const EV_START_SHIFT: c_int = 3;
+    pub const EV_OVERLAP: c_int = 4;
+    pub const EV_GAP_ABSORBED: c_int = 5;
+    pub const EV_GAP: c_int = 6;
+    pub const EV_DROP: c_int = 7;
+    pub const EV_GAP_MARKER: c_int = 8;
+    pub const EV_VIDEO_ENDED: c_int = 9;
+    pub const EV_TIME_ORDER: c_int = 10;
+    pub const EV_RETIME: c_int = 11;
+    pub const F_CHAPTER: u32 = 0x0010;
+    pub const F_BATCH: u32 = 0x0040;
+    pub const F_DISCARD: u32 = 0x0008;
+    pub const EV_VIDEO_TIMECODE: c_int = 12;
+    pub const EV_VIDEO_TIMECODE_LIMIT: c_int = 13;
+    pub const EV_VIDEO_INVALID: c_int = 14;
+    pub const EV_VIDEO_REPAIR: c_int = 15;
+    pub const EV_VIDEO_RATE_CHANGE: c_int = 16;
+
+    /// `DRVideoStats`.
+    #[repr(C)]
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct VideoStats {
+        pub units: i64,
+        pub pictures: i64,
+        pub out: i64,
+        pub placeholders: i64,
+        pub invalid: i64,
+        pub num: c_int,
+        pub den: c_int,
+        pub base: i64,
+    }
+
+    /// `DRVideo` (only handled through pointers).
+    #[repr(C)]
+    pub struct Video {
+        _private: [u8; 0],
+    }
+
+    pub const KIND_VIDEO: c_int = 1;
+    pub const KIND_AUDIO: c_int = 2;
+    pub const KIND_SUBTITLE: c_int = 3;
+
+    pub type JoinOutCb = unsafe extern "C" fn(opaque: *mut c_void, track: c_int, frame: *mut Frame) -> c_int;
+
+    /// `DRJoinConfig`.
+    #[repr(C)]
+    pub struct JoinConfig {
+        pub nb_tracks: c_int,
+        pub kinds: *const c_int,
+        pub marks: *const i64,
+        pub nb_marks: c_int,
+        pub out: JoinOutCb,
+        pub out_opaque: *mut c_void,
+        pub event: Option<EventCb>,
+        pub event_opaque: *mut c_void,
+    }
+
+    /// `DRJoinStats`.
+    #[repr(C)]
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct JoinStats {
+        pub segments: c_int,
+        pub frames: i64,
+        pub retimed: i64,
+        pub chapters: i64,
+        pub offset: i64,
+        pub start: i64,
+    }
+
+    /// `DRJoin` (only handled through pointers).
+    #[repr(C)]
+    pub struct Join {
+        _private: [u8; 0],
+    }
+
+    /// `DREvent`.
+    #[repr(C)]
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+    pub struct Event {
+        pub kind: c_int,
+        pub track: c_int,
+        pub pos: i64,
+        pub dur: i64,
+        pub skew: i64,
+        pub count: i64,
+    }
+
+    pub type EventCb = unsafe extern "C" fn(opaque: *mut c_void, ev: *const Event);
+
+    /// `DRVideoRef`.
+    #[repr(C)]
+    pub struct VideoRef {
+        pub opaque: *mut c_void,
+        pub max_time: unsafe extern "C" fn(opaque: *mut c_void) -> i64,
+        pub advance: unsafe extern "C" fn(opaque: *mut c_void, target: i64, ended: *mut c_int) -> c_int,
+    }
+
+    /// `DRJunctionConfig`.
+    #[repr(C)]
+    pub struct JunctionConfig {
+        pub track: c_int,
+        pub frame_dur: i64,
+        pub tolerance: i64,
+        pub video: VideoRef,
+        pub out: FrameCb,
+        pub out_opaque: *mut c_void,
+        pub event: Option<EventCb>,
+        pub event_opaque: *mut c_void,
+    }
+
+    /// `DRJunctionStats`.
+    #[repr(C)]
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct JunctionStats {
+        pub input: i64,
+        pub out: i64,
+        pub dropped: i64,
+        pub dropped_dur: i64,
+        pub markers: i64,
+        pub skew: i64,
+        pub base: i64,
+        pub ended: c_int,
+    }
+
+    /// `DRJunction` (only handled through pointers).
+    #[repr(C)]
+    pub struct Junction {
+        _private: [u8; 0],
+    }
+
+    /// `DRCutter` (only handled through pointers).
+    #[repr(C)]
+    pub struct Cutter {
+        _private: [u8; 0],
+    }
+
+    pub type UnitCb = unsafe extern "C" fn(opaque: *mut c_void, unit: *const Unit) -> c_int;
+
+    /// The first members of `AVCodecDescriptor`.
+    #[repr(C)]
+    pub struct CodecDescriptor {
+        pub id: c_int,
+        pub kind: c_int,
+        pub name: *const c_char,
+    }
+
+    extern "C" {
+        pub fn avcodec_descriptor_get_by_name(name: *const c_char) -> *const CodecDescriptor;
+        pub fn ff_discrip_cutter_open(
+            out: *mut *mut Cutter,
+            log: *mut c_void,
+            codec: c_int,
+            cb: UnitCb,
+            opaque: *mut c_void,
+        ) -> c_int;
+        pub fn ff_discrip_cutter_write(c: *mut Cutter, data: *const u8, size: c_int, time: i64) -> c_int;
+        pub fn ff_discrip_cutter_flush(c: *mut Cutter) -> c_int;
+        pub fn ff_discrip_cutter_stats(c: *const Cutter, stats: *mut CutterStats);
+        pub fn ff_discrip_cutter_close(c: *mut *mut Cutter);
+        pub fn ff_discrip_frame_unref(f: *mut Frame);
+        pub fn ff_discrip_audio_open(
+            out: *mut *mut Audio,
+            log: *mut c_void,
+            codec: c_int,
+            flags: c_int,
+            cb: FrameCb,
+            opaque: *mut c_void,
+        ) -> c_int;
+        pub fn ff_discrip_audio_unit(audio: *mut c_void, unit: *const Unit) -> c_int;
+        pub fn ff_discrip_audio_marker(a: *mut Audio, time: i64) -> c_int;
+        pub fn ff_discrip_audio_flush(a: *mut Audio) -> c_int;
+        pub fn ff_discrip_audio_stats(a: *const Audio, stats: *mut AudioStats);
+        pub fn ff_discrip_audio_close(a: *mut *mut Audio);
+        pub fn ff_discrip_junction_open(out: *mut *mut Junction, log: *mut c_void, cfg: *const JunctionConfig) -> c_int;
+        pub fn ff_discrip_junction_push(j: *mut Junction, frame: *mut Frame) -> c_int;
+        pub fn ff_discrip_junction_finish(j: *mut Junction) -> c_int;
+        pub fn ff_discrip_junction_stats(j: *const Junction, st: *mut JunctionStats);
+        pub fn ff_discrip_junction_close(j: *mut *mut Junction);
+        pub fn ff_discrip_join_open(out: *mut *mut Join, log: *mut c_void, cfg: *const JoinConfig) -> c_int;
+        pub fn ff_discrip_join_segment(j: *mut Join) -> c_int;
+        pub fn ff_discrip_join_push(j: *mut Join, track: c_int, frame: *mut Frame) -> c_int;
+        pub fn ff_discrip_join_finish(j: *mut Join) -> c_int;
+        pub fn ff_discrip_join_stats(j: *const Join, st: *mut JoinStats);
+        pub fn ff_discrip_join_close(j: *mut *mut Join);
+        pub fn ff_discrip_video_open(
+            out: *mut *mut Video,
+            log: *mut c_void,
+            codec: c_int,
+            track: c_int,
+            cb: FrameCb,
+            opaque: *mut c_void,
+            event: Option<EventCb>,
+            event_opaque: *mut c_void,
+        ) -> c_int;
+        pub fn ff_discrip_video_unit(video: *mut c_void, unit: *const Unit) -> c_int;
+        pub fn ff_discrip_video_flush(v: *mut Video) -> c_int;
+        pub fn ff_discrip_video_stats(v: *const Video, st: *mut VideoStats);
+        pub fn ff_discrip_video_close(v: *mut *mut Video);
+    }
+
+    /// FFmpeg's codec id for a codec name (e.g. "ac3"), or None.
+    #[must_use]
+    pub fn codec_id(name: &CStr) -> Option<c_int> {
+        // SAFETY: name is a valid C string; the result is a static descriptor or NULL.
+        let d = unsafe { avcodec_descriptor_get_by_name(name.as_ptr()) };
+        // SAFETY: a non-NULL result points to a static descriptor.
+        (!d.is_null()).then(|| unsafe { (*d).id })
     }
 }

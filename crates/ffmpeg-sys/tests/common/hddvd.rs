@@ -24,10 +24,20 @@ pub fn evob(name: &'static str, slot: u16, secs: u32) -> Evob {
 
 /// The VTI: one attribute record, the EVOB records.
 pub fn vti(evobs: &[Evob]) -> Vec<u8> {
-    let mut a = vec![0u8; 12];
-    a[0..2].copy_from_slice(&1u16.to_be_bytes());
-    a[8..12].copy_from_slice(&12u32.to_be_bytes());
-    a.extend(vec![0u8; 0x206]);
+    vti_with(evobs, &vec![1; evobs.len()], &[vec![0u8; 0x206]])
+}
+
+/// The VTI with attribute records `attrs` (0x206 bytes each) and, per EVOB,
+/// its attribute record (1-based).
+pub fn vti_with(evobs: &[Evob], attr_of: &[u32], attrs: &[Vec<u8>]) -> Vec<u8> {
+    let mut a = vec![0u8; 8 + 4 * attrs.len()];
+    a[0..2].copy_from_slice(&u16::try_from(attrs.len()).unwrap().to_be_bytes());
+    for (i, r) in attrs.iter().enumerate() {
+        let off = u32::try_from(a.len()).unwrap();
+        a[8 + 4 * i..12 + 4 * i].copy_from_slice(&off.to_be_bytes());
+        assert_eq!(r.len(), 0x206);
+        a.extend_from_slice(r);
+    }
     let mut b = vec![0u8; 8 + 4 * evobs.len()];
     b[0..4].copy_from_slice(&u32::try_from(evobs.len()).unwrap().to_be_bytes());
     for (i, e) in evobs.iter().enumerate() {
@@ -35,7 +45,7 @@ pub fn vti(evobs: &[Evob]) -> Vec<u8> {
         b[8 + 4 * i..12 + 4 * i].copy_from_slice(&off.to_be_bytes());
         let mut r = vec![0u8; 0x140];
         r[2..2 + e.name.len()].copy_from_slice(e.name.as_bytes());
-        r[0x106..0x10a].copy_from_slice(&1u32.to_be_bytes());
+        r[0x106..0x10a].copy_from_slice(&attr_of[i].to_be_bytes());
         r[0x10a..0x10e].copy_from_slice(&e.start.to_be_bytes());
         r[0x10e..0x112].copy_from_slice(&e.end.to_be_bytes());
         r[0x112..0x116].copy_from_slice(&1u32.to_be_bytes());
@@ -45,13 +55,120 @@ pub fn vti(evobs: &[Evob]) -> Vec<u8> {
     let mut f = vec![0u8; S];
     f[..12].copy_from_slice(b"ADVANCED-VTS");
     f[0xb8..0xbc].copy_from_slice(&1u32.to_be_bytes());
-    f[0xbc..0xc0].copy_from_slice(&2u32.to_be_bytes());
-    a.resize(S, 0);
+    let blocks_a = u32::try_from(a.len().div_ceil(S)).unwrap();
+    f[0xbc..0xc0].copy_from_slice(&(1 + blocks_a).to_be_bytes());
+    a.resize(usize::try_from(blocks_a).unwrap() * S, 0);
     f.extend(a);
     f.extend(b);
     f
 }
 
+/// An attribute record: video attribute bytes 0x02..0x04, audio entries
+/// (first byte each), sub-picture entries (5 bytes each), 32 palette words.
+pub fn attr_record(video: [u8; 3], audio: &[u8], subs: &[[u8; 5]], palette: &[u32; 32]) -> Vec<u8> {
+    let mut r = vec![0u8; 0x206];
+    r[2..5].copy_from_slice(&video);
+    r[0x0e..0x10].copy_from_slice(&u16::try_from(audio.len()).unwrap().to_be_bytes());
+    for (j, a) in audio.iter().enumerate() {
+        r[0x10 + 4 * j] = *a;
+    }
+    r[0xe4..0xe6].copy_from_slice(&u16::try_from(subs.len()).unwrap().to_be_bytes());
+    for (j, p) in subs.iter().enumerate() {
+        r[0xe6 + 5 * j..0xeb + 5 * j].copy_from_slice(p);
+    }
+    for (j, w) in palette.iter().enumerate() {
+        r[0x186 + 4 * j..0x18a + 4 * j].copy_from_slice(&w.to_be_bytes());
+    }
+    r
+}
+
+/// A time map of `blocks` blocks (entries of at most 8000 blocks).
+pub fn tmap_blocks(blocks: usize) -> Vec<u8> {
+    let mut counts = Vec::new();
+    let mut left = blocks;
+    while left > 0 {
+        let n = left.min(8000);
+        counts.push(u16::try_from(n).unwrap());
+        left -= n;
+    }
+    tmap(&counts, 0, 0, false)
+}
+
+/// A pack: pack header, the packets, then a padding packet over the rest.
+pub fn pack(packets: &[Vec<u8>]) -> Vec<u8> {
+    let mut s = pack_header();
+    let mut at = 14;
+    for p in packets {
+        s[at..at + p.len()].copy_from_slice(p);
+        at += p.len();
+    }
+    let rem = 2048 - at;
+    if rem > 0 {
+        assert!(rem >= 6, "{rem} bytes left: no room for a padding packet");
+        s[at..at + 4].copy_from_slice(&[0, 0, 1, 0xbe]);
+        s[at + 4..at + 6].copy_from_slice(&u16::try_from(rem - 6).unwrap().to_be_bytes());
+        s[at + 6..].fill(0xff);
+    }
+    s
+}
+
+/// A private stream 1 packet: sub-stream id, PTS (90 kHz) when given, the
+/// 4-byte audio sub-stream header (1 frame, first access unit at 1), payload.
+pub fn ps1_packet(sub: u8, pts: Option<u64>, payload: &[u8]) -> Vec<u8> {
+    let hdr: Vec<u8> = match pts {
+        Some(t) => {
+            let b = |v: u64| u8::try_from(v & 0xff).unwrap();
+            vec![0x81, 0x80, 5, 0x21 | b((t >> 29) & 0x0e), b(t >> 22), 0x01 | b((t >> 14) & 0xfe), b(t >> 7), 0x01 | b((t << 1) & 0xfe)]
+        }
+        None => vec![0x81, 0x00, 0],
+    };
+    let len = hdr.len() + 4 + payload.len();
+    let mut p = vec![0, 0, 1, 0xbd];
+    p.extend_from_slice(&u16::try_from(len).unwrap().to_be_bytes());
+    p.extend(hdr);
+    p.extend_from_slice(&[sub, 1, 0, 1]);
+    p.extend_from_slice(payload);
+    p
+}
+
+/// A video packet (stream 0xe0, no PTS) of `len` bytes in all.
+pub fn video_packet(len: usize) -> Vec<u8> {
+    let mut p = vec![0u8; len];
+    p[..4].copy_from_slice(&[0, 0, 1, 0xe0]);
+    p[4..6].copy_from_slice(&u16::try_from(len - 6).unwrap().to_be_bytes());
+    p[6] = 0x81;
+    p
+}
+
+/// An E-AC-3 frame of `size` bytes (48 kHz, 6 blocks, 2/0): stream type, and
+/// for a dependent stream the channel map.
+pub fn eac3_frame(size: usize, strmtyp: u8, chanmap: Option<u16>) -> Vec<u8> {
+    let mut f = vec![0u8; size];
+    let w = (u16::from(strmtyp) << 14) | u16::try_from(size / 2 - 1).unwrap();
+    f[0] = 0x0b;
+    f[1] = 0x77;
+    f[2..4].copy_from_slice(&w.to_be_bytes());
+    f[4] = (3 << 4) | (2 << 1); // fscod 0, numblkscod 3, acmod 2, lfeon 0
+    f[5] = 16 << 3; // bsid 16, dialnorm 0
+    if let Some(m) = chanmap {
+        // byte 6: dialnorm (2 bits), compre 0, chanmape 1, chanmap bits 15..12
+        let [hi, lo] = m.to_be_bytes();
+        f[6] = 0x10 | (hi >> 4);
+        f[7] = (hi << 4) | (lo >> 4);
+        f[8] = lo << 4;
+    }
+    f
+}
+
+/// An AC-3 frame: 48 kHz, 128 kb/s (512 bytes), bsid 8.
+pub fn ac3_frame() -> Vec<u8> {
+    let mut f = vec![0u8; 512];
+    f[0] = 0x0b;
+    f[1] = 0x77;
+    f[4] = 16; // fscod 0, frmsizecod 16 (128 kb/s)
+    f[5] = 8 << 3;
+    f
+}
 /// A time map: its first table's block counts (each entry's last u16), the
 /// first table's value, header byte 0x14, and a second table when `two`.
 pub fn tmap(counts: &[u16], value: u16, byte14: u8, two: bool) -> Vec<u8> {
@@ -346,6 +463,19 @@ pub fn open_file(path: &std::path::Path, key_files: &[String]) -> Result<Opened,
 }
 
 impl Opened {
+    /// Build every title's tracks (titles that cannot be used leave the
+    /// plan), then the plan as text: Ok(dump) or Err(code).
+    pub fn tracks(&self) -> Result<String, c_int> {
+        let ret = unsafe { hddvd::ff_hddvd_tracks_build(ptr::null_mut(), self.fs, self.aacs, self.vti, self.xs, self.nb, self.plan) };
+        if ret < 0 {
+            return Err(ret);
+        }
+        let d = unsafe { hddvd::ff_hddvd_titles_dump(self.plan) };
+        let s = unsafe { CStr::from_ptr(d) }.to_str().unwrap().to_owned();
+        unsafe { ffmpeg_sys::av_free(d.cast()) };
+        Ok(s)
+    }
+
     /// Block of EVOB slot's stream, made usable: (result, bytes).
     pub fn block(&self, slot: c_int, block: u32) -> (c_int, Vec<u8>) {
         let mut buf = vec![0u8; 2048];

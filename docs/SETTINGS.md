@@ -28,6 +28,12 @@ The settings file (`~/.config/disc-remuxer/settings.toml`, or `--settings FILE`)
 | `dvd.title_order` | auto, scan_first, table | `"auto"` | Order of a DVD's titles: scan_first = the titles the disc's navigation leads to first, then the others; table = the disc's title table order; auto = scan_first with the cell modes auto and walk, table with trim and walk_trim. |
 | `dvd.min_title_length` | 0 to 86400 | `120` | Titles shorter than this many seconds are listed but not selected. |
 
+## [aacs]
+
+| Setting | Allowed | Default | What it does |
+|---|---|---|---|
+| `aacs.key_files` | text; empty = not set | `""` | AACS key files (KEYDB.cfg format), separated by commas, read in this order; the first one holding a key for the disc is used. Needed for encrypted HD DVD images. |
+
 ## [log]
 
 | Setting | Allowed | Default | What it does |

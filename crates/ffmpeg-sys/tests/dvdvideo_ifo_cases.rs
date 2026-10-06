@@ -216,8 +216,11 @@ fn every_case_differs_from_the_valid_disc() {
 /// navigation scan, titles), cell mode automatic, no minimum length.
 fn plan_of(name: &str) -> Result<ffmpeg_sys::dvdvideo::Plan, std::os::raw::c_int> {
     use ffmpeg_sys::dvdvideo::{titles, TitleOptions, CELLS_AUTO, ORDER_AUTO};
+    // one folder per call: tests run in parallel and may build the same case
+    static CALL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let (_, _, change) = cases().into_iter().find(|c| c.0 == name).unwrap();
-    let dir = std::env::temp_dir().join(format!("dvdvideo-ifo-case-{name}-{}", std::process::id()));
+    let n = CALL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("dvdvideo-ifo-case-{name}-{}-{n}", std::process::id()));
     write_case(&dir, name, change.as_ref());
     let opts = ffmpeg_sys::discio::ImageOptions::default();
     titles(&dir, &opts, 1, &TitleOptions { cell_mode: CELLS_AUTO, title_order: ORDER_AUTO, min_length: 0 })

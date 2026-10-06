@@ -51,6 +51,8 @@
 #include "libavutil/log.h"
 #include "libavutil/mem.h"
 
+#include "libavcodec/avcodec.h"
+
 #include "disclang.h"
 #include "hddvd_internal.h"
 
@@ -434,9 +436,7 @@ static HDDVDClip *clip_of(Planner *p, const HDDVDEvob *e, int *err)
     return ret > 0 ? *slot : NULL;
 }
 
-/* Whether a clip's src names EVOB evo ("file:///dvddisc/HVDVD_TS/" or
- * "HDDVD_TS/" + evo's base name + ".map", case not regarded; evo ends ".evo"). */
-static int src_names_evob(void *logctx, const char *s, const char *evo)
+int ff_hddvd_src_names_evob(void *logctx, const char *s, const char *evo)
 {
     size_t n = strlen(evo);
 
@@ -483,12 +483,12 @@ void ff_hddvd_evob_marks(void *logctx, HDDVDVTI *vti, HDDVDXpl *const *xpls, int
             ts = ff_hddvd_xpl_child(root, HDDVD_XPL_TITLE_SET, 0);
             if ((fpt = ff_hddvd_xpl_child(ts, HDDVD_XPL_FIRST_PLAY_TITLE, 0)))
                 for (int c = 0; !found && c < ff_hddvd_xpl_count(fpt, HDDVD_XPL_PRIMARY_AUDIO_VIDEO_CLIP); c++)
-                    found = src_names_evob(logctx, ff_hddvd_xpl_str(ff_hddvd_xpl_child(fpt,
+                    found = ff_hddvd_src_names_evob(logctx, ff_hddvd_xpl_str(ff_hddvd_xpl_child(fpt,
                                            HDDVD_XPL_PRIMARY_AUDIO_VIDEO_CLIP, c), "src"), e->name);
             for (int t = 0; !found && t < ff_hddvd_xpl_count(ts, HDDVD_XPL_TITLE); t++) {
                 const HDDVDXplNode *title = ff_hddvd_xpl_child(ts, HDDVD_XPL_TITLE, t);
                 for (int c = 0; !found && c < ff_hddvd_xpl_count(title, HDDVD_XPL_PRIMARY_AUDIO_VIDEO_CLIP); c++)
-                    found = src_names_evob(logctx, ff_hddvd_xpl_str(ff_hddvd_xpl_child(title,
+                    found = ff_hddvd_src_names_evob(logctx, ff_hddvd_xpl_str(ff_hddvd_xpl_child(title,
                                            HDDVD_XPL_PRIMARY_AUDIO_VIDEO_CLIP, c), "src"), e->name);
             }
             if (found) {
@@ -512,7 +512,7 @@ static const char *playlist_name(void *logctx, const HDDVDXpl *x, const char *ev
                 const char *s = ff_hddvd_xpl_str(ff_hddvd_xpl_child(t, HDDVD_XPL_PRIMARY_AUDIO_VIDEO_CLIP, c), "src");
                 static const char *const keys[] = { "displayName", "description", "id" };
 
-                if (!src_names_evob(logctx, s, evo))
+                if (!ff_hddvd_src_names_evob(logctx, s, evo))
                     continue;
                 for (int k = 0; k < 3; k++) {
                     const char *v = ff_hddvd_xpl_str(t, keys[k]);
@@ -737,6 +737,7 @@ void ff_hddvd_titles_free(HDDVDTitlePlan **pplan)
     for (int i = 0; i < plan->nb_titles; i++) {
         av_free(plan->titles[i].clips);
         av_free(plan->titles[i].marks);
+        av_free(plan->titles[i].tracks);
     }
     av_free(plan->titles);
     for (int i = 0; i < HDDVD_VTI_MAX_EVOBS; i++) {
@@ -768,6 +769,16 @@ char *ff_hddvd_titles_dump(const HDDVDTitlePlan *plan)
         av_bprintf(&bp, "|%d\n", t->nb_marks);
         for (int k = 0; k < t->nb_marks; k++)
             av_bprintf(&bp, "  chapter %d|%"PRIu32"|%s\n", k + 1, t->marks[k].ms, t->marks[k].name);
+        for (int k = 0; k < t->nb_tracks; k++) {
+            const HDDVDTrack *r = &t->tracks[k];
+            av_bprintf(&bp, "  track %d|%s|%s|%d|%d|%s", k, av_get_media_type_string(r->type),
+                       avcodec_get_name(r->codec), r->index, r->number, r->lang);
+            if (r->core)
+                av_bprintf(&bp, "|%s", r->core == 1 ? "with core" : "core");
+            if (r->type == AVMEDIA_TYPE_SUBTITLE)
+                av_bprintf(&bp, "|%dx%d|%08"PRIx32, r->width, r->height, r->palette ? r->palette[0] : 0);
+            av_bprintf(&bp, "\n");
+        }
     }
     for (int x = 0; x < HDDVD_VTI_MAX_EVOBS; x++) {
         const HDDVDClip *c = plan->clips[x];

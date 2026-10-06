@@ -1,9 +1,10 @@
 //! Calls into our FFmpeg: versions, log routing, the stock DVD-Video probe.
 
 use disc_core::settings::Settings;
+use disc_core::{emit, msg};
 use ffmpeg_sys::log_level;
 use std::ffi::{CStr, CString};
-use std::os::raw::{c_char, c_int};
+use std::os::raw::{c_char, c_int, c_void};
 use std::path::Path;
 
 pub fn version() -> String {
@@ -189,6 +190,92 @@ pub fn debug_dvd_titles(source: &Path, settings: &Settings) -> anyhow::Result<()
         )?;
     }
     Ok(())
+}
+
+/// The HD DVD demuxer's options for title `title` with the read settings.
+fn hddvd_options(settings: &Settings, title: i32) -> String {
+    format!(
+        "title={title}:read_attempts={}:udf_reader={}",
+        settings.number("read.attempts"),
+        settings.text("read.udf_reader").unwrap_or("netbsd"),
+    )
+}
+
+fn ms(ts: i64) -> String {
+    if ts == ffmpeg_sys::AV_NOPTS_VALUE {
+        return "-".into();
+    }
+    let sign = if ts < 0 { "-" } else { "" };
+    let total = ts.unsigned_abs() / 90; // 90 kHz -> ms
+    format!("{sign}{}:{:02}:{:02}.{:03}", total / 3_600_000, total / 60_000 % 60, total / 1000 % 60, total % 1000)
+}
+
+/// 90 kHz ticks as milliseconds with three decimals.
+fn ms3(ticks: i64) -> String {
+    let us = ticks * 1000 / 90;
+    format!("{}.{:03}", us / 1000, (us % 1000).abs())
+}
+
+fn text(p: *const c_char) -> String {
+    if p.is_null() {
+        return String::new();
+    }
+    // SAFETY: the glue passes NUL-terminated strings that live during the callback.
+    unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
+}
+
+unsafe extern "C" fn demux_stream(_opaque: *mut c_void, st: *const ffmpeg_sys::DemuxStreamStats) {
+    // SAFETY: the glue passes a valid record for the duration of the call.
+    let s = unsafe { &*st };
+    let (kind, codec, lang, file) = (text(s.kind), text(s.codec), text(s.lang), text(s.file));
+    let lang = if lang.is_empty() { "-".to_string() } else { lang };
+    if file.is_empty() {
+        disc_core::emit!(disc_core::msg::DEMUX_CARRIED, index = s.index, kind = kind, codec = codec, lang = lang);
+        return;
+    }
+    disc_core::emit!(disc_core::msg::DEMUX_STREAM, index = s.index, kind = kind, codec = codec, lang = lang,
+        packets = s.packets, bytes = s.bytes, start = ms(s.first_ts), end = ms(s.end_ts), file = file);
+    if s.overlaps > 0 || s.gaps > 0 {
+        disc_core::emit!(disc_core::msg::DEMUX_CONTINUITY, index = s.index, overlaps = s.overlaps,
+            max_overlap = ms3(s.max_overlap), gaps = s.gaps, max_gap = ms3(s.max_gap));
+    }
+    if s.no_ts > 0 {
+        disc_core::emit!(disc_core::msg::DEMUX_NO_TIMESTAMP, index = s.index, count = s.no_ts);
+    }
+}
+
+/// `demux`: every title (or one) of an HD DVD image as elementary streams and
+/// chapters in `folder`.
+pub fn demux_hddvd(source: &Path, title: Option<i32>, folder: &Path, settings: &Settings) -> anyhow::Result<()> {
+    let c = |s: &str| CString::new(s).map_err(|_| anyhow::anyhow!("a path contains a NUL byte"));
+    let path = c(&source.to_string_lossy())?;
+    let dir = c(&folder.to_string_lossy())?;
+    let keys = c(settings.text("aacs.key_files").unwrap_or(""))?;
+    let format = c("hddvd")?;
+    let mut t = title.unwrap_or(0);
+    loop {
+        emit!(msg::DEMUX_TITLE, title = t, source = source.display(), folder = folder.display());
+        let options = c(&hddvd_options(settings, t))?;
+        let prefix = c(&format!("t{t:02}_"))?;
+        let mut nb: c_int = -1;
+        // SAFETY: every pointer is a valid NUL-terminated string; the callback matches the glue's type.
+        let ret = unsafe {
+            ffmpeg_sys::dr_demux(format.as_ptr(), path.as_ptr(), options.as_ptr(), keys.as_ptr(), dir.as_ptr(),
+                prefix.as_ptr(), &raw mut nb, demux_stream, std::ptr::null_mut())
+        };
+        if ret < 0 {
+            let reason = ffmpeg_sys::error_text(ret);
+            emit!(msg::DEMUX_FAILED, title = t, source = source.display(), reason = reason);
+            anyhow::bail!("title {t}: {reason}");
+        }
+        if title.is_none() && t == 0 {
+            emit!(msg::DEMUX_TITLES, source = source.display(), count = nb);
+        }
+        t += 1;
+        if title.is_some() || t >= nb {
+            return Ok(());
+        }
+    }
 }
 
 #[cfg(test)]

@@ -67,6 +67,19 @@ enum Command {
         #[arg(long, value_name = "DIR")]
         out: Option<PathBuf>,
     },
+    /// Write the streams of HD DVD titles as elementary-stream files, one file
+    /// per track, and the chapters as Matroska XML, into each disc's job
+    /// folder (files <title>_<stream>_<language>.<ext>, <title>_chapters.xml).
+    Demux {
+        /// A disc image or a folder holding disc images.
+        source: PathBuf,
+        /// Title number (0-based, as listed); every title when not given.
+        #[arg(long)]
+        title: Option<i32>,
+        /// Output folder for the job folders (overrides output.root).
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
+    },
     /// Developer tools: the steps of the DVD processing one at a time, with
     /// their raw results on standard output.
     Debug {
@@ -212,12 +225,26 @@ fn run(cli: &Cli, settings: &Settings, command_line: &str) -> Result<()> {
             let discs = jobs::find(source, settings)?;
             let root = output_root(out.as_deref(), settings);
             let planned = jobs::plan(source, &discs, root, settings);
-            jobs::run(&planned, settings, command_line, |disc| {
+            jobs::run(&planned, settings, command_line, |job| {
+                let disc = job.disc;
                 emit!(msg::PROBE_TITLE, title = title, source = disc.path.display());
                 ffmpeg::probe_dvdvideo(&disc.path, *title, settings).map_err(|reason| {
                     emit!(msg::PROBE_FAILED, title = title, source = disc.path.display(), reason = reason);
                     anyhow::anyhow!("title {title} could not be opened")
                 })
+            })
+        }
+        Command::Demux { source, title, out } => {
+            let discs = jobs::find(source, settings)?;
+            let root = output_root(out.as_deref(), settings);
+            if root.is_none() {
+                emit!(msg::NO_OUTPUT_FOLDER);
+                anyhow::bail!("no output folder");
+            }
+            let planned = jobs::plan(source, &discs, root, settings);
+            jobs::run(&planned, settings, command_line, |job| {
+                let folder = job.folder.as_deref().expect("demux jobs have a job folder");
+                ffmpeg::demux_hddvd(&job.disc.path, *title, folder, settings)
             })
         }
         Command::Debug { what: DebugCommand::DvdScan { source, trace } } => ffmpeg::debug_dvd_scan(source, *trace, settings),
