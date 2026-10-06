@@ -136,6 +136,7 @@ static int subdemux_open(AVFormatContext *s)
 {
     HDDVDDemuxContext *c = s->priv_data;
     extern const FFInputFormat ff_discrip_ps_demuxer;
+    AVDictionary *opts = NULL;
     int ret;
 
     if (!(c->mpeg_buf = av_mallocz(HDDVD_BLOCK)))
@@ -159,7 +160,12 @@ static int subdemux_open(AVFormatContext *s)
     c->mpeg_ctx->interrupt_callback = s->interrupt_callback;
     c->mpeg_ctx->pb = &c->mpeg_pb.pub;
     c->mpeg_ctx->io_open = NULL;
-    return avformat_open_input(&c->mpeg_ctx, "", &ff_discrip_ps_demuxer.p, NULL);
+    /* HD DVD's LPCM audio frame header is 5 bytes */
+    if ((ret = av_dict_set(&opts, "lpcm_header", "5", 0)) < 0)
+        return ret;
+    ret = avformat_open_input(&c->mpeg_ctx, "", &ff_discrip_ps_demuxer.p, &opts);
+    av_dict_free(&opts);
+    return ret;
 }
 
 static void held_free(HDDVDDemuxContext *c)
@@ -214,7 +220,7 @@ static int hddvd_close(AVFormatContext *s)
     return 0;
 }
 
-/* The id the MPEG-PS demuxer (discrip_ps.c) gives a track's packets: video stream_id
+/* The id the disc pack reader (discrip_ps.c) gives a track's packets: video stream_id
  * 0xE0 (MPEG-2) / 0xE2 (AVC) / 0xFD with extension 0x55 (VC-1); private
  * stream 1 sub-streams AC-3 0x80+n, DTS 0x88+n, LPCM 0xA0+n, MLP 0xB0+n,
  * Dolby Digital Plus 0xC0+n, sub-pictures 0x20+n; MPEG audio stream_id

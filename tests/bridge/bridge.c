@@ -170,7 +170,7 @@ static const char *tb_gcrypt_header_version(void) { return GCRYPT_VERSION; }
 static const char *tb_aacs_header_version(void) { return AACS_VERSION_STRING; }
 
 /* Runs an MPEG-PS demuxer (`which`: 0 FFmpeg's mpeg.c, 1 the disc formats'
- * discrip_ps.c) over the bytes in memory, the way the disc demuxers do (no
+ * discrip_ps.c with its LPCM header length) over the bytes in memory, the way the disc demuxers do (no
  * parsing, no filled-in times); each packet goes to cb with its stream id,
  * the codec the demuxer gave the stream, its bytes and pts. Returns the
  * number of packets, or an AVERROR. */
@@ -189,7 +189,7 @@ static int tb_mem_read(void *opaque, uint8_t *buf, int n)
     return k;
 }
 
-static int tb_ps_read(int which, const uint8_t *data, int size, tb_ps_packet_cb cb, void *opaque)
+static int tb_ps_read(int which, int lpcm_header, const uint8_t *data, int size, tb_ps_packet_cb cb, void *opaque)
 {
     extern const FFInputFormat ff_mpegps_demuxer, ff_discrip_ps_demuxer;
     const FFInputFormat *f = which ? &ff_discrip_ps_demuxer : &ff_mpegps_demuxer;
@@ -197,6 +197,7 @@ static int tb_ps_read(int which, const uint8_t *data, int size, tb_ps_packet_cb 
     AVFormatContext *s = avformat_alloc_context();
     uint8_t *buf = av_malloc(4096);
     AVPacket *pkt = av_packet_alloc();
+    AVDictionary *opts = NULL;
     int n = 0, ret;
 
     if (!s || !buf || !pkt || !(s->pb = avio_alloc_context(buf, 4096, 0, &m, tb_mem_read, NULL, NULL))) {
@@ -206,7 +207,11 @@ static int tb_ps_read(int which, const uint8_t *data, int size, tb_ps_packet_cb 
     }
     s->flags |= AVFMT_FLAG_CUSTOM_IO | AVFMT_FLAG_NOPARSE | AVFMT_FLAG_NOFILLIN;
     s->probesize = 0;
-    if ((ret = avformat_open_input(&s, "", &f->p, NULL)) < 0)
+    if (which)
+        av_dict_set_int(&opts, "lpcm_header", lpcm_header, 0);
+    ret = avformat_open_input(&s, "", &f->p, &opts);
+    av_dict_free(&opts);
+    if (ret < 0)
         goto end;
     while ((ret = av_read_frame(s, pkt)) >= 0) {
         AVStream *st = s->streams[pkt->stream_index];
