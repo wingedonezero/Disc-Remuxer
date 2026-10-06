@@ -1020,6 +1020,26 @@ pub mod discrip {
         pub start: i64,
     }
 
+    pub const CHAPTER_00: c_int = -1;
+
+    /// `DRChapterPlan`.
+    #[repr(C)]
+    pub struct ChapterPlan {
+        pub marks: *mut i64,
+        pub nb_marks: c_int,
+        pub atoms: *mut c_int,
+        pub nb_atoms: c_int,
+    }
+
+    /// `DRChapter`.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Chapter {
+        pub start: i64,
+        pub end: i64,
+        pub record: c_int,
+    }
+
     /// `DRJoin` (only handled through pointers).
     #[repr(C)]
     pub struct Join {
@@ -1135,6 +1155,24 @@ pub mod discrip {
         pub fn ff_discrip_join_finish(j: *mut Join) -> c_int;
         pub fn ff_discrip_join_stats(j: *const Join, st: *mut JoinStats);
         pub fn ff_discrip_join_close(j: *mut *mut Join);
+        pub fn ff_discrip_join_chapters(j: *const Join, starts: *mut *const i64) -> c_int;
+        pub fn ff_discrip_chapter_plan(
+            log: *mut c_void,
+            records: *const i64,
+            nb_records: c_int,
+            skip: i64,
+            chapter00: c_int,
+            plan: *mut ChapterPlan,
+        ) -> c_int;
+        pub fn ff_discrip_chapter_plan_free(plan: *mut ChapterPlan);
+        pub fn ff_discrip_chapter_list(
+            plan: *const ChapterPlan,
+            starts: *const i64,
+            nb_starts: c_int,
+            duration: i64,
+            out: *mut *mut Chapter,
+            nb_out: *mut c_int,
+        ) -> c_int;
         pub fn ff_discrip_video_open(
             out: *mut *mut Video,
             log: *mut c_void,

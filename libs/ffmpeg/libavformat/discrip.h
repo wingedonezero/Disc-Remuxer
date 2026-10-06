@@ -348,7 +348,7 @@ typedef int (*DRJoinOutCb)(void *opaque, int track, DRFrame *frame);
 typedef struct DRJoinConfig {
     int            nb_tracks;
     const int     *kinds;        /**< DRTrackKind per track; track 0 must be video */
-    const int64_t *marks;        /**< chapter mark times, ascending (ticks), or NULL */
+    const int64_t *marks;        /**< chapter mark times, ascending (ticks; DRChapterPlan.marks), or NULL */
     int            nb_marks;
     DRJoinOutCb    out;   void *out_opaque;
     DREventCb      event; void *event_opaque;
@@ -370,7 +370,51 @@ int  ff_discrip_join_push(DRJoin *j, int track, DRFrame *frame);
 /** The end of the title. */
 int  ff_discrip_join_finish(DRJoin *j);
 void ff_discrip_join_stats(const DRJoin *j, DRJoinStats *st);
+/** The times of the frames marked as chapter starts so far (valid until
+ *  the joiner is closed); returns their number. */
+int  ff_discrip_join_chapters(const DRJoin *j, const int64_t **starts);
 void ff_discrip_join_close(DRJoin **j);
+
+/* ---- Chapters (discrip_chapters.c) ----
+ * Time-mark chapters (HD DVD, Blu-ray): the disc's chapter records (ticks
+ * from the title start, in the disc's order) become the mark times the
+ * joiner puts on video key frames (DRJoinConfig.marks); the k-th marked
+ * frame starts the k-th chapter. */
+
+#define DR_CHAPTER_00 (-1)     /**< an added first chapter that is no record of the disc */
+
+typedef struct DRChapterPlan {
+    int64_t *marks;            /**< ascending mark times (ticks, title timeline) */
+    int      nb_marks;
+    int     *atoms;            /**< per mark: the record it comes from, or DR_CHAPTER_00 */
+    int      nb_atoms;
+} DRChapterPlan;
+
+/**
+ * The marks of a title's chapter records. A broken tail (a last record at 0
+ * after one that is not, or one earlier than the record before it) is cut
+ * off; a record earlier than the one before it otherwise refuses the title
+ * (AVERROR_INVALIDDATA). Records before skip (leading segments left out) are
+ * dropped, the others move back by skip; the first kept one within 0.1 s of
+ * the start is at 0; a record at the time of the one before it is dropped.
+ * When the first kept record does not start the title, a chapter at 0 is
+ * added: record 0 when it was dropped, else (chapter00 set) DR_CHAPTER_00.
+ */
+int  ff_discrip_chapter_plan(void *logctx, const int64_t *records, int nb_records, int64_t skip, int chapter00,
+                             DRChapterPlan *plan);
+void ff_discrip_chapter_plan_free(DRChapterPlan *plan);
+
+typedef struct DRChapter {
+    int64_t start, end;        /**< ticks, title timeline */
+    int     record;            /**< the disc's record, or DR_CHAPTER_00 */
+} DRChapter;
+
+/** The chapters of a ripped title: the k-th start time (of the k-th frame
+ *  the joiner marked) starts plan atom k; each ends where the next starts,
+ *  the last at duration. Fewer than two starts: no chapters (*nb_out = 0).
+ *  *out is freed with av_free(). */
+int  ff_discrip_chapter_list(const DRChapterPlan *plan, const int64_t *starts, int nb_starts, int64_t duration,
+                             DRChapter **out, int *nb_out);
 
 /* ---- Stage 2, video: pictures timed on a fixed grid (discrip_video.c) ----
  * Every picture's time is base + position x field duration; positions are

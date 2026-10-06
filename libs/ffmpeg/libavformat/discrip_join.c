@@ -50,6 +50,8 @@ struct DRJoin {
     int64_t      prev_e0, prev_start, prev_offset;
     int64_t      batch_min; /* earliest video time of the segment's first batch so far */
     int          mark;      /* next chapter mark */
+    int64_t     *chap;      /* times of the frames that start chapters */
+    int          nb_chap, chap_cap;
     DRJoinStats  st;
 };
 
@@ -71,9 +73,21 @@ static int wait_add(Track *t, DRFrame *f)
 static int give(DRJoin *j, int track, DRFrame *f, int64_t ts)
 {
     f->time = ts + j->offset - j->start;
-    if (!track && (f->flags & DR_F_KEY) && j->mark < j->cfg.nb_marks) {
+    /* an empty marker takes no chapter */
+    if (!track && (f->flags & DR_F_KEY) && (f->dur || f->size) && j->mark < j->cfg.nb_marks) {
         uint64_t m = j->cfg.marks[j->mark], o = f->time;
         if (m <= o || m - o < MARK_AHEAD) {
+            if (j->nb_chap == j->chap_cap) {
+                int cap = j->chap_cap ? 2 * j->chap_cap : 32;
+                int64_t *c = av_realloc_array(j->chap, cap, sizeof(*c));
+                if (!c) {
+                    ff_discrip_frame_unref(f);
+                    return AVERROR(ENOMEM);
+                }
+                j->chap     = c;
+                j->chap_cap = cap;
+            }
+            j->chap[j->nb_chap++] = f->time;
             f->flags |= DR_F_CHAPTER;
             j->mark++;
             j->st.chapters++;
@@ -306,6 +320,12 @@ void ff_discrip_join_stats(const DRJoin *j, DRJoinStats *st)
     *st = j->st;
 }
 
+int ff_discrip_join_chapters(const DRJoin *j, const int64_t **starts)
+{
+    *starts = j->chap;
+    return j->nb_chap;
+}
+
 void ff_discrip_join_close(DRJoin **jp)
 {
     DRJoin *j = *jp;
@@ -318,5 +338,6 @@ void ff_discrip_join_close(DRJoin **jp)
         av_freep(&j->t[k].wait);
     }
     av_freep(&j->t);
+    av_freep(&j->chap);
     av_freep(jp);
 }

@@ -140,9 +140,21 @@ logged with the reason; nothing is guessed.
   before it. One that starts before the previous one ends, by more than its
   own duration, is reported (event); the reference moves it to the end of
   the previous one instead.
-- Chapter marks: the master's key frame at, or up to 0.4 s before, each mark
-  time carries the chapter flag; marks within 0.1 s of the title start become
-  0; fewer than two marks -> no chapters.
+- Chapter marks (`discrip_chapters.c`; time marks: HD DVD, Blu-ray): the
+  disc's records are planned first: a broken tail (a last record at 0 after
+  one that is not, or earlier than the one before it) is cut off, a record
+  earlier than the one before it otherwise refuses the title; records in
+  leading segments left out are dropped and the rest move back by their
+  length; the first kept record within 0.1 s of the start is at 0; a record
+  at the time of the one before it is dropped (the reference keeps it, so
+  its later chapter names shift by one); when the first kept record does
+  not start the title, a chapter is added at 0 (record 0 when it was
+  dropped, else "Chapter 00" when the setting asks). The master's key frame
+  at, or up to 0.4 s before, each mark carries the chapter flag (one per
+  frame; empty markers take none); the k-th flagged frame starts chapter k,
+  which ends where the next starts, the last at the title's end; fewer than
+  two -> no chapters. DVD marks by byte position (the first picture past a
+  cell's position) come with the DVD wiring.
 
 ## 8. Stage 4: junction per output track
 
