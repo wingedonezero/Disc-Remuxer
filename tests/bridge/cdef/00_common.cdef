@@ -35,3 +35,5 @@ int rand(void);
 struct AVAES *av_aes_alloc(void);
 int av_aes_init(struct AVAES *a, const uint8_t *key, int key_bits, int decrypt);
 void av_aes_crypt(struct AVAES *a, uint8_t *dst, const uint8_t *src, int count, uint8_t *iv, int decrypt);
+
+const struct AVInputFormat *av_find_input_format(const char *short_name);
