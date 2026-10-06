@@ -430,7 +430,7 @@ static const DRAudioRules audio_latm = {
  * unit; it lasts its samples (rate / 600 on DVD-Video, rate / 1200 on HD
  * DVD) and leaves as little-endian PCM. */
 
-static int lpcm_unit_size(const uint8_t *buf, int avail, void *state)
+static int lpcm_unit_size(void *log, const uint8_t *buf, int avail, int final, void *state)
 {
     const DRLpcm *p = state;
 
@@ -560,7 +560,8 @@ static const DRCodec codecs[] = {
       .verify = verify_mpegvideo },
     { .id = AV_CODEC_ID_MPEG2VIDEO, .name = "mpeg2video", .anchor = anchor_mpegvideo, .video = &ff_discrip_video_mpv,
       .verify = verify_mpegvideo },
-    { .id = AV_CODEC_ID_VC1, .name = "vc1", .anchor = anchor_vc1, .video = &ff_discrip_video_vc1, .verify = verify_vc1 },
+    { .id = AV_CODEC_ID_VC1, .name = "vc1", .anchor = anchor_vc1, .video = &ff_discrip_video_vc1, .verify = verify_vc1,
+      .unit_size = ff_discrip_vc1_unit_size, .resync = ff_discrip_vc1_resync, .cut_state_size = sizeof(DRVc1Cut) },
     { .id = AV_CODEC_ID_AC3, .name = "ac3", .anchor = anchor_unit, .check = check_ac3, .audio = &audio_ac3,
       .verify = verify_ac3 },
     { .id = AV_CODEC_ID_EAC3, .name = "eac3", .anchor = anchor_unit, .check = check_eac3, .audio = &audio_eac3,

@@ -145,14 +145,14 @@ static int control(const uint8_t *b, int64_t len, Control *c)
 /* The cutter (DRCodec.unit_size): with 10 bytes or more, a unit starts only
  * where the header states a size of at least 9 and a first control sequence
  * that leaves 5 bytes; the unit is as long as its size. */
-int ff_discrip_spu_unit_size(const uint8_t *buf, int avail, void *state)
+int ff_discrip_spu_unit_size(void *log, const uint8_t *buf, int avail, int final, void *state)
 {
     Header h;
 
     if (avail >= 10) {
         header(buf, avail, &h);
         if (h.size < 9 || h.dcsq > h.size - 5)
-            return -1;
+            return DR_CUT_NONE;
     }
     if (!header(buf, avail, &h) || h.size > avail)
         return 0;

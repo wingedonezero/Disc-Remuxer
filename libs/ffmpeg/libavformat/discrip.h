@@ -151,13 +151,19 @@ typedef struct DRCodec {
     /** Video rules; NULL for audio / subtitles (or while not implemented). */
     const DRVideoRules *video;
     /** The core's own unit cutter, used instead of FFmpeg's parser where the
-     *  parser drops bytes the reference keeps. unit_size: the size of the
-     *  unit at buf (> 0), 0 when more bytes are needed, < 0 when no unit
-     *  starts there; resync: the offset of the next possible unit start in
-     *  buf, -1 when none. NULL: FFmpeg's parser. state: the cutter's codec
-     *  state (ff_discrip_cutter_set_state), NULL when none. */
-    int (*unit_size)(const uint8_t *buf, int avail, void *state);
+     *  parser drops bytes the reference keeps or groups them differently.
+     *  unit_size: the size of the unit at buf (> 0), 0 when more bytes are
+     *  needed, DR_CUT_NONE when no unit starts there, another negative
+     *  AVERROR when the stream cannot be cut (logged; the track fails);
+     *  final: no more bytes will come. resync: the offset of the next
+     *  possible unit start in buf, -1 when none. NULL: FFmpeg's parser.
+     *  state: the cutter's codec state (ff_discrip_cutter_set_state, or the
+     *  cutter's own one of cut_state_size bytes), NULL when none. */
+    int (*unit_size)(void *log, const uint8_t *buf, int avail, int final, void *state);
     int (*resync)(const uint8_t *buf, int avail);
+    /** > 0: the cutter keeps a zeroed state of this size for unit_size
+     *  (which resets it when it returns anything but 0). */
+    int cut_state_size;
     /** The check of an output unit (stage 5): DR_UNIT_OK, DR_UNIT_BAD (sync
      *  word or size wrong), DR_UNIT_CRC (a checksum fails). NULL: not
      *  checked. */
@@ -165,6 +171,9 @@ typedef struct DRCodec {
 } DRCodec;
 
 enum { DR_UNIT_OK = 0, DR_UNIT_BAD = 1, DR_UNIT_CRC = 2 };
+
+/** DRCodec.unit_size: no unit starts at buf. */
+#define DR_CUT_NONE (-1)
 
 /** The codec table entry of a codec, or NULL (the codec is not supported). */
 const DRCodec *ff_discrip_codec(enum AVCodecID id);
@@ -675,7 +684,7 @@ extern const DRAudioRules ff_discrip_audio_mlp;
 extern const DRVideoRules ff_discrip_video_mpv;
 extern const DRVideoRules ff_discrip_video_vc1;
 int ff_discrip_mlp_check(const uint8_t *data, int size);
-int ff_discrip_mlp_unit_size(const uint8_t *buf, int avail, void *state);
+int ff_discrip_mlp_unit_size(void *log, const uint8_t *buf, int avail, int final, void *state);
 int ff_discrip_mlp_resync(const uint8_t *buf, int avail);
 int ff_discrip_spu_check(const uint8_t *data, int size);
 int ff_discrip_spu_verify(const uint8_t *data, int size);
@@ -683,7 +692,16 @@ int ff_discrip_mlp_verify(const uint8_t *data, int size);
 /** An AU's input timing (16 bits); returns the samples per AU its major
  *  sync states, 0 when it has none. */
 int ff_discrip_mlp_timing(const uint8_t *data, int size, int *timing);
-int ff_discrip_spu_unit_size(const uint8_t *buf, int avail, void *state);
+int ff_discrip_spu_unit_size(void *log, const uint8_t *buf, int avail, int final, void *state);
+int ff_discrip_vc1_unit_size(void *log, const uint8_t *buf, int avail, int final, void *state);
+int ff_discrip_vc1_resync(const uint8_t *buf, int avail);
+/** The VC-1 cutter's state: where its scan of the unit at the window's
+ *  start stands. */
+typedef struct DRVc1Cut {
+    int scan;              /**< next offset to look for a start code at */
+    int part;              /**< the part of the unit the last start code began */
+    int stage;             /**< the header stage reached (part 0) */
+} DRVc1Cut;
 int ff_discrip_spu_resync(const uint8_t *buf, int avail);
 
 #endif /* AVFORMAT_DISCRIP_H */

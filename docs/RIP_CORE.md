@@ -56,9 +56,14 @@ track within its first 2000 sectors minus 300 s; a PTS below it gets +2^33.
 - A unit gets a record's PTS when it is the FIRST unit that starts inside
   that record's bytes. Every later unit of the same payload has no
   timestamp. A record that ends before the next unit starts is dropped.
-- The cutter is FFmpeg's parser where it cuts the same; a prefixed copy where
-  it must differ (e.g. MPEG-2 GOP user data as a separate unit, VC-1 field
-  pictures paired).
+- The cutter is FFmpeg's parser where it cuts the same; the core's own unit
+  rule where it must differ (TrueHD / MLP, LPCM, sub-pictures, VC-1). VC-1:
+  a unit is one frame with the headers before it and the user data after it
+  (frame / field user data stays with its frame; FFmpeg's parser starts the
+  next unit there); an end of sequence stays only after a second field; an
+  end of sequence without one, and headers not followed by a frame, are units
+  without a frame, left out; a slice, a field or user data where none can be
+  stops the track.
 
 ## 4. The codec table
 
