@@ -425,7 +425,7 @@ static const DRAudioRules audio_latm = {
 static const DRCodec codecs[] = {
     { AV_CODEC_ID_MPEG1VIDEO,   "mpeg1video",   anchor_mpegvideo, NULL, NULL, &ff_discrip_video_mpv },
     { AV_CODEC_ID_MPEG2VIDEO,   "mpeg2video",   anchor_mpegvideo, NULL, NULL, &ff_discrip_video_mpv },
-    { AV_CODEC_ID_VC1,          "vc1",          anchor_vc1       },
+    { AV_CODEC_ID_VC1,          "vc1",          anchor_vc1, NULL, NULL, &ff_discrip_video_vc1 },
     { AV_CODEC_ID_AC3,          "ac3",          anchor_unit, check_ac3,  &audio_ac3  },
     { AV_CODEC_ID_EAC3,         "eac3",         anchor_unit, check_eac3, &audio_eac3 },
     { .id = AV_CODEC_ID_TRUEHD, .name = "truehd", .anchor = anchor_unit, .check = ff_discrip_mlp_check,

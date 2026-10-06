@@ -45,6 +45,7 @@ typedef struct VUnit {
     int64_t  dec;                   /* decode position in fields */
     int64_t  rank;
     int      adjusted;              /* position already includes the offset (repair) */
+    int      key;                   /* key frame by the codec's own rule */
 } VUnit;
 
 typedef struct VQ {
@@ -63,6 +64,8 @@ struct DRVideo {
 
     VUnit               held;      /* a field picture waiting for its second field */
     int                 have_held;
+    VQ                  c;         /* units before the counted-order stage (counted_order codecs) */
+    uint32_t            ctr;       /* the display-order counter */
     VQ                  g;         /* units before the group stage */
     VQ                  q;         /* units with positions, before timing */
     int                 finished;
@@ -180,7 +183,7 @@ static int collect(DRVideo *v, int *pend, int *count, int *consumed)
             return HAVE;
         }
     }
-    return v->finished ? NONE : WAIT;
+    return v->finished && !v->c.n ? NONE : WAIT;
 }
 
 /* One group: the pictures from one I picture to the next (at most 448), with
@@ -275,7 +278,7 @@ static void set_scale(DRVideo *v)
 /* Units in q, or whether more will come: HAVE / NONE / WAIT for unit k. */
 static int need(DRVideo *v, int k)
 {
-    return k < v->q.n ? HAVE : (v->finished && !v->g.n) ? NONE : WAIT;
+    return k < v->q.n ? HAVE : (v->finished && !v->g.n && !v->c.n) ? NONE : WAIT;
 }
 
 /* The frame rate from the pictures' PES times when the codec gives none:
@@ -520,7 +523,7 @@ static int assign(DRVideo *v, int n, int no_check)
                 v->e8 = p;
         }
         u.f.flags &= ~(DR_F_KEY | DR_F_DISCARD | DR_F_BATCH);
-        if (u.type == DR_PIC_I)
+        if (u.type == DR_PIC_I || u.key)
             u.f.flags |= DR_F_KEY;
         else if (u.type == DR_PIC_B)
             u.f.flags |= DR_F_DISCARD;
@@ -691,10 +694,70 @@ no_timed:
     }
 }
 
+/* Counted display order: from a reference picture on, the B pictures that
+ * follow it (at most 36 pictures) are numbered first, then the reference
+ * picture; an I picture restarts the count; a leading B picture is numbered
+ * on its own. Units that are no picture move on with the pictures. */
+static int counted(DRVideo *v)
+{
+    int pend[37], count = 0, consumed = 0, k, ret;
+
+    for (;;) {
+        while (consumed < v->c.n && !is_pic(at(&v->c, consumed)->type))
+            consumed++;
+        if (consumed == v->c.n) {
+            if (!v->finished || !consumed)
+                return v->finished ? NONE : WAIT;
+            goto move;
+        }
+        break;
+    }
+    pend[count++] = consumed++;
+    if (at(&v->c, pend[0])->type == DR_PIC_B) {
+        at(&v->c, pend[0])->order = v->ctr++ & 0xFFFFFF;
+        goto move;
+    }
+    if (at(&v->c, pend[0])->type == DR_PIC_I)
+        v->ctr = 0;
+    for (k = 2; k != 0x25; k++) {
+        while (consumed < v->c.n && !is_pic(at(&v->c, consumed)->type))
+            consumed++;
+        if (consumed == v->c.n) {
+            if (!v->finished)
+                return WAIT;
+            break;
+        }
+        pend[count++] = consumed++;
+        if (at(&v->c, pend[count - 1])->type != DR_PIC_B)
+            break;
+    }
+    if (count >= 2 && at(&v->c, pend[count - 1])->type != DR_PIC_B) {
+        consumed = pend[count - 1];    /* the next reference picture stays */
+        count--;
+    }
+    for (int i = 1; i < count; i++)
+        at(&v->c, pend[i])->order = v->ctr++ & 0xFFFFFF;
+    at(&v->c, pend[0])->order = v->ctr++ & 0xFFFFFF;
+move:
+    for (int i = 0; i < consumed; i++) {
+        if ((ret = q_push(&v->g, at(&v->c, 0))) < 0)
+            return ret;
+        q_pop(&v->c);
+    }
+    return HAVE;
+}
+
 static int run(DRVideo *v)
 {
     int r;
 
+    while (v->rules->counted_order) {
+        r = counted(v);
+        if (r < 0)
+            return r;
+        if (r != HAVE)
+            break;
+    }
     for (;;) {
         r = group(v);
         if (r < 0)
@@ -724,6 +787,11 @@ static int run(DRVideo *v)
 
 /* ---- units in ---- */
 
+static int to_next(DRVideo *v, VUnit *u)
+{
+    return q_push(v->rules->counted_order ? &v->c : &v->g, u);
+}
+
 static int unit_in(DRVideo *v, VUnit *u)
 {
     v->st.units++;
@@ -734,10 +802,10 @@ static int unit_in(DRVideo *v, VUnit *u)
             v->held.fields = 2;
             v->have_held   = 0;
             av_log(v->log, AV_LOG_WARNING, "Rip core: video: a field picture without its second field\n");
-            if ((ret = q_push(&v->g, &v->held)) < 0)
+            if ((ret = to_next(v, &v->held)) < 0)
                 return ret;
         }
-        return q_push(&v->g, u);
+        return to_next(v, u);
     }
     if (!v->have_held) {
         v->held      = *u;
@@ -761,7 +829,7 @@ static int unit_in(DRVideo *v, VUnit *u)
         ff_discrip_frame_unref(b);
         v->held.fields = 2;
         v->have_held   = 0;
-        if ((ret = q_push(&v->g, &v->held)) < 0)
+        if ((ret = to_next(v, &v->held)) < 0)
             return ret;
     }
     return 0;
@@ -787,6 +855,7 @@ int ff_discrip_video_unit(void *opaque, const DRUnit *du)
     u.type   = pic.type;
     u.order  = pic.order;
     u.fields = pic.fields;
+    u.key    = pic.key;
     if (is_pic(u.type) && u.fields <= 0) {
         av_log(v->log, AV_LOG_ERROR, "Rip core: video: a picture without a duration\n");
         ff_discrip_frame_unref(&u.f);
@@ -806,14 +875,15 @@ int ff_discrip_video_flush(DRVideo *v)
     if (v->have_held) {
         v->held.fields = 2;
         v->have_held   = 0;
-        if ((ret = q_push(&v->g, &v->held)) < 0)
+        if ((ret = to_next(v, &v->held)) < 0)
             return ret;
     }
     v->finished = 1;
     if ((ret = run(v)) < 0)
         return ret;
-    if (v->q.n || v->g.n)
-        av_log(v->log, AV_LOG_WARNING, "Rip core: video: %d units left at the end of the segment\n", v->q.n + v->g.n);
+    if (v->q.n || v->g.n || v->c.n)
+        av_log(v->log, AV_LOG_WARNING, "Rip core: video: %d units left at the end of the segment\n",
+               v->q.n + v->g.n + v->c.n);
     if (v->invalid && v->started)
         event(v, DR_EV_VIDEO_INVALID, grid(v, v->e8), 0, v->invalid);
     v->st.invalid = v->invalid;
@@ -876,6 +946,7 @@ void ff_discrip_video_close(DRVideo **vp)
         return;
     if (v->have_held)
         ff_discrip_frame_unref(&v->held.f);
+    q_free(&v->c);
     q_free(&v->g);
     q_free(&v->q);
     if (v->priv && v->rules->close)

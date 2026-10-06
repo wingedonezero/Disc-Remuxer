@@ -76,6 +76,7 @@ typedef struct DRPicture {
     int type;           /**< DRPictureType */
     int order;          /**< display-order number (wraps at the codec's period) */
     int fields;         /**< duration in fields (2 = one frame) */
+    int key;            /**< a key frame even when not an I picture (e.g. VC-1 sequence header + entry point) */
 } DRPicture;
 
 /* What the core needs to know about a video codec. */
@@ -84,6 +85,10 @@ typedef struct DRVideoRules {
      *  (ff_discrip_video_set_rate) from headers it carries; < 0 on failure. */
     int  (*picture)(DRVideo *v, const DRFrame *unit, DRPicture *pic);
     int    order_period;   /**< wrap period of the display-order number */
+    /** 1: the codec carries no display-order number; it is counted: B
+     *  pictures after a reference picture are numbered before it, I
+     *  pictures restart the count (VC-1). */
+    int    counted_order;
     size_t priv_size;
     void (*close)(void *priv);
 } DRVideoRules;
@@ -383,6 +388,7 @@ void ff_discrip_video_close(DRVideo **v);
 /* rules of codecs in their own files */
 extern const DRAudioRules ff_discrip_audio_mlp;
 extern const DRVideoRules ff_discrip_video_mpv;
+extern const DRVideoRules ff_discrip_video_vc1;
 int ff_discrip_mlp_check(const uint8_t *data, int size);
 int ff_discrip_mlp_unit_size(const uint8_t *buf, int avail);
 int ff_discrip_mlp_resync(const uint8_t *buf, int avail);
