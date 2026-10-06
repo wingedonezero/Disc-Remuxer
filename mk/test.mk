@@ -15,11 +15,18 @@ $(VENV)/.installed: $(ROOT)/tests/requirements.txt
 	$(VENV)/bin/pip install -q -r $<
 	touch $@
 
-$(BRIDGE)/.built: $(VENV)/.installed $(BUILD)/ffmpeg/.installed $(wildcard $(ROOT)/tests/bridge/*.* $(ROOT)/tests/bridge/cdef/*)
+# libdvdnav's VM driven directly (its private headers and config.h, which
+# cannot meet FFmpeg's in one file)
+$(BRIDGE)/dvdnav_selftest.o: $(ROOT)/tests/bridge/dvdnav_selftest.c $(BUILD)/dvdnav/libdvdnav.a
+	@mkdir -p $(BRIDGE)
+	$(CC) $(LIB_CFLAGS) $(DVDNAV_CFLAGS) -c $< -o $@
+
+$(BRIDGE)/.built: $(VENV)/.installed $(BUILD)/ffmpeg/.installed $(BRIDGE)/dvdnav_selftest.o \
+                  $(wildcard $(ROOT)/tests/bridge/*.* $(ROOT)/tests/bridge/cdef/*)
 	@mkdir -p $(BRIDGE)
 	BRIDGE_CFLAGS="$$(sed -n 's/^CPPFLAGS=//p' $(BUILD)/ffmpeg/build/ffbuild/config.mak) -DHAVE_AV_CONFIG_H -std=c17 \
 	  -I$(FFMPEG_SRC) -I$(BUILD)/ffmpeg/build $$($(TOOL_PC) pkg-config --static --cflags $(BRIDGE_PKGS) dvdnav dvdread)" \
-	BRIDGE_LIBS="$$($(TOOL_PC) pkg-config --static --libs $(BRIDGE_PKGS)) -lpthread" \
+	BRIDGE_LIBS="$(BRIDGE)/dvdnav_selftest.o $$($(TOOL_PC) pkg-config --static --libs $(BRIDGE_PKGS)) -lpthread" \
 	$(PY) $(ROOT)/tests/bridge/build_bridge.py $(BRIDGE)
 	touch $@
 

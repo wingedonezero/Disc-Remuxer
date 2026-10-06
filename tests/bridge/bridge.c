@@ -5,6 +5,7 @@
  */
 
 #include <pthread.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "libavcodec/avcodec.h"
@@ -18,6 +19,18 @@
 #include "libavformat/hddvd_internal.h"
 
 #include <dvdread/dvd_udf.h>
+#include <dvdcss/dvdcss.h>
+
+/* dvdnav_selftest.c and libdvdnav's VM (src/vm/rand.h) */
+uint32_t vm_rand_next(uint32_t *state);
+void vm_rand_seed(uint32_t *state, uint32_t value);
+int vm_rand_shuffle(uint32_t state, unsigned int bound, unsigned int step);
+int dr_selftest_vm_exec(const uint8_t command[8], int nr_of_programs, int pgN,
+                        unsigned *failures, const char **first);
+int dr_selftest_vm_run(const uint8_t *commands, int nb_commands, int nr_of_programs, int pgN,
+                       uint32_t ticks_between, int (*rnd)(void *), void *rnd_priv,
+                       uint16_t gprm[16], int *pg_n, unsigned *failures,
+                       unsigned *ignored, int *ign_reg, int *ign_value);
 
 typedef void (*tb_log_sink)(int level, const char *line);
 
@@ -126,4 +139,21 @@ static int tb_parser_run(const char *codec_name, const uint8_t *const *data,
     av_parser_close(parser);
     avcodec_free_context(&avctx);
     return 0;
+}
+
+/* libdvdcss: its log callback takes a va_list, which cannot reach Python;
+ * the shim passes the level and the format string on. */
+void tb_py_css_log(void *p_log, int level, const char *format);
+
+static void css_log(void *p_log, int level, const char *format, va_list args)
+{
+    tb_py_css_log(p_log, level, format);
+}
+
+/* dvdcss_open_stream_uncached() with the log going to tb_py_css_log (with_log)
+ * or nowhere. */
+static dvdcss_t tb_dvdcss_open_stream_uncached(void *p_stream, dvdcss_stream_cb *p_stream_cb,
+                                               int with_log, void *p_log)
+{
+    return dvdcss_open_stream_uncached(p_stream, p_stream_cb, with_log ? css_log : NULL, p_log);
 }

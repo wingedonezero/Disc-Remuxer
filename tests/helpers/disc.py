@@ -189,11 +189,11 @@ def free_file(f):
     lib.ff_discio_file_free(ffi.new("DiscIOFile **", f))
 
 
-def env_or_skip(*names):
-    """The values of environment variables a real-disc test needs; skips the
-    test (shown as SKIPPED) when one is not set."""
+def env_or_skip(*names, need="a real disc"):
+    """The values of environment variables a test needs (a real disc, by
+    default); skips the test (shown as SKIPPED) when one is not set."""
     values = [os.environ.get(n) for n in names]
     missing = [n for n, v in zip(names, values) if not v]
     if missing:
-        pytest.skip(f"needs a real disc: {', '.join(missing)} not set")
+        pytest.skip(f"needs {need}: {', '.join(missing)} not set")
     return values[0] if len(values) == 1 else values

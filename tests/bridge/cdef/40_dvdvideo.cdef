@@ -1,0 +1,170 @@
+/* libavformat/dvdvideo_internal.h: the DVD-Video source, disc, VOBUs, cells,
+   navigation scan and title plan. */
+
+typedef struct DVDVideoRand {
+    uint32_t state[31];
+    int      front;
+} DVDVideoRand;
+
+typedef struct DVDVideoSource DVDVideoSource;
+
+int ff_dvdvideo_source_open(void *log, const char *path, const DiscIOImageOptions *opts, int attempts,
+                            DVDVideoSource **out);
+void ff_dvdvideo_source_close(DVDVideoSource **src);
+dvd_reader_filesystem_h *ff_dvdvideo_source_files(DVDVideoSource *src);
+int ff_dvdvideo_source_descramble(DVDVideoSource *src, int vtsn, int menu, uint8_t *block);
+int ff_dvdvideo_source_vob_read(DVDVideoSource *src, int vtsn, int menu, int64_t sector, uint8_t *buf,
+                                int attempts);
+
+int ff_dvdvideo_css_scrambled_pes(const uint8_t *sec);
+int ff_dvdvideo_css_content_valid(const uint8_t *sec);
+int ff_dvdvideo_css_can_test(const uint8_t *sec);
+
+typedef struct DVDVideoDisc {
+    void           *log;
+    DVDVideoSource *src;
+    dvd_reader_t   *dvdread;
+    ...;
+} DVDVideoDisc;
+
+int ff_dvdvideo_disc_open(void *log, DVDVideoSource *src, DVDVideoDisc **disc);
+void ff_dvdvideo_disc_close(DVDVideoDisc **disc);
+const pgc_t *ff_dvdvideo_disc_pgc(const DVDVideoDisc *d, int vtsn, int pgcn);
+const cell_playback_t *ff_dvdvideo_disc_cell(const DVDVideoDisc *d, int vtsn, int pgcn, int celln);
+
+#define DVDVIDEO_VOBU_END_OF_CELL ...
+
+typedef struct DVDVideoVobuStep {
+    uint32_t next;
+    uint32_t len;
+} DVDVideoVobuStep;
+
+int ff_dvdvideo_vobu_step(DVDVideoDisc *d, int vtsn, const cell_playback_t *cell, uint32_t sector,
+                          DVDVideoVobuStep *step);
+
+int ff_dvdvideo_cell_rejected(DVDVideoDisc *d, int vtsn, const pgc_t *pgc, int i, int quick, int prev);
+int ff_dvdvideo_cell_cmd_may_link(const pgc_t *pgc, int cmd_nr);
+int ff_dvdvideo_pgc_rejection(DVDVideoDisc *d, int vtsn, int pgcn, const pgc_t *pgc, int *reason);
+
+void ff_dvdvideo_rand_init(DVDVideoRand *r, uint32_t seed);
+int ff_dvdvideo_rand_next(void *r);
+
+typedef struct DVDVideoScanResult {
+    char     name[16];
+    int      title;
+    int      pgcn;
+    uint8_t *cells;
+    int      nb_cells;
+} DVDVideoScanResult;
+
+typedef struct DVDVideoScan {
+    DVDVideoScanResult *results;
+    int                 nb_results;
+    int                 failed;
+    char                failure[512];
+    uint8_t             entered[100];
+} DVDVideoScan;
+
+typedef void (*DVDVideoScanTrace)(void *opaque, const char *line);
+int ff_dvdvideo_scan(void *log, DVDVideoDisc *disc, DVDVideoScanTrace trace, void *trace_opaque,
+                     DVDVideoScan **scan);
+void ff_dvdvideo_scan_free(DVDVideoScan **scan);
+extern "Python" void tb_py_scan_trace(void *opaque, const char *line);
+
+#define DVDVIDEO_INVALID_SEGMENT ...
+
+enum DVDVideoCellMode {
+    DVDVIDEO_CELLS_AUTO,
+    DVDVIDEO_CELLS_WALK,
+    DVDVIDEO_CELLS_TRIM,
+    DVDVIDEO_CELLS_WALK_TRIM,
+};
+
+enum DVDVideoTitleOrder {
+    DVDVIDEO_ORDER_AUTO,
+    DVDVIDEO_ORDER_SCAN_FIRST,
+    DVDVIDEO_ORDER_TABLE,
+};
+
+enum DVDVideoNotSelected {
+    DVDVIDEO_TITLE_SELECTABLE,
+    DVDVIDEO_TITLE_SHORT,
+    DVDVIDEO_TITLE_FAKE,
+};
+
+typedef struct DVDVideoChapter {
+    int      pgcn;
+    int      pgn;
+    int      cell;
+    uint32_t segment;
+    uint64_t offset;
+    uint64_t time;
+} DVDVideoChapter;
+
+typedef struct DVDVideoExtent {
+    uint32_t logical;
+    uint32_t sector;
+    uint32_t count;
+} DVDVideoExtent;
+
+typedef struct DVDVideoSegment {
+    DVDVideoExtent *extents;
+    int             nb_extents;
+    int             last_cell;
+    int           (*runs)[2];
+    int             nb_runs;
+    uint64_t        size;
+    char            label[256];
+} DVDVideoSegment;
+
+typedef struct DVDVideoTitle {
+    int              index;
+    char             name[16];
+    int              title_type;
+    int              vtsn, vts_ttn;
+    int              angle;
+    int              angles;
+    int              pgcn;
+    DVDVideoChapter *chapters;
+    int              nb_chapters;
+    int              scan;
+    uint8_t          audio[8];
+    int              nb_audio;
+    int              audio_mask;
+    uint8_t          subp[64];
+    int              nb_subp;
+    int             *cells;
+    int              nb_cells;
+    DVDVideoSegment *segments;
+    int              nb_segments;
+    int              segments_built;
+    uint32_t         declared_secs;
+    uint32_t         measured_secs;
+    uint32_t         nav_invalid_count;
+    int              not_selected;
+} DVDVideoTitle;
+
+typedef struct DVDVideoTitleEvent {
+    int  kind;
+    char args[128];
+} DVDVideoTitleEvent;
+
+typedef struct DVDVideoTitlePlan {
+    DVDVideoTitle      *titles;
+    int                 nb_titles;
+    DVDVideoTitleEvent *events;
+    int                 nb_events;
+} DVDVideoTitlePlan;
+
+typedef struct DVDVideoTitleOptions {
+    int cell_mode;
+    int title_order;
+    int min_length;
+} DVDVideoTitleOptions;
+
+int ff_dvdvideo_titles_plan(void *log, DVDVideoDisc *disc, const DVDVideoScan *scan, const DVDVideoTitleOptions *opt,
+                            DVDVideoTitlePlan **plan);
+void ff_dvdvideo_titles_free(DVDVideoTitlePlan **plan);
+const char *ff_dvdvideo_event_name(int kind);
+
+int ff_dvdvideo_check_vts(void *log, dvd_reader_t *dvd, int vtsn, const ifo_handle_t *ifo);
