@@ -1,7 +1,7 @@
 # Architecture
 
 Status: **plan agreed, being carried out** (the order of work is below;
-done: step 1). Each step moves a part to its place and is checked against
+done: steps 1, 2). Each step moves a part to its place and is checked against
 the output from before the move.
 
 ## Words
@@ -65,7 +65,7 @@ Rules:
 | `dvdvideodec.c`, `dvdvideo_*.c` | the DVD format part (no longer a demuxer of its own); its playback reading through libdvdnav (`dvdvideo_play.c`) gives way to the navigation scan + title plan, with sectors fed into `mpeg.c` |
 | `hddvddec.c`, `hddvd_*.c` | the HD DVD format part `ff_disc_hddvd` (step 1, done: no demuxer of its own any more) |
 | `hddvd_tracks.c` | stays (stream table, languages); its content probe reads through the line instead of its own pack reader and frame cutter |
-| `discrip_pack.c`, `discrip_ps.c` | into `mpeg.c`: option for disc sectors (one pack per 2048-byte sector, the sector rules) and the LPCM header length (3 / 5 bytes, always LPCM) |
+| `discrip_pack.c`, `discrip_ps.c` (step 2, done) | moved into `mpeg.c`: option `disc` (one pack per 2048-byte sector, the sector rules) and `lpcm_header` (3 / 5 bytes, always LPCM) |
 | `discrip_units.c` (the cutter stage) | goes: FFmpeg's read loop (`demux.c`) runs the parsers; where the frame / timestamp pairing must differ for discs, that goes into `demux.c` / `parser.c` behind the disc flag |
 | `discrip_mpv.c` | the picture rules into `mpegvideo_parser.c` where they decide frames; what only the video timing needs stays with the title timeline |
 | `discrip_vc1.c` | the frame cutting rules (end-of-sequence, user data with its frame) into `vc1_parser.c`; picture timing stays with the title timeline |
@@ -93,8 +93,8 @@ their logs for changed warnings).
    disc, every title, its streams and chapters) comes from one open; the
    stream details in it (bit rate, channels, frame size, ...) are filled once
    the start of each title is read for them.
-2. **Demuxer:** `mpeg.c` gets the disc options; the HD DVD part feeds it
-   directly; `discrip_pack.c` and `discrip_ps.c` go.
+2. **Demuxer (done):** `mpeg.c` got the disc options; the HD DVD part feeds
+   it; `discrip_pack.c` and `discrip_ps.c` are gone.
 3. **Parsers, one codec at a time:** AC-3, E-AC-3, DTS, MPEG audio (FFmpeg's
    parsers already cut these; only where they run changes), then MPEG-2
    video, VC-1, TrueHD / MLP, sub-pictures, LPCM; `discrip_units.c` goes at
@@ -113,11 +113,11 @@ Open points (decided on the way): the parsers' disc flag (a new
 files keep the `discrip_` prefix or are renamed once only the timeline is
 left.
 
-## How a disc is read today (before the order above)
+## How a disc is read today (the order above part-way done)
 
 The program opens `disc`, which hands HD DVD images to the HD DVD part. The
 HD DVD part reads a title's blocks through the readers and decryption, feeds
-them into `discrip_ps` (its own MPEG-PS demuxer on `discrip_pack`), and runs
+them into FFmpeg's `mpeg.c` as disc sectors (option `disc`), and runs
 the packets through the rip core (`discrip_*`: its cutter stage runs FFmpeg's
 parsers for MPEG video, AC-3 / E-AC-3, DTS, MPEG audio and AAC, its own
 cutters for VC-1, TrueHD / MLP, LPCM and sub-pictures). The DVD-Video

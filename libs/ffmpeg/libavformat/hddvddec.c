@@ -3,9 +3,9 @@
  * On the disc the disc layer opened it reads the title set's structure
  * (VTI), the playlists, the AACS keys, the title plan and the titles'
  * tracks; one title's tracks become the streams. Its EVOB clips are read in
- * order through the disc formats' copy of FFmpeg's MPEG-PS demuxer
- * (discrip_ps.c; raw PES payloads) into the shared rip core, whose output
- * frames are the packets.
+ * order through FFmpeg's MPEG-PS demuxer as disc sectors (mpeg.c, option
+ * disc; raw PES payloads) into the shared rip core, whose output frames are
+ * the packets.
  *
  * This file is part of FFmpeg.
  *
@@ -127,7 +127,7 @@ static int subdemux_read(void *opaque, uint8_t *buf, int buf_size)
 static int subdemux_open(AVFormatContext *s)
 {
     HDDVDDemuxContext *c = ff_disc_part(s);
-    extern const FFInputFormat ff_discrip_ps_demuxer;
+    extern const FFInputFormat ff_mpegps_demuxer;
     AVDictionary *opts = NULL;
     int ret;
 
@@ -152,10 +152,11 @@ static int subdemux_open(AVFormatContext *s)
     c->mpeg_ctx->interrupt_callback = s->interrupt_callback;
     c->mpeg_ctx->pb = &c->mpeg_pb.pub;
     c->mpeg_ctx->io_open = NULL;
-    /* HD DVD's LPCM audio frame header is 5 bytes */
-    if ((ret = av_dict_set(&opts, "lpcm_header", "5", 0)) < 0)
+    /* disc sectors; HD DVD's LPCM audio frame header is 5 bytes */
+    if ((ret = av_dict_set(&opts, "disc", "1", 0)) < 0 ||
+        (ret = av_dict_set(&opts, "lpcm_header", "5", 0)) < 0)
         return ret;
-    ret = avformat_open_input(&c->mpeg_ctx, "", &ff_discrip_ps_demuxer.p, &opts);
+    ret = avformat_open_input(&c->mpeg_ctx, "", &ff_mpegps_demuxer.p, &opts);
     av_dict_free(&opts);
     return ret;
 }
@@ -209,7 +210,7 @@ static void hddvd_close(AVFormatContext *s)
     ff_hddvd_vti_free(&c->vti);
 }
 
-/* The id the disc pack reader (discrip_ps.c) gives a track's packets: video stream_id
+/* The id the disc sector reader (mpeg.c) gives a track's packets: video stream_id
  * 0xE0 (MPEG-2) / 0xE2 (AVC) / 0xFD with extension 0x55 (VC-1); private
  * stream 1 sub-streams AC-3 0x80+n, DTS 0x88+n, LPCM 0xA0+n, MLP 0xB0+n,
  * Dolby Digital Plus 0xC0+n, sub-pictures 0x20+n; MPEG audio stream_id

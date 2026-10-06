@@ -27,12 +27,13 @@ def tb_py_ps_packet(opaque, id, codec, data, size, pts):
     ffi.from_handle(opaque).append((id, codec, bytes(ffi.buffer(data, size)), pts))
 
 
-def ps_read(stream, ours=True, lpcm_header=3):
-    """The packets an MPEG-PS demuxer gives over stream (bytes): ours
-    (discrip_ps.c, with the LPCM header length) or FFmpeg's mpeg.c. (return
-    code or packet count, [(stream id, codec id, payload, pts)])."""
+def ps_read(stream, disc=True, lpcm_header=3):
+    """The packets FFmpeg's MPEG-PS demuxer (mpeg.c) gives over stream
+    (bytes): as disc sectors (option disc, with the LPCM header length) or as
+    an ordinary program stream. (return code or packet count, [(stream id,
+    codec id, payload, pts)])."""
     data = ffi.new("uint8_t[]", stream)
     out = []
     h = ffi.new_handle(out)
-    ret = lib.tb_ps_read(1 if ours else 0, lpcm_header, data, len(stream), lib.tb_py_ps_packet, h)
+    ret = lib.tb_ps_read(1 if disc else 0, lpcm_header, data, len(stream), lib.tb_py_ps_packet, h)
     return ret, out

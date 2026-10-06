@@ -59,19 +59,20 @@
 #include "disclang.h"
 #include "discrip.h"
 #include "hddvd_internal.h"
+#include "mpeg.h"
 
 #define PACK            2048
 #define PTS_SCAN_PACKS  2000    /* packs searched for the stream's first PTS */
 #define PROBE_FRAMES    4
 #define RESYNC_GIVE_UP  0xa001  /* bytes without a frame start after which the data is dropped */
 
-/* ---- one pack of an EVOB: discrip_pack.c ---- */
+/* ---- one pack of an EVOB: mpeg.c's disc sectors ---- */
 
-typedef DRPesPacket Pkt;
+typedef MpegPsDiscPacket Pkt;
 
 static int pack_packet(const uint8_t *s, int *off, Pkt *p, int lpcm5)
 {
-    return ff_discrip_pack_packet(s, off, p, lpcm5);
+    return ff_mpegps_disc_packet(s, off, p, lpcm5);
 }
 
 /* ---- AC-3 / E-AC-3 frames (ATSC A/52, Annex E) ---- */
@@ -631,12 +632,12 @@ static int probe_deliver(Probe *p, const uint8_t *sec, const Pkt *k)
 
 /* One pack of the stream: its packets of the probed stream go to the unit
  * cutter. A pack holds at most 2 packets unless one is MPEG audio. */
-static int probe_packet(void *opaque, const uint8_t *sec, const DRPesPacket *k)
+static int probe_packet(void *opaque, const uint8_t *sec, const MpegPsDiscPacket *k)
 {
     return probe_deliver(opaque, sec, k) ? 0 : AVERROR_INVALIDDATA;
 }
 
-/* One pack of the stream (discrip_pack.c's sector rules): its packets of the
+/* One pack of the stream (the disc sector rules of mpeg.c): its packets of the
  * probed stream go to the unit cutter. */
 static int probe_pack(Probe *p)
 {
@@ -647,10 +648,10 @@ static int probe_pack(Probe *p)
 
     if (!probe_block(p, b, sec))
         return 0;
-    ret = ff_discrip_pack_sector(sec, 1, probe_packet, p, &why, &at);
-    if (ret == DR_SECTOR_FAIL)
+    ret = ff_mpegps_disc_sector(sec, 1, probe_packet, p, &why, &at);
+    if (ret == MPEGPS_DISC_FAIL)
         av_log(p->log, AV_LOG_WARNING, "EVOB %s: block %"PRIu32" (byte %d): %s\n", p->clip->evob->name, b, at, why);
-    return ret != DR_SECTOR_FAIL && ret >= 0;
+    return ret != MPEGPS_DISC_FAIL && ret >= 0;
 }
 
 /* Read the clip from its start until the framer has its units or the clip

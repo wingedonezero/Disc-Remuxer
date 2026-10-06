@@ -169,8 +169,8 @@ static dvdcss_t tb_dvdcss_open_stream_uncached(void *p_stream, dvdcss_stream_cb 
 static const char *tb_gcrypt_header_version(void) { return GCRYPT_VERSION; }
 static const char *tb_aacs_header_version(void) { return AACS_VERSION_STRING; }
 
-/* Runs an MPEG-PS demuxer (`which`: 0 FFmpeg's mpeg.c, 1 the disc formats'
- * discrip_ps.c with its LPCM header length) over the bytes in memory, the way the disc demuxers do (no
+/* Runs FFmpeg's MPEG-PS demuxer (mpeg.c; `which`: 0 as it is, 1 as disc sectors with the
+ * LPCM header length) over the bytes in memory, the way the disc demuxers do (no
  * parsing, no filled-in times); each packet goes to cb with its stream id,
  * the codec the demuxer gave the stream, its bytes and pts. Returns the
  * number of packets, or an AVERROR. */
@@ -191,8 +191,8 @@ static int tb_mem_read(void *opaque, uint8_t *buf, int n)
 
 static int tb_ps_read(int which, int lpcm_header, const uint8_t *data, int size, tb_ps_packet_cb cb, void *opaque)
 {
-    extern const FFInputFormat ff_mpegps_demuxer, ff_discrip_ps_demuxer;
-    const FFInputFormat *f = which ? &ff_discrip_ps_demuxer : &ff_mpegps_demuxer;
+    extern const FFInputFormat ff_mpegps_demuxer;
+    const FFInputFormat *f = &ff_mpegps_demuxer;
     TbMem m = { data, size, 0 };
     AVFormatContext *s = avformat_alloc_context();
     uint8_t *buf = av_malloc(4096);
@@ -207,8 +207,10 @@ static int tb_ps_read(int which, int lpcm_header, const uint8_t *data, int size,
     }
     s->flags |= AVFMT_FLAG_CUSTOM_IO | AVFMT_FLAG_NOPARSE | AVFMT_FLAG_NOFILLIN;
     s->probesize = 0;
-    if (which)
+    if (which) {                /* disc sectors */
+        av_dict_set_int(&opts, "disc", 1, 0);
         av_dict_set_int(&opts, "lpcm_header", lpcm_header, 0);
+    }
     ret = avformat_open_input(&s, "", &f->p, &opts);
     av_dict_free(&opts);
     if (ret < 0)

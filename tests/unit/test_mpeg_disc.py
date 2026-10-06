@@ -1,10 +1,10 @@
-"""libavformat/discrip_ps.c + discrip_pack.c: the disc formats' program
-stream demuxer. The stream is read one 2048-byte sector (one pack) at a
-time with the pack rules of the reference's disc reader; payloads leave
-with FFmpeg's MPEG-PS stream ids and header cuts, except that a private
-stream 1 sub-stream 0xA0-0xAF is always linear PCM with its audio frame
-header kept (FFmpeg's mpeg.c guesses MLP from the header's dynamic range
-byte and then cuts 6 more bytes). The sectors are built byte by byte."""
+"""libavformat/mpeg.c with the option disc: the disc formats' program
+stream. The stream is read one 2048-byte sector (one pack) at a time with
+the pack rules of the reference's disc reader; payloads leave with FFmpeg's
+MPEG-PS stream ids and header cuts, except that a private stream 1
+sub-stream 0xA0-0xAF is always linear PCM with its audio frame header kept
+(mpeg.c without the option guesses MLP from the header's dynamic range byte
+and then cuts 6 more bytes). The sectors are built byte by byte."""
 
 import struct
 
@@ -76,9 +76,9 @@ def test_lpcm_is_always_lpcm_with_its_header_kept():
 
 def test_ffmpeg_s_reader_cuts_lpcm_when_the_dynamic_range_byte_is_not_0x80():
     # what the disc reader fixes: upstream takes the stream for MLP and cuts 6 bytes
-    _, pkts = ps_read(sector(private1(0xA0, bytes([0x00, 0x01, 0x23]), SAMPLES)), ours=False)
+    _, pkts = ps_read(sector(private1(0xA0, bytes([0x00, 0x01, 0x23]), SAMPLES)), disc=False)
     assert (pkts[0][1], pkts[0][2]) == (codec_id("mlp"), (bytes([0x00, 0x01, 0x23]) + SAMPLES)[6:])
-    _, pkts = ps_read(sector(private1(0xA0, bytes([0x00, 0x01, 0x80]), SAMPLES)), ours=False)
+    _, pkts = ps_read(sector(private1(0xA0, bytes([0x00, 0x01, 0x80]), SAMPLES)), disc=False)
     assert (pkts[0][1], pkts[0][2]) == (codec_id("pcm_dvd"), bytes([0x00, 0x01, 0x80]) + SAMPLES)
 
 
@@ -104,7 +104,7 @@ def test_the_other_streams_leave_as_ffmpeg_s_reader_gives_them():
     ]
     for pkt, sid, want in cases:
         stream = sector(pkt)
-        ours, theirs = payloads(stream), payloads(stream, ours=False)
+        ours, theirs = payloads(stream), payloads(stream, disc=False)
         assert ours == theirs, hex(sid)
         assert ours == (1, [(sid, want, 90000)]), hex(sid)
 
@@ -118,7 +118,7 @@ def test_vc1_takes_its_stream_id_extension():
 def test_a_pts_whose_marker_bits_are_wrong_is_no_time():
     stream = sector(pes(0xE0, SAMPLES, marker_ok=False))
     assert payloads(stream) == (1, [(0x1E0, SAMPLES, AV_NOPTS_VALUE)])
-    assert payloads(stream, ours=False)[1][0][2] != AV_NOPTS_VALUE, "FFmpeg's reader keeps it"
+    assert payloads(stream, disc=False)[1][0][2] != AV_NOPTS_VALUE, "FFmpeg's reader keeps it"
 
 
 def test_only_all_zero_sectors_are_empty():
