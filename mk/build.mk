@@ -12,6 +12,11 @@ ifeq ($(filter $(MODE),debug release),)
 $(error MODE must be debug or release, not '$(MODE)')
 endif
 
+# No built-in suffix rules: the source trees are prerequisites, and make's
+# own rules would try to rebuild files in them (e.g. libgcrypt's .info
+# manual from its .texi when a fresh checkout leaves the .info older).
+.SUFFIXES:
+
 ROOT  := $(abspath .)
 LIBS  := $(ROOT)/libs
 BUILD := $(ROOT)/build/$(MODE)
