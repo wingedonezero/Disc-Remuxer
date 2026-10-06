@@ -272,6 +272,7 @@ enum DREventKind {
     DR_EV_VIDEO_TIMECODE_LIMIT, /**< 40 different differences reported: no more */
     DR_EV_VIDEO_INVALID,   /**< end of the segment: count = pictures whose PES time was off the grid */
     DR_EV_VIDEO_REPAIR,    /**< the grid followed a jump of the PES times (count = placeholders) */
+    DR_EV_VIDEO_RATE_CHANGE, /**< a later header states another frame rate (count = num, dur = den): warning only */
 };
 
 typedef struct DREvent {
@@ -380,6 +381,8 @@ int  ff_discrip_video_open(DRVideo **v, void *logctx, enum AVCodecID codec, int 
                            DRFrameCb cb, void *opaque, DREventCb event, void *event_opaque);
 int  ff_discrip_video_unit(void *video, const DRUnit *unit);
 int  ff_discrip_video_flush(DRVideo *v);
+/** A frame rate a header states: the first one times the segment; a later
+ *  different one is a warning (logged, event), the timing keeps the first. */
 void ff_discrip_video_set_rate(DRVideo *v, int num, int den);
 void *ff_discrip_video_priv(DRVideo *v);
 void ff_discrip_video_stats(const DRVideo *v, DRVideoStats *st);

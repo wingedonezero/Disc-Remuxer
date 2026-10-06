@@ -71,15 +71,16 @@ static int picture_mpv(DRVideo *v, const DRFrame *f, DRPicture *pic)
                 e = next_sc(p, n, e + 4);
             if (e >= 0 && e + 10 <= n && p[e + 3] == 0xB5 && (p[e + 4] & 0xF0) == 0x10) {
                 mpeg2 = 1;
-                if (!s->have_rate) {
+                num *= ((p[e + 9] >> 5) & 3) + 1;
+                den *= (p[e + 9] & 0x1F) + 1;
+                if (!s->have_rate)
                     s->progressive_seq = (p[e + 5] >> 3) & 1;
-                    num *= ((p[e + 9] >> 5) & 3) + 1;
-                    den *= (p[e + 9] & 0x1F) + 1;
-                }
             }
-            if (!s->have_rate && num && den) {
-                s->have_rate = 1;
-                s->mpeg2     = mpeg2;
+            if (num && den) {
+                if (!s->have_rate) {
+                    s->have_rate = 1;
+                    s->mpeg2     = mpeg2;
+                }
                 ff_discrip_video_set_rate(v, num, den);
             }
         } else if (code == 0x00 && i + 6 <= n) {

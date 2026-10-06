@@ -73,6 +73,8 @@ struct DRVideo {
     int64_t             t_pres, t_dec;
 
     int                 num, den;  /* frame rate */
+    int                 rate_from_header;
+    int                 warn_num, warn_den; /* the last different rate warned about */
     uint64_t            v70, v78;  /* ticks per field = v70 / v78 */
     int64_t             base;
     int                 started;
@@ -922,10 +924,23 @@ int ff_discrip_video_open(DRVideo **vp, void *logctx, enum AVCodecID codec, int 
 
 void ff_discrip_video_set_rate(DRVideo *v, int num, int den)
 {
-    if (!v->started && num > 0 && den > 0) {
+    if (num <= 0 || den <= 0)
+        return;
+    if (!v->rate_from_header) {
+        v->rate_from_header = 1;
         v->num = num;
         v->den = den;
+        return;
     }
+    if ((int64_t)num * v->den == (int64_t)v->num * den)
+        return;
+    if (!v->warn_den || (int64_t)num * v->warn_den != (int64_t)v->warn_num * den) {
+        av_log(v->log, AV_LOG_WARNING, "Rip core: video: a header states %d/%d fps, the segment is timed at "
+               "%d/%d fps (its first header)\n", num, den, v->num, v->den);
+        event(v, DR_EV_VIDEO_RATE_CHANGE, 0, den, num);
+    }
+    v->warn_num = num;
+    v->warn_den = den;
 }
 
 void *ff_discrip_video_priv(DRVideo *v)

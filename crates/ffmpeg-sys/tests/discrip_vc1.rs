@@ -217,3 +217,46 @@ fn repeated_fields_lengthen_frames() {
     }
     assert!(s.events.is_empty());
 }
+
+/// With `DISCRIP_VC1_FILE` (a raw VC-1 elementary stream): every unit our
+/// rules read, as `pos key discard fields` lines on stdout, to compare with
+/// FFmpeg's decoder (`ffprobe -show_frames`).
+#[test]
+#[ignore = "needs DISCRIP_VC1_FILE"]
+fn print_units_of_a_file() {
+    let Ok(path) = std::env::var("DISCRIP_VC1_FILE") else { return };
+    let data = std::fs::read(path).unwrap();
+    let units: Vec<(Vec<u8>, i64)> =
+        data.chunks(2048).map(|c| (c.to_vec(), ffmpeg_sys::AV_NOPTS_VALUE)).collect();
+    let id = codec_id(&CString::new("vc1").unwrap()).unwrap();
+    let mut sink = Sink2(Vec::new());
+    let mut v: *mut Video = std::ptr::null_mut();
+    let mut c: *mut Cutter = std::ptr::null_mut();
+    // SAFETY: sink outlives both stages; both are closed below.
+    unsafe {
+        let sp = (&raw mut sink).cast();
+        assert_eq!(ff_discrip_video_open(&raw mut v, std::ptr::null_mut(), id, 0, on_frame2, sp, None, sp), 0);
+        assert_eq!(ff_discrip_cutter_open(&raw mut c, std::ptr::null_mut(), id, ff_discrip_video_unit, v.cast()), 0);
+        for (bytes, t) in &units {
+            assert_eq!(ff_discrip_cutter_write(c, bytes.as_ptr(), c_int::try_from(bytes.len()).unwrap(), *t), 0);
+        }
+        assert_eq!(ff_discrip_cutter_flush(c), 0);
+        assert_eq!(ff_discrip_video_flush(v), 0);
+        ff_discrip_cutter_close(&raw mut c);
+        ff_discrip_video_close(&raw mut v);
+    }
+    for (pos, flags, dur) in sink.0 {
+        println!("UNIT {pos} {} {} {}", u8::from(flags & F_KEY != 0), u8::from(flags & F_DISCARD != 0), dur / FIELD);
+    }
+}
+
+struct Sink2(Vec<(i64, u32, i64)>);
+
+unsafe extern "C" fn on_frame2(o: *mut c_void, f: *mut Frame) -> c_int {
+    // SAFETY: o is the &mut Sink2; f a frame we own.
+    let (s, fr) = unsafe { (&mut *o.cast::<Sink2>(), &mut *f) };
+    s.0.push((fr.pos, fr.flags, fr.dur));
+    // SAFETY: ours.
+    unsafe { ff_discrip_frame_unref(f) };
+    0
+}

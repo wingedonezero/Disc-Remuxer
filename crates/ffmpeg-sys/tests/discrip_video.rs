@@ -11,7 +11,7 @@ use ffmpeg_sys::discrip::{
     codec_id, ff_discrip_cutter_close, ff_discrip_cutter_flush, ff_discrip_cutter_open, ff_discrip_cutter_write,
     ff_discrip_frame_unref, ff_discrip_video_close, ff_discrip_video_flush, ff_discrip_video_open,
     ff_discrip_video_stats, ff_discrip_video_unit, Cutter, Event, Frame, Video, VideoStats, EV_VIDEO_INVALID,
-    EV_VIDEO_REPAIR, EV_VIDEO_TIMECODE, F_BATCH, F_DISCARD, F_KEY, F_MARKER,
+    EV_VIDEO_RATE_CHANGE, EV_VIDEO_REPAIR, EV_VIDEO_TIMECODE, F_BATCH, F_DISCARD, F_KEY, F_MARKER,
 };
 
 const M2V: &[u8] = include_bytes!("data/testsrc_1200.m2v");
@@ -74,6 +74,10 @@ fn pictures(s: &[u8]) -> Vec<(usize, usize, i64, u8)> {
 /// The stream through the cutter and the video timing, each picture's
 /// payload with the PES time `time(display index, decode index)`.
 fn run(time: impl Fn(i64, usize) -> Option<i64>) -> (Sink, VideoStats) {
+    run_on(M2V, time)
+}
+
+fn run_on(m2v: &[u8], time: impl Fn(i64, usize) -> Option<i64>) -> (Sink, VideoStats) {
     let id = codec_id(&CString::new("mpeg2video").unwrap()).unwrap();
     let mut sink = Sink { out: Vec::new(), events: Vec::new() };
     let mut v: *mut Video = std::ptr::null_mut();
@@ -84,9 +88,9 @@ fn run(time: impl Fn(i64, usize) -> Option<i64>) -> (Sink, VideoStats) {
         let sp = (&raw mut sink).cast();
         assert_eq!(ff_discrip_video_open(&raw mut v, std::ptr::null_mut(), id, 0, on_frame, sp, Some(on_event), sp), 0);
         assert_eq!(ff_discrip_cutter_open(&raw mut c, std::ptr::null_mut(), id, ff_discrip_video_unit, v.cast()), 0);
-        for (k, &(a, b, disp, _)) in pictures(M2V).iter().enumerate() {
+        for (k, &(a, b, disp, _)) in pictures(m2v).iter().enumerate() {
             let t = time(disp, k).unwrap_or(ffmpeg_sys::AV_NOPTS_VALUE);
-            assert_eq!(ff_discrip_cutter_write(c, M2V[a..b].as_ptr(), c_int::try_from(b - a).unwrap(), t), 0);
+            assert_eq!(ff_discrip_cutter_write(c, m2v[a..b].as_ptr(), c_int::try_from(b - a).unwrap(), t), 0);
         }
         assert_eq!(ff_discrip_cutter_flush(c), 0);
         assert_eq!(ff_discrip_video_flush(v), 0);
@@ -184,4 +188,23 @@ fn a_jump_of_a_fraction_of_a_field_leaves_the_rest_off_the_grid_by_that_fraction
     assert!(!tc.is_empty());
     assert!(tc.iter().all(|e| e.dur == -2_160_000 || e.dur.abs() > FRAME), "{tc:?}");
     assert!(st.invalid > 500);
+}
+
+#[test]
+fn a_later_header_with_another_frame_rate_is_a_warning_and_the_first_rate_stays() {
+    // every sequence header after the 50th says 25 fps (frame_rate_code 3)
+    let mut m = M2V.to_vec();
+    let heads: Vec<usize> = (0..m.len() - 8).filter(|&i| m[i..i + 4] == [0, 0, 1, 0xB3]).collect();
+    for &i in &heads[50..] {
+        m[i + 7] = (m[i + 7] & 0xF0) | 3;
+    }
+    let pics = pictures(&m);
+    let (s, st) = run_on(&m, |d, _| Some(pes(d)));
+    assert_eq!((st.num, st.den), (30000, 1001));
+    let rc: Vec<&Event> = s.events.iter().filter(|e| e.kind == EV_VIDEO_RATE_CHANGE).collect();
+    assert_eq!(rc.len(), 1, "one warning for the new rate");
+    assert_eq!((rc[0].count, rc[0].dur), (25, 1));
+    for (o, p) in s.out.iter().zip(&pics) {
+        assert_eq!(o.0, pes(p.2), "still timed at 29.97");
+    }
 }

@@ -937,6 +937,7 @@ pub mod discrip {
     pub const EV_VIDEO_TIMECODE_LIMIT: c_int = 13;
     pub const EV_VIDEO_INVALID: c_int = 14;
     pub const EV_VIDEO_REPAIR: c_int = 15;
+    pub const EV_VIDEO_RATE_CHANGE: c_int = 16;
 
     /// `DRVideoStats`.
     #[repr(C)]

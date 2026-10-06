@@ -129,13 +129,15 @@ static void sequence(DRVideo *v, Vc1State *s, const uint8_t *p, const uint8_t *e
         num /= den;
         den  = 1;
     }
+    ff_discrip_video_set_rate(v, num, den);
+    if (s->have_seq)
+        return;                    /* the flags come from the first usable header */
     s->have_seq  = 1;
     s->profile   = profile;
     s->interlace = interlace;
     s->tfcntr    = tfcntr;
     s->pulldown  = pulldown;
     s->psf       = psf;
-    ff_discrip_video_set_rate(v, num, den);
 }
 
 /* A unit as FFmpeg's parser cuts it holds at most one frame (start code 0x0D)
@@ -153,8 +155,7 @@ static int picture_vc1(DRVideo *v, const DRFrame *f, DRPicture *pic)
             e = n;
         if (code == SC_SEQ) {
             has_seq = 1;
-            if (!s->have_seq)
-                sequence(v, s, p + i + 4, p + e);
+            sequence(v, s, p + i + 4, p + e);
         } else if (code == SC_ENTRY)
             has_entry = 1;
         else if (code == SC_FRAME && frame < 0)
