@@ -16,9 +16,12 @@
  * 1..4 one stream number per display mode with bit 5 = present), 0x186 32
  * palette entries (two palettes of 16).
  *
- * The probe reads the EVOB's stream as MPEG-2 program stream packs from its
- * first block: the stream needs a PES packet with a PTS as the first packet
- * of one of its first 2000 packs; its first frame must be a valid header;
+ * The probe reads the EVOB's stream from its first block: the stream needs a
+ * PES packet with a PTS as the first packet of one of its first 2000 packs;
+ * then the stream's frames come through FFmpeg's MPEG-PS demuxer as disc
+ * sectors and FFmpeg's AC-3 / DTS parser in disc mode (the disc reader's
+ * frame rules, every variant of the codec); its first frame must be a valid
+ * header;
  * 4 frames all E-AC-3 -> E-AC-3, all AC-3 -> AC-3, anything else (also fewer
  * than 4 frames) -> the stream is not supported and left out. A probe that
  * fails leaves the whole title out.
@@ -45,17 +48,16 @@
 #include <string.h>
 
 #include "libavutil/avstring.h"
-#include "libavutil/crc.h"
 #include "libavutil/error.h"
 #include "libavutil/intreadwrite.h"
 #include "libavutil/log.h"
 #include "libavutil/mem.h"
 
 #include "libavcodec/ac3_parser_internal.h"
-#include "libavcodec/defs.h"
-#include "libavcodec/dca_syncwords.h"
-#include "libavcodec/get_bits.h"
+#include "libavcodec/avcodec.h"
+#include "libavcodec/dca.h"
 
+#include "avformat.h"
 #include "disclang.h"
 #include "discrip.h"
 #include "hddvd_internal.h"
@@ -64,7 +66,6 @@
 #define PACK            2048
 #define PTS_SCAN_PACKS  2000    /* packs searched for the stream's first PTS */
 #define PROBE_FRAMES    4
-#define RESYNC_GIVE_UP  0xa001  /* bytes without a frame start after which the data is dropped */
 
 /* ---- one pack of an EVOB: mpeg.c's disc sectors ---- */
 
@@ -75,450 +76,27 @@ static int pack_packet(const uint8_t *s, int *off, Pkt *p, int lpcm5)
     return ff_mpegps_disc_packet(s, off, p, lpcm5);
 }
 
-/* ---- AC-3 / E-AC-3 frames (ATSC A/52, Annex E) ---- */
+/* ---- the stream probe ----
+ * The clip is read from its start through FFmpeg's MPEG-PS demuxer as disc
+ * sectors (mpeg.c, option disc: the disc reader's sector rules) and the
+ * stream's payloads go to FFmpeg's parser in disc mode taking every variant
+ * of the codec (PARSER_FLAG_DISC | PARSER_FLAG_DISC_ANY: the disc reader's
+ * frame rules, AC-3 and E-AC-3 frames alike, DTS frames with or without a
+ * DTS-HD extension). */
 
-typedef struct FrameHdr {
-    int size;                                   /**< bytes */
-    int bsid;
-} FrameHdr;
-
-static int is_eac3(int bsid)
-{
-    return bsid >= 10 && bsid <= 16;
-}
-
-/* syncinfo + bsid. E-AC-3 (bsid 10..16): the frame size field only; AC-3
- * (bsid 0..8): FFmpeg's header parse (sample rate code 0..2, frame size code
- * 0..37); bsid 9 and 17.. are not frames. */
-static int frame_header(FrameHdr *h, const uint8_t *b, int len)
-{
-    AC3HeaderInfo info, *pi = &info;
-
-    if (len < 7)
-        return 0;
-    h->bsid = b[5] >> 3;
-    if (is_eac3(h->bsid)) {
-        h->size = ((AV_RB16(b + 2) & 0x7ff) + 1) * 2;
-        return 1;
-    }
-    if (b[5] >= 0x48 || avpriv_ac3_parse_header(&pi, b, len) < 0)
-        return 0;
-    h->size = info.frame_size;
-    return 1;
-}
-
-/* A/52 crc1 and crc2: bytes 2 .. 5/8 of the frame, then the remaining 3/8,
- * each give a remainder of 0. */
-static int ac3_crc_ok(const uint8_t *b, int size)
-{
-    int n58 = size * 5 >> 3;
-
-    const AVCRC *crc = av_crc_get_table(AV_CRC_16_ANSI);
-
-    return !av_crc(crc, 0, b + 2, n58 - 2) && !av_crc(crc, 0, b + n58, size * 3 >> 3);
-}
-
-/* The stream header from a frame: E-AC-3 bitstream information up to the
- * channel map (the frame must hold it; a dependent stream's channel map must
- * give the channels its audio coding mode and LFE give); AC-3: syncinfo. */
-static int stream_header(const uint8_t *b, int len)
-{
-    static const uint8_t acmod_channels[8] = { 2, 1, 2, 3, 3, 4, 4, 5 };
-    FrameHdr h;
-    GetBitContext gb;
-    unsigned strmtyp, acmod, lfeon, chanmap = 0, chanmape = 0;
-    int channels, expect;
-
-    if (!frame_header(&h, b, len))
-        return 0;
-    if (!is_eac3(h.bsid))
-        return 1;
-    if (init_get_bits8(&gb, b + 2, len - 2) < 0)
-        return 0;
-    strmtyp = get_bits(&gb, 2);
-    skip_bits_long(&gb, 3);                     /* substreamid */
-    skip_bits_long(&gb, 11);                    /* frmsiz */
-    skip_bits_long(&gb, 2);                     /* fscod */
-    skip_bits_long(&gb, 2);                     /* fscod2 / numblkscod */
-    acmod = get_bits(&gb, 3);
-    lfeon = get_bits1(&gb);
-    skip_bits_long(&gb, 5);                     /* bsid */
-    skip_bits_long(&gb, 5);                     /* dialnorm */
-    if (get_bits1(&gb))                            /* compre */
-        skip_bits_long(&gb, 8);
-    if (!acmod) {
-        skip_bits_long(&gb, 5);
-        if (get_bits1(&gb))
-            skip_bits_long(&gb, 8);
-    }
-    if (strmtyp == 1 && (chanmape = get_bits1(&gb)))
-        chanmap = get_bits(&gb, 16);
-    if (get_bits_left(&gb) < 0)
-        return 0;
-    if (!chanmape)
-        return 1;
-    channels = acmod_channels[acmod] + lfeon;
-    expect = 0;
-    for (int i = 0; i < 16; i++) {
-        /* bit 0 (first) .. 15: L C R Ls Rs Lc/Rc Lrs/Rrs Cs Ts Lsd/Rsd Lw/Rw Lvh/Rvh Cvh Lts/Rts LFE2 LFE */
-        static const uint8_t weight[16] = { 1, 1, 1, 1, 1, 2, 2, 1, 1, 2, 2, 2, 1, 2, 1, 1 };
-        if (chanmap & (0x8000 >> i))
-            expect += weight[i];
-    }
-    return expect == channels;
-}
-
-/* AC-3 frame start: 0 no, 1 yes, 2 too few bytes to tell. */
-static int frame_sync(const uint8_t *b, int len)
-{
-    FrameHdr h;
-
-    if (len < 2)
-        return 2;
-    if (b[0] != 0x0b || b[1] != 0x77)
-        return 0;
-    if (len < 7)
-        return 2;
-    return frame_header(&h, b, len);
-}
-
-/* Bytes to skip to the next frame start: -2 need more data, -1 give up. A
- * frame start found here also needs a valid stream header (E-AC-3: through
- * its channel map) and, for AC-3, both CRCs. */
-static int frame_resync(const uint8_t *b, int len)
-{
-    if (len < 7)
-        return -2;
-    for (int pos = 0; pos < len - 2; pos++) {
-        FrameHdr h;
-        int rem = len - pos;
-
-        if (b[pos] != 0x0b || b[pos + 1] != 0x77)
-            continue;
-        if (rem < 8)
-            break;
-        if (!frame_header(&h, b + pos, rem))
-            return pos + 1;
-        if (rem < h.size)
-            return -2;
-        if (!stream_header(b + pos, h.size))
-            return pos + 1;
-        if (is_eac3(h.bsid))
-            return pos;
-        return pos + !ac3_crc_ok(b + pos, h.size);
-    }
-    return len >= RESYNC_GIVE_UP ? -1 : -2;
-}
-
-/* ---- DTS core frames and DTS-HD extension substreams (ETSI TS 102 114) ---- */
-
-static int dts_core_ok(const uint8_t *b, int len)
-{
-    return len >= 11 && AV_RB32(b) == DCA_SYNCWORD_CORE_BE;
-}
-
-static int dts_core_size(const uint8_t *b)
-{
-    return (AV_RB24(b + 5) >> 4 & 0x3fff) + 1;
-}
-
-/* Extension substream header: the fields the probe needs. */
-typedef struct ExtSS {
-    int      hdr_size;                          /**< header bytes */
-    int      frame_size;                        /**< bytes of the substream frame */
-    int      nb_assets;
-    int      asset_size[8];                     /**< bytes of each asset */
-} ExtSS;
-
-/* The start of the header: user bits, substream index, header size, frame
- * size. 0 without the sync word, with fewer than 10 bytes or past the end. */
-static int extss_start(ExtSS *h, GetBitContext *r, const uint8_t *b, int len, int *idx, int *blong)
-{
-    if (len < 10 || AV_RB32(b) != DCA_SYNCWORD_SUBSTREAM || init_get_bits8(r, b + 4, len - 4) < 0)
-        return 0;
-    skip_bits(r, 8);                            /* UserDefinedBits */
-    *idx   = get_bits(r, 2);                    /* nExtSSIndex */
-    *blong = get_bits1(r);                      /* bHeaderSizeType */
-    if (get_bits_left(r) < 0)
-        return 0;
-    h->hdr_size   = get_bits(r, *blong ? 12 : 8) + 1;
-    h->frame_size = get_bits_long(r, *blong ? 20 : 16) + 1;
-    return get_bits_left(r) >= 0;
-}
-
-/* The whole header (through the first asset's descriptor when the static
- * fields are present): 1 valid, 0 not (also when it runs past the data). */
-static int extss_header(ExtSS *h, const uint8_t *b, int len)
-{
-    GetBitContext gb;
-    int idx, blong, stat, nb_pres, chans;
-    unsigned ss_mask[8] = { 0 };
-
-#define OVERRUN (get_bits_left(&gb) < 0)
-    if (!extss_start(h, &gb, b, len, &idx, &blong) || h->hdr_size > len)
-        return 0;
-    stat = get_bits1(&gb);                      /* bStaticFieldsPresent */
-    if (OVERRUN)
-        return 0;
-    nb_pres = h->nb_assets = 1;
-    if (stat) {
-        skip_bits_long(&gb, 2);                 /* reference clock */
-        skip_bits_long(&gb, 3);                 /* frame duration */
-        if (get_bits1(&gb)) {                      /* time stamp */
-            skip_bits_long(&gb, 32);
-            skip_bits_long(&gb, 4);
-        }
-        nb_pres      = get_bits(&gb, 3) + 1;
-        h->nb_assets = get_bits(&gb, 3) + 1;
-        if (OVERRUN)
-            return 0;
-        for (int i = 0; i < nb_pres; i++)
-            ss_mask[i] = get_bits_long(&gb, idx + 1);
-        /* active asset masks: read in steps of 2 substreams, each time as bit 0
-         * of the presentation's substream mask says */
-        for (int i = 0; i < nb_pres; i++)
-            for (int n = 0; n < idx + 1; n += 2)
-                if (ss_mask[i] & 1)
-                    skip_bits_long(&gb, 8);
-        if (get_bits1(&gb)) {                      /* mixing metadata */
-            int a, c;
-            if (OVERRUN)
-                return 0;
-            skip_bits_long(&gb, 2);
-            a = get_bits(&gb, 2);
-            c = get_bits(&gb, 2);
-            if (OVERRUN)
-                return 0;
-            skip_bits_long(&gb, (a + 1) * 4 * (c + 1));
-        } else if (OVERRUN) {
-            return 0;
-        }
-    }
-    if (OVERRUN)
-        return 0;
-    for (int k = 0; k < h->nb_assets; k++)
-        h->asset_size[k] = get_bits_long(&gb, blong ? 20 : 16) + 1;
-    for (int k = 0; k < h->nb_assets; k++) {
-        skip_bits_long(&gb, 9);                 /* descriptor size */
-        skip_bits_long(&gb, 3);                 /* asset index */
-        if (!stat)
-            continue;
-        if (get_bits1(&gb))                        /* asset type */
-            skip_bits_long(&gb, 4);
-        if (get_bits1(&gb))                        /* language */
-            skip_bits_long(&gb, 24);
-        if (get_bits1(&gb)) {                      /* info text */
-            int n;
-            if (OVERRUN)
-                return 0;
-            n = get_bits(&gb, 10) + 1;
-            skip_bits_long(&gb, 8 * n);
-        } else if (OVERRUN) {
-            return 0;
-        }
-        skip_bits_long(&gb, 5);                 /* bit resolution */
-        skip_bits_long(&gb, 4);                 /* maximum sample rate */
-        chans = get_bits(&gb, 8) + 1;
-        if (get_bits1(&gb)) {                      /* one-to-one map */
-            if (chans >= 3)
-                skip_bits_long(&gb, 1);
-            if (chans >= 7)
-                skip_bits_long(&gb, 1);
-            if (get_bits1(&gb))                    /* speaker mask */
-                skip_bits_long(&gb, (get_bits(&gb, 2) + 1) * 4);
-        }
-        break;                                  /* only the first asset's descriptor */
-    }
-    return !OVERRUN;
-#undef OVERRUN
-}
-
-/* ---- the stream probe ---- */
-
-typedef struct Probe Probe;                    /** How a stream's data is cut into units (the frame parsers' contract). */
-typedef struct Framer {
-    /** unit size: < 0 need more data, 0 none, else bytes */
-    int (*size)(Probe *p, const uint8_t *b, int len);/** 1 a valid unit */
-    int (*check)(Probe *p, const uint8_t *b, int len);/** 0 no unit starts here, 1 one does, 2 too few bytes to tell */
-    int (*sync)(Probe *p, const uint8_t *b, int len);/** bytes to skip to the next unit start, -2 need more data, -1 give up */
-    int (*resync)(Probe *p, const uint8_t *b, int len);/** a unit cut: 0 = the probe fails */
-    int (*unit)(Probe *p, const uint8_t *b, int len);
-    int limit;                                  /**< bytes of data held while looking for units */
-    int want;                                   /**< units to collect */
-} Framer;
-
-struct Probe {
+typedef struct Probe {
     void          *log;
     DiscIOFS      *fs;
     HDDVDAACS     *aacs;
     HDDVDClip     *clip;
-    const Framer  *f;
     int            key;                         /**< the stream's packet key */
+    int            sub;                         /**< its sub-stream id: the demuxer's stream id */
     uint32_t       pos, end;                    /**< blocks */
-    uint8_t       *buf;                         /**< stream data not yet cut into units */
-    int            used;
-    int            synced;
+    int            read_failed;                 /**< a block could not be read */
     int            nb_units;
     int            bsid[PROBE_FRAMES];          /**< AC-3: the first frames' bsid */
-    int            dts_undecided, dts_dep;      /**< DTS: whether an extension substream follows each core frame */
-};                                              /* AC-3 / E-AC-3 framer: any of the two. */
-
-static int ac3_size(Probe *p, const uint8_t *b, int len)
-{
-    FrameHdr h;
-    if (len < 7)
-        return -1;
-    return frame_header(&h, b, len) ? h.size : -2;
-}
-
-static int ac3_check(Probe *p, const uint8_t *b, int len)
-{
-    FrameHdr h;
-    return frame_header(&h, b, len);
-}
-
-static int ac3_sync(Probe *p, const uint8_t *b, int len)
-{
-    return frame_sync(b, len);
-}
-
-static int ac3_resync(Probe *p, const uint8_t *b, int len)
-{
-    return frame_resync(b, len);
-}
-
-/* The first frame gives the stream header. */
-static int ac3_unit(Probe *p, const uint8_t *b, int len)
-{
-    FrameHdr h;
-
-    if (!p->nb_units && !stream_header(b, len)) {
-        av_log(p->log, AV_LOG_WARNING, "EVOB %s: stream 0x%04x: its first frame is not a valid header\n",
-               p->clip->evob->name, p->key);
-        return 0;
-    }
-    frame_header(&h, b, len);
-    if (p->nb_units < PROBE_FRAMES)
-        p->bsid[p->nb_units] = h.bsid;
-    return 1;
-}
-
-/* DTS framer: a core frame and, when one follows the first core frame, an
- * extension substream frame. */
-
-static int dts_core_sync(const uint8_t *b, int len)
-{
-    if (len < 4)
-        return 2;
-    if (AV_RB32(b) != DCA_SYNCWORD_CORE_BE)
-        return 0;
-    return len < 11 ? 2 : 1;
-}
-
-static int dts_extss_sync(const uint8_t *b, int len)
-{
-    ExtSS h;
-    GetBitContext r;
-    int idx, blong;
-
-    if (len < 4)
-        return 2;
-    if (AV_RB32(b) != DCA_SYNCWORD_SUBSTREAM)
-        return 0;
-    if (len < 10)
-        return 2;
-    return extss_start(&h, &r, b, len, &idx, &blong);
-}
-
-static int dts_size(Probe *p, const uint8_t *b, int len)
-{
-    int n, s;
-
-    if (!dts_core_ok(b, len))
-        return -1;
-    n = dts_core_size(b);
-    if (p->dts_undecided) {
-        if (n >= len)
-            return -1;
-        if ((s = dts_extss_sync(b + n, len - n)) == 2)
-            return -1;
-        p->dts_undecided = 0;
-        p->dts_dep = s == 1;
-    }
-    if (!p->dts_dep)
-        return n;
-    if (n >= len)
-        return -1;
-    s = dts_extss_sync(b + n, len - n);
-    if (!s)
-        return -2;
-    if (s == 2)
-        return -1;
-    {
-        ExtSS h;
-        GetBitContext r;
-        int idx, blong;
-        if (len - n < 10 || !extss_start(&h, &r, b + n, len - n, &idx, &blong))
-            return -1;
-        return n + h.frame_size;
-    }
-}
-
-static int dts_check(Probe *p, const uint8_t *b, int len)
-{
-    ExtSS h;
-    int n;
-
-    if (!dts_core_ok(b, len))
-        return 0;
-    if (!p->dts_dep)
-        return 1;
-    n = dts_core_size(b);
-    if (n + 1 > len || dts_extss_sync(b + n, len - n) != 1)
-        return 0;
-    return extss_header(&h, b + n, len - n);
-}
-
-static int dts_sync(Probe *p, const uint8_t *b, int len)
-{
-    return dts_core_sync(b, len);
-}
-
-static int dts_resync(Probe *p, const uint8_t *b, int len)
-{
-    return -1;                                  /* drop what is held */
-}
-
-/* The first unit gives the stream header: a core frame and, with an
- * extension substream, its header, its frame within the unit and its assets
- * within the frame. */
-static int dts_unit(Probe *p, const uint8_t *b, int len)
-{
-    ExtSS h;
-    int n, off;
-
-    if (p->nb_units)
-        return 1;
-    if (!dts_core_ok(b, len))
-        goto bad;
-    if (!p->dts_dep)
-        return 1;
-    n = dts_core_size(b);
-    if (!extss_header(&h, b + n, len - n) || h.frame_size > len - n)
-        goto bad;
-    off = h.hdr_size;
-    for (int k = 0; k < h.nb_assets; k++)
-        off += h.asset_size[k];
-    if ((unsigned)off <= (unsigned)(len - n))
-        return 1;
-bad:
-    av_log(p->log, AV_LOG_WARNING, "EVOB %s: stream 0x%04x: its first frame is not a valid header\n",
-           p->clip->evob->name, p->key);
-    return 0;
-}
-
-static const Framer ac3_framer = { ac3_size, ac3_check, ac3_sync, ac3_resync, ac3_unit, 0x4000, PROBE_FRAMES };
-static const Framer dts_framer = { dts_size, dts_check, dts_sync, dts_resync, dts_unit, 0x14000, 1 };
+    int            dts_hd;                      /**< DTS: an extension substream follows the core frames */
+} Probe;
 
 /* A block of the stream as the probe sees it: made usable where it can be
  * (a pack that cannot be is passed on as read: the pack rules decide);
@@ -559,119 +137,124 @@ static int probe_first_pts(Probe *p)
     return 0;
 }
 
-/* Stream data in: cut it into units. */
-static int probe_data(Probe *p, const uint8_t *data, int len)
+/* The next block of the clip for the demuxer; AVERROR_EOF at its end. */
+static int probe_read(void *opaque, uint8_t *buf, int size)
 {
-    const Framer *f = p->f;
-    int off = 0;
+    Probe *p = opaque;
 
-    if (len) {
-        if (f->limit - p->used < len) {
-            av_log(p->log, AV_LOG_DEBUG, "EVOB %s: stream 0x%04x: %d bytes without a unit dropped\n",
-                   p->clip->evob->name, p->key, p->used);
-            p->used = p->synced = 0;
-            return 1;
-        }
-        memcpy(p->buf + p->used, data, len);
-        p->used += len;
+    if (size < PACK)
+        return AVERROR(EINVAL);
+    if (p->pos >= p->end)
+        return AVERROR_EOF;
+    if (!probe_block(p, p->pos++, buf)) {
+        p->read_failed = 1;
+        return AVERROR(EIO);
     }
-    while (p->used) {
-        const uint8_t *b = p->buf + off;
-        int s;
+    return PACK;
+}
 
-        if (!p->synced) {
-            int r = f->sync(p, b, p->used);
-            if (!r) {
-                int k = f->resync(p, b, p->used);
-                if (k == -2)
-                    break;
-                if (k == -1) {
-                    p->used = p->synced = 0;
-                    return 1;
-                }
-                if (!k)
-                    k = 1;
-                p->used -= k;
-                off += k;
-                continue;
-            }
-            if (r == 1)
-                p->synced = 1;
+/* A frame the parser found: the first one must be a valid stream header
+ * (AC-3: its E-AC-3 bitstream information through the channel map; DTS: a
+ * core frame, with an extension substream whose header, frame and assets
+ * fit). 1 taken, 0 the probe fails. */
+static int probe_frame(Probe *p, enum AVCodecID codec, const uint8_t *b, int len)
+{
+    if (codec == AV_CODEC_ID_DTS) {
+        if (!p->nb_units) {
+            int kind = avpriv_dca_disc_first_frame(b, len);
+            if (!kind)
+                goto bad;
+            p->dts_hd = kind == 2;
         }
-        s = f->size(p, b, p->used);
-        if (s <= 0 || s > p->used)
-            break;
-        p->used -= s;
-        off += s;
-        p->synced = 0;
-        if (f->check(p, b, s) == 1) {
-            if (!f->unit(p, b, s))
-                return 0;
-            p->nb_units++;
-        }
+    } else {
+        if (!p->nb_units && !avpriv_ac3_disc_stream_header(b, len))
+            goto bad;
+        if (p->nb_units < PROBE_FRAMES)
+            p->bsid[p->nb_units] = len > 5 ? b[5] >> 3 : 0;
     }
-    if (off && p->used)
-        memmove(p->buf, p->buf + off, p->used);
+    p->nb_units++;
     return 1;
+bad:
+    av_log(p->log, AV_LOG_WARNING, "EVOB %s: stream 0x%04x: its first frame is not a valid header\n",
+           p->clip->evob->name, p->key);
+    return 0;
 }
 
-/* A packet's payload: the bytes before its first access unit, then the rest. */
-static int probe_deliver(Probe *p, const uint8_t *sec, const Pkt *k)
+/* Read the clip from its start until want frames are found or the clip
+ * ends. 1 done, 0 failed, < 0 error. */
+static int probe_run(Probe *p, enum AVCodecID codec, int want)
 {
-    const uint8_t *d = sec + k->at + k->payload;
-    int n = k->len - k->payload, fau = k->first_au;
+    AVCodecParserContext *parser = NULL;
+    AVCodecContext *avctx = NULL;
+    AVPacket *pkt = NULL;
+    HDDVDClipPS ps;
+    int ret, done = 0;
 
-    if (k->key != p->key || n <= 0)
-        return 1;
-    if (k->at + k->payload + n > PACK)
-        n = PACK - k->at - k->payload;
-    if (fau > 0 && n > fau)
-        return probe_data(p, d, fau) && probe_data(p, d + fau, n - fau);
-    return probe_data(p, d, n);
-}
-
-/* One pack of the stream: its packets of the probed stream go to the unit
- * cutter. A pack holds at most 2 packets unless one is MPEG audio. */
-static int probe_packet(void *opaque, const uint8_t *sec, const MpegPsDiscPacket *k)
-{
-    return probe_deliver(opaque, sec, k) ? 0 : AVERROR_INVALIDDATA;
-}
-
-/* One pack of the stream (the disc sector rules of mpeg.c): its packets of the
- * probed stream go to the unit cutter. */
-static int probe_pack(Probe *p)
-{
-    uint8_t sec[PACK];
-    const char *why;
-    uint32_t b = p->pos++;
-    int at, ret;
-
-    if (!probe_block(p, b, sec))
-        return 0;
-    ret = ff_mpegps_disc_sector(sec, 1, probe_packet, p, &why, &at);
-    if (ret == MPEGPS_DISC_FAIL)
-        av_log(p->log, AV_LOG_WARNING, "EVOB %s: block %"PRIu32" (byte %d): %s\n", p->clip->evob->name, b, at, why);
-    return ret != MPEGPS_DISC_FAIL && ret >= 0;
-}
-
-/* Read the clip from its start until the framer has its units or the clip
- * ends. 1 done, 0 failed. */
-static int probe_run(Probe *p)
-{
     if (!probe_first_pts(p))
         return 0;
-    while (p->nb_units < p->f->want && p->pos < p->end)
-        if (!probe_pack(p))
-            return 0;
-    return 1;
+    p->pos = 0;
+    if ((ret = ff_hddvd_clip_ps_open(&ps, NULL, probe_read, p)) < 0) {
+        ff_hddvd_clip_ps_close(&ps);
+        return p->read_failed ? 0 : ret;
+    }
+    parser = av_parser_init(codec);
+    avctx  = avcodec_alloc_context3(NULL);
+    pkt    = av_packet_alloc();
+    if (!parser || !avctx || !pkt) {
+        ret = AVERROR(ENOMEM);
+        goto end;
+    }
+    parser->flags   |= PARSER_FLAG_DISC | PARSER_FLAG_DISC_ANY;
+    avctx->codec_id   = codec;
+    avctx->codec_type = AVMEDIA_TYPE_AUDIO;
+    ret = 1;
+    while (!done && p->nb_units < want) {
+        const AVStream *st;
+        const uint8_t *d;
+        int n, r = av_read_frame(ps.ctx, pkt);
+
+        if (r == AVERROR_EOF)
+            break;
+        if (r < 0) {
+            /* a block that cannot be read, or a sector the disc reader's
+             * rules refuse (logged by the demuxer) */
+            ret = r == AVERROR(ENOMEM) ? r : 0;
+            break;
+        }
+        st = ps.ctx->streams[pkt->stream_index];
+        d  = pkt->data;
+        n  = pkt->size;
+        while (st->id == p->sub && n > 0 && p->nb_units < want) {
+            uint8_t *out;
+            int out_size, used = av_parser_parse2(parser, avctx, &out, &out_size, d, n,
+                                                  AV_NOPTS_VALUE, AV_NOPTS_VALUE, 0);
+            d += used;
+            n -= used;
+            if (parser->disc_status < 0) {
+                ret = parser->disc_status == AVERROR(ENOMEM) ? parser->disc_status : 0;
+                done = 1;
+                break;
+            }
+            if (out_size && !parser->disc_status && !probe_frame(p, codec, out, out_size)) {
+                ret  = 0;
+                done = 1;
+                break;
+            }
+        }
+        av_packet_unref(pkt);
+    }
+end:
+    av_packet_free(&pkt);
+    av_parser_close(parser);
+    avcodec_free_context(&avctx);
+    ff_hddvd_clip_ps_close(&ps);
+    return ret;
 }
 
-static int probe_init(Probe *p, void *logctx, DiscIOFS *fs, HDDVDAACS *aacs, HDDVDClip *clip,
-                      const Framer *f, int key)
+static void probe_init(Probe *p, void *logctx, DiscIOFS *fs, HDDVDAACS *aacs, HDDVDClip *clip, int sub)
 {
-    *p = (Probe){ .log = logctx, .fs = fs, .aacs = aacs, .clip = clip, .f = f, .key = key,
-                  .end = clip->size / PACK, .dts_undecided = 1 };
-    return (p->buf = av_mallocz(f->limit + AV_INPUT_BUFFER_PADDING_SIZE)) ? 0 : AVERROR(ENOMEM);
+    *p = (Probe){ .log = logctx, .fs = fs, .aacs = aacs, .clip = clip, .sub = sub, .key = sub << 8 | 0xbd,
+                  .end = clip->size / PACK };
 }
 
 /* Dolby Digital Plus stream `number` of clip: *codec = E-AC-3, AC-3 or
@@ -683,14 +266,13 @@ static int probe_ddplus(void *logctx, DiscIOFS *fs, HDDVDAACS *aacs, HDDVDClip *
     unsigned mask;
     int ret, k;
 
-    if ((ret = probe_init(&p, logctx, fs, aacs, clip, &ac3_framer, (0xc0 + number) << 8 | 0xbd)) < 0)
+    probe_init(&p, logctx, fs, aacs, clip, 0xc0 + number);
+    if ((ret = probe_run(&p, AV_CODEC_ID_AC3, PROBE_FRAMES)) <= 0)
         return ret;
-    if (!(ret = probe_run(&p)))
-        goto end;
     k = FFMIN(p.nb_units, PROBE_FRAMES);
     mask = k << 8;
     for (int i = 0; i < k; i++)
-        if (is_eac3(p.bsid[i]))
+        if (p.bsid[i] >= 10 && p.bsid[i] <= 16)
             mask |= 1 << i;
     *codec = mask == 0x40f ? AV_CODEC_ID_EAC3 : mask == 0x400 ? AV_CODEC_ID_AC3 : AV_CODEC_ID_NONE;
     av_log(logctx, *codec == AV_CODEC_ID_NONE ? AV_LOG_WARNING : AV_LOG_VERBOSE,
@@ -698,33 +280,29 @@ static int probe_ddplus(void *logctx, DiscIOFS *fs, HDDVDAACS *aacs, HDDVDClip *
            *codec == AV_CODEC_ID_EAC3 ? "E-AC-3" : *codec == AV_CODEC_ID_AC3 ? "AC-3 only" :
            "a mix of AC-3 and E-AC-3 or fewer than 4 frames: not supported, the stream is left out "
            "[untested on real discs]");
-end:
-    av_free(p.buf);
-    return ret;
+    return 1;
 }
 
 /* DTS stream `number` of clip: *hd = 1 when an extension substream follows
  * its first core frame (DTS-HD: a track, plus the DTS stream inside it as a
- * track of its own). 1 done, 0 failed (also when no unit is found). */
+ * track of its own). 1 done, 0 failed (also when no frame is found). */
 static int probe_dts(void *logctx, DiscIOFS *fs, HDDVDAACS *aacs, HDDVDClip *clip, int number, int *hd)
 {
     Probe p;
     int ret;
 
-    if ((ret = probe_init(&p, logctx, fs, aacs, clip, &dts_framer, (0x88 + number) << 8 | 0xbd)) < 0)
+    probe_init(&p, logctx, fs, aacs, clip, 0x88 + number);
+    if ((ret = probe_run(&p, AV_CODEC_ID_DTS, 1)) <= 0)
         return ret;
-    if ((ret = probe_run(&p)) && !p.nb_units) {
+    if (!p.nb_units) {
         av_log(logctx, AV_LOG_WARNING, "EVOB %s: DTS stream %d: no frame found\n", clip->evob->name, number);
-        ret = 0;
+        return 0;
     }
-    if (ret) {
-        *hd = p.dts_dep;
-        av_log(logctx, AV_LOG_WARNING, "EVOB %s: DTS stream %d: %s [untested on real discs]\n", clip->evob->name,
-               number, *hd ? "DTS-HD (a DTS stream with an extension): listed, and the DTS stream inside it as a second track"
-                           : "DTS core");
-    }
-    av_free(p.buf);
-    return ret;
+    *hd = p.dts_hd;
+    av_log(logctx, AV_LOG_WARNING, "EVOB %s: DTS stream %d: %s [untested on real discs]\n", clip->evob->name,
+           number, *hd ? "DTS-HD (a DTS stream with an extension): listed, and the DTS stream inside it as a second track"
+                       : "DTS core");
+    return 1;
 }
 
 /* ---- playlist metadata of a stream ---- */

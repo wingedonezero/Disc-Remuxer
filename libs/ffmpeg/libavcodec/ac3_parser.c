@@ -530,7 +530,7 @@ static int disc_crc_ok(const uint8_t *b, int size)
 /* The stream header from a frame: E-AC-3 bitstream information up to the
  * channel map (the frame must hold it; a dependent stream's channel map must
  * give the channels its audio coding mode and LFE give); AC-3: the syncinfo. */
-static int disc_stream_header(const uint8_t *b, int len)
+int avpriv_ac3_disc_stream_header(const uint8_t *b, int len)
 {
     static const uint8_t acmod_channels[8] = { 2, 1, 2, 3, 3, 4, 4, 5 };
     /* bit 0 (first) .. 15: L C R Ls Rs Lc/Rc Lrs/Rrs Cs Ts Lsd/Rsd Lw/Rw Lvh/Rvh Cvh Lts/Rts LFE2 LFE */
@@ -618,7 +618,7 @@ static int disc_resync(void *ctx, const uint8_t *b, int len)
             return pos + 1;
         if (rem < size)
             return -2;
-        if (!disc_stream_header(b + pos, size))
+        if (!avpriv_ac3_disc_stream_header(b + pos, size))
             return pos + 1;
         if (disc_is_eac3(bsid))
             return pos;

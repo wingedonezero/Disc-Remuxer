@@ -166,3 +166,17 @@ def test_a_failed_sector_stays_failed():
     ret, pkts = payloads(three + sector(pes(0xE0, SAMPLES)))
     assert ret < 0
     assert pkts == [], "nothing after the failure"
+
+
+def test_an_audio_payload_is_split_at_its_first_access_unit():
+    # the payload starts with the end of a frame that began earlier; the
+    # first access unit pointer says where the next frame starts: the bytes
+    # before it and from it leave as two packets, the time with the second
+    tail, frame = b"\x55" * 50, b"\x0b\x77" + bytes(98)
+    ret, got = payloads(sector(private1(0x80, b"", tail + frame, fau=51)))
+    assert (ret, got) == (2, [(0x80, tail, AV_NOPTS_VALUE), (0x80, frame, 90000)])
+    # a first access unit at the payload's start, or none: one packet
+    assert payloads(sector(private1(0x80, b"", frame, fau=1))) == (1, [(0x80, frame, 90000)])
+    assert payloads(sector(private1(0x80, b"", tail, nf=0, fau=0))) == (1, [(0x80, tail, 90000)])
+    # ordinary program streams are read as before: one packet
+    assert payloads(sector(private1(0x80, b"", tail + frame, fau=51)), disc=False)[0] == 1

@@ -337,6 +337,7 @@ typedef struct DiscExtSS {
     int hdr_size;           /**< header bytes */
     int frame_size;         /**< bytes of the substream frame */
     int nb_assets;
+    int asset_size[8];      /**< bytes of each asset */
 } DiscExtSS;
 
 /* The start of the header: user bits, substream index, header size, frame
@@ -357,7 +358,7 @@ static int disc_extss_start(DiscExtSS *h, GetBitContext *r, const uint8_t *b, in
 
 /* The whole header (through the first asset's descriptor when the static
  * fields are present): 1 valid, 0 not (also when it runs past the data). */
-static int disc_extss_header(const uint8_t *b, int len)
+static int disc_extss_header(DiscExtSS *ph, const uint8_t *b, int len)
 {
     DiscExtSS h;
     GetBitContext gb;
@@ -407,7 +408,7 @@ static int disc_extss_header(const uint8_t *b, int len)
     if (OVERRUN)
         return 0;
     for (int k = 0; k < h.nb_assets; k++)
-        skip_bits_long(&gb, blong ? 20 : 16);  /* asset sizes */
+        h.asset_size[k] = get_bits_long(&gb, blong ? 20 : 16) + 1;
     for (int k = 0; k < h.nb_assets; k++) {
         skip_bits_long(&gb, 9);                 /* descriptor size */
         skip_bits_long(&gb, 3);                 /* asset index */
@@ -439,6 +440,7 @@ static int disc_extss_header(const uint8_t *b, int len)
         }
         break;                                  /* only the first asset's descriptor */
     }
+    *ph = h;
     return !OVERRUN;
 #undef OVERRUN
 }
@@ -528,7 +530,28 @@ static int disc_hd_check(void *ctx, const uint8_t *b, int len)
     n = disc_core_size(b);
     if (n + 1 > len || disc_extss_sync(b + n, len - n) != 1)
         return 0;
-    return disc_extss_header(b + n, len - n);
+    {
+        DiscExtSS h;
+        return disc_extss_header(&h, b + n, len - n);
+    }
+}
+
+int avpriv_dca_disc_first_frame(const uint8_t *b, int len)
+{
+    DiscExtSS h;
+    int n, off;
+
+    if (!disc_core_ok(b, len))
+        return 0;
+    n = disc_core_size(b);
+    if (len <= n)
+        return 1;
+    if (!disc_extss_header(&h, b + n, len - n) || h.frame_size > len - n)
+        return 0;
+    off = h.hdr_size;
+    for (int k = 0; k < h.nb_assets; k++)
+        off += h.asset_size[k];
+    return (unsigned)off <= (unsigned)(len - n) ? 2 : 0;
 }
 
 static const FFDiscFrameRule disc_dts_rule = {

@@ -395,6 +395,23 @@ int ff_hddvd_aacs_sector(void *logctx, HDDVDAACS *aacs, DiscIOFS *fs, HDDVDClip 
  */
 int ff_hddvd_clip_block(void *logctx, HDDVDAACS *aacs, DiscIOFS *fs, HDDVDClip *clip, uint32_t block, uint8_t *buf);
 
+/** An EVOB's stream read through FFmpeg's MPEG-PS demuxer as disc sectors. */
+typedef struct HDDVDClipPS {
+    struct AVFormatContext *ctx;
+    struct AVIOContext     *pb;
+} HDDVDClipPS;
+
+/**
+ * Open the MPEG-PS demuxer (mpeg.c, options disc=1 and lpcm_header=5) over
+ * the 2048-byte blocks read gives (one per call; AVERROR_EOF at the end),
+ * raw payloads with their own times (no parsing, no filled-in or corrected
+ * timestamps). parent (may be NULL): the context whose whitelists and
+ * interrupt callback the demuxer takes.
+ */
+int ff_hddvd_clip_ps_open(HDDVDClipPS *ps, struct AVFormatContext *parent,
+                          int (*read)(void *opaque, uint8_t *buf, int size), void *opaque);
+void ff_hddvd_clip_ps_close(HDDVDClipPS *ps);
+
 /* ---- tracks ---- */
 
 /**

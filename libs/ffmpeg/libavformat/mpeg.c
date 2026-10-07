@@ -1055,6 +1055,30 @@ typedef struct DiscSectorRead {
     int64_t          pos;        /* the sector's byte position */
 } DiscSectorRead;
 
+/* Bytes start..end of the sector as a packet of the stream. */
+static int disc_queue(MpegDemuxContext *c, const uint8_t *sec, int start, int end, int64_t pts, int64_t pos,
+                      int stream_index)
+{
+    AVPacket *pkt;
+    int ret;
+
+    if (c->q_n == DISC_QUEUE)
+        return AVERROR_BUG;
+    if (!(pkt = av_packet_alloc()))
+        return AVERROR(ENOMEM);
+    if ((ret = av_new_packet(pkt, end - start)) < 0) {
+        av_packet_free(&pkt);
+        return ret;
+    }
+    memcpy(pkt->data, sec + start, end - start);
+    pkt->pts          = pts;
+    pkt->dts          = AV_NOPTS_VALUE;
+    pkt->pos          = pos;
+    pkt->stream_index = stream_index;
+    c->q[(c->q_head + c->q_n++) % DISC_QUEUE] = pkt;
+    return 0;
+}
+
 static int disc_on_packet(void *opaque, const uint8_t *sec, const MpegPsDiscPacket *p)
 {
     DiscSectorRead *r = opaque;
@@ -1063,7 +1087,6 @@ static int disc_on_packet(void *opaque, const uint8_t *sec, const MpegPsDiscPack
     enum AVMediaType type;
     enum AVCodecID codec;
     AVStream *st = NULL;
-    AVPacket *pkt;
     int id, start, end, ret;
 
     if (!disc_stream_of(p, &id, &type, &codec))
@@ -1088,21 +1111,19 @@ static int disc_on_packet(void *opaque, const uint8_t *sec, const MpegPsDiscPack
     if (p->pts_present && !p->pts_valid)
         av_log(s, AV_LOG_WARNING, "Disc pack reader: sector %"PRId64", stream 0x%x: the PTS's marker bits are "
                "wrong: the packet has no time\n", r->pos / MPEGPS_DISC_SECTOR, id);
-    if (c->q_n == DISC_QUEUE)
-        return AVERROR_BUG;
-    if (!(pkt = av_packet_alloc()))
-        return AVERROR(ENOMEM);
-    if ((ret = av_new_packet(pkt, end - start)) < 0) {
-        av_packet_free(&pkt);
-        return ret;
+    /* a private stream 1 audio payload whose first access unit starts inside
+     * it: the bytes before it (the end of a frame that began earlier) and the
+     * bytes from it go on as two packets, the time with the second (the
+     * reader hands them to the frame rules apart); not LPCM, whose payload
+     * begins with its audio frame header */
+    if ((p->key & 0xff) == 0xbd && type == AVMEDIA_TYPE_AUDIO && !p->extra &&
+        p->first_au > 0 && start + p->first_au < end) {
+        if ((ret = disc_queue(c, sec, start, start + p->first_au, AV_NOPTS_VALUE, r->pos + p->at, st->index)) < 0)
+            return ret;
+        start += p->first_au;
     }
-    memcpy(pkt->data, sec + start, end - start);
-    pkt->pts          = p->pts_valid ? (int64_t)p->pts : AV_NOPTS_VALUE;
-    pkt->dts          = AV_NOPTS_VALUE;
-    pkt->pos          = r->pos + p->at;
-    pkt->stream_index = st->index;
-    c->q[(c->q_head + c->q_n++) % DISC_QUEUE] = pkt;
-    return 0;
+    return disc_queue(c, sec, start, end, p->pts_valid ? (int64_t)p->pts : AV_NOPTS_VALUE, r->pos + p->at,
+                      st->index);
 }
 
 static int disc_read_packet(AVFormatContext *s, AVPacket *pkt)

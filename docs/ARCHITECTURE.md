@@ -1,7 +1,7 @@
 # Architecture
 
 Status: **plan agreed, being carried out** (the order of work is below;
-done: steps 1-3). Each step moves a part to its place and is checked against
+done: steps 1-4). Each step moves a part to its place and is checked against
 the output from before the move.
 
 ## Words
@@ -67,7 +67,7 @@ Rules:
 | `discdec.c`, `disc.h` (step 1, done) | the disc layer, the only disc demuxer the program opens; `disc.h` is what a format part gives it |
 | `dvdvideodec.c`, `dvdvideo_*.c` | the DVD format part (no longer a demuxer of its own); its playback reading through libdvdnav (`dvdvideo_play.c`) gives way to the navigation scan + title plan, with sectors fed into `mpeg.c` |
 | `hddvddec.c`, `hddvd_*.c` | the HD DVD format part `ff_disc_hddvd` (step 1, done: no demuxer of its own any more) |
-| `hddvd_tracks.c` | stays (stream table, languages); its content probe reads through the line instead of its own pack reader and frame finding |
+| `hddvd_tracks.c` | stays (stream table, languages); step 4, done: its content probe reads through the line (`mpeg.c` disc mode, FFmpeg's AC-3 / DTS parsers in disc mode) instead of its own pack reader and frame finding |
 | `discrip_pack.c`, `discrip_ps.c` (step 2, done) | moved into `mpeg.c`: option `disc` (one pack per 2048-byte sector, the sector rules) and `lpcm_header` (3 / 5 bytes, always LPCM) |
 | `discrip_units.c` (was the cutter; now `discrip_frames.c`, the frame step) | stays, shrunk to the time pairing (a packet's time goes to the first frame whose picture header lies in it, the MPEG rule FFmpeg's read loop does not have) in front of FFmpeg's parsers (decided in step 3: FFmpeg's read loop pairs times with where a frame begins and keeps only 4 packets' times) |
 | `discrip_mpv.c` | stays: picture rules for the video timing (FFmpeg's `mpegvideo_parser.c` already cuts the frames) |
@@ -104,7 +104,10 @@ their logs for changed warnings).
    / MLP (`mlp_parser.c`); MPEG video and the audio codecs were already cut by
    FFmpeg's parsers. Kept with the title timeline (decided): the time pairing,
    the checks of which frames belong to a track, LPCM's frame size.
-4. **HD DVD track probe** reads through the line (corpus track lists equal).
+4. **HD DVD track probe (done)** reads through the line (corpus track lists
+   equal). With it: FFmpeg's AC-3 and DTS parsers got the disc reader's own
+   frame rules (used when ripping too); `mpeg.c`'s disc mode splits an audio
+   payload at its first access unit, as the reader does.
 5. **Title timeline tidied:** what is left of `discrip_*` is the timeline;
    codec table slimmed; downmix through libswresample.
 6. **DVD on the same line:** the DVD part's sectors into `mpeg.c` with the
