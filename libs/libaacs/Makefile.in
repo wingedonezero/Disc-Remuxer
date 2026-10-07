@@ -167,7 +167,8 @@ libaacs_la_DEPENDENCIES = $(am__DEPENDENCIES_1) $(am__DEPENDENCIES_1)
 am__libaacs_la_SOURCES_DIST = src/libaacs/aacs.h src/libaacs/aacs.c \
 	src/libaacs/cci_data.h src/libaacs/cci.h src/libaacs/cci.c \
 	src/libaacs/content_cert.h src/libaacs/content_cert.c \
-	src/libaacs/crypto.h src/libaacs/crypto.c src/libaacs/hddvd.c \
+	src/libaacs/crypto.h src/libaacs/crypto.c src/libaacs/bd.c src/libaacs/hddvd.c \
+	src/libaacs/keyfile.h src/libaacs/keyfile.c \
 	src/libaacs/mk.h src/libaacs/mkb.h \
 	src/libaacs/mkb.c src/libaacs/mmc.h src/libaacs/mmc.c \
 	src/libaacs/unit_key.h src/libaacs/unit_key.c src/file/dirs.h \
@@ -197,7 +198,7 @@ am__dirstamp = $(am__leading_dot)dirstamp
 @HAVE_DARWIN_FALSE@@HAVE_WIN32_FALSE@	src/file/path.lo
 am_libaacs_la_OBJECTS = src/libaacs/aacs.lo src/libaacs/cci.lo \
 	src/libaacs/content_cert.lo src/libaacs/crypto.lo \
-	src/libaacs/hddvd.lo \
+	src/libaacs/bd.lo src/libaacs/hddvd.lo src/libaacs/keyfile.lo \
 	src/libaacs/mkb.lo src/libaacs/mmc.lo src/libaacs/unit_key.lo \
 	src/file/file.lo src/file/filesystem.lo src/file/keydbcfg.lo \
 	src/file/keydbcfg-parser.lo src/file/keydbcfg-lexer.lo \
@@ -297,7 +298,8 @@ am__depfiles_remade = src/devtools/$(DEPDIR)/cci_dump-cci_dump.Po \
 	src/libaacs/$(DEPDIR)/cci_dump-cci.Po \
 	src/libaacs/$(DEPDIR)/content_cert.Plo \
 	src/libaacs/$(DEPDIR)/crypto.Plo src/libaacs/$(DEPDIR)/ec.Plo \
-	src/libaacs/$(DEPDIR)/hddvd.Plo \
+	src/libaacs/$(DEPDIR)/bd.Plo src/libaacs/$(DEPDIR)/hddvd.Plo \
+	src/libaacs/$(DEPDIR)/keyfile.Plo \
 	src/libaacs/$(DEPDIR)/mkb.Plo \
 	src/libaacs/$(DEPDIR)/mkb_dump-mkb.Po \
 	src/libaacs/$(DEPDIR)/mmc.Plo \
@@ -571,7 +573,8 @@ lib_LTLIBRARIES = libaacs.la
 libaacs_la_SOURCES = src/libaacs/aacs.h src/libaacs/aacs.c \
 	src/libaacs/cci_data.h src/libaacs/cci.h src/libaacs/cci.c \
 	src/libaacs/content_cert.h src/libaacs/content_cert.c \
-	src/libaacs/crypto.h src/libaacs/crypto.c src/libaacs/hddvd.c \
+	src/libaacs/crypto.h src/libaacs/crypto.c src/libaacs/bd.c src/libaacs/hddvd.c \
+	src/libaacs/keyfile.h src/libaacs/keyfile.c \
 	src/libaacs/mk.h src/libaacs/mkb.h \
 	src/libaacs/mkb.c src/libaacs/mmc.h src/libaacs/mmc.c \
 	src/libaacs/unit_key.h src/libaacs/unit_key.c src/file/dirs.h \
@@ -798,7 +801,11 @@ src/libaacs/content_cert.lo: src/libaacs/$(am__dirstamp) \
 	src/libaacs/$(DEPDIR)/$(am__dirstamp)
 src/libaacs/crypto.lo: src/libaacs/$(am__dirstamp) \
 	src/libaacs/$(DEPDIR)/$(am__dirstamp)
+src/libaacs/bd.lo: src/libaacs/$(am__dirstamp) \
+	src/libaacs/$(DEPDIR)/$(am__dirstamp)
 src/libaacs/hddvd.lo: src/libaacs/$(am__dirstamp) \
+	src/libaacs/$(DEPDIR)/$(am__dirstamp)
+src/libaacs/keyfile.lo: src/libaacs/$(am__dirstamp) \
 	src/libaacs/$(DEPDIR)/$(am__dirstamp)
 src/libaacs/mkb.lo: src/libaacs/$(am__dirstamp) \
 	src/libaacs/$(DEPDIR)/$(am__dirstamp)
@@ -970,7 +977,9 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@src/libaacs/$(DEPDIR)/cci_dump-cci.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/libaacs/$(DEPDIR)/content_cert.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/libaacs/$(DEPDIR)/crypto.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@src/libaacs/$(DEPDIR)/bd.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/libaacs/$(DEPDIR)/hddvd.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@src/libaacs/$(DEPDIR)/keyfile.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/libaacs/$(DEPDIR)/ec.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/libaacs/$(DEPDIR)/mkb.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/libaacs/$(DEPDIR)/mkb_dump-mkb.Po@am__quote@ # am--include-marker
@@ -1635,7 +1644,9 @@ distclean: distclean-am
 	-rm -f src/libaacs/$(DEPDIR)/cci_dump-cci.Po
 	-rm -f src/libaacs/$(DEPDIR)/content_cert.Plo
 	-rm -f src/libaacs/$(DEPDIR)/crypto.Plo
+	-rm -f src/libaacs/$(DEPDIR)/bd.Plo
 	-rm -f src/libaacs/$(DEPDIR)/hddvd.Plo
+	-rm -f src/libaacs/$(DEPDIR)/keyfile.Plo
 	-rm -f src/libaacs/$(DEPDIR)/ec.Plo
 	-rm -f src/libaacs/$(DEPDIR)/mkb.Plo
 	-rm -f src/libaacs/$(DEPDIR)/mkb_dump-mkb.Po
@@ -1724,7 +1735,9 @@ maintainer-clean: maintainer-clean-am
 	-rm -f src/libaacs/$(DEPDIR)/cci_dump-cci.Po
 	-rm -f src/libaacs/$(DEPDIR)/content_cert.Plo
 	-rm -f src/libaacs/$(DEPDIR)/crypto.Plo
+	-rm -f src/libaacs/$(DEPDIR)/bd.Plo
 	-rm -f src/libaacs/$(DEPDIR)/hddvd.Plo
+	-rm -f src/libaacs/$(DEPDIR)/keyfile.Plo
 	-rm -f src/libaacs/$(DEPDIR)/ec.Plo
 	-rm -f src/libaacs/$(DEPDIR)/mkb.Plo
 	-rm -f src/libaacs/$(DEPDIR)/mkb_dump-mkb.Po
