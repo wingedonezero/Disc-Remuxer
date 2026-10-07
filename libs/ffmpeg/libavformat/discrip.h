@@ -668,11 +668,11 @@ int  ff_discrip_pcm_finish(DRPcm *p);
 void ff_discrip_pcm_stats(const DRPcm *p, DRPcmStats *st);
 void ff_discrip_pcm_close(DRPcm **p);
 
-/* ---- the seamless overlap search's audio (discrip_seamless.c, discrip_mix.c) ---- */
+/* ---- the seamless overlap search's audio (discrip_seamless.c) ---- */
 
 /** Decodes TrueHD / MLP units (pre: decoded first and dropped) to one
  *  channel of 32-bit samples: 16-bit samples x 65536; channels mixed by
- *  ff_discrip_mix_matrix to front centre (centre 1, surround sqrt(2) / 8,
+ *  ff_discrip_seamless_mix to front centre (centre 1, surround sqrt(2) / 8,
  *  LFE 0, normalised; Q30 coefficients, 64-bit sums shifted down by 30,
  *  clipped). Each unit must give one frame of its own duration; of each range
  *  frame its first rate x duration samples are kept. Returns 1 with *out
@@ -684,11 +684,14 @@ int ff_discrip_seamless_decode(void *logctx, enum AVCodecID codec, int rate, con
  *  (0xFFFFFFFF = 1 or more), in integers; 0 when both are silent (no sample
  *  beyond +-99), 1 when they do not correlate positively. */
 uint32_t ff_discrip_seamless_corr(const int32_t *a, const int32_t *b, uint32_t n);
-/** The channel mix matrix of FFmpeg 4.4's libavresample (out x in, row
- *  stride). */
-int ff_discrip_mix_matrix(uint64_t in_layout, uint64_t out_layout, double center_mix_level,
-                          double surround_mix_level, double lfe_mix_level, int normalize,
-                          double *matrix, int stride, enum AVMatrixEncoding matrix_encoding);
+/** The mono mix of a decoded layout (a native channel mask) as Q30
+ *  coefficients, one per channel in mask order (llrint(2^30 c), clipped):
+ *  libswresample's matrix to front centre (centre 1, surround sqrt(2) / 8,
+ *  LFE 0, normalised to 1, Pro Logic II encoding) of the layout without its
+ *  height, wide, surround direct and second LFE channels, which get 0.
+ *  AVERROR(EINVAL) when no mix is built (no front speaker, more than 32
+ *  channels, a layout libswresample refuses). */
+int ff_discrip_seamless_mix(void *logctx, uint64_t layout, int32_t *q30);
 
 /* ---- Linear PCM of DVD-Video and HD DVD (discrip_lpcm.c) ----
  * The packet source hands each PES packet's audio frame header to

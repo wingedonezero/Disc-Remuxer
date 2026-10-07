@@ -5,6 +5,7 @@ join whose next segment repeats the last two access units of the one before
 it. The TrueHD stream is tests/data/sine_4813.thd (FFmpeg's encoder, 16-bit
 stereo, a major sync every 16 access units)."""
 
+import gzip
 import math
 
 from helpers import DATA, ffi, lib
@@ -174,3 +175,29 @@ def test_without_decoding_the_join_takes_the_duration_rule():
     assert not any(e["kind"] == lib.DR_EV_SEAMLESS_DROP for e in events)
     assert any(e["kind"] == lib.DR_EV_DROP and e["count"] == 2 for e in events), events
     assert st.dropped == 2
+
+
+def test_the_mono_mix_equals_the_matrix_it_was_built_on():
+    """libswresample's matrix without the height, wide, surround direct and
+    second LFE channels gives the Q30 coefficients the copied libavresample
+    matrix gave, for every layout the TrueHD decoder can give (recorded in
+    tests/data/mono_mix_q30.txt.gz)."""
+    TOP_FRONT = (1 << 12) | (1 << 14)
+    built = refused = height = 0
+    q30 = ffi.new("int32_t[32]")
+    for line in gzip.decompress((DATA / "mono_mix_q30.txt.gz").read_bytes()).decode().splitlines():
+        if line.startswith("#"):
+            continue
+        mask, *want = line.split()
+        mask = int(mask, 16)
+        ret = lib.ff_discrip_seamless_mix(ffi.NULL, mask, q30)
+        if want == ["-"]:
+            assert ret < 0, hex(mask)
+            refused += 1
+            continue
+        assert ret >= 0, hex(mask)
+        assert [q30[i] for i in range(len(want))] == [int(w) for w in want], hex(mask)
+        built += 1
+        height += bool(mask & TOP_FRONT)
+    assert (built, refused) == (6143, 2042)
+    assert height  # the layouts where libswresample alone would differ are among them

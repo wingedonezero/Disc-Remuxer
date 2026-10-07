@@ -30,6 +30,7 @@
 #include "libavutil/frame.h"
 #include "libavutil/log.h"
 #include "libavutil/mem.h"
+#include "libswresample/swresample.h"
 
 #include "discrip.h"
 
@@ -38,6 +39,44 @@
 #define MIX_CENTER   1.0
 #define MIX_SURROUND 0.1767766952966369
 #define MIX_LFE      0.0
+/* Channels of the TrueHD / MLP decoder that take no part in the mix (the
+ * height speakers, the wide and surround direct pairs, the second LFE): the
+ * matrix the search was built on has no rule for them. libswresample mixes
+ * the top front pair into the front, so they are taken out of the layout
+ * before it builds the matrix. */
+#define MIX_LEFT_OUT (AV_CH_TOP_FRONT_LEFT | AV_CH_TOP_FRONT_RIGHT | AV_CH_TOP_FRONT_CENTER | \
+                      AV_CH_TOP_CENTER | AV_CH_WIDE_LEFT | AV_CH_WIDE_RIGHT | \
+                      AV_CH_SURROUND_DIRECT_LEFT | AV_CH_SURROUND_DIRECT_RIGHT | AV_CH_LOW_FREQUENCY_2)
+
+/* swr_build_matrix2() scales a full 64 x 64 matrix (libswresample's channel
+ * limit), whatever the layouts */
+#define MIX_SIZE 64
+
+int ff_discrip_seamless_mix(void *log, uint64_t layout, int32_t *q30)
+{
+    uint64_t mixed = layout & ~MIX_LEFT_OUT;
+    AVChannelLayout in, out = AV_CHANNEL_LAYOUT_MONO;
+    double *mat;
+    int ret;
+
+    /* at least one front speaker (libswresample says the same, as an error) */
+    if (!(mixed & AV_CH_LAYOUT_SURROUND) || av_popcount64(layout) > 32)
+        return AVERROR(EINVAL);
+    if (!(mat = av_calloc(MIX_SIZE * MIX_SIZE, sizeof(*mat))))
+        return AVERROR(ENOMEM);
+    av_channel_layout_from_mask(&in, mixed);
+    ret = swr_build_matrix2(&in, &out, MIX_CENTER, MIX_SURROUND, MIX_LFE, 1.0, 1.0, mat, MIX_SIZE,
+                            AV_MATRIX_ENCODING_DPLII, log);
+    if (ret >= 0)
+        /* back to the layout's channels: the left-out ones get 0 */
+        for (int bit = 0, c = 0, k = 0; bit < 64; bit++) {
+            if (!(layout >> bit & 1))
+                continue;
+            q30[c++] = mixed >> bit & 1 ? av_clipl_int32(llrint(1073741824.0 * mat[k++])) : 0;
+        }
+    av_free(mat);
+    return ret;
+}
 
 typedef struct Mono {
     int32_t *s;
@@ -152,7 +191,6 @@ int ff_discrip_seamless_decode(void *log, enum AVCodecID codec, int rate, const 
             }
             if (!channels) {
                 uint64_t layout = fr->ch_layout.order == AV_CHANNEL_ORDER_NATIVE ? fr->ch_layout.u.mask : 0;
-                double mat[32];
                 channels = fr->ch_layout.nb_channels;
                 if (fr->format != AV_SAMPLE_FMT_S16 && fr->format != AV_SAMPLE_FMT_S16P &&
                     fr->format != AV_SAMPLE_FMT_S32 && fr->format != AV_SAMPLE_FMT_S32P) {
@@ -161,15 +199,12 @@ int ff_discrip_seamless_decode(void *log, enum AVCodecID codec, int rate, const 
                     goto end;
                 }
                 if (channels > 1) {
-                    if (channels > 32 || ff_discrip_mix_matrix(layout, AV_CH_FRONT_CENTER, MIX_CENTER, MIX_SURROUND,
-                                                               MIX_LFE, 1, mat, channels,
-                                                               AV_MATRIX_ENCODING_DPLII) < 0) {
+                    if (channels > 32 || (ret = ff_discrip_seamless_mix(log, layout, q30)) < 0) {
                         av_log(log, AV_LOG_DEBUG, "Rip core: seamless search: no mono mix for %d channels\n",
                                channels);
+                        ret = ret == AVERROR(ENOMEM) ? ret : 0;
                         goto end;
                     }
-                    for (int c = 0; c < channels; c++)
-                        q30[c] = av_clipl_int32(llrint(1073741824.0 * mat[c]));
                 }
             }
             if (fr->ch_layout.nb_channels != channels) {

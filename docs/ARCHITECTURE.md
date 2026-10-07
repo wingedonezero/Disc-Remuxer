@@ -76,7 +76,7 @@ Rules:
 | `discrip_spu.c` | step 3, done: the unit cutting is in `dvdsub_parser.c` (disc mode); the unit check and the units' times stay |
 | `discrip_lpcm.c` | stays: LPCM has no frames in the bitstream; the frame size (samples per output frame) is the title timeline's choice |
 | `discrip_codecs.c` (codec table) | stays: which frames belong to a track (the checks after the parser), durations, anchors, output checks; the frame cutting it named is in FFmpeg's parsers (`disc_parser`) |
-| `discrip_mix.c` (copied FFmpeg downmix) | replaced by libswresample |
+| `discrip_mix.c` (copied FFmpeg downmix) | step 5, done: replaced by libswresample (the seamless search's mono mix; the same numbers on every TrueHD layout) |
 | `discrip_cc.c`, `discrip_ccx.c` | stay with the title timeline (caption track; the caption converter is a helper program) |
 | `discrip_title.c`, `_join.c`, `_video.c`, `_audio.c`, `_junction.c`, `_pcm.c`, `_seamless.c`, `_chapters.c`, `_verify.c` | the title timeline (stay) |
 | `bluray.c` | FFmpeg's libbluray protocol, untouched until Blu-ray |
@@ -118,6 +118,10 @@ their logs for changed warnings).
    AC-3) that carries an AC-3 inside it gives two linked tracks, like DTS-HD
    MA and its DTS: the E-AC-3 whole, and the AC-3 taken out of it (FFmpeg's
    `eac3_core`; `inner_track` / `from_track`). HD DVD never gives that pair.
+   Also: the seamless search's mono mix leaves the height speakers (and the
+   wide, surround direct and second LFE channels) out, as the reference does;
+   test with them in and out on TrueHD that carries them and see whether the
+   chosen join changes.
 
 Open points (decided on the way): the parsers' disc flag (a new
 `PARSER_FLAG_*` bit set from the demuxer, or a format context flag that

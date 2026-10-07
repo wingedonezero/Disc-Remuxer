@@ -303,6 +303,7 @@ void ff_discrip_pcm_close(DRPcm **p);
 int ff_discrip_seamless_decode(void *logctx, int codec, int rate, const DRFrame *pre, int nb_pre,
                                const DRFrame *range, int nb_range, int32_t **out, int *nb_out);
 uint32_t ff_discrip_seamless_corr(const int32_t *a, const int32_t *b, uint32_t n);
+int ff_discrip_seamless_mix(void *logctx, uint64_t layout, int32_t *q30);
 
 typedef struct DRLpcm {
     int      init;
