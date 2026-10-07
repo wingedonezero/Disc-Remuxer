@@ -614,6 +614,8 @@ static const DRCodec codecs[] = {
     { .id = AV_CODEC_ID_DVD_SUBTITLE, .name = "dvd_subtitle",
       .check = ff_disctl_spu_check, .disc_parser = 1,
       .verify = ff_disctl_spu_verify },
+    { .id = AV_CODEC_ID_HDMV_PGS_SUBTITLE, .name = "hdmv_pgs_subtitle",
+      .check = ff_disctl_pgs_check, .disc_parser = 1, .verify = ff_disctl_pgs_verify },
     /* closed captions as text cues (made by the caption converter) */
     { .id = AV_CODEC_ID_SUBRIP, .name = "subrip" },
 };

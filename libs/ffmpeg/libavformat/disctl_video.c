@@ -1060,6 +1060,14 @@ int ff_disctl_video_snap(const DRVideo *v, int64_t t, int64_t *out)
     return 0;
 }
 
+int ff_disctl_video_field(const DRVideo *v, int64_t *ticks)
+{
+    if (!v->started)
+        return AVERROR(EAGAIN);
+    *ticks = (int64_t)(v->v70 / v->v78);
+    return 0;
+}
+
 void *ff_disctl_video_priv(DRVideo *v)
 {
     return v->priv;

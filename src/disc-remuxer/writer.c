@@ -61,6 +61,7 @@ static const char *es_extension(enum AVCodecID id)
     case AV_CODEC_ID_PCM_S16LE:
     case AV_CODEC_ID_PCM_S24LE:    return "wav";
     case AV_CODEC_ID_DVD_SUBTITLE: return "sub";
+    case AV_CODEC_ID_HDMV_PGS_SUBTITLE: return "sup";
     case AV_CODEC_ID_SUBRIP:       return "srt";
     default:                       return "bin";
     }
@@ -103,6 +104,7 @@ typedef struct EsOut {
     char         *name;
     FILE         *f;
     FILE         *idx;              /* sub-pictures: the VobSub index next to the .sub */
+    int           no_forced;        /* a forced-only track that showed nothing: its file removed */
     int64_t       sub_pos;          /* bytes written to the .sub */
     int64_t       cues;             /* captions: SRT cues written */
     int           wav;              /* a WAV header to complete at the end */
@@ -368,6 +370,29 @@ static int srt_write(EsOut *o, const AVStream *st, const AVPacket *pkt)
     return 0;
 }
 
+/* A PGS display set as .sup: each segment after a "PG" header with the
+ * set's time (90 kHz, 32 bits) and a decode time of 0 (a reader shows a set
+ * at its composition segment's time; the decode times only schedule a
+ * player's decoder). */
+static int sup_write(EsOut *o, const AVStream *st, const AVPacket *pkt)
+{
+    uint32_t pts = (uint32_t)av_rescale_q(pkt->pts, st->time_base, (AVRational){ 1, 90000 });
+    int off = 0;
+
+    while (off + 3 <= pkt->size) {
+        int len = 3 + AV_RB16(pkt->data + off + 1);
+        uint8_t h[10] = { 'P', 'G' };
+        if (off + len > pkt->size)
+            return AVERROR_INVALIDDATA;
+        AV_WB32(h + 2, pts);
+        if (fwrite(h, 1, sizeof(h), o->f) != sizeof(h) || fwrite(pkt->data + off, 1, len, o->f) != (size_t)len)
+            return AVERROR(EIO);
+        o->st.bytes += sizeof(h) + len;
+        off += len;
+    }
+    return off == pkt->size ? 0 : AVERROR_INVALIDDATA;
+}
+
 static int es_write(EsOut *o, const AVPacket *pkt)
 {
     if (o->idx)
@@ -478,6 +503,9 @@ static void subtitle_detail(const AVStream *st, int opened, char *json, size_t s
     }
     if (no_stop)
         av_bprintf(&b, "; %"PRId64" without a stop time, each shown until the next one", no_stop);
+    if (av_dict_get(st->metadata, "forced_objects", NULL, 0))
+        av_bprintf(&b, "; %"PRId64" forced object%s", meta_int(st->metadata, "forced_objects"),
+                   meta_int(st->metadata, "forced_objects") == 1 ? "" : "s");
     log_text(outside ? LOG_WARNING : LOG_INFO, "      %s", b.str);
     av_bprint_finalize(&b, NULL);
     snprintf(json, size, ",\"picture\":%s,\"width\":%d,\"height\":%d,\"no_stop\":%"PRId64",\"outside\":%"PRId64,
@@ -604,7 +632,8 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
             goto end;
         }
         ret = o->idx ? vobsub_write(o, st, pkt) :
-              st->codecpar->codec_id == AV_CODEC_ID_SUBRIP ? srt_write(o, st, pkt) : es_write(o, pkt);
+              st->codecpar->codec_id == AV_CODEC_ID_SUBRIP ? srt_write(o, st, pkt) :
+              st->codecpar->codec_id == AV_CODEC_ID_HDMV_PGS_SUBTITLE ? sup_write(o, st, pkt) : es_write(o, pkt);
         av_packet_unref(pkt);
         if (ret < 0)
             goto end;
@@ -632,6 +661,17 @@ end:
             ret = AVERROR(errno);
         if (o->idx && fclose(o->idx) && ret >= 0)
             ret = AVERROR(errno);
+        o->f = NULL;
+        /* a forced-only subtitle track that shows nothing is empty: no file
+         * (as an MKV leaves such a track out) */
+        if (ret >= 0 && o->opened && (ctx->streams[i]->disposition & AV_DISPOSITION_FORCED) &&
+            av_dict_get(ctx->streams[i]->metadata, "forced_objects", NULL, 0) &&
+            !meta_int(ctx->streams[i]->metadata, "forced_objects")) {
+            if (remove(o->name) < 0)
+                ret = AVERROR(errno);
+            o->opened = 0;
+            o->no_forced = 1;
+        }
     }
     if (ret < 0) {
         log_msg(MSG_TITLE_FAILED, LOG_ERROR, "Title #%d failed: %s", job->title, av_err2str(ret));
@@ -660,6 +700,8 @@ end:
                      codec_label(st->codecpar->codec_id, st->codecpar->profile), *o->layout ? " " : "", o->layout);
             if (empty_cc)
                 snprintf(state, sizeof(state), "no caption text: no file");
+            else if (o->no_forced)
+                snprintf(state, sizeof(state), "no forced subtitles: no file");
             else if (!o->opened)
                 snprintf(state, sizeof(state), "no data: no file");
             else if (warn)
@@ -668,7 +710,8 @@ end:
                 snprintf(state, sizeof(state), "OK");
             if (o->opened && st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
                 snprintf(delay, sizeof(delay), ", delay %"PRId64" ms", o->st.delay_ms);
-            log_text(!o->opened && !empty_cc ? LOG_WARNING : warn || empty_cc ? LOG_INFO : LOG_OK,
+            log_text(!o->opened && !empty_cc && !o->no_forced ? LOG_WARNING : warn || empty_cc || o->no_forced ?
+                     LOG_INFO : LOG_OK,
                      "  %02u  %-30s %8"PRId64" %-9s  %s%s",
                      i, what, frames, unit, state, delay);
             if (st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE)

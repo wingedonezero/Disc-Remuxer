@@ -507,6 +507,9 @@ int  ff_disctl_video_flush(DRVideo *v);
 /** A frame rate a header states: the first one times the segment; a later
  *  different one is a warning (logged, event), the timing keeps the first. */
 void ff_disctl_video_set_rate(DRVideo *v, int num, int den);
+/** The grid's field period (ticks, truncated): AVERROR(EAGAIN) while the grid
+ *  is not known yet. */
+int  ff_disctl_video_field(const DRVideo *v, int64_t *ticks);
 /** Bytes taken out of the unit being read (from DRVideoRules.split), at
  *  stream byte pos: a side unit, handed on (ff_disctl_video_set_side) with
  *  the grid time of the next picture after that unit in its batch, else of
@@ -540,6 +543,7 @@ typedef struct DRSpuStats {
     int64_t colcon;            /**< with a colour / contrast change (CHG_COLCON) */
     int64_t max_shift;         /**< largest move to the video grid (ticks) */
     int64_t outside;           /**< drawn outside the canvas (SET_DAREA beyond width x height) */
+    int64_t forced_objects;    /**< PGS: forced objects shown (a forced-only track: the ones it keeps) */
 } DRSpuStats;
 
 typedef struct DRSpu DRSpu;
@@ -547,10 +551,17 @@ typedef struct DRSpu DRSpu;
 /** Sub-picture timing of one track in one segment, on the grid of the
  *  segment's video v (which must outlive it); width x height the canvas the
  *  units are drawn on (0 x 0: not known, not checked). */
+/* Blu-ray PGS (ff_disctl_spu_set_pgs): the units are display sets, each
+ * lasting one video field period (the next set replaces or clears it), timed
+ * at the video grid point nearest to its composition segment's time; a
+ * forced-only track keeps every set (later sets may use what earlier ones
+ * define) with each set's composition objects cut to the forced ones. */
 int  ff_disctl_spu_open(DRSpu **s, void *logctx, int track, DRVideo *v, int width, int height,
                          DRFrameCb cb, void *opaque, DREventCb event, void *event_opaque);
 /** A DRUnitCb: opaque = the DRSpu. */
 int  ff_disctl_spu_unit(void *spu, const DRUnit *unit);
+/** The track is PGS (forced_only: DR_SUB_FORCED_ONLY track). */
+void ff_disctl_spu_set_pgs(DRSpu *s, int forced_only);
 /** The end of the segment (after the video's flush). */
 int  ff_disctl_spu_flush(DRSpu *s);
 void ff_disctl_spu_stats(const DRSpu *s, DRSpuStats *st);
@@ -745,7 +756,12 @@ typedef struct DRTitleTrack {
     int            kind;           /**< DRTrackKind */
     int            audio_flags;    /**< DR_AUDIO_EXTRACTED, DR_AUDIO_EXTENDED */
     int            width, height;  /**< sub-pictures: the canvas they are drawn on (0 x 0: not known) */
+    int            sub_flags;      /**< DR_SUB_FORCED_ONLY */
 } DRTitleTrack;
+
+/** A subtitle track of what a player shows with subtitles switched off:
+ *  only the objects marked forced (PGS: object_forced_on_flag). */
+#define DR_SUB_FORCED_ONLY 0x0001
 
 typedef struct DRTitleConfig {
     int                 nb_tracks;
@@ -778,6 +794,9 @@ int  ff_disctl_title_frame(DRTitle *t, int *track, DRFrame *frame);
 /** After finish: the chapters of the plan the marks came from (*out freed
  *  with av_free()). */
 int  ff_disctl_title_chapters(const DRTitle *t, const DRChapterPlan *plan, DRChapter **out, int *nb_out);
+/** PGS: the forced objects the track shows (a forced-only track: none
+ *  means it shows nothing). */
+int ff_disctl_title_forced_objects(const DRTitle *t, int track, int64_t *forced);
 /** A linear PCM track's format once its first header was read (else NULL). */
 const DRLpcm *ff_disctl_title_lpcm(const DRTitle *t, int track);
 /** Untested features met so far (audio reviews): the job must be checked,
@@ -809,6 +828,14 @@ extern const DRVideoRules ff_disctl_video_vc1;
 extern const DRVideoRules ff_disctl_video_h264;
 int ff_disctl_mlp_check(const uint8_t *data, int size);
 int ff_disctl_spu_check(const uint8_t *data, int size);
+/* PGS display sets (disctl_pgs.c): 1 when data is one display set (from a
+ * presentation composition segment to the end segment, lengths exact). */
+int ff_disctl_pgs_check(const uint8_t *data, int size);
+int ff_disctl_pgs_verify(const uint8_t *data, int size);
+/** The set with each composition segment's objects cut to the forced ones
+ *  into out (at least size bytes): its size, < 0 the set does not parse;
+ *  *forced: the forced objects kept. */
+int ff_disctl_pgs_forced_only(const uint8_t *in, int size, uint8_t *out, int *forced);
 int ff_disctl_spu_verify(const uint8_t *data, int size);
 /** The VobSub index header of a sub-picture track (frame size, the 16
  *  palette entries 0x00 Y Cr Cb converted to RGB; NULL = all black) into buf;

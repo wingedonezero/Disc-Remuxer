@@ -176,13 +176,14 @@ static int describe_titles(AVFormatContext *s)
 }
 
 /* Whether the title timeline reads a track's codec in this step: AVC
- * video; AC-3, DTS, DTS-HD audio. */
+ * video; AC-3, DTS, DTS-HD audio; PGS subtitles. */
 static int readable(const BlurayTrack *tk)
 {
     switch (tk->codec) {
     case AV_CODEC_ID_H264: return tk->type == AVMEDIA_TYPE_VIDEO && tk->from_track < 0;   /* not the 3-D second view */
     case AV_CODEC_ID_AC3:
-    case AV_CODEC_ID_DTS:  return !(tk->flags & BLURAY_TRACK_SIDE);
+    case AV_CODEC_ID_DTS:
+    case AV_CODEC_ID_HDMV_PGS_SUBTITLE: return !(tk->flags & BLURAY_TRACK_SIDE);
     default:               return 0;
     }
 }
@@ -246,12 +247,22 @@ static int open_title(AVFormatContext *s, const BlurayTitle *t)
         avpriv_set_pts_info(st, 64, 1, DR_TICKS_PER_SECOND);
         if (tk->from_track >= 0)
             st->disposition |= AV_DISPOSITION_DEPENDENT;
+        if (tk->flags & BLURAY_TRACK_FORCED)
+            st->disposition |= AV_DISPOSITION_FORCED;
         if (tk->lang[0] && av_dict_set(&st->metadata, "language", tk->lang, 0) < 0)
             return AVERROR(ENOMEM);
         if (av_dict_set_int(&st->metadata, "disc_track", i, 0) < 0)
             return AVERROR(ENOMEM);
+        /* what the units are, for the caller's log */
+        if (tk->codec == AV_CODEC_ID_HDMV_PGS_SUBTITLE &&
+            av_dict_set(&st->metadata, "picture", (tk->flags & BLURAY_TRACK_FORCED) ?
+                        "Blu-ray PGS display sets, forced subtitles only (each set shows only its forced objects, "
+                        "as a player does with subtitles off)" : "Blu-ray PGS display sets", 0) < 0)
+            return AVERROR(ENOMEM);
         c->tracks[n].codec       = tk->codec;
-        c->tracks[n].kind        = tk->type == AVMEDIA_TYPE_VIDEO ? DR_KIND_VIDEO : DR_KIND_AUDIO;
+        c->tracks[n].kind        = tk->type == AVMEDIA_TYPE_VIDEO ? DR_KIND_VIDEO :
+                                   tk->type == AVMEDIA_TYPE_AUDIO ? DR_KIND_AUDIO : DR_KIND_SUBTITLE;
+        c->tracks[n].sub_flags   = (tk->flags & BLURAY_TRACK_FORCED) ? DR_SUB_FORCED_ONLY : 0;
         c->tracks[n].audio_flags = (tk->from_track >= 0 ? DR_AUDIO_EXTRACTED : 0) |
                                    (tk->from_track >= 0 || tk->inner_track >= 0 ? DR_AUDIO_EXTENDED : 0);
         add_pid(c, &nb_pids, tk->pid);

@@ -63,6 +63,7 @@ typedef struct Track {
     int           holding;
     int64_t       extended;      /* sub-pictures: units without a stop time shown until the next one */
     int64_t       outside;       /* sub-pictures: units drawn outside the canvas */
+    int64_t       forced_objects;/* PGS: forced objects shown */
     DRCcx        *ccx;           /* captions: the converter, from the first block on */
     int64_t       cc_blocks;     /* captions: caption blocks given to the converter */
     int64_t       cc_last_ms;    /* captions: the last block's time (ms) */
@@ -666,6 +667,8 @@ static int seg_open(DRTitle *t)
             ret   = ff_disctl_spu_open(&k->spu, t->log, i, t->t[0].video, k->cfg.width, k->cfg.height, seg_frame, k, on_seg_event, t);
             unit  = ff_disctl_spu_unit;
             stage = k->spu;
+            if (ret >= 0 && k->cfg.codec == AV_CODEC_ID_HDMV_PGS_SUBTITLE)
+                ff_disctl_spu_set_pgs(k->spu, !!(k->cfg.sub_flags & DR_SUB_FORCED_ONLY));
             break;
         }
         if (ret < 0)
@@ -715,6 +718,7 @@ static int seg_end(DRTitle *t)
             DRSpuStats ss;
             ff_disctl_spu_stats(k->spu, &ss);
             k->outside  += ss.outside;
+            k->forced_objects += ss.forced_objects;
             k->warnings += ss.outside > 0;  /* the stage warns once per segment */
         }
         if (k->audio) {
@@ -970,6 +974,14 @@ void ff_disctl_title_cc_dropped(const DRTitle *t, int64_t *blocks, int64_t *text
 {
     *blocks = t->cc_dropped;
     *text   = t->cc_text;
+}
+
+int ff_disctl_title_forced_objects(const DRTitle *t, int track, int64_t *forced)
+{
+    if (track < 0 || track >= t->cfg.nb_tracks || t->t[track].cfg.kind != DR_KIND_SUBTITLE)
+        return AVERROR(EINVAL);
+    *forced = t->t[track].forced_objects;
+    return 0;
 }
 
 int ff_disctl_title_spu_result(const DRTitle *t, int track, int64_t *no_stop, int64_t *outside)

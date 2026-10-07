@@ -601,6 +601,10 @@ static int title_end(AVFormatContext *s)
             ((ret = av_dict_set_int(m, "no_stop", frames, 0)) < 0 ||
              (ret = av_dict_set_int(m, "outside", warnings, 0)) < 0))
             return ret;
+        if (s->streams[i]->codecpar->codec_id == AV_CODEC_ID_HDMV_PGS_SUBTITLE &&
+            ff_disctl_title_forced_objects(r->rip, i, &frames) >= 0 &&
+            (ret = av_dict_set_int(m, "forced_objects", frames, 0)) < 0)
+            return ret;
     }
     return 0;
 }
