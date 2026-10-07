@@ -110,7 +110,11 @@ their logs for changed warnings).
 6. **DVD on the same line:** the DVD part's sectors into `mpeg.c` with the
    disc options, its titles through the title timeline, libdvdnav playback
    reading removed; checked against the DVD corpus checks.
-7. **Matroska writer**, then **Blu-ray** (TS demuxer decided there).
+7. **Matroska writer**, then **Blu-ray** (TS demuxer decided there). Blu-ray
+   items noted on the way: an E-AC-3 stream (Dolby Digital Plus, the improved
+   AC-3) that carries an AC-3 inside it gives two linked tracks, like DTS-HD
+   MA and its DTS: the E-AC-3 whole, and the AC-3 taken out of it (FFmpeg's
+   `eac3_core`; `inner_track` / `from_track`). HD DVD never gives that pair.
 
 Open points (decided on the way): the parsers' disc flag (a new
 `PARSER_FLAG_*` bit set from the demuxer, or a format context flag that
