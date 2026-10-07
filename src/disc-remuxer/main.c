@@ -18,6 +18,7 @@
 #include <libavformat/avformat.h>
 #include <libavformat/discinfo.h>
 #include <libavutil/avutil.h>
+#include <libavutil/bprint.h>
 
 #include "log.h"
 #include "msg.h"
@@ -110,25 +111,29 @@ static const char *json_num(char *buf, size_t size, int64_t v)
  * record. */
 static void title_overview(const DiscTitleInfo *t, int detail)
 {
-    char dur[32], size[32], streams[4096] = "", files[2048] = "", js[512], jl[16], extra[160] = "";
+    char dur[32], size[32], files[2048] = "", js[512], jl[16], extra[160] = "";
+    AVBPrint streams;
     int nv = 0, na = 0, ns = 0;
 
     hms(dur, sizeof(dur), t->duration);
     size_text(size, sizeof(size), t->size);
+    av_bprint_init(&streams, 0, AV_BPRINT_SIZE_UNLIMITED);
     for (int i = 0; i < t->nb_streams; i++) {
         const DiscStreamInfo *k = &t->streams[i];
-        char jc[64], jsl[16], n1[24], n2[24], n3[24], n4[24], n5[24], n6[24], ji[24], jf[24];
+        char jc[64], jsl[16], n1[24], n2[24], n3[24], n4[24], n5[24], n6[24], ji[24], jf[24], jo[24];
         nv += k->type == AVMEDIA_TYPE_VIDEO;
         na += k->type == AVMEDIA_TYPE_AUDIO;
         ns += k->type == AVMEDIA_TYPE_SUBTITLE;
-        snprintf(streams + strlen(streams), sizeof(streams) - strlen(streams),
+        av_bprintf(&streams,
                  "%s{\"index\":%d,\"kind\":\"%s\",\"codec\":%s,\"language\":%s,\"inner_track\":%s,"
-                 "\"from_track\":%s,\"width\":%s,"
+                 "\"from_track\":%s,\"forced\":%s,\"second_view\":%s,\"offset_sequence\":%s,\"width\":%s,"
                  "\"height\":%s,\"channels\":%s,\"sample_rate\":%s,\"bits\":%s,\"bit_rate\":%s}",
                  i ? "," : "", i, av_get_media_type_string(k->type),
                  json_str(jc, sizeof(jc), codec_label(k->codec, AV_PROFILE_UNKNOWN)),
                  json_str(jsl, sizeof(jsl), k->language), json_index(ji, sizeof(ji), k->inner_track),
-                 json_index(jf, sizeof(jf), k->from_track), json_num(n1, sizeof(n1), k->width),
+                 json_index(jf, sizeof(jf), k->from_track), k->forced ? "true" : "false",
+                 k->second_view ? "true" : "false", json_index(jo, sizeof(jo), k->offset_sequence),
+                 json_num(n1, sizeof(n1), k->width),
                  json_num(n2, sizeof(n2), k->height), json_num(n3, sizeof(n3), k->channels),
                  json_num(n4, sizeof(n4), k->sample_rate), json_num(n5, sizeof(n5), k->bits),
                  json_num(n6, sizeof(n6), k->bit_rate));
@@ -158,10 +163,17 @@ static void title_overview(const DiscTitleInfo *t, int detail)
             char extra[64] = "", link[96] = "";
             if (k->type == AVMEDIA_TYPE_SUBTITLE && k->width)
                 snprintf(extra, sizeof(extra), "  %dx%d", k->width, k->height);
-            if (k->from_track >= 0)
+            if (k->forced)
+                snprintf(link, sizeof(link), "  (forced subtitles of track %d)", k->from_track);
+            else if (k->second_view)
+                snprintf(link, sizeof(link), "  (3-D second view of track %d)", k->from_track);
+            else if (k->from_track >= 0)
                 snprintf(link, sizeof(link), "  (taken out of track %d)", k->from_track);
             else if (k->inner_track >= 0)
                 snprintf(link, sizeof(link), "  (track %d is taken out of it)", k->inner_track);
+            if (k->offset_sequence >= 0)
+                snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "  3-D offset sequence %d",
+                         k->offset_sequence);
             log_text(LOG_INFO, "       %-2d %-8s %-8s %-3s%s%s", i, av_get_media_type_string(k->type),
                      codec_label(k->codec, AV_PROFILE_UNKNOWN), k->language, extra, link);
         }
@@ -175,7 +187,8 @@ static void title_overview(const DiscTitleInfo *t, int detail)
     log_json("title", "\"index\":%d,\"name\":%s,\"duration\":%.3f,\"chapters\":%d,\"size\":%"PRId64",\"language\":%s,"
              "\"selected\":%s,\"files\":[%s],\"tracks\":[%s]%s", t->index,
              json_str(js, sizeof(js), t->name ? t->name : ""), t->duration / (double)AV_TIME_BASE, t->nb_chapters,
-             t->size, json_str(jl, sizeof(jl), t->language), t->selected ? "true" : "false", files, streams, extra);
+             t->size, json_str(jl, sizeof(jl), t->language), t->selected ? "true" : "false", files, streams.str, extra);
+    av_bprint_finalize(&streams, NULL);
 }
 
 /* The disc line and the overview of its titles (with the JSON disc and title

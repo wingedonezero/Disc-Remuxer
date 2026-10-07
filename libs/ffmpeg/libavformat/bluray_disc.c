@@ -558,5 +558,16 @@ void ff_bluray_disc_dump(const BlurayDisc *d, AVBPrint *bp)
         for (int k = 0; k < t->nb_side; k++)
             av_bprintf(bp, " text %s", t->side[k].seg.desc);
         av_bprintf(bp, "\n");
+        for (int k = 0; k < t->nb_tracks; k++) {
+            const BlurayTrack *tk = &t->tracks[k];
+            av_bprintf(bp, "  track %d kind 0x%02x pid 0x%04x sel 0x%x 0x%x flags 0x%x lang '%s' stream %d from %d inner %d",
+                       k, tk->code, tk->pid, tk->sel1, tk->sel2, tk->flags, tk->lang, tk->stream, tk->from_track,
+                       tk->inner_track);
+            if (tk->offset_seq >= 0)
+                av_bprintf(bp, " offset %d", tk->offset_seq);
+            if (tk->flags & BLURAY_TRACK_SIDE)
+                av_bprintf(bp, " clip %05u stc %d", tk->side_clip, tk->side_stc);
+            av_bprintf(bp, "\n");
+        }
     }
 }

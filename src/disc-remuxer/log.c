@@ -301,18 +301,22 @@ void log_progress(int title, double done)
 
 void log_json(const char *type, const char *fields, ...)
 {
-    char body[16384];
+    char *body = NULL;
     va_list vl;
+    int n;
 
     if (!json_mode)
         return;
     va_start(vl, fields);
-    vsnprintf(body, sizeof(body), fields, vl);
+    n = vasprintf(&body, fields, vl);   /* a record of any length (a title with many tracks) */
     va_end(vl);
+    if (n < 0)
+        return;
     pthread_mutex_lock(&lock);
     printf("{\"type\":\"%s\"%s%s}\n", type, *body ? "," : "", body);
     fflush(stdout);
     pthread_mutex_unlock(&lock);
+    free(body);
 }
 
 void log_counts(int *errors, int *warnings)

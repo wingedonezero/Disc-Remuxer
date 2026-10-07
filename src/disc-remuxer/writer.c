@@ -86,7 +86,10 @@ const char *codec_label(enum AVCodecID id, int profile)
     case AV_CODEC_ID_AAC:          return "AAC";
     case AV_CODEC_ID_PCM_DVD:
     case AV_CODEC_ID_PCM_S16LE:
-    case AV_CODEC_ID_PCM_S24LE:    return "LPCM";
+    case AV_CODEC_ID_PCM_S24LE:
+    case AV_CODEC_ID_PCM_BLURAY:   return "LPCM";
+    case AV_CODEC_ID_HDMV_PGS_SUBTITLE:  return "PGS";
+    case AV_CODEC_ID_HDMV_TEXT_SUBTITLE: return "TextST";
     case AV_CODEC_ID_DVD_SUBTITLE: return "VobSub";
     case AV_CODEC_ID_SUBRIP:       return "CC";      /* closed captions made into text */
     default:                       return avcodec_get_name(id);

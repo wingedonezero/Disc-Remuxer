@@ -67,17 +67,21 @@ static const char *keep(BlurayDemuxContext *c, char *str)
 
 /* The disc info's titles: name (the title's own, else the disc's), what it
  * is made from, its angle, duration and size (its STC sequences' and their
- * bytes), the clip files it plays (one per segment item), chapter marks. */
+ * bytes), the clip files it plays (one per segment item), its tracks,
+ * chapter marks. */
 static int describe_titles(AVFormatContext *s)
 {
     BlurayDemuxContext *c = ff_disc_part(s);
     BlurayDisc *b = &c->disc;
 
     for (int i = 0; i < b->nb_titles; i++) {
-        const BlurayTitle *t = &b->titles[i];
-        DiscTitleInfo *dt = ff_disc_add_title(s);
+        BlurayTitle *t = &b->titles[i];
+        DiscTitleInfo *dt;
+        int ret = ff_bluray_title_tracks(s, t);
 
-        if (!dt)
+        if (ret < 0 && ret != AVERROR_INVALIDDATA)
+            return ret;
+        if (!(dt = ff_disc_add_title(s)))
             return AVERROR(ENOMEM);
         dt->name     = t->title_name ? t->title_name : b->name;
         dt->source   = t->name;
@@ -101,6 +105,20 @@ static int describe_titles(AVFormatContext *s)
                         return AVERROR(ENOMEM);
                 }
             }
+        for (int k = 0; k < t->nb_tracks; k++) {
+            const BlurayTrack *tk = &t->tracks[k];
+            DiscStreamInfo *ds = ff_disc_title_add_stream(dt);
+            if (!ds)
+                return AVERROR(ENOMEM);
+            ds->type        = tk->type;
+            ds->codec       = tk->codec;
+            ds->inner_track = tk->inner_track;
+            ds->from_track  = tk->from_track;
+            ds->forced      = !!(tk->flags & BLURAY_TRACK_FORCED);
+            ds->second_view = tk->type == AVMEDIA_TYPE_VIDEO && tk->from_track >= 0;
+            ds->offset_sequence = tk->offset_seq;
+            memcpy(ds->language, tk->lang, sizeof(ds->language));
+        }
         for (int k = 0; k < t->nb_marks; k++) {
             DiscChapterInfo *ch = ff_disc_title_add_chapter(dt);
             if (!ch)

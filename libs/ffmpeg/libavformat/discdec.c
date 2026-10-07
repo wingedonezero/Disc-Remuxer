@@ -71,7 +71,7 @@ DiscStreamInfo *ff_disc_title_add_stream(DiscTitleInfo *t)
     DiscStreamInfo *k = av_dynarray2_add((void **)&t->streams, &t->nb_streams, sizeof(*k), NULL);
     if (k) {
         memset(k, 0, sizeof(*k));
-        k->inner_track = k->from_track = -1;
+        k->inner_track = k->from_track = k->offset_sequence = -1;
     }
     return k;
 }

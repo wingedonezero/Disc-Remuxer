@@ -24,7 +24,9 @@
 #include <inttypes.h>
 #include <stdint.h>
 
+#include "libavutil/avutil.h"
 #include "libavutil/error.h"
+#include "libavcodec/codec_id.h"
 
 #include "discio.h"
 
@@ -227,7 +229,19 @@ typedef struct BlurayClipStream {
     uint8_t  coding_type;
     uint8_t  info_len;               /**< recorded length - 1 */
     uint8_t  info[32];
+    /* what the stream probe found (bluray_tracks.c) */
+    uint32_t probe;                  /**< BLURAY_PROBE_* */
+    char     probe_lang[4];          /**< with BLURAY_PROBE_LANG */
+    uint8_t  subtype;                /**< with BLURAY_PROBE_SUBTYPE: a private stream's kind */
 } BlurayClipStream;
+
+#define BLURAY_PROBE_DONE     0x10   /**< probed */
+#define BLURAY_PROBE_NO_CORE  0x20   /**< E-AC-3 / DTS-HD without a core substream */
+#define BLURAY_PROBE_LANG     0x40   /**< probe_lang found in the stream */
+#define BLURAY_PROBE_SUBTYPE  0x80   /**< subtype found in the program map */
+#define BLURAY_PROBE_M2TS     0x100  /**< a stream of a BDAV (M2TS) clip */
+#define BLURAY_PROBE_HEVC_EL  0x200  /**< HEVC with a second layer on PID 0x1015 */
+#define BLURAY_PROBE_AVC_ID   0x400  /**< AVC video on PES stream id 0xE0 + (probe & 0xf) */
 
 typedef struct BlurayProgram {
     uint32_t          spn_start;
@@ -365,6 +379,33 @@ typedef struct BluraySide {
     BluraySegment         seg;
 } BluraySide;
 
+/** A track of a title (bluray_tracks.c): one of the parts a clip stream
+ *  gives (TrueHD and its AC-3, a subtitle and its forced-only copy, ...). */
+typedef struct BlurayTrack {
+    int              code;          /**< the kind of track (internal codes, bluray_tracks.c) */
+    enum AVMediaType type;
+    enum AVCodecID   codec;
+    uint16_t         pid;
+    uint32_t         sel1, sel2;    /**< what of the PID it takes (PES stream id extension, ...) */
+    uint32_t         flags;         /**< BLURAY_TRACK_* */
+    char             lang[4];
+    int              stream;        /**< the stream it comes from (the title's stream numbering) */
+    int              from_track;    /**< the track it is taken out of, -1 none */
+    int              inner_track;   /**< the track taken out of it, -1 none */
+    int              offset_seq;    /**< 3-D subtitle: offset sequence id, -1 none */
+    uint32_t         side_clip;     /**< text subtitle from its own clip: the clip number */
+    int              side_stc;      /**< and the STC sequence (index over the clip's ATC sequences) */
+} BlurayTrack;
+
+#define BLURAY_TRACK_SECONDARY 0x200    /**< secondary audio */
+#define BLURAY_TRACK_HAS_CORE  0x400    /**< a core track is taken out of it */
+#define BLURAY_TRACK_CORE      0x100    /**< the core of another track */
+#define BLURAY_TRACK_DERIVED   0x800    /**< taken out of another track */
+#define BLURAY_TRACK_FORCED    0x1000   /**< only the forced subtitles */
+#define BLURAY_TRACK_3D_BASE   0x2000   /**< the base view of a stereoscopic (3-D) video */
+#define BLURAY_TRACK_3D_PLANE  0x8000   /**< a 3-D subtitle with an offset sequence (offset_seq) */
+#define BLURAY_TRACK_SIDE      0x1000000/**< read from its own clip (text subtitle) */
+
 typedef struct BlurayTitle {
     char                  name[32];     /**< "00800.mpls", "00800.mpls(1)", "00012.m2ts", "01001.rpls(1)" */
     BluraySegment        *segs;
@@ -380,6 +421,10 @@ typedef struct BlurayTitle {
     char                 *title_name;   /**< BDAV / AVCHD title name (av_free()), or NULL */
     char                 *alt_name;     /**< BDAV: the number or name part kept apart */
     int                   year, month, day, hour, minute, second;  /**< recording time (BDAV / AVCHD), 0 none */
+    /* tracks (bluray_tracks.c) */
+    BlurayTrack          *tracks;
+    int                   nb_tracks;
+    int                   track_seg;    /**< the segment the tracks are described from (the largest) */
 } BlurayTitle;
 
 /**
@@ -394,6 +439,15 @@ struct BlurayDisc;
 int  ff_bluray_titles_build(void *log, struct BlurayDisc *d, int min_length);
 void ff_bluray_titles_free(struct BlurayDisc *d);
 /** The title's duration, 45 kHz ticks (its segments' STC sequences). */
+/**
+ * The tracks of title t (t->tracks): its streams described from the
+ * largest segment's first clip (the title's streams only), the second view
+ * of a 3-D title, its text subtitles; video first, then audio, then
+ * subtitles, an identical audio / subtitle stream left out.
+ * @return 0, AVERROR_INVALIDDATA the title has no video, < 0 error
+ */
+int ff_bluray_title_tracks(void *log, BlurayTitle *t);
+
 int64_t ff_bluray_title_duration(const BlurayTitle *t);
 /** The title's size, bytes. */
 int64_t ff_bluray_title_size(const BlurayTitle *t);
