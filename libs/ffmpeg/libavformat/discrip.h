@@ -118,10 +118,13 @@ typedef struct DRAudioRules {
     int  (*header)(DRAudio *a, const DRFrame *unit, DRAudioHeader *h);
     /** 1 when the unit is a sync unit (DR_F_SYNC). NULL: never. */
     int  (*sync)(const uint8_t *data, int size);
-    /** The unit's duration in ticks, and its final bytes (a core cut
-     *  shortens frame->size); < 0 on failure. NULL: samples / rate of the
-     *  header. */
+    /** The unit's duration in ticks; < 0 on failure. NULL: samples / rate
+     *  of the header. */
     int  (*duration)(DRAudio *a, DRFrame *frame);
+    /** The FFmpeg bitstream filter each unit goes through after its
+     *  duration, for a track of these audio flags (e.g. eac3_core: an AC-3
+     *  frame without the E-AC-3 frames after it), NULL: none. */
+    const char *(*filter)(int flags);
     /** Checks a unit for features that are implemented but not met on real
      *  discs yet (ff_discrip_audio_review). NULL: none. */
     void (*inspect)(DRAudio *a, const DRFrame *frame);

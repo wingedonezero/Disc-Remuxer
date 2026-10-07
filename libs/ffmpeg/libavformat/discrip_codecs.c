@@ -120,9 +120,7 @@ static int sync_always(const uint8_t *data, int size)
 
 /* Each unit is timed by its own first syncframe. A unit whose length or rate
  * is not the stream's (the first sync unit's) is timed by its own values and
- * reported for review. An AC-3 unit is cut to its first syncframe: the bytes
- * after it are E-AC-3 frames the parser joined to it, not part of an AC-3
- * track. */
+ * reported for review. */
 static int duration_ac3(DRAudio *a, DRFrame *f)
 {
     const DRAudioHeader *s = ff_discrip_audio_header(a);
@@ -130,8 +128,6 @@ static int duration_ac3(DRAudio *a, DRFrame *f)
 
     if (ac3_header(f->data, f->size, &h) < 0 || !h.sample_rate)
         return AVERROR_INVALIDDATA;
-    if (!is_eac3(&h) && h.frame_size < f->size)
-        f->size = h.frame_size;
     if (h.sample_rate != s->rate || h.num_blocks * 256 != s->samples)
         ff_discrip_audio_review(a, REVIEW_FRAME_LENGTH, "a frame's length or sample rate differs from the "
                                 "stream's first frame (timed by its own values)");
@@ -163,10 +159,19 @@ static void inspect_eac3(DRAudio *a, const DRFrame *f)
     }
 }
 
+/* An AC-3 track keeps each unit's AC-3 frame alone: the parser joins the
+ * E-AC-3 frames after an AC-3 frame to it (they belong to the same time),
+ * and FFmpeg's eac3_core filter takes them off. */
+static const char *filter_ac3(int flags)
+{
+    return "eac3_core";
+}
+
 static const DRAudioRules audio_ac3 = {
     .header   = header_ac3,
     .sync     = sync_always,
     .duration = duration_ac3,
+    .filter   = filter_ac3,
 };
 
 static const DRAudioRules audio_eac3 = {
@@ -235,8 +240,6 @@ static int duration_dts(DRAudio *a, DRFrame *f)
     int rate, samples;
 
     if (dts_core(f->data, f->size, &h) >= 0) {
-        if ((ff_discrip_audio_flags(a) & DR_AUDIO_CORE_ONLY) && h.frame_size < f->size)
-            f->size = h.frame_size;
         rate    = dts_rates[h.sr_code];
         samples = h.npcmblocks * 32;
     } else if (dts_exss_sync(f->data, f->size) && !(ff_discrip_audio_flags(a) & DR_AUDIO_CORE_ONLY) &&
@@ -254,10 +257,18 @@ static int duration_dts(DRAudio *a, DRFrame *f)
     return 0;
 }
 
+/* A DTS track taken out of a DTS-HD stream keeps each unit's DTS frame
+ * alone (FFmpeg's dca_core filter takes the DTS-HD extension off). */
+static const char *filter_dts(int flags)
+{
+    return flags & DR_AUDIO_CORE_ONLY ? "dca_core" : NULL;
+}
+
 static const DRAudioRules audio_dts = {
     .header   = header_dts,
     .sync     = sync_always,
     .duration = duration_dts,
+    .filter   = filter_dts,
 };
 
 /* ---- MPEG-1 / MPEG-2 audio (ISO/IEC 11172-3, 13818-3) ----
