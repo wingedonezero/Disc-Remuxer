@@ -82,8 +82,9 @@ typedef struct FFDiscCut {
 /**
  * Cut a disc's stream with rule, keeping to the parser contract: the
  * return value is the number of buf's bytes the chunk given out took (bytes
- * after them come again), so the frame offsets and timestamps of
- * av_parser_parse2() stay right. One chunk per call: a unit (disc_status 0)
+ * after them come again; < 0 when it ended in bytes kept from earlier
+ * calls), so the frame offsets and timestamps of av_parser_parse2() stay
+ * right. One chunk per call: a unit (disc_status 0)
  * or bytes that are no unit (disc_status 1); disc_status < 0: the stream
  * cannot be cut. buf_size 0: the end of the stream (the bytes left are cut
  * as the last ones).

@@ -807,14 +807,6 @@ int ff_discrip_spu_verify(const uint8_t *data, int size);
  *  track's codec private data. */
 int ff_discrip_vobsub_header(char *buf, int size, int width, int height, const uint32_t *ycrcb);
 int ff_discrip_mlp_verify(const uint8_t *data, int size);
-int ff_discrip_vc1_unit_size(void *log, const uint8_t *buf, int avail, int final, void *state);
-int ff_discrip_vc1_resync(const uint8_t *buf, int avail);
-/** The VC-1 cutter's state: where its scan of the unit at the window's
- *  start stands. */
-typedef struct DRVc1Cut {
-    int scan;              /**< next offset to look for a start code at */
-    int part;              /**< the part of the unit the last start code began */
-    int stage;             /**< the header stage reached (part 0) */
-} DRVc1Cut;
+
 
 #endif /* AVFORMAT_DISCRIP_H */

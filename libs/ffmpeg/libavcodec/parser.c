@@ -208,7 +208,8 @@ int av_parser_parse2(AVCodecParserContext *s, AVCodecContext *avctx,
 av_cold /* The disc cut (PARSER_FLAG_DISC): the rule cuts the kept bytes plus buf
  * (all the bytes there are so far, as one window); a chunk given out takes
  * buf's bytes up to its end, the bytes of buf after it are taken out of the
- * window again (they come back with the next call). */
+ * window again (they come back with the next call). A chunk that ends in
+ * the kept bytes returns how far before buf it ended (< 0). */
 int ff_parser_disc_cut(AVCodecParserContext *s, void *logctx, const FFDiscCutRule *rule, FFDiscCut *dc,
                        const uint8_t **poutbuf, int *poutbuf_size, const uint8_t *buf, int buf_size)
 {
@@ -275,9 +276,12 @@ int ff_parser_disc_cut(AVCodecParserContext *s, void *logctx, const FFDiscCutRul
         dc->len = 0;
         return k - old;
     }
+    /* the chunk ended in bytes kept from earlier calls: the next one starts
+     * before buf (a negative index, as the parser contract has it; the
+     * caller is told 0 bytes were taken) */
     memmove(dc->win, dc->win + k, old - k);
     dc->len = old - k;
-    return 0;
+    return k - old;
 }
 
 void ff_parser_disc_cut_close(FFDiscCut *dc)
