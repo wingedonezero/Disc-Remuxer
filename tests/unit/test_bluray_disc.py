@@ -14,9 +14,10 @@ from synth import bluray as bd
 from synth.bluray import Item, Stream, SubPath, be16, be32
 
 
-def dump(path, lang=None):
+def dump(path, lang=None, min_length=-1):
+    """The structure dump (with the titles when min_length >= 0), or the error."""
     err = ffi.new("int *")
-    p = lib.tb_bluray_dump(str(path).encode(), lang.encode() if lang else ffi.NULL, err)
+    p = lib.tb_bluray_dump(str(path).encode(), lang.encode() if lang else ffi.NULL, min_length, err)
     if p == ffi.NULL:
         return err[0]
     try:

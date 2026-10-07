@@ -237,7 +237,7 @@ end:
 
 /* Blu-ray: a disc folder's structure as ff_bluray_disc_dump() writes it
  * (free()), or NULL with *err set when the disc cannot be read. */
-static char *tb_bluray_dump(const char *path, const char *lang, int *err)
+static char *tb_bluray_dump(const char *path, const char *lang, int min_length, int *err)
 {
     DiscIOFS *fs = NULL;
     BlurayDisc d;
@@ -248,6 +248,8 @@ static char *tb_bluray_dump(const char *path, const char *lang, int *err)
     if (*err < 0)
         return NULL;
     *err = ff_bluray_disc_open(NULL, fs, path, lang, &d);
+    if (*err >= 0 && min_length >= 0)
+        *err = ff_bluray_titles_build(NULL, &d, min_length);
     if (*err >= 0) {
         av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
         ff_bluray_disc_dump(&d, &bp);

@@ -28,7 +28,7 @@ fills the disc, the format part its titles.
 | Level | Fields |
 |---|---|
 | disc (`DiscInfo`) | kind (`HD DVD`, ...), volume label, file system and UDF revision, encrypted, the titles |
-| title (`DiscTitleInfo`) | number in the title list, name, language, duration, size in bytes, selected (0: shorter than the minimum length, listed only), the disc's files it plays in order, chapters (start, name), streams |
+| title (`DiscTitleInfo`) | number in the title list, name, source (what it is made from, e.g. `00800.mpls(1)`; Blu-ray), angle (Blu-ray, 0 none), language, duration, size in bytes, selected (0: shorter than the minimum length, listed only), the disc's files it plays in order, chapters (start, name), streams |
 | stream (`DiscStreamInfo`) | kind, codec, language, core (1: carries a core that is also a stream, 2: is that core), frame / canvas size; the stream details (aspect, frame rate, channels, sample rate, bits, bit rate) are 0 until the start of each title is read for them (to come) |
 
 ## The opened title

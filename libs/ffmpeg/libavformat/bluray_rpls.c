@@ -51,7 +51,7 @@ int ff_bluray_rpls_parse(void *log, const BlurayFile *f, BlurayPlaylist *pl)
     ff_bluray_header(H, &pl->hdr);
     if (pl->hdr.type != MKBETAG('P', 'L', 'S', 'T'))
         return 0;
-    memcpy(pl->bdav_info, H + 0x2e, 0x2a);
+    memcpy(pl->bdav_hdr, H, sizeof(pl->bdav_hdr));
     pl->name_len = H[0x58];
     memcpy(pl->name, H + 0x59, 0xff);
     P = AV_RB32(H + 8);

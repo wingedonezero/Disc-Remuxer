@@ -113,11 +113,11 @@ def mpls(items, subpaths=(), marks=(), ext=None, playback_type=1, version="0200"
 
 # ---- clip information ----
 
-def clpi(packets=1000, stcs=((0, 0x1001, 0, 27000000, 27000000 + 90000),), streams=((0x1011, 0x1b, b"\x61"),),
-         ts_info_len=0x1e, kind="HDMV", version="0200", stream_type=1, ext=None, atcs=None):
+def clpi(packets=1024, stcs=((0, 0x1001, 27000000, 27000000 + 90000),), streams=((0x1011, 0x1b, b"\x61"),),
+         ts_info_len=0x1e, kind="HDMV", version="0200", stream_type=1, ext=None, atcs=None, app_type=1):
     """stcs: (spn_stc_start, pcr_pid, ...) per STC of one ATC sequence, or
     atcs: [(spn_atc_start, offset_stc_id, [stcs])]."""
-    info = bytes(2) + bytes([stream_type, 1, 0, 0, 0, 0]) + be32(48000000) + be32(packets) + bytes(128)
+    info = bytes(2) + bytes([stream_type, app_type, 0, 0, 0, 0]) + be32(48000000) + be32(packets) + bytes(128)
     info += be16(ts_info_len) + bytes([0x80]) + b"HDMV" + bytes(ts_info_len - 5)
     info = be32(len(info)) + info
     atcs = atcs if atcs is not None else [(0, 0, stcs)]

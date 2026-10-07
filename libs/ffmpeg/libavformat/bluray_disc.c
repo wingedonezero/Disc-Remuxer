@@ -425,6 +425,7 @@ int ff_bluray_disc_open(void *log, DiscIOFS *fs, const char *path, const char *l
 
 void ff_bluray_disc_free(BlurayDisc *d)
 {
+    ff_bluray_titles_free(d);
     for (int i = 0; i < d->nb_clips; i++)
         ff_bluray_clip_free(&d->clips[i]);
     av_freep(&d->clips);
@@ -530,5 +531,28 @@ void ff_bluray_disc_dump(const BlurayDisc *d, AVBPrint *bp)
         for (int k = 0; k < pl->nb_marks; k++)
             av_bprintf(bp, "  mark %d type %u item %u time %u pid 0x%04x duration %u\n", k, pl->marks[k].type,
                        pl->marks[k].play_item, pl->marks[k].time, pl->marks[k].pid, pl->marks[k].duration);
+    }
+    for (int i = 0; i < d->nb_titles; i++) {
+        const BlurayTitle *t = &d->titles[i];
+        av_bprintf(bp, "title %d %s angle %d duration %"PRId64" size %"PRId64" segments ", i, t->name, t->angle,
+                   ff_bluray_title_duration(t), ff_bluray_title_size(t));
+        for (int k = 0; k < t->nb_segs; k++)
+            av_bprintf(bp, "%s%s%s", k ? "," : "", t->segs[k].desc, t->segs[k].interleaved ? "*" : "");
+        av_bprintf(bp, " marks");
+        for (int k = 0; k < t->nb_marks; k++)
+            av_bprintf(bp, "%s%"PRIu64, k ? "," : " ", t->marks[k]);
+        av_bprintf(bp, " pids");
+        for (int k = 0; k < t->nb_pids; k++)
+            av_bprintf(bp, "%s0x%04x", k ? "," : " ", t->pids[k]);
+        if (t->title_name)
+            av_bprintf(bp, " name '%s'", t->title_name);
+        if (t->alt_name)
+            av_bprintf(bp, " alt '%s'", t->alt_name);
+        if (t->year)
+            av_bprintf(bp, " recorded %04d-%02d-%02d %02d:%02d:%02d", t->year, t->month, t->day, t->hour, t->minute,
+                       t->second);
+        for (int k = 0; k < t->nb_side; k++)
+            av_bprintf(bp, " text %s", t->side[k].seg.desc);
+        av_bprintf(bp, "\n");
     }
 }

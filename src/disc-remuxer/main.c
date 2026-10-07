@@ -110,7 +110,7 @@ static const char *json_num(char *buf, size_t size, int64_t v)
  * record. */
 static void title_overview(const DiscTitleInfo *t, int detail)
 {
-    char dur[32], size[32], streams[4096] = "", files[2048] = "", js[512], jl[16];
+    char dur[32], size[32], streams[4096] = "", files[2048] = "", js[512], jl[16], extra[160] = "";
     int nv = 0, na = 0, ns = 0;
 
     hms(dur, sizeof(dur), t->duration);
@@ -146,8 +146,13 @@ static void title_overview(const DiscTitleInfo *t, int detail)
         char list[1024] = "";
         for (int i = 0; i < t->nb_files; i++)
             snprintf(list + strlen(list), sizeof(list) - strlen(list), "%s%s", i ? ", " : "", t->files[i]);
-        log_text(LOG_INFO, "       %s, %s%s%s%s", size, list, t->language[0] ? ", language " : "", t->language,
-                 t->selected ? "" : ", not selected (shorter than the minimum length)");
+        char from[64] = "";
+        if (t->source)
+            snprintf(from, sizeof(from), "from %s%s", t->source, t->nb_files ? ": " : "");
+        if (t->angle)
+            snprintf(from + strlen(from), sizeof(from) - strlen(from), "angle %d, ", t->angle);
+        log_text(LOG_INFO, "       %s, %s%s%s%s%s", size, from, list, t->language[0] ? ", language " : "",
+                 t->language, t->selected ? "" : ", not selected (shorter than the minimum length)");
         for (int i = 0; i < t->nb_streams; i++) {
             const DiscStreamInfo *k = &t->streams[i];
             char extra[64] = "", link[96] = "";
@@ -161,10 +166,16 @@ static void title_overview(const DiscTitleInfo *t, int detail)
                      codec_label(k->codec, AV_PROFILE_UNKNOWN), k->language, extra, link);
         }
     }
+    if (t->source) {
+        char jsrc[96];
+        snprintf(extra, sizeof(extra), ",\"source\":%s", json_str(jsrc, sizeof(jsrc), t->source));
+    }
+    if (t->angle)
+        snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), ",\"angle\":%d", t->angle);
     log_json("title", "\"index\":%d,\"name\":%s,\"duration\":%.3f,\"chapters\":%d,\"size\":%"PRId64",\"language\":%s,"
-             "\"selected\":%s,\"files\":[%s],\"tracks\":[%s]", t->index,
+             "\"selected\":%s,\"files\":[%s],\"tracks\":[%s]%s", t->index,
              json_str(js, sizeof(js), t->name ? t->name : ""), t->duration / (double)AV_TIME_BASE, t->nb_chapters,
-             t->size, json_str(jl, sizeof(jl), t->language), t->selected ? "true" : "false", files, streams);
+             t->size, json_str(jl, sizeof(jl), t->language), t->selected ? "true" : "false", files, streams, extra);
 }
 
 /* The disc line and the overview of its titles (with the JSON disc and title
