@@ -13,11 +13,14 @@
 #include "libavformat/avformat.h"
 #include "libavformat/demux.h"
 #include "libavutil/aes.h"
+#include "libavutil/bprint.h"
 #include "libavutil/log.h"
+#include "libavutil/mem.h"
 
+#include "libavformat/bluray_internal.h"
 #include "libavformat/disclang.h"
 #include "libavformat/discio.h"
-#include "libavformat/discrip.h"
+#include "libavformat/disctl.h"
 #include "libavformat/dvdvideo_internal.h"
 #include "libavformat/hddvd_internal.h"
 
@@ -230,4 +233,45 @@ end:
     avformat_close_input(&s);
     av_packet_free(&pkt);
     return ret;
+}
+
+/* Blu-ray: a disc folder's structure as ff_bluray_disc_dump() writes it
+ * (free()), or NULL with *err set when the disc cannot be read. */
+static char *tb_bluray_dump(const char *path, const char *lang, int min_length, int *err)
+{
+    DiscIOFS *fs = NULL;
+    BlurayDisc d;
+    AVBPrint bp;
+    char *out = NULL;
+
+    *err = ff_discio_mount_folder(NULL, path, 1, &fs);
+    if (*err < 0)
+        return NULL;
+    *err = ff_bluray_disc_open(NULL, fs, path, lang, &d);
+    if (*err >= 0 && min_length >= 0)
+        *err = ff_bluray_titles_build(NULL, &d, min_length);
+    if (*err >= 0) {
+        av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
+        ff_bluray_disc_dump(&d, &bp);
+        if (av_bprint_is_complete(&bp))
+            out = strdup(bp.str);
+        av_bprint_finalize(&bp, NULL);
+    }
+    ff_bluray_disc_free(&d);
+    ff_discio_fs_close(&fs);
+    return out;
+}
+
+static char *tb_bluray_text(uint8_t charset, const uint8_t *text, uint32_t len)
+{
+    char *t = ff_bluray_text(NULL, charset, text, len), *out = t ? strdup(t) : NULL;
+    av_free(t);
+    return out;
+}
+
+static char *tb_bluray_clean_title(const char *s)
+{
+    char *t = ff_bluray_clean_title(s), *out = t ? strdup(t) : NULL;
+    av_free(t);
+    return out;
 }

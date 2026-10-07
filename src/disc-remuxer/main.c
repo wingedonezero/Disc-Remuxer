@@ -110,7 +110,7 @@ static const char *json_num(char *buf, size_t size, int64_t v)
  * record. */
 static void title_overview(const DiscTitleInfo *t, int detail)
 {
-    char dur[32], size[32], streams[4096] = "", files[2048] = "", js[512], jl[16];
+    char dur[32], size[32], streams[4096] = "", files[2048] = "", js[512], jl[16], extra[160] = "";
     int nv = 0, na = 0, ns = 0;
 
     hms(dur, sizeof(dur), t->duration);
@@ -146,8 +146,13 @@ static void title_overview(const DiscTitleInfo *t, int detail)
         char list[1024] = "";
         for (int i = 0; i < t->nb_files; i++)
             snprintf(list + strlen(list), sizeof(list) - strlen(list), "%s%s", i ? ", " : "", t->files[i]);
-        log_text(LOG_INFO, "       %s, %s%s%s%s", size, list, t->language[0] ? ", language " : "", t->language,
-                 t->selected ? "" : ", not selected (shorter than the minimum length)");
+        char from[64] = "";
+        if (t->source)
+            snprintf(from, sizeof(from), "from %s%s", t->source, t->nb_files ? ": " : "");
+        if (t->angle)
+            snprintf(from + strlen(from), sizeof(from) - strlen(from), "angle %d, ", t->angle);
+        log_text(LOG_INFO, "       %s, %s%s%s%s%s", size, from, list, t->language[0] ? ", language " : "",
+                 t->language, t->selected ? "" : ", not selected (shorter than the minimum length)");
         for (int i = 0; i < t->nb_streams; i++) {
             const DiscStreamInfo *k = &t->streams[i];
             char extra[64] = "", link[96] = "";
@@ -161,10 +166,16 @@ static void title_overview(const DiscTitleInfo *t, int detail)
                      codec_label(k->codec, AV_PROFILE_UNKNOWN), k->language, extra, link);
         }
     }
+    if (t->source) {
+        char jsrc[96];
+        snprintf(extra, sizeof(extra), ",\"source\":%s", json_str(jsrc, sizeof(jsrc), t->source));
+    }
+    if (t->angle)
+        snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), ",\"angle\":%d", t->angle);
     log_json("title", "\"index\":%d,\"name\":%s,\"duration\":%.3f,\"chapters\":%d,\"size\":%"PRId64",\"language\":%s,"
-             "\"selected\":%s,\"files\":[%s],\"tracks\":[%s]", t->index,
+             "\"selected\":%s,\"files\":[%s],\"tracks\":[%s]%s", t->index,
              json_str(js, sizeof(js), t->name ? t->name : ""), t->duration / (double)AV_TIME_BASE, t->nb_chapters,
-             t->size, json_str(jl, sizeof(jl), t->language), t->selected ? "true" : "false", files, streams);
+             t->size, json_str(jl, sizeof(jl), t->language), t->selected ? "true" : "false", files, streams, extra);
 }
 
 /* The disc line and the overview of its titles (with the JSON disc and title
@@ -175,12 +186,12 @@ static const char *disc_overview(const char *source, int detail, int *nb_titles)
 {
     AVFormatContext *ctx = NULL;
     const DiscInfo *d;
-    char revs[32] = "", js1[64], js2[256], js3[64];
+    char revs[32] = "", js1[64], js2[256], js3[64], js4[1024], jname[1100];
     int ret;
 
     if ((ret = open_title(DISC_FORMAT, source, ONLY_DISC_INFO, &ctx)) < 0 || !(d = disc_info(ctx))) {
         log_msg(MSG_SOURCE_UNSUPPORTED, LOG_ERROR, "%s cannot be read as a disc this program supports (%s); "
-                "only HD DVD images are wired so far", source, av_err2str(ret < 0 ? ret : AVERROR_BUG));
+                "HD DVD and Blu-ray are wired so far", source, av_err2str(ret < 0 ? ret : AVERROR_BUG));
         avformat_close_input(&ctx);
         return NULL;
     }
@@ -190,10 +201,15 @@ static const char *disc_overview(const char *source, int detail, int *nb_titles)
     log_msg(MSG_SOURCE, LOG_INFO, "Disc: %s '%s', %s%s, %s, %d title%s", d->kind, d->label ? d->label : "",
             d->filesystem ? d->filesystem : "?", revs, d->encrypted ? "encrypted" : "not encrypted",
             d->nb_titles, d->nb_titles == 1 ? "" : "s");
-    log_json("disc", "\"kind\":%s,\"label\":%s,\"filesystem\":%s,\"encrypted\":%s,\"titles\":%d",
+    if (d->name)
+        log_msg(MSG_SOURCE, LOG_INFO, "Disc name: %s", d->name);
+    jname[0] = 0;
+    if (d->name)
+        snprintf(jname, sizeof(jname), ",\"name\":%s", json_str(js4, sizeof(js4), d->name));
+    log_json("disc", "\"kind\":%s,\"label\":%s,\"filesystem\":%s,\"encrypted\":%s,\"titles\":%d%s",
              json_str(js1, sizeof(js1), d->kind), json_str(js2, sizeof(js2), d->label ? d->label : ""),
              json_str(js3, sizeof(js3), d->filesystem ? d->filesystem : ""), d->encrypted ? "true" : "false",
-             d->nb_titles);
+             d->nb_titles, jname);
     for (int t = 0; t < d->nb_titles; t++)
         title_overview(&d->titles[t], detail);
     avformat_close_input(&ctx);

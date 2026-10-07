@@ -40,6 +40,7 @@
 /* The format parts, by the disc kind the readers tell. */
 static const DiscFormat *const parts[] = {
     &ff_disc_hddvd,
+    &ff_disc_bluray,
     NULL
 };
 
@@ -99,6 +100,7 @@ static int disc_close(AVFormatContext *s)
 {
     DiscContext *d = s->priv_data;
 
+    ff_disc_title_reader_close(&d->reader);
     if (d->fmt && d->part)
         d->fmt->close(s);
     av_freep(&d->part);
@@ -122,11 +124,17 @@ static int disc_read_header(AVFormatContext *s)
     int ret;
 
     opts.udf_reader = d->opt_udf_reader;
-    if ((ret = ff_discio_source_open_file(s, s->url, &d->image)) < 0)
-        return ret;
-    d->image->attempts = d->opt_read_attempts;
-    if ((ret = ff_discio_mount_image(d->image, &opts, &d->fs)) < 0)
-        return ret;
+    if (ff_discio_folder_is_dir(s->url)) {
+        /* a disc folder: its files are read as host files */
+        if ((ret = ff_discio_mount_folder(s, s->url, d->opt_read_attempts, &d->fs)) < 0)
+            return ret;
+    } else {
+        if ((ret = ff_discio_source_open_file(s, s->url, &d->image)) < 0)
+            return ret;
+        d->image->attempts = d->opt_read_attempts;
+        if ((ret = ff_discio_mount_image(d->image, &opts, &d->fs)) < 0)
+            return ret;
+    }
     kind = ff_discio_disc_format(d->fs);
     for (int i = 0; parts[i] && !d->fmt; i++)
         if (parts[i]->kind == kind)
@@ -148,13 +156,20 @@ static int disc_read_header(AVFormatContext *s)
     d->info.udf_revision = d->fs->udf_revision;
     if (!(d->part = av_mallocz(d->fmt->priv_size)))
         return AVERROR(ENOMEM);
-    return d->fmt->open(s);
+    if ((ret = d->fmt->open(s)) < 0)
+        return ret;
+    if (d->opt_title < 0)               /* only the disc info, no title opened */
+        return 0;
+    return ff_disc_title_reader_open(s, &d->src);
 }
 
 static int disc_read_packet(AVFormatContext *s, AVPacket *pkt)
 {
     DiscContext *d = s->priv_data;
-    return d->fmt->read_packet(s, pkt);
+
+    if (!d->reader)                     /* only the disc info: nothing to read */
+        return AVERROR_EOF;
+    return ff_disc_title_reader_packet(s, pkt);
 }
 
 #define OFFSET(x) offsetof(DiscContext, x)
@@ -179,7 +194,7 @@ static const AVClass disc_class = {
 
 const FFInputFormat ff_disc_demuxer = {
     .p.name         = "disc",
-    .p.long_name    = NULL_IF_CONFIG_SMALL("Disc (HD DVD; DVD-Video and Blu-ray to come)"),
+    .p.long_name    = NULL_IF_CONFIG_SMALL("Disc (HD DVD, Blu-ray; DVD-Video to come)"),
     .p.priv_class   = &disc_class,
     .p.flags        = AVFMT_SHOW_IDS | AVFMT_NOFILE | AVFMT_NO_BYTE_SEEK |
                       AVFMT_NOGENSEARCH | AVFMT_NOBINSEARCH,

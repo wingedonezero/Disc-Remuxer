@@ -21,3 +21,7 @@ Full command (TrueHD):
   -q:v 20 -f mpeg2video` (MPEG-2, 29.97 fps, GOP of 12 with two B pictures between references)
 - `sine_7680.ac3`: the same sine (float planar), 7680 samples, `-c:a ac3 -b:a 192k -f ac3` (5 AC-3 frames of 768
   bytes, 48 kHz)
+- `mono_mix_q30.txt.gz`: the mono mix of the seamless overlap search as the matrix it was built on (FFmpeg 4.4's
+  libavresample `avresample_build_matrix`, copied into the title timeline until libswresample replaced it) gave it, for
+  every combination of the TrueHD decoder's channel groups with 2 or more channels (8185 layouts): the channel mask,
+  then each channel's Q30 coefficient, or `-` when no mix is built. Recorded from that copy before it was removed.

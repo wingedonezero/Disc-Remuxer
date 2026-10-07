@@ -1,11 +1,11 @@
-"""The VobSub index header of a sub-picture track (discrip_spu.c)."""
+"""The VobSub index header of a sub-picture track (disctl_spu.c)."""
 
 from helpers import ffi, lib
 
 
 def vobsub_header(width, height, palette):
     buf = ffi.new("char[1024]")
-    n = lib.ff_discrip_vobsub_header(buf, 1024, width, height,
+    n = lib.ff_disctl_vobsub_header(buf, 1024, width, height,
                                      ffi.new("uint32_t[16]", palette) if palette else ffi.NULL)
     assert 0 < n < 1024
     return ffi.string(buf).decode()

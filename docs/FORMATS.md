@@ -3,9 +3,11 @@
 `disc-remuxer` has no format-specific code. It opens every source with one
 demuxer of our FFmpeg, `disc` (the disc layer, `libavformat/discdec.c`): it
 tells the kind of disc and hands it to that kind's format part (HD DVD now;
-DVD-Video and Blu-ray, UHD and 3D to come), which runs its titles through
-the shared rip core (`libavformat/discrip_*.c`). Every format part gives the
-program the same things, listed here.
+DVD-Video and Blu-ray, UHD and 3D to come), which describes the disc and the
+opened title; the disc layer's title reader (`libavformat/disctitle.c`) runs
+that title through FFmpeg's line and the title timeline
+(`libavformat/disctl_*.c`). Every format part gives the program the same
+things, listed here.
 
 ## Options the program sets
 
@@ -26,7 +28,7 @@ fills the disc, the format part its titles.
 | Level | Fields |
 |---|---|
 | disc (`DiscInfo`) | kind (`HD DVD`, ...), volume label, file system and UDF revision, encrypted, the titles |
-| title (`DiscTitleInfo`) | number in the title list, name, language, duration, size in bytes, selected (0: shorter than the minimum length, listed only), the disc's files it plays in order, chapters (start, name), streams |
+| title (`DiscTitleInfo`) | number in the title list, name, source (what it is made from, e.g. `00800.mpls(1)`; Blu-ray), angle (Blu-ray, 0 none), language, duration, size in bytes, selected (0: shorter than the minimum length, listed only), the disc's files it plays in order, chapters (start, name), streams |
 | stream (`DiscStreamInfo`) | kind, codec, language, core (1: carries a core that is also a stream, 2: is that core), frame / canvas size; the stream details (aspect, frame rate, channels, sample rate, bits, bit rate) are 0 until the start of each title is read for them (to come) |
 
 ## The opened title
@@ -61,12 +63,12 @@ title has been read.
 | subtitle streams | `outside` | units drawn outside the canvas (each segment that has some also counts one warning) |
 | the context | `untested` | features met that no real disc has tested (the job is reported failed) |
 
-Chapters are `AVFormatContext.chapters`, set at the end (the rip core marks
+Chapters are `AVFormatContext.chapters`, set at the end (the title timeline marks
 them on the video's key frames).
 
 ## Log
 
-Everything the disc layer, the format part and the rip core have to say goes through
+Everything the disc layer, the format part and the title timeline have to say goes through
 `av_log`: errors and warnings a reader must see at `AV_LOG_ERROR` /
 `AV_LOG_WARNING` in plain language, normal steps at `AV_LOG_INFO`, details
 at `AV_LOG_VERBOSE` / `AV_LOG_DEBUG`. Messages that come again on every title

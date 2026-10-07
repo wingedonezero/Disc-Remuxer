@@ -1,0 +1,439 @@
+/*
+ * Blu-ray (BDMV, BDAV, AVCHD): the format part's structures
+ *
+ * This file is part of FFmpeg.
+ *
+ * FFmpeg is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * FFmpeg is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with FFmpeg; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
+ */
+
+#ifndef AVFORMAT_BLURAY_INTERNAL_H
+#define AVFORMAT_BLURAY_INTERNAL_H
+
+#include <inttypes.h>
+#include <stdint.h>
+
+#include "libavutil/error.h"
+
+#include "discio.h"
+
+/* ---- reading a disc file (bluray_files.c) ---- */
+
+/**
+ * A disc file read whole: the main copy, or its BACKUP copy when the main
+ * copy is missing or cannot be read (a BACKUP copy of another size than a
+ * readable main copy is not used).
+ */
+typedef struct BlurayFile {
+    uint8_t *data;
+    uint32_t size;
+    char     path[96];   /**< the path read, for the log */
+} BlurayFile;
+
+/** The type indicator and version of a file's first 8 bytes: the 4 type
+ *  bytes big-endian, the 4 version characters read as hexadecimal ("0200"
+ *  -> 0x200). */
+typedef struct BlurayHeader {
+    uint32_t type;
+    uint16_t version;
+} BlurayHeader;
+
+/** Bytes [off, off + len) of f into buf; 0 when they are not all in the
+ *  file (a read the reference program's file reader refuses). */
+int  ff_bluray_read(const BlurayFile *f, uint32_t off, void *buf, uint32_t len);
+void ff_bluray_header(const uint8_t h[8], BlurayHeader *out);
+
+/**
+ * Load "/<root><dir>/<name>.<ext>" with the first extension variant of exts
+ * (NULL-terminated, at most 5) that has a main or BACKUP copy
+ * ("/<root>/BACKUP<dir>/<name>.<ext>"); names[k] is the base name tried with
+ * exts[k] (names[0] where names has fewer entries).
+ * @return 1 loaded, 0 no copy found, < 0 error
+ */
+int  ff_bluray_load(void *log, DiscIOFS *fs, const char *root, const char *dir,
+                    const char *const *names, const char *const *exts, BlurayFile *out);
+void ff_bluray_file_free(BlurayFile *f);
+
+/**
+ * The 5-digit numbers of the files "NNNNN<suffix>" (suffix with its dot,
+ * exact case) of a directory, in the directory's order; names whose first
+ * 5 characters are not digits are skipped (logged). A missing directory
+ * gives none.
+ * @return 0, < 0 error
+ */
+int  ff_bluray_list_numbered(void *log, DiscIOFS *fs, const char *dir, const char *suffix,
+                             uint32_t **out, int *nb);
+void ff_bluray_sort_numbers(uint32_t *v, int n);
+
+/* ---- extension data (shared by playlists, clip information, index) ---- */
+
+typedef struct BlurayExtEntry {
+    uint16_t id1, id2;
+    uint32_t start;      /**< absolute file offset of its data */
+    uint32_t length;     /**< as recorded */
+    uint32_t copied;     /**< bytes kept in data (0 when the parser reads it itself) */
+    uint8_t *data;
+} BlurayExtEntry;
+
+/**
+ * The extension data block at file offset off: its entries appended to
+ * *entries; the data of an entry is copied (clamped to the file) unless
+ * parsed_directly(id1, id2).
+ * @return 1, 0 a read failed, < 0 error
+ */
+int ff_bluray_ext_data(void *log, const BlurayFile *f, uint32_t off,
+                       int (*parsed_directly)(uint16_t id1, uint16_t id2),
+                       BlurayExtEntry **entries, int *nb);
+void ff_bluray_ext_free(BlurayExtEntry **entries, int *nb);
+
+/* ---- playlists (bluray_mpls.c: BDMV .mpls, bluray_rpls.c: BDAV .rpls) ---- */
+
+/** One stream of an STN table: its stream entry and stream attributes, as
+ *  recorded (payloads truncated to 8 / 32 bytes; the lengths are the
+ *  recorded ones). */
+typedef struct BlurayStnStream {
+    uint8_t entry_type;      /**< stream_entry byte 1 (stream_type) */
+    uint8_t entry_len;       /**< length - 1 */
+    uint8_t entry[8];        /**< the entry's bytes after its type */
+    uint8_t coding_type;     /**< stream_attributes byte 1 */
+    uint8_t attr_len;        /**< length - 1 */
+    uint8_t attr[32];        /**< the attributes' bytes after the coding type */
+} BlurayStnStream;
+
+/** A clip of an angle (multi-angle PlayItem) or of a multi-clip SubPlayItem. */
+typedef struct BlurayAngleClip {
+    char    clip[6];         /**< Clip_Information_file_name, 5 characters */
+    char    codec[5];        /**< Clip_codec_identifier, 4 characters */
+    uint8_t stc_id;          /**< ref_to_STC_id */
+    uint32_t pos;            /**< file offset of its codec identifier */
+} BlurayAngleClip;
+
+/** The stereoscopic (3-D) part of a PlayItem (extension 2/1, STN_table_SS). */
+typedef struct BlurayStnSS {
+    int             present;
+    uint8_t         fixed_offset_popup;  /**< first byte bit 7 */
+    BlurayStnStream dep_video;           /**< the dependent view's video stream */
+    uint8_t         nb_offset_seq;       /**< low 6 bits */
+    uint8_t       (*pg)[23];             /**< one record per PG stream of the PlayItem */
+} BlurayStnSS;
+
+typedef struct BlurayPlayItem {
+    int             multi_angle;     /**< byte 0x0c bit 4 */
+    char            clip[6];
+    char            codec[5];
+    uint32_t        pos;             /**< file offset of its codec identifier */
+    uint8_t         connection;      /**< connection_condition (byte 0x0c low 4 bits) */
+    uint8_t         stc_id;
+    uint32_t        in_time, out_time;   /**< 45 kHz */
+    BlurayAngleClip *angles;         /**< the further angles (angle 1 is the item's own clip) */
+    int             nb_angles;
+    uint8_t         nb_ig;           /**< STN: interactive graphics streams (not read) */
+    BlurayStnStream video;           /**< STN: the one primary video stream */
+    BlurayStnStream *audio;
+    int             nb_audio;
+    BlurayStnStream *pg;
+    int             nb_pg;
+    BlurayStnSS     ss;
+} BlurayPlayItem;
+
+typedef struct BluraySubPlayItem {
+    int             multi_clip;      /**< byte 0x0e bit 0 */
+    char            clip[6];
+    char            codec[5];
+    uint32_t        pos;
+    uint8_t         connection;      /**< byte 0x0e bits 1-4 */
+    uint8_t         stc_id;
+    uint32_t        in_time, out_time;
+    uint16_t        sync_play_item;
+    uint32_t        sync_start_pts;
+    BlurayAngleClip *clips;          /**< the further clips of a multi-clip item */
+    int             nb_clips;
+} BluraySubPlayItem;
+
+typedef struct BluraySubPath {
+    uint8_t            type;         /**< SubPath_type */
+    BluraySubPlayItem *items;
+    int                nb_items;
+} BluraySubPath;
+
+typedef struct BlurayMark {
+    uint8_t  type;
+    uint16_t play_item;
+    uint32_t time;                   /**< 45 kHz */
+    uint16_t pid;
+    uint32_t duration;
+} BlurayMark;
+
+typedef struct BlurayPlaylist {
+    uint32_t        number;          /**< file number (NNNNN.mpls) */
+    BlurayHeader    hdr;
+    int             bdav;            /**< a BDAV .rpls playlist */
+    /* AppInfoPlayList */
+    uint8_t         playback_type;
+    uint16_t        playback_count;
+    uint16_t        app_flags;
+    BlurayPlayItem *items;
+    int             nb_items;
+    BluraySubPath  *subpaths;
+    int             nb_subpaths;
+    BlurayMark     *marks;
+    int             nb_marks;
+    BlurayExtEntry *ext;
+    int             nb_ext;
+    BluraySubPath   ext_subpath;     /**< extension 2/2: its first SubPath */
+    int             ext_subpath_type;/**< 0xffff: none */
+    /* BDAV only */
+    uint8_t         bdav_type;       /**< PlayList type (low 4 bits) */
+    uint8_t         bdav_hdr[0x158]; /**< the file's first 0x158 bytes (UIAppInfoPlayList: character set at
+                                          0x2e, recording time 0x32..0x38, number 0x40, names 0x43 / 0x58) */
+    uint8_t         name_len;
+    char            name[256];       /**< the recorded name bytes (0x59..) */
+} BlurayPlaylist;
+
+/** Parse an .mpls file. @return 1, 0 not a valid playlist (logged), < 0 error */
+int  ff_bluray_mpls_parse(void *log, const BlurayFile *f, BlurayPlaylist *pl);
+/** Parse a BDAV .rpls file. @return 1, 0 not a valid playlist, < 0 error */
+int  ff_bluray_rpls_parse(void *log, const BlurayFile *f, BlurayPlaylist *pl);
+void ff_bluray_playlist_free(BlurayPlaylist *pl);
+
+/* ---- clip information (bluray_clpi.c) ---- */
+
+typedef struct BlurayStc {
+    uint16_t pcr_pid;
+    uint32_t spn_stc_start;          /**< source packet number */
+    uint32_t start, end;             /**< presentation start / end, 45 kHz */
+} BlurayStc;
+
+typedef struct BlurayAtc {
+    uint32_t   spn_atc_start;
+    uint8_t    offset_stc_id;
+    BlurayStc *stc;
+    int        nb_stc;
+} BlurayAtc;
+
+typedef struct BlurayClipStream {
+    uint16_t pid;
+    uint8_t  coding_type;
+    uint8_t  info_len;               /**< recorded length - 1 */
+    uint8_t  info[32];
+} BlurayClipStream;
+
+typedef struct BlurayProgram {
+    uint32_t          spn_start;
+    uint16_t          pmt_pid;
+    BlurayClipStream *streams;
+    int               nb_streams;
+} BlurayProgram;
+
+typedef struct BlurayAtcDelta {
+    uint32_t delta;
+    char     clip[6];
+    char     codec[5];
+} BlurayAtcDelta;
+
+typedef struct BlurayClip {
+    uint32_t        number;          /**< file number (NNNNN.clpi) */
+    BlurayHeader    hdr;
+    /* ClipInfo */
+    uint32_t        stream_type;     /**< Clip_stream_type (1 on old / BDAV clips) */
+    uint32_t        app_type;        /**< application_type */
+    int             atc_delta;       /**< the ATC delta list is present */
+    uint32_t        rate;            /**< TS_recording_rate */
+    uint32_t        packets;         /**< number_of_source_packets */
+    uint8_t         ts_validity;
+    char            format_id[5];
+    BlurayAtcDelta *deltas;
+    int             nb_deltas;
+    /* SequenceInfo: the first ATC sequence (a second one is dropped on BDMV clips) */
+    BlurayAtc      *atc;
+    int             nb_atc;
+    /* ProgramInfo */
+    BlurayProgram   program;
+    /* CPI */
+    uint8_t         cpi_type;
+    /* extension data */
+    BlurayExtEntry *ext;
+    int             nb_ext;
+    uint32_t       *ss_extents;      /**< extension 2/4: extent start points */
+    int             nb_ss_extents;
+    /* the stream file */
+    char            stream_path[48]; /**< "/BDMV/STREAM/NNNNN.m2ts" as found, "" none */
+    int64_t         stream_size;
+    int             stc_gap;         /**< its STC ids are not contiguous: no STC lookup succeeds */
+    int             interleave;      /**< 3-D pairing with it: 0 not decided, 1 fails, 2 this one first, 3 the other first */
+} BlurayClip;
+
+int  ff_bluray_clpi_parse(void *log, const BlurayFile *f, BlurayClip *c);
+/** The clip's stream file: "/<root>/STREAM/NNNNN.m2ts" (".fmts" for stream
+ *  type 2, else ".MTS"); a size other than packets x 192 is logged.
+ *  @return 1 found, 0 not found */
+int  ff_bluray_clip_stream_file(void *log, DiscIOFS *fs, BlurayClip *c);
+void ff_bluray_clip_free(BlurayClip *c);
+
+/* ---- index.bdmv, id.bdmv (bluray_index.c) ---- */
+
+typedef struct BlurayIndexEntry {
+    uint8_t  object_type;            /**< byte 0 bits 7-6 (1 HDMV, 2 BD-J) */
+    uint8_t  access_type;            /**< byte 0 bits 5-4 */
+    uint8_t  playback_type;          /**< byte 4 bits 7-6 */
+    uint32_t ref;                    /**< object type 1: movie object id; 2: BD-J object number */
+} BlurayIndexEntry;
+
+typedef struct BlurayIndex {
+    BlurayHeader      hdr;
+    BlurayIndexEntry  first_play, top_menu;
+    BlurayIndexEntry *titles;
+    int               nb_titles;
+    BlurayExtEntry   *ext;
+    int               nb_ext;
+} BlurayIndex;
+
+typedef struct BlurayId {
+    BlurayHeader hdr;
+    uint32_t     org_id;
+    uint8_t      disc_id[16];
+} BlurayId;
+
+int  ff_bluray_index_parse(void *log, const BlurayFile *f, BlurayIndex *ix);
+void ff_bluray_index_free(BlurayIndex *ix);
+int  ff_bluray_id_parse(void *log, const BlurayFile *f, BlurayId *id);
+
+/* ---- disc names (bluray_meta.c) ---- */
+
+/** Recorded text of the given character set as UTF-8 (av_free()), or NULL
+ *  (none, or a character set that is not decoded). */
+char *ff_bluray_text(void *log, uint8_t charset, const uint8_t *text, uint32_t len);
+/** The disc library title with the suffixes the reference program removes
+ *  (" Blu-ray 3D", " 4K Ultra HD", ", The", ...) taken off (av_free()), or
+ *  NULL when nothing is left. */
+char *ff_bluray_clean_title(const char *s);
+/**
+ * A disc library file (bdmt_LLL.xml): the name of its first discinfo's
+ * first title, cleaned (av_free(); NULL when none), and the text of its
+ * first language element (as written, cut to 7 bytes; "" when none). A file
+ * that does not parse is tried again with the reference program's repairs.
+ * @return 1, 0 not readable XML, < 0 error
+ */
+int ff_bluray_meta_read(void *log, const BlurayFile *f, char **name, char lang[8]);
+
+/* ---- titles (bluray_titles.c) ---- */
+
+/** One piece of a title: an STC sequence of a clip (the whole sequence), with
+ *  its 3-D dependent-view clip when the title is stereoscopic. */
+typedef struct BluraySegItem {
+    BlurayClip           *clip;
+    const BlurayStc      *stc;
+    BlurayClip           *dep;          /**< dependent-view clip (3-D), or NULL */
+    const BlurayPlayItem *item;         /**< the PlayItem it comes from, or NULL (a clip title) */
+    int                   connection;   /**< the PlayItem's connection condition (1 for clip titles) */
+    int64_t               start, length;/**< bytes: in the clip's stream file, or (interleaved) in the
+                                             base + dependent-view pair */
+} BluraySegItem;
+
+/** Items read as one stream: an item and the seamlessly connected
+ *  (connection condition 6) items after it. */
+typedef struct BluraySegment {
+    BluraySegItem *items;
+    int            nb_items;
+    int            interleaved;         /**< base and dependent view read interleaved (3-D) */
+    char           path[192];           /**< "/BDMV/STREAM/00001.m2ts+00002.m2ts", for the log */
+    char           desc[256];           /**< "(1:0/2,3)": clips, STC index, dependent clip */
+} BluraySegment;
+
+/** A text subtitle (TextST) stream of a title, read from its own clip. */
+typedef struct BluraySide {
+    BlurayClip           *clip;
+    const BlurayStc      *stc;
+    const BlurayStnStream *entry;
+    BlurayClip           *sync_clip;
+    const BlurayStc      *sync_stc;
+    uint32_t              sync_pts;
+    uint16_t              sync_item;
+    BluraySegment         seg;
+} BluraySide;
+
+typedef struct BlurayTitle {
+    char                  name[32];     /**< "00800.mpls", "00800.mpls(1)", "00012.m2ts", "01001.rpls(1)" */
+    BluraySegment        *segs;
+    int                   nb_segs;
+    BluraySide           *side;
+    int                   nb_side;
+    uint64_t             *marks;        /**< chapter positions, 1/1,080,000,000 s, ascending */
+    int                   nb_marks;
+    uint16_t             *pids;         /**< the streams the title keeps (ascending) */
+    int                   nb_pids;
+    const BlurayPlaylist *pl;           /**< NULL for a clip title */
+    int                   angle;        /**< 1-based angle of a multi-angle playlist, 0 none */
+    char                 *title_name;   /**< BDAV / AVCHD title name (av_free()), or NULL */
+    char                 *alt_name;     /**< BDAV: the number or name part kept apart */
+    int                   year, month, day, hour, minute, second;  /**< recording time (BDAV / AVCHD), 0 none */
+} BlurayTitle;
+
+/**
+ * Build the disc's titles with the reference program's rules: play items
+ * merged where they join cleanly, each playlist split into parts at its
+ * non-seamless connections, repeated items trimmed, one title per angle,
+ * titles for clips no title uses fully, recordable / AVCHD titles,
+ * duplicates and titles shorter than min_length seconds left out.
+ * The playlists' items may be changed (merged, connection conditions set).
+ */
+struct BlurayDisc;
+int  ff_bluray_titles_build(void *log, struct BlurayDisc *d, int min_length);
+void ff_bluray_titles_free(struct BlurayDisc *d);
+/** The title's duration, 45 kHz ticks (its segments' STC sequences). */
+int64_t ff_bluray_title_duration(const BlurayTitle *t);
+/** The title's size, bytes. */
+int64_t ff_bluray_title_size(const BlurayTitle *t);
+
+/* ---- the disc (bluray_disc.c) ---- */
+
+typedef struct BlurayDisc {
+    DiscIOFS       *fs;
+    DiscIOFS       *parent_fs;       /**< AVCHD folder: the card's root (names only), or NULL */
+    int             bdav;            /**< /BDAV/info.bdav: a BDAV (recorder) disc */
+    int             bdplus;          /**< /BDSVM/00000.svm present */
+    char           *name;            /**< disc name (av_free()), or NULL */
+    char           *name_eng;        /**< its English name when another language was chosen */
+    char            name_lang[4];    /**< language of the name's disc library file */
+    BlurayClip     *clips;           /**< in listing order; clips that do not load are left out */
+    int             nb_clips;
+    BlurayPlaylist *playlists;
+    int             nb_playlists;
+    uint32_t       *bdjo;            /**< BD-J object numbers (parsed with the BD-J step) */
+    int             nb_bdjo;
+    uint32_t       *jars;
+    int             nb_jars;
+    BlurayIndex     index;
+    int             has_index;
+    BlurayId        id;
+    int             has_id;
+    BlurayTitle    *titles;
+    int             nb_titles;
+} BlurayDisc;
+
+/**
+ * Read a Blu-ray disc's structure: its kind (BDMV / BDAV), name, clip
+ * information (with their stream files), playlists, index and id.
+ * path: the source as given (an AVCHD folder's card root is mounted for its
+ * name files), or NULL.
+ * @return 0, < 0 error (the disc cannot be read)
+ */
+int  ff_bluray_disc_open(void *log, DiscIOFS *fs, const char *path, const char *lang, BlurayDisc *d);
+void ff_bluray_disc_free(BlurayDisc *d);
+/** The disc's structure as text, one line per clip, playlist, PlayItem,
+ *  mark and stream (for the log and for comparisons with other readers). */
+struct AVBPrint;
+void ff_bluray_disc_dump(const BlurayDisc *d, struct AVBPrint *bp);
+
+#endif /* AVFORMAT_BLURAY_INTERNAL_H */

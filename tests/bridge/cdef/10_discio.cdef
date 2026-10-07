@@ -38,6 +38,7 @@ typedef struct DiscIOFile {
     int           nb_extents;
     DiscIOExtent *extents;
     uint8_t      *data;
+    DiscIOSource *host;
 } DiscIOFile;
 
 struct DiscIOFS;
@@ -46,6 +47,7 @@ enum DiscIOFSKind {
     DISCIO_FS_ISO9660 = 1,
     DISCIO_FS_JOLIET,
     DISCIO_FS_UDF,
+    DISCIO_FS_FOLDER,
 };
 
 typedef int (*DiscIODirCallback)(void *opaque, const char *name, int is_dir);
@@ -104,6 +106,8 @@ enum DiscIODiscFormat {
 };
 
 enum DiscIODiscFormat ff_discio_disc_format(DiscIOFS *fs);
+int ff_discio_folder_is_dir(const char *path);
+int ff_discio_mount_folder(void *logctx, const char *path, int attempts, DiscIOFS **out);
 
 /* bridge: Python sources (tests/helpers/source.py) */
 extern "Python" int tb_py_read_at(void *opaque, int64_t pos, uint8_t *buf, int len);

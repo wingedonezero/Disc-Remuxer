@@ -130,6 +130,9 @@ typedef struct DiscIOFile {
      * "embedded" data): size bytes, no extents. NULL otherwise.
      */
     uint8_t      *data;
+    /** A file of a disc folder: the host file it is read from (owned), no
+     *  extents. NULL otherwise. */
+    DiscIOSource *host;
 } DiscIOFile;
 
 struct DiscIOFS;
@@ -139,6 +142,7 @@ enum DiscIOFSKind {
     DISCIO_FS_ISO9660 = 1,
     DISCIO_FS_JOLIET,
     DISCIO_FS_UDF,
+    DISCIO_FS_FOLDER,          /**< a disc folder on the host (discio_folder.c) */
 };
 
 /** Called once per directory entry by DiscIOFSOps.list_dir. */
@@ -333,5 +337,14 @@ enum DiscIODiscFormat {
  * 3. DVD: /VIDEO_TS/VIDEO_TS.IFO.
  */
 enum DiscIODiscFormat ff_discio_disc_format(DiscIOFS *fs);
+
+/** Whether path is a folder on the host. */
+int ff_discio_folder_is_dir(const char *path);
+/**
+ * Mount a disc folder on the host (discio_folder.c): paths are looked up
+ * below it as written, its files read as host files with attempts read
+ * attempts each.
+ */
+int ff_discio_mount_folder(void *logctx, const char *path, int attempts, DiscIOFS **out);
 
 #endif /* AVFORMAT_DISCIO_H */

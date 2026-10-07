@@ -278,10 +278,11 @@ OBJS-$(CONFIG_H264_MUXER)                += rawenc.o
 OBJS-$(CONFIG_HASH_MUXER)                += hashenc.o
 OBJS-$(CONFIG_HCA_DEMUXER)               += hca.o
 OBJS-$(CONFIG_HCOM_DEMUXER)              += hcom.o pcm.o
-OBJS-$(CONFIG_DISC_DEMUXER)              += discdec.o hddvddec.o hddvd_vti.o hddvd_xpl.o \
-                                            discrip_frames.o discrip_codecs.o discrip_audio.o discrip_mlp.o discrip_junction.o discrip_join.o discrip_video.o discrip_mpv.o discrip_vc1.o discrip_spu.o discrip_cc.o discrip_ccx.o discrip_chapters.o discrip_verify.o discrip_seamless.o discrip_mix.o discrip_lpcm.o discrip_pcm.o discrip_title.o \
+OBJS-$(CONFIG_DISC_DEMUXER)              += discdec.o disctitle.o hddvddec.o \
+                                            bluraydec.o bluray_disc.o bluray_titles.o bluray_files.o bluray_mpls.o bluray_rpls.o bluray_clpi.o bluray_index.o bluray_meta.o hddvd_vti.o hddvd_xpl.o \
+                                            disctl_frames.o disctl_codecs.o disctl_audio.o disctl_mlp.o disctl_junction.o disctl_join.o disctl_video.o disctl_mpv.o disctl_vc1.o disctl_spu.o disctl_cc.o disctl_ccx.o disctl_chapters.o disctl_verify.o disctl_seamless.o disctl_lpcm.o disctl_pcm.o disctl_title.o \
                                             hddvd_titles.o hddvd_aacs.o hddvd_tracks.o disclang.o avlanguage.o \
-                                            discio_read.o discio_fs.o discio_iso9660.o \
+                                            discio_read.o discio_fs.o discio_iso9660.o discio_folder.o \
                                             discio_udf_netbsd.o discio_udf_linux.o
 OBJS-$(CONFIG_HDS_MUXER)                 += hdsenc.o
 OBJS-$(CONFIG_HEVC_DEMUXER)              += hevcdec.o rawdec.o
@@ -697,7 +698,6 @@ OBJS-$(CONFIG_VAPOURSYNTH_DEMUXER)       += vapoursynth.o
 # protocols I/O
 OBJS-$(CONFIG_ANDROID_CONTENT_PROTOCOL)  += file.o
 OBJS-$(CONFIG_ASYNC_PROTOCOL)            += async.o
-OBJS-$(CONFIG_BLURAY_PROTOCOL)           += bluray.o
 OBJS-$(CONFIG_CACHE_PROTOCOL)            += cache.o
 OBJS-$(CONFIG_CONCAT_PROTOCOL)           += concat.o
 OBJS-$(CONFIG_CONCATF_PROTOCOL)          += concat.o

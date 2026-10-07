@@ -2,10 +2,10 @@
  * HD DVD (Advanced Content): the format part of the disc layer (disc.h).
  * On the disc the disc layer opened it reads the title set's structure
  * (VTI), the playlists, the AACS keys, the title plan and the titles'
- * tracks; one title's tracks become the streams. Its EVOB clips are read in
- * order through FFmpeg's MPEG-PS demuxer as disc sectors (mpeg.c, option
- * disc; raw PES payloads) into the shared rip core, whose output frames are
- * the packets.
+ * tracks; one title's tracks become the streams. The disc layer's title
+ * reader reads its EVOB clips (DiscTitleSource: the blocks of a clip, AACS
+ * decrypted here; LPCM's 5-byte audio frame header; the 102 ms audio
+ * lead-in tolerance; the title's chapter marks).
  *
  * This file is part of FFmpeg.
  *
@@ -27,7 +27,6 @@
 #include <string.h>
 
 #include "libavutil/avstring.h"
-#include "libavutil/channel_layout.h"
 #include "libavutil/common.h"
 #include "libavutil/error.h"
 #include "libavutil/log.h"
@@ -35,19 +34,14 @@
 #include "libavutil/dict.h"
 
 #include "avformat.h"
-#include "avio_internal.h"
-#include "demux.h"
 #include "disc.h"
 #include "discinfo.h"
 #include "discio.h"
-#include "discrip.h"
+#include "disctl.h"
 #include "hddvd_internal.h"
 #include "internal.h"
 
 #define HDDVD_BLOCK 2048
-#define PTS_REF_SECTORS 2000              /* the PTS wrap reference is looked for in the first sectors */
-#define PTS_REF_BACK    27000000LL        /* and lies 300 s (90 kHz) before the first video time */
-#define TAIL_BYTES      (64LL << 20)      /* frames from a clip's last 64 MiB may be joined seamlessly */
 #define LEAD_IN_TOLERANCE 110160000LL     /* HD DVD audio lead-in tolerance: 102 ms (ticks) */
 
 typedef struct HDDVDDemuxContext {
@@ -58,107 +52,38 @@ typedef struct HDDVDDemuxContext {
     HDDVDAACS     *aacs;
     HDDVDTitlePlan *plan;
 
-    /* reading the chosen title: its clips in order through an MPEG-PS sub-demuxer */
+    /* the opened title, as the title reader gets it (DiscContext.src) */
     const HDDVDTitle *title;
-    int            clip;            /**< clip being read */
-    uint32_t       block;           /**< next block of that clip */
-    uint32_t       nb_blocks;       /**< blocks of that clip */
-    int            clip_done;       /**< the clip's last block was given to the sub-demuxer */
-    uint32_t       skipped;         /**< unusable blocks of that clip left out so far */
-    uint64_t       tail_start;      /**< byte of that clip where its last 64 MiB begin */
-    int64_t        pts_ref;         /**< that clip's PTS wrap reference (90 kHz), -1 while not known */
-    int64_t        last_sector;     /**< sector of the last PES packet read */
-    AVPacket     **held;            /**< packets read before the reference was known */
-    int            nb_held, held_cap;
-    HDDVDClipPS    ps;              /**< the clip through FFmpeg's MPEG-PS demuxer (disc sectors) */
-
-    /* the shared rip core */
-    DRTitle       *rip;
-    DRChapterPlan  chapter_plan;
-    int            rip_done;        /**< every clip was read, the core finished */
-    int64_t        blocks_total;    /**< blocks of all the title's clips */
-    int64_t        blocks_done;     /**< blocks read so far */
-    int            chapters_set;
-    AVPacket      *in;
+    DRTitleTrack  *tracks;
+    int64_t       *chapter_times;
+    const char   **chapter_names;
 } HDDVDDemuxContext;
 
-/* The next block of the clip being read; EOF at the clip's end. */
-static int subdemux_read(void *opaque, uint8_t *buf, int buf_size)
-{
-    AVFormatContext *s = opaque;
-    HDDVDDemuxContext *c = ff_disc_part(s);
-    HDDVDClip *clip = c->title->clips[c->clip];
-    int ret;
-
-    if (buf_size < HDDVD_BLOCK)
-        return AVERROR(EINVAL);
-    while (c->block < c->nb_blocks) {
-        uint32_t b = c->block++;
-
-        ret = ff_hddvd_clip_block(s, c->aacs, c->fs, clip, b, buf);
-        if (ret < 0) {
-            av_log(s, AV_LOG_ERROR, "EVOB %s: block %"PRIu32" of %"PRIu32" cannot be read (%s): "
-                   "the rest of the EVOB is not read\n", clip->evob->name, b, c->nb_blocks, av_err2str(ret));
-            c->block = c->nb_blocks;
-            break;
-        }
-        c->blocks_done++;
-        if (c->blocks_total)
-            ((DiscContext *)s->priv_data)->progress = c->blocks_done * 10000 / c->blocks_total;
-        if (!ret) {
-            av_log(s, AV_LOG_WARNING, "EVOB %s: block %"PRIu32" is not usable: left out\n", clip->evob->name, b);
-            c->skipped++;
-            continue;
-        }
-        return HDDVD_BLOCK;
-    }
-    c->clip_done = 1;
-    return AVERROR_EOF;
-}
-
-static void held_free(HDDVDDemuxContext *c)
-{
-    for (int i = 0; i < c->nb_held; i++)
-        av_packet_free(&c->held[i]);
-    c->nb_held = 0;
-}
-
-/* Start reading clip k of the title (a segment of the rip core): its blocks,
- * where its last 64 MiB begin, its PTS wrap reference still to be found. */
-static int clip_start(AVFormatContext *s, int k)
+static const char *clip_name(AVFormatContext *s, int k)
 {
     HDDVDDemuxContext *c = ff_disc_part(s);
-    const HDDVDTitle *t = c->title;
-    const HDDVDClip *clip = t->clips[k];
-    int ret;
+    return c->title->clips[k]->evob->name;
+}
 
-    c->clip        = k;
-    c->block       = 0;
-    c->nb_blocks   = clip->size / HDDVD_BLOCK;
-    c->clip_done   = 0;
-    c->skipped     = 0;
-    c->tail_start  = clip->size >= TAIL_BYTES ? clip->size - TAIL_BYTES : 0;
-    c->pts_ref     = -1;
-    c->last_sector = -1;
-    held_free(c);
-    av_log(s, AV_LOG_VERBOSE, "Reading EVOB %s (%d of %d): %"PRIu32" blocks, the last 64 MiB from byte %"PRIu64"\n",
-           clip->evob->name, k + 1, t->nb_clips, c->nb_blocks, c->tail_start);
-    ff_hddvd_clip_ps_close(&c->ps);
-    if ((ret = ff_hddvd_clip_ps_open(&c->ps, s, subdemux_read, s)) < 0)
-        return ret;
-    return ff_discrip_title_segment(c->rip);
+static uint32_t clip_blocks(AVFormatContext *s, int k)
+{
+    HDDVDDemuxContext *c = ff_disc_part(s);
+    return c->title->clips[k]->size / HDDVD_BLOCK;
+}
+
+static int read_block(AVFormatContext *s, int k, uint32_t block, uint8_t *buf)
+{
+    HDDVDDemuxContext *c = ff_disc_part(s);
+    return ff_hddvd_clip_block(s, c->aacs, c->fs, c->title->clips[k], block, buf);
 }
 
 static void hddvd_close(AVFormatContext *s)
 {
     HDDVDDemuxContext *c = ff_disc_part(s);
 
-    ff_hddvd_clip_ps_close(&c->ps);
-    held_free(c);
-    av_freep(&c->held);
-    av_packet_free(&c->in);
-    ff_discrip_title_close(&c->rip);
-    ff_discrip_chapter_plan_free(&c->chapter_plan);
+    av_freep(&c->tracks);
+    av_freep(&c->chapter_times);
+    av_freep(&c->chapter_names);
     ff_hddvd_titles_free(&c->plan);
     ff_hddvd_aacs_close(&c->aacs);
     ff_hddvd_xpl_free_all(&c->xpls, c->nb_xpls);
@@ -214,7 +139,7 @@ static int add_streams(AVFormatContext *s, const HDDVDTitle *t)
             st->disposition |= AV_DISPOSITION_DEPENDENT;
         if (k->type == AVMEDIA_TYPE_SUBTITLE) {
             char idx[1024];
-            int n = ff_discrip_vobsub_header(idx, sizeof(idx), k->width, k->height, k->palette);
+            int n = ff_disctl_vobsub_header(idx, sizeof(idx), k->width, k->height, k->palette);
             int ret;
 
             st->codecpar->width   = k->width;
@@ -240,8 +165,6 @@ static int add_streams(AVFormatContext *s, const HDDVDTitle *t)
     }
     return 0;
 }
-
-static int rip_open(AVFormatContext *s);
 
 /* The disc info's titles: name, language, duration, size, whether
  * selected, the EVOB files, chapter records, streams (their details are not
@@ -292,6 +215,50 @@ static int describe_titles(AVFormatContext *s)
     return 0;
 }
 
+/* The opened title for the title reader: its clips, tracks (track 0 is
+ * the title's video) and chapter marks, HD DVD's LPCM header and lead-in
+ * tolerance. */
+static int title_source(AVFormatContext *s)
+{
+    DiscContext *d = s->priv_data;
+    HDDVDDemuxContext *c = ff_disc_part(s);
+    const HDDVDTitle *t = c->title;
+
+    if (!(c->chapter_times = av_calloc(FFMAX(t->nb_marks, 1), sizeof(*c->chapter_times))) ||
+        !(c->chapter_names = av_calloc(FFMAX(t->nb_marks, 1), sizeof(*c->chapter_names))) ||
+        !(c->tracks = av_calloc(t->nb_tracks, sizeof(*c->tracks))))
+        return AVERROR(ENOMEM);
+    for (int i = 0; i < t->nb_marks; i++) {
+        c->chapter_times[i] = (int64_t)t->marks[i].ms * (DR_TICKS_PER_SECOND / 1000);
+        c->chapter_names[i] = t->marks[i].name;
+    }
+    for (int i = 0; i < t->nb_tracks; i++) {
+        const HDDVDTrack *k = &t->tracks[i];
+        c->tracks[i].codec       = k->codec;
+        c->tracks[i].kind        = k->type == AVMEDIA_TYPE_VIDEO ? DR_KIND_VIDEO :
+                                   k->type == AVMEDIA_TYPE_AUDIO ? DR_KIND_AUDIO : DR_KIND_SUBTITLE;
+        c->tracks[i].audio_flags = (k->from_track >= 0 ? DR_AUDIO_EXTRACTED : 0) |
+                                   (k->from_track >= 0 || k->inner_track >= 0 ? DR_AUDIO_EXTENDED : 0);
+        c->tracks[i].width       = k->width;
+        c->tracks[i].height      = k->height;
+    }
+    d->src = (DiscTitleSource){
+        .nb_clips      = t->nb_clips,
+        .clip_kind     = "EVOB",
+        .clip_name     = clip_name,
+        .clip_blocks   = clip_blocks,
+        .read_block    = read_block,
+        .lpcm_header   = 5,
+        .tolerance     = LEAD_IN_TOLERANCE,
+        .tracks        = c->tracks,
+        .nb_tracks     = t->nb_tracks,
+        .chapter_times = c->chapter_times,
+        .chapter_names = (const char *const *)c->chapter_names,
+        .nb_chapters   = t->nb_marks,
+    };
+    return 0;
+}
+
 static int hddvd_open(AVFormatContext *s)
 {
     DiscContext *d = s->priv_data;
@@ -324,286 +291,7 @@ static int hddvd_open(AVFormatContext *s)
     if ((ret = add_streams(s, c->title)) < 0)
         return ret;
     s->duration = av_rescale(c->title->duration, AV_TIME_BASE, 90000);
-    if ((ret = rip_open(s)) < 0)
-        return ret;
-    return clip_start(s, 0);
-}
-
-/* The chapter plan from the title's marks and the rip core for its tracks
- * (track 0 is the title's video). */
-static int rip_open(AVFormatContext *s)
-{
-    HDDVDDemuxContext *c = ff_disc_part(s);
-    const HDDVDTitle *t = c->title;
-    DRTitleTrack *tracks;
-    int64_t *records;
-    int ret;
-
-    if (!(records = av_calloc(FFMAX(t->nb_marks, 1), sizeof(*records))))
-        return AVERROR(ENOMEM);
-    for (int i = 0; i < t->nb_marks; i++)
-        records[i] = (int64_t)t->marks[i].ms * (DR_TICKS_PER_SECOND / 1000);
-    /* no leading clip is left out yet (skip 0); no "Chapter 00" */
-    ret = ff_discrip_chapter_plan(s, records, t->nb_marks, 0, 0, &c->chapter_plan);
-    av_free(records);
-    if (ret < 0)
-        return ret;
-    if (!(tracks = av_calloc(t->nb_tracks, sizeof(*tracks))))
-        return AVERROR(ENOMEM);
-    for (int i = 0; i < t->nb_tracks; i++) {
-        const HDDVDTrack *k = &t->tracks[i];
-        tracks[i].codec       = k->codec;
-        tracks[i].kind        = k->type == AVMEDIA_TYPE_VIDEO ? DR_KIND_VIDEO :
-                                k->type == AVMEDIA_TYPE_AUDIO ? DR_KIND_AUDIO : DR_KIND_SUBTITLE;
-        tracks[i].audio_flags = (k->from_track >= 0 ? DR_AUDIO_EXTRACTED : 0) |
-                                (k->from_track >= 0 || k->inner_track >= 0 ? DR_AUDIO_EXTENDED : 0);
-        tracks[i].width       = k->width;
-        tracks[i].height      = k->height;
-    }
-    {
-        DRTitleConfig cfg = {
-            .nb_tracks = t->nb_tracks, .tracks = tracks, .tolerance = LEAD_IN_TOLERANCE, .lpcm_hd = 1,
-            .marks = c->chapter_plan.marks, .nb_marks = c->chapter_plan.nb_marks,
-        };
-        ret = ff_discrip_title_open(&c->rip, s, &cfg);
-    }
-    av_free(tracks);
-    if (ret < 0)
-        return ret;
-    if (!(c->in = av_packet_alloc()))
-        return AVERROR(ENOMEM);
-    for (int i = 0; i < t->nb_clips; i++)
-        c->blocks_total += t->clips[i]->size / HDDVD_BLOCK;
-    return 0;
-}
-
-/* A payload of the clip being read to every track it feeds (a DTS-HD
- * stream also feeds the DTS track taken out of it): its PES time with the clip's wrap
- * reference, in ticks; whether it lies in the clip's last 64 MiB. */
-static int feed(AVFormatContext *s, const AVPacket *pkt)
-{
-    HDDVDDemuxContext *c = ff_disc_part(s);
-    const AVStream *sub = c->ps.ctx->streams[pkt->stream_index];
-    int64_t time = AV_NOPTS_VALUE;
-    int tail = (uint64_t)pkt->pos + (uint64_t)c->skipped * HDDVD_BLOCK >= c->tail_start, n = 0, ret;
-
-    if (pkt->pts != AV_NOPTS_VALUE)
-        time = (pkt->pts < c->pts_ref ? pkt->pts + (1LL << 33) : pkt->pts) * DR_TICKS_PER_PTS;
-    for (int i = 0; i < s->nb_streams; i++) {
-        if (s->streams[i]->id != sub->id)
-            continue;
-        if ((ret = ff_discrip_title_payload(c->rip, i, pkt->data, pkt->size, time, tail)) < 0)
-            return ret;
-        n++;
-    }
-    if (!n)
-        av_log(s, AV_LOG_TRACE, "EVOB %s: packet of stream 0x%x (no track): left out\n",
-               c->title->clips[c->clip]->evob->name, sub->id);
-    return 0;
-}
-
-static int hold(HDDVDDemuxContext *c, AVPacket *pkt)
-{
-    if (c->nb_held == c->held_cap) {
-        int cap = c->held_cap ? 2 * c->held_cap : 64;
-        AVPacket **h = av_realloc_array(c->held, cap, sizeof(*h));
-        if (!h)
-            return AVERROR(ENOMEM);
-        c->held     = h;
-        c->held_cap = cap;
-    }
-    if (!(c->held[c->nb_held] = av_packet_alloc()))
-        return AVERROR(ENOMEM);
-    av_packet_move_ref(c->held[c->nb_held++], pkt);
-    return 0;
-}
-
-/* One PES packet of the title into the rip core. The clip's PTS wrap
- * reference is the time of the first video packet that starts a sector in
- * its first 2000 sectors, less 300 s; packets before it wait for it. A
- * time below the reference has wrapped (+2^33). */
-static int read_input(AVFormatContext *s)
-{
-    HDDVDDemuxContext *c = ff_disc_part(s);
-    AVPacket *pkt = c->in;
-    const AVStream *sub;
-    int64_t sector;
-    int first, ret;
-
-    ret = av_read_frame(c->ps.ctx, pkt);
-    if (ret == AVERROR_EOF && c->clip_done) {
-        if (c->pts_ref < 0) {
-            av_log(s, AV_LOG_ERROR, "EVOB %s: no video time in its first %d sectors: no time reference\n",
-                   c->title->clips[c->clip]->evob->name, PTS_REF_SECTORS);
-            return AVERROR_INVALIDDATA;
-        }
-        if (c->clip + 1 < c->title->nb_clips)
-            return clip_start(s, c->clip + 1);
-        if ((ret = ff_discrip_title_finish(c->rip)) < 0)
-            return ret;
-        c->rip_done = 1;
-        return 0;
-    }
-    if (ret < 0)
-        return ret;
-    sub    = c->ps.ctx->streams[pkt->stream_index];
-    sector = pkt->pos / HDDVD_BLOCK + c->skipped;
-    first  = sector != c->last_sector;
-    c->last_sector = sector;
-    if (c->pts_ref < 0) {
-        int64_t limit = FFMIN(PTS_REF_SECTORS, (int64_t)(c->title->clips[c->clip]->size / HDDVD_BLOCK));
-
-        if (sub->id == s->streams[0]->id && pkt->pts != AV_NOPTS_VALUE && first && sector < limit) {
-            c->pts_ref = pkt->pts >= PTS_REF_BACK ? pkt->pts - PTS_REF_BACK : pkt->pts + (1LL << 33) - PTS_REF_BACK;
-            av_log(s, AV_LOG_VERBOSE, "EVOB %s: first video time %"PRId64" in sector %"PRId64": wrap reference %"
-                   PRId64"\n", c->title->clips[c->clip]->evob->name, pkt->pts, sector, c->pts_ref);
-            for (int i = 0; i < c->nb_held; i++)
-                if ((ret = feed(s, c->held[i])) < 0)
-                    break;
-            held_free(c);
-            if (ret < 0) {
-                av_packet_unref(pkt);
-                return ret;
-            }
-        } else if (sector >= limit) {
-            av_log(s, AV_LOG_ERROR, "EVOB %s: no video time in its first %"PRId64" sectors: no time reference\n",
-                   c->title->clips[c->clip]->evob->name, limit);
-            av_packet_unref(pkt);
-            return AVERROR_INVALIDDATA;
-        } else {
-            return hold(c, pkt);
-        }
-    }
-    ret = feed(s, pkt);
-    av_packet_unref(pkt);
-    return ret;
-}
-
-/* The chapters of the ripped title, once the core finished. */
-static int set_chapters(AVFormatContext *s)
-{
-    HDDVDDemuxContext *c = ff_disc_part(s);
-    DRChapter *ch;
-    int n, ret;
-
-    c->chapters_set = 1;
-    if ((ret = ff_discrip_title_chapters(c->rip, &c->chapter_plan, &ch, &n)) < 0)
-        return ret;
-    for (int i = 0; i < n; i++) {
-        const char *name = ch[i].record >= 0 && c->title->marks[ch[i].record].name &&
-                           *c->title->marks[ch[i].record].name ? c->title->marks[ch[i].record].name : NULL;
-        if (!avpriv_new_chapter(s, i, (AVRational){ 1, DR_TICKS_PER_SECOND }, ch[i].start, ch[i].end, name)) {
-            av_free(ch);
-            return AVERROR(ENOMEM);
-        }
-    }
-    av_free(ch);
-    s->duration = av_rescale(ff_discrip_title_duration(c->rip), AV_TIME_BASE, DR_TICKS_PER_SECOND);
-    return 0;
-}
-
-/* A linear PCM track leaves as little-endian PCM: its stream takes the
- * format of the first audio frame header. */
-static int lpcm_params(AVFormatContext *s, int k)
-{
-    HDDVDDemuxContext *c = ff_disc_part(s);
-    AVCodecParameters *par = s->streams[k]->codecpar;
-    const DRLpcm *p;
-
-    if (par->codec_id != AV_CODEC_ID_PCM_DVD || !(p = ff_discrip_title_lpcm(c->rip, k)))
-        return 0;
-    par->codec_id              = p->bits > 16 ? AV_CODEC_ID_PCM_S24LE : AV_CODEC_ID_PCM_S16LE;
-    par->sample_rate           = p->rate;
-    par->bits_per_coded_sample = p->bits;
-    av_channel_layout_uninit(&par->ch_layout);
-    if (p->chmask && av_popcount64(p->chmask) == p->channels)
-        return av_channel_layout_from_mask(&par->ch_layout, p->chmask);
-    av_channel_layout_default(&par->ch_layout, p->channels);
-    return 0;
-}
-
-/* The rip core's next output frame as a packet (time base 1/1,080,000,000
- * s); empty markers carry no bytes and are not given out. */
-static int hddvd_read_packet(AVFormatContext *s, AVPacket *pkt)
-{
-    HDDVDDemuxContext *c = ff_disc_part(s);
-    int ret;
-
-    if (!c->rip)                        /* only the disc info: nothing to read */
-        return AVERROR_EOF;
-    for (;;) {
-        DRFrame f;
-        int k;
-
-        ret = ff_discrip_title_frame(c->rip, &k, &f);
-        if (!ret) {
-            if (!f.size) {
-                ff_discrip_frame_unref(&f);
-                continue;
-            }
-            if ((ret = lpcm_params(s, k)) < 0) {
-                ff_discrip_frame_unref(&f);
-                return ret;
-            }
-            pkt->buf          = f.buf;
-            pkt->data         = f.data;
-            pkt->size         = f.size;
-            pkt->pts          = f.time;
-            pkt->dts          = AV_NOPTS_VALUE;
-            pkt->duration     = f.dur;
-            pkt->pos          = f.pos;
-            pkt->stream_index = k;
-            if (f.flags & DR_F_KEY)
-                pkt->flags |= AV_PKT_FLAG_KEY;
-            if (f.flags & DR_F_DISCARD)
-                pkt->flags |= AV_PKT_FLAG_DISPOSABLE;
-            return 0;
-        }
-        if (ret == AVERROR_EOF) {
-            int64_t review = ff_discrip_title_review(c->rip);
-            if (!c->chapters_set) {
-                if ((ret = set_chapters(s)) < 0)
-                    return ret;
-                /* features met that no real disc has tested: the caller
-                 * reports the job as failed so that its log is looked at */
-                if (review) {
-                    av_log(s, AV_LOG_ERROR, "HD DVD: %"PRId64" untested feature(s) met in this title: "
-                           "check the log before using the output\n", review);
-                    if ((ret = av_dict_set_int(&s->metadata, "untested", review, 0)) < 0)
-                        return ret;
-                }
-                /* line-21 caption data the core took out of the video (HD DVD
-                 * keeps no caption track: the data is reported, not kept) */
-                {
-                    int64_t blocks, text;
-                    ff_discrip_title_cc_dropped(c->rip, &blocks, &text);
-                    if (blocks && ((ret = av_dict_set_int(&s->streams[0]->metadata, "cc_blocks", blocks, 0)) < 0 ||
-                                   (ret = av_dict_set_int(&s->streams[0]->metadata, "cc_text", text, 0)) < 0))
-                        return ret;
-                }
-                /* each track's result for the caller: frames, warnings, start delay (ms) */
-                for (int i = 0; i < s->nb_streams; i++) {
-                    int64_t frames, warnings, delay;
-                    AVDictionary **m = &s->streams[i]->metadata;
-                    if (ff_discrip_title_track_result(c->rip, i, &frames, &warnings, &delay) < 0)
-                        continue;
-                    if ((ret = av_dict_set_int(m, "frames", frames, 0)) < 0 ||
-                        (ret = av_dict_set_int(m, "warnings", warnings, 0)) < 0 ||
-                        (ret = av_dict_set_int(m, "delay_us", delay / (DR_TICKS_PER_SECOND / 1000000), 0)) < 0)
-                        return ret;
-                    if (ff_discrip_title_spu_result(c->rip, i, &frames, &warnings) >= 0 &&
-                        ((ret = av_dict_set_int(m, "no_stop", frames, 0)) < 0 ||
-                         (ret = av_dict_set_int(m, "outside", warnings, 0)) < 0))
-                        return ret;
-                }
-            }
-            return AVERROR_EOF;
-        }
-        if (ret != AVERROR(EAGAIN))
-            return ret;
-        if ((ret = read_input(s)) < 0)
-            return ret;
-    }
+    return title_source(s);
 }
 
 const DiscFormat ff_disc_hddvd = {
@@ -611,6 +299,5 @@ const DiscFormat ff_disc_hddvd = {
     .kind        = DISCIO_DISC_HDDVD,
     .priv_size   = sizeof(HDDVDDemuxContext),
     .open        = hddvd_open,
-    .read_packet = hddvd_read_packet,
     .close       = hddvd_close,
 };
