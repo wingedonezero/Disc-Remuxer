@@ -1,7 +1,8 @@
 # FFmpeg (libs/ffmpeg, our copy): its own configure + make, out of tree,
 # static, with our DVD libraries, expat and libaacs found through the .pc
 # files above. FFmpeg's own make is run every time (it rebuilds only what
-# changed); configure only when its arguments change.
+# changed); configure only when its arguments change, or the lists configure
+# reads the components from (a new parser, demuxer, filter ...).
 
 FFMPEG_SRC := $(LIBS)/ffmpeg
 FFMPEG     := $(BUILD)/ffmpeg/install
@@ -18,7 +19,11 @@ FFMPEG_ARGS += --disable-stripping --disable-optimizations --extra-cflags=--cove
 endif
 $(call args_stamp,$(BUILD)/ffmpeg/args,$(FFMPEG_ARGS))
 
-$(BUILD)/ffmpeg/build/ffbuild/config.mak: $(BUILD)/ffmpeg/args $(FFMPEG_PCS) $(FFMPEG_SRC)/configure
+FFMPEG_LISTS := $(FFMPEG_SRC)/libavcodec/parsers.c $(FFMPEG_SRC)/libavcodec/allcodecs.c \
+  $(FFMPEG_SRC)/libavcodec/bitstream_filters.c $(FFMPEG_SRC)/libavformat/allformats.c \
+  $(FFMPEG_SRC)/libavformat/protocols.c
+
+$(BUILD)/ffmpeg/build/ffbuild/config.mak: $(BUILD)/ffmpeg/args $(FFMPEG_PCS) $(FFMPEG_SRC)/configure $(FFMPEG_LISTS)
 	@mkdir -p $(BUILD)/ffmpeg/build
 	cd $(BUILD)/ffmpeg/build && PKG_CONFIG_PATH=$(PC) PKG_CONFIG_LIBDIR=$(PC) $(FFMPEG_SRC)/configure $(FFMPEG_ARGS)
 	touch $@
