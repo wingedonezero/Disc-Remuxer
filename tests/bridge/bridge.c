@@ -4,7 +4,9 @@
  * callback, running a parser the way libavformat does).
  */
 
+#include <errno.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -235,6 +237,85 @@ end:
     return ret;
 }
 
+/* FFmpeg's MPEG-TS demuxer (mpegts.c) in disc mode over the bytes in
+ * memory, or over the first max_bytes of the file at path (data NULL), for
+ * the PIDs given; each payload piece goes to cb with its stream id (PID |
+ * PES key << 16), bytes, pts and byte position. Returns the number of
+ * pieces, or an AVERROR. */
+typedef void (*tb_ts_packet_cb)(void *opaque, int id, const uint8_t *data, int size, int64_t pts, int64_t pos);
+
+typedef struct TbFile { FILE *f; int64_t left; } TbFile;
+
+static int tb_file_read(void *opaque, uint8_t *buf, int n)
+{
+    TbFile *t = opaque;
+    size_t k;
+    if (t->left <= 0)
+        return AVERROR_EOF;
+    k = fread(buf, 1, FFMIN((int64_t)n, t->left), t->f);
+    if (!k)
+        return AVERROR_EOF;
+    t->left -= k;
+    return k;
+}
+
+static int tb_ts_read(const uint8_t *data, int size, const char *path, int64_t max_bytes, const int *pids, int npids,
+                      tb_ts_packet_cb cb, void *opaque)
+{
+    extern const FFInputFormat ff_mpegts_demuxer;
+    TbMem m = { data, size, 0 };
+    TbFile tf = { NULL, max_bytes };
+    AVFormatContext *s = avformat_alloc_context();
+    uint8_t *buf = av_malloc(4096);
+    AVPacket *pkt = av_packet_alloc();
+    AVDictionary *opts = NULL;
+    AVBPrint bp;
+    int n = 0, ret;
+
+    if (!data && !(tf.f = fopen(path, "rb"))) {
+        av_free(buf);
+        ret = AVERROR(errno);
+        goto end;
+    }
+    if (!s || !buf || !pkt ||
+        !(s->pb = avio_alloc_context(buf, 4096, 0, data ? (void *)&m : (void *)&tf, data ? tb_mem_read : tb_file_read,
+                                     NULL, NULL))) {
+        av_free(buf);
+        ret = AVERROR(ENOMEM);
+        goto end;
+    }
+    s->flags |= AVFMT_FLAG_CUSTOM_IO | AVFMT_FLAG_NOPARSE | AVFMT_FLAG_NOFILLIN;
+    s->correct_ts_overflow = 0;
+    s->probesize = 0;
+    av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
+    for (int i = 0; i < npids; i++)
+        av_bprintf(&bp, "%s%d", i ? "," : "", pids[i]);
+    av_dict_set_int(&opts, "disc", 1, 0);
+    if (npids)
+        av_dict_set(&opts, "disc_pids", bp.str, 0);
+    av_bprint_finalize(&bp, NULL);
+    ret = avformat_open_input(&s, "", &ff_mpegts_demuxer.p, &opts);
+    av_dict_free(&opts);
+    if (ret < 0)
+        goto end;
+    while ((ret = av_read_frame(s, pkt)) >= 0) {
+        cb(opaque, s->streams[pkt->stream_index]->id, pkt->data, pkt->size, pkt->pts, pkt->pos);
+        av_packet_unref(pkt);
+        n++;
+    }
+    ret = ret == AVERROR_EOF ? n : ret;
+end:
+    if (s && s->pb) {
+        av_freep(&s->pb->buffer);
+        avio_context_free(&s->pb);
+    }
+    avformat_close_input(&s);
+    av_packet_free(&pkt);
+    if (tf.f)
+        fclose(tf.f);
+    return ret;
+}
+
 /* Blu-ray: a disc folder's structure as ff_bluray_disc_dump() writes it
  * (free()), or NULL with *err set when the disc cannot be read. */
 static char *tb_bluray_dump(const char *path, const char *lang, int min_length, int *err)
@@ -260,6 +341,77 @@ static char *tb_bluray_dump(const char *path, const char *lang, int min_length, 
     ff_bluray_disc_free(&d);
     ff_discio_fs_close(&fs);
     return out;
+}
+
+/* Blu-ray AACS: a disc folder opened with the AACS step (key files in
+ * order), its clips' keys and their aligned units. */
+typedef struct TBBluray {
+    DiscIOFS   *fs;
+    BlurayDisc  d;
+    BlurayAACS *aacs;
+} TBBluray;
+
+static void tb_bluray_close(TBBluray *b)
+{
+    if (!b)
+        return;
+    ff_bluray_aacs_close(&b->aacs);
+    ff_bluray_disc_free(&b->d);
+    ff_discio_fs_close(&b->fs);
+    free(b);
+}
+
+static TBBluray *tb_bluray_open(const char *path, const char *const *key_files, int nb_key_files, int *err)
+{
+    TBBluray *b = calloc(1, sizeof(*b));
+
+    if (!b) {
+        *err = AVERROR(ENOMEM);
+        return NULL;
+    }
+    if ((*err = ff_discio_mount_folder(NULL, path, 1, &b->fs)) >= 0 &&
+        (*err = ff_bluray_disc_open(NULL, b->fs, path, NULL, &b->d)) >= 0)
+        *err = ff_bluray_aacs_open(NULL, &b->d, key_files, nb_key_files, &b->aacs);
+    if (*err < 0) {
+        tb_bluray_close(b);
+        return NULL;
+    }
+    return b;
+}
+
+static BlurayClip *tb_bluray_clip(TBBluray *b, uint32_t number)
+{
+    for (int i = 0; i < b->d.nb_clips; i++)
+        if (b->d.clips[i].number == number)
+            return &b->d.clips[i];
+    return NULL;
+}
+
+/* The clip's key unit, or -100 when there is no such clip. */
+static int tb_bluray_key_unit(TBBluray *b, uint32_t clip)
+{
+    BlurayClip *c = tb_bluray_clip(b, clip);
+    return c ? c->key_unit : -100;
+}
+
+static int tb_bluray_unit(TBBluray *b, uint32_t clip, uint8_t *unit)
+{
+    BlurayClip *c = tb_bluray_clip(b, clip);
+    return c ? ff_bluray_aacs_unit(NULL, b->aacs, c, unit) : AVERROR(EINVAL);
+}
+
+/* 1 and the disc ID, or 0 when the disc has none. */
+static int tb_bluray_disc_id(TBBluray *b, uint8_t *id)
+{
+    if (!b->d.has_disc_id)
+        return 0;
+    memcpy(id, b->d.disc_id, 20);
+    return 1;
+}
+
+static int tb_bluray_has_keys(TBBluray *b)
+{
+    return b->aacs != NULL;
 }
 
 static char *tb_bluray_text(uint8_t charset, const uint8_t *text, uint32_t len)

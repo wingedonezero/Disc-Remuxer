@@ -230,3 +230,109 @@ def bdmv(clips=None, playlists=None, extra=None, stream_files=True, root="BDMV")
         f[f"{root}/PLAYLIST/{n:05d}.mpls"] = d
     f.update(extra or {})
     return f
+
+
+# ---- AACS ----
+
+UNIT = 6144                # aligned unit: 32 source packets of 192 bytes
+
+
+def unit_key_ro(enc_keys, record=48, skb=False, kind=(1, 1), pos=0x70):
+    """Unit_Key_RO.inf: key block at pos (BE32 at 0), header bytes 0x10..
+    (type, version, SKB flag), the CPS unit count and one record per unit
+    with its encrypted key at +0x20."""
+    f = bytearray(pos + 16 + record * len(enc_keys))
+    f[0:4] = be32(pos)
+    f[0x10], f[0x11], f[0x12] = kind[0], kind[1], int(skb)
+    f[pos:pos + 2] = be16(len(enc_keys))
+    for n, k in enumerate(enc_keys):
+        at = pos + 16 + n * record + 0x20
+        f[at:at + 16] = k
+    return bytes(f)
+
+
+def mkb(mkb_type=0x031003, version=1, size=4096):
+    """A media key block that starts with its Type and Version record (the
+    rest filler)."""
+    f = bytearray(i % 251 + 1 for i in range(size))
+    f[0:12] = bytes([0x10]) + (12).to_bytes(3, "big") + be32(mkb_type) + be32(version)
+    return bytes(f)
+
+
+def ts_unit(seed=0, cpi=0):
+    """An aligned unit of 32 source packets: TP_extra_header (copy
+    permission cpi, arrival time) and a TS packet (sync byte, counting
+    payload)."""
+    u = bytearray()
+    for k in range(32):
+        u += be32((cpi << 30) | (seed * 0x1000 + k * 0x10))
+        u += bytes([0x47, 0x01, 0x00, 0x10 | (k & 15)]) + bytes((seed + k + i) & 0xff for i in range(184))
+    return bytes(u)
+
+
+def encrypt_unit(plain, unit_key, cpi=3):
+    """An aligned unit as the disc holds it: every packet marked (copy
+    permission cpi), bytes 16.. AES-128-CBC (AACS IV) with the key
+    AES-128E(unit key, the first 16 bytes) xor those bytes."""
+    from synth.hddvd import AACS_IV, aes, aes_e
+    u = bytearray(plain)
+    for k in range(32):
+        u[k * 192] = (u[k * 192] & 0x3f) | (cpi << 6)
+    bk = bytes(a ^ b for a, b in zip(aes_e(unit_key, bytes(u[:16])), u[:16]))
+    return bytes(u[:16]) + aes(bk, bytes(u[16:]), False, AACS_IV)
+
+
+# ---- transport stream ----
+
+def ts_packet(pid, payload=b"", pusi=False, cc=0):
+    """A 188-byte TS packet: the payload, an adaptation field filling the
+    rest (none when the payload fills 184 bytes)."""
+    room = 184 - len(payload)
+    assert room >= 0
+    h = bytes([0x47, (0x40 if pusi else 0) | (pid >> 8), pid & 0xff])
+    if room == 0:
+        return h + bytes([0x10 | cc]) + payload
+    af = bytes([room - 1]) + (bytes([0]) + bytes([0xff] * (room - 2)) if room > 1 else b"")
+    return h + bytes([0x30 | cc]) + af + payload
+
+
+def pes(stream_id, payload, ext=None, pts=None):
+    """A PES packet: optional PTS, optional stream_id_extension (stream id 0xFD)."""
+    flags, hdr = 0, b""
+    if pts is not None:
+        flags |= 0x80
+        hdr += bytes([0x21 | ((pts >> 29) & 0x0e), (pts >> 22) & 0xff, 0x01 | ((pts >> 14) & 0xfe),
+                      (pts >> 7) & 0xff, 0x01 | ((pts << 1) & 0xfe)])
+    if ext is not None:
+        flags |= 0x01
+        hdr += bytes([0x01, 0x81, ext])          # PES_extension_flag_2, its field length 1, the extension
+    body = bytes([0x80, flags, len(hdr)]) + hdr + payload
+    return b"\x00\x00\x01" + bytes([stream_id]) + be16(len(body)) + body
+
+
+def source_units(packets):
+    """Aligned units of source packets (4-byte TP_extra_header + TS packet),
+    padded with null packets to whole units."""
+    out = bytearray()
+    for i, p in enumerate(packets):
+        out += be32(i * 0x10) + p
+    n = len(packets)
+    while n % 32:
+        out += be32(n * 0x10) + ts_packet(0x1fff, bytes(184))
+        n += 1
+    return bytes(out)
+
+
+def ts_packets(pid, data, cc=0):
+    """data (a PES packet, or several back to back) in TS packets of pid:
+    the first starts a payload unit, the last is filled with an
+    adaptation field."""
+    out = []
+    for i in range(0, len(data), 184):
+        out.append(ts_packet(pid, data[i:i + 184], pusi=(i == 0), cc=(cc + len(out)) & 15))
+    return out
+
+
+def source_packets(packets):
+    """TS packets as 192-byte source packets (no padding to whole units)."""
+    return b"".join(be32(i * 0x10) + p for i, p in enumerate(packets))

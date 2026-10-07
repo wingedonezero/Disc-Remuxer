@@ -325,5 +325,7 @@ void ff_bluray_clip_free(BlurayClip *c)
     av_freep(&c->program.streams);
     av_freep(&c->ss_extents);
     ff_bluray_ext_free(&c->ext, &c->nb_ext);
+    av_freep(&c->pmt);
+    c->pmt_len = c->pmt_tried = 0;
     c->nb_atc = c->nb_deltas = c->program.nb_streams = c->nb_ss_extents = 0;
 }

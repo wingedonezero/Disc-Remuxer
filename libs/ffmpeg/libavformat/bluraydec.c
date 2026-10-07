@@ -1,7 +1,8 @@
 /*
  * Blu-ray (BDMV, BDAV, AVCHD): the format part of the disc layer (disc.h).
- * It reads the disc's structure (bluray_disc.c) and describes the disc;
- * titles, keys and reading follow in their steps.
+ * It reads the disc's structure (bluray_disc.c), its AACS keys
+ * (bluray_aacs.c) and title list (bluray_titles.c) and describes the disc;
+ * tracks and reading follow in their steps.
  *
  * This file is part of FFmpeg.
  *
@@ -35,6 +36,7 @@
 
 typedef struct BlurayDemuxContext {
     BlurayDisc disc;
+    BlurayAACS *aacs;
     char     **files;          /* the titles' file names (disc info) */
     int        nb_files;
 } BlurayDemuxContext;
@@ -50,6 +52,7 @@ static void bluray_close(AVFormatContext *s)
     for (int i = 0; i < c->nb_files; i++)
         av_free(c->files[i]);
     av_freep(&c->files);
+    ff_bluray_aacs_close(&c->aacs);
     ff_bluray_disc_free(&c->disc);
 }
 
@@ -64,7 +67,8 @@ static const char *keep(BlurayDemuxContext *c, char *str)
 
 /* The disc info's titles: name (the title's own, else the disc's), what it
  * is made from, its angle, duration and size (its STC sequences' and their
- * bytes), the clip files it plays (one per segment item), chapter marks. */
+ * bytes), the clip files it plays (one per segment item), its tracks,
+ * chapter marks. */
 static int describe_titles(AVFormatContext *s)
 {
     BlurayDemuxContext *c = ff_disc_part(s);
@@ -72,9 +76,9 @@ static int describe_titles(AVFormatContext *s)
 
     for (int i = 0; i < b->nb_titles; i++) {
         const BlurayTitle *t = &b->titles[i];
-        DiscTitleInfo *dt = ff_disc_add_title(s);
+        DiscTitleInfo *dt;
 
-        if (!dt)
+        if (!(dt = ff_disc_add_title(s)))
             return AVERROR(ENOMEM);
         dt->name     = t->title_name ? t->title_name : b->name;
         dt->source   = t->name;
@@ -98,6 +102,21 @@ static int describe_titles(AVFormatContext *s)
                         return AVERROR(ENOMEM);
                 }
             }
+        for (int k = 0; k < t->nb_tracks; k++) {
+            const BlurayTrack *tk = &t->tracks[k];
+            DiscStreamInfo *ds = ff_disc_title_add_stream(dt);
+            if (!ds)
+                return AVERROR(ENOMEM);
+            ds->type        = tk->type;
+            ds->codec       = tk->codec;
+            ds->inner_track = tk->inner_track;
+            ds->from_track  = tk->from_track;
+            ds->forced      = !!(tk->flags & BLURAY_TRACK_FORCED);
+            ds->second_view = tk->type == AVMEDIA_TYPE_VIDEO && tk->from_track >= 0;
+            ds->offset_sequence = tk->offset_seq;
+            ds->second_layer    = !!(tk->flags & BLURAY_TRACK_LAYER2);
+            memcpy(ds->language, tk->lang, sizeof(ds->language));
+        }
         for (int k = 0; k < t->nb_marks; k++) {
             DiscChapterInfo *ch = ff_disc_title_add_chapter(dt);
             if (!ch)
@@ -133,6 +152,9 @@ static int bluray_open(AVFormatContext *s)
         }
         av_bprint_finalize(&bp, NULL);
     }
+    if ((ret = ff_bluray_aacs_open(s, b, (const char *const *)d->opt_keydb, d->nb_opt_keydb, &c->aacs)) < 0)
+        return ret;
+    b->keys = c->aacs;
     if ((ret = ff_bluray_titles_build(s, b, d->opt_min_length)) < 0 || (ret = describe_titles(s)) < 0)
         return ret;
     d->info.name      = b->name;

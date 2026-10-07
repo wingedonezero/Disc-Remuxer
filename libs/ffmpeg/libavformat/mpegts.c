@@ -44,6 +44,7 @@
 #include "mpeg.h"
 #include "isom.h"
 #include "id3v2.h"
+#include "packet_internal.h"
 #if CONFIG_ICONV
 #include <iconv.h>
 #endif
@@ -198,6 +199,14 @@ struct MpegTSContext {
 
     AVStream *epg_stream;
     AVBufferPool* pools[32];
+
+    /* disc mode (Blu-ray / BDAV / AVCHD stream files read as a disc reader
+     * reads them, see "disc" below) */
+    int disc;
+    int *disc_pids;
+    unsigned nb_disc_pids;
+    struct DiscTsPid *disc_pid[NB_PID_MAX];
+    PacketList disc_queue;
 };
 
 #define MPEGTS_OPTIONS \
@@ -227,6 +236,11 @@ static const AVOption options[] = {
      {.i64 = 0}, 0, 1, 0 },
     {"max_packet_size", "maximum size of emitted packet", offsetof(MpegTSContext, max_packet_size), AV_OPT_TYPE_INT,
      {.i64 = 204800}, TS_PAYLOAD_SIZE, INT_MAX/2, AV_OPT_FLAG_DECODING_PARAM },
+    {"disc", "read 192-byte source packets as a disc reader does (Blu-ray): the payload of each PES packet of the "
+     "PIDs in disc_pids as it arrives, one stream per PID and PES stream key", offsetof(MpegTSContext, disc),
+     AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
+    {"disc_pids", "disc mode: the PIDs read", offsetof(MpegTSContext, disc_pids),
+     AV_OPT_TYPE_INT | AV_OPT_TYPE_FLAG_ARRAY, {.arr = NULL}, 0, 0x1fff, AV_OPT_FLAG_DECODING_PARAM },
     { NULL },
 };
 
@@ -3547,12 +3561,19 @@ static void seek_back(AVFormatContext *s, AVIOContext *pb, int64_t pos) {
         av_log(s, (pb->seekable & AVIO_SEEKABLE_NORMAL) ? AV_LOG_ERROR : AV_LOG_INFO, "Unable to seek back to the start\n");
 }
 
+static int disc_read_header(AVFormatContext *s);
+static int disc_read_packet(AVFormatContext *s, AVPacket *pkt);
+static void disc_free(MpegTSContext *ts);
+
 static int mpegts_read_header(AVFormatContext *s)
 {
     MpegTSContext *ts = s->priv_data;
     AVIOContext *pb   = s->pb;
     int64_t pos, probesize = s->probesize;
     int64_t seekback = FFMAX(s->probesize, (int64_t)ts->resync_size + PROBE_PACKET_MAX_BUF);
+
+    if (ts->disc)
+        return disc_read_header(s);
 
     if (ffio_ensure_seekback(pb, seekback) < 0)
         av_log(s, AV_LOG_WARNING, "Failed to allocate buffers for seekback\n");
@@ -3700,6 +3721,9 @@ static int mpegts_read_packet(AVFormatContext *s, AVPacket *pkt)
     MpegTSContext *ts = s->priv_data;
     int ret, i;
 
+    if (ts->disc)
+        return disc_read_packet(s, pkt);
+
     pkt->size = -1;
     ts->pkt = pkt;
     ret = handle_packets(ts, 0);
@@ -3742,8 +3766,357 @@ static void mpegts_free(MpegTSContext *ts)
 static int mpegts_read_close(AVFormatContext *s)
 {
     MpegTSContext *ts = s->priv_data;
+    disc_free(ts);
     mpegts_free(ts);
     return 0;
+}
+
+/* ---- disc mode ----
+ *
+ * A Blu-ray stream file read as the disc reader reads it: 192-byte source
+ * packets (4-byte TP_extra_header + TS packet), all-zero source packets
+ * skipped; a TS packet with a bad sync byte, the transport error bit or an
+ * adaptation field length >= 184 left out (logged). For each PID asked for
+ * (disc_pids) the PES packets are put together as the disc reader does:
+ * a PES header (at most 752 bytes) is collected until complete; its payload
+ * is given out at once, the rest of the PES packet as each TS packet brings
+ * it; a PES packet of length 0 runs to the next PES start; a TS packet that
+ * starts a PES without a start code continues the current one when one is
+ * running; what cannot be read (no start code, a header that does not
+ * parse, a header longer than its packet, a header that does not fit) drops
+ * the PID's data until its next PES start. Each payload piece is a packet
+ * of the stream for its PID and PES stream key (the stream id; stream id
+ * 0xFD with its stream_id_extension: 0xFD | extension << 8): stream id =
+ * PID | key << 16. The first piece with bytes of a PES packet carries its
+ * PTS (33 bits as recorded, when its marker bits are set), the rest none;
+ * pos is the byte of the source packet the piece is in. */
+
+#define DISC_SRC_PACKET  192
+#define DISC_HDR_MAX     0x2f0
+#define DISC_UNBOUNDED   0x7ffffff0u
+#define DISC_ERRORS_MAX  1000
+
+enum { DISC_HEADER = 1, DISC_BODY = 2, DISC_DROP = 3 };
+
+typedef struct DiscTsPid {
+    uint8_t  hdr[DISC_HDR_MAX];
+    unsigned buffered;
+    int      state;
+    uint32_t remaining;           /* bytes of the running PES body still to come, DISC_UNBOUNDED none */
+    int      stream;              /* the stream of the running PES body */
+    int64_t  pts;                 /* the running PES packet's PTS, until a piece of it is given out */
+    unsigned errors;              /* TS header errors */
+} DiscTsPid;
+
+typedef struct DiscPes {
+    uint16_t key;
+    unsigned off;                 /* payload start (header length) */
+    unsigned total;               /* PES_packet_length + 6, 0 unbounded */
+    int64_t  pts;                 /* AV_NOPTS_VALUE none */
+} DiscPes;
+
+/* A PES header (the disc reader's rules): 1 parsed, 0 not usable. */
+static int disc_pes(const uint8_t *p, unsigned avail, DiscPes *o)
+{
+    uint8_t sid, flags;
+
+    if (avail < 6 || p[0] || p[1] || p[2] != 1)
+        return 0;
+    sid      = p[3];
+    o->key   = sid;
+    o->pts   = AV_NOPTS_VALUE;
+    o->total = AV_RB16(p + 4) ? AV_RB16(p + 4) + 6 : 0;
+    if ((sid & 0xfe) == 0xbe) {
+        o->off = 6;
+        return 1;
+    }
+    if (avail < 9)
+        return 0;
+    o->off = p[8] + 9;
+    if (!((sid >= 0xe0 && sid <= 0xe2) || sid == 0xfd || sid == 0xbd || (sid & 0xe0) == 0xc0))
+        return 1;
+    flags = p[7];
+    if (flags >= 0xc0 || (flags & 0xc0) == 0x80) {
+        if (avail < 0xe)
+            return 0;
+        if ((p[9] & 1) && (p[11] & 1) && (p[13] & 1))
+            o->pts = ff_parse_pes_pts(p + 9);
+    }
+    if ((flags & 1) && !(flags & 0x3e)) {
+        unsigned q = 9 + 5 * ((flags >> 7) & 1) + 5 * ((flags >> 6) & 1);
+        if (avail < q + 1)
+            return 0;
+        if (p[q] < 0x40) {
+            if (p[q] & 1) {
+                unsigned r = q + ((p[q] & 0x10) ? 3 : 1);
+                if (avail < r + 2)
+                    return 0;
+                if (p[r] == 0x81 && p[r + 1] < 0x80)
+                    o->key = p[r + 1] << 8 | sid;
+            }
+        } else {
+            av_log(NULL, AV_LOG_DEBUG, "TS: a PES extension with private data or a pack header\n");
+        }
+    } else if (flags & 1) {
+        av_log(NULL, AV_LOG_DEBUG, "TS: a PES extension behind other optional fields\n");
+    }
+    return avail >= o->off;
+}
+
+static int disc_stream(AVFormatContext *s, int pid, uint16_t key)
+{
+    int id = pid | key << 16;
+    AVStream *st;
+
+    for (int i = 0; i < s->nb_streams; i++)
+        if (s->streams[i]->id == id)
+            return i;
+    if (!(st = avformat_new_stream(s, NULL)))
+        return AVERROR(ENOMEM);
+    st->id = id;
+    st->codecpar->codec_type = AVMEDIA_TYPE_DATA;
+    avpriv_set_pts_info(st, 33, 1, 90000);
+    return st->index;
+}
+
+/* A payload piece of the running PES packet of d; the PES packet's time
+ * goes with its first piece that has bytes. */
+static int disc_emit(AVFormatContext *s, DiscTsPid *d, const uint8_t *data, unsigned len, int64_t pos)
+{
+    MpegTSContext *ts = s->priv_data;
+    AVPacket *pkt = ts->pkt;
+    int64_t pts = d->pts;
+    int ret;
+
+    if (d->stream < 0 || !len)
+        return 0;
+    d->pts = AV_NOPTS_VALUE;
+    if ((ret = av_new_packet(pkt, len)) < 0)
+        return ret;
+    memcpy(pkt->data, data, len);
+    pkt->stream_index = d->stream;
+    pkt->pts = pkt->dts = pts;
+    pkt->pos = pos;
+    ret = ff_packet_list_put(&ts->disc_queue, pkt, NULL, 0);
+    av_packet_unref(pkt);
+    return ret;
+}
+
+static void disc_drop(AVFormatContext *s, DiscTsPid *d, int pid, int why)
+{
+    static const char *const whys[] = { "a PES header does not fit", "no PES start code",
+                                        "a PES header cannot be read", "a PES packet shorter than its header", "",
+                                        "a PES body longer than its packet" };
+    av_log(s, AV_LOG_WARNING, "TS: PID 0x%04x: %s: its data is dropped until its next PES start\n", pid,
+           why >= 0 && why < FF_ARRAY_ELEMS(whys) ? whys[why] : "?");
+    d->remaining = DISC_UNBOUNDED;
+    d->buffered  = 0;
+    d->state     = DISC_DROP;
+}
+
+/* The collected PES header bytes: payloads given out as far as they go. */
+static int disc_headers(AVFormatContext *s, DiscTsPid *d, int pid, int64_t pos)
+{
+    for (;;) {
+        DiscPes pes;
+        unsigned hlen, end, n, used;
+        int ret, st;
+
+        if (d->buffered < 6)
+            return 0;
+        if (d->hdr[0] || d->hdr[1] || d->hdr[2] != 1) {
+            disc_drop(s, d, pid, 1);
+            return 0;
+        }
+        if ((d->hdr[3] & 0xfe) == 0xbe)
+            hlen = 6;
+        else if (d->buffered >= 9)
+            hlen = d->hdr[8] + 9;
+        else
+            return 0;
+        if (d->buffered < hlen)
+            return 0;
+        if (!disc_pes(d->hdr, d->buffered, &pes)) {
+            disc_drop(s, d, pid, 2);
+            return 0;
+        }
+        if (pes.total && pes.total - 1 < pes.off) {
+            disc_drop(s, d, pid, 3);
+            return 0;
+        }
+        if (pes.off > d->buffered)
+            return 0;
+        end = pes.total ? FFMIN(d->buffered, pes.total) : d->buffered;
+        n   = end - pes.off;
+        if ((st = disc_stream(s, pid, pes.key)) < 0)
+            return st;
+        d->stream = st;
+        d->pts    = pes.pts;
+        if ((ret = disc_emit(s, d, d->hdr + pes.off, n, pos)) < 0)
+            return ret;
+        if (!pes.total) {
+            d->state     = DISC_BODY;
+            d->remaining = DISC_UNBOUNDED;
+            d->buffered  = 0;
+            return 0;
+        }
+        used = n + pes.off;
+        if (end == d->buffered) {
+            d->buffered = 0;
+            if (pes.total == used) {
+                d->state = DISC_HEADER;
+            } else {
+                d->state     = DISC_BODY;
+                d->remaining = pes.total - used;
+            }
+            return 0;
+        }
+        /* another PES packet follows in the collected bytes */
+        memmove(d->hdr, d->hdr + pes.total, d->buffered - pes.total);
+        d->buffered -= pes.total;
+        d->state = DISC_HEADER;
+    }
+}
+
+static int disc_ts_packet(AVFormatContext *s, const uint8_t *p, int64_t pos)
+{
+    MpegTSContext *ts = s->priv_data;
+    int pid, pusi, off = 4;
+    unsigned len;
+    const uint8_t *pl;
+    DiscTsPid *d;
+
+    if (p[0] != 0x47 || (p[1] & 0x80))
+        pid = -1;
+    else
+        pid = (p[1] & 0x1f) << 8 | p[2];
+    if (pid >= 0 && (p[3] & 0x20)) {
+        if (p[4] >= 0xb8)
+            pid = -2;
+        else
+            off = p[4] + 5;
+    }
+    if (pid < 0) {
+        /* counted against every PID read */
+        for (unsigned i = 0; i < ts->nb_disc_pids; i++) {
+            DiscTsPid *e = ts->disc_pid[ts->disc_pids[i]];
+            if (e && ++e->errors <= DISC_ERRORS_MAX)
+                av_log(s, e->errors == DISC_ERRORS_MAX ? AV_LOG_WARNING : AV_LOG_DEBUG,
+                       "TS: PID 0x%04x: a TS packet at byte %"PRId64" cannot be read%s\n", ts->disc_pids[i], pos,
+                       e->errors == DISC_ERRORS_MAX ? " (1000 such packets: no more are logged)" : "");
+        }
+        return 0;
+    }
+    if (!(d = ts->disc_pid[pid]))
+        return 0;
+    pusi = p[1] & 0x40;
+    pl   = p + off;
+    len  = (p[3] & 0x10) ? TS_PACKET_SIZE - off : 0;
+
+    if (pusi) {
+        if (d->state != DISC_HEADER && len >= 6 && (pl[0] || pl[1] || pl[2] != 1)) {
+            av_log(s, AV_LOG_DEBUG, "TS: PID 0x%04x: a PES start without a start code: taken as a continuation\n",
+                   pid);
+        } else {
+            if (d->remaining != DISC_UNBOUNDED && d->state != DISC_HEADER)
+                av_log(s, AV_LOG_WARNING, "TS: PID 0x%04x: a PES packet cut short at byte %"PRId64"\n", pid, pos);
+            d->remaining = 0;
+            d->buffered  = 0;
+            d->state     = DISC_HEADER;
+            goto collect;
+        }
+    }
+    if (d->state == DISC_BODY || d->state == DISC_DROP) {
+        if (d->state == DISC_BODY && d->remaining != DISC_UNBOUNDED && len > d->remaining) {
+            disc_drop(s, d, pid, 5);
+            return 0;
+        }
+        if (d->remaining == DISC_UNBOUNDED) {
+            if (d->state == DISC_BODY)
+                return disc_emit(s, d, pl, len, pos);
+            return 0;
+        }
+        if (len > d->remaining) {
+            av_log(s, AV_LOG_ERROR, "TS: PID 0x%04x: a TS packet at byte %"PRId64" runs past its PES packet\n",
+                   pid, pos);
+            return AVERROR_INVALIDDATA;
+        }
+        if (d->state == DISC_BODY) {
+            int ret = disc_emit(s, d, pl, len, pos);
+            if (ret < 0)
+                return ret;
+        }
+        d->remaining -= len;
+        if (!d->remaining) {
+            d->buffered = 0;
+            d->state    = DISC_HEADER;
+        }
+        return 0;
+    }
+    if (d->state != DISC_HEADER) {
+        av_log(s, AV_LOG_ERROR, "TS: PID 0x%04x: unknown reading state\n", pid);
+        return AVERROR_BUG;
+    }
+collect:
+    if (len > DISC_HDR_MAX - d->buffered) {
+        disc_drop(s, d, pid, 0);
+        return 0;
+    }
+    memcpy(d->hdr + d->buffered, pl, len);
+    d->buffered += len;
+    return disc_headers(s, d, pid, pos);
+}
+
+static int disc_read_header(AVFormatContext *s)
+{
+    MpegTSContext *ts = s->priv_data;
+
+    ts->stream          = s;
+    ts->raw_packet_size = DISC_SRC_PACKET;
+    for (unsigned i = 0; i < ts->nb_disc_pids; i++) {
+        int pid = ts->disc_pids[i];
+        if (!ts->disc_pid[pid]) {
+            if (!(ts->disc_pid[pid] = av_mallocz(sizeof(DiscTsPid))))
+                return AVERROR(ENOMEM);
+            ts->disc_pid[pid]->state     = DISC_HEADER;
+            ts->disc_pid[pid]->remaining = DISC_UNBOUNDED;
+            ts->disc_pid[pid]->stream    = -1;
+            ts->disc_pid[pid]->pts       = AV_NOPTS_VALUE;
+        }
+    }
+    if (!(ts->pkt = av_packet_alloc()))
+        return AVERROR(ENOMEM);
+    s->ctx_flags |= AVFMTCTX_NOHEADER;
+    return 0;
+}
+
+static int disc_read_packet(AVFormatContext *s, AVPacket *pkt)
+{
+    MpegTSContext *ts = s->priv_data;
+    uint8_t buf[DISC_SRC_PACKET];
+
+    while (!ts->disc_queue.head) {
+        int64_t pos = avio_tell(s->pb);
+        int ret = avio_read(s->pb, buf, DISC_SRC_PACKET), zero = 1;
+        if (ret != DISC_SRC_PACKET)
+            return ret < 0 ? ret : AVERROR_EOF;
+        for (int i = 0; i < DISC_SRC_PACKET && zero; i++)
+            zero = !buf[i];
+        if (zero)
+            continue;
+        if ((ret = disc_ts_packet(s, buf + 4, pos)) < 0)
+            return ret;
+    }
+    return ff_packet_list_get(&ts->disc_queue, pkt);
+}
+
+static void disc_free(MpegTSContext *ts)
+{
+    for (unsigned i = 0; i < NB_PID_MAX; i++)
+        av_freep(&ts->disc_pid[i]);
+    ff_packet_list_free(&ts->disc_queue);
+    if (ts->disc)
+        av_packet_free(&ts->pkt);
 }
 
 av_unused static int64_t mpegts_get_pcr(AVFormatContext *s, int stream_index,

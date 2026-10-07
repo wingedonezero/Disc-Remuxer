@@ -256,6 +256,48 @@ AACS_PUBLIC int aacs_hddvd_title_key(const AACS_HDDVD *, uint32_t id, uint8_t ke
 AACS_PUBLIC int aacs_hddvd_decrypt_pack(const uint8_t title_key[16], const uint8_t seed12[12], uint8_t *pack);
 
 /*
+ * Blu-ray with the application's own file reading
+ */
+
+typedef struct aacs_bd AACS_BD;
+
+/* The same messages and levels as the HD DVD open. */
+typedef AACS_HDDVD_LOG AACS_BD_LOG;
+#define AACS_BD_LOG_ERROR   AACS_HDDVD_LOG_ERROR
+#define AACS_BD_LOG_WARNING AACS_HDDVD_LOG_WARNING
+#define AACS_BD_LOG_INFO    AACS_HDDVD_LOG_INFO
+
+/**
+ * The CPS unit keys of a Blu-ray disc. disc_id: the disc ID the key files use
+ * (SHA-1 of its Unit_Key_RO.inf); enc_uk: the nb_uk (>= 1) encrypted unit
+ * keys of that file; mkb: its media key block (mkb_name for the log), or
+ * NULL. The key files (KEYDB.cfg, with or without "0x" before the hex
+ * values) are read in order; of their entries for the disc ID the first
+ * volume unique key decrypts the unit keys; without one, the first unit-key
+ * list (U, every unit 1..nb_uk) is used; else the media key (the first
+ * entry's, or from the MKB with the files' device keys, then processing keys)
+ * and the first entry's volume ID give the volume unique key.
+ * @return the handle, or NULL with *error_code an AACS_ERROR_* code
+ */
+AACS_PUBLIC AACS_BD *aacs_bd_open(const uint8_t disc_id[20], const uint8_t (*enc_uk)[16], unsigned nb_uk,
+                                  const uint8_t *mkb, size_t mkb_size, const char *mkb_name,
+                                  const char *const *key_files, unsigned nb_key_files,
+                                  AACS_BD_LOG log, void *log_opaque, int *error_code);
+AACS_PUBLIC void aacs_bd_close(AACS_BD *);
+
+/* Number of CPS units; unit n's key (1..n): 1, else 0. */
+AACS_PUBLIC unsigned aacs_bd_units(const AACS_BD *);
+AACS_PUBLIC int aacs_bd_unit_key(const AACS_BD *, unsigned unit, uint8_t key[16]);
+
+/**
+ * Decrypt a 6144-byte aligned unit in place: bytes 16..6143 with
+ * AES-128-CBC (AACS IV), key AES-G(unit key, the unit's first 16 bytes).
+ * Neither the result nor the copy permission bits are checked or changed.
+ * @return 0, < 0 on a cryptography error
+ */
+AACS_PUBLIC int aacs_bd_decrypt_unit(const uint8_t unit_key[16], uint8_t *unit);
+
+/*
  * Debug log: every message libaacs would write (to stderr or AACS_DEBUG_FILE,
  * as AACS_DEBUG_MASK selects) goes to handler instead; NULL restores that.
  */

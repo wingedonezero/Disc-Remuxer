@@ -24,7 +24,9 @@
 #include <inttypes.h>
 #include <stdint.h>
 
+#include "libavutil/avutil.h"
 #include "libavutil/error.h"
+#include "libavcodec/codec_id.h"
 
 #include "discio.h"
 
@@ -227,7 +229,19 @@ typedef struct BlurayClipStream {
     uint8_t  coding_type;
     uint8_t  info_len;               /**< recorded length - 1 */
     uint8_t  info[32];
+    /* what the stream probe found (bluray_tracks.c) */
+    uint32_t probe;                  /**< BLURAY_PROBE_* */
+    char     probe_lang[4];          /**< with BLURAY_PROBE_LANG */
+    uint8_t  subtype;                /**< with BLURAY_PROBE_SUBTYPE: a private stream's kind */
 } BlurayClipStream;
+
+#define BLURAY_PROBE_DONE     0x10   /**< probed */
+#define BLURAY_PROBE_NO_CORE  0x20   /**< E-AC-3 / DTS-HD without a core substream */
+#define BLURAY_PROBE_LANG     0x40   /**< probe_lang found in the stream */
+#define BLURAY_PROBE_SUBTYPE  0x80   /**< subtype found in the program map */
+#define BLURAY_PROBE_M2TS     0x100  /**< a stream of a BDAV (M2TS) clip */
+#define BLURAY_PROBE_HEVC_EL  0x200  /**< HEVC with a second layer on PID 0x1015 */
+#define BLURAY_PROBE_AVC_ID   0x400  /**< AVC video on PES stream id 0xE0 + (probe & 0xf) */
 
 typedef struct BlurayProgram {
     uint32_t          spn_start;
@@ -272,6 +286,12 @@ typedef struct BlurayClip {
     int64_t         stream_size;
     int             stc_gap;         /**< its STC ids are not contiguous: no STC lookup succeeds */
     int             interleave;      /**< 3-D pairing with it: 0 not decided, 1 fails, 2 this one first, 3 the other first */
+    /* the program map read from the stream (BDAV clips, bluray_probe.c) */
+    uint8_t        *pmt;
+    int             pmt_len;
+    int             pmt_tried;
+    /* AACS (bluray_aacs.c) */
+    int             key_unit;        /**< CPS unit whose key decrypts it: 1.., BLURAY_KEY_NONE, BLURAY_KEY_UNKNOWN */
 } BlurayClip;
 
 int  ff_bluray_clpi_parse(void *log, const BlurayFile *f, BlurayClip *c);
@@ -351,6 +371,8 @@ typedef struct BluraySegment {
     char           desc[256];           /**< "(1:0/2,3)": clips, STC index, dependent clip */
 } BluraySegment;
 
+typedef struct BlurayAACS BlurayAACS;   /**< bluray_aacs.c */
+
 /** A text subtitle (TextST) stream of a title, read from its own clip. */
 typedef struct BluraySide {
     BlurayClip           *clip;
@@ -362,6 +384,34 @@ typedef struct BluraySide {
     uint16_t              sync_item;
     BluraySegment         seg;
 } BluraySide;
+
+/** A track of a title (bluray_tracks.c): one of the parts a clip stream
+ *  gives (TrueHD and its AC-3, a subtitle and its forced-only copy, ...). */
+typedef struct BlurayTrack {
+    int              code;          /**< the kind of track (internal codes, bluray_tracks.c) */
+    enum AVMediaType type;
+    enum AVCodecID   codec;
+    uint16_t         pid;
+    uint32_t         sel1, sel2;    /**< what of the PID it takes (PES stream id extension, ...) */
+    uint32_t         flags;         /**< BLURAY_TRACK_* */
+    char             lang[4];
+    int              stream;        /**< the stream it comes from (the title's stream numbering) */
+    int              from_track;    /**< the track it is taken out of, -1 none */
+    int              inner_track;   /**< the track taken out of it, -1 none */
+    int              offset_seq;    /**< 3-D subtitle: offset sequence id, -1 none */
+    uint32_t         side_clip;     /**< text subtitle from its own clip: the clip number */
+    int              side_stc;      /**< and the STC sequence (index over the clip's ATC sequences) */
+} BlurayTrack;
+
+#define BLURAY_TRACK_SECONDARY 0x200    /**< secondary audio */
+#define BLURAY_TRACK_HAS_CORE  0x400    /**< a core track is taken out of it */
+#define BLURAY_TRACK_CORE      0x100    /**< the core of another track */
+#define BLURAY_TRACK_DERIVED   0x800    /**< taken out of another track */
+#define BLURAY_TRACK_FORCED    0x1000   /**< only the forced subtitles */
+#define BLURAY_TRACK_3D_BASE   0x2000   /**< the base view of a stereoscopic (3-D) video */
+#define BLURAY_TRACK_3D_PLANE  0x8000   /**< a 3-D subtitle with an offset sequence (offset_seq) */
+#define BLURAY_TRACK_LAYER2    0x10000  /**< HEVC read with its second layer (PID sel1) */
+#define BLURAY_TRACK_SIDE      0x1000000/**< read from its own clip (text subtitle) */
 
 typedef struct BlurayTitle {
     char                  name[32];     /**< "00800.mpls", "00800.mpls(1)", "00012.m2ts", "01001.rpls(1)" */
@@ -378,6 +428,10 @@ typedef struct BlurayTitle {
     char                 *title_name;   /**< BDAV / AVCHD title name (av_free()), or NULL */
     char                 *alt_name;     /**< BDAV: the number or name part kept apart */
     int                   year, month, day, hour, minute, second;  /**< recording time (BDAV / AVCHD), 0 none */
+    /* tracks (bluray_tracks.c) */
+    BlurayTrack          *tracks;
+    int                   nb_tracks;
+    int                   track_seg;    /**< the segment the tracks are described from (the largest) */
 } BlurayTitle;
 
 /**
@@ -389,9 +443,37 @@ typedef struct BlurayTitle {
  * The playlists' items may be changed (merged, connection conditions set).
  */
 struct BlurayDisc;
-int  ff_bluray_titles_build(void *log, struct BlurayDisc *d, int min_length);
+int  ff_bluray_titles_build(void *log, struct BlurayDisc *d, int min_length);   /* with the tracks (d->fs, d->keys) */
 void ff_bluray_titles_free(struct BlurayDisc *d);
 /** The title's duration, 45 kHz ticks (its segments' STC sequences). */
+/**
+ * The tracks of title t (t->tracks): its streams described from the
+ * largest segment's first clip (the title's streams only), the second view
+ * of a 3-D title, its text subtitles; video first, then audio, then
+ * subtitles, an identical audio / subtitle stream left out.
+ * @return 0, AVERROR_INVALIDDATA the title has no video, < 0 error
+ */
+int ff_bluray_title_tracks(void *log, DiscIOFS *fs, BlurayAACS *aacs, BlurayTitle *t);
+
+/**
+ * The stream probe of clip stream e (once per stream) from the segment's
+ * stream data: no core substream, the AVC PES stream id, the HEVC second
+ * layer, BDAV program map kinds and languages (BLURAY_PROBE_*). c is the
+ * segment's first clip (e may belong to its dependent view); code and
+ * nb_parts: e's description before the probe (its first track kind, its
+ * number of tracks).
+ * @return 0, < 0 the stream data cannot be read (logged)
+ */
+int ff_bluray_probe_stream(void *log, DiscIOFS *fs, BlurayAACS *aacs, const BluraySegment *s,
+                           BlurayClip *c, BlurayClipStream *e, int code, int nb_parts);
+
+/**
+ * The PES stream keys seen in pid of the segment's stream data, up to
+ * limit PES headers of one key (the start of the stream).
+ * @return the number of keys seen, < 0 the stream data cannot be read
+ */
+int ff_bluray_pid_scan(void *log, DiscIOFS *fs, BlurayAACS *aacs, const BluraySegment *s, uint16_t pid, int limit);
+
 int64_t ff_bluray_title_duration(const BlurayTitle *t);
 /** The title's size, bytes. */
 int64_t ff_bluray_title_size(const BlurayTitle *t);
@@ -410,6 +492,8 @@ typedef struct BlurayDisc {
     int             nb_clips;
     BlurayPlaylist *playlists;
     int             nb_playlists;
+    uint32_t       *playlist_ids;    /**< the playlist listing (also the files that did not load) */
+    int             nb_playlist_ids;
     uint32_t       *bdjo;            /**< BD-J object numbers (parsed with the BD-J step) */
     int             nb_bdjo;
     uint32_t       *jars;
@@ -420,7 +504,41 @@ typedef struct BlurayDisc {
     int             has_id;
     BlurayTitle    *titles;
     int             nb_titles;
+    /* AACS (bluray_aacs.c) */
+    BlurayAACS     *keys;            /**< the keys (owned by the format part), NULL none */
+    int             aacs;            /**< an /AACS or /AACS_bd directory */
+    uint8_t         disc_id[20];     /**< SHA-1 of the disc's Unit_Key file */
+    int             has_disc_id;
+    char            disc_id_from[96];/**< the file it is the digest of */
 } BlurayDisc;
+
+/* ---- AACS (bluray_aacs.c) ---- */
+
+#define BLURAY_KEY_UNKNOWN (-1)      /**< not found yet: found on the clip's first encrypted unit */
+#define BLURAY_KEY_NONE      0       /**< no key: its units are used as they are */
+
+/**
+ * The AACS step of the disc open: an /AACS (or /AACS_bd) directory gives the
+ * disc's unit keys (through the key files) and each clip's key, or shows the
+ * disc is not encrypted after all; without one the disc is taken as not
+ * encrypted (with the checks for discs decrypted by other software). Sets
+ * the clips' key_unit and the disc ID.
+ * @return 0 (*out NULL when nothing is decrypted), AVERROR(EACCES) no key
+ *         for the disc, AVERROR_PATCHWELCOME a kind of AACS not supported,
+ *         another < 0 error (the disc cannot be opened)
+ */
+int  ff_bluray_aacs_open(void *log, BlurayDisc *d, const char *const *key_files, int nb_key_files,
+                         BlurayAACS **out);
+void ff_bluray_aacs_close(BlurayAACS **a);
+
+/**
+ * Make one 6144-byte aligned unit of clip c usable, in place: a unit marked
+ * encrypted (copy permission bits) is decrypted with the clip's key (found
+ * on its first encrypted unit when not known yet) and its marks cleared; a
+ * unit that is not marked, or of a clip without a key, is left as it is.
+ * @return 0, < 0 error (the unit cannot be decrypted)
+ */
+int  ff_bluray_aacs_unit(void *log, BlurayAACS *a, BlurayClip *c, uint8_t *unit);
 
 /**
  * Read a Blu-ray disc's structure: its kind (BDMV / BDAV), name, clip
