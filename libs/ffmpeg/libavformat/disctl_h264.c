@@ -11,11 +11,10 @@
  * after it may refer to pictures before it).
  *
  * A frame keeps the NAL units of its access unit as they are on the disc,
- * each with its start code (a 00 00 00 01 start code stays one), except the
- * units that carry no picture data and that the Matroska / ISO storage of
- * H.264 does not keep (ISO/IEC 14496-15): filler data (12), end of sequence
- * (10), end of stream (11), access unit delimiters (9), the nal_unit_types
- * that start no unit (0, 16-18, 21-23, 25-27, 29, 31) and zero stuffing
+ * each with its start code (a 00 00 00 01 start code stays one), access unit
+ * delimiters included, except what is no part of a picture: filler data
+ * (12), end of sequence (10), end of stream (11), the nal_unit_types that
+ * start no unit (0, 16-18, 21-23, 25-27, 29, 31) and zero stuffing
  * (trailing_zero_8bits). A stream file and a Matroska file of a title carry
  * the same NAL units.
  *
@@ -55,7 +54,7 @@ typedef struct H264State {
 /* Whether a NAL unit of type t leaves the frame. */
 static int dropped(int t)
 {
-    return t == 9 || (t >= 10 && t <= 12) || !t || (t >= 16 && t <= 18) || (t >= 21 && t <= 23) ||
+    return (t >= 10 && t <= 12) || !t || (t >= 16 && t <= 18) || (t >= 21 && t <= 23) ||
            (t >= 25 && t <= 27) || t == 29 || t == 31;
 }
 
@@ -141,7 +140,7 @@ static int picture_h264(DRVideo *v, const DRFrame *f, DRPicture *pic)
 static void close_h264(void *priv)
 {
     const H264State *s = priv;
-    static const char *const names[32] = { [9] = "access unit delimiters", [10] = "ends of sequence",
+    static const char *const names[32] = { [10] = "ends of sequence",
                                            [11] = "ends of stream", [12] = "filler data units" };
 
     for (int t = 0; t < 32; t++)

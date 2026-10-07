@@ -2,9 +2,9 @@
 (h264_parser.c) cuts the disc reader's access units (the units in front of a
 picture's first slice, the picture's slices, the trailing slice extensions)
 and gives each picture's type, recovery point, picture order count and field
-periods (pic_struct); the H.264 rules (disctl_h264.c) take out delimiters,
-filler, end units and zero stuffing and keep every other NAL unit as on the
-disc. Streams built bit by bit here (synth/h264.py)."""
+periods (pic_struct); the H.264 rules (disctl_h264.c) take out filler, end
+units and zero stuffing and keep every other NAL unit (delimiters too) as on
+the disc. Streams built bit by bit here (synth/h264.py)."""
 
 from helpers import AV_NOPTS_VALUE, ffi, lib
 from helpers.disctl import Handles, codec_id, events_into, fn
@@ -118,7 +118,7 @@ def without(data, types):
     return bytes(out)
 
 
-def test_access_units_become_frames_on_the_grid_without_delimiters():
+def test_access_units_become_frames_on_the_grid():
     units = stream()
     s, st, ret = run([(u, t) for u, t, _ in units])
     assert ret == 0
@@ -127,7 +127,7 @@ def test_access_units_become_frames_on_the_grid_without_delimiters():
     for o, (u, t, _) in zip(s.out, units):
         assert o[1] == t, "grid time = PES time"
         assert o[2] == 2 * FIELD
-        assert o[0] == without(u, {9}), "every NAL unit as on the disc but the delimiter"
+        assert o[0] == without(u, set()), "every NAL unit as on the disc"
     assert s.events == [], s.events
     assert all(o[3] & F_KEY for o in s.out[::N]), "I pictures are key frames"
     assert not any(o[3] & F_KEY for i, o in enumerate(s.out) if i % N), "only those"
@@ -167,8 +167,9 @@ def test_filler_end_units_and_zero_stuffing_are_taken_out():
     assert ret == 0
     assert len(s.out) == len(units)
     for o, (u, _, _) in zip(s.out, units):
-        assert o[0] == without(u, {9})
+        assert o[0] == without(u, set())
         assert 12 not in H.nal_types(o[0]) and 10 not in H.nal_types(o[0])
+        assert H.nal_types(o[0])[0] == 9, "the delimiter stays"
 
 
 def test_a_picture_before_its_parameter_sets_is_left_out():
@@ -179,7 +180,7 @@ def test_a_picture_before_its_parameter_sets_is_left_out():
     s, st, ret = run(head + [(u, t) for u, t, _ in units])
     assert ret == 0
     assert len(s.out) == len(units), "the two pictures without parameter sets are no frames"
-    assert s.out[0][0] == without(units[0][0], {9})
+    assert s.out[0][0] == without(units[0][0], set())
 
 
 def test_slices_of_one_picture_stay_together_and_a_new_frame_num_starts_a_picture():
@@ -208,8 +209,29 @@ def test_slice_extensions_after_the_slices_go_with_the_picture_and_sei_with_the_
         built.append((u, t))
     s, _, ret = run(built)
     assert ret == 0
-    assert s.out[4][0] == without(built[4][0], {9})
+    assert s.out[4][0] == without(built[4][0], set())
     assert H.nal_types(s.out[4][0])[-1] == 20
+
+
+def test_a_reset_of_the_picture_order_count_keeps_the_display_order():
+    # I P P P* P P ... in display order; P* has memory_management_control_operation
+    # 5 and the encoder counts from it again (H.264 8.2.1): the pictures after
+    # it are shown after it
+    units, lsb = [], 0
+    for i in range(30):
+        head = H.aud() + (H.sps() + H.pps() + H.sei([H.pic_timing(0)]) if i == 0 else H.sei([H.pic_timing(0)]))
+        if i == 0:
+            sl = H.slice_(H.SLICE_I, 0, 0, idr=True)
+        else:
+            if i == 13:
+                lsb = 0                          # the count after P* starts at its own 0
+            lsb += 2
+            sl = H.slice_(H.SLICE_P, i % 16, lsb % 64, mmco5=(i == 12))
+        units.append((head + sl, BASE + i * 2 * FIELD))
+    s, _, ret = run(units)
+    assert ret == 0
+    assert [o[1] for o in s.out] == [t for _, t in units], "every picture at its own time"
+    assert s.events == [], s.events
 
 
 def test_frame_doubling_lasts_four_field_periods():

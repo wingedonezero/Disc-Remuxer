@@ -72,6 +72,9 @@ typedef struct H264ParseContext {
     FFDiscCut disc;
     uint8_t disc_ps[128];                   ///< pic_struct history (the latest 128 pictures)
     int disc_ps_n, disc_ps_start;
+    int disc_reset;                         ///< the picture just parsed has memory_management_control_operation 5
+    int disc_order_base, disc_order_max;    ///< display order: added to the POC since the last reset / the highest
+    int64_t disc_resets;                    ///< pictures with memory_management_control_operation 5 so far
 } H264ParseContext;
 
 static int find_start_code(const uint8_t *buf, int buf_size,
@@ -484,8 +487,14 @@ static inline int parse_nal_units(AVCodecParserContext *s,
                     p->poc.prev_poc_msb = 0;
                     p->poc.prev_poc_lsb =
                         p->picture_structure == PICT_BOTTOM_FIELD ? 0 : field_poc[0];
+                    /* disc mode: H.264 8.2.1, after the picture its
+                     * TopFieldOrderCnt is less tempPicOrderCnt (its own
+                     * PicOrderCnt): the next picture counts from there */
+                    if ((s->flags & PARSER_FLAG_DISC) && p->picture_structure != PICT_BOTTOM_FIELD)
+                        p->poc.prev_poc_lsb = field_poc[0] - s->output_picture_number;
                 }
             }
+            p->disc_reset = got_reset > 0;
 
             if (p->sei.picture_timing.present) {
                 ret = ff_h264_sei_process_picture_timing(&p->sei.picture_timing,
@@ -615,8 +624,13 @@ fail:
  * A data partition where a picture starts: the stream cannot be cut.
  *
  * Each frame then gives its picture type (its first slice), key_frame (an
- * IDR picture, or a recovery point SEI in front of it), output_picture_number (the picture
- * order count) and disc_fields from its pic_struct: 0 -> 2, 1 / 2 -> 1,
+ * IDR picture, or a recovery point SEI in front of it), output_picture_number
+ * (the display order: the picture order count of H.264 8.2.1; a picture
+ * with memory_management_control_operation 5 resets it for the pictures
+ * after it (its own TopFieldOrderCnt less its PicOrderCnt), and as every
+ * picture before it is shown before it, the count after it goes on above
+ * the highest one before it until the next IDR picture) and disc_fields
+ * from its pic_struct: 0 -> 2, 1 / 2 -> 1,
  * 3 / 4 -> 2, 5 / 6 -> 3, 7 -> 4, 8 -> 6 field periods. pic_struct is 0 when
  * the SPS has neither HRD parameters nor pic_struct_present_flag; else
  * the picture timing SEI's; without one 0 for a frame-only stream, 1 / 2 for
@@ -939,7 +953,7 @@ static int disc_picture(AVCodecParserContext *s, AVCodecContext *avctx, const ui
     static const uint8_t fields[9] = { 2, 1, 1, 2, 2, 3, 3, 4, 6 };
     H264ParseContext *p = s->priv_data;
     const SPS *sps;
-    int ps;
+    int ps, idr = 0;
 
     if (parse_nal_units(s, avctx, buf, size) < 0 || !(sps = p->ps.sps)) {
         av_log(avctx, AV_LOG_ERROR, "Title timeline: H.264: a picture's headers cannot be read\n");
@@ -949,9 +963,28 @@ static int disc_picture(AVCodecParserContext *s, AVCodecContext *avctx, const ui
     for (int i = 0; i + 3 < size; i++)      /* the first slice: an IDR picture's */
         if (!buf[i] && !buf[i + 1] && buf[i + 2] == 1 &&
             ((buf[i + 3] & 0x1f) == H264_NAL_SLICE || (buf[i + 3] & 0x1f) == H264_NAL_IDR_SLICE)) {
-            s->key_frame |= (buf[i + 3] & 0x1f) == H264_NAL_IDR_SLICE;
+            idr = (buf[i + 3] & 0x1f) == H264_NAL_IDR_SLICE;
             break;
         }
+    s->key_frame |= idr;
+    /* the display order across a memory_management_control_operation 5:
+     * the picture itself counts 0 after it (H.264 8.2.1) and is shown after
+     * every picture before it */
+    if (idr)
+        p->disc_order_base = 0;
+    if (p->disc_reset) {
+        p->disc_order_base = p->disc_order_max + 2;
+        s->output_picture_number = 0;
+        if (!p->disc_resets++)
+            av_log(avctx, AV_LOG_WARNING, "Title timeline: H.264: a picture with memory_management_control_operation "
+                   "5 (the picture order count starts again after it): display order continued as H.264 8.2.1 "
+                   "says [untested on real discs]\n");
+        av_log(avctx, AV_LOG_VERBOSE, "Title timeline: H.264: memory_management_control_operation 5 in picture %"
+               PRId64" of the reset count\n", p->disc_resets);
+    }
+    s->output_picture_number += p->disc_order_base;
+    if (idr || p->disc_reset || s->output_picture_number > p->disc_order_max)
+        p->disc_order_max = s->output_picture_number;
     if (!sps->nal_hrd_parameters_present_flag && !sps->vcl_hrd_parameters_present_flag &&
         !sps->pic_struct_present_flag)
         ps = 0;

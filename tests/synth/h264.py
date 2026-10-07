@@ -138,10 +138,11 @@ SLICE_P, SLICE_B, SLICE_I = 0, 1, 2
 
 
 def slice_(kind, frame_num, poc_lsb, idr=False, ref=True, first_mb=0, pps_id=0, log2_frame_num=4, log2_poc_lsb=6,
-           field=None, idr_id=0, size=300, slice_type=None, sc=b"\0\0\1"):
+           field=None, idr_id=0, size=300, slice_type=None, mmco5=False, sc=b"\0\0\1"):
     """A slice (type 1, or 5 for an IDR picture): its header up to
     dec_ref_pic_marking, then picture data bytes. field: None (frame), 'top'
-    or 'bottom' (an interlaced SPS)."""
+    or 'bottom' (an interlaced SPS). mmco5: dec_ref_pic_marking with
+    memory_management_control_operation 5."""
     b = Bits()
     b.ue(first_mb).ue(kind + 5 if slice_type is None else slice_type).ue(pps_id).u(frame_num, log2_frame_num)
     if field is not None:
@@ -161,6 +162,8 @@ def slice_(kind, frame_num, poc_lsb, idr=False, ref=True, first_mb=0, pps_id=0, 
     if ref:
         if idr:
             b.u(0, 1).u(0, 1)                    # no_output_of_prior_pics, long_term_reference_flag
+        elif mmco5:
+            b.u(1, 1).ue(5).ue(0)                # adaptive marking: operation 5, end
         else:
             b.u(0, 1)                            # adaptive_ref_pic_marking_mode_flag
     b.se(0)                                      # slice_qp_delta
