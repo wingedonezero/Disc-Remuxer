@@ -175,12 +175,12 @@ static const char *disc_overview(const char *source, int detail, int *nb_titles)
 {
     AVFormatContext *ctx = NULL;
     const DiscInfo *d;
-    char revs[32] = "", js1[64], js2[256], js3[64];
+    char revs[32] = "", js1[64], js2[256], js3[64], js4[1024], jname[1100];
     int ret;
 
     if ((ret = open_title(DISC_FORMAT, source, ONLY_DISC_INFO, &ctx)) < 0 || !(d = disc_info(ctx))) {
         log_msg(MSG_SOURCE_UNSUPPORTED, LOG_ERROR, "%s cannot be read as a disc this program supports (%s); "
-                "only HD DVD images are wired so far", source, av_err2str(ret < 0 ? ret : AVERROR_BUG));
+                "HD DVD and Blu-ray are wired so far", source, av_err2str(ret < 0 ? ret : AVERROR_BUG));
         avformat_close_input(&ctx);
         return NULL;
     }
@@ -190,10 +190,15 @@ static const char *disc_overview(const char *source, int detail, int *nb_titles)
     log_msg(MSG_SOURCE, LOG_INFO, "Disc: %s '%s', %s%s, %s, %d title%s", d->kind, d->label ? d->label : "",
             d->filesystem ? d->filesystem : "?", revs, d->encrypted ? "encrypted" : "not encrypted",
             d->nb_titles, d->nb_titles == 1 ? "" : "s");
-    log_json("disc", "\"kind\":%s,\"label\":%s,\"filesystem\":%s,\"encrypted\":%s,\"titles\":%d",
+    if (d->name)
+        log_msg(MSG_SOURCE, LOG_INFO, "Disc name: %s", d->name);
+    jname[0] = 0;
+    if (d->name)
+        snprintf(jname, sizeof(jname), ",\"name\":%s", json_str(js4, sizeof(js4), d->name));
+    log_json("disc", "\"kind\":%s,\"label\":%s,\"filesystem\":%s,\"encrypted\":%s,\"titles\":%d%s",
              json_str(js1, sizeof(js1), d->kind), json_str(js2, sizeof(js2), d->label ? d->label : ""),
              json_str(js3, sizeof(js3), d->filesystem ? d->filesystem : ""), d->encrypted ? "true" : "false",
-             d->nb_titles);
+             d->nb_titles, jname);
     for (int t = 0; t < d->nb_titles; t++)
         title_overview(&d->titles[t], detail);
     avformat_close_input(&ctx);

@@ -64,12 +64,13 @@ Rules:
 
 | Today | Goes to |
 |---|---|
-| `discio_*.c`, `discio.h` | stay: the readers |
+| `discio_*.c`, `discio.h` | stay: the readers (`discio_folder.c`: a disc folder on the host as a file system) |
 | `disclang.c` | stays: language codes for every format part |
 | `discdec.c`, `disc.h` (step 1, done) | the disc layer, the only disc demuxer the program opens; `disc.h` is what a format part gives it |
 | `disctitle.c` (step 6, done) | the disc layer's title reader: what `hddvddec.c` did that is not HD DVD (the clips through `mpeg.c`, the time reference, the payloads to the title timeline, its frames out, chapters, results); a format part fills `DiscTitleSource` (clips, block reading, tracks, chapter marks, LPCM header size, lead-in tolerance) |
 | `dvdvideodec.c`, `dvdvideo_*.c` | the DVD format part (no longer a demuxer of its own); its playback reading through libdvdnav (`dvdvideo_play.c`) gives way to the navigation scan + title plan, with sectors fed into `mpeg.c` |
 | `hddvddec.c`, `hddvd_*.c` | the HD DVD format part `ff_disc_hddvd` (step 1, done: no demuxer of its own any more; step 6, done: only HD DVD's structure, the reading is the title reader's) |
+| `bluraydec.c`, `bluray_*.c` (Blu-ray step B1, done) | the Blu-ray format part `ff_disc_bluray` (BDMV, BDAV, AVCHD): the disc's structure and name so far; titles (B2), AACS (B3), tracks (B4) next |
 | `hddvd_tracks.c` | stays (stream table, languages); step 4, done: its content probe reads through the line (`mpeg.c` disc mode, FFmpeg's AC-3 / DTS parsers in disc mode) instead of its own pack reader and frame finding |
 | `discrip_pack.c`, `discrip_ps.c` (step 2, done) | moved into `mpeg.c`: option `disc` (one pack per 2048-byte sector, the sector rules) and `lpcm_header` (3 / 5 bytes, always LPCM) |
 | `discrip_units.c` (was the cutter; now `disctl_frames.c`, the frame step) | stays, shrunk to the time pairing (a packet's time goes to the first frame whose picture header lies in it, the MPEG rule FFmpeg's read loop does not have) in front of FFmpeg's parsers (decided in step 3: FFmpeg's read loop pairs times with where a frame begins and keeps only 4 packets' times) |

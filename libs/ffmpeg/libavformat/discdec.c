@@ -40,6 +40,7 @@
 /* The format parts, by the disc kind the readers tell. */
 static const DiscFormat *const parts[] = {
     &ff_disc_hddvd,
+    &ff_disc_bluray,
     NULL
 };
 
@@ -193,7 +194,7 @@ static const AVClass disc_class = {
 
 const FFInputFormat ff_disc_demuxer = {
     .p.name         = "disc",
-    .p.long_name    = NULL_IF_CONFIG_SMALL("Disc (HD DVD; DVD-Video and Blu-ray to come)"),
+    .p.long_name    = NULL_IF_CONFIG_SMALL("Disc (HD DVD, Blu-ray; DVD-Video to come)"),
     .p.priv_class   = &disc_class,
     .p.flags        = AVFMT_SHOW_IDS | AVFMT_NOFILE | AVFMT_NO_BYTE_SEEK |
                       AVFMT_NOGENSEARCH | AVFMT_NOBINSEARCH,

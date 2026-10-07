@@ -141,5 +141,6 @@ int  ff_disc_title_reader_packet(AVFormatContext *s, AVPacket *pkt);
 void ff_disc_title_reader_close(DiscTitleReader **reader);
 
 extern const DiscFormat ff_disc_hddvd;
+extern const DiscFormat ff_disc_bluray;
 
 #endif /* AVFORMAT_DISC_H */

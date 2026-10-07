@@ -84,6 +84,7 @@ typedef struct DiscTitleInfo {
 typedef struct DiscInfo {
     const char      *kind;           /**< "HD DVD", ... */
     const char      *label;          /**< the volume label */
+    const char      *name;           /**< the disc's own name (e.g. a Blu-ray disc library title), NULL when none */
     const char      *filesystem;     /**< the file system read, e.g. "UDF (NetBSD)" */
     int              udf_revision;   /**< its UDF revision (0x0250 = 2.50), 0 when not UDF */
     int              encrypted;
