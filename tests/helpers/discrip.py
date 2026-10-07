@@ -113,6 +113,8 @@ def run(codec, payloads, marker=None, flags=0):
     c = ffi.new("DRFrames **")
     assert lib.ff_discrip_audio_open(a, ffi.NULL, cid, flags, lib.tb_py_frame, keep(collect(outs))) == 0
     assert lib.ff_discrip_frames_open(c, ffi.NULL, cid, fn("ff_discrip_audio_unit"), a[0]) == 0
+    if flags & lib.DR_AUDIO_EXTENDED:
+        lib.ff_discrip_frames_take_any(c[0])
     for data, time in payloads:
         assert lib.ff_discrip_frames_write(c[0], bytes(data), len(data),
                                            AV_NOPTS_VALUE if time is None else time) == 0

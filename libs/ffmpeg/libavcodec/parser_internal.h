@@ -93,4 +93,36 @@ int ff_parser_disc_cut(AVCodecParserContext *s, void *logctx, const FFDiscCutRul
                        const uint8_t **poutbuf, int *poutbuf_size, const uint8_t *buf, int buf_size);
 void ff_parser_disc_cut_close(FFDiscCut *dc);
 
+/**
+ * A disc frame rule (PARSER_FLAG_DISC) in the disc reader's four steps, for
+ * codecs whose frames are found by a sync word: sync (0 no frame starts
+ * here, 1 one does, 2 too few bytes to tell), size (> 0 the frame's size,
+ * <= 0 more bytes needed), check (1 the frame is valid), resync (bytes to
+ * skip to the next frame start, -2 more bytes needed, -1 give the kept
+ * bytes up), and limit: the bytes kept while looking for a frame (more
+ * coming in: the kept bytes and the new ones are given up).
+ */
+typedef struct FFDiscFrameRule {
+    int (*sync)(void *ctx, const uint8_t *buf, int avail);
+    int (*size)(void *ctx, const uint8_t *buf, int avail);
+    int (*check)(void *ctx, const uint8_t *buf, int size);
+    int (*resync)(void *ctx, const uint8_t *buf, int avail);
+    int limit;
+} FFDiscFrameRule;
+
+/** The state of a disc frame search: the kept bytes and the sync. */
+typedef struct FFDiscFrames {
+    FFDiscCut cut;
+    int       synced;                   /**< a frame starts at the kept bytes' start */
+} FFDiscFrames;
+
+/**
+ * Find a disc's frames with rule (ctx: the rule's own context), under the
+ * same parser contract as ff_parser_disc_cut(): one chunk per call, a frame
+ * that is valid (disc_status 0) or bytes that are no frame (1: skipped to
+ * the next frame start, given up, or a frame the check refuses).
+ */
+int ff_parser_disc_frames(AVCodecParserContext *s, void *ctx, const FFDiscFrameRule *rule, FFDiscFrames *df,
+                          const uint8_t **poutbuf, int *poutbuf_size, const uint8_t *buf, int buf_size);
+
 #endif /* AVCODEC_PARSER_INTERNAL_H */

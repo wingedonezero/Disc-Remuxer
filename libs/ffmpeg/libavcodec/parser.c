@@ -284,6 +284,90 @@ int ff_parser_disc_cut(AVCodecParserContext *s, void *logctx, const FFDiscCutRul
     return k - old;
 }
 
+/* The chunk of the first k kept bytes (see ff_parser_disc_cut): the bytes
+ * of buf it did not take come again. */
+static int disc_give(AVCodecParserContext *s, FFDiscCut *dc, int k, int old, int status,
+                     const uint8_t **poutbuf, int *poutbuf_size)
+{
+    av_fast_padded_malloc(&dc->out, &dc->out_cap, k);
+    if (!dc->out) {
+        dc->len = old;
+        s->disc_status = AVERROR(ENOMEM);
+        return 0;
+    }
+    memcpy(dc->out, dc->win, k);
+    *poutbuf       = dc->out;
+    *poutbuf_size  = k;
+    s->disc_status = status;
+    if (k >= old) {
+        dc->len = 0;
+        return k - old;
+    }
+    memmove(dc->win, dc->win + k, old - k);
+    dc->len = old - k;
+    return k - old;
+}
+
+/* The disc frame search: the steps of the disc reader on the kept bytes plus
+ * buf. Bytes that would pass the limit are given up with the kept ones
+ * (and are not looked at); a sync that fails skips to the next frame start
+ * (resync, at least 1 byte) or gives the kept bytes up; a frame is as long
+ * as its size, then checked. Each of these is one chunk. */
+int ff_parser_disc_frames(AVCodecParserContext *s, void *ctx, const FFDiscFrameRule *rule, FFDiscFrames *df,
+                          const uint8_t **poutbuf, int *poutbuf_size, const uint8_t *buf, int buf_size)
+{
+    FFDiscCut *dc = &df->cut;
+    int old = dc->len, k;
+
+    s->disc_status = 0;
+    *poutbuf      = NULL;
+    *poutbuf_size = 0;
+    if (buf_size) {
+        if (dc->len + buf_size > dc->cap) {
+            int cap = FFMAX(2 * dc->cap, dc->len + buf_size);
+            uint8_t *w = av_realloc(dc->win, cap);
+            if (!w) {
+                s->disc_status = AVERROR(ENOMEM);
+                return 0;
+            }
+            dc->win = w;
+            dc->cap = cap;
+        }
+        memcpy(dc->win + dc->len, buf, buf_size);
+        dc->len += buf_size;
+        if (rule->limit - old < buf_size) {        /* too many bytes without a frame */
+            df->synced = 0;
+            return disc_give(s, dc, dc->len, old, 1, poutbuf, poutbuf_size);
+        }
+    } else if (old) {                               /* the end: the kept bytes are no frame */
+        df->synced = 0;
+        return disc_give(s, dc, old, old, 1, poutbuf, poutbuf_size);
+    }
+    if (!dc->len)
+        return 0;
+
+    if (!df->synced) {
+        int r = rule->sync(ctx, dc->win, dc->len);
+        if (!r) {
+            k = rule->resync(ctx, dc->win, dc->len);
+            if (k == -2)
+                return buf_size;
+            if (k == -1)
+                k = dc->len;
+            else if (!k)
+                k = 1;
+            return disc_give(s, dc, k, old, 1, poutbuf, poutbuf_size);
+        }
+        if (r == 1)
+            df->synced = 1;
+    }
+    k = rule->size(ctx, dc->win, dc->len);
+    if (k <= 0 || k > dc->len)
+        return buf_size;                            /* the frame goes on in the bytes to come */
+    df->synced = 0;
+    return disc_give(s, dc, k, old, rule->check(ctx, dc->win, k) == 1 ? 0 : 1, poutbuf, poutbuf_size);
+}
+
 void ff_parser_disc_cut_close(FFDiscCut *dc)
 {
     av_freep(&dc->win);

@@ -674,6 +674,8 @@ static int seg_open(DRTitle *t)
             return ret;
         if (k->cfg.codec == AV_CODEC_ID_PCM_DVD)
             ff_discrip_audio_set_state(k->audio, &k->lpcm);
+        if (k->cfg.kind == DR_KIND_AUDIO && (k->cfg.audio_flags & DR_AUDIO_EXTENDED))
+            ff_discrip_frames_take_any(k->cut);
         if (k->cfg.kind == DR_KIND_VIDEO)
             ff_discrip_video_set_side(k->video, cc_side, t);
     }

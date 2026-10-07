@@ -5,6 +5,7 @@ bytes (an AC-3 track keeps only AC-3 syncframes, an E-AC-3 track only E-AC-3
 ones; dependent frames and further substreams stay in the unit of their
 independent frame and are reported for review)."""
 
+from synth.a52 import with_crcs
 from helpers import AV_NOPTS_VALUE, lib
 from helpers.discrip import dur, run, timed
 
@@ -14,7 +15,7 @@ F_KEY, F_SYNC, F_MARKER = lib.DR_F_KEY, lib.DR_F_SYNC, lib.DR_F_MARKER
 def ac3(tag):
     """AC-3 syncframe: 48 kHz, 192 kbit/s (768 bytes), bsid 8, 2/0; tag
     marks the payload so frames can be told apart."""
-    return bytes([0x0B, 0x77, 0x00, 0x00, 0x14, 0x40, 0x40]) + bytes([tag]) * (768 - 7)
+    return with_crcs(bytes([0x0B, 0x77, 0x00, 0x00, 0x14, 0x40, 0x40]) + bytes([tag]) * (768 - 7))
 
 
 def eac3(strmtyp, sub, numblkscod, size, tag):

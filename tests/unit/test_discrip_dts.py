@@ -44,14 +44,14 @@ def dtshd_stream():
 
 
 def test_a_dtshd_unit_keeps_core_and_extension_and_is_timed_by_the_core():
-    r = run("dts", [(dtshd_stream(), 1)])
+    r = run("dts", [(dtshd_stream(), 1)], flags=lib.DR_AUDIO_EXTENDED)
     assert len(r.outs) == 10
     assert all(len(o.bytes) == FRAME + 600 and o.dur == dur(512, 48000) for o in r.outs)
     assert r.audio.cut_bytes == 0
 
 
 def test_a_dts_track_taken_out_of_dts_hd_keeps_only_the_dts_frames():
-    r = run("dts", [(dtshd_stream(), 1)], flags=lib.DR_AUDIO_EXTRACTED)
+    r = run("dts", [(dtshd_stream(), 1)], flags=lib.DR_AUDIO_EXTRACTED | lib.DR_AUDIO_EXTENDED)
     assert len(r.outs) == 10
     for o, f in zip(r.outs, frames()):
         assert o.bytes == f

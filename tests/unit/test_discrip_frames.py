@@ -6,6 +6,7 @@ computed here from the built stream's layout, independently of the code."""
 
 import dataclasses
 
+from synth.a52 import with_crcs
 from helpers import AV_NOPTS_VALUE, ffi, lib
 from helpers.discrip import Handles, codec_id
 
@@ -60,8 +61,9 @@ def expected_time(payloads, anchors, a):
 
 def ac3_frame():
     """One AC-3 syncframe: 48 kHz, 192 kbit/s (768 bytes), bsid 8, 2/0; the
-    rest is zero (the parser reads only the header)."""
-    return bytes([0x0B, 0x77, 0x00, 0x00, 0x14, 0x40, 0x40]) + bytes(768 - 7)
+    rest is zero, with valid CRCs (the disc frame rules check them after
+    bytes that are no frame)."""
+    return with_crcs(bytes([0x0B, 0x77, 0x00, 0x00, 0x14, 0x40, 0x40]) + bytes(768 - 7))
 
 
 def chunks(data, n):

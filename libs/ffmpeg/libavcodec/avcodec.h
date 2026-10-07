@@ -2630,6 +2630,11 @@ typedef struct AVCodecParserContext {
 /// Disc mode: the stream comes from a disc (DVD-Video, HD DVD, Blu-ray); the
 /// parsers that know disc rules cut it with them and set disc_status
 #define PARSER_FLAG_DISC                      0x2000
+/// Disc mode: take every variant of the codec (AC-3 and E-AC-3 frames alike;
+/// DTS frames with or without a DTS-HD extension, the kind decided from the
+/// stream), as for a stream whose kind is still to be found or that carries
+/// an extension
+#define PARSER_FLAG_DISC_ANY                  0x4000
 
     int64_t offset;      ///< byte offset from starting packet start
     int64_t cur_frame_end[AV_PARSER_PTS_NB];

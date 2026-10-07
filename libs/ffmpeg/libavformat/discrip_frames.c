@@ -118,6 +118,12 @@ void ff_discrip_frames_stats(const DRFrames *c, DRFramesStats *stats)
     *stats = c->st;
 }
 
+void ff_discrip_frames_take_any(DRFrames *c)
+{
+    if (c->parser)
+        c->parser->flags |= PARSER_FLAG_DISC_ANY;
+}
+
 void ff_discrip_frames_set_pcm_format(DRFrames *c, int channels, int bits, int samples_per_frame)
 {
     c->avctx->ch_layout.nb_channels = channels;

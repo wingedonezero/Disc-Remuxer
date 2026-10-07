@@ -221,6 +221,10 @@ int ff_discrip_frames_flush(DRFrames *c);
 
 void ff_discrip_frames_stats(const DRFrames *c, DRFramesStats *stats);
 
+/** The stream carries an extension (DTS-HD): FFmpeg's parser takes every
+ *  variant of the codec (PARSER_FLAG_DISC_ANY). */
+void ff_discrip_frames_take_any(DRFrames *c);
+
 /** Linear PCM: the frame format for FFmpeg's parser (from the packets'
  *  audio frame headers): channels, coded bits per sample, samples per
  *  frame. */
@@ -230,6 +234,9 @@ void ff_discrip_frames_close(DRFrames **frames);
 
 /* ---- Stage 2, audio: units timed within one segment (discrip_audio.c) ---- */
 
+#define DR_AUDIO_EXTENDED  0x0002  /**< the stream carries an extension (DTS-HD): its frames are found
+                                        with the extension's rules (the track whose stream it is, and
+                                        the one taken out of it) */
 #define DR_AUDIO_EXTRACTED 0x0001  /**< the track is a stream taken out of another one (DTS out of
                                         DTS-HD): the codec's filter keeps only its frames */
 
@@ -722,7 +729,7 @@ int ff_discrip_lpcm_convert(const DRLpcm *p, const uint8_t *in, int size, uint8_
 typedef struct DRTitleTrack {
     enum AVCodecID codec;
     int            kind;           /**< DRTrackKind */
-    int            audio_flags;    /**< DR_AUDIO_EXTRACTED */
+    int            audio_flags;    /**< DR_AUDIO_EXTRACTED, DR_AUDIO_EXTENDED */
     int            width, height;  /**< sub-pictures: the canvas they are drawn on (0 x 0: not known) */
 } DRTitleTrack;
 
