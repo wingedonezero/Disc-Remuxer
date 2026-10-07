@@ -54,7 +54,7 @@
 
 #include "bluray_internal.h"
 
-#define UNIT       6144
+#define UNIT       BLURAY_UNIT
 #define PACKET     192
 #define SCAN_CAP   0x80000001LL       /* a PES scan ends here */
 #define PSI_SCAN   0x200000           /* a table is looked for in the first 2 MiB */
@@ -63,38 +63,32 @@
 
 /* ---- the segment as aligned units ---- */
 
-typedef struct Units {
-    void                *log;
-    DiscIOFS            *fs;
-    BlurayAACS          *aacs;
-    const BluraySegment *s;
-    int                  item;         /* the open item, -1 none */
-    DiscIOFile          *f;
-    int64_t              item_pos;     /* its first byte in the segment */
-} Units;
-
 static int64_t item_length(const BluraySegItem *it)
 {
     return it->dep ? (int64_t)it->clip->packets * PACKET : it->length;   /* 3-D: the base view only */
 }
 
-static int64_t units_size(const Units *u)
+int64_t ff_bluray_seg_size(const BluraySegment *s)
 {
     int64_t n = 0;
-    for (int i = 0; i < u->s->nb_items; i++)
-        n += item_length(&u->s->items[i]);
+    for (int i = 0; i < s->nb_items; i++)
+        n += item_length(&s->items[i]);
     return n;
 }
 
-static void units_close(Units *u)
+void ff_bluray_seg_reader_init(BluraySegReader *u, void *log, DiscIOFS *fs, BlurayAACS *aacs,
+                               const BluraySegment *s)
+{
+    *u = (BluraySegReader){ .log = log, .fs = fs, .aacs = aacs, .s = s, .item = -1 };
+}
+
+void ff_bluray_seg_reader_close(BluraySegReader *u)
 {
     ff_discio_file_free(&u->f);
     u->item = -1;
 }
 
-/* The unit at pos (a multiple of 6144) into buf, decrypted: 0, AVERROR_EOF
- * past the end, < 0 error (logged). */
-static int units_read(Units *u, int64_t pos, uint8_t *buf)
+int ff_bluray_seg_read(BluraySegReader *u, int64_t pos, uint8_t *buf)
 {
     int64_t base = 0;
     int ret;
@@ -107,10 +101,10 @@ static int units_read(Units *u, int64_t pos, uint8_t *buf)
             continue;
         }
         if (u->item != i) {
-            units_close(u);
+            ff_bluray_seg_reader_close(u);
             if ((ret = u->fs->ops->open_file(u->fs, it->clip->stream_path, &u->f)) < 0) {
-                av_log(u->log, AV_LOG_ERROR, "Blu-ray: %s cannot be opened for the stream probe: %s\n",
-                       it->clip->stream_path, av_err2str(ret));
+                av_log(u->log, AV_LOG_ERROR, "Blu-ray: %s cannot be opened: %s\n", it->clip->stream_path,
+                       av_err2str(ret));
                 return ret;
             }
             u->item = i;
@@ -195,14 +189,14 @@ typedef struct Keys {
 
 /* The PES stream keys of pid until one is seen limit times: 1, 0 the scan
  * failed (logged). */
-static int scan_pes(Units *u, uint16_t pid, int limit, Keys *k)
+static int scan_pes(BluraySegReader *u, uint16_t pid, int limit, Keys *k)
 {
-    int64_t end = (units_size(u) + UNIT - 1) / UNIT * UNIT;
+    int64_t end = (ff_bluray_seg_size(u->s) + UNIT - 1) / UNIT * UNIT;
     uint8_t buf[UNIT];
 
     memset(k, 0, sizeof(*k));
     for (int64_t pos = 0; pos < end && pos < SCAN_CAP; pos += UNIT) {
-        int ret = units_read(u, pos, buf), zero = 1;
+        int ret = ff_bluray_seg_read(u, pos, buf), zero = 1;
         if (ret == AVERROR_EOF)
             break;
         if (ret < 0)
@@ -254,18 +248,18 @@ static int has_key(const Keys *k, uint16_t key)
 
 /* The first complete section of table_id on pid within the first 2 MiB
  * (CRC checked), cached per clip; NULL none. */
-static const uint8_t *psi_section(Units *u, BlurayClip *c, uint8_t table_id, uint16_t pid)
+static const uint8_t *psi_section(BluraySegReader *u, BlurayClip *c, uint8_t table_id, uint16_t pid)
 {
     const AVCRC *crc = av_crc_get_table(AV_CRC_32_IEEE);
     uint8_t acc[0x1008], buf[UNIT];
-    int64_t limit = FFMIN(units_size(u), PSI_SCAN);
+    int64_t limit = FFMIN(ff_bluray_seg_size(u->s), PSI_SCAN);
     int n = 0;
 
     if (c->pmt_tried)
         return c->pmt_len ? c->pmt : NULL;
     c->pmt_tried = 1;
     for (int64_t pos = 0; pos < limit; pos += UNIT) {
-        if (units_read(u, pos, buf) < 0)
+        if (ff_bluray_seg_read(u, pos, buf) < 0)
             break;
         for (int i = 0; i < UNIT / PACKET; i++) {
             const uint8_t *p = buf + i * PACKET + 4;
@@ -403,15 +397,15 @@ static void nal_bytes(NalScan *n, const uint8_t *p, int len)
 
 /* The HEVC stream on pid 0x1015 carries Dolby Vision RPUs among its first
  * parameter sets: 1, 0 not, < 0 the stream cannot be read. */
-static int hevc_second_layer(Units *u)
+static int hevc_second_layer(BluraySegReader *u)
 {
-    int64_t end = (units_size(u) + UNIT - 1) / UNIT * UNIT;
+    int64_t end = (ff_bluray_seg_size(u->s) + UNIT - 1) / UNIT * UNIT;
     uint8_t buf[UNIT];
     NalScan n = { 0 };
     int in_pes = 0;
 
     for (int64_t pos = 0; pos < end && !nal_done(&n); pos += UNIT) {
-        int ret = units_read(u, pos, buf);
+        int ret = ff_bluray_seg_read(u, pos, buf);
         if (ret == AVERROR_EOF)
             break;
         if (ret < 0)
@@ -447,13 +441,14 @@ static int hevc_second_layer(Units *u)
 int ff_bluray_probe_stream(void *log, DiscIOFS *fs, BlurayAACS *aacs, const BluraySegment *s,
                            BlurayClip *c, BlurayClipStream *e, int code, int nb_parts)
 {
-    Units u = { .log = log, .fs = fs, .aacs = aacs, .s = s, .item = -1 };
+    BluraySegReader u;
     BlurayClipStream *f = &c->program.streams[0];
     int m2ts = c->hdr.type == MKBETAG('M', '2', 'T', 'S'), ret = 0;
     Keys k;
 
     if (e->probe & BLURAY_PROBE_DONE)
         return 0;
+    ff_bluray_seg_reader_init(&u, log, fs, aacs, s);
     if (nb_parts >= 2 && code >= 0x40 && code < 0xc0) {
         if (!scan_pes(&u, e->pid, 3, &k)) {
             ret = AVERROR_INVALIDDATA;
@@ -520,16 +515,19 @@ int ff_bluray_probe_stream(void *log, DiscIOFS *fs, BlurayAACS *aacs, const Blur
     }
     e->probe |= BLURAY_PROBE_DONE;
 end:
-    units_close(&u);
+    ff_bluray_seg_reader_close(&u);
     return ret;
 }
 
 int ff_bluray_pid_scan(void *log, DiscIOFS *fs, BlurayAACS *aacs, const BluraySegment *s, uint16_t pid, int limit)
 {
-    Units u = { .log = log, .fs = fs, .aacs = aacs, .s = s, .item = -1 };
+    BluraySegReader u;
     Keys k;
-    int ok = scan_pes(&u, pid, limit, &k);
+    int ok;
 
-    units_close(&u);
+    ff_bluray_seg_reader_init(&u, log, fs, aacs, s);
+    ok = scan_pes(&u, pid, limit, &k);
+
+    ff_bluray_seg_reader_close(&u);
     return ok ? k.n : AVERROR_INVALIDDATA;
 }

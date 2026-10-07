@@ -304,4 +304,11 @@ int ff_parse_mpeg2_descriptor(AVFormatContext *fc, AVStream *st, int stream_type
  */
 int ff_check_h264_startcode(AVFormatContext *s, const AVStream *st, const AVPacket *pkt);
 
+/**
+ * A PES header read with disc mode's rules (option disc): 1 and its stream
+ * key (stream_id, or 0xFD | stream_id_extension << 8) and PTS (33 bits as
+ * recorded, AV_NOPTS_VALUE none), 0 not usable. avail: the bytes at p.
+ */
+int ff_mpegts_disc_pes_header(const uint8_t *p, unsigned avail, uint16_t *key, int64_t *pts);
+
 #endif /* AVFORMAT_MPEGTS_H */

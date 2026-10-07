@@ -190,12 +190,34 @@ static int window_add(DRFrames *c, const uint8_t *data, int size)
     return 0;
 }
 
+/* The picture values a disc-mode parser gives the unit it just cut. */
+static void parser_picture(const DRFrames *c, DRPicture *pic)
+{
+    const AVCodecParserContext *s = c->parser;
+
+    memset(pic, 0, sizeof(*pic));
+    switch (s->pict_type) {
+    case AV_PICTURE_TYPE_I:
+    case AV_PICTURE_TYPE_SI: pic->type = DR_PIC_I; break;
+    case AV_PICTURE_TYPE_P:
+    case AV_PICTURE_TYPE_SP: pic->type = DR_PIC_P; break;
+    case AV_PICTURE_TYPE_B:  pic->type = DR_PIC_B; break;
+    default:                 pic->type = DR_PIC_OTHER;
+    }
+    pic->order    = s->output_picture_number;
+    pic->fields   = s->disc_fields;
+    pic->key      = s->key_frame > 0;
+    pic->rate_num = c->avctx->framerate.num;
+    pic->rate_den = c->avctx->framerate.den;
+}
+
 /* One unit at stream offset off: check it, time it, give it out. */
 static int unit_take(DRFrames *c, const uint8_t *data, int size, int64_t off)
 {
     int samples = c->parser && !c->codec->disc_parser ? c->parser->duration : 0;
     int rate    = c->parser && !c->codec->disc_parser ? c->avctx->sample_rate : 0;
     int64_t time = AV_NOPTS_VALUE;
+    DRPicture pic;
     int unit, a;
 
     unit = !c->codec->check || c->codec->check(data, size);
@@ -218,7 +240,10 @@ static int unit_take(DRFrames *c, const uint8_t *data, int size, int64_t off)
     c->st.units++;
     if (time != AV_NOPTS_VALUE)
         c->st.timed++;
-    return c->cb(c->opaque, &(DRUnit){ data, size, time, off, samples, rate });
+    if (c->codec->parser_picture)
+        parser_picture(c, &pic);
+    return c->cb(c->opaque, &(DRUnit){ data, size, time, off, samples, rate,
+                                       c->codec->parser_picture ? &pic : NULL });
 }
 
 /* The bytes up to stream offset end are given out. */

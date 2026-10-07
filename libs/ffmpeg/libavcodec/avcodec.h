@@ -2762,6 +2762,15 @@ typedef struct AVCodecParserContext {
      * the parser logged why).
      */
     int disc_status;
+
+    /**
+     * Disc mode, video parsers that time pictures by the disc reader's rules
+     * (H.264): the duration of the frame given out in field periods (0: not
+     * known). pict_type, key_frame (I pictures aside: a random access point
+     * the stream marks) and output_picture_number (the display-order
+     * number) go with it.
+     */
+    int disc_fields;
 } AVCodecParserContext;
 
 typedef struct AVCodecParser {

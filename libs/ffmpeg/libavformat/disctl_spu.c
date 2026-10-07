@@ -2,7 +2,10 @@
  * The title timeline: sub-picture units (DVD-Video and HD DVD), as FFmpeg's
  * DVD subtitle parser finds them in disc mode: each unit's check, its
  * duration from its display control sequences, and its time on the video
- * grid of its segment.
+ * grid of its segment. Blu-ray PGS display sets, as FFmpeg's HDMV PGS
+ * parser finds them in disc mode, the same way: each set lasts one video
+ * field period (the next set replaces or clears it); a forced-only track's
+ * sets show only their forced objects (disctl_pgs.c).
  *
  * This file is part of FFmpeg.
  *
@@ -190,6 +193,7 @@ struct DRSpu {
     Held       *q;               /* units waiting for the video's grid */
     int         head, n, cap;
     int         warned_colcon, warned_outside;
+    int         pgs, forced_only, said_forced;
     DRSpuStats  st;
 };
 
@@ -225,6 +229,8 @@ static int drain(DRSpu *s)
         }
         s->st.max_shift = FFMAX(s->st.max_shift, FFABS(t - h->pes));
         h->f.time = t;
+        if (s->pgs && (ret = ff_disctl_video_field(s->video, &h->f.dur)) < 0)
+            return ret;
         s->st.out++;
         if ((ret = s->cb(s->opaque, &h->f)) < 0)
             return ret;
@@ -233,12 +239,90 @@ static int drain(DRSpu *s)
     return 0;
 }
 
+/* Room for one more held unit. */
+static int hold(DRSpu *s, Held *h)
+{
+    if (s->head && s->head + s->n == s->cap) {
+        memmove(s->q, s->q + s->head, s->n * sizeof(*s->q));
+        s->head = 0;
+    }
+    if (s->head + s->n == s->cap) {
+        int cap = s->cap ? 2 * s->cap : 16;
+        Held *q = av_realloc_array(s->q, cap, sizeof(*q));
+        if (!q)
+            return AVERROR(ENOMEM);
+        s->q   = q;
+        s->cap = cap;
+    }
+    s->q[s->head + s->n++] = *h;
+    return 0;
+}
+
+/* A PGS display set: its bytes (a forced-only track: cut to its forced
+ * objects), its time on the video grid once it is known. */
+static int pgs_unit(DRSpu *s, const DRUnit *u)
+{
+    Held h = { .f = { .time = u->time, .pos = u->pos, .flags = DR_F_KEY }, .pes = u->time };
+    int n, forced, ret;
+
+    s->st.units++;
+    if (!ff_disctl_pgs_check(u->data, u->size)) {
+        av_log(s->log, AV_LOG_ERROR, "Title timeline: PGS track %d: a display set the parser passed does not parse\n",
+               s->track);
+        return AVERROR_BUG;
+    }
+    if (u->time == AV_NOPTS_VALUE || u->time < 0) {
+        av_log(s->log, AV_LOG_WARNING, "Title timeline: PGS track %d: the display set at byte %"PRId64" has no time: "
+               "left out\n", s->track, u->pos);
+        event(s, DR_EV_SUB_UNTIMED, u->pos, 0);
+        s->st.untimed++;
+        return 0;
+    }
+    if (!(h.f.buf = av_buffer_alloc(u->size + AV_INPUT_BUFFER_PADDING_SIZE)))
+        return AVERROR(ENOMEM);
+    n = ff_disctl_pgs_forced_only(u->data, u->size, h.f.buf->data, &forced);
+    if (n < 0) {
+        av_log(s->log, AV_LOG_ERROR, "Title timeline: PGS track %d: the composition of the display set at byte %"PRId64
+               " does not parse\n", s->track, u->pos);
+        ff_disctl_frame_unref(&h.f);
+        return n;
+    }
+    s->st.forced_objects += forced;
+    if (s->forced_only) {
+        if (forced && !s->said_forced) {
+            s->said_forced = 1;
+            av_log(s->log, AV_LOG_INFO, "Title timeline: PGS track %d: forced subtitles: each display set shows only "
+                   "its forced objects, as a player does with subtitles off [untested on real discs]\n", s->track);
+        }
+    } else {
+        memcpy(h.f.buf->data, u->data, u->size);
+        n = u->size;
+    }
+    memset(h.f.buf->data + n, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+    h.f.data = h.f.buf->data;
+    h.f.size = n;
+    if ((ret = hold(s, &h)) < 0) {
+        ff_disctl_frame_unref(&h.f);
+        return ret;
+    }
+    return drain(s);
+}
+
+void ff_disctl_spu_set_pgs(DRSpu *s, int forced_only)
+{
+    s->pgs         = 1;
+    s->forced_only = forced_only;
+}
+
 int ff_disctl_spu_unit(void *opaque, const DRUnit *u)
 {
     DRSpu *s = opaque;
     Control c;
     Held h = { .f = { .time = u->time, .pos = u->pos, .flags = DR_F_KEY }, .pes = u->time };
+    int ret;
 
+    if (s->pgs)
+        return pgs_unit(s, u);
     s->st.units++;
     if (!control(u->data, u->size, &c)) {
         av_log(s->log, AV_LOG_ERROR, "Title timeline: sub-picture track %d: a unit the parser passed does not parse\n",
@@ -278,21 +362,10 @@ int ff_disctl_spu_unit(void *opaque, const DRUnit *u)
     memset(h.f.buf->data + u->size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
     h.f.data = h.f.buf->data;
     h.f.size = u->size;
-    if (s->head && s->head + s->n == s->cap) {
-        memmove(s->q, s->q + s->head, s->n * sizeof(*s->q));
-        s->head = 0;
+    if ((ret = hold(s, &h)) < 0) {
+        ff_disctl_frame_unref(&h.f);
+        return ret;
     }
-    if (s->head + s->n == s->cap) {
-        int cap = s->cap ? 2 * s->cap : 16;
-        Held *q = av_realloc_array(s->q, cap, sizeof(*q));
-        if (!q) {
-            ff_disctl_frame_unref(&h.f);
-            return AVERROR(ENOMEM);
-        }
-        s->q   = q;
-        s->cap = cap;
-    }
-    s->q[s->head + s->n++] = h;
     return drain(s);
 }
 

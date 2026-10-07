@@ -38,6 +38,14 @@ typedef struct DRAudioHeader {
     int samples;
 } DRAudioHeader;
 
+typedef struct DRPicture {
+    int type;
+    int order;
+    int fields;
+    int key;
+    int rate_num, rate_den;
+} DRPicture;
+
 typedef struct DRUnit {
     const uint8_t *data;
     int            size;
@@ -45,6 +53,7 @@ typedef struct DRUnit {
     int64_t        pos;
     int            samples;
     int            rate;
+    const DRPicture *pic;
 } DRUnit;
 
 typedef int (*DRUnitCb)(void *opaque, const DRUnit *unit);
@@ -236,12 +245,16 @@ typedef struct DRSpuStats {
     int64_t colcon;
     int64_t max_shift;
     int64_t outside;
+    int64_t forced_objects;
 } DRSpuStats;
 
 typedef struct DRSpu DRSpu;
 int  ff_disctl_spu_open(DRSpu **s, void *logctx, int track, DRVideo *v, int width, int height,
                          DRFrameCb cb, void *opaque, DREventCb event, void *event_opaque);
 int  ff_disctl_spu_unit(void *spu, const DRUnit *unit);
+void ff_disctl_spu_set_pgs(DRSpu *s, int forced_only);
+int  ff_disctl_pgs_check(const uint8_t *data, int size);
+int  ff_disctl_pgs_forced_only(const uint8_t *in, int size, uint8_t *out, int *forced);
 int  ff_disctl_spu_flush(DRSpu *s);
 void ff_disctl_spu_stats(const DRSpu *s, DRSpuStats *st);
 void ff_disctl_spu_close(DRSpu **s);
@@ -324,6 +337,7 @@ typedef struct DRTitleTrack {
     int kind;
     int audio_flags;
     int width, height;
+    int sub_flags;
 } DRTitleTrack;
 
 typedef struct DRTitleConfig {

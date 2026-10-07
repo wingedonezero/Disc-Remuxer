@@ -456,6 +456,18 @@ void ff_bluray_titles_free(struct BlurayDisc *d);
 int ff_bluray_title_tracks(void *log, DiscIOFS *fs, BlurayAACS *aacs, BlurayTitle *t);
 
 /**
+ * The PES stream keys a track's PID is read with (stream_id, or 0xFD |
+ * stream_id_extension << 8; 0 any key), the reference program's per kind:
+ * video 0xE0 (AVC 0xE0 + its probed id, VC-1 0x55FD, HEVC 0xE1), AC-3 /
+ * DTS / E-AC-3 alone extension sel1 (any on BDAV clips), DTS-HD alone and
+ * TrueHD extension sel1, DTS-HD / E-AC-3 with a core both sel1 and sel2,
+ * LPCM and PGS 0xBD, AAC any, MPEG audio 0xC0 + sel1 (any on BDAV clips).
+ * bdav: the title's clips are BDAV (M2TS) clips.
+ * @return the number of keys (1 or 2), 0 a kind with none (text subtitles)
+ */
+int ff_bluray_track_keys(const BlurayTrack *tk, int bdav, uint16_t key[2]);
+
+/**
  * The stream probe of clip stream e (once per stream) from the segment's
  * stream data: no core substream, the AVC PES stream id, the HEVC second
  * layer, BDAV program map kinds and languages (BLURAY_PROBE_*). c is the
@@ -473,6 +485,29 @@ int ff_bluray_probe_stream(void *log, DiscIOFS *fs, BlurayAACS *aacs, const Blur
  * @return the number of keys seen, < 0 the stream data cannot be read
  */
 int ff_bluray_pid_scan(void *log, DiscIOFS *fs, BlurayAACS *aacs, const BluraySegment *s, uint16_t pid, int limit);
+
+/** A segment's stream data as 6144-byte aligned units (32 source packets):
+ *  its items' byte ranges one after another (a 3-D item: its base-view clip
+ *  only), each unit made usable by ff_bluray_aacs_unit (bluray_probe.c). */
+typedef struct BluraySegReader {
+    void                *log;
+    DiscIOFS            *fs;
+    BlurayAACS          *aacs;
+    const BluraySegment *s;
+    int                  item;         /**< the open item, -1 none */
+    DiscIOFile          *f;
+} BluraySegReader;
+
+#define BLURAY_UNIT 6144
+
+/** Bytes of the segment's stream data. */
+int64_t ff_bluray_seg_size(const BluraySegment *s);
+void    ff_bluray_seg_reader_init(BluraySegReader *u, void *log, DiscIOFS *fs, BlurayAACS *aacs,
+                                  const BluraySegment *s);
+/** The unit at pos (a multiple of 6144) into buf: 0, AVERROR_EOF past the
+ *  end (also for a part unit at the end), < 0 error (logged). */
+int     ff_bluray_seg_read(BluraySegReader *u, int64_t pos, uint8_t *buf);
+void    ff_bluray_seg_reader_close(BluraySegReader *u);
 
 int64_t ff_bluray_title_duration(const BlurayTitle *t);
 /** The title's size, bytes. */

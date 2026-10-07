@@ -188,14 +188,14 @@ static int probe_run(Probe *p, enum AVCodecID codec, int want)
     AVCodecParserContext *parser = NULL;
     AVCodecContext *avctx = NULL;
     AVPacket *pkt = NULL;
-    DiscPS ps;
+    DiscDemux ps;
     int ret, done = 0;
 
     if (!probe_first_pts(p))
         return 0;
     p->pos = 0;
     if ((ret = ff_disc_ps_open(&ps, NULL, 5, probe_read, p)) < 0) {
-        ff_disc_ps_close(&ps);
+        ff_disc_demux_close(&ps);
         return p->read_failed ? 0 : ret;
     }
     parser = av_parser_init(codec);
@@ -248,7 +248,7 @@ end:
     av_packet_free(&pkt);
     av_parser_close(parser);
     avcodec_free_context(&avctx);
-    ff_disc_ps_close(&ps);
+    ff_disc_demux_close(&ps);
     return ret;
 }
 

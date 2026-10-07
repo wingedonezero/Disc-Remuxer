@@ -3863,6 +3863,17 @@ static int disc_pes(const uint8_t *p, unsigned avail, DiscPes *o)
     return avail >= o->off;
 }
 
+int ff_mpegts_disc_pes_header(const uint8_t *p, unsigned avail, uint16_t *key, int64_t *pts)
+{
+    DiscPes pes;
+
+    if (!disc_pes(p, avail, &pes))
+        return 0;
+    *key = pes.key;
+    *pts = pes.pts;
+    return 1;
+}
+
 static int disc_stream(AVFormatContext *s, int pid, uint16_t key)
 {
     int id = pid | key << 16;
