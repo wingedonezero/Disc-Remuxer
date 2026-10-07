@@ -77,7 +77,7 @@ static int describe_titles(AVFormatContext *s)
     for (int i = 0; i < b->nb_titles; i++) {
         BlurayTitle *t = &b->titles[i];
         DiscTitleInfo *dt;
-        int ret = ff_bluray_title_tracks(s, t);
+        int ret = ff_bluray_title_tracks(s, b->fs, c->aacs, t);
 
         if (ret < 0 && ret != AVERROR_INVALIDDATA)
             return ret;
@@ -117,6 +117,7 @@ static int describe_titles(AVFormatContext *s)
             ds->forced      = !!(tk->flags & BLURAY_TRACK_FORCED);
             ds->second_view = tk->type == AVMEDIA_TYPE_VIDEO && tk->from_track >= 0;
             ds->offset_sequence = tk->offset_seq;
+            ds->second_layer    = !!(tk->flags & BLURAY_TRACK_LAYER2);
             memcpy(ds->language, tk->lang, sizeof(ds->language));
         }
         for (int k = 0; k < t->nb_marks; k++) {

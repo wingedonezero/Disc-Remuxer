@@ -280,3 +280,44 @@ def encrypt_unit(plain, unit_key, cpi=3):
         u[k * 192] = (u[k * 192] & 0x3f) | (cpi << 6)
     bk = bytes(a ^ b for a, b in zip(aes_e(unit_key, bytes(u[:16])), u[:16]))
     return bytes(u[:16]) + aes(bk, bytes(u[16:]), False, AACS_IV)
+
+
+# ---- transport stream ----
+
+def ts_packet(pid, payload=b"", pusi=False, cc=0):
+    """A 188-byte TS packet: the payload, an adaptation field filling the
+    rest (none when the payload fills 184 bytes)."""
+    room = 184 - len(payload)
+    assert room >= 0
+    h = bytes([0x47, (0x40 if pusi else 0) | (pid >> 8), pid & 0xff])
+    if room == 0:
+        return h + bytes([0x10 | cc]) + payload
+    af = bytes([room - 1]) + (bytes([0]) + bytes([0xff] * (room - 2)) if room > 1 else b"")
+    return h + bytes([0x30 | cc]) + af + payload
+
+
+def pes(stream_id, payload, ext=None, pts=None):
+    """A PES packet: optional PTS, optional stream_id_extension (stream id 0xFD)."""
+    flags, hdr = 0, b""
+    if pts is not None:
+        flags |= 0x80
+        hdr += bytes([0x21 | ((pts >> 29) & 0x0e), (pts >> 22) & 0xff, 0x01 | ((pts >> 14) & 0xfe),
+                      (pts >> 7) & 0xff, 0x01 | ((pts << 1) & 0xfe)])
+    if ext is not None:
+        flags |= 0x01
+        hdr += bytes([0x01, 0x81, ext])          # PES_extension_flag_2, its field length 1, the extension
+    body = bytes([0x80, flags, len(hdr)]) + hdr + payload
+    return b"\x00\x00\x01" + bytes([stream_id]) + be16(len(body)) + body
+
+
+def source_units(packets):
+    """Aligned units of source packets (4-byte TP_extra_header + TS packet),
+    padded with null packets to whole units."""
+    out = bytearray()
+    for i, p in enumerate(packets):
+        out += be32(i * 0x10) + p
+    n = len(packets)
+    while n % 32:
+        out += be32(n * 0x10) + ts_packet(0x1fff, bytes(184))
+        n += 1
+    return bytes(out)

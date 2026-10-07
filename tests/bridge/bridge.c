@@ -251,7 +251,7 @@ static char *tb_bluray_dump(const char *path, const char *lang, int min_length, 
     if (*err >= 0 && min_length >= 0)
         *err = ff_bluray_titles_build(NULL, &d, min_length);
     for (int i = 0; *err >= 0 && min_length >= 0 && i < d.nb_titles; i++) {
-        int r = ff_bluray_title_tracks(NULL, &d.titles[i]);
+        int r = ff_bluray_title_tracks(NULL, fs, NULL, &d.titles[i]);
         if (r < 0 && r != AVERROR_INVALIDDATA)
             *err = r;
     }

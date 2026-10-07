@@ -50,6 +50,7 @@ typedef struct DiscStreamInfo {
     int              from_track;     /**< the stream this one is taken out of, -1 none */
     int              forced;         /**< subtitles: only the forced ones (taken out of from_track) */
     int              second_view;    /**< video: the second view of a 3-D video (from_track is the first) */
+    int              second_layer;   /**< video: a second (enhancement) layer on its own PID is read with it */
     int              offset_sequence;/**< subtitles of a 3-D title: the disc's offset sequence for its depth, -1 none */
     int              width, height;  /**< video: the frame; subtitles: the canvas the units are drawn on */
     /* the stream details (not filled yet) */

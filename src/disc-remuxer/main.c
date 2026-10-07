@@ -126,13 +126,14 @@ static void title_overview(const DiscTitleInfo *t, int detail)
         ns += k->type == AVMEDIA_TYPE_SUBTITLE;
         av_bprintf(&streams,
                  "%s{\"index\":%d,\"kind\":\"%s\",\"codec\":%s,\"language\":%s,\"inner_track\":%s,"
-                 "\"from_track\":%s,\"forced\":%s,\"second_view\":%s,\"offset_sequence\":%s,\"width\":%s,"
+                 "\"from_track\":%s,\"forced\":%s,\"second_view\":%s,\"second_layer\":%s,\"offset_sequence\":%s,\"width\":%s,"
                  "\"height\":%s,\"channels\":%s,\"sample_rate\":%s,\"bits\":%s,\"bit_rate\":%s}",
                  i ? "," : "", i, av_get_media_type_string(k->type),
                  json_str(jc, sizeof(jc), codec_label(k->codec, AV_PROFILE_UNKNOWN)),
                  json_str(jsl, sizeof(jsl), k->language), json_index(ji, sizeof(ji), k->inner_track),
                  json_index(jf, sizeof(jf), k->from_track), k->forced ? "true" : "false",
-                 k->second_view ? "true" : "false", json_index(jo, sizeof(jo), k->offset_sequence),
+                 k->second_view ? "true" : "false", k->second_layer ? "true" : "false",
+                 json_index(jo, sizeof(jo), k->offset_sequence),
                  json_num(n1, sizeof(n1), k->width),
                  json_num(n2, sizeof(n2), k->height), json_num(n3, sizeof(n3), k->channels),
                  json_num(n4, sizeof(n4), k->sample_rate), json_num(n5, sizeof(n5), k->bits),
@@ -171,6 +172,8 @@ static void title_overview(const DiscTitleInfo *t, int detail)
                 snprintf(link, sizeof(link), "  (taken out of track %d)", k->from_track);
             else if (k->inner_track >= 0)
                 snprintf(link, sizeof(link), "  (track %d is taken out of it)", k->inner_track);
+            if (k->second_layer)
+                snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "  with its second layer");
             if (k->offset_sequence >= 0)
                 snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "  3-D offset sequence %d",
                          k->offset_sequence);

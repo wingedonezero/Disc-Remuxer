@@ -24,6 +24,9 @@
  * A subtitle of a 3-D title takes the offset sequence the playlist's 3-D
  * data gives its PG stream (if any).
  *
+ * Before the tracks are taken, every stream of the segment is probed once
+ * (bluray_probe.c); a stream that cannot be probed fails the title.
+ *
  * Tracks: the first stream with a video track gives the video (and the 3-D
  * second view), then every audio track of every stream, then every subtitle
  * track, then the text subtitles from their own clips; an audio or subtitle
@@ -141,8 +144,10 @@ static void describe(const BlurayClipStream *e, Desc *d)
         break;
     case 0x24:
         d->n = 1; d->k[0].code = K_HEVC;
-        if (e->probe & BLURAY_PROBE_HEVC_EL)
-            d->k[0].sel1 = 0x1015;
+        if (e->probe & BLURAY_PROBE_HEVC_EL) {
+            d->k[0].sel1   = 0x1015;
+            d->k[0].flags |= BLURAY_TRACK_LAYER2;
+        }
         break;
     case 0x03: case 0x04: d->n = 1; d->k[0].code = K_MPA; break;
     case 0x0f: case 0x11: d->n = 1; d->k[0].code = K_AAC; d->k[0].sel2 = e->coding_type; break;
@@ -402,7 +407,40 @@ static int add_parts(void *log, BlurayTitle *t, const Desc *d, int stream, int l
     return 0;
 }
 
-int ff_bluray_title_tracks(void *log, BlurayTitle *t)
+/* The probes of every stream of the segment (the title's PIDs or not; not
+ * the text subtitles; a dependent-view stream numbered as the reference
+ * program does, without the text subtitles). */
+static int probe_streams(void *log, DiscIOFS *fs, BlurayAACS *aacs, const BlurayTitle *t, const BluraySegment *s,
+                         int n)
+{
+    BlurayClip *c = s->items[0].clip, *dep = s->items[0].dep;
+    int nc = c->program.nb_streams, ret;
+
+    for (int i = 0; i < n; i++) {
+        BlurayClipStream *e;
+        Desc d;
+        if (i < nc + t->nb_side) {
+            if (i >= nc)
+                continue;
+            e = &c->program.streams[i];
+        } else {
+            int k = i - nc + 1;
+            if (!dep || k >= dep->program.nb_streams) {
+                av_log(log, AV_LOG_DEBUG, "Blu-ray: title %s: no dependent-view stream %d to probe\n", t->name, k);
+                continue;
+            }
+            e = &dep->program.streams[k];
+        }
+        describe(e, &d);
+        if ((ret = ff_bluray_probe_stream(log, fs, aacs, s, c, e, d.n ? d.k[0].code : 0, d.n)) < 0) {
+            av_log(log, AV_LOG_WARNING, "Blu-ray: title %s: stream #%d cannot be probed\n", t->name, i);
+            return ret;
+        }
+    }
+    return 0;
+}
+
+int ff_bluray_title_tracks(void *log, DiscIOFS *fs, BlurayAACS *aacs, BlurayTitle *t)
 {
     const BluraySegment *s;
     int64_t best = -1;
@@ -437,6 +475,8 @@ int ff_bluray_title_tracks(void *log, BlurayTitle *t)
         av_log(log, AV_LOG_WARNING, "Blu-ray: title %s has no video stream\n", t->name);
         return AVERROR_INVALIDDATA;
     }
+    if (fs && (ret = probe_streams(log, fs, aacs, t, s, n)) < 0)
+        return ret == AVERROR(ENOMEM) ? ret : AVERROR_INVALIDDATA;
     stream_desc(log, t, s, video, three_d, &d, &side_clip, &side_stc);
     if ((ret = add_parts(log, t, &d, video, 0x01, 0x40, 0, 0, -1, 0, NULL)) < 0)
         return ret;
