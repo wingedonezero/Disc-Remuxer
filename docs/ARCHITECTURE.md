@@ -15,7 +15,7 @@ One name per job, used everywhere (code comments, logs, docs):
 | disc layer | opens a source once, tells which kind of disc it is, gives the disc info (every title, its streams and chapters), opens a title | `discdec.c`, `disc.h`, `discinfo.h` |
 | title reader | the disc layer's part that reads the opened title: its clips one after another through FFmpeg's line into the title timeline, the clip's time reference, the timeline's frames out as packets, chapters and track results at the end; the format part only says what the title is (clips, how a block is read, tracks, chapter marks, its own values) | `disctitle.c` |
 | disc info | the description of a disc for the caller's overview (not the streams a title is ripped from) | `discinfo.h` |
-| format part | knows one disc format's structure: titles, clips, tracks, chapters, keys; runs the line below for a title | DVD (`dvdvideo*`), HD DVD (`hddvd*`), Blu-ray (to add) |
+| format part | knows one disc format's structure: titles, clips, tracks, chapters, keys; runs the line below for a title | DVD (`dvdvideo*`), HD DVD (`hddvd*`), Blu-ray (`bluray*`, to add) |
 | demuxer | splits a container into packets, one pile per stream | FFmpeg's `mpeg.c` (VOB / EVOB packs), `mpegts.c` (Blu-ray) |
 | parser | finds where each frame of one stream starts and ends | FFmpeg's `*_parser.c` (disc mode: `PARSER_FLAG_DISC`) |
 | frame step | gives a track's payloads to its parser and the PES times to the frames | `disctl_frames.c` |
@@ -82,7 +82,7 @@ Rules:
 | `discrip_mix.c` (copied FFmpeg downmix) | step 5, done: replaced by libswresample (the seamless search's mono mix; the same numbers on every TrueHD layout) |
 | `disctl_cc.c`, `disctl_ccx.c` | stay with the title timeline (caption track; the caption converter is a helper program) |
 | `disctl_title.c`, `_join.c`, `_video.c`, `_audio.c`, `_junction.c`, `_pcm.c`, `_seamless.c`, `_chapters.c`, `_verify.c` | the title timeline (stay) |
-| `bluray.c` | FFmpeg's libbluray protocol, untouched until Blu-ray |
+| `bluray.c` (FFmpeg's libbluray protocol) | removed (user, 2026-10-07: never used; libbluray is not part of the program); the Blu-ray format part takes the name: `bluraydec.c`, `bluray_*.c` |
 
 ## Order of work
 

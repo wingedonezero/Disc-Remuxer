@@ -220,7 +220,6 @@ External library support:
   --enable-libaribcaption  enable ARIB text and caption decoding via libaribcaption [no]
   --enable-libass          enable libass subtitles rendering,
                            needed for subtitles and ass filter [no]
-  --enable-libbluray       enable BluRay reading using libbluray [no]
   --enable-libbs2b         enable bs2b DSP library [no]
   --enable-libcaca         enable textual display using libcaca [no]
   --enable-libcdio         enable audio CD grabbing with libcdio [no]
@@ -2082,7 +2081,6 @@ EXTERNAL_LIBRARY_LIST="
     libaom
     libaribcaption
     libass
-    libbluray
     libbs2b
     libcaca
     libcodec2
@@ -4077,7 +4075,6 @@ xv_outdev_deps="xlib_xv xlib_x11 xlib_xext"
 android_content_protocol_deps="jni"
 android_content_protocol_select="file_protocol"
 async_protocol_deps="threads"
-bluray_protocol_deps="libbluray"
 ffrtmpcrypt_protocol_conflict="librtmp_protocol"
 ffrtmpcrypt_protocol_deps_any="gcrypt gmp openssl mbedtls"
 ffrtmpcrypt_protocol_select="tcp_protocol"
@@ -7335,7 +7332,6 @@ enabled libaribcaption    && require_pkg_config libaribcaption "libaribcaption >
 enabled lv2               && require_pkg_config lv2 lilv-0 "lilv/lilv.h" lilv_world_new
 enabled libiec61883       && require libiec61883 libiec61883/iec61883.h iec61883_cmp_connect -lraw1394 -lavc1394 -lrom1394 -liec61883
 enabled libass            && require_pkg_config libass "libass >= 0.11.0" ass/ass.h ass_library_init
-enabled libbluray         && require_pkg_config libbluray libbluray libbluray/bluray.h bd_open
 enabled libbs2b           && require_pkg_config libbs2b libbs2b bs2b.h bs2b_open
 enabled libcaca           && require_pkg_config libcaca caca caca.h caca_create_canvas
 enabled libcodec2         && require libcodec2 codec2/codec2.h codec2_create -lcodec2
