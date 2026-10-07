@@ -176,13 +176,14 @@ static int describe_titles(AVFormatContext *s)
 }
 
 /* Whether the title timeline reads a track's codec in this step: AVC
- * video; AC-3, DTS, DTS-HD audio; PGS subtitles. */
+ * video; AC-3, DTS, DTS-HD, TrueHD audio; PGS subtitles. */
 static int readable(const BlurayTrack *tk)
 {
     switch (tk->codec) {
     case AV_CODEC_ID_H264: return tk->type == AVMEDIA_TYPE_VIDEO && tk->from_track < 0;   /* not the 3-D second view */
     case AV_CODEC_ID_AC3:
     case AV_CODEC_ID_DTS:
+    case AV_CODEC_ID_TRUEHD:
     case AV_CODEC_ID_HDMV_PGS_SUBTITLE: return !(tk->flags & BLURAY_TRACK_SIDE);
     default:               return 0;
     }
