@@ -17,7 +17,7 @@
 
 #include "libavformat/disclang.h"
 #include "libavformat/discio.h"
-#include "libavformat/discrip.h"
+#include "libavformat/disctl.h"
 #include "libavformat/dvdvideo_internal.h"
 #include "libavformat/hddvd_internal.h"
 

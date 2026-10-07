@@ -38,7 +38,7 @@
 #include "avio_internal.h"
 #include "demux.h"
 #include "disc.h"
-#include "discrip.h"
+#include "disctl.h"
 #include "internal.h"
 
 #define DISC_BLOCK      2048
@@ -201,7 +201,7 @@ static int clip_start(AVFormatContext *s, int k)
     ff_disc_ps_close(&r->ps);
     if ((ret = ff_disc_ps_open(&r->ps, s, src->lpcm_header, ps_read, s)) < 0)
         return ret;
-    return ff_discrip_title_segment(r->rip);
+    return ff_disctl_title_segment(r->rip);
 }
 
 void ff_disc_title_reader_close(DiscTitleReader **reader)
@@ -214,8 +214,8 @@ void ff_disc_title_reader_close(DiscTitleReader **reader)
     held_free(r);
     av_freep(&r->held);
     av_packet_free(&r->in);
-    ff_discrip_title_close(&r->rip);
-    ff_discrip_chapter_plan_free(&r->chapter_plan);
+    ff_disctl_title_close(&r->rip);
+    ff_disctl_chapter_plan_free(&r->chapter_plan);
     av_freep(reader);
 }
 
@@ -229,7 +229,7 @@ int ff_disc_title_reader_open(AVFormatContext *s, const DiscTitleSource *src)
         return AVERROR(ENOMEM);
     r->src = src;
     /* no leading clip is left out yet (skip 0); no "Chapter 00" */
-    if ((ret = ff_discrip_chapter_plan(s, src->chapter_times, src->nb_chapters, 0, 0, &r->chapter_plan)) < 0)
+    if ((ret = ff_disctl_chapter_plan(s, src->chapter_times, src->nb_chapters, 0, 0, &r->chapter_plan)) < 0)
         return ret;
     {
         DRTitleConfig cfg = {
@@ -237,7 +237,7 @@ int ff_disc_title_reader_open(AVFormatContext *s, const DiscTitleSource *src)
             .lpcm_hd = src->lpcm_header == 5,
             .marks = r->chapter_plan.marks, .nb_marks = r->chapter_plan.nb_marks,
         };
-        if ((ret = ff_discrip_title_open(&r->rip, s, &cfg)) < 0)
+        if ((ret = ff_disctl_title_open(&r->rip, s, &cfg)) < 0)
             return ret;
     }
     if (!(r->in = av_packet_alloc()))
@@ -262,7 +262,7 @@ static int feed(AVFormatContext *s, const AVPacket *pkt)
     for (int i = 0; i < s->nb_streams; i++) {
         if (s->streams[i]->id != sub->id)
             continue;
-        if ((ret = ff_discrip_title_payload(r->rip, i, pkt->data, pkt->size, time, tail)) < 0)
+        if ((ret = ff_disctl_title_payload(r->rip, i, pkt->data, pkt->size, time, tail)) < 0)
             return ret;
         n++;
     }
@@ -310,7 +310,7 @@ static int read_input(AVFormatContext *s)
         }
         if (r->clip + 1 < src->nb_clips)
             return clip_start(s, r->clip + 1);
-        return ff_discrip_title_finish(r->rip);
+        return ff_disctl_title_finish(r->rip);
     }
     if (ret < 0)
         return ret;
@@ -355,7 +355,7 @@ static int set_chapters(AVFormatContext *s)
     int n, ret;
 
     r->chapters_set = 1;
-    if ((ret = ff_discrip_title_chapters(r->rip, &r->chapter_plan, &ch, &n)) < 0)
+    if ((ret = ff_disctl_title_chapters(r->rip, &r->chapter_plan, &ch, &n)) < 0)
         return ret;
     for (int i = 0; i < n; i++) {
         const char *name = ch[i].record >= 0 && r->src->chapter_names && r->src->chapter_names[ch[i].record] &&
@@ -366,7 +366,7 @@ static int set_chapters(AVFormatContext *s)
         }
     }
     av_free(ch);
-    s->duration = av_rescale(ff_discrip_title_duration(r->rip), AV_TIME_BASE, DR_TICKS_PER_SECOND);
+    s->duration = av_rescale(ff_disctl_title_duration(r->rip), AV_TIME_BASE, DR_TICKS_PER_SECOND);
     return 0;
 }
 
@@ -378,7 +378,7 @@ static int lpcm_params(AVFormatContext *s, int k)
     AVCodecParameters *par = s->streams[k]->codecpar;
     const DRLpcm *p;
 
-    if (par->codec_id != AV_CODEC_ID_PCM_DVD || !(p = ff_discrip_title_lpcm(r->rip, k)))
+    if (par->codec_id != AV_CODEC_ID_PCM_DVD || !(p = ff_disctl_title_lpcm(r->rip, k)))
         return 0;
     par->codec_id              = p->bits > 16 ? AV_CODEC_ID_PCM_S24LE : AV_CODEC_ID_PCM_S16LE;
     par->sample_rate           = p->rate;
@@ -397,7 +397,7 @@ static int title_end(AVFormatContext *s)
 {
     DiscContext *d = s->priv_data;
     DiscTitleReader *r = d->reader;
-    int64_t review = ff_discrip_title_review(r->rip);
+    int64_t review = ff_disctl_title_review(r->rip);
     int ret;
 
     if ((ret = set_chapters(s)) < 0)
@@ -414,7 +414,7 @@ static int title_end(AVFormatContext *s)
      * keep as a track: reported */
     {
         int64_t blocks, text;
-        ff_discrip_title_cc_dropped(r->rip, &blocks, &text);
+        ff_disctl_title_cc_dropped(r->rip, &blocks, &text);
         if (blocks && ((ret = av_dict_set_int(&s->streams[0]->metadata, "cc_blocks", blocks, 0)) < 0 ||
                        (ret = av_dict_set_int(&s->streams[0]->metadata, "cc_text", text, 0)) < 0))
             return ret;
@@ -423,13 +423,13 @@ static int title_end(AVFormatContext *s)
     for (int i = 0; i < s->nb_streams; i++) {
         int64_t frames, warnings, delay;
         AVDictionary **m = &s->streams[i]->metadata;
-        if (ff_discrip_title_track_result(r->rip, i, &frames, &warnings, &delay) < 0)
+        if (ff_disctl_title_track_result(r->rip, i, &frames, &warnings, &delay) < 0)
             continue;
         if ((ret = av_dict_set_int(m, "frames", frames, 0)) < 0 ||
             (ret = av_dict_set_int(m, "warnings", warnings, 0)) < 0 ||
             (ret = av_dict_set_int(m, "delay_us", delay / (DR_TICKS_PER_SECOND / 1000000), 0)) < 0)
             return ret;
-        if (ff_discrip_title_spu_result(r->rip, i, &frames, &warnings) >= 0 &&
+        if (ff_disctl_title_spu_result(r->rip, i, &frames, &warnings) >= 0 &&
             ((ret = av_dict_set_int(m, "no_stop", frames, 0)) < 0 ||
              (ret = av_dict_set_int(m, "outside", warnings, 0)) < 0))
             return ret;
@@ -448,14 +448,14 @@ int ff_disc_title_reader_packet(AVFormatContext *s, AVPacket *pkt)
         DRFrame f;
         int k;
 
-        ret = ff_discrip_title_frame(r->rip, &k, &f);
+        ret = ff_disctl_title_frame(r->rip, &k, &f);
         if (!ret) {
             if (!f.size) {
-                ff_discrip_frame_unref(&f);
+                ff_disctl_frame_unref(&f);
                 continue;
             }
             if ((ret = lpcm_params(s, k)) < 0) {
-                ff_discrip_frame_unref(&f);
+                ff_disctl_frame_unref(&f);
                 return ret;
             }
             pkt->buf          = f.buf;

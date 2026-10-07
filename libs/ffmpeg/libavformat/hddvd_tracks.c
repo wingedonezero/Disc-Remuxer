@@ -60,7 +60,7 @@
 #include "avformat.h"
 #include "disc.h"
 #include "disclang.h"
-#include "discrip.h"
+#include "disctl.h"
 #include "hddvd_internal.h"
 #include "mpeg.h"
 

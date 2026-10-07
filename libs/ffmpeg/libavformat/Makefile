@@ -279,7 +279,7 @@ OBJS-$(CONFIG_HASH_MUXER)                += hashenc.o
 OBJS-$(CONFIG_HCA_DEMUXER)               += hca.o
 OBJS-$(CONFIG_HCOM_DEMUXER)              += hcom.o pcm.o
 OBJS-$(CONFIG_DISC_DEMUXER)              += discdec.o disctitle.o hddvddec.o hddvd_vti.o hddvd_xpl.o \
-                                            discrip_frames.o discrip_codecs.o discrip_audio.o discrip_mlp.o discrip_junction.o discrip_join.o discrip_video.o discrip_mpv.o discrip_vc1.o discrip_spu.o discrip_cc.o discrip_ccx.o discrip_chapters.o discrip_verify.o discrip_seamless.o discrip_lpcm.o discrip_pcm.o discrip_title.o \
+                                            disctl_frames.o disctl_codecs.o disctl_audio.o disctl_mlp.o disctl_junction.o disctl_join.o disctl_video.o disctl_mpv.o disctl_vc1.o disctl_spu.o disctl_cc.o disctl_ccx.o disctl_chapters.o disctl_verify.o disctl_seamless.o disctl_lpcm.o disctl_pcm.o disctl_title.o \
                                             hddvd_titles.o hddvd_aacs.o hddvd_tracks.o disclang.o avlanguage.o \
                                             discio_read.o discio_fs.o discio_iso9660.o \
                                             discio_udf_netbsd.o discio_udf_linux.o

@@ -169,7 +169,7 @@ static int disc_is_sc(const uint8_t *p)
 
 static void disc_cut_fail(void *log, int code, const char *where)
 {
-    av_log(log, AV_LOG_ERROR, "Rip core: VC-1: start code 0x%02X %s: the track cannot be ripped\n", code, where);
+    av_log(log, AV_LOG_ERROR, "Title timeline: VC-1: start code 0x%02X %s: the track cannot be ripped\n", code, where);
 }
 
 /* The part a unit's first BDU begins, or < 0. */

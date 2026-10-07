@@ -7,7 +7,7 @@
 
 run: empties the counters, runs pytest on the coverage build (DR_MODE=coverage)
 with the arguments given, and writes {source file: [lines reached]} for our
-files (libavformat discio_* / discrip_* / dvdvideo_* / hddvd_* / disclang,
+files (libavformat discio_* / disctl_* / dvdvideo_* / hddvd_* / disclang,
 libdvdread, libdvdnav, libdvdcss). only: the lines b reaches and a does not,
 by file and function (e.g. a = the built-data tests, b = the real-disc tests).
 """
@@ -20,7 +20,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build" / "coverage"
-OURS = re.compile(r"libs/(ffmpeg/libavformat/(discio|discrip|dvdvideo|hddvd|disclang)[^/]*\.c"
+OURS = re.compile(r"libs/(ffmpeg/libavformat/(discio|disctl|discdec|disctitle|dvdvideo|hddvd|disclang)[^/]*\.c"
                   r"|libdvdread/src/.*\.c|libdvdnav/src/.*\.c|libdvdcss/src/.*\.c)$")
 
 

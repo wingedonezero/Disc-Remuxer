@@ -9,7 +9,7 @@ and then cuts 6 more bytes). The sectors are built byte by byte."""
 import struct
 
 from helpers import AV_NOPTS_VALUE
-from helpers.discrip import codec_id
+from helpers.disctl import codec_id
 from helpers.parser import ps_read
 
 SECTOR = 2048

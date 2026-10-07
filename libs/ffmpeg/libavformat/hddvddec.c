@@ -37,7 +37,7 @@
 #include "disc.h"
 #include "discinfo.h"
 #include "discio.h"
-#include "discrip.h"
+#include "disctl.h"
 #include "hddvd_internal.h"
 #include "internal.h"
 
@@ -139,7 +139,7 @@ static int add_streams(AVFormatContext *s, const HDDVDTitle *t)
             st->disposition |= AV_DISPOSITION_DEPENDENT;
         if (k->type == AVMEDIA_TYPE_SUBTITLE) {
             char idx[1024];
-            int n = ff_discrip_vobsub_header(idx, sizeof(idx), k->width, k->height, k->palette);
+            int n = ff_disctl_vobsub_header(idx, sizeof(idx), k->width, k->height, k->palette);
             int ret;
 
             st->codecpar->width   = k->width;

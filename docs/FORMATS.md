@@ -5,8 +5,8 @@ demuxer of our FFmpeg, `disc` (the disc layer, `libavformat/discdec.c`): it
 tells the kind of disc and hands it to that kind's format part (HD DVD now;
 DVD-Video and Blu-ray, UHD and 3D to come), which describes the disc and the
 opened title; the disc layer's title reader (`libavformat/disctitle.c`) runs
-that title through FFmpeg's line and the shared rip core
-(`libavformat/discrip_*.c`). Every format part gives the program the same
+that title through FFmpeg's line and the title timeline
+(`libavformat/disctl_*.c`). Every format part gives the program the same
 things, listed here.
 
 ## Options the program sets
@@ -63,12 +63,12 @@ title has been read.
 | subtitle streams | `outside` | units drawn outside the canvas (each segment that has some also counts one warning) |
 | the context | `untested` | features met that no real disc has tested (the job is reported failed) |
 
-Chapters are `AVFormatContext.chapters`, set at the end (the rip core marks
+Chapters are `AVFormatContext.chapters`, set at the end (the title timeline marks
 them on the video's key frames).
 
 ## Log
 
-Everything the disc layer, the format part and the rip core have to say goes through
+Everything the disc layer, the format part and the title timeline have to say goes through
 `av_log`: errors and warnings a reader must see at `AV_LOG_ERROR` /
 `AV_LOG_WARNING` in plain language, normal steps at `AV_LOG_INFO`, details
 at `AV_LOG_VERBOSE` / `AV_LOG_DEBUG`. Messages that come again on every title

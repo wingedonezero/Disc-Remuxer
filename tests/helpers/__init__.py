@@ -78,7 +78,7 @@ def error_text(code):
 # Every module that attaches Python code to the bridge's callbacks: a
 # callback without its code would silently return 0, so every extern "Python"
 # of the declarations must have its code once these are loaded.
-from helpers import css, discrip, dvd, hddvd, parser, source, vm, xml  # noqa: E402,F401
+from helpers import css, disctl, dvd, hddvd, parser, source, vm, xml  # noqa: E402,F401
 
 _DECLARED = set()
 for _f in (ROOT / "tests" / "bridge" / "cdef").glob("*.cdef"):
