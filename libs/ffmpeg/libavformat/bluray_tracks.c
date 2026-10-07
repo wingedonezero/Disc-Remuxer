@@ -511,3 +511,32 @@ int ff_bluray_title_tracks(void *log, DiscIOFS *fs, BlurayAACS *aacs, BlurayTitl
            t->nb_tracks, t->track_seg, n, three_d ? ", 3-D" : "");
     return 0;
 }
+
+/* ---- what a track reads ---- */
+
+int ff_bluray_track_keys(const BlurayTrack *tk, int bdav, uint16_t key[2])
+{
+    uint16_t fx  = tk->sel1 << 8 | 0xfd;    /* the PES stream id extension it takes */
+    uint16_t fx0 = bdav ? 0 : fx;           /* BDAV clips: any key */
+
+    switch (tk->code) {
+    case K_MPEG2:
+    case K_MVC:          key[0] = 0xe0;                    return 1;
+    case K_AVC:          key[0] = 0xe0 + (tk->sel1 & 0xff); return 1;
+    case K_VC1:          key[0] = (tk->sel1 << 8) + 0x55fd; return 1;
+    case K_HEVC:         key[0] = 0xe1;                    return 1;
+    case K_MPA:          key[0] = bdav ? 0 : (tk->sel1 & 0xff) + 0xc0; return 1;
+    case K_AC3:
+    case K_DTS:
+    case K_EAC3:         key[0] = fx0;                     return 1;
+    case K_DTSHD:
+    case K_TRUEHD:       key[0] = fx;                      return 1;
+    case K_DTSHD_CORE:
+    case K_EAC3_CORE:    key[0] = fx; key[1] = tk->sel2 << 8 | 0xfd; return 2;
+    case K_LPCM:
+    case K_PGS:
+    case K_PGS_FORCED:   key[0] = 0xbd;                    return 1;
+    case K_AAC:          key[0] = 0;                       return 1;
+    }
+    return 0;
+}

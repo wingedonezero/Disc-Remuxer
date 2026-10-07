@@ -33,20 +33,39 @@
 
 struct DRTitleTrack;
 
+/** What of a Blu-ray clip's stream data a track takes: the payloads of
+ *  its PID with one of its PES stream keys (stream_id, or 0xFD |
+ *  stream_id_extension << 8; key 0: any key of the PID). A track with two
+ *  keys takes both in the order they arrive (a core frame and its
+ *  extension: they alternate, the first key first). */
+typedef struct DiscTsFeed {
+    int      pid;
+    uint16_t key[2];
+    int      nb_keys;
+} DiscTsFeed;
+
 /** What the title reader needs of the opened title; the format part fills
  *  DiscContext.src in its open (the arrays and strings stay its own until
- *  its close). Track i is stream i, whose id is the id mpeg.c gives its
- *  payloads (the start code 0x1xx of an MPEG stream, the sub-stream id of a
- *  private stream 1 stream, 0xFD55 for VC-1); track 0 is the video. */
+ *  its close). Track i is stream i; track 0 is the video. Program-stream
+ *  clips (ts 0): 2048-byte sectors through FFmpeg's MPEG-PS demuxer; a
+ *  track takes the payloads mpeg.c gives the id of its stream (the start
+ *  code 0x1xx of an MPEG stream, the sub-stream id of a private stream 1
+ *  stream, 0xFD55 for VC-1). Blu-ray clips (ts 1): 6144-byte units of
+ *  192-byte source packets through FFmpeg's MPEG-TS demuxer in disc mode;
+ *  a track takes what its feed says. */
 typedef struct DiscTitleSource {
     int          nb_clips;
     const char  *clip_kind;                                  /**< for the log: "EVOB" */
     const char *(*clip_name)(AVFormatContext *s, int clip);
-    uint32_t    (*clip_blocks)(AVFormatContext *s, int clip);  /**< 2048-byte blocks of the clip */
-    /** Block of the clip into buf (2048 bytes, decrypted): 1 read, 0 not
-     *  usable (left out), < 0 cannot be read (the rest of the clip is not
-     *  read). */
+    uint32_t    (*clip_blocks)(AVFormatContext *s, int clip);  /**< blocks of the clip (2048 / 6144 bytes) */
+    /** Block of the clip into buf (decrypted): 1 read, 0 not usable (left
+     *  out), < 0 cannot be read (the rest of the clip is not read). */
     int         (*read_block)(AVFormatContext *s, int clip, uint32_t block, uint8_t *buf);
+
+    int          ts;                /**< Blu-ray stream data (6144-byte units, MPEG-TS) */
+    const int   *pids;              /**< ts: the PIDs read */
+    int          nb_pids;
+    const DiscTsFeed *feeds;        /**< ts: what each track takes */
 
     int          lpcm_header;       /**< bytes of a PES packet's LPCM audio frame header (HD DVD 5) */
     int64_t      tolerance;         /**< audio lead-in tolerance (ticks; the format's own) */
@@ -117,20 +136,25 @@ int ff_disc_title_add_file(DiscTitleInfo *t, const char *name);
 
 /* ---- disctitle.c ---- */
 
-/** A clip through FFmpeg's MPEG-PS demuxer as disc sectors (mpeg.c, option
- *  disc, the format's LPCM header size): raw PES payloads with their own
- *  times (no parsing, no filled-in or corrected timestamps), from the
- *  2048-byte blocks read gives (one per call; AVERROR_EOF at the end).
- *  parent (may be NULL): the context whose whitelists and interrupt callback
- *  the demuxer takes. */
-typedef struct DiscPS {
+/** A clip through FFmpeg's demuxer as a disc reader reads it, from the
+ *  blocks read gives (one per call; AVERROR_EOF at the end): raw PES
+ *  payloads with their own times (no parsing, no filled-in or corrected
+ *  timestamps). parent (may be NULL): the context whose whitelists and
+ *  interrupt callback the demuxer takes. */
+typedef struct DiscDemux {
     AVFormatContext *ctx;
     AVIOContext     *pb;
-} DiscPS;
+} DiscDemux;
 
-int  ff_disc_ps_open(DiscPS *ps, AVFormatContext *parent, int lpcm_header,
+/** MPEG-PS (mpeg.c, option disc): 2048-byte sectors, the format's LPCM
+ *  header size. */
+int  ff_disc_ps_open(DiscDemux *dm, AVFormatContext *parent, int lpcm_header,
                      int (*read)(void *opaque, uint8_t *buf, int size), void *opaque);
-void ff_disc_ps_close(DiscPS *ps);
+/** MPEG-TS (mpegts.c, option disc): 6144-byte units of source packets, the
+ *  PIDs read; each payload's stream id is PID | PES stream key << 16. */
+int  ff_disc_ts_open(DiscDemux *dm, AVFormatContext *parent, const int *pids, int nb_pids,
+                     int (*read)(void *opaque, uint8_t *buf, int size), void *opaque);
+void ff_disc_demux_close(DiscDemux *dm);
 
 /** The title reader (DiscContext.reader) over src: the title timeline for
  *  its tracks and chapters; reading starts at its first clip. */
