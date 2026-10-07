@@ -90,6 +90,8 @@ int ff_discrip_cutter_open(DRCutter **cutter, void *logctx, enum AVCodecID codec
     }
     c->parser = av_parser_init(codec);
     c->avctx  = avcodec_alloc_context3(NULL);
+    if (c->parser && c->codec->disc_parser)
+        c->parser->flags |= PARSER_FLAG_DISC;
     if (!c->parser || !c->avctx) {
         int ret = c->avctx ? AVERROR(ENOSYS) : AVERROR(ENOMEM);
         if (!c->parser)
@@ -190,8 +192,8 @@ static int window_add(DRCutter *c, const uint8_t *data, int size)
 /* One unit at stream offset off: check it, time it, give it out. */
 static int unit_take(DRCutter *c, const uint8_t *data, int size, int64_t off)
 {
-    int samples = c->parser ? c->parser->duration : 0;
-    int rate    = c->parser ? c->avctx->sample_rate : 0;
+    int samples = c->parser && !c->codec->disc_parser ? c->parser->duration : 0;
+    int rate    = c->parser && !c->codec->disc_parser ? c->avctx->sample_rate : 0;
     int64_t time = AV_NOPTS_VALUE;
     int unit, a;
 
@@ -228,7 +230,17 @@ static void window_consume(DRCutter *c, int64_t end)
     c->win_pos  = end;
 }
 
-/* One unit from FFmpeg's parser. */
+/* Bytes that are no unit (damaged or cut stream): left out. */
+static void not_a_unit(DRCutter *c, int k)
+{
+    av_log(c->log, AV_LOG_WARNING, "Rip core: %s: %d bytes at stream offset %"PRId64" are not a unit "
+           "(damaged or cut stream): left out\n", c->codec->name, k, c->win_pos);
+    c->st.skipped++;
+    c->st.skipped_bytes += k;
+}
+
+/* One chunk from FFmpeg's parser: a unit, or (disc mode, disc_status 1)
+ * bytes that are no unit; disc_status < 0: the stream cannot be cut. */
 static int unit_out(DRCutter *c, const uint8_t *data, int size)
 {
     int64_t off = c->parser->frame_offset, rel = off - c->win_pos;
@@ -241,8 +253,24 @@ static int unit_out(DRCutter *c, const uint8_t *data, int size)
                c->codec->name, size, off, c->win_pos, c->win_pos + c->win_len);
         return AVERROR_BUG;
     }
+    if (c->codec->disc_parser && c->parser->disc_status == 1) {
+        not_a_unit(c, size);
+        window_consume(c, off + size);
+        return 0;
+    }
     window_consume(c, off + size);
     return unit_take(c, data, size, off);
+}
+
+/* After a call of a disc-mode parser: the stream cannot be cut. */
+static int cut_failed(DRCutter *c)
+{
+    int err = c->codec->disc_parser ? c->parser->disc_status : 0;
+
+    if (err < 0)
+        av_log(c->log, AV_LOG_ERROR, "Rip core: %s: the stream cannot be cut into units at stream offset %"
+               PRId64"\n", c->codec->name, c->win_pos);
+    return err < 0 ? err : 0;
 }
 
 /* The core's own cutter (DRCodec.unit_size): units cut from the kept bytes;
@@ -277,10 +305,7 @@ static int native_cut(DRCutter *c, int final)
             else
                 break;      /* a unit may start in the bytes still to come */
         }
-        av_log(c->log, AV_LOG_WARNING, "Rip core: %s: %d bytes at stream offset %"PRId64" are not a unit "
-               "(damaged or cut stream): left out\n", c->codec->name, k, c->win_pos);
-        c->st.skipped++;
-        c->st.skipped_bytes += k;
+        not_a_unit(c, k);
         window_consume(c, c->win_pos + k);
     }
     return 0;
@@ -321,7 +346,7 @@ int ff_discrip_cutter_write(DRCutter *c, const uint8_t *data, int size, int64_t 
         c->in_pos += used;
         p         += used;
         left      -= used;
-        if (out_size && (ret = unit_out(c, out, out_size)) < 0)
+        if ((ret = cut_failed(c)) < 0 || (out_size && (ret = unit_out(c, out, out_size)) < 0))
             return ret;
     }
     c->st.bytes += size;
@@ -341,6 +366,8 @@ int ff_discrip_cutter_flush(DRCutter *c)
 
         av_parser_parse2(c->parser, c->avctx, &out, &out_size, NULL, 0,
                          AV_NOPTS_VALUE, AV_NOPTS_VALUE, c->in_pos);
+        if ((ret = cut_failed(c)) < 0)
+            return ret;
         if (!out_size)
             break;
         if ((ret = unit_out(c, out, out_size)) < 0)

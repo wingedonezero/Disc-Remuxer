@@ -166,6 +166,10 @@ typedef struct DRCodec {
     /** > 0: the cutter keeps a zeroed state of this size for unit_size
      *  (which resets it when it returns anything but 0). */
     int cut_state_size;
+    /** 1: cut by FFmpeg's parser in disc mode (PARSER_FLAG_DISC), which
+     *  knows the reference's cut rule and says which of its chunks are no
+     *  unit (AVCodecParserContext.disc_status). */
+    int disc_parser;
     /** The check of an output unit (stage 5): DR_UNIT_OK, DR_UNIT_BAD (sync
      *  word or size wrong), DR_UNIT_CRC (a checksum fails). NULL: not
      *  checked. */
@@ -803,7 +807,6 @@ int ff_discrip_spu_verify(const uint8_t *data, int size);
  *  track's codec private data. */
 int ff_discrip_vobsub_header(char *buf, int size, int width, int height, const uint32_t *ycrcb);
 int ff_discrip_mlp_verify(const uint8_t *data, int size);
-int ff_discrip_spu_unit_size(void *log, const uint8_t *buf, int avail, int final, void *state);
 int ff_discrip_vc1_unit_size(void *log, const uint8_t *buf, int avail, int final, void *state);
 int ff_discrip_vc1_resync(const uint8_t *buf, int avail);
 /** The VC-1 cutter's state: where its scan of the unit at the window's
@@ -813,6 +816,5 @@ typedef struct DRVc1Cut {
     int part;              /**< the part of the unit the last start code began */
     int stage;             /**< the header stage reached (part 0) */
 } DRVc1Cut;
-int ff_discrip_spu_resync(const uint8_t *buf, int avail);
 
 #endif /* AVFORMAT_DISCRIP_H */

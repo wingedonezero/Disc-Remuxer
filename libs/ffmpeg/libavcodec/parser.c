@@ -205,7 +205,90 @@ int av_parser_parse2(AVCodecParserContext *s, AVCodecContext *avctx,
     return index;
 }
 
-av_cold void av_parser_close(AVCodecParserContext *s)
+av_cold /* The disc cut (PARSER_FLAG_DISC): the rule cuts the kept bytes plus buf
+ * (all the bytes there are so far, as one window); a chunk given out takes
+ * buf's bytes up to its end, the bytes of buf after it are taken out of the
+ * window again (they come back with the next call). */
+int ff_parser_disc_cut(AVCodecParserContext *s, void *logctx, const FFDiscCutRule *rule, FFDiscCut *dc,
+                       const uint8_t **poutbuf, int *poutbuf_size, const uint8_t *buf, int buf_size)
+{
+    int final = !buf_size, old = dc->len, k, r;
+
+    s->disc_status = 0;
+    *poutbuf      = NULL;
+    *poutbuf_size = 0;
+    if (rule->state_size && !dc->state && !(dc->state = av_mallocz(rule->state_size))) {
+        s->disc_status = AVERROR(ENOMEM);
+        return 0;
+    }
+    if (buf_size) {
+        if (dc->len + buf_size > dc->cap) {
+            int cap = FFMAX(2 * dc->cap, dc->len + buf_size);
+            uint8_t *w = av_realloc(dc->win, cap);
+            if (!w) {
+                s->disc_status = AVERROR(ENOMEM);
+                return 0;
+            }
+            dc->win = w;
+            dc->cap = cap;
+        }
+        memcpy(dc->win + dc->len, buf, buf_size);
+        dc->len += buf_size;
+    }
+    if (!dc->len)
+        return 0;
+
+    r = rule->unit_size(logctx, dc->win, dc->len, final, dc->state);
+    if (r < 0 && r != DISC_CUT_NONE) {
+        dc->len = old;
+        s->disc_status = r;
+        return 0;
+    }
+    if (r > 0) {
+        k = r;
+    } else if (!r && !final) {
+        return buf_size;                    /* the unit goes on in the bytes to come */
+    } else if (!r) {
+        k = dc->len;
+        s->disc_status = 1;
+    } else {
+        int at = rule->resync(dc->win + 1, dc->len - 1);
+        if (at >= 0)
+            k = at + 1;
+        else if (final)
+            k = dc->len;
+        else
+            return buf_size;                /* a unit may start in the bytes to come */
+        s->disc_status = 1;
+    }
+
+    av_fast_padded_malloc(&dc->out, &dc->out_cap, k);
+    if (!dc->out) {
+        dc->len = old;
+        s->disc_status = AVERROR(ENOMEM);
+        return 0;
+    }
+    memcpy(dc->out, dc->win, k);
+    *poutbuf      = dc->out;
+    *poutbuf_size = k;
+    if (k >= old) {
+        dc->len = 0;
+        return k - old;
+    }
+    memmove(dc->win, dc->win + k, old - k);
+    dc->len = old - k;
+    return 0;
+}
+
+void ff_parser_disc_cut_close(FFDiscCut *dc)
+{
+    av_freep(&dc->win);
+    av_freep(&dc->out);
+    av_freep(&dc->state);
+    dc->len = dc->cap = dc->out_cap = 0;
+}
+
+void av_parser_close(AVCodecParserContext *s)
 {
     if (s) {
         if (ffcodecparser(s->parser)->close)

@@ -587,7 +587,7 @@ static const DRCodec codecs[] = {
     { .id = AV_CODEC_ID_AAC_LATM, .name = "aac_latm", .anchor = anchor_unit, .check = loas, .audio = &audio_latm,
       .verify = verify_latm },
     { .id = AV_CODEC_ID_DVD_SUBTITLE, .name = "dvd_subtitle", .anchor = anchor_unit,
-      .check = ff_discrip_spu_check, .unit_size = ff_discrip_spu_unit_size, .resync = ff_discrip_spu_resync,
+      .check = ff_discrip_spu_check, .disc_parser = 1,
       .verify = ff_discrip_spu_verify },
     /* closed captions as text cues (made by the caption converter) */
     { .id = AV_CODEC_ID_SUBRIP, .name = "subrip", .anchor = anchor_unit },

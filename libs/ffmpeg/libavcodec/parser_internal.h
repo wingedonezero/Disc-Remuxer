@@ -54,4 +54,42 @@ static inline const FFCodecParser *ffcodecparser(const AVCodecParser *parser)
 #define PARSER_CODEC_LIST(...) CHECK_FOR_TOO_MANY_IDS(__VA_ARGS__) \
     .p.codec_ids = { FIRST_SEVEN(__VA_ARGS__, TIMES_SEVEN(AV_CODEC_ID_NONE)) }
 
+/**
+ * A disc cut rule (PARSER_FLAG_DISC): how a parser cuts a disc's stream.
+ */
+typedef struct FFDiscCutRule {
+    /** Size of the unit at the start of buf (avail bytes; final: no more
+     *  bytes will come): > 0 its size, 0 more bytes needed, DISC_CUT_NONE no
+     *  unit starts there, another < 0 the stream cannot be cut (logged). */
+    int (*unit_size)(void *logctx, const uint8_t *buf, int avail, int final, void *state);
+    /** Where the next unit may start in buf (avail bytes), < 0 when not
+     *  within them. */
+    int (*resync)(const uint8_t *buf, int avail);
+    int state_size;                     /**< bytes of the rule's own state */
+} FFDiscCutRule;
+
+#define DISC_CUT_NONE (-1)
+
+/** The bytes of a disc cut: kept, not yet given out. */
+typedef struct FFDiscCut {
+    uint8_t *win;                       /**< bytes taken in and not yet given out */
+    int      len, cap;
+    uint8_t *out;                       /**< the chunk given out last */
+    int      out_cap;
+    void    *state;
+} FFDiscCut;
+
+/**
+ * Cut a disc's stream with rule, keeping to the parser contract: the
+ * return value is the number of buf's bytes the chunk given out took (bytes
+ * after them come again), so the frame offsets and timestamps of
+ * av_parser_parse2() stay right. One chunk per call: a unit (disc_status 0)
+ * or bytes that are no unit (disc_status 1); disc_status < 0: the stream
+ * cannot be cut. buf_size 0: the end of the stream (the bytes left are cut
+ * as the last ones).
+ */
+int ff_parser_disc_cut(AVCodecParserContext *s, void *logctx, const FFDiscCutRule *rule, FFDiscCut *dc,
+                       const uint8_t **poutbuf, int *poutbuf_size, const uint8_t *buf, int buf_size);
+void ff_parser_disc_cut_close(FFDiscCut *dc);
+
 #endif /* AVCODEC_PARSER_INTERNAL_H */
