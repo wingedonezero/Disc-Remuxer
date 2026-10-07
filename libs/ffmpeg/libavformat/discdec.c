@@ -123,11 +123,17 @@ static int disc_read_header(AVFormatContext *s)
     int ret;
 
     opts.udf_reader = d->opt_udf_reader;
-    if ((ret = ff_discio_source_open_file(s, s->url, &d->image)) < 0)
-        return ret;
-    d->image->attempts = d->opt_read_attempts;
-    if ((ret = ff_discio_mount_image(d->image, &opts, &d->fs)) < 0)
-        return ret;
+    if (ff_discio_folder_is_dir(s->url)) {
+        /* a disc folder: its files are read as host files */
+        if ((ret = ff_discio_mount_folder(s, s->url, d->opt_read_attempts, &d->fs)) < 0)
+            return ret;
+    } else {
+        if ((ret = ff_discio_source_open_file(s, s->url, &d->image)) < 0)
+            return ret;
+        d->image->attempts = d->opt_read_attempts;
+        if ((ret = ff_discio_mount_image(d->image, &opts, &d->fs)) < 0)
+            return ret;
+    }
     kind = ff_discio_disc_format(d->fs);
     for (int i = 0; parts[i] && !d->fmt; i++)
         if (parts[i]->kind == kind)

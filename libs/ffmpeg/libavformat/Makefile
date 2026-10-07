@@ -281,7 +281,7 @@ OBJS-$(CONFIG_HCOM_DEMUXER)              += hcom.o pcm.o
 OBJS-$(CONFIG_DISC_DEMUXER)              += discdec.o disctitle.o hddvddec.o hddvd_vti.o hddvd_xpl.o \
                                             disctl_frames.o disctl_codecs.o disctl_audio.o disctl_mlp.o disctl_junction.o disctl_join.o disctl_video.o disctl_mpv.o disctl_vc1.o disctl_spu.o disctl_cc.o disctl_ccx.o disctl_chapters.o disctl_verify.o disctl_seamless.o disctl_lpcm.o disctl_pcm.o disctl_title.o \
                                             hddvd_titles.o hddvd_aacs.o hddvd_tracks.o disclang.o avlanguage.o \
-                                            discio_read.o discio_fs.o discio_iso9660.o \
+                                            discio_read.o discio_fs.o discio_iso9660.o discio_folder.o \
                                             discio_udf_netbsd.o discio_udf_linux.o
 OBJS-$(CONFIG_HDS_MUXER)                 += hdsenc.o
 OBJS-$(CONFIG_HEVC_DEMUXER)              += hevcdec.o rawdec.o

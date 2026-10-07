@@ -47,6 +47,7 @@ void ff_discio_file_free(DiscIOFile **file)
         return;
     av_freep(&(*file)->extents);
     av_freep(&(*file)->data);
+    ff_discio_source_free(&(*file)->host);
     av_freep(file);
 }
 
@@ -73,6 +74,8 @@ int ff_discio_file_read_attempts(DiscIOFS *fs, const DiscIOFile *file, int64_t p
         memcpy(buf, file->data + pos, len);
         return 0;
     }
+    if (file->host)
+        return ff_discio_read_bytes(file->host, pos, buf, len, attempts, quiet);
     for (int i = 0; i < file->nb_extents && done < len; i++) {
         const DiscIOExtent *e = &file->extents[i];
         int64_t ext_bytes = e->count * DISCIO_BLOCK_SIZE;
