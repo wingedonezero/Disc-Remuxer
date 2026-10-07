@@ -796,8 +796,6 @@ extern const DRAudioRules ff_discrip_audio_mlp;
 extern const DRVideoRules ff_discrip_video_mpv;
 extern const DRVideoRules ff_discrip_video_vc1;
 int ff_discrip_mlp_check(const uint8_t *data, int size);
-int ff_discrip_mlp_unit_size(void *log, const uint8_t *buf, int avail, int final, void *state);
-int ff_discrip_mlp_resync(const uint8_t *buf, int avail);
 int ff_discrip_spu_check(const uint8_t *data, int size);
 int ff_discrip_spu_verify(const uint8_t *data, int size);
 /** The VobSub index header of a sub-picture track (frame size, the 16

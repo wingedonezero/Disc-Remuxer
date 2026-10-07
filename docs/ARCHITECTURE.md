@@ -1,7 +1,7 @@
 # Architecture
 
 Status: **plan agreed, being carried out** (the order of work is below;
-done: steps 1, 2). Each step moves a part to its place and is checked against
+done: steps 1-3). Each step moves a part to its place and is checked against
 the output from before the move.
 
 ## Words
@@ -66,13 +66,13 @@ Rules:
 | `hddvddec.c`, `hddvd_*.c` | the HD DVD format part `ff_disc_hddvd` (step 1, done: no demuxer of its own any more) |
 | `hddvd_tracks.c` | stays (stream table, languages); its content probe reads through the line instead of its own pack reader and frame cutter |
 | `discrip_pack.c`, `discrip_ps.c` (step 2, done) | moved into `mpeg.c`: option `disc` (one pack per 2048-byte sector, the sector rules) and `lpcm_header` (3 / 5 bytes, always LPCM) |
-| `discrip_units.c` (the cutter stage) | goes: FFmpeg's read loop (`demux.c`) runs the parsers; where the frame / timestamp pairing must differ for discs, that goes into `demux.c` / `parser.c` behind the disc flag |
-| `discrip_mpv.c` | the picture rules into `mpegvideo_parser.c` where they decide frames; what only the video timing needs stays with the title timeline |
-| `discrip_vc1.c` | the frame cutting rules (end-of-sequence, user data with its frame) into `vc1_parser.c`; picture timing stays with the title timeline |
-| `discrip_mlp.c` | the access unit rules (what follows a broken unit) into `mlp_parser.c` |
-| `discrip_spu.c` | the unit rules and checks into `dvdsub_parser.c` (it already reads HD DVD's 32-bit unit size); the units' times stay with the title timeline |
-| `discrip_lpcm.c` | the header check into `mpeg.c`; frames of the samples: the title timeline |
-| `discrip_codecs.c` (codec table) | the frame checks move to their parsers; the table keeps what the title timeline needs per codec (durations, anchors, output checks) |
+| `discrip_units.c` (the cutter stage) | stays, shrunk to the time pairing (a packet's time goes to the first frame whose picture header lies in it, the MPEG rule FFmpeg's read loop does not have) in front of FFmpeg's parsers (decided in step 3: FFmpeg's read loop pairs times with where a frame begins and keeps only 4 packets' times) |
+| `discrip_mpv.c` | stays: picture rules for the video timing (FFmpeg's `mpegvideo_parser.c` already cuts the frames) |
+| `discrip_vc1.c` | step 3, done: the frame cutting rules are in `vc1_parser.c` (disc mode); the picture timing stays |
+| `discrip_mlp.c` | step 3, done: the access unit cutting is in `mlp_parser.c` (disc mode); the unit check, timing and the seamless join stay |
+| `discrip_spu.c` | step 3, done: the unit cutting is in `dvdsub_parser.c` (disc mode); the unit check and the units' times stay |
+| `discrip_lpcm.c` | stays: LPCM has no frames in the bitstream; the frame size (samples per output frame) is the title timeline's choice |
+| `discrip_codecs.c` (codec table) | stays: which frames belong to a track (the checks after the parser), durations, anchors, output checks; the cutters it named are in FFmpeg's parsers (`disc_parser`) |
 | `discrip_mix.c` (copied FFmpeg downmix) | replaced by libswresample |
 | `discrip_cc.c`, `discrip_ccx.c` | stay with the title timeline (caption track; the caption converter is a helper program) |
 | `discrip_title.c`, `_join.c`, `_video.c`, `_audio.c`, `_junction.c`, `_pcm.c`, `_seamless.c`, `_chapters.c`, `_verify.c` | the title timeline (stay) |
@@ -95,10 +95,12 @@ their logs for changed warnings).
    the start of each title is read for them.
 2. **Demuxer (done):** `mpeg.c` got the disc options; the HD DVD part feeds
    it; `discrip_pack.c` and `discrip_ps.c` are gone.
-3. **Parsers, one codec at a time:** AC-3, E-AC-3, DTS, MPEG audio (FFmpeg's
-   parsers already cut these; only where they run changes), then MPEG-2
-   video, VC-1, TrueHD / MLP, sub-pictures, LPCM; `discrip_units.c` goes at
-   the end.
+3. **Parsers (done):** the rip core's own cutters are in FFmpeg's parsers,
+   behind `PARSER_FLAG_DISC` (`parser.c`'s disc cut under the parser
+   contract): sub-pictures (`dvdsub_parser.c`), VC-1 (`vc1_parser.c`), TrueHD
+   / MLP (`mlp_parser.c`); MPEG video and the audio codecs were already cut by
+   FFmpeg's parsers. Kept with the title timeline (decided): the time pairing,
+   the checks of which frames belong to a track, LPCM's frame size.
 4. **HD DVD track probe** reads through the line (corpus track lists equal).
 5. **Title timeline tidied:** what is left of `discrip_*` is the timeline;
    codec table slimmed; downmix through libswresample.
