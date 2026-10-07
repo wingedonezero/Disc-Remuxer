@@ -146,7 +146,9 @@ def test_a_stereoscopic_title_reads_base_and_dependent_view_interleaved(tmp_path
              2: bd.clpi(packets=1024, ext=ext, app_type=8, streams=((0x1012, 0x20, b"\x61"),))}
     sp = SubPath(type=8, clips=["00002"]).bytes()
     pl = bd.mpls([Item("00001", S, E)], marks=[(1, 0, S), (1, 0, S + 1000)], ext=[(2, 2, bytes(4) + be16(1) + sp)])
-    ts = titles(build(tmp_path, bd.bdmv(clips, {1: pl})))
+    files = bd.bdmv(clips, {1: pl})
+    files["BDMV/STREAM/00001.m2ts"] = files["BDMV/STREAM/00002.m2ts"] = bytes(1024 * 192)  # read by the probes
+    ts = titles(build(tmp_path, files))
     t = [l for l in ts if "00001.mpls" in l][0]
     assert field(t, "segments") == "1/2*"
     assert field(t, "size") == str(2 * 1024 * 192)

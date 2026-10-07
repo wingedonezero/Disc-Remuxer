@@ -676,6 +676,50 @@ static int title_add_segment(BlurayTitle *t, BluraySegment *s)
     return 0;
 }
 
+/* A segment of one PlayItem (not 3-D): an audio stream the PlayItem names
+ * that its clip's information lacks is added to the clip (with the
+ * PlayItem's attributes) when the stream data has PES packets on its PID
+ * (the reference program's repair of such clips). */
+static int repair_streams(void *log, BlurayDisc *d, BluraySegment *s)
+{
+    const BlurayPlayItem *it = s->items[0].item;
+    BlurayClip *c = s->items[0].clip;
+
+    for (int i = 0; i < it->nb_audio; i++) {
+        const BlurayStnStream *e = &it->audio[i];
+        BlurayClipStream *v, *ns;
+        uint16_t pid;
+        int has = 0, n;
+        if (e->entry_type != 1 || e->entry_len < 2)
+            continue;
+        pid = AV_RB16(e->entry);
+        for (int k = 0; k < c->program.nb_streams && !has; k++)
+            has = c->program.streams[k].pid == pid;
+        if (has)
+            continue;
+        if ((n = ff_bluray_pid_scan(log, d->fs, d->keys, s, pid, 5)) < 0) {
+            av_log(log, AV_LOG_DEBUG, "Blu-ray: clip %05u: the repair of its streams stops at stream %d\n",
+                   c->number, i);
+            return 0;
+        }
+        if (!n)
+            continue;
+        av_log(log, AV_LOG_WARNING, "Blu-ray: clip %05u lacks the stream on PID 0x%04X its playlist names; the "
+               "stream data has it: added with the playlist's attributes (the clip information is corrupt)\n",
+               c->number, pid);
+        if (!(v = av_realloc_array(c->program.streams, c->program.nb_streams + 1, sizeof(*v))))
+            return AVERROR(ENOMEM);
+        c->program.streams = v;
+        ns = &v[c->program.nb_streams++];
+        memset(ns, 0, sizeof(*ns));
+        ns->pid         = pid;
+        ns->coding_type = e->coding_type;
+        ns->info_len    = e->attr_len;
+        memcpy(ns->info, e->attr, FFMIN(sizeof(ns->info), sizeof(e->attr)));
+    }
+    return 0;
+}
+
 /* One segment of records r[0..n): interleaved (3-D) when every record has a
  * dependent-view clip of application type 8 whose first stream is MVC
  * video, if that can be read, else from the base clips. 1, 0 failed. */
@@ -710,6 +754,10 @@ static int build_segment(void *log, BlurayDisc *d, BlurayTitle *t, const Rec *r,
         return 0;
     }
     segment_names(&s);
+    if (n == 1 && r[0].item && !r[0].dep && (ret = repair_streams(log, d, &s)) < 0) {
+        segment_free(&s);
+        return ret;
+    }
     if ((ret = title_add_segment(t, &s)) < 0) {
         segment_free(&s);
         return ret;
@@ -862,6 +910,20 @@ static int add_title(Ctx *c, BlurayTitle *t, int nangles, int angle, int check)
                 return 0;
             }
         }
+    /* its tracks (with the stream probes): a title whose tracks cannot be
+     * taken is left out */
+    if (d->fs) {
+        int ret = ff_bluray_title_tracks(c->log, d->fs, d->keys, t);
+        if (ret == AVERROR(ENOMEM)) {
+            title_free(t);
+            return ret;
+        }
+        if (ret < 0) {
+            av_log(c->log, AV_LOG_WARNING, "Blu-ray: title %s was skipped (its tracks cannot be taken)\n", t->name);
+            title_free(t);
+            return 0;
+        }
+    }
     {
         /* its segments: clip[:STC index][/dependent-view clip], runs in parentheses */
         char map[512] = "";

@@ -523,3 +523,13 @@ end:
     units_close(&u);
     return ret;
 }
+
+int ff_bluray_pid_scan(void *log, DiscIOFS *fs, BlurayAACS *aacs, const BluraySegment *s, uint16_t pid, int limit)
+{
+    Units u = { .log = log, .fs = fs, .aacs = aacs, .s = s, .item = -1 };
+    Keys k;
+    int ok = scan_pes(&u, pid, limit, &k);
+
+    units_close(&u);
+    return ok ? k.n : AVERROR_INVALIDDATA;
+}

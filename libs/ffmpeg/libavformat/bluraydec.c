@@ -75,12 +75,9 @@ static int describe_titles(AVFormatContext *s)
     BlurayDisc *b = &c->disc;
 
     for (int i = 0; i < b->nb_titles; i++) {
-        BlurayTitle *t = &b->titles[i];
+        const BlurayTitle *t = &b->titles[i];
         DiscTitleInfo *dt;
-        int ret = ff_bluray_title_tracks(s, b->fs, c->aacs, t);
 
-        if (ret < 0 && ret != AVERROR_INVALIDDATA)
-            return ret;
         if (!(dt = ff_disc_add_title(s)))
             return AVERROR(ENOMEM);
         dt->name     = t->title_name ? t->title_name : b->name;
@@ -157,6 +154,7 @@ static int bluray_open(AVFormatContext *s)
     }
     if ((ret = ff_bluray_aacs_open(s, b, (const char *const *)d->opt_keydb, d->nb_opt_keydb, &c->aacs)) < 0)
         return ret;
+    b->keys = c->aacs;
     if ((ret = ff_bluray_titles_build(s, b, d->opt_min_length)) < 0 || (ret = describe_titles(s)) < 0)
         return ret;
     d->info.name      = b->name;

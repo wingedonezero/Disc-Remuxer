@@ -196,11 +196,44 @@ def test_hevc_with_a_dolby_vision_second_layer(tmp_path):
     assert got == [("0x05", "0x1011", "0x0 0x0", "0x0", "''", -1, -1)]
 
 
-def test_a_stream_that_cannot_be_probed_leaves_the_title_without_tracks(tmp_path):
+def test_a_title_whose_streams_cannot_be_probed_is_skipped(tmp_path):
     install_log()
     clip = [VIDEO, (0x1100, 0x83, b"\x61eng")]
     # a PES header that says it has a PTS in a 12-byte payload: too short to read
     bad = bd.ts_packet(0x1100, bytes([0, 0, 1, 0xfd, 0, 0, 0x80, 0x80, 0, 0, 0, 0]), pusi=True)
     assert probed(tmp_path, clip, video_packets() + [bad]) == []
     assert logged("a PES header cannot be read")
-    assert logged("cannot be probed")
+    assert logged("title 00001.m2ts was skipped")
+
+
+# ---- the repair of a clip's stream table ----
+
+def repaired(tmp_path, packets, name):
+    """A playlist part of one PlayItem (with chapters, so it is a playlist
+    title) naming an AC-3 stream (PID 0x1100) its clip's information lacks;
+    the tracks of the playlist title."""
+    data = bd.source_units(packets)
+    clips = {1: bd.clpi(packets=len(data) // 192, streams=[VIDEO])}
+    item = Item("00001", S, E, audio=[Stream(0x1100, 0x81, b"\x61deu")])
+    files = bd.bdmv(clips, {1: bd.mpls([item], marks=[(1, 0, S), (1, 0, S + 1000)])})
+    files["BDMV/STREAM/00001.m2ts"] = data
+    t = dump(bd.write(tmp_path / name, files), min_length=0)
+    assert isinstance(t, str), t
+    out, mine = [], False
+    for l in t.splitlines():
+        if l.startswith("title "):
+            mine = l.split()[2] == "00001.mpls"
+        elif l.startswith("  track ") and mine:
+            out.append(short(l.strip())[:2] + (short(l.strip())[4],))
+    return out
+
+
+def test_a_stream_the_playlist_names_and_the_clip_lacks_is_added_when_its_data_is_there(tmp_path):
+    install_log()
+    audio = [bd.ts_packet(0x1100, bd.pes(0xbd, bytes(16), pts=900 + i), pusi=True) for i in range(5)]
+    assert repaired(tmp_path, video_packets() + audio, "data") == [("0x03", "0x1011", "''"),
+                                                                     ("0x41", "0x1100", "'deu'")]
+    assert logged("clip 00001 lacks the stream on PID 0x1100 its playlist names")
+    install_log()
+    assert repaired(tmp_path, video_packets(), "nodata") == [("0x03", "0x1011", "''")]
+    assert not logged("lacks the stream")

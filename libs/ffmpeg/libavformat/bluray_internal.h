@@ -443,7 +443,7 @@ typedef struct BlurayTitle {
  * The playlists' items may be changed (merged, connection conditions set).
  */
 struct BlurayDisc;
-int  ff_bluray_titles_build(void *log, struct BlurayDisc *d, int min_length);
+int  ff_bluray_titles_build(void *log, struct BlurayDisc *d, int min_length);   /* with the tracks (d->fs, d->keys) */
 void ff_bluray_titles_free(struct BlurayDisc *d);
 /** The title's duration, 45 kHz ticks (its segments' STC sequences). */
 /**
@@ -466,6 +466,13 @@ int ff_bluray_title_tracks(void *log, DiscIOFS *fs, BlurayAACS *aacs, BlurayTitl
  */
 int ff_bluray_probe_stream(void *log, DiscIOFS *fs, BlurayAACS *aacs, const BluraySegment *s,
                            BlurayClip *c, BlurayClipStream *e, int code, int nb_parts);
+
+/**
+ * The PES stream keys seen in pid of the segment's stream data, up to
+ * limit PES headers of one key (the start of the stream).
+ * @return the number of keys seen, < 0 the stream data cannot be read
+ */
+int ff_bluray_pid_scan(void *log, DiscIOFS *fs, BlurayAACS *aacs, const BluraySegment *s, uint16_t pid, int limit);
 
 int64_t ff_bluray_title_duration(const BlurayTitle *t);
 /** The title's size, bytes. */
@@ -498,6 +505,7 @@ typedef struct BlurayDisc {
     BlurayTitle    *titles;
     int             nb_titles;
     /* AACS (bluray_aacs.c) */
+    BlurayAACS     *keys;            /**< the keys (owned by the format part), NULL none */
     int             aacs;            /**< an /AACS or /AACS_bd directory */
     uint8_t         disc_id[20];     /**< SHA-1 of the disc's Unit_Key file */
     int             has_disc_id;
