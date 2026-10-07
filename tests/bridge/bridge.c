@@ -4,7 +4,9 @@
  * callback, running a parser the way libavformat does).
  */
 
+#include <errno.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -232,6 +234,85 @@ end:
     }
     avformat_close_input(&s);
     av_packet_free(&pkt);
+    return ret;
+}
+
+/* FFmpeg's MPEG-TS demuxer (mpegts.c) in disc mode over the bytes in
+ * memory, or over the first max_bytes of the file at path (data NULL), for
+ * the PIDs given; each payload piece goes to cb with its stream id (PID |
+ * PES key << 16), bytes, pts and byte position. Returns the number of
+ * pieces, or an AVERROR. */
+typedef void (*tb_ts_packet_cb)(void *opaque, int id, const uint8_t *data, int size, int64_t pts, int64_t pos);
+
+typedef struct TbFile { FILE *f; int64_t left; } TbFile;
+
+static int tb_file_read(void *opaque, uint8_t *buf, int n)
+{
+    TbFile *t = opaque;
+    size_t k;
+    if (t->left <= 0)
+        return AVERROR_EOF;
+    k = fread(buf, 1, FFMIN((int64_t)n, t->left), t->f);
+    if (!k)
+        return AVERROR_EOF;
+    t->left -= k;
+    return k;
+}
+
+static int tb_ts_read(const uint8_t *data, int size, const char *path, int64_t max_bytes, const int *pids, int npids,
+                      tb_ts_packet_cb cb, void *opaque)
+{
+    extern const FFInputFormat ff_mpegts_demuxer;
+    TbMem m = { data, size, 0 };
+    TbFile tf = { NULL, max_bytes };
+    AVFormatContext *s = avformat_alloc_context();
+    uint8_t *buf = av_malloc(4096);
+    AVPacket *pkt = av_packet_alloc();
+    AVDictionary *opts = NULL;
+    AVBPrint bp;
+    int n = 0, ret;
+
+    if (!data && !(tf.f = fopen(path, "rb"))) {
+        av_free(buf);
+        ret = AVERROR(errno);
+        goto end;
+    }
+    if (!s || !buf || !pkt ||
+        !(s->pb = avio_alloc_context(buf, 4096, 0, data ? (void *)&m : (void *)&tf, data ? tb_mem_read : tb_file_read,
+                                     NULL, NULL))) {
+        av_free(buf);
+        ret = AVERROR(ENOMEM);
+        goto end;
+    }
+    s->flags |= AVFMT_FLAG_CUSTOM_IO | AVFMT_FLAG_NOPARSE | AVFMT_FLAG_NOFILLIN;
+    s->correct_ts_overflow = 0;
+    s->probesize = 0;
+    av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
+    for (int i = 0; i < npids; i++)
+        av_bprintf(&bp, "%s%d", i ? "," : "", pids[i]);
+    av_dict_set_int(&opts, "disc", 1, 0);
+    if (npids)
+        av_dict_set(&opts, "disc_pids", bp.str, 0);
+    av_bprint_finalize(&bp, NULL);
+    ret = avformat_open_input(&s, "", &ff_mpegts_demuxer.p, &opts);
+    av_dict_free(&opts);
+    if (ret < 0)
+        goto end;
+    while ((ret = av_read_frame(s, pkt)) >= 0) {
+        cb(opaque, s->streams[pkt->stream_index]->id, pkt->data, pkt->size, pkt->pts, pkt->pos);
+        av_packet_unref(pkt);
+        n++;
+    }
+    ret = ret == AVERROR_EOF ? n : ret;
+end:
+    if (s && s->pb) {
+        av_freep(&s->pb->buffer);
+        avio_context_free(&s->pb);
+    }
+    avformat_close_input(&s);
+    av_packet_free(&pkt);
+    if (tf.f)
+        fclose(tf.f);
     return ret;
 }
 

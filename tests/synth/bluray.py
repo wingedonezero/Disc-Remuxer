@@ -321,3 +321,18 @@ def source_units(packets):
         out += be32(n * 0x10) + ts_packet(0x1fff, bytes(184))
         n += 1
     return bytes(out)
+
+
+def ts_packets(pid, data, cc=0):
+    """data (a PES packet, or several back to back) in TS packets of pid:
+    the first starts a payload unit, the last is filled with an
+    adaptation field."""
+    out = []
+    for i in range(0, len(data), 184):
+        out.append(ts_packet(pid, data[i:i + 184], pusi=(i == 0), cc=(cc + len(out)) & 15))
+    return out
+
+
+def source_packets(packets):
+    """TS packets as 192-byte source packets (no padding to whole units)."""
+    return b"".join(be32(i * 0x10) + p for i, p in enumerate(packets))

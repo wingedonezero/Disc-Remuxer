@@ -29,6 +29,10 @@ extern "Python" void tb_py_parser_frame(void *opaque, int size, int64_t pts, int
 typedef void (*tb_ps_packet_cb)(void *opaque, int id, int codec, const uint8_t *data, int size, int64_t pts);
 int tb_ps_read(int which, int lpcm_header, const uint8_t *data, int size, tb_ps_packet_cb cb, void *opaque);
 extern "Python" void tb_py_ps_packet(void *opaque, int id, int codec, const uint8_t *data, int size, int64_t pts);
+typedef void (*tb_ts_packet_cb)(void *opaque, int id, const uint8_t *data, int size, int64_t pts, int64_t pos);
+int tb_ts_read(const uint8_t *data, int size, const char *path, int64_t max_bytes, const int *pids, int npids,
+               tb_ts_packet_cb cb, void *opaque);
+extern "Python" void tb_py_ts_packet(void *opaque, int id, const uint8_t *data, int size, int64_t pts, int64_t pos);
 
 /* the C library's own random numbers (stdlib.h) */
 void srand(unsigned seed);
