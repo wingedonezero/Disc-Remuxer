@@ -84,11 +84,13 @@ typedef struct DRPicture {
     int order;          /**< display-order number (wraps at the codec's period) */
     int fields;         /**< duration in fields (2 = one frame) */
     int key;            /**< a key frame even when not an I picture (e.g. VC-1 sequence header + entry point) */
+    int rate_num, rate_den;     /**< the frame rate the unit's headers give (0: none) */
 } DRPicture;
 
 /* What the core needs to know about a video codec. */
 typedef struct DRVideoRules {
-    /** The unit's picture values; may set the frame rate
+    /** The unit's picture values (pic comes filled in with what the parser
+     *  gave, DRCodec.parser_picture); may set the frame rate
      *  (ff_disctl_video_set_rate) from headers it carries; < 0 on failure. */
     int  (*picture)(DRVideo *v, const DRFrame *unit, DRPicture *pic);
     int    order_period;   /**< wrap period of the display-order number */
@@ -96,9 +98,13 @@ typedef struct DRVideoRules {
      *  pictures after a reference picture are numbered before it, I
      *  pictures restart the count (VC-1). */
     int    counted_order;
+    /** 1: the key frames are the pictures the codec rule marks (DRPicture.key),
+     *  not every I picture (H.264: IDR pictures and recovery points). */
+    int    codec_keys;
     /** Takes bytes out of a unit before picture() sees it (shrinking
-     *  unit->size) and hands each piece to ff_disctl_video_side(); < 0 on
-     *  failure. NULL: none. */
+     *  unit->size): pieces that leave the video as their own track go to
+     *  ff_disctl_video_side(), others are dropped; < 0 on failure. NULL:
+     *  none. */
     int  (*split)(DRVideo *v, DRFrame *unit);
     size_t priv_size;
     void (*close)(void *priv);
@@ -160,6 +166,10 @@ typedef struct DRCodec {
      *  knows the reference's cut rule and says which of its chunks are no
      *  unit (AVCodecParserContext.disc_status). */
     int disc_parser;
+    /** 1: the disc-mode parser gives each unit's picture values
+     *  (pict_type, key_frame, output_picture_number, disc_fields, the frame
+     *  rate): they come with the unit (DRUnit.pic). */
+    int parser_picture;
     /** The check of an output unit (stage 5): DR_UNIT_OK, DR_UNIT_BAD (sync
      *  word or size wrong), DR_UNIT_CRC (a checksum fails). NULL: not
      *  checked. */
@@ -181,6 +191,7 @@ typedef struct DRUnit {
     int64_t        pos;    /**< byte offset of the unit's first byte in the track's stream */
     int            samples;/**< samples FFmpeg's parser gives the unit, 0 = none */
     int            rate;   /**< and their sample rate */
+    const DRPicture *pic;  /**< the picture values the parser gives (DRCodec.parser_picture), or NULL */
 } DRUnit;
 
 /** Called for every unit, in stream order. A negative return stops the
@@ -795,6 +806,7 @@ void ff_disctl_title_close(DRTitle **t);
 extern const DRAudioRules ff_disctl_audio_mlp;
 extern const DRVideoRules ff_disctl_video_mpv;
 extern const DRVideoRules ff_disctl_video_vc1;
+extern const DRVideoRules ff_disctl_video_h264;
 int ff_disctl_mlp_check(const uint8_t *data, int size);
 int ff_disctl_spu_check(const uint8_t *data, int size);
 int ff_disctl_spu_verify(const uint8_t *data, int size);

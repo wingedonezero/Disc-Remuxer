@@ -38,6 +38,14 @@ typedef struct DRAudioHeader {
     int samples;
 } DRAudioHeader;
 
+typedef struct DRPicture {
+    int type;
+    int order;
+    int fields;
+    int key;
+    int rate_num, rate_den;
+} DRPicture;
+
 typedef struct DRUnit {
     const uint8_t *data;
     int            size;
@@ -45,6 +53,7 @@ typedef struct DRUnit {
     int64_t        pos;
     int            samples;
     int            rate;
+    const DRPicture *pic;
 } DRUnit;
 
 typedef int (*DRUnitCb)(void *opaque, const DRUnit *unit);

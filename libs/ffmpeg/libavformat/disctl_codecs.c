@@ -65,6 +65,22 @@ static int anchor_vc1(const uint8_t *data, int size)
     return start_code(data, size, 0x0D);
 }
 
+/* H.264 (ITU-T H.264 Annex B): the first NAL unit of the access unit that is
+ * a sequence or picture parameter set, a coded slice (types 1, 5) or a
+ * coded slice extension (20) takes the PES time (at its start code); a
+ * delimiter, SEI, filler or end unit does not. */
+static int anchor_h264(const uint8_t *data, int size)
+{
+    for (int i = 0; i + 3 < size; i++)
+        if (!data[i] && !data[i + 1] && data[i + 2] == 1) {
+            int t = data[i + 3] & 0x1f;
+            if (t == 1 || t == 5 || t == 7 || t == 8 || t == 20)
+                return i;
+            i += 2;
+        }
+    return -1;
+}
+
 /* ---- AC-3 / E-AC-3 (ATSC A/52, Annex E for E-AC-3) ----
  * A syncframe starts with 0x0B77. bsid 10..16 = E-AC-3 syntax, else AC-3
  * (the split the HD DVD track probe uses too). An AC-3 track keeps only AC-3
@@ -487,6 +503,21 @@ static int verify_vc1(const uint8_t *d, int size)
     return size >= 4 && !d[0] && !d[1] && d[2] == 1 && anchor_vc1(d, size) >= 0 ? DR_UNIT_OK : DR_UNIT_BAD;
 }
 
+/* H.264: the unit starts with a start code and holds a coded slice. */
+static int verify_h264(const uint8_t *d, int size)
+{
+    int i = 0;
+
+    while (i < size && !d[i])
+        i++;
+    if (i < 2 || i + 1 >= size || d[i] != 1)
+        return DR_UNIT_BAD;
+    for (; i + 3 < size; i++)
+        if (!d[i] && !d[i + 1] && d[i + 2] == 1 && ((d[i + 3] & 0x1f) == 1 || (d[i + 3] & 0x1f) == 5))
+            return DR_UNIT_OK;
+    return DR_UNIT_BAD;
+}
+
 /* AC-3 / E-AC-3: the unit is whole syncframes; each one's CRC over the
  * frame after its sync word comes out 0 (as FFmpeg's decoder checks it). */
 static int verify_ac3(const uint8_t *d, int size)
@@ -554,6 +585,8 @@ static const DRCodec codecs[] = {
       .verify = verify_mpegvideo },
     { .id = AV_CODEC_ID_VC1, .name = "vc1", .anchor = anchor_vc1, .video = &ff_disctl_video_vc1, .verify = verify_vc1,
       .disc_parser = 1 },
+    { .id = AV_CODEC_ID_H264, .name = "h264", .anchor = anchor_h264, .video = &ff_disctl_video_h264,
+      .verify = verify_h264, .disc_parser = 1, .parser_picture = 1 },
     { .id = AV_CODEC_ID_AC3, .name = "ac3", .check = check_ac3, .audio = &audio_ac3,
       .verify = verify_ac3, .disc_parser = 1 },
     { .id = AV_CODEC_ID_EAC3, .name = "eac3", .check = check_eac3, .audio = &audio_eac3,

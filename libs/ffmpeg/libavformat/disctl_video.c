@@ -577,7 +577,7 @@ static int assign(DRVideo *v, int n, int no_check)
                 v->e8 = p;
         }
         u.f.flags &= ~(DR_F_KEY | DR_F_DISCARD | DR_F_BATCH);
-        if (u.type == DR_PIC_I || u.key)
+        if ((u.type == DR_PIC_I && !v->rules->codec_keys) || u.key)
             u.f.flags |= DR_F_KEY;
         else if (u.type == DR_PIC_B)
             u.f.flags |= DR_F_DISCARD;
@@ -941,7 +941,7 @@ int ff_disctl_video_unit(void *opaque, const DRUnit *du)
     DRVideo *v = opaque;
     VUnit u = { .f = { .time = du->time, .pos = du->pos, .samples = du->samples, .rate = du->rate },
                 .seq = v->st.units };
-    DRPicture pic = { 0 };
+    DRPicture pic = du->pic ? *du->pic : (DRPicture){ 0 };
     int ret;
 
     if (!(u.f.buf = av_buffer_alloc(du->size + AV_INPUT_BUFFER_PADDING_SIZE)))

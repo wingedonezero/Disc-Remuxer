@@ -28,6 +28,7 @@
 #define UNCHECKED_BITSTREAM_READER 1
 
 #include <stdint.h>
+#include <string.h>
 
 #include "libavutil/attributes.h"
 #include "libavutil/avutil.h"
@@ -67,6 +68,10 @@ typedef struct H264ParseContext {
     int parse_last_mb;
     int64_t reference_dts;
     int last_frame_num, last_picture_structure;
+    /* disc mode (PARSER_FLAG_DISC) */
+    FFDiscCut disc;
+    uint8_t disc_ps[128];                   ///< pic_struct history (the latest 128 pictures)
+    int disc_ps_n, disc_ps_start;
 } H264ParseContext;
 
 static int find_start_code(const uint8_t *buf, int buf_size,
@@ -586,6 +591,426 @@ fail:
     return -1;
 }
 
+/* ---- Disc mode (PARSER_FLAG_DISC): the disc reader's access-unit rule ----
+ * The stream is NAL units with start codes (Annex B). A NAL unit runs from
+ * its 00 00 01 to the zero run in front of the next one; zero bytes go with
+ * the start code after them.
+ * Units the disc reader does not see stay in the chunk they fall in, for the
+ * title timeline to take out: filler data, end of sequence and end of stream
+ * (nal_unit_type 10-12) and the types that start no unit (0, 16-18, 21-23,
+ * 25-27, 29, 31).
+ * An access unit is every other unit before a picture's first slice
+ * (parameter sets, SEI, delimiter, ...), the picture's slices, then its
+ * trailing units. A slice belongs to the picture of the slice before it
+ * while pic_parameter_set_id, frame_num, pic_order_cnt_lsb, field_pic_flag,
+ * bottom_field_flag, IdrPicFlag and idr_pic_id stay the same (data
+ * partitions B and C always do). Trailing units: after the slices, a run of
+ * auxiliary slices (19), slice extensions (20) and types 28 / 30 (28 ends
+ * the run), looked for across at most 100 units; SEI, PPS and the other
+ * types that are neither in the run nor end it are passed over, and go with
+ * the run when one follows. SPS, slices, delimiters and data partitions end
+ * the search.
+ * A picture whose first slice has a slice_type of 10 or more, or no
+ * parameter sets yet, is left out with the units in front of it (no frame).
+ * A data partition where a picture starts: the stream cannot be cut.
+ *
+ * Each frame then gives its picture type (its first slice), key_frame (an
+ * IDR picture, or a recovery point SEI in front of it), output_picture_number (the picture
+ * order count) and disc_fields from its pic_struct: 0 -> 2, 1 / 2 -> 1,
+ * 3 / 4 -> 2, 5 / 6 -> 3, 7 -> 4, 8 -> 6 field periods. pic_struct is 0 when
+ * the SPS has neither HRD parameters nor pic_struct_present_flag; else
+ * the picture timing SEI's; without one 0 for a frame-only stream, 1 / 2 for
+ * a top / bottom field, and for a frame of an interlaced stream it is guessed
+ * from the pictures before (all of the last 9 or more alike: that value; an
+ * A, B, A, B alternation over 11 or more: B), or the stream cannot be cut.
+ */
+
+enum { DISC_PREFIX, DISC_SLICES, DISC_SUFFIX };
+
+#define DISC_SUFFIX_MAX 100
+
+typedef struct H264DiscNal {
+    int zr;                 ///< first byte of the zero run in front of its start code
+    int sc;                 ///< its start code 00 00 01
+    int type;               ///< nal_unit_type
+} H264DiscNal;
+
+typedef struct H264DiscSlice {
+    int slice_type, pps_id, frame_num, field, bottom, idr, idr_id, poc_lsb;
+} H264DiscSlice;
+
+/** Where the cut of the access unit at the start of the kept bytes stands. */
+typedef struct H264DiscCut {
+    H264ParseContext *p;
+    H264DiscNal *nal;       ///< the NAL units found so far
+    int nb_nal, nal_cap;
+    int scan;               ///< next offset to look for a start code at
+    int done;               ///< NAL units decided
+    int phase;
+    H264DiscSlice first;    ///< the picture's first slice
+    int suffix[DISC_SUFFIX_MAX + 1];    ///< the units the trailing-unit search went over
+    int nb_suffix, suffix_k;
+    int no_unit;            ///< the chunk given out is no frame
+} H264DiscCut;
+
+static int disc_hidden(int t)
+{
+    /* filler, ends of sequence / stream; the types that start no unit */
+    return (t >= 10 && t <= 12) || !t || (t >= 16 && t <= 18) || (t >= 21 && t <= 23) ||
+           (t >= 25 && t <= 27) || t == 29 || t == 31;
+}
+
+static int disc_push(H264DiscCut *st, int zr, int sc, int type)
+{
+    if (st->nb_nal == st->nal_cap) {
+        int cap = st->nal_cap ? 2 * st->nal_cap : 64;
+        H264DiscNal *n = av_realloc_array(st->nal, cap, sizeof(*n));
+        if (!n)
+            return AVERROR(ENOMEM);
+        st->nal     = n;
+        st->nal_cap = cap;
+    }
+    st->nal[st->nb_nal++] = (H264DiscNal){ zr, sc, type };
+    return 0;
+}
+
+/* The unit (from its NAL header, size bytes) as RBSP read with gb; the
+ * caller frees *buf. */
+static int disc_rbsp(const uint8_t *nal, int size, H2645RBSP *rbsp, H2645NAL *n)
+{
+    av_fast_padded_malloc(&rbsp->rbsp_buffer, &rbsp->rbsp_buffer_alloc_size, size);
+    if (!rbsp->rbsp_buffer)
+        return AVERROR(ENOMEM);
+    if (ff_h2645_extract_rbsp(nal, size, rbsp, n, 1) < 0)
+        return AVERROR_INVALIDDATA;
+    return init_get_bits8(&n->gb, n->data, n->size);
+}
+
+/* A parameter set of the access unit into the parser's sets. */
+static int disc_param_set(H264ParseContext *p, AVCodecContext *avctx, const uint8_t *nal, int size)
+{
+    H2645RBSP rbsp = { NULL };
+    H2645NAL n = { NULL };
+    int ret = disc_rbsp(nal, size, &rbsp, &n);
+
+    if (ret >= 0) {
+        skip_bits(&n.gb, 8);
+        if ((nal[0] & 0x1f) == H264_NAL_SPS)
+            ff_h264_decode_seq_parameter_set(&n.gb, avctx, &p->ps, 0);
+        else
+            ff_h264_decode_picture_parameter_set(&n.gb, avctx, &p->ps, n.size_bits);
+    }
+    av_freep(&rbsp.rbsp_buffer);
+    return ret == AVERROR(ENOMEM) ? ret : 0;
+}
+
+/* A slice header as far as the picture comparison reads it: 1 read, 0 no
+ * parameter sets for it or cut short, 2 a slice_type of 10 or more. */
+static int disc_slice(H264ParseContext *p, const uint8_t *nal, int size, H264DiscSlice *h)
+{
+    uint8_t tmp[64 + AV_INPUT_BUFFER_PADDING_SIZE] = { 0 };
+    const PPS *pps;
+    const SPS *sps;
+    GetBitContext gb;
+    int n = 0, zeros = 0;
+
+    /* the first bytes after the NAL header, without emulation prevention */
+    for (int i = 1; i < size && n < 64; i++) {
+        if (zeros >= 2 && nal[i] == 3) {
+            zeros = 0;
+            continue;
+        }
+        zeros = nal[i] ? 0 : zeros + 1;
+        tmp[n++] = nal[i];
+    }
+    memset(h, 0, sizeof(*h));
+    h->idr = (nal[0] & 0x1f) == H264_NAL_IDR_SLICE;
+    if (init_get_bits8(&gb, tmp, n) < 0)
+        return 0;
+    get_ue_golomb_long(&gb);                /* first_mb_in_slice */
+    h->slice_type = get_ue_golomb_31(&gb);
+    if (get_bits_left(&gb) < 0)
+        return 0;
+    if (h->slice_type >= 10)
+        return 2;
+    h->pps_id = get_ue_golomb(&gb);
+    if (h->pps_id < 0 || h->pps_id >= MAX_PPS_COUNT || !(pps = p->ps.pps_list[h->pps_id]) || !(sps = pps->sps))
+        return 0;
+    if (sps->residual_color_transform_flag)
+        skip_bits(&gb, 2);                  /* colour_plane_id */
+    h->frame_num = get_bits_long(&gb, sps->log2_max_frame_num);
+    if (!sps->frame_mbs_only_flag && (h->field = get_bits1(&gb)))
+        h->bottom = get_bits1(&gb);
+    if (h->idr)
+        h->idr_id = get_ue_golomb_long(&gb);
+    if (!sps->poc_type)
+        h->poc_lsb = get_bits_long(&gb, sps->log2_max_poc_lsb);
+    return get_bits_left(&gb) >= 0;
+}
+
+static int disc_same(const H264DiscSlice *a, const H264DiscSlice *b)
+{
+    return a->pps_id == b->pps_id && a->frame_num == b->frame_num && a->poc_lsb == b->poc_lsb &&
+           a->field == b->field && (!a->field || a->bottom == b->bottom) && a->idr == b->idr &&
+           (!a->idr || a->idr_id == b->idr_id);
+}
+
+/* The chunk of the kept bytes up to end is decided: the cut starts anew. */
+static int disc_end(H264DiscCut *st, int end, int no_unit)
+{
+    st->nb_nal = st->scan = st->done = st->nb_suffix = st->suffix_k = 0;
+    st->phase   = DISC_PREFIX;
+    st->no_unit = no_unit;
+    return end;
+}
+
+static int disc_fail(H264DiscCut *st, void *log, int type)
+{
+    av_log(log, AV_LOG_ERROR, "Title timeline: H.264: a data partition (NAL unit type %d) where a picture "
+           "starts: the track cannot be ripped\n", type);
+    disc_end(st, 0, 0);
+    return AVERROR_PATCHWELCOME;
+}
+
+static int disc_unit_size(void *log, const uint8_t *buf, int avail, int final, void *state)
+{
+    H264DiscCut *st = state;
+    H264ParseContext *p = st->p;
+    int i, ret;
+
+    if (!st->nb_nal) {                      /* the unit's own start code */
+        int z = 0;
+        while (z < avail && !buf[z])
+            z++;
+        if (z + 1 >= avail)
+            return final ? DISC_CUT_NONE : 0;
+        if (z < 2 || buf[z] != 1)
+            return DISC_CUT_NONE;
+        if ((ret = disc_push(st, 0, z - 2, buf[z + 1] & 0x1f)) < 0)
+            return ret;
+        st->scan = z + 2;
+    }
+    for (i = st->scan; i + 3 < avail; i++) {
+        int zr, lo;
+        if (buf[i + 2] > 1) {
+            i += 2;
+            continue;
+        }
+        if (buf[i] || buf[i + 1] || buf[i + 2] != 1)
+            continue;
+        lo = st->nal[st->nb_nal - 1].sc + 4;
+        for (zr = i; zr > lo && !buf[zr - 1]; zr--)
+            ;
+        if ((ret = disc_push(st, zr, i, buf[i + 3] & 0x1f)) < 0)
+            return ret;
+        i += 3;
+    }
+    st->scan = i;
+
+    while (st->done < st->nb_nal) {
+        int j = st->done, t = st->nal[j].type;
+        int complete = j + 1 < st->nb_nal || final;
+        int end = j + 1 < st->nb_nal ? st->nal[j + 1].zr : avail;
+        const uint8_t *nal = buf + st->nal[j].sc + 3;
+        int size = end - st->nal[j].sc - 3;
+        H264DiscSlice h;
+
+        if (disc_hidden(t)) {
+            st->done++;
+            continue;
+        }
+        if (st->phase == DISC_PREFIX) {
+            if (t >= H264_NAL_DPA && t <= H264_NAL_DPC)
+                return disc_fail(st, log, t);
+            if (t == H264_NAL_SLICE || t == H264_NAL_IDR_SLICE) {
+                if (!complete)
+                    return 0;
+                if ((ret = disc_slice(p, nal, size, &h)) != 1) {
+                    av_log(log, AV_LOG_DEBUG, "Title timeline: H.264: a picture %s: left out with the units in "
+                           "front of it\n", ret == 2 ? "with a slice_type of 10 or more" :
+                           "without its parameter sets");
+                    return disc_end(st, end, 1);
+                }
+                st->first = h;
+                st->phase = DISC_SLICES;
+            } else if (t == H264_NAL_SPS || t == H264_NAL_PPS) {
+                if (!complete)
+                    return 0;
+                if ((ret = disc_param_set(p, log, nal, size)) < 0)
+                    return ret;
+            }
+            st->done++;
+            continue;
+        }
+        if (st->phase == DISC_SLICES) {
+            if (t == H264_NAL_DPB || t == H264_NAL_DPC) {
+                st->done++;
+                continue;
+            }
+            if (t == H264_NAL_SLICE || t == H264_NAL_IDR_SLICE || t == H264_NAL_DPA) {
+                if (!complete)
+                    return 0;
+                ret = disc_slice(p, nal, size, &h);
+                if (ret == 1 && h.pps_id != st->first.pps_id)
+                    av_log(log, AV_LOG_WARNING, "Title timeline: H.264: slices of another picture parameter set "
+                           "follow without a unit between them: taken as the next picture "
+                           "[untested on real discs]\n");
+                if (ret == 1 && disc_same(&h, &st->first)) {
+                    st->done++;
+                    continue;
+                }
+                return disc_end(st, st->nal[j].zr, 0);
+            }
+            st->phase = DISC_SUFFIX;
+        }
+        /* trailing units: the run after the slices */
+        {
+            int suffix = t == 19 || t == 20 || t == 28 || t == 30;
+            int stop   = t == H264_NAL_SPS || t == H264_NAL_SLICE || t == H264_NAL_IDR_SLICE ||
+                         t == H264_NAL_AUD || (t >= H264_NAL_DPA && t <= H264_NAL_DPC) || t == 28;
+            int e      = suffix ? st->nb_suffix + 1 : 0;
+
+            st->suffix[st->nb_suffix++] = j;
+            if (!e && st->suffix_k)
+                return disc_end(st, st->nal[st->suffix[st->suffix_k]].zr, 0);
+            st->suffix_k = e;
+            if (stop || st->nb_suffix == DISC_SUFFIX_MAX) {
+                if (st->suffix_k < st->nb_suffix)
+                    return disc_end(st, st->nal[st->suffix[st->suffix_k]].zr, 0);
+                if (j + 1 < st->nb_nal)
+                    return disc_end(st, st->nal[j + 1].zr, 0);
+                if (!final)
+                    return 0;
+                return disc_end(st, avail, 0);
+            }
+            st->done++;
+        }
+    }
+    if (!final)
+        return 0;
+    /* the end of the stream */
+    if (st->phase == DISC_PREFIX)
+        return disc_end(st, avail, 1);      /* units without a picture */
+    if (st->phase == DISC_SUFFIX && st->suffix_k < st->nb_suffix)
+        return disc_end(st, st->nal[st->suffix[st->suffix_k]].zr, 0);
+    return disc_end(st, avail, 0);
+}
+
+/* The next start code with the zero run in front of it; the last bytes
+ * may begin one. */
+static int disc_resync(const uint8_t *buf, int avail)
+{
+    for (int i = 0; i + 2 < avail; i++)
+        if (!buf[i] && !buf[i + 1] && buf[i + 2] == 1) {
+            while (i > 0 && !buf[i - 1])
+                i--;
+            return i;
+        }
+    return avail > 3 ? avail - 3 : -1;
+}
+
+static const FFDiscCutRule disc_rule = { disc_unit_size, disc_resync, 0 };
+
+/* pic_struct guessed from the pictures before: < 0 none. */
+static int disc_guess_ps(const H264ParseContext *p)
+{
+    int n = p->disc_ps_n, l[128];
+
+    if (n >= 9) {
+        int v = p->disc_ps[p->disc_ps_start], k;
+        for (k = 1; k < n && p->disc_ps[(p->disc_ps_start + k) & 127] == v; k++)
+            ;
+        if (k == n)
+            return v;
+    }
+    if (n <= 10)
+        return -1;
+    for (int k = 0; k < n; k++)             /* the newest first */
+        l[k] = p->disc_ps[(p->disc_ps_start + n - 1 - k) & 127];
+    for (int k = 2; k != (n & ~1); k += 2)
+        if (l[k] != l[0] || l[k + 1] != l[1])
+            return -1;
+    return l[1];
+}
+
+/* The values of the frame just cut. */
+static int disc_picture(AVCodecParserContext *s, AVCodecContext *avctx, const uint8_t *buf, int size)
+{
+    static const uint8_t fields[9] = { 2, 1, 1, 2, 2, 3, 3, 4, 6 };
+    H264ParseContext *p = s->priv_data;
+    const SPS *sps;
+    int ps;
+
+    if (parse_nal_units(s, avctx, buf, size) < 0 || !(sps = p->ps.sps)) {
+        av_log(avctx, AV_LOG_ERROR, "Title timeline: H.264: a picture's headers cannot be read\n");
+        return AVERROR_INVALIDDATA;
+    }
+    s->key_frame = p->sei.recovery_point.recovery_frame_cnt >= 0;
+    for (int i = 0; i + 3 < size; i++)      /* the first slice: an IDR picture's */
+        if (!buf[i] && !buf[i + 1] && buf[i + 2] == 1 &&
+            ((buf[i + 3] & 0x1f) == H264_NAL_SLICE || (buf[i + 3] & 0x1f) == H264_NAL_IDR_SLICE)) {
+            s->key_frame |= (buf[i + 3] & 0x1f) == H264_NAL_IDR_SLICE;
+            break;
+        }
+    if (!sps->nal_hrd_parameters_present_flag && !sps->vcl_hrd_parameters_present_flag &&
+        !sps->pic_struct_present_flag)
+        ps = 0;
+    else if (sps->pic_struct_present_flag && p->sei.picture_timing.present)
+        ps = p->sei.picture_timing.pic_struct;
+    else if (sps->frame_mbs_only_flag)
+        ps = 0;
+    else if (p->picture_structure != PICT_FRAME)
+        ps = p->picture_structure == PICT_BOTTOM_FIELD ? 2 : 1;
+    else if ((ps = disc_guess_ps(p)) < 0) {
+        av_log(avctx, AV_LOG_ERROR, "Title timeline: H.264: a frame of an interlaced stream without its "
+               "pic_struct, and none can be guessed from the pictures before\n");
+        return AVERROR_INVALIDDATA;
+    } else
+        av_log(avctx, AV_LOG_DEBUG, "Title timeline: H.264: a frame without its pic_struct: %d guessed from the "
+               "pictures before [untested on real discs]\n", ps);
+    if (ps < 0 || ps > 8) {
+        av_log(avctx, AV_LOG_ERROR, "Title timeline: H.264: pic_struct %d\n", ps);
+        return AVERROR_INVALIDDATA;
+    }
+    if (p->disc_ps_n == 128) {
+        p->disc_ps_start = (p->disc_ps_start + 1) & 127;
+        p->disc_ps_n--;
+    }
+    p->disc_ps[(p->disc_ps_start + p->disc_ps_n++) & 127] = ps;
+    s->disc_fields = fields[ps];
+    if (sps->timing_info_present_flag && sps->num_units_in_tick && sps->time_scale)
+        av_reduce(&avctx->framerate.num, &avctx->framerate.den, sps->time_scale,
+                  2LL * sps->num_units_in_tick, 1 << 30);
+    return 0;
+}
+
+static int disc_parse(AVCodecParserContext *s, AVCodecContext *avctx,
+                      const uint8_t **poutbuf, int *poutbuf_size, const uint8_t *buf, int buf_size)
+{
+    H264ParseContext *p = s->priv_data;
+    H264DiscCut *st;
+    int ret, r;
+
+    if (!p->disc.state && !(p->disc.state = av_mallocz(sizeof(H264DiscCut)))) {
+        s->disc_status = AVERROR(ENOMEM);
+        *poutbuf       = NULL;
+        *poutbuf_size  = 0;
+        return 0;
+    }
+    st          = p->disc.state;
+    st->p       = p;
+    st->no_unit = 0;
+    s->disc_fields = 0;
+    ret = ff_parser_disc_cut(s, avctx, &disc_rule, &p->disc, poutbuf, poutbuf_size, buf, buf_size);
+    if (*poutbuf_size && !s->disc_status) {
+        if (st->no_unit)
+            s->disc_status = 1;
+        else if ((r = disc_picture(s, avctx, *poutbuf, *poutbuf_size)) < 0)
+            s->disc_status = r;
+    }
+    return ret;
+}
+
 static int h264_parse(AVCodecParserContext *s,
                       AVCodecContext *avctx,
                       const uint8_t **poutbuf, int *poutbuf_size,
@@ -595,6 +1020,9 @@ static int h264_parse(AVCodecParserContext *s,
     ParseContext *pc = &p->pc;
     AVRational time_base = { 0, 1 };
     int next;
+
+    if (s->flags & PARSER_FLAG_DISC)
+        return disc_parse(s, avctx, poutbuf, poutbuf_size, buf, buf_size);
 
     if (!p->got_first) {
         p->got_first = 1;
@@ -675,6 +1103,9 @@ static av_cold void h264_close(AVCodecParserContext *s)
     ParseContext *pc = &p->pc;
 
     av_freep(&pc->buffer);
+    if (p->disc.state)
+        av_freep(&((H264DiscCut *)p->disc.state)->nal);
+    ff_parser_disc_cut_close(&p->disc);
 
     ff_h264_sei_uninit(&p->sei);
     ff_h264_ps_uninit(&p->ps);
