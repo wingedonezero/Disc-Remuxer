@@ -513,6 +513,25 @@ int64_t ff_bluray_title_duration(const BlurayTitle *t);
 /** The title's size, bytes. */
 int64_t ff_bluray_title_size(const BlurayTitle *t);
 
+/**
+ * The parts of title t: the runs of its segments between the places where
+ * whole stream files are played back to back (a non-seamless connection,
+ * connection condition 1, that joined into the title because both items
+ * cover their whole STC sequences: episodes of a series one after another).
+ * first (nb_segs + 1 entries, or NULL): the first segment of each part, and
+ * nb_segs after the last. Returns the number of parts (1: the title is one
+ * piece).
+ */
+int     ff_bluray_title_parts(const BlurayTitle *t, int *first);
+/** 45 kHz ticks of segments [s0, s1) (their STC sequences, as the title's duration). */
+int64_t ff_bluray_segs_duration(const BlurayTitle *t, int s0, int s1);
+/**
+ * The chapter marks of segments [s0, s1) of title t on their own: from the
+ * first segment's start, without those in their last second (the rule a
+ * title has for its own end). out: room for t->nb_marks. Returns the count.
+ */
+int     ff_bluray_segs_marks(const BlurayTitle *t, int s0, int s1, uint64_t *out);
+
 /* ---- the disc (bluray_disc.c) ---- */
 
 typedef struct BlurayDisc {

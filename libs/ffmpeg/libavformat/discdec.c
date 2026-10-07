@@ -84,6 +84,14 @@ DiscChapterInfo *ff_disc_title_add_chapter(DiscTitleInfo *t)
     return c;
 }
 
+DiscPartInfo *ff_disc_title_add_part(DiscTitleInfo *t)
+{
+    DiscPartInfo *p = av_dynarray2_add((void **)&t->parts, &t->nb_parts, sizeof(*p), NULL);
+    if (p)
+        memset(p, 0, sizeof(*p));
+    return p;
+}
+
 int ff_disc_title_add_file(DiscTitleInfo *t, const char *name)
 {
     return av_dynarray_add_nofree(&t->files, &t->nb_files, (void *)name);
@@ -108,6 +116,7 @@ static int disc_close(AVFormatContext *s)
         av_freep(&d->info.titles[i].streams);
         av_freep(&d->info.titles[i].chapters);
         av_freep(&d->info.titles[i].files);
+        av_freep(&d->info.titles[i].parts);
     }
     av_freep(&d->info.titles);
     d->info.nb_titles = 0;
@@ -160,6 +169,12 @@ static int disc_read_header(AVFormatContext *s)
         return ret;
     if (d->opt_title < 0)               /* only the disc info, no title opened */
         return 0;
+    if (d->opt_part >= 0 && (d->opt_title >= d->info.nb_titles ||
+                             d->opt_part >= d->info.titles[d->opt_title].nb_parts)) {
+        av_log(s, AV_LOG_ERROR, "Title %d has no part %d (it has %d)\n", d->opt_title, d->opt_part,
+               d->opt_title < d->info.nb_titles ? d->info.titles[d->opt_title].nb_parts : 0);
+        return AVERROR(EINVAL);
+    }
     return ff_disc_title_reader_open(s, &d->src);
 }
 
@@ -175,6 +190,7 @@ static int disc_read_packet(AVFormatContext *s, AVPacket *pkt)
 #define OFFSET(x) offsetof(DiscContext, x)
 static const AVOption disc_options[] = {
     {"title",           "the title to open (0 = the first of the disc's title list; -1 = none: only the disc info)", OFFSET(opt_title), AV_OPT_TYPE_INT, { .i64=0 }, -1, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
+    {"part",            "with title: only that part of it (a title playing whole stream files back to back), from 0; -1 = the whole title", OFFSET(opt_part), AV_OPT_TYPE_INT, { .i64=-1 }, -1, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
     {"min_length",      "titles shorter than this (seconds) are listed, not selected", OFFSET(opt_min_length), AV_OPT_TYPE_INT, { .i64=0 }, 0, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
     {"keydb",           "AACS key files (KEYDB.cfg), read in this order",          OFFSET(opt_keydb),          AV_OPT_TYPE_STRING | AV_OPT_TYPE_FLAG_ARRAY, { .arr = NULL }, 0, 0, AV_OPT_FLAG_DECODING_PARAM },
     {"read_attempts",   "read attempts per request on the disc",                    OFFSET(opt_read_attempts),  AV_OPT_TYPE_INT,    { .i64=DISCIO_DEFAULT_ATTEMPTS }, 1, 100, AV_OPT_FLAG_DECODING_PARAM },

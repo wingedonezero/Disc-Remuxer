@@ -181,3 +181,60 @@ def test_a_recorded_playlist_is_one_title_with_its_name_and_time(tmp_path):
 def test_seamless_runs_of_a_recorded_playlist_are_titles_of_their_own(tmp_path):
     ts = titles(bdav(tmp_path, [("00001", 1), ("00002", 6), ("00003", 1), ("00004", 6)]))
     assert [l.split()[2] for l in ts if "rpls" in l] == ["01001.rpls(1)", "01001.rpls(2)"]
+
+
+# ---- parts: whole stream files played back to back (option part) ----
+
+def parts(line):
+    """The dump's parts: [(first segment, duration, [marks])], [] when the title is one piece."""
+    if " parts " not in line:
+        return []
+    out = []
+    for p in field(line, "parts").split(","):
+        first, dur, marks = p.split(":")
+        out.append((int(first), int(dur), [int(m) for m in marks.split("+")] if marks else []))
+    return out
+
+
+def whole(clip, cc=1):
+    """An item that covers its whole STC sequence: connection 1 joins it to the item before."""
+    return Item(clip, S, E, connection=cc)
+
+
+M = 24000                                   # 45 kHz ticks -> chapter mark units
+
+
+def test_a_title_of_whole_files_back_to_back_has_a_part_per_file(tmp_path):
+    pl = bd.mpls([whole("00001"), whole("00002"), whole("00003")],
+                 marks=[(1, 0, S), (1, 0, S + 20000), (1, 1, S), (1, 1, S + 30000), (1, 2, S)])
+    ts = titles(disc(tmp_path, [1, 2, 3], {1: pl}))
+    assert names(ts) == ["00001.mpls"], "one title: the items join"
+    assert parts(ts[0]) == [(0, 90000, [0, 20000 * M]), (1, 90000, [0, 30000 * M]), (2, 90000, [0])], \
+        "each part from its own start, with the marks of its own item"
+
+
+def test_a_part_drops_the_marks_in_its_own_last_second(tmp_path):
+    pl = bd.mpls([whole("00001"), whole("00002")], marks=[(1, 0, S), (1, 0, S + 60000), (1, 1, S)])
+    ts = titles(disc(tmp_path, [1, 2], {1: pl}))
+    assert field(ts[0], "marks") == "0,%d,%d" % (60000 * M, 90000 * M), "the title keeps it (not its last second)"
+    assert parts(ts[0])[0][2] == [0], "as a title of its own the first file would not have it"
+
+
+def test_a_mark_at_the_end_of_a_file_is_the_next_part_s_start_once(tmp_path):
+    pl = bd.mpls([whole("00001"), whole("00002")], marks=[(1, 0, S), (1, 0, E), (1, 1, S), (1, 1, S + 10000)])
+    ts = titles(disc(tmp_path, [1, 2], {1: pl}))
+    assert parts(ts[0])[1][2] == [0, 10000 * M]
+
+
+def test_seamless_items_stay_in_their_part(tmp_path):
+    pl = bd.mpls([whole("00001"), whole("00002"), whole("00003", 6), whole("00004", 5)])
+    ts = titles(disc(tmp_path, [1, 2, 3, 4], {1: pl}))
+    assert field(ts[0], "segments") == "1,(2,3),4"
+    assert [(f, d) for f, d, _ in parts(ts[0])] == [(0, 90000), (1, 3 * 90000)], \
+        "connection 6 and 5 are no back-to-back join: only the joined connection 1 starts a part"
+
+
+def test_a_title_without_back_to_back_files_has_no_parts(tmp_path):
+    pl = bd.mpls([part_item("00001"), part_item("00002", 6)], marks=[(1, 0, S + 45000)])
+    ts = titles(disc(tmp_path, [1, 2], {1: pl}))
+    assert parts(ts[0]) == []

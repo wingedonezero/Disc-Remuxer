@@ -54,6 +54,12 @@ static const Setting registry[] = {
       "How a title's output files are named. {NAME1} the title's name, {CMNT1} its comment, {DT} its "
       "date, {N2} its number with two digits; {prefix:VAR} writes the prefix only after other text. "
       "Empty: {NAME1}{-:CMNT1}{-:DT}{title:+DFLT}{_t:N2}." },
+    { "output", "split_joined_titles", SET_BOOL, "false", 0, 0, NULL,
+      "A title that plays whole stream files back to back (the episodes of a series one after another in one "
+      "Blu-ray title) is written as parts, one per file: <name>_p1, _p2, ..., each from its own start with its "
+      "own chapters and its audio as the file holds it. Off: such a title is one timeline (the audio's overlaps "
+      "at the joins are evened out by dropping whole frames). The demux option --split <titles> turns it on "
+      "for chosen titles of one run." },
     { "log", "debug_file", SET_BOOL, "false", 0, 0, NULL,
       "Also write a debug log with every detail into the output folder, next to the log." },
 };

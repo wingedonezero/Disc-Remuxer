@@ -68,6 +68,17 @@ typedef struct DiscChapterInfo {
     const char      *name;           /**< NULL when the disc names none */
 } DiscChapterInfo;
 
+/** A part of a title that plays whole stream files back to back (the
+ *  episodes of a series in one title): what the option part opens on its
+ *  own, as if it were a title of its own. */
+typedef struct DiscPartInfo {
+    int64_t          start;          /**< AV_TIME_BASE, from the title's start */
+    int64_t          duration;       /**< AV_TIME_BASE */
+    int              first_file;     /**< its files: files[first_file .. first_file + nb_files) of the title */
+    int              nb_files;
+    int              nb_chapters;    /**< its own chapters (from its own start) */
+} DiscPartInfo;
+
 /** A title of the disc's title list. */
 typedef struct DiscTitleInfo {
     int              index;          /**< its number in the title list (the option title), from 0 */
@@ -84,6 +95,8 @@ typedef struct DiscTitleInfo {
     DiscChapterInfo *chapters;
     int              nb_streams;
     DiscStreamInfo  *streams;
+    int              nb_parts;       /**< 0: the title is one piece */
+    DiscPartInfo    *parts;
 } DiscTitleInfo;
 
 /** The disc. */

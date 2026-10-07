@@ -163,7 +163,7 @@ CSS in the demuxer) still reads by playback through libdvdnav into FFmpeg's
 
 | File | Part |
 |---|---|
-| `main.c` | commands (`info`, `demux`, `settings`, `version`), options (`--config`, `--set`, `--json`, `-v`), the run |
+| `main.c` | commands (`info`, `demux`, `settings`, `version`), options (`--config`, `--set`, `--json`, `--split`, `-v`), the run |
 | `settings.c` | the settings registry and `disc-remuxer.toml` next to the program (written with every setting and its help; new settings added, unknown ones removed, values kept) |
 | `writer.c` | opening a title and writing its stream files, chapters and VobSub pairs |
 | `check.c` | the end check: each written video / audio file is read back with FFmpeg's decoders and its stream details (format, profile, size, aspect, frame rate, scan, colour, HDR; audio format, channels, layout, rate, depth, ...) must equal those read from the disc's stream while ripping; a missing or different field fails the title |

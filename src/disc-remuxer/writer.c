@@ -418,7 +418,7 @@ static int es_flush_hold(const AVFormatContext *ctx, const AVStream *st, EsOut *
     return ret;
 }
 
-int open_title(const char *format, const char *source, int title, AVFormatContext **ctx)
+int open_title(const char *format, const char *source, int title, int part, AVFormatContext **ctx)
 {
     const AVInputFormat *fmt = av_find_input_format(format);
     AVDictionary *opts = NULL;
@@ -429,6 +429,8 @@ int open_title(const char *format, const char *source, int title, AVFormatContex
     if (!fmt)
         return AVERROR_DEMUXER_NOT_FOUND;
     av_dict_set_int(&opts, "title", title, 0);
+    if (part >= 0)
+        av_dict_set_int(&opts, "part", part, 0);
     av_dict_set_int(&opts, "read_attempts", setting_int("read.attempts"), 0);
     av_dict_set(&opts, "udf_reader", setting_text("read.udf_reader"), 0);
     if (nb_keys) {
@@ -525,26 +527,36 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     const char *tname;
     EsOut *out = NULL;
     AVPacket *pkt = NULL;
-    char dir[4096], prefix[4200], dur[32], js[4300];
+    char dir[4096], prefix[4200], dur[32], js[4300], who[64], base[512], jpart[32] = "";
     int ret;
 
     memset(res, 0, sizeof(*res));
-    if ((ret = open_title(job->format, job->source, job->title, &ctx)) < 0) {
-        log_step("=== Title %d/%d: #%d ===", job->ordinal, job->count, job->title);
-        log_msg(MSG_TITLE_OPEN_FAILED, LOG_ERROR, "Title #%d cannot be opened: %s", job->title, av_err2str(ret));
+    /* "Title #8", or "Title #8 part 2/7" for a part of a title */
+    if (job->part >= 0) {
+        snprintf(who, sizeof(who), "Title #%d part %d/%d", job->title, job->part + 1, job->nb_parts);
+        snprintf(jpart, sizeof(jpart), ",\"part\":%d", job->part + 1);
+    } else
+        snprintf(who, sizeof(who), "Title #%d", job->title);
+    if ((ret = open_title(job->format, job->source, job->title, job->part, &ctx)) < 0) {
+        log_step("=== Title %d/%d: %s ===", job->ordinal, job->count, who + 6);
+        log_msg(MSG_TITLE_OPEN_FAILED, LOG_ERROR, "%s cannot be opened: %s", who, av_err2str(ret));
         res->failed = 1;
         return ret;
     }
     info = disc_info(ctx);
     tname = info && job->title < info->nb_titles ? info->titles[job->title].name : NULL;
-    title_name(setting_text("output.file_name_template"), tname, NULL, NULL, job->title,
-               res->name, sizeof(res->name));
+    title_name(setting_text("output.file_name_template"), tname, NULL, NULL, job->title, base, sizeof(base));
+    /* a part's files: the title's name + _p<n>, in the title's folder */
+    if (job->part >= 0)
+        snprintf(res->name, sizeof(res->name), "%.500s_p%d", base, job->part + 1);
+    else
+        snprintf(res->name, sizeof(res->name), "%s", base);
     hms(dur, sizeof(dur), ctx->duration > 0 ? ctx->duration / (double)AV_TIME_BASE : 0);
-    log_step("=== Title %d/%d: #%d %s (%s) ===", job->ordinal, job->count, job->title, tname ? tname : "", dur);
-    log_json("title_start", "\"title\":%d,\"name\":%s,\"ordinal\":%d,\"count\":%d", job->title,
+    log_step("=== Title %d/%d: %s %s (%s) ===", job->ordinal, job->count, who + 6, tname ? tname : "", dur);
+    log_json("title_start", "\"title\":%d%s,\"name\":%s,\"ordinal\":%d,\"count\":%d", job->title, jpart,
              json_str(js, sizeof(js), res->name), job->ordinal, job->count);
 
-    snprintf(dir, sizeof(dir), "%s%s%s", job->out_dir, job->sub_folder ? "/" : "", job->sub_folder ? res->name : "");
+    snprintf(dir, sizeof(dir), "%s%s%s", job->out_dir, job->sub_folder ? "/" : "", job->sub_folder ? base : "");
     if (mkdir(dir, 0777) < 0 && errno != EEXIST) {
         ret = AVERROR(errno);
         log_msg(MSG_FOLDER_FAILED, LOG_ERROR, "The folder %s cannot be created: %s", dir, strerror(errno));
@@ -674,7 +686,7 @@ end:
         }
     }
     if (ret < 0) {
-        log_msg(MSG_TITLE_FAILED, LOG_ERROR, "Title #%d failed: %s", job->title, av_err2str(ret));
+        log_msg(MSG_TITLE_FAILED, LOG_ERROR, "%s failed: %s", who, av_err2str(ret));
         res->failed = 1;
     } else {
         int64_t untested = meta_int(ctx->metadata, "untested");
@@ -729,9 +741,9 @@ end:
             if (o->opened)
                 log_text(LOG_DETAIL, "      %s", o->name);
             res->warnings += warn;
-            log_json("track", "\"title\":%d,\"index\":%u,\"codec\":%s,\"language\":%s,\"layout\":%s,"
+            log_json("track", "\"title\":%d%s,\"index\":%u,\"codec\":%s,\"language\":%s,\"layout\":%s,"
                      "\"frames\":%"PRId64",\"warnings\":%"PRId64",\"delay_ms\":%"PRId64",\"file\":%s%s", job->title,
-                     i, json_str(jc, sizeof(jc), codec_label(st->codecpar->codec_id, st->codecpar->profile)),
+                     jpart, i, json_str(jc, sizeof(jc), codec_label(st->codecpar->codec_id, st->codecpar->profile)),
                      json_str(jl, sizeof(jl), o->st.lang), json_str(jy, sizeof(jy), o->layout), frames, warn,
                      o->st.delay_ms, json_str(jf, sizeof(jf), o->opened ? o->name : ""), extra);
         }
@@ -745,21 +757,21 @@ end:
         res->warnings += unchecked;
         log_msg(MSG_CHAPTERS, LOG_INFO, "Chapters: %u", ctx->nb_chapters);
         if (check_failed) {
-            log_msg(MSG_DETAILS_DIFFER, LOG_ERROR, "Title #%d: its files are written, but %d of them do not keep "
-                    "the disc stream's details (see above)", job->title, check_failed);
+            log_msg(MSG_DETAILS_DIFFER, LOG_ERROR, "%s: its files are written, but %d of them do not keep "
+                    "the disc stream's details (see above)", who, check_failed);
             res->failed = 1;
         } else if (untested) {
-            log_msg(MSG_UNTESTED, LOG_ERROR, "Title #%d: %"PRId64" feature(s) met that no real disc has tested: "
-                    "its files are written, but check the log before using them", job->title, untested);
+            log_msg(MSG_UNTESTED, LOG_ERROR, "%s: %"PRId64" feature(s) met that no real disc has tested: "
+                    "its files are written, but check the log before using them", who, untested);
             res->failed = 1;
         } else if (res->warnings) {
-            log_msg(MSG_TITLE_DONE, LOG_INFO, "Title #%d: done with %"PRId64" warning%s", job->title, res->warnings,
+            log_msg(MSG_TITLE_DONE, LOG_INFO, "%s: done with %"PRId64" warning%s", who, res->warnings,
                     res->warnings == 1 ? "" : "s");
         } else {
-            log_msg(MSG_TITLE_DONE, LOG_OK, "Title #%d: done", job->title);
+            log_msg(MSG_TITLE_DONE, LOG_OK, "%s: done", who);
         }
     }
-    log_json("title_result", "\"title\":%d,\"status\":\"%s\",\"warnings\":%"PRId64",\"folder\":%s", job->title,
+    log_json("title_result", "\"title\":%d%s,\"status\":\"%s\",\"warnings\":%"PRId64",\"folder\":%s", job->title, jpart,
              res->failed ? "failed" : "ok", res->warnings, json_str(js, sizeof(js), dir));
     for (unsigned i = 0; ctx && out && i < ctx->nb_streams; i++) {
         EsOut *o = &out[i];

@@ -816,6 +816,46 @@ int64_t ff_bluray_title_size(const BlurayTitle *t)
     return bytes;
 }
 
+int ff_bluray_title_parts(const BlurayTitle *t, int *first)
+{
+    int n = 0;
+
+    for (int i = 0; i < t->nb_segs; i++)
+        if (!i || t->segs[i].items[0].connection == CC_JOINED) {
+            if (first)
+                first[n] = i;
+            n++;
+        }
+    if (first)
+        first[n] = t->nb_segs;
+    return FFMAX(n, 1);
+}
+
+int64_t ff_bluray_segs_duration(const BlurayTitle *t, int s0, int s1)
+{
+    int64_t ticks = 0;
+    for (int i = s0; i < s1; i++)
+        for (int k = 0; k < t->segs[i].nb_items; k++)
+            ticks += (uint32_t)(t->segs[i].items[k].stc->end - t->segs[i].items[k].stc->start);
+    return ticks;
+}
+
+int ff_bluray_segs_marks(const BlurayTitle *t, int s0, int s1, uint64_t *out)
+{
+    uint64_t start = (uint64_t)ff_bluray_segs_duration(t, 0, s0) * MARK_UNIT;
+    uint64_t end   = start + (uint64_t)ff_bluray_segs_duration(t, s0, s1) * MARK_UNIT;
+    int n = 0;
+
+    /* the title's marks are ascending and within it; a mark at the end of
+     * an earlier part's item lies on this part's start, where this part's
+     * own first mark may already be: kept once */
+    for (int k = 0; k < t->nb_marks; k++)
+        if (t->marks[k] >= start && t->marks[k] < end && t->marks[k] - start < end - start - 1080000000ULL &&
+            !(t->marks[k] == start && n))
+            out[n++] = t->marks[k] - start;
+    return n;
+}
+
 static int set_pids(BlurayTitle *t, const U16Set *p)
 {
     av_freep(&t->pids);
