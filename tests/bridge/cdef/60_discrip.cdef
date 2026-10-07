@@ -64,7 +64,7 @@ int ff_discrip_cutter_open(DRCutter **cutter, void *logctx, int codec, DRUnitCb 
 int ff_discrip_cutter_write(DRCutter *c, const uint8_t *data, int size, int64_t time);
 int ff_discrip_cutter_flush(DRCutter *c);
 void ff_discrip_cutter_stats(const DRCutter *c, DRCutterStats *stats);
-void ff_discrip_cutter_set_state(DRCutter *c, void *state);
+void ff_discrip_cutter_set_pcm_format(DRCutter *c, int channels, int bits, int samples_per_frame);
 void ff_discrip_cutter_close(DRCutter **cutter);
 
 typedef struct DRAudioStats {

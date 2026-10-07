@@ -88,11 +88,12 @@ def test_units_are_frames_of_the_stated_size():
     c = ffi.new("DRCutter **")
     assert lib.ff_discrip_audio_open(audio, ffi.NULL, cid, 0, lib.tb_py_frame, keep(on_frame)) == 0
     assert lib.ff_discrip_cutter_open(c, ffi.NULL, cid, fn("ff_discrip_audio_unit"), audio[0]) == 0
-    lib.ff_discrip_cutter_set_state(c[0], p)
     lib.ff_discrip_audio_set_state(audio[0], p)
     for k in range(0, len(stream), 2000):
         chunk = stream[k:k + 2000]
         assert header(p, [k // 2000, 0x01, 0x80], False) == 0
+        # the frame format for FFmpeg's LPCM parser, as the title gives it
+        lib.ff_discrip_cutter_set_pcm_format(c[0], p.channels, p.bits, p.spf)
         assert lib.ff_discrip_cutter_write(c[0], chunk, len(chunk), (k // 2000) * 1000) == 0
     assert lib.ff_discrip_cutter_flush(c[0]) == 0
     assert lib.ff_discrip_audio_flush(audio[0]) == 0

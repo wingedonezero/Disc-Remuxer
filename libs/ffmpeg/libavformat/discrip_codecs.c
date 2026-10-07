@@ -441,20 +441,6 @@ static const DRAudioRules audio_latm = {
  * unit; it lasts its samples (rate / 600 on DVD-Video, rate / 1200 on HD
  * DVD) and leaves as little-endian PCM. */
 
-static int lpcm_unit_size(void *log, const uint8_t *buf, int avail, int final, void *state)
-{
-    const DRLpcm *p = state;
-
-    if (!p || !p->init)
-        return 0;
-    return avail >= p->frame_bytes ? p->frame_bytes : 0;
-}
-
-static int lpcm_resync(const uint8_t *buf, int avail)
-{
-    return avail;
-}
-
 static int header_lpcm(DRAudio *a, const DRFrame *f, DRAudioHeader *out)
 {
     const DRLpcm *p = ff_discrip_audio_state(a);
@@ -586,7 +572,7 @@ static const DRCodec codecs[] = {
     { .id = AV_CODEC_ID_DTS, .name = "dts", .anchor = anchor_unit, .check = check_dts, .audio = &audio_dts,
       .verify = verify_dts },
     { .id = AV_CODEC_ID_PCM_DVD, .name = "pcm_dvd", .anchor = anchor_unit, .audio = &audio_lpcm,
-      .unit_size = lpcm_unit_size, .resync = lpcm_resync },
+      .disc_parser = 1 },
     { .id = AV_CODEC_ID_MP1, .name = "mp1", .anchor = anchor_unit, .check = check_mpa, .audio = &audio_mpa,
       .verify = verify_mpa },
     { .id = AV_CODEC_ID_MP2, .name = "mp2", .anchor = anchor_unit, .check = check_mpa, .audio = &audio_mpa,

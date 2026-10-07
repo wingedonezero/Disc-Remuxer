@@ -155,20 +155,6 @@ typedef struct DRCodec {
     const DRAudioRules *audio;
     /** Video rules; NULL for audio / subtitles (or while not implemented). */
     const DRVideoRules *video;
-    /** The core's own unit cutter, used instead of FFmpeg's parser where the
-     *  parser drops bytes the reference keeps or groups them differently.
-     *  unit_size: the size of the unit at buf (> 0), 0 when more bytes are
-     *  needed, DR_CUT_NONE when no unit starts there, another negative
-     *  AVERROR when the stream cannot be cut (logged; the track fails);
-     *  final: no more bytes will come. resync: the offset of the next
-     *  possible unit start in buf, -1 when none. NULL: FFmpeg's parser.
-     *  state: the cutter's codec state (ff_discrip_cutter_set_state, or the
-     *  cutter's own one of cut_state_size bytes), NULL when none. */
-    int (*unit_size)(void *log, const uint8_t *buf, int avail, int final, void *state);
-    int (*resync)(const uint8_t *buf, int avail);
-    /** > 0: the cutter keeps a zeroed state of this size for unit_size
-     *  (which resets it when it returns anything but 0). */
-    int cut_state_size;
     /** 1: cut by FFmpeg's parser in disc mode (PARSER_FLAG_DISC), which
      *  knows the reference's cut rule and says which of its chunks are no
      *  unit (AVCodecParserContext.disc_status). */
@@ -181,8 +167,6 @@ typedef struct DRCodec {
 
 enum { DR_UNIT_OK = 0, DR_UNIT_BAD = 1, DR_UNIT_CRC = 2 };
 
-/** DRCodec.unit_size: no unit starts at buf. */
-#define DR_CUT_NONE (-1)
 
 /** The codec table entry of a codec, or NULL (the codec is not supported). */
 const DRCodec *ff_discrip_codec(enum AVCodecID id);
@@ -236,9 +220,10 @@ int ff_discrip_cutter_flush(DRCutter *c);
 
 void ff_discrip_cutter_stats(const DRCutter *c, DRCutterStats *stats);
 
-/** A codec state the cutter's unit rule reads (LPCM: the DRLpcm of the
- *  track); owned by the caller. */
-void ff_discrip_cutter_set_state(DRCutter *c, void *state);
+/** Linear PCM: the frame format for FFmpeg's parser (from the packets'
+ *  audio frame headers): channels, coded bits per sample, samples per
+ *  frame. */
+void ff_discrip_cutter_set_pcm_format(DRCutter *c, int channels, int bits, int samples_per_frame);
 
 void ff_discrip_cutter_close(DRCutter **cutter);
 

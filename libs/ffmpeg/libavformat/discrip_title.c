@@ -672,10 +672,8 @@ static int seg_open(DRTitle *t)
             return ret;
         if ((ret = ff_discrip_cutter_open(&k->cut, t->log, k->cfg.codec, unit, stage)) < 0)
             return ret;
-        if (k->cfg.codec == AV_CODEC_ID_PCM_DVD) {
-            ff_discrip_cutter_set_state(k->cut, &k->lpcm);
+        if (k->cfg.codec == AV_CODEC_ID_PCM_DVD)
             ff_discrip_audio_set_state(k->audio, &k->lpcm);
-        }
         if (k->cfg.kind == DR_KIND_VIDEO)
             ff_discrip_video_set_side(k->video, cc_side, t);
     }
@@ -825,6 +823,8 @@ static int title_payload(DRTitle *t, int track, const uint8_t *data, int size, i
         }
         if ((ret = ff_discrip_lpcm_header(&k->lpcm, t->log, data, h, t->cfg.lpcm_hd)) < 0)
             return ret;
+        /* the frame format for FFmpeg's LPCM parser (DVD-Video / HD DVD frames) */
+        ff_discrip_cutter_set_pcm_format(k->cut, k->lpcm.channels, k->lpcm.bits, k->lpcm.spf);
         data += h;
         size -= h;
     }
