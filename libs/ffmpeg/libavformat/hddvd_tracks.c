@@ -58,6 +58,7 @@
 #include "libavcodec/dca.h"
 
 #include "avformat.h"
+#include "disc.h"
 #include "disclang.h"
 #include "discrip.h"
 #include "hddvd_internal.h"
@@ -187,14 +188,14 @@ static int probe_run(Probe *p, enum AVCodecID codec, int want)
     AVCodecParserContext *parser = NULL;
     AVCodecContext *avctx = NULL;
     AVPacket *pkt = NULL;
-    HDDVDClipPS ps;
+    DiscPS ps;
     int ret, done = 0;
 
     if (!probe_first_pts(p))
         return 0;
     p->pos = 0;
-    if ((ret = ff_hddvd_clip_ps_open(&ps, NULL, probe_read, p)) < 0) {
-        ff_hddvd_clip_ps_close(&ps);
+    if ((ret = ff_disc_ps_open(&ps, NULL, 5, probe_read, p)) < 0) {
+        ff_disc_ps_close(&ps);
         return p->read_failed ? 0 : ret;
     }
     parser = av_parser_init(codec);
@@ -247,7 +248,7 @@ end:
     av_packet_free(&pkt);
     av_parser_close(parser);
     avcodec_free_context(&avctx);
-    ff_hddvd_clip_ps_close(&ps);
+    ff_disc_ps_close(&ps);
     return ret;
 }
 

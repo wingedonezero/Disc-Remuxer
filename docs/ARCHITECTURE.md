@@ -1,7 +1,7 @@
 # Architecture
 
 Status: **plan agreed, being carried out** (the order of work is below;
-done: steps 1-4). Each step moves a part to its place and is checked against
+done: steps 1-5, step 6's title reader; DVD later). Each step moves a part to its place and is checked against
 the output from before the move.
 
 ## Words
@@ -13,6 +13,7 @@ One name per job, used everywhere (code comments, logs, docs):
 | reader | gets bytes off the source: opens the image or folder, reads its file system, reads sectors with retries | `discio_*` |
 | decryption | makes encrypted sectors usable | libdvdcss (DVD), libaacs (HD DVD, Blu-ray) |
 | disc layer | opens a source once, tells which kind of disc it is, gives the disc info (every title, its streams and chapters), opens a title | `discdec.c`, `disc.h`, `discinfo.h` |
+| title reader | the disc layer's part that reads the opened title: its clips one after another through FFmpeg's line into the title timeline, the clip's time reference, the timeline's frames out as packets, chapters and track results at the end; the format part only says what the title is (clips, how a block is read, tracks, chapter marks, its own values) | `disctitle.c` |
 | disc info | the description of a disc for the caller's overview (not the streams a title is ripped from) | `discinfo.h` |
 | format part | knows one disc format's structure: titles, clips, tracks, chapters, keys; runs the line below for a title | DVD (`dvdvideo*`), HD DVD (`hddvd*`), Blu-ray (to add) |
 | demuxer | splits a container into packets, one pile per stream | FFmpeg's `mpeg.c` (VOB / EVOB packs), `mpegts.c` (Blu-ray) |
@@ -33,7 +34,8 @@ disc layer                         one FFmpeg demuxer, "disc": open the source o
   │                                which kind of disc, title list (info), open a title
   ├─ format parts                  DVD / HD DVD / Blu-ray: disc structure only
   ├─ readers + decryption          discio_*, libdvdcss, libaacs, later libbluray
-  ▼
+  └─ title reader                  the opened title's clips through the line below,
+  ▼                                its frames out as packets
 FFmpeg's own line                  mpeg.c / mpegts.c -> parsers (FFmpeg's read loop runs them)
                                    our fixes inside these files, behind disc options
   ▼
@@ -65,8 +67,9 @@ Rules:
 | `discio_*.c`, `discio.h` | stay: the readers |
 | `disclang.c` | stays: language codes for every format part |
 | `discdec.c`, `disc.h` (step 1, done) | the disc layer, the only disc demuxer the program opens; `disc.h` is what a format part gives it |
+| `disctitle.c` (step 6, done) | the disc layer's title reader: what `hddvddec.c` did that is not HD DVD (the clips through `mpeg.c`, the time reference, the payloads to the title timeline, its frames out, chapters, results); a format part fills `DiscTitleSource` (clips, block reading, tracks, chapter marks, LPCM header size, lead-in tolerance) |
 | `dvdvideodec.c`, `dvdvideo_*.c` | the DVD format part (no longer a demuxer of its own); its playback reading through libdvdnav (`dvdvideo_play.c`) gives way to the navigation scan + title plan, with sectors fed into `mpeg.c` |
-| `hddvddec.c`, `hddvd_*.c` | the HD DVD format part `ff_disc_hddvd` (step 1, done: no demuxer of its own any more) |
+| `hddvddec.c`, `hddvd_*.c` | the HD DVD format part `ff_disc_hddvd` (step 1, done: no demuxer of its own any more; step 6, done: only HD DVD's structure, the reading is the title reader's) |
 | `hddvd_tracks.c` | stays (stream table, languages); step 4, done: its content probe reads through the line (`mpeg.c` disc mode, FFmpeg's AC-3 / DTS parsers in disc mode) instead of its own pack reader and frame finding |
 | `discrip_pack.c`, `discrip_ps.c` (step 2, done) | moved into `mpeg.c`: option `disc` (one pack per 2048-byte sector, the sector rules) and `lpcm_header` (3 / 5 bytes, always LPCM) |
 | `discrip_units.c` (was the cutter; now `discrip_frames.c`, the frame step) | stays, shrunk to the time pairing (a packet's time goes to the first frame whose picture header lies in it, the MPEG rule FFmpeg's read loop does not have) in front of FFmpeg's parsers (decided in step 3: FFmpeg's read loop pairs times with where a frame begins and keeps only 4 packets' times) |
@@ -108,11 +111,20 @@ their logs for changed warnings).
    equal). With it: FFmpeg's AC-3 and DTS parsers got the disc reader's own
    frame rules (used when ripping too); `mpeg.c`'s disc mode splits an audio
    payload at its first access unit, as the reader does.
-5. **Title timeline tidied:** what is left of `discrip_*` is the timeline;
-   codec table slimmed; downmix through libswresample.
-6. **DVD on the same line:** the DVD part's sectors into `mpeg.c` with the
-   disc options, its titles through the title timeline, libdvdnav playback
-   reading removed; checked against the DVD corpus checks.
+5. **Title timeline tidied (done):** what is left of `discrip_*` is the
+   timeline; codec table slimmed (leftovers of the cutter removed); downmix
+   through libswresample.
+6. **Title reader (done):** what the HD DVD part did that every format
+   needs moved into the disc layer (`disctitle.c`); the rules it holds are
+   the shared ones (the program-stream reader's time reference, the last
+   64 MiB of a clip), the format's own values come from the format part
+   (LPCM header size, audio lead-in tolerance). Then the rip core's files
+   are renamed to the title timeline's words (`disctl_`).
+   **DVD on the same line** comes later (user, 2026-10-06), done as HD DVD
+   was (decomp check first): the DVD part becomes a format part filling
+   `DiscTitleSource` (its segments, CSS, `lpcm_header` 3, its tolerance), its
+   titles through the title timeline, libdvdnav playback reading removed;
+   checked against the DVD corpus checks.
 7. **Matroska writer**, then **Blu-ray** (TS demuxer decided there). Blu-ray
    items noted on the way: an E-AC-3 stream (Dolby Digital Plus, the improved
    AC-3) that carries an AC-3 inside it gives two linked tracks, like DTS-HD
@@ -132,9 +144,10 @@ left.
 ## How a disc is read today (the order above part-way done)
 
 The program opens `disc`, which hands HD DVD images to the HD DVD part. The
-HD DVD part reads a title's blocks through the readers and decryption, feeds
-them into FFmpeg's `mpeg.c` as disc sectors (option `disc`), and runs
-the packets through the rip core (`discrip_*`): its frame step gives each
+HD DVD part describes the disc and the opened title; the disc layer's title
+reader reads the title's blocks through the HD DVD part (readers and
+decryption), feeds them into FFmpeg's `mpeg.c` as disc sectors (option
+`disc`), and runs the packets through the rip core (`discrip_*`): its frame step gives each
 track's payloads to the track's FFmpeg parser (in disc mode where the parser
 has the disc reader's rule: VC-1, TrueHD / MLP, sub-pictures, LPCM) and
 pairs PES times with the frames, then the title timeline. The DVD-Video

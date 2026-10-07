@@ -99,6 +99,7 @@ static int disc_close(AVFormatContext *s)
 {
     DiscContext *d = s->priv_data;
 
+    ff_disc_title_reader_close(&d->reader);
     if (d->fmt && d->part)
         d->fmt->close(s);
     av_freep(&d->part);
@@ -148,13 +149,20 @@ static int disc_read_header(AVFormatContext *s)
     d->info.udf_revision = d->fs->udf_revision;
     if (!(d->part = av_mallocz(d->fmt->priv_size)))
         return AVERROR(ENOMEM);
-    return d->fmt->open(s);
+    if ((ret = d->fmt->open(s)) < 0)
+        return ret;
+    if (d->opt_title < 0)               /* only the disc info, no title opened */
+        return 0;
+    return ff_disc_title_reader_open(s, &d->src);
 }
 
 static int disc_read_packet(AVFormatContext *s, AVPacket *pkt)
 {
     DiscContext *d = s->priv_data;
-    return d->fmt->read_packet(s, pkt);
+
+    if (!d->reader)                     /* only the disc info: nothing to read */
+        return AVERROR_EOF;
+    return ff_disc_title_reader_packet(s, pkt);
 }
 
 #define OFFSET(x) offsetof(DiscContext, x)
