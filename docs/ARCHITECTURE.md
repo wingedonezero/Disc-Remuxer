@@ -125,7 +125,10 @@ their logs for changed warnings).
    `DiscTitleSource` (its segments, CSS, `lpcm_header` 3, its tolerance), its
    titles through the title timeline, libdvdnav playback reading removed;
    checked against the DVD corpus checks.
-7. **Matroska writer**, then **Blu-ray** (TS demuxer decided there). Blu-ray
+7. **Blu-ray** (TS demuxer decided there), then the **Matroska writer** once
+   every format's streams are right (user, 2026-10-06: Blu-ray adds many
+   pieces, e.g. more than one video stream and HDR, so the writer is built
+   once and tested on every format's streams). Blu-ray
    items noted on the way: an E-AC-3 stream (Dolby Digital Plus, the improved
    AC-3) that carries an AC-3 inside it gives two linked tracks, like DTS-HD
    MA and its DTS: the E-AC-3 whole, and the AC-3 taken out of it (FFmpeg's
