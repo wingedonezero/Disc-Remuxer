@@ -20,7 +20,7 @@ class Sink:
 
 
 def run(time, m2v=M2V):
-    """The stream through the cutter and the video timing, each picture's
+    """The stream through the frame step and the video timing, each picture's
     payload with the PES time time(display index, decode index)."""
     cid = codec_id("mpeg2video")
     sink = Sink()
@@ -31,18 +31,18 @@ def run(time, m2v=M2V):
         return 0
     keep = Handles()
     v = ffi.new("DRVideo **")
-    c = ffi.new("DRCutter **")
+    c = ffi.new("DRFrames **")
     st = ffi.new("DRVideoStats *")
     assert lib.ff_discrip_video_open(v, ffi.NULL, cid, 0, lib.tb_py_frame, keep(on_frame), lib.tb_py_event,
                                      keep(events_into(sink.events))) == 0
-    assert lib.ff_discrip_cutter_open(c, ffi.NULL, cid, fn("ff_discrip_video_unit"), v[0]) == 0
+    assert lib.ff_discrip_frames_open(c, ffi.NULL, cid, fn("ff_discrip_video_unit"), v[0]) == 0
     for k, (a, b, disp, _) in enumerate(pictures(m2v)):
         t = time(disp, k)
-        assert lib.ff_discrip_cutter_write(c[0], m2v[a:b], b - a, AV_NOPTS_VALUE if t is None else t) == 0
-    assert lib.ff_discrip_cutter_flush(c[0]) == 0
+        assert lib.ff_discrip_frames_write(c[0], m2v[a:b], b - a, AV_NOPTS_VALUE if t is None else t) == 0
+    assert lib.ff_discrip_frames_flush(c[0]) == 0
     assert lib.ff_discrip_video_flush(v[0]) == 0
     lib.ff_discrip_video_stats(v[0], st)
-    lib.ff_discrip_cutter_close(c)
+    lib.ff_discrip_frames_close(c)
     lib.ff_discrip_video_close(v)
     return sink, st
 

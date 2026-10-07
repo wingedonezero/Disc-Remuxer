@@ -46,7 +46,8 @@ typedef struct DiscStreamInfo {
     enum AVMediaType type;
     enum AVCodecID   codec;          /**< AV_CODEC_ID_NONE: no codec for the disc's stream */
     char             language[4];    /**< ISO 639-2, "" when the disc names none */
-    int              core;           /**< 1: it carries a core that is also a stream; 2: it is that core */
+    int              inner_track;    /**< the stream taken out of this one (DTS out of DTS-HD MA), -1 none */
+    int              from_track;     /**< the stream this one is taken out of, -1 none */
     int              width, height;  /**< video: the frame; subtitles: the canvas the units are drawn on */
     /* the stream details (not filled yet) */
     AVRational       aspect;         /**< video: display aspect ratio */

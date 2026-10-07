@@ -255,7 +255,7 @@ static int add_streams(AVFormatContext *s, const HDDVDTitle *t)
         st->codecpar->codec_type  = k->type;
         st->codecpar->codec_id    = k->codec;
         avpriv_set_pts_info(st, 64, 1, DR_TICKS_PER_SECOND);
-        if (k->core == 2)
+        if (k->from_track >= 0)
             st->disposition |= AV_DISPOSITION_DEPENDENT;
         if (k->type == AVMEDIA_TYPE_SUBTITLE) {
             char idx[1024];
@@ -325,7 +325,8 @@ static int describe_titles(AVFormatContext *s)
                 return AVERROR(ENOMEM);
             ds->type   = tk->type;
             ds->codec  = tk->codec;
-            ds->core   = tk->core;
+            ds->inner_track = tk->inner_track;
+            ds->from_track  = tk->from_track;
             if (tk->type == AVMEDIA_TYPE_SUBTITLE) {
                 ds->width  = tk->width;
                 ds->height = tk->height;
@@ -399,7 +400,7 @@ static int rip_open(AVFormatContext *s)
         tracks[i].codec       = k->codec;
         tracks[i].kind        = k->type == AVMEDIA_TYPE_VIDEO ? DR_KIND_VIDEO :
                                 k->type == AVMEDIA_TYPE_AUDIO ? DR_KIND_AUDIO : DR_KIND_SUBTITLE;
-        tracks[i].audio_flags = k->core == 2 ? DR_AUDIO_CORE_ONLY : 0;
+        tracks[i].audio_flags = k->from_track >= 0 ? DR_AUDIO_EXTRACTED : 0;
         tracks[i].width       = k->width;
         tracks[i].height      = k->height;
     }
@@ -421,7 +422,7 @@ static int rip_open(AVFormatContext *s)
 }
 
 /* A payload of the clip being read to every track it feeds (a DTS-HD
- * stream also feeds its core track): its PES time with the clip's wrap
+ * stream also feeds the DTS track taken out of it): its PES time with the clip's wrap
  * reference, in ticks; whether it lies in the clip's last 64 MiB. */
 static int feed(AVFormatContext *s, const AVPacket *pkt)
 {

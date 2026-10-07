@@ -3,7 +3,7 @@ sequence header gives the frame rate and the header flags; the frame header
 gives the picture type (PTYPE; for field pairs the 3-bit FPTYPE, Table 105)
 and the fields (RFF / RPTFRM); display order is counted (B pictures after a
 reference picture first, I pictures restart); sequence header + entry point
-make a key frame. The core's own cutter makes a unit of one frame with the
+make a key frame. FFmpeg's VC-1 parser, in disc mode, makes a unit of one frame with the
 headers before it and the user data after it; an end of sequence stays only
 after a second field. Streams built bit by bit here."""
 
@@ -81,7 +81,7 @@ class Sink:
 
 
 def run(units):
-    """Units (bytes, PES time) through the cutter and the video timing."""
+    """Units (bytes, PES time) through the frame step and the video timing."""
     cid = codec_id("vc1")
     sink = Sink()
 
@@ -91,17 +91,17 @@ def run(units):
         return 0
     keep = Handles()
     v = ffi.new("DRVideo **")
-    c = ffi.new("DRCutter **")
+    c = ffi.new("DRFrames **")
     st = ffi.new("DRVideoStats *")
     assert lib.ff_discrip_video_open(v, ffi.NULL, cid, 0, lib.tb_py_frame, keep(on_frame), lib.tb_py_event,
                                      keep(events_into(sink.events))) == 0
-    assert lib.ff_discrip_cutter_open(c, ffi.NULL, cid, fn("ff_discrip_video_unit"), v[0]) == 0
+    assert lib.ff_discrip_frames_open(c, ffi.NULL, cid, fn("ff_discrip_video_unit"), v[0]) == 0
     for data, t in units:
-        assert lib.ff_discrip_cutter_write(c[0], data, len(data), t) == 0
-    assert lib.ff_discrip_cutter_flush(c[0]) == 0
+        assert lib.ff_discrip_frames_write(c[0], data, len(data), t) == 0
+    assert lib.ff_discrip_frames_flush(c[0]) == 0
     assert lib.ff_discrip_video_flush(v[0]) == 0
     lib.ff_discrip_video_stats(v[0], st)
-    lib.ff_discrip_cutter_close(c)
+    lib.ff_discrip_frames_close(c)
     lib.ff_discrip_video_close(v)
     return sink, st
 
@@ -192,9 +192,9 @@ def test_skipped_frames_repeat_fields_too():
 
 
 def frames_of(stream, chunk):
-    """A stream through the cutter (fed chunk bytes at a time, no PES times)
+    """A stream through the frame step (fed chunk bytes at a time, no PES times)
     and the video stage: the frames' bytes in decode order, or the first
-    error the cutter returned."""
+    error the frame step returned."""
     cid = codec_id("vc1")
     out = []
 
@@ -204,20 +204,20 @@ def frames_of(stream, chunk):
         return 0
     keep = Handles()
     v = ffi.new("DRVideo **")
-    c = ffi.new("DRCutter **")
+    c = ffi.new("DRFrames **")
     assert lib.ff_discrip_video_open(v, ffi.NULL, cid, 0, lib.tb_py_frame, keep(on_bytes), ffi.NULL, ffi.NULL) == 0
-    assert lib.ff_discrip_cutter_open(c, ffi.NULL, cid, fn("ff_discrip_video_unit"), v[0]) == 0
+    assert lib.ff_discrip_frames_open(c, ffi.NULL, cid, fn("ff_discrip_video_unit"), v[0]) == 0
     err = 0
     for i in range(0, len(stream), chunk):
         part = stream[i:i + chunk]
-        err = lib.ff_discrip_cutter_write(c[0], part, len(part), AV_NOPTS_VALUE)
+        err = lib.ff_discrip_frames_write(c[0], part, len(part), AV_NOPTS_VALUE)
         if err < 0:
             break
     if err == 0:
-        err = lib.ff_discrip_cutter_flush(c[0])
+        err = lib.ff_discrip_frames_flush(c[0])
     if err == 0:
         assert lib.ff_discrip_video_flush(v[0]) == 0
-    lib.ff_discrip_cutter_close(c)
+    lib.ff_discrip_frames_close(c)
     lib.ff_discrip_video_close(v)
     return err if err < 0 else out
 
@@ -301,14 +301,14 @@ def test_print_units_of_a_file():
         return 0
     keep = Handles()
     v = ffi.new("DRVideo **")
-    c = ffi.new("DRCutter **")
+    c = ffi.new("DRFrames **")
     assert lib.ff_discrip_video_open(v, ffi.NULL, cid, 0, lib.tb_py_frame, keep(on_frame), ffi.NULL, ffi.NULL) == 0
-    assert lib.ff_discrip_cutter_open(c, ffi.NULL, cid, fn("ff_discrip_video_unit"), v[0]) == 0
+    assert lib.ff_discrip_frames_open(c, ffi.NULL, cid, fn("ff_discrip_video_unit"), v[0]) == 0
     for i in range(0, len(data), 2048):
-        assert lib.ff_discrip_cutter_write(c[0], data[i:i + 2048], len(data[i:i + 2048]), AV_NOPTS_VALUE) == 0
-    assert lib.ff_discrip_cutter_flush(c[0]) == 0
+        assert lib.ff_discrip_frames_write(c[0], data[i:i + 2048], len(data[i:i + 2048]), AV_NOPTS_VALUE) == 0
+    assert lib.ff_discrip_frames_flush(c[0]) == 0
     assert lib.ff_discrip_video_flush(v[0]) == 0
-    lib.ff_discrip_cutter_close(c)
+    lib.ff_discrip_frames_close(c)
     lib.ff_discrip_video_close(v)
     for pos, flags, dur in units:
         print(f"UNIT {pos} {int(bool(flags & F_KEY))} {int(bool(flags & F_DISCARD))} {dur // FIELD}")

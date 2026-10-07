@@ -704,8 +704,8 @@ end:
 }
 
 /* DTS stream `number` of clip: *hd = 1 when an extension substream follows
- * its first core frame (DTS-HD: a track with a core, plus the core as a track
- * of its own). 1 done, 0 failed (also when no unit is found). */
+ * its first core frame (DTS-HD: a track, plus the DTS stream inside it as a
+ * track of its own). 1 done, 0 failed (also when no unit is found). */
 static int probe_dts(void *logctx, DiscIOFS *fs, HDDVDAACS *aacs, HDDVDClip *clip, int number, int *hd)
 {
     Probe p;
@@ -720,7 +720,7 @@ static int probe_dts(void *logctx, DiscIOFS *fs, HDDVDAACS *aacs, HDDVDClip *cli
     if (ret) {
         *hd = p.dts_dep;
         av_log(logctx, AV_LOG_WARNING, "EVOB %s: DTS stream %d: %s [untested on real discs]\n", clip->evob->name,
-               number, *hd ? "DTS-HD (core + extension substream): listed with its core as a second track"
+               number, *hd ? "DTS-HD (a DTS stream with an extension): listed, and the DTS stream inside it as a second track"
                            : "DTS core");
     }
     av_free(p.buf);
@@ -845,7 +845,7 @@ static int probe_clip(Builder *b, HDDVDClip *clip, const HDDVDEvobAttr *a)
         }
         clip->probed[j]      = 1;
         clip->probe_codec[j] = codec;
-        clip->probe_core[j]  = hd;
+        clip->probe_dtshd[j] = hd;
     }
     return 1;
 }
@@ -876,7 +876,9 @@ static void subpic_size(const uint8_t *v, int *w, int *h)
 static int describe(Builder *b, const HDDVDClip *clip, const HDDVDEvobAttr *a, int i, HDDVDTrack *t)
 {
     memset(t, 0, sizeof(*t));
-    t->index = i;
+    t->index       = i;
+    t->inner_track = -1;
+    t->from_track  = -1;
     if (!i) {
         uint8_t v = a->raw[2];
         t->type  = AVMEDIA_TYPE_VIDEO;
@@ -985,17 +987,20 @@ static int build_title(Builder *b, HDDVDTitle *t)
                 continue;
             for (int m = 1; m < t->nb_tracks && !dup; m++)
                 dup = t->tracks[m].codec == k.codec && t->tracks[m].number == k.number &&
-                      t->tracks[m].core == (k.type == AVMEDIA_TYPE_AUDIO && clip->probe_core[k.number]);
+                      t->tracks[m].from_track < 0 &&
+                      (t->tracks[m].inner_track >= 0) == (k.type == AVMEDIA_TYPE_AUDIO && clip->probe_dtshd[k.number]);
             if (dup) {
                 av_log(b->log, AV_LOG_WARNING, "Title %s: %s stream %d is the same as an earlier one "
                        "and is left out\n", t->name, pass ? "sub-picture" : "audio", i);
                 continue;
             }
-            if (k.type == AVMEDIA_TYPE_AUDIO && clip->probe_core[k.number]) {
-                k.core = 1;
+            if (k.type == AVMEDIA_TYPE_AUDIO && clip->probe_dtshd[k.number]) {
+                /* DTS-HD, then the DTS stream inside it as a track of its own */
+                k.inner_track = t->nb_tracks + 1;
                 if ((ret = add_track(t, &k)) < 0)
                     return ret;
-                k.core = 2;                     /* its core, as a track of its own */
+                k.inner_track = -1;
+                k.from_track  = t->nb_tracks - 1;
             }
             if (k.codec == AV_CODEC_ID_PCM_DVD)
                 untested(b, 2, "LPCM audio");

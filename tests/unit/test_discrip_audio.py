@@ -89,7 +89,7 @@ def test_ac3_track_keeps_only_its_ac3_syncframes():
         for k, o in enumerate(r.outs):
             assert o.bytes == ac3(k), f"stream type {strmtyp}"
             assert o.dur == 34560000
-        assert r.audio.cut_bytes + r.cutter.skipped_bytes == 6 * 512, f"stream type {strmtyp}"
+        assert r.audio.cut_bytes + r.frames.skipped_bytes == 6 * 512, f"stream type {strmtyp}"
         assert r.audio.review == 0
 
 
@@ -98,7 +98,7 @@ def test_eac3_track_leaves_out_ac3_syncframes():
     r = run("eac3", [(stream, 0)])
     assert len(r.outs) == 6
     assert all(len(o.bytes) == 512 and o.bytes[2] & 0xC0 == 0 for o in r.outs)
-    assert r.cutter.skipped == 6
+    assert r.frames.skipped == 6
     # the payload's time goes to the first UNIT starting in it: the AC-3 frame
     # before it is not a unit of this track
     assert r.outs[0].time == 0

@@ -341,14 +341,15 @@ def dts_extss(size, asset):
     return bytes(f)
 
 
-def test_a_dts_stream_is_dts_or_dts_hd_with_its_core_as_a_second_track():
+def test_a_dts_stream_is_dts_or_dts_hd_with_the_dts_stream_inside_as_a_second_track():
     core = dts_core(900)
     assert dts([pack([ps1_packet(0x88, 90000, core + core)])]) == \
         ["title A.EVO", "  0|video|vc1|0|0|", "  1|audio|dts|1|0|"]
-    # an extension substream after the first core frame: DTS-HD, then its core
+    # an extension substream after the first core frame: DTS-HD, then the DTS
+    # stream inside it as a track taken out of it
     unit = dts_core(600) + dts_extss(200, 184)
     assert dts([pack([ps1_packet(0x88, 90000, unit + unit)])]) == \
-        ["title A.EVO", "  0|video|vc1|0|0|", "  1|audio|dts|1|0||with core", "  2|audio|dts|1|0||core"]
+        ["title A.EVO", "  0|video|vc1|0|0|", "  1|audio|dts|1|0||gives track 2", "  2|audio|dts|1|0||from track 1"]
 
 
 def test_a_dts_stream_without_a_frame_or_with_a_bad_first_header_leaves_the_title_out():

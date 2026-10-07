@@ -1,7 +1,7 @@
 """libavformat/discrip_lpcm.c and the LPCM rules of the rip core: the audio
 frame header of DVD-Video (3 bytes) and HD DVD (5 bytes, read in the DVD
 layout), the sample conversion to little-endian PCM, and units of one frame
-through the cutter and the audio stage. The 16-bit stereo 48 kHz case is the
+through the frame step and the audio stage. The 16-bit stereo 48 kHz case is the
 one the reference program was observed on (a byte swap of each sample); the
 other sample sizes follow the DVD-Video sample layout."""
 
@@ -85,19 +85,19 @@ def test_units_are_frames_of_the_stated_size():
         return 0
     keep = Handles()
     audio = ffi.new("DRAudio **")
-    c = ffi.new("DRCutter **")
+    c = ffi.new("DRFrames **")
     assert lib.ff_discrip_audio_open(audio, ffi.NULL, cid, 0, lib.tb_py_frame, keep(on_frame)) == 0
-    assert lib.ff_discrip_cutter_open(c, ffi.NULL, cid, fn("ff_discrip_audio_unit"), audio[0]) == 0
+    assert lib.ff_discrip_frames_open(c, ffi.NULL, cid, fn("ff_discrip_audio_unit"), audio[0]) == 0
     lib.ff_discrip_audio_set_state(audio[0], p)
     for k in range(0, len(stream), 2000):
         chunk = stream[k:k + 2000]
         assert header(p, [k // 2000, 0x01, 0x80], False) == 0
         # the frame format for FFmpeg's LPCM parser, as the title gives it
-        lib.ff_discrip_cutter_set_pcm_format(c[0], p.channels, p.bits, p.spf)
-        assert lib.ff_discrip_cutter_write(c[0], chunk, len(chunk), (k // 2000) * 1000) == 0
-    assert lib.ff_discrip_cutter_flush(c[0]) == 0
+        lib.ff_discrip_frames_set_pcm_format(c[0], p.channels, p.bits, p.spf)
+        assert lib.ff_discrip_frames_write(c[0], chunk, len(chunk), (k // 2000) * 1000) == 0
+    assert lib.ff_discrip_frames_flush(c[0]) == 0
     assert lib.ff_discrip_audio_flush(audio[0]) == 0
-    lib.ff_discrip_cutter_close(c)
+    lib.ff_discrip_frames_close(c)
     lib.ff_discrip_audio_close(audio)
     assert len(outs) == 4100 // 320
     for k, o in enumerate(outs):

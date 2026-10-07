@@ -16,7 +16,10 @@ One name per job, used everywhere (code comments, logs, docs):
 | disc info | the description of a disc for the caller's overview (not the streams a title is ripped from) | `discinfo.h` |
 | format part | knows one disc format's structure: titles, clips, tracks, chapters, keys; runs the line below for a title | DVD (`dvdvideo*`), HD DVD (`hddvd*`), Blu-ray (to add) |
 | demuxer | splits a container into packets, one pile per stream | FFmpeg's `mpeg.c` (VOB / EVOB packs), `mpegts.c` (Blu-ray) |
-| parser | cuts a stream's packets into whole frames, each with its time | FFmpeg's `*_parser.c` |
+| parser | finds where each frame of one stream starts and ends | FFmpeg's `*_parser.c` (disc mode: `PARSER_FLAG_DISC`) |
+| frame step | gives a track's payloads to its parser and the PES times to the frames | `discrip_frames.c` |
+| bitstream filter | changes frames that are already found (e.g. keeps only the DTS frame of a DTS-HD frame) | FFmpeg's `bsf/*.c` |
+| joiner | joins a title's clips into one timeline and fixes the joins (gaps, overlaps, frames at both sides) | `discrip_join.c`, `discrip_junction.c`, `discrip_pcm.c` |
 | title timeline | puts a title's frames on one timeline: clips joined, frame timing, audio gaps and overlaps, chapters, checks of the output | `discrip_*` (what remains of them, see below) |
 | decoder | turns frames into pictures and sound: not used to rip; only the end check reads our output back with it | FFmpeg's decoders |
 | writer | writes frames into files: stream files, Matroska | `src/disc-remuxer/writer.c` |
@@ -64,15 +67,15 @@ Rules:
 | `discdec.c`, `disc.h` (step 1, done) | the disc layer, the only disc demuxer the program opens; `disc.h` is what a format part gives it |
 | `dvdvideodec.c`, `dvdvideo_*.c` | the DVD format part (no longer a demuxer of its own); its playback reading through libdvdnav (`dvdvideo_play.c`) gives way to the navigation scan + title plan, with sectors fed into `mpeg.c` |
 | `hddvddec.c`, `hddvd_*.c` | the HD DVD format part `ff_disc_hddvd` (step 1, done: no demuxer of its own any more) |
-| `hddvd_tracks.c` | stays (stream table, languages); its content probe reads through the line instead of its own pack reader and frame cutter |
+| `hddvd_tracks.c` | stays (stream table, languages); its content probe reads through the line instead of its own pack reader and frame finding |
 | `discrip_pack.c`, `discrip_ps.c` (step 2, done) | moved into `mpeg.c`: option `disc` (one pack per 2048-byte sector, the sector rules) and `lpcm_header` (3 / 5 bytes, always LPCM) |
-| `discrip_units.c` (the cutter stage) | stays, shrunk to the time pairing (a packet's time goes to the first frame whose picture header lies in it, the MPEG rule FFmpeg's read loop does not have) in front of FFmpeg's parsers (decided in step 3: FFmpeg's read loop pairs times with where a frame begins and keeps only 4 packets' times) |
+| `discrip_units.c` (was the cutter; now `discrip_frames.c`, the frame step) | stays, shrunk to the time pairing (a packet's time goes to the first frame whose picture header lies in it, the MPEG rule FFmpeg's read loop does not have) in front of FFmpeg's parsers (decided in step 3: FFmpeg's read loop pairs times with where a frame begins and keeps only 4 packets' times) |
 | `discrip_mpv.c` | stays: picture rules for the video timing (FFmpeg's `mpegvideo_parser.c` already cuts the frames) |
 | `discrip_vc1.c` | step 3, done: the frame cutting rules are in `vc1_parser.c` (disc mode); the picture timing stays |
 | `discrip_mlp.c` | step 3, done: the access unit cutting is in `mlp_parser.c` (disc mode); the unit check, timing and the seamless join stay |
 | `discrip_spu.c` | step 3, done: the unit cutting is in `dvdsub_parser.c` (disc mode); the unit check and the units' times stay |
 | `discrip_lpcm.c` | stays: LPCM has no frames in the bitstream; the frame size (samples per output frame) is the title timeline's choice |
-| `discrip_codecs.c` (codec table) | stays: which frames belong to a track (the checks after the parser), durations, anchors, output checks; the cutters it named are in FFmpeg's parsers (`disc_parser`) |
+| `discrip_codecs.c` (codec table) | stays: which frames belong to a track (the checks after the parser), durations, anchors, output checks; the frame cutting it named is in FFmpeg's parsers (`disc_parser`) |
 | `discrip_mix.c` (copied FFmpeg downmix) | replaced by libswresample |
 | `discrip_cc.c`, `discrip_ccx.c` | stay with the title timeline (caption track; the caption converter is a helper program) |
 | `discrip_title.c`, `_join.c`, `_video.c`, `_audio.c`, `_junction.c`, `_pcm.c`, `_seamless.c`, `_chapters.c`, `_verify.c` | the title timeline (stay) |
@@ -95,7 +98,7 @@ their logs for changed warnings).
    the start of each title is read for them.
 2. **Demuxer (done):** `mpeg.c` got the disc options; the HD DVD part feeds
    it; `discrip_pack.c` and `discrip_ps.c` are gone.
-3. **Parsers (done):** the rip core's own cutters are in FFmpeg's parsers,
+3. **Parsers (done):** the rip core's own frame cutting is in FFmpeg's parsers,
    behind `PARSER_FLAG_DISC` (`parser.c`'s disc cut under the parser
    contract): sub-pictures (`dvdsub_parser.c`), VC-1 (`vc1_parser.c`), TrueHD
    / MLP (`mlp_parser.c`); MPEG video and the audio codecs were already cut by
@@ -120,9 +123,10 @@ left.
 The program opens `disc`, which hands HD DVD images to the HD DVD part. The
 HD DVD part reads a title's blocks through the readers and decryption, feeds
 them into FFmpeg's `mpeg.c` as disc sectors (option `disc`), and runs
-the packets through the rip core (`discrip_*`: its cutter stage runs FFmpeg's
-parsers for MPEG video, AC-3 / E-AC-3, DTS, MPEG audio and AAC, its own
-cutters for VC-1, TrueHD / MLP, LPCM and sub-pictures). The DVD-Video
+the packets through the rip core (`discrip_*`): its frame step gives each
+track's payloads to the track's FFmpeg parser (in disc mode where the parser
+has the disc reader's rule: VC-1, TrueHD / MLP, sub-pictures, LPCM) and
+pairs PES times with the frames, then the title timeline. The DVD-Video
 demuxer (FFmpeg's, split into helper files, every read through the readers,
 CSS in the demuxer) still reads by playback through libdvdnav into FFmpeg's
 `mpeg.c` and is not opened by the program.

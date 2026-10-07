@@ -773,8 +773,10 @@ char *ff_hddvd_titles_dump(const HDDVDTitlePlan *plan)
             const HDDVDTrack *r = &t->tracks[k];
             av_bprintf(&bp, "  track %d|%s|%s|%d|%d|%s", k, av_get_media_type_string(r->type),
                        avcodec_get_name(r->codec), r->index, r->number, r->lang);
-            if (r->core)
-                av_bprintf(&bp, "|%s", r->core == 1 ? "with core" : "core");
+            if (r->inner_track >= 0)
+                av_bprintf(&bp, "|gives track %d", r->inner_track);
+            if (r->from_track >= 0)
+                av_bprintf(&bp, "|from track %d", r->from_track);
             if (r->type == AVMEDIA_TYPE_SUBTITLE)
                 av_bprintf(&bp, "|%dx%d|%08"PRIx32, r->width, r->height, r->palette ? r->palette[0] : 0);
             av_bprintf(&bp, "\n");

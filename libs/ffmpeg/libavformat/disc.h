@@ -77,7 +77,8 @@ static inline void *ff_disc_part(AVFormatContext *s)
  *  NULL: out of memory. Strings are the format part's, kept until close;
  *  a title is finished before the next one is added. */
 DiscTitleInfo *ff_disc_add_title(AVFormatContext *s);
-/** A new stream / chapter / file at the end of title t (zeroed); NULL / < 0: out of memory. */
+/** A new stream (zeroed, no linked streams) / chapter / file at the end of
+ *  title t; NULL / < 0: out of memory. */
 DiscStreamInfo *ff_disc_title_add_stream(DiscTitleInfo *t);
 DiscChapterInfo *ff_disc_title_add_chapter(DiscTitleInfo *t);
 int ff_disc_title_add_file(DiscTitleInfo *t, const char *name);

@@ -1,6 +1,6 @@
 /*
  * The shared rip core: one title through all stages. Per segment each track
- * has a cutter and a timing stage (video grid, audio durations, sub-pictures
+ * has a frame step (FFmpeg's parser) and a timing stage (video grid, audio durations, sub-pictures
  * on the video grid); the joiner lays the segments end to end; each audio
  * output track then passes the junction (or the PCM strategy for linear
  * PCM); every output frame is checked and queued for the format demuxer.
@@ -43,14 +43,14 @@ typedef struct Track {
     DRTitle      *title;
     int           index;
     DRTitleTrack  cfg;
-    DRLpcm        lpcm;          /* linear PCM: the headers seen (shared by cutter and audio stage) */
+    DRLpcm        lpcm;          /* linear PCM: the headers seen (the frame step's format and the audio stage) */
 
     /* the current segment */
-    DRCutter     *cut;
+    DRFrames     *cut;
     DRVideo      *video;
     DRAudio      *audio;
     DRSpu        *spu;
-    int64_t       bytes;         /* payload bytes given to the cutter */
+    int64_t       bytes;         /* payload bytes given to the frame step */
     int64_t       tail_from;     /* stream offset where the payloads from the source's tail begin, -1 */
 
     /* the output side */
@@ -670,7 +670,7 @@ static int seg_open(DRTitle *t)
         }
         if (ret < 0)
             return ret;
-        if ((ret = ff_discrip_cutter_open(&k->cut, t->log, k->cfg.codec, unit, stage)) < 0)
+        if ((ret = ff_discrip_frames_open(&k->cut, t->log, k->cfg.codec, unit, stage)) < 0)
             return ret;
         if (k->cfg.codec == AV_CODEC_ID_PCM_DVD)
             ff_discrip_audio_set_state(k->audio, &k->lpcm);
@@ -684,7 +684,7 @@ static void seg_close(DRTitle *t)
 {
     for (int i = t->cfg.nb_tracks - 1; i >= 0; i--) {
         Track *k = &t->t[i];
-        ff_discrip_cutter_close(&k->cut);
+        ff_discrip_frames_close(&k->cut);
         ff_discrip_spu_close(&k->spu);
         ff_discrip_audio_close(&k->audio);
         ff_discrip_video_close(&k->video);
@@ -698,13 +698,13 @@ static int seg_end(DRTitle *t)
     Track *v = &t->t[0];
     int ret;
 
-    if ((ret = ff_discrip_cutter_flush(v->cut)) < 0 || (ret = ff_discrip_video_flush(v->video)) < 0)
+    if ((ret = ff_discrip_frames_flush(v->cut)) < 0 || (ret = ff_discrip_video_flush(v->video)) < 0)
         return ret;
     for (int i = 1; i < t->cfg.nb_tracks; i++) {
         Track *k = &t->t[i];
         if (k->cfg.kind == DR_KIND_CAPTION)
             continue;
-        if ((ret = ff_discrip_cutter_flush(k->cut)) < 0)
+        if ((ret = ff_discrip_frames_flush(k->cut)) < 0)
             return ret;
         ret = k->spu ? ff_discrip_spu_flush(k->spu) : ff_discrip_audio_flush(k->audio);
         if (ret < 0)
@@ -824,14 +824,14 @@ static int title_payload(DRTitle *t, int track, const uint8_t *data, int size, i
         if ((ret = ff_discrip_lpcm_header(&k->lpcm, t->log, data, h, t->cfg.lpcm_hd)) < 0)
             return ret;
         /* the frame format for FFmpeg's LPCM parser (DVD-Video / HD DVD frames) */
-        ff_discrip_cutter_set_pcm_format(k->cut, k->lpcm.channels, k->lpcm.bits, k->lpcm.spf);
+        ff_discrip_frames_set_pcm_format(k->cut, k->lpcm.channels, k->lpcm.bits, k->lpcm.spf);
         data += h;
         size -= h;
     }
     if (tail && k->tail_from < 0)
         k->tail_from = k->bytes;
     k->bytes += size;
-    return ff_discrip_cutter_write(k->cut, data, size, time);
+    return ff_discrip_frames_write(k->cut, data, size, time);
 }
 
 static int title_finish(DRTitle *t)
@@ -902,7 +902,7 @@ int ff_discrip_title_frame(DRTitle *t, int *track, DRFrame *f)
 }
 
 /* A failure leaves a stage in the middle of its work (a payload half given
- * to a cutter, frames half handed on): the title stays failed, every later
+ * to a frame step, frames half handed on): the title stays failed, every later
  * call returns the same error instead of going on with broken state. */
 static int sticky(DRTitle *t, int ret)
 {

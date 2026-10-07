@@ -88,6 +88,15 @@ static void size_text(char *buf, size_t size, int64_t bytes)
     snprintf(buf, size, "%"PRId64".%d %s", tenths / 10, (int)(tenths % 10), gb ? "GB" : "MB");
 }
 
+/* A linked stream's index for JSON, or null (-1: none). */
+static const char *json_index(char *buf, size_t size, int v)
+{
+    if (v < 0)
+        return "null";
+    snprintf(buf, size, "%d", v);
+    return buf;
+}
+
 /* A stream detail for JSON: the number, or null when not known (0). */
 static const char *json_num(char *buf, size_t size, int64_t v)
 {
@@ -108,16 +117,18 @@ static void title_overview(const DiscTitleInfo *t, int detail)
     size_text(size, sizeof(size), t->size);
     for (int i = 0; i < t->nb_streams; i++) {
         const DiscStreamInfo *k = &t->streams[i];
-        char jc[64], jsl[16], n1[24], n2[24], n3[24], n4[24], n5[24], n6[24];
+        char jc[64], jsl[16], n1[24], n2[24], n3[24], n4[24], n5[24], n6[24], ji[24], jf[24];
         nv += k->type == AVMEDIA_TYPE_VIDEO;
         na += k->type == AVMEDIA_TYPE_AUDIO;
         ns += k->type == AVMEDIA_TYPE_SUBTITLE;
         snprintf(streams + strlen(streams), sizeof(streams) - strlen(streams),
-                 "%s{\"index\":%d,\"kind\":\"%s\",\"codec\":%s,\"language\":%s,\"core\":%d,\"width\":%s,"
+                 "%s{\"index\":%d,\"kind\":\"%s\",\"codec\":%s,\"language\":%s,\"inner_track\":%s,"
+                 "\"from_track\":%s,\"width\":%s,"
                  "\"height\":%s,\"channels\":%s,\"sample_rate\":%s,\"bits\":%s,\"bit_rate\":%s}",
                  i ? "," : "", i, av_get_media_type_string(k->type),
                  json_str(jc, sizeof(jc), codec_label(k->codec, AV_PROFILE_UNKNOWN)),
-                 json_str(jsl, sizeof(jsl), k->language), k->core, json_num(n1, sizeof(n1), k->width),
+                 json_str(jsl, sizeof(jsl), k->language), json_index(ji, sizeof(ji), k->inner_track),
+                 json_index(jf, sizeof(jf), k->from_track), json_num(n1, sizeof(n1), k->width),
                  json_num(n2, sizeof(n2), k->height), json_num(n3, sizeof(n3), k->channels),
                  json_num(n4, sizeof(n4), k->sample_rate), json_num(n5, sizeof(n5), k->bits),
                  json_num(n6, sizeof(n6), k->bit_rate));
@@ -139,12 +150,15 @@ static void title_overview(const DiscTitleInfo *t, int detail)
                  t->selected ? "" : ", not selected (shorter than the minimum length)");
         for (int i = 0; i < t->nb_streams; i++) {
             const DiscStreamInfo *k = &t->streams[i];
-            char extra[64] = "";
+            char extra[64] = "", link[96] = "";
             if (k->type == AVMEDIA_TYPE_SUBTITLE && k->width)
                 snprintf(extra, sizeof(extra), "  %dx%d", k->width, k->height);
+            if (k->from_track >= 0)
+                snprintf(link, sizeof(link), "  (taken out of track %d)", k->from_track);
+            else if (k->inner_track >= 0)
+                snprintf(link, sizeof(link), "  (track %d is taken out of it)", k->inner_track);
             log_text(LOG_INFO, "       %-2d %-8s %-8s %-3s%s%s", i, av_get_media_type_string(k->type),
-                     codec_label(k->codec, AV_PROFILE_UNKNOWN), k->language, extra,
-                     k->core == 1 ? "  (with core)" : k->core == 2 ? "  (core)" : "");
+                     codec_label(k->codec, AV_PROFILE_UNKNOWN), k->language, extra, link);
         }
     }
     log_json("title", "\"index\":%d,\"name\":%s,\"duration\":%.3f,\"chapters\":%d,\"size\":%"PRId64",\"language\":%s,"

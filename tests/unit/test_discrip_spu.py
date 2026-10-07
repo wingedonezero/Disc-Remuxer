@@ -75,38 +75,38 @@ def run(payloads, subs_first, canvas=(0, 0)):
         return 0
     keep = Handles()
     v = ffi.new("DRVideo **")
-    vc = ffi.new("DRCutter **")
+    vc = ffi.new("DRFrames **")
     s = ffi.new("DRSpu **")
-    sc = ffi.new("DRCutter **")
+    sc = ffi.new("DRFrames **")
     st = ffi.new("DRSpuStats *")
-    cut = ffi.new("DRCutterStats *")
+    cut = ffi.new("DRFramesStats *")
     t = ffi.new("int64_t *")
     assert lib.ff_discrip_video_open(v, ffi.NULL, vid, 0, lib.tb_py_frame, keep(drop), ffi.NULL, ffi.NULL) == 0
-    assert lib.ff_discrip_cutter_open(vc, ffi.NULL, vid, fn("ff_discrip_video_unit"), v[0]) == 0
+    assert lib.ff_discrip_frames_open(vc, ffi.NULL, vid, fn("ff_discrip_video_unit"), v[0]) == 0
     assert lib.ff_discrip_spu_open(s, ffi.NULL, 1, v[0], canvas[0], canvas[1], lib.tb_py_frame, keep(on_frame), lib.tb_py_event,
                                    keep(events_into(events))) == 0
-    assert lib.ff_discrip_cutter_open(sc, ffi.NULL, sid, fn("ff_discrip_spu_unit"), s[0]) == 0
+    assert lib.ff_discrip_frames_open(sc, ffi.NULL, sid, fn("ff_discrip_spu_unit"), s[0]) == 0
     snap = lib.ff_discrip_video_snap(v[0], BASE, t)
 
     def subs():
         for data, time in payloads:
-            assert lib.ff_discrip_cutter_write(sc[0], data, len(data), AV_NOPTS_VALUE if time is None else time) == 0
+            assert lib.ff_discrip_frames_write(sc[0], data, len(data), AV_NOPTS_VALUE if time is None else time) == 0
     if subs_first:
         subs()
         assert out == [], "units wait for the video's grid"
     for a, b, disp, _ in pictures(M2V):
-        assert lib.ff_discrip_cutter_write(vc[0], M2V[a:b], b - a, BASE + disp * FRAME) == 0
+        assert lib.ff_discrip_frames_write(vc[0], M2V[a:b], b - a, BASE + disp * FRAME) == 0
     if not subs_first:
         subs()
-    assert lib.ff_discrip_cutter_flush(vc[0]) == 0
+    assert lib.ff_discrip_frames_flush(vc[0]) == 0
     assert lib.ff_discrip_video_flush(v[0]) == 0
-    assert lib.ff_discrip_cutter_flush(sc[0]) == 0
+    assert lib.ff_discrip_frames_flush(sc[0]) == 0
     assert lib.ff_discrip_spu_flush(s[0]) == 0
     lib.ff_discrip_spu_stats(s[0], st)
-    lib.ff_discrip_cutter_stats(sc[0], cut)
-    lib.ff_discrip_cutter_close(sc)
+    lib.ff_discrip_frames_stats(sc[0], cut)
+    lib.ff_discrip_frames_close(sc)
     lib.ff_discrip_spu_close(s)
-    lib.ff_discrip_cutter_close(vc)
+    lib.ff_discrip_frames_close(vc)
     lib.ff_discrip_video_close(v)
     return Run(out, events, st, cut, snap)
 

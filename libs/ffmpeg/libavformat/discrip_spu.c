@@ -1,7 +1,8 @@
 /*
- * The shared rip core: sub-picture units (DVD-Video and HD DVD). The unit
- * cutter, each unit's duration from its display control sequences, and its
- * time on the video grid of its segment.
+ * The shared rip core: sub-picture units (DVD-Video and HD DVD), as FFmpeg's
+ * DVD subtitle parser finds them in disc mode: each unit's check, its
+ * duration from its display control sequences, and its time on the video
+ * grid of its segment.
  *
  * This file is part of FFmpeg.
  *
@@ -240,7 +241,7 @@ int ff_discrip_spu_unit(void *opaque, const DRUnit *u)
 
     s->st.units++;
     if (!control(u->data, u->size, &c)) {
-        av_log(s->log, AV_LOG_ERROR, "Rip core: sub-picture track %d: a unit the cutter passed does not parse\n",
+        av_log(s->log, AV_LOG_ERROR, "Rip core: sub-picture track %d: a unit the parser passed does not parse\n",
                s->track);
         return AVERROR_BUG;
     }

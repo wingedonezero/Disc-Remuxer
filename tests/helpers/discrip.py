@@ -99,34 +99,34 @@ def event_dict(ev):
 class Run:
     outs: list
     audio: object
-    cutter: object
+    frames: object
 
 
 def run(codec, payloads, marker=None, flags=0):
-    """Payloads [(bytes, time or None)] of one segment through the cutter
-    and the audio stage (flags: audio flags, e.g. DR_AUDIO_CORE_ONLY)."""
+    """Payloads [(bytes, time or None)] of one segment through the frame step
+    and the audio stage (flags: audio flags, e.g. DR_AUDIO_EXTRACTED)."""
     cid = codec_id(codec)
     assert cid is not None
     outs = []
     keep = Handles()
     a = ffi.new("DRAudio **")
-    c = ffi.new("DRCutter **")
+    c = ffi.new("DRFrames **")
     assert lib.ff_discrip_audio_open(a, ffi.NULL, cid, flags, lib.tb_py_frame, keep(collect(outs))) == 0
-    assert lib.ff_discrip_cutter_open(c, ffi.NULL, cid, fn("ff_discrip_audio_unit"), a[0]) == 0
+    assert lib.ff_discrip_frames_open(c, ffi.NULL, cid, fn("ff_discrip_audio_unit"), a[0]) == 0
     for data, time in payloads:
-        assert lib.ff_discrip_cutter_write(c[0], bytes(data), len(data),
+        assert lib.ff_discrip_frames_write(c[0], bytes(data), len(data),
                                            AV_NOPTS_VALUE if time is None else time) == 0
-    assert lib.ff_discrip_cutter_flush(c[0]) == 0
+    assert lib.ff_discrip_frames_flush(c[0]) == 0
     if marker is not None:
         assert lib.ff_discrip_audio_marker(a[0], marker) == 0
     assert lib.ff_discrip_audio_flush(a[0]) == 0
     audio = ffi.new("DRAudioStats *")
-    cutter = ffi.new("DRCutterStats *")
+    frames = ffi.new("DRFramesStats *")
     lib.ff_discrip_audio_stats(a[0], audio)
-    lib.ff_discrip_cutter_stats(c[0], cutter)
-    lib.ff_discrip_cutter_close(c)
+    lib.ff_discrip_frames_stats(c[0], frames)
+    lib.ff_discrip_frames_close(c)
     lib.ff_discrip_audio_close(a)
-    return Run(outs, audio, cutter)
+    return Run(outs, audio, frames)
 
 
 def dur(samples, rate):

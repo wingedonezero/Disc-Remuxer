@@ -230,9 +230,10 @@ static int header_dts(DRAudio *a, const DRFrame *f, DRAudioHeader *out)
     return -1;
 }
 
-/* A unit with a core is timed by its core frame header (npcmblocks x 32
- * samples); a core-only track keeps only the core frame. A unit without a
- * core is timed by FFmpeg's parser (extension substream asset) and reviewed. */
+/* A unit with a core frame is timed by its core frame header (npcmblocks x
+ * 32 samples). A unit without one is timed by FFmpeg's parser (extension
+ * substream asset) and reviewed; a DTS track taken out of DTS-HD has no
+ * such units. */
 static int duration_dts(DRAudio *a, DRFrame *f)
 {
     const DRAudioHeader *s = ff_discrip_audio_header(a);
@@ -242,7 +243,7 @@ static int duration_dts(DRAudio *a, DRFrame *f)
     if (dts_core(f->data, f->size, &h) >= 0) {
         rate    = dts_rates[h.sr_code];
         samples = h.npcmblocks * 32;
-    } else if (dts_exss_sync(f->data, f->size) && !(ff_discrip_audio_flags(a) & DR_AUDIO_CORE_ONLY) &&
+    } else if (dts_exss_sync(f->data, f->size) && !(ff_discrip_audio_flags(a) & DR_AUDIO_EXTRACTED) &&
                f->samples > 0 && f->rate > 0) {
         ff_discrip_audio_review(a, REVIEW_DTS_SUBSTREAM_ONLY, "DTS-HD extension substream without a core "
                                 "(DTS Express / LBR), timed by FFmpeg's parser");
@@ -261,7 +262,7 @@ static int duration_dts(DRAudio *a, DRFrame *f)
  * alone (FFmpeg's dca_core filter takes the DTS-HD extension off). */
 static const char *filter_dts(int flags)
 {
-    return flags & DR_AUDIO_CORE_ONLY ? "dca_core" : NULL;
+    return flags & DR_AUDIO_EXTRACTED ? "dca_core" : NULL;
 }
 
 static const DRAudioRules audio_dts = {

@@ -148,7 +148,7 @@ static void sequence(DRVideo *v, Vc1State *s, const uint8_t *p, const uint8_t *e
     s->psf       = psf;
 }
 
-/* A unit as the cutter cuts it holds at most one frame (start code 0x0D)
+/* A unit as FFmpeg's VC-1 parser finds it in disc mode holds at most one frame (start code 0x0D)
  * and its second field (0x0C), with the headers before it and the user data
  * after it; a unit without a frame is left out. */
 static int picture_vc1(DRVideo *v, const DRFrame *f, DRPicture *pic)

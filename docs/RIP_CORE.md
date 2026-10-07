@@ -40,7 +40,7 @@ prefix only where it must differ.
 for each payload (track, bytes, PES time, from the last 64 MiB of the
 segment's source or not) and `ff_discrip_title_finish()` at the end, and
 takes the output frames with `ff_discrip_title_frame()`. Per segment each
-track has a cutter and its timing stage; the joiner's frames go to the
+track has a frame step (FFmpeg's parser) and its timing stage; the joiner's frames go to the
 junction (or the PCM strategy), every output frame to the checks. Audio
 frames wait until the video has been handed on past their time (the
 junction compares them with the video). Events of the video and
@@ -65,16 +65,19 @@ track within its first 2000 sectors (a packet that starts a sector) minus
 300 s; a PTS below it gets +2^33. Packets before the reference is found
 wait for it; none in those sectors fails the title.
 
-## 3. Stage 1: units and timestamp records
+## 3. Stage 1: frames and timestamp records (`discrip_frames.c`)
 
 - Each payload is one record {byte position, length, PTS}. The payload goes
-  to the track's unit cutter (`av_parser_parse2`; the parser's own timestamp
-  logic is not used).
+  to the track's FFmpeg parser (`av_parser_parse2`; the parser's own
+  timestamp logic is not used), which finds the frames ("units").
 - A unit gets a record's PTS when it is the FIRST unit that starts inside
   that record's bytes. Every later unit of the same payload has no
   timestamp. A record that ends before the next unit starts is dropped.
-- The cutter is FFmpeg's parser where it cuts the same; the core's own unit
-  rule where it must differ (TrueHD / MLP, LPCM, sub-pictures, VC-1). VC-1:
+- Every codec's frames are found by its FFmpeg parser; where the disc
+  reader's rule differs from the parser's ordinary one, the parser has it
+  in its disc mode (`PARSER_FLAG_DISC`; TrueHD / MLP, sub-pictures, VC-1,
+  and the LPCM parser that FFmpeg did not have): the parser says for each
+  chunk whether it is a frame or bytes that are no frame (left out). VC-1:
   a unit is one frame with the headers before it and the user data after it
   (frame / field user data stays with its frame; FFmpeg's parser starts the
   next unit there); an end of sequence stays only after a second field; an
@@ -89,14 +92,14 @@ logged with the reason; nothing is guessed.
 
 | entry | meaning |
 |---|---|
-| family | `timed` (duration and sync rule below) or `stream` (duration from the cutter, never a sync unit) |
-| cutter | parser id, or our copy |
+| family | `timed` (duration and sync rule below) or `stream` (duration from the parser, never a sync unit) |
+| parser | FFmpeg's parser; `disc_parser`: its disc mode |
 | duration | rule for each unit (e.g. AC-3: samples / rate from the stream's first header; TrueHD: per major-sync access unit) |
 | sync unit | whether a unit may start a drop / join (AC-3, E-AC-3, DTS: every frame; TrueHD: major-sync units only) |
 | decoder | FFmpeg decoder for the overlap search, or none |
-| core cut | unit cut to its core frame (when the track is a derived core) |
+| filter | FFmpeg bitstream filter each unit goes through (`eac3_core`: an AC-3 track; `dca_core`: a DTS track taken out of a DTS-HD stream) |
 | video only | units per frame (2 = fields), frame-rate source, display-order number and its wrap period |
-| sub-picture only | own cutter (unit size from its header); duration from the display-stop command; snapped to the video grid |
+| sub-picture only | units found by FFmpeg's DVD subtitle parser in disc mode (unit size from its header); duration from the display-stop command; snapped to the video grid |
 
 ## 5. The format profile
 

@@ -67,7 +67,7 @@ def test_a_major_sync_au_with_a_bad_checksum_is_not_a_unit():
     stream[offset + 12] ^= 0x01  # inside the major sync block, covered by its checksum
     stream = bytes(stream)
     r = run("truehd", [(stream, 5)])
-    assert r.cutter.skipped == 1, "the damaged AU is left out"
+    assert r.frames.skipped == 1, "the damaged AU is left out"
     assert len(r.outs) == len(units) - 1
     assert all(o.bytes != stream[offset:offset + len(units[second_major])] for o in r.outs)
     assert r.outs[1].time == AV_NOPTS_VALUE
@@ -82,7 +82,7 @@ def test_junk_between_aus_is_skipped_up_to_the_next_major_sync():
     next_major = next(k for k in range(10, len(units)) if is_major(units[k]))
     r = run("truehd", [(stream, 5)])
     lost = sum(len(a) for a in units[10:next_major])
-    assert r.cutter.skipped_bytes == 100 + lost
+    assert r.frames.skipped_bytes == 100 + lost
     assert len(r.outs) == 10 + len(units) - next_major
     assert r.outs[10].bytes == units[next_major]
 
@@ -91,4 +91,4 @@ def test_a_cut_off_last_au_is_not_a_unit():
     units = aus(THD)
     r = run("truehd", [(THD[:-5], 5)])
     assert len(r.outs) == len(units) - 1
-    assert r.cutter.skipped_bytes == len(units[120]) - 5
+    assert r.frames.skipped_bytes == len(units[120]) - 5

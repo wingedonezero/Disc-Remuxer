@@ -183,10 +183,10 @@ typedef struct DRUnit {
 } DRUnit;
 
 /** Called for every unit, in stream order. A negative return stops the
- *  cutter and is returned by the call that produced the unit. */
+ *  frame step and is returned by the call that produced the unit. */
 typedef int (*DRUnitCb)(void *opaque, const DRUnit *unit);
 
-typedef struct DRCutterStats {
+typedef struct DRFramesStats {
     int64_t bytes;         /**< payload bytes written */
     int64_t records;       /**< payloads written with a time */
     int64_t units;         /**< units given to the callback */
@@ -195,12 +195,13 @@ typedef struct DRCutterStats {
     int64_t skipped;       /**< parser outputs that are not units (left out) */
     int64_t skipped_bytes;
     int64_t joined;        /**< parser outputs added to the unit before them (DRCodec.continues) */
-} DRCutterStats;
+} DRFramesStats;
 
-typedef struct DRCutter DRCutter;
+typedef struct DRFrames DRFrames;
 
 /**
- * A unit cutter for one track of one segment: payloads in, units out.
+ * The frame step for one track of one segment: payloads in, units out (found by
+ * FFmpeg's parser, each with its PES time).
  * Units are cut by FFmpeg's parser for the codec; a unit takes the time of a
  * payload when the unit's anchor (see DRCodec) is the first one that lies in
  * that payload's bytes (ISO/IEC 13818-1 2.4.3.7: a PES packet's PTS belongs
@@ -209,28 +210,28 @@ typedef struct DRCutter DRCutter;
  * @param logctx for av_log
  * @return 0, AVERROR(ENOSYS) when the codec has no table entry or no parser
  */
-int ff_discrip_cutter_open(DRCutter **cutter, void *logctx, enum AVCodecID codec,
+int ff_discrip_frames_open(DRFrames **frames, void *logctx, enum AVCodecID codec,
                            DRUnitCb cb, void *opaque);
 
 /** One payload; time in ticks or AV_NOPTS_VALUE. */
-int ff_discrip_cutter_write(DRCutter *c, const uint8_t *data, int size, int64_t time);
+int ff_discrip_frames_write(DRFrames *c, const uint8_t *data, int size, int64_t time);
 
 /** The end of the segment: the units still buffered in the parser. */
-int ff_discrip_cutter_flush(DRCutter *c);
+int ff_discrip_frames_flush(DRFrames *c);
 
-void ff_discrip_cutter_stats(const DRCutter *c, DRCutterStats *stats);
+void ff_discrip_frames_stats(const DRFrames *c, DRFramesStats *stats);
 
 /** Linear PCM: the frame format for FFmpeg's parser (from the packets'
  *  audio frame headers): channels, coded bits per sample, samples per
  *  frame. */
-void ff_discrip_cutter_set_pcm_format(DRCutter *c, int channels, int bits, int samples_per_frame);
+void ff_discrip_frames_set_pcm_format(DRFrames *c, int channels, int bits, int samples_per_frame);
 
-void ff_discrip_cutter_close(DRCutter **cutter);
+void ff_discrip_frames_close(DRFrames **frames);
 
 /* ---- Stage 2, audio: units timed within one segment (discrip_audio.c) ---- */
 
-#define DR_AUDIO_CORE_ONLY 0x0001  /**< the track is the core of a stream that also
-                                        carries an extension: units are cut to the core */
+#define DR_AUDIO_EXTRACTED 0x0001  /**< the track is a stream taken out of another one (DTS out of
+                                        DTS-HD): the codec's filter keeps only its frames */
 
 typedef struct DRAudioStats {
     int64_t units;         /**< units written */
@@ -244,7 +245,7 @@ typedef struct DRAudioStats {
 
 /**
  * Audio timing of one track in one segment. Units come from the track's
- * cutter (ff_discrip_audio_unit as its callback); timed frames go to cb.
+ * frame step (ff_discrip_audio_unit as its callback); timed frames go to cb.
  * @return 0, AVERROR(ENOSYS) when the codec's audio rules are missing
  */
 int ff_discrip_audio_open(DRAudio **audio, void *logctx, enum AVCodecID codec, int flags,
@@ -477,7 +478,7 @@ typedef struct DRVideoStats {
 } DRVideoStats;
 
 /**
- * Video timing of one track in one segment. Units come from the cutter
+ * Video timing of one track in one segment. Units come from the frame step
  * (ff_discrip_video_unit as its callback); frames go to cb in decode order
  * with grid times; the last frame of each batch carries DR_F_BATCH.
  */
@@ -684,8 +685,9 @@ int ff_discrip_mix_matrix(uint64_t in_layout, uint64_t out_layout, double center
 
 /* ---- Linear PCM of DVD-Video and HD DVD (discrip_lpcm.c) ----
  * The packet source hands each PES packet's audio frame header to
- * ff_discrip_lpcm_header() before its payload goes to the cutter; the same
- * DRLpcm is the state of the track's cutter and audio stage. A unit is one
+ * ff_discrip_lpcm_header() before its payload goes to the frame step (which
+ * gives the frame format to FFmpeg's LPCM parser); the same DRLpcm is the
+ * state of the track's audio stage. A unit is one
  * frame; its samples become little-endian PCM (16 bits, or 24 bits for 20-
  * and 24-bit samples). */
 
@@ -712,7 +714,7 @@ int ff_discrip_lpcm_convert(const DRLpcm *p, const uint8_t *in, int size, uint8_
 /* ---- One title through all stages (discrip_title.c) ----
  * The format demuxer hands over each segment's payloads (per track, with the
  * PES time and whether they come from the last 64 MiB of the segment's
- * source); the title runs the cutters, the timing stages, the joiner, the
+ * source); the title runs the frame steps, the timing stages, the joiner, the
  * junction (or the PCM strategy) and the checks, and gives the output frames
  * back. Track 0 is the master video. Audio frames wait until the video has
  * been handed on past their time (the junction compares them with it). */
@@ -720,7 +722,7 @@ int ff_discrip_lpcm_convert(const DRLpcm *p, const uint8_t *in, int size, uint8_
 typedef struct DRTitleTrack {
     enum AVCodecID codec;
     int            kind;           /**< DRTrackKind */
-    int            audio_flags;    /**< DR_AUDIO_CORE_ONLY */
+    int            audio_flags;    /**< DR_AUDIO_EXTRACTED */
     int            width, height;  /**< sub-pictures: the canvas they are drawn on (0 x 0: not known) */
 } DRTitleTrack;
 

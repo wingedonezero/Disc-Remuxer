@@ -337,7 +337,7 @@ def test_caption_blocks_without_a_caption_track_are_counted_and_left_out():
 def test_a_failed_title_stays_failed():
     # the caption converter cannot start: the payload that brings the first
     # caption block fails, and every later call returns the same error (a
-    # cutter left with half a payload must not go on)
+    # frame step left with half a payload must not go on)
     stream, _ = with_captions(M2V, {2: load(b"HELLO"), 3: EOC})
     tr = ffi.new("DRTitleTrack[]", [[codec_id("mpeg2video"), lib.DR_KIND_VIDEO, 0],
                                     [codec_id("subrip"), lib.DR_KIND_CAPTION, 0]])

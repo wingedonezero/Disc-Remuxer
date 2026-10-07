@@ -245,7 +245,7 @@ typedef struct HDDVDClip {
     /* audio streams whose content was probed: their codec (NONE: left out) */
     uint8_t          probed[HDDVD_VTI_MAX_AUDIO];
     enum AVCodecID   probe_codec[HDDVD_VTI_MAX_AUDIO];
-    uint8_t          probe_core[HDDVD_VTI_MAX_AUDIO];   /**< DTS-HD: also carries a DTS core */
+    uint8_t          probe_dtshd[HDDVD_VTI_MAX_AUDIO];  /**< DTS-HD: a DTS stream with an extension */
 } HDDVDClip;
 
 typedef struct HDDVDChapterMark {
@@ -270,8 +270,9 @@ typedef struct HDDVDTrack {
     char             lang[4];       /**< ISO 639-2 when known, else as written; "" none */
     int              width, height; /**< sub-pictures: the canvas (HDDVD_SUBPIC_CODING_HD: 1920x1080) */
     const uint32_t  *palette;       /**< sub-pictures: 16 entries of the attribute record */
-    int              core;          /**< audio: 1 = holds a core that the next track carries
-                                         on its own (DTS-HD), 2 = that core track */
+    int              inner_track;   /**< audio: the track taken out of this one (DTS out of
+                                         DTS-HD), -1 none */
+    int              from_track;    /**< audio: the track this one is taken out of, -1 none */
 } HDDVDTrack;
 
 typedef struct HDDVDTitle {
