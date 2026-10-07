@@ -342,7 +342,7 @@ static int audio_out_open(DRTitle *t, Track *k)
 {
     DRVideoRef vref = { t, video_max, video_advance };
 
-    if (k->cfg.codec == AV_CODEC_ID_PCM_DVD) {
+    if (k->cfg.codec == AV_CODEC_ID_PCM_DVD || k->cfg.codec == AV_CODEC_ID_PCM_BLURAY) {
         DRPcmConfig pc = {
             .track = k->index, .rate = k->lpcm.rate, .bits = k->lpcm.bits > 16 ? 24 : 16,
             .bytes_per_sample_frame = k->lpcm.spf ? k->lpcm.out_frame_bytes / k->lpcm.spf : 0,
@@ -675,8 +675,10 @@ static int seg_open(DRTitle *t)
             return ret;
         if ((ret = ff_disctl_frames_open(&k->cut, t->log, k->cfg.codec, unit, stage)) < 0)
             return ret;
-        if (k->cfg.codec == AV_CODEC_ID_PCM_DVD)
+        if (k->cfg.codec == AV_CODEC_ID_PCM_DVD || k->cfg.codec == AV_CODEC_ID_PCM_BLURAY) {
+            k->lpcm.bd = k->cfg.codec == AV_CODEC_ID_PCM_BLURAY;
             ff_disctl_audio_set_state(k->audio, &k->lpcm);
+        }
         if (k->cfg.kind == DR_KIND_AUDIO && (k->cfg.audio_flags & DR_AUDIO_EXTENDED))
             ff_disctl_frames_take_any(k->cut);
         if (k->cfg.kind == DR_KIND_VIDEO)
@@ -995,7 +997,8 @@ int ff_disctl_title_spu_result(const DRTitle *t, int track, int64_t *no_stop, in
 
 const DRLpcm *ff_disctl_title_lpcm(const DRTitle *t, int track)
 {
-    if (track < 0 || track >= t->cfg.nb_tracks || t->t[track].cfg.codec != AV_CODEC_ID_PCM_DVD ||
+    if (track < 0 || track >= t->cfg.nb_tracks ||
+        (t->t[track].cfg.codec != AV_CODEC_ID_PCM_DVD && t->t[track].cfg.codec != AV_CODEC_ID_PCM_BLURAY) ||
         !t->t[track].lpcm.init)
         return NULL;
     return &t->t[track].lpcm;

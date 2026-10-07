@@ -715,13 +715,14 @@ uint32_t ff_disctl_seamless_corr(const int32_t *a, const int32_t *b, uint32_t n)
  *  channels, a layout libswresample refuses). */
 int ff_disctl_seamless_mix(void *logctx, uint64_t layout, int32_t *q30);
 
-/* ---- Linear PCM of DVD-Video and HD DVD (disctl_lpcm.c) ----
- * The packet source hands each PES packet's audio frame header to
- * ff_disctl_lpcm_header() before its payload goes to the frame step (which
- * gives the frame format to FFmpeg's LPCM parser); the same DRLpcm is the
- * state of the track's audio stage. A unit is one
- * frame; its samples become little-endian PCM (16 bits, or 24 bits for 20-
- * and 24-bit samples). */
+/* ---- Linear PCM of DVD-Video, HD DVD and Blu-ray (disctl_lpcm.c) ----
+ * DVD-Video / HD DVD: the packet source hands each PES packet's audio frame
+ * header to ff_disctl_lpcm_header() before its payload goes to the frame
+ * step (which gives the frame format to FFmpeg's LPCM parser). Blu-ray: the
+ * header is part of each unit FFmpeg's parser cuts; the audio stage reads it
+ * (ff_disctl_lpcm_bd_header()). The same DRLpcm is the state of the track's
+ * audio stage. A unit is one frame; its samples become little-endian PCM
+ * (16 bits, or 24 bits for 20- and 24-bit samples). */
 
 typedef struct DRLpcm {
     int      init;             /**< the first header was read */
@@ -730,17 +731,29 @@ typedef struct DRLpcm {
     int      spf;              /**< samples per frame (DVD rate / 600, HD DVD rate / 1200) */
     int      frame_bytes;      /**< a frame on the disc */
     int      out_frame_bytes;  /**< a frame converted */
-    uint64_t chmask;           /**< HD DVD: the channel mask of the channel assignment, 0 = none */
+    uint64_t chmask;           /**< HD DVD, Blu-ray: the channel mask of the channel assignment, 0 = none */
     int      drc;              /**< the last header's dynamic range byte */
     int      hd;
+    /* Blu-ray (every unit starts with its 4-byte header) */
+    int      bd;
+    uint8_t  h2, h3;           /**< the first header's channel assignment / frequency byte and bits byte */
+    int      payload;          /**< the first header's payload size: every unit's */
+    int      coded;            /**< channels stored per sample (an odd count padded to even) */
+    uint8_t  map[8];           /**< output channel c = stored channel map[c] (the channel mask's order) */
 } DRLpcm;
 
 /** A PES packet's audio frame header: DVD-Video 3 bytes, HD DVD 5 bytes (hd).
  *  The first sets the format; a later one that differs in more than the
  *  frame number and the dynamic range is an error (AVERROR_INVALIDDATA). */
 int ff_disctl_lpcm_header(DRLpcm *p, void *logctx, const uint8_t *hdr, int len, int hd);
+/** A Blu-ray LPCM unit's header (its first 4 of size bytes): the first sets
+ *  the format; a later one must state the same channel assignment, sampling
+ *  frequency, bits per sample and payload size (AVERROR_INVALIDDATA). */
+int ff_disctl_lpcm_bd_header(DRLpcm *p, void *logctx, const uint8_t *unit, int size);
 /** The samples of size disc bytes as little-endian PCM into out (room for
- *  size x 6 / 5); returns the bytes written. */
+ *  size x 6 / 5); returns the bytes written. Blu-ray: in is a unit's payload
+ *  (after its header), the channels leave in map order without the padding
+ *  channel. */
 int ff_disctl_lpcm_convert(const DRLpcm *p, const uint8_t *in, int size, uint8_t *out);
 
 /* ---- One title through all stages (disctl_title.c) ----

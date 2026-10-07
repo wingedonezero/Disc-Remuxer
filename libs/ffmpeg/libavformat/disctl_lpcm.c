@@ -1,7 +1,8 @@
 /*
- * The title timeline: linear PCM of DVD-Video and HD DVD. The private
- * header of each PES packet gives the format (checked against the first),
- * a unit is one frame, and the samples are turned into little-endian PCM.
+ * The title timeline: linear PCM of DVD-Video, HD DVD and Blu-ray. The
+ * private header of each PES packet (Blu-ray: of each unit) gives the
+ * format (checked against the first), a unit is one frame, and the samples
+ * are turned into little-endian PCM.
  *
  * This file is part of FFmpeg.
  *
@@ -23,7 +24,9 @@
 #include <string.h>
 
 #include "libavutil/error.h"
+#include "libavutil/intreadwrite.h"
 #include "libavutil/log.h"
+#include "libavutil/macros.h"
 
 #include "disctl.h"
 
@@ -103,9 +106,113 @@ int ff_disctl_lpcm_header(DRLpcm *p, void *log, const uint8_t *h, int len, int h
     }
 }
 
+/* Blu-ray channel assignments 1 and 3 to 11: the channels shown, the
+ * channels stored (an odd count is padded to even), and each stored
+ * channel's place in the channel mask (0: the padding channel; none for
+ * mono and stereo). Disc order of 3/4: L R C Ls Rls Rrs Rs (+ LFE). */
+static const struct {
+    uint8_t  channels, coded;
+    uint16_t pos[8];
+} bd_assign[12] = {
+    [1]  = { 1, 2 },
+    [3]  = { 2, 2 },
+    [4]  = { 3, 4, { 0x001, 0x002, 0x004, 0 } },
+    [5]  = { 3, 4, { 0x001, 0x002, 0x100, 0 } },
+    [6]  = { 4, 4, { 0x001, 0x002, 0x004, 0x100 } },
+    [7]  = { 4, 4, { 0x001, 0x002, 0x200, 0x400 } },
+    [8]  = { 5, 6, { 0x001, 0x002, 0x004, 0x200, 0x400, 0 } },
+    [9]  = { 6, 6, { 0x001, 0x002, 0x004, 0x200, 0x400, 0x008 } },
+    [10] = { 7, 8, { 0x001, 0x002, 0x004, 0x200, 0x010, 0x020, 0x400, 0 } },
+    [11] = { 8, 8, { 0x001, 0x002, 0x004, 0x200, 0x010, 0x020, 0x400, 0x008 } },
+};
+
+static int bd_rate(int fs)
+{
+    return fs == 1 ? 48000 : fs == 4 ? 96000 : fs == 5 ? 192000 : 0;
+}
+
+int ff_disctl_lpcm_bd_header(DRLpcm *p, void *log, const uint8_t *u, int size)
+{
+    int payload, ca, fs, q;
+
+    if (size < 4) {
+        av_log(log, AV_LOG_ERROR, "Title timeline: LPCM: a %d-byte unit has no header\n", size);
+        return AVERROR_INVALIDDATA;
+    }
+    payload = AV_RB16(u);
+    if (p->init) {
+        if (u[2] != p->h2 || (u[3] ^ p->h3) >= 0x40 || payload != p->payload) {
+            av_log(log, AV_LOG_ERROR, "Title timeline: LPCM: the header %02x %02x %02x %02x does not match the "
+                   "stream's first (payload %d bytes, %02x %02x): the format changed [untested on real discs]\n",
+                   u[0], u[1], u[2], u[3], p->payload, p->h2, p->h3);
+            return AVERROR_INVALIDDATA;
+        }
+        return 0;
+    }
+    ca = u[2] >> 4;
+    fs = u[2] & 0x0F;
+    q  = u[3] >> 6;
+    if (ca >= FF_ARRAY_ELEMS(bd_assign) || !bd_assign[ca].channels || !bd_rate(fs) || !q || !payload) {
+        av_log(log, AV_LOG_ERROR, "Title timeline: LPCM: the header %02x %02x %02x %02x states no format\n",
+               u[0], u[1], u[2], u[3]);
+        return AVERROR_INVALIDDATA;
+    }
+    p->bd       = 1;
+    p->h2       = u[2];
+    p->h3       = u[3];
+    p->payload  = payload;
+    p->bits     = 12 + 4 * q;
+    p->rate     = bd_rate(fs);
+    p->channels = bd_assign[ca].channels;
+    p->coded    = bd_assign[ca].coded;
+    p->chmask   = 0;
+    for (int k = 0; k < p->coded; k++)
+        p->chmask |= bd_assign[ca].pos[k];
+    /* the channels leave in the order of their places in the mask */
+    if (!p->chmask) {
+        for (int c = 0; c < p->channels; c++)
+            p->map[c] = c;
+    } else {
+        int c = 0;
+        for (uint64_t bit = 1; c < p->channels; bit <<= 1)
+            for (int k = 0; k < p->coded; k++)
+                if (bd_assign[ca].pos[k] == bit)
+                    p->map[c++] = k;
+    }
+    p->frame_bytes     = 4 + payload;
+    p->spf             = payload / ((p->bits == 16 ? 2 : 3) * p->coded);
+    p->out_frame_bytes = (p->bits == 16 ? 2 : 3) * p->channels * p->spf;
+    p->init            = 1;
+    av_log(log, AV_LOG_DEBUG, "Title timeline: LPCM: Blu-ray, %d bits, %d Hz, %d channels (%d stored, mask 0x%"PRIx64
+           "), %d samples per %d-byte unit\n", p->bits, p->rate, p->channels, p->coded, p->chmask, p->spf,
+           p->frame_bytes);
+    if (p->bits != 24 || p->channels != 2 || p->rate != 48000)
+        av_log(log, AV_LOG_WARNING, "Title timeline: LPCM: Blu-ray %d-bit %d-channel %d Hz [untested on real discs]\n",
+               p->bits, p->channels, p->rate);
+    if (p->payload % ((p->bits == 16 ? 2 : 3) * p->coded))
+        av_log(log, AV_LOG_WARNING, "Title timeline: LPCM: a %d-byte payload is no whole number of samples: its "
+               "last %d bytes are left out [untested on real discs]\n", p->payload,
+               p->payload % ((p->bits == 16 ? 2 : 3) * p->coded));
+    return 0;
+}
+
 int ff_disctl_lpcm_convert(const DRLpcm *p, const uint8_t *in, int size, uint8_t *out)
 {
     int o = 0;
+
+    if (p->bd) {
+        /* sample frames of coded channels, big-endian 2 bytes (16 bits) or 3
+         * (20 bits left-aligned, 24 bits) */
+        int bps = p->bits == 16 ? 2 : 3, fb = bps * p->coded;
+
+        for (int i = 0; i + fb <= size; i += fb)
+            for (int c = 0; c < p->channels; c++) {
+                const uint8_t *s = in + i + bps * p->map[c];
+                for (int b = bps - 1; b >= 0; b--)
+                    out[o++] = s[b];
+            }
+        return o;
+    }
 
     if (p->bits == 16) {
         for (int i = 0; i + 1 < size; i += 2) {

@@ -546,7 +546,8 @@ static int lpcm_params(AVFormatContext *s, int k)
     AVCodecParameters *par = s->streams[k]->codecpar;
     const DRLpcm *p;
 
-    if (par->codec_id != AV_CODEC_ID_PCM_DVD || !(p = ff_disctl_title_lpcm(r->rip, k)))
+    if ((par->codec_id != AV_CODEC_ID_PCM_DVD && par->codec_id != AV_CODEC_ID_PCM_BLURAY) ||
+        !(p = ff_disctl_title_lpcm(r->rip, k)))
         return 0;
     par->codec_id              = p->bits > 16 ? AV_CODEC_ID_PCM_S24LE : AV_CODEC_ID_PCM_S16LE;
     par->sample_rate           = p->rate;

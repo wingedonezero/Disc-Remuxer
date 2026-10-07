@@ -327,9 +327,15 @@ typedef struct DRLpcm {
     uint64_t chmask;
     int      drc;
     int      hd;
+    int      bd;
+    uint8_t  h2, h3;
+    int      payload;
+    int      coded;
+    uint8_t  map[8];
 } DRLpcm;
 
 int ff_disctl_lpcm_header(DRLpcm *p, void *logctx, const uint8_t *hdr, int len, int hd);
+int ff_disctl_lpcm_bd_header(DRLpcm *p, void *logctx, const uint8_t *unit, int size);
 int ff_disctl_lpcm_convert(const DRLpcm *p, const uint8_t *in, int size, uint8_t *out);
 
 typedef struct DRTitleTrack {

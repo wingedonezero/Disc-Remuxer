@@ -116,6 +116,8 @@ typedef struct EsOut {
     AVPacket    **hold;
     int           nb_hold;
     DetailsProbe *probe;            /* video / audio: the disc stream's details for the end check */
+    int           probe_late;       /* LPCM: the probe opens with the first packet (the stream's format is
+                                       the converted PCM's from then on) */
     int           checked;          /* the end check ran: 1 pass, -1 fail, 0 not run */
     char          problems[1024];   /* its findings */
 } EsOut;
@@ -582,7 +584,12 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         o->st.lang     = lang ? lang->value : "";
         o->st.file     = "";
         o->st.first_ms = AV_NOPTS_VALUE;
-        if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && !st->codecpar->ch_layout.nb_channels) {
+        /* LPCM leaves the demuxer as little-endian PCM: its format (with the
+         * channel layout) is set when its first packet comes */
+        o->probe_late  = st->codecpar->codec_id == AV_CODEC_ID_PCM_DVD ||
+                         st->codecpar->codec_id == AV_CODEC_ID_PCM_BLURAY;
+        if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && !st->codecpar->ch_layout.nb_channels &&
+            !o->probe_late) {
             const AVCodec *dec = avcodec_find_decoder(st->codecpar->codec_id);
             if (!(o->hold = av_calloc(HOLD_MAX, sizeof(*o->hold)))) {
                 ret = AVERROR(ENOMEM);
@@ -600,7 +607,7 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
 
     for (unsigned i = 0; i < ctx->nb_streams; i++) {
         enum AVMediaType t = ctx->streams[i]->codecpar->codec_type;
-        if ((t == AVMEDIA_TYPE_VIDEO || t == AVMEDIA_TYPE_AUDIO) &&
+        if ((t == AVMEDIA_TYPE_VIDEO || t == AVMEDIA_TYPE_AUDIO) && !out[i].probe_late &&
             details_probe_open(&out[i].probe, ctx->streams[i]->codecpar) < 0)
             log_text(LOG_DETAIL, "Track %u: no decoder for %s: its details are not checked", i,
                      avcodec_get_name(ctx->streams[i]->codecpar->codec_id));
@@ -610,6 +617,12 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         EsOut *o = &out[pkt->stream_index];
         int64_t progress;
 
+        if (o->probe_late) {
+            o->probe_late = 0;
+            if (details_probe_open(&o->probe, st->codecpar) < 0)
+                log_text(LOG_DETAIL, "Track %d: no decoder for %s: its details are not checked", pkt->stream_index,
+                         avcodec_get_name(st->codecpar->codec_id));
+        }
         if (o->probe)
             details_probe_packet(o->probe, pkt);
 
