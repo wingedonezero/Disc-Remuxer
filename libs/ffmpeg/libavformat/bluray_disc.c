@@ -32,8 +32,9 @@
  *    out);
  * 5. each playlist (playlists that fail are left out);
  * 6. index.bdmv and CERTIFICATE/id.bdmv (BDMV).
- * Still to come with their steps: AACS and BD+ (keys, per-clip keys), the
- * individual segment table, the JAR date and the BD-J analysis.
+ * Then the format part runs the AACS step (bluray_aacs.c). Still to come
+ * with their steps: BD+, the individual segment table, the JAR date and the
+ * BD-J analysis.
  */
 
 #include <stdio.h>
@@ -385,7 +386,9 @@ int ff_bluray_disc_open(void *log, DiscIOFS *fs, const char *path, const char *l
         }
         ret = 0;
     }
-    av_freep(&ids);
+    d->playlist_ids    = ids;      /* the listing, for the AACS step */
+    d->nb_playlist_ids = n;
+    ids = NULL;
     if (ret < 0)
         return ret;
     if (d->bdav)
@@ -432,13 +435,14 @@ void ff_bluray_disc_free(BlurayDisc *d)
     for (int i = 0; i < d->nb_playlists; i++)
         ff_bluray_playlist_free(&d->playlists[i]);
     av_freep(&d->playlists);
+    av_freep(&d->playlist_ids);
     av_freep(&d->bdjo);
     av_freep(&d->jars);
     ff_bluray_index_free(&d->index);
     av_freep(&d->name);
     av_freep(&d->name_eng);
     ff_discio_fs_close(&d->parent_fs);
-    d->nb_clips = d->nb_playlists = d->nb_bdjo = d->nb_jars = 0;
+    d->nb_clips = d->nb_playlists = d->nb_playlist_ids = d->nb_bdjo = d->nb_jars = 0;
 }
 
 /* ---- the structure as text ---- */

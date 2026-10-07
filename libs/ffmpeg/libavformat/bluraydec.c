@@ -1,7 +1,8 @@
 /*
  * Blu-ray (BDMV, BDAV, AVCHD): the format part of the disc layer (disc.h).
- * It reads the disc's structure (bluray_disc.c) and describes the disc;
- * titles, keys and reading follow in their steps.
+ * It reads the disc's structure (bluray_disc.c), its AACS keys
+ * (bluray_aacs.c) and title list (bluray_titles.c) and describes the disc;
+ * tracks and reading follow in their steps.
  *
  * This file is part of FFmpeg.
  *
@@ -35,6 +36,7 @@
 
 typedef struct BlurayDemuxContext {
     BlurayDisc disc;
+    BlurayAACS *aacs;
     char     **files;          /* the titles' file names (disc info) */
     int        nb_files;
 } BlurayDemuxContext;
@@ -50,6 +52,7 @@ static void bluray_close(AVFormatContext *s)
     for (int i = 0; i < c->nb_files; i++)
         av_free(c->files[i]);
     av_freep(&c->files);
+    ff_bluray_aacs_close(&c->aacs);
     ff_bluray_disc_free(&c->disc);
 }
 
@@ -133,6 +136,8 @@ static int bluray_open(AVFormatContext *s)
         }
         av_bprint_finalize(&bp, NULL);
     }
+    if ((ret = ff_bluray_aacs_open(s, b, (const char *const *)d->opt_keydb, d->nb_opt_keydb, &c->aacs)) < 0)
+        return ret;
     if ((ret = ff_bluray_titles_build(s, b, d->opt_min_length)) < 0 || (ret = describe_titles(s)) < 0)
         return ret;
     d->info.name      = b->name;

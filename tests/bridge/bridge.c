@@ -262,6 +262,77 @@ static char *tb_bluray_dump(const char *path, const char *lang, int min_length, 
     return out;
 }
 
+/* Blu-ray AACS: a disc folder opened with the AACS step (key files in
+ * order), its clips' keys and their aligned units. */
+typedef struct TBBluray {
+    DiscIOFS   *fs;
+    BlurayDisc  d;
+    BlurayAACS *aacs;
+} TBBluray;
+
+static void tb_bluray_close(TBBluray *b)
+{
+    if (!b)
+        return;
+    ff_bluray_aacs_close(&b->aacs);
+    ff_bluray_disc_free(&b->d);
+    ff_discio_fs_close(&b->fs);
+    free(b);
+}
+
+static TBBluray *tb_bluray_open(const char *path, const char *const *key_files, int nb_key_files, int *err)
+{
+    TBBluray *b = calloc(1, sizeof(*b));
+
+    if (!b) {
+        *err = AVERROR(ENOMEM);
+        return NULL;
+    }
+    if ((*err = ff_discio_mount_folder(NULL, path, 1, &b->fs)) >= 0 &&
+        (*err = ff_bluray_disc_open(NULL, b->fs, path, NULL, &b->d)) >= 0)
+        *err = ff_bluray_aacs_open(NULL, &b->d, key_files, nb_key_files, &b->aacs);
+    if (*err < 0) {
+        tb_bluray_close(b);
+        return NULL;
+    }
+    return b;
+}
+
+static BlurayClip *tb_bluray_clip(TBBluray *b, uint32_t number)
+{
+    for (int i = 0; i < b->d.nb_clips; i++)
+        if (b->d.clips[i].number == number)
+            return &b->d.clips[i];
+    return NULL;
+}
+
+/* The clip's key unit, or -100 when there is no such clip. */
+static int tb_bluray_key_unit(TBBluray *b, uint32_t clip)
+{
+    BlurayClip *c = tb_bluray_clip(b, clip);
+    return c ? c->key_unit : -100;
+}
+
+static int tb_bluray_unit(TBBluray *b, uint32_t clip, uint8_t *unit)
+{
+    BlurayClip *c = tb_bluray_clip(b, clip);
+    return c ? ff_bluray_aacs_unit(NULL, b->aacs, c, unit) : AVERROR(EINVAL);
+}
+
+/* 1 and the disc ID, or 0 when the disc has none. */
+static int tb_bluray_disc_id(TBBluray *b, uint8_t *id)
+{
+    if (!b->d.has_disc_id)
+        return 0;
+    memcpy(id, b->d.disc_id, 20);
+    return 1;
+}
+
+static int tb_bluray_has_keys(TBBluray *b)
+{
+    return b->aacs != NULL;
+}
+
 static char *tb_bluray_text(uint8_t charset, const uint8_t *text, uint32_t len)
 {
     char *t = ff_bluray_text(NULL, charset, text, len), *out = t ? strdup(t) : NULL;

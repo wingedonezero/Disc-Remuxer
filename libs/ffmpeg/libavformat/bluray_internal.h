@@ -272,6 +272,8 @@ typedef struct BlurayClip {
     int64_t         stream_size;
     int             stc_gap;         /**< its STC ids are not contiguous: no STC lookup succeeds */
     int             interleave;      /**< 3-D pairing with it: 0 not decided, 1 fails, 2 this one first, 3 the other first */
+    /* AACS (bluray_aacs.c) */
+    int             key_unit;        /**< CPS unit whose key decrypts it: 1.., BLURAY_KEY_NONE, BLURAY_KEY_UNKNOWN */
 } BlurayClip;
 
 int  ff_bluray_clpi_parse(void *log, const BlurayFile *f, BlurayClip *c);
@@ -410,6 +412,8 @@ typedef struct BlurayDisc {
     int             nb_clips;
     BlurayPlaylist *playlists;
     int             nb_playlists;
+    uint32_t       *playlist_ids;    /**< the playlist listing (also the files that did not load) */
+    int             nb_playlist_ids;
     uint32_t       *bdjo;            /**< BD-J object numbers (parsed with the BD-J step) */
     int             nb_bdjo;
     uint32_t       *jars;
@@ -420,7 +424,42 @@ typedef struct BlurayDisc {
     int             has_id;
     BlurayTitle    *titles;
     int             nb_titles;
+    /* AACS (bluray_aacs.c) */
+    int             aacs;            /**< an /AACS or /AACS_bd directory */
+    uint8_t         disc_id[20];     /**< SHA-1 of the disc's Unit_Key file */
+    int             has_disc_id;
+    char            disc_id_from[96];/**< the file it is the digest of */
 } BlurayDisc;
+
+/* ---- AACS (bluray_aacs.c) ---- */
+
+#define BLURAY_KEY_UNKNOWN (-1)      /**< not found yet: found on the clip's first encrypted unit */
+#define BLURAY_KEY_NONE      0       /**< no key: its units are used as they are */
+
+typedef struct BlurayAACS BlurayAACS;
+
+/**
+ * The AACS step of the disc open: an /AACS (or /AACS_bd) directory gives the
+ * disc's unit keys (through the key files) and each clip's key, or shows the
+ * disc is not encrypted after all; without one the disc is taken as not
+ * encrypted (with the checks for discs decrypted by other software). Sets
+ * the clips' key_unit and the disc ID.
+ * @return 0 (*out NULL when nothing is decrypted), AVERROR(EACCES) no key
+ *         for the disc, AVERROR_PATCHWELCOME a kind of AACS not supported,
+ *         another < 0 error (the disc cannot be opened)
+ */
+int  ff_bluray_aacs_open(void *log, BlurayDisc *d, const char *const *key_files, int nb_key_files,
+                         BlurayAACS **out);
+void ff_bluray_aacs_close(BlurayAACS **a);
+
+/**
+ * Make one 6144-byte aligned unit of clip c usable, in place: a unit marked
+ * encrypted (copy permission bits) is decrypted with the clip's key (found
+ * on its first encrypted unit when not known yet) and its marks cleared; a
+ * unit that is not marked, or of a clip without a key, is left as it is.
+ * @return 0, < 0 error (the unit cannot be decrypted)
+ */
+int  ff_bluray_aacs_unit(void *log, BlurayAACS *a, BlurayClip *c, uint8_t *unit);
 
 /**
  * Read a Blu-ray disc's structure: its kind (BDMV / BDAV), name, clip

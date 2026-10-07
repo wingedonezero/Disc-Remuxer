@@ -2,4 +2,11 @@
 char *tb_bluray_dump(const char *path, const char *lang, int min_length, int *err);
 char *tb_bluray_text(uint8_t charset, const uint8_t *text, uint32_t len);
 char *tb_bluray_clean_title(const char *s);
+typedef struct TBBluray TBBluray;
+TBBluray *tb_bluray_open(const char *path, const char *const *key_files, int nb_key_files, int *err);
+void tb_bluray_close(TBBluray *b);
+int tb_bluray_key_unit(TBBluray *b, uint32_t clip);
+int tb_bluray_unit(TBBluray *b, uint32_t clip, uint8_t *unit);
+int tb_bluray_disc_id(TBBluray *b, uint8_t *id);
+int tb_bluray_has_keys(TBBluray *b);
 void free(void *p);
