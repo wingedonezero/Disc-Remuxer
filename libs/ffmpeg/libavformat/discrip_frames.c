@@ -209,7 +209,7 @@ static int unit_take(DRFrames *c, const uint8_t *data, int size, int64_t off)
         c->st.skipped_bytes += size;
         return 0;
     }
-    a = c->codec->anchor(data, size);
+    a = c->codec->anchor ? c->codec->anchor(data, size) : 0;
     if (a >= 0)
         time = take_time(c, off + a);
     else

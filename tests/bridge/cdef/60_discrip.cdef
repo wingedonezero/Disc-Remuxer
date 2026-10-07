@@ -57,7 +57,6 @@ typedef struct DRFramesStats {
     int64_t records_unused;
     int64_t skipped;
     int64_t skipped_bytes;
-    int64_t joined;
 } DRFramesStats;
 
 typedef struct DRFrames DRFrames;

@@ -143,8 +143,9 @@ typedef struct DRCodec {
     enum AVCodecID id;
     const char    *name;
     /** Offset inside a unit where the part that takes a PES timestamp starts
-     *  (MPEG-2 video: the picture start code; VC-1: the frame start code;
-     *  audio and sub-pictures: 0), or -1 when the unit has none. */
+     *  (MPEG-2 video: the picture start code; VC-1: the frame start code),
+     *  or -1 when the unit has none. NULL: the unit's first byte (audio
+     *  frames and sub-picture units: every unit can take a time). */
     int (*anchor)(const uint8_t *data, int size);
     /** 1 when the parser's output is a unit of the codec, 0 when it is not
      *  (bytes before the first sync word, bytes between units): such bytes
@@ -171,7 +172,7 @@ enum { DR_UNIT_OK = 0, DR_UNIT_BAD = 1, DR_UNIT_CRC = 2 };
 /** The codec table entry of a codec, or NULL (the codec is not supported). */
 const DRCodec *ff_discrip_codec(enum AVCodecID id);
 
-/* ---- Stage 1: units and timestamp records (discrip_units.c) ---- */
+/* ---- Stage 1: units and timestamp records (discrip_frames.c) ---- */
 
 typedef struct DRUnit {
     const uint8_t *data;   /**< the unit's bytes, valid during the callback */
@@ -194,7 +195,6 @@ typedef struct DRFramesStats {
     int64_t records_unused;/**< records dropped without giving their time to a unit */
     int64_t skipped;       /**< parser outputs that are not units (left out) */
     int64_t skipped_bytes;
-    int64_t joined;        /**< parser outputs added to the unit before them (DRCodec.continues) */
 } DRFramesStats;
 
 typedef struct DRFrames DRFrames;

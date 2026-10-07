@@ -65,12 +65,6 @@ static int anchor_vc1(const uint8_t *data, int size)
     return start_code(data, size, 0x0D);
 }
 
-/* Audio frames and sub-picture units: every unit can take a time. */
-static int anchor_unit(const uint8_t *data, int size)
-{
-    return 0;
-}
-
 /* ---- AC-3 / E-AC-3 (ATSC A/52, Annex E for E-AC-3) ----
  * A syncframe starts with 0x0B77. bsid 10..16 = E-AC-3 syntax, else AC-3
  * (the split the HD DVD track probe uses too). An AC-3 track keeps only AC-3
@@ -560,35 +554,35 @@ static const DRCodec codecs[] = {
       .verify = verify_mpegvideo },
     { .id = AV_CODEC_ID_VC1, .name = "vc1", .anchor = anchor_vc1, .video = &ff_discrip_video_vc1, .verify = verify_vc1,
       .disc_parser = 1 },
-    { .id = AV_CODEC_ID_AC3, .name = "ac3", .anchor = anchor_unit, .check = check_ac3, .audio = &audio_ac3,
+    { .id = AV_CODEC_ID_AC3, .name = "ac3", .check = check_ac3, .audio = &audio_ac3,
       .verify = verify_ac3, .disc_parser = 1 },
-    { .id = AV_CODEC_ID_EAC3, .name = "eac3", .anchor = anchor_unit, .check = check_eac3, .audio = &audio_eac3,
+    { .id = AV_CODEC_ID_EAC3, .name = "eac3", .check = check_eac3, .audio = &audio_eac3,
       .verify = verify_ac3 },
-    { .id = AV_CODEC_ID_TRUEHD, .name = "truehd", .anchor = anchor_unit, .check = ff_discrip_mlp_check,
+    { .id = AV_CODEC_ID_TRUEHD, .name = "truehd", .check = ff_discrip_mlp_check,
       .audio = &ff_discrip_audio_mlp, .disc_parser = 1,
       .verify = ff_discrip_mlp_verify },
-    { .id = AV_CODEC_ID_MLP, .name = "mlp", .anchor = anchor_unit, .check = ff_discrip_mlp_check,
+    { .id = AV_CODEC_ID_MLP, .name = "mlp", .check = ff_discrip_mlp_check,
       .audio = &ff_discrip_audio_mlp, .disc_parser = 1,
       .verify = ff_discrip_mlp_verify },
-    { .id = AV_CODEC_ID_DTS, .name = "dts", .anchor = anchor_unit, .check = check_dts, .audio = &audio_dts,
+    { .id = AV_CODEC_ID_DTS, .name = "dts", .check = check_dts, .audio = &audio_dts,
       .verify = verify_dts, .disc_parser = 1 },
-    { .id = AV_CODEC_ID_PCM_DVD, .name = "pcm_dvd", .anchor = anchor_unit, .audio = &audio_lpcm,
+    { .id = AV_CODEC_ID_PCM_DVD, .name = "pcm_dvd", .audio = &audio_lpcm,
       .disc_parser = 1 },
-    { .id = AV_CODEC_ID_MP1, .name = "mp1", .anchor = anchor_unit, .check = check_mpa, .audio = &audio_mpa,
+    { .id = AV_CODEC_ID_MP1, .name = "mp1", .check = check_mpa, .audio = &audio_mpa,
       .verify = verify_mpa },
-    { .id = AV_CODEC_ID_MP2, .name = "mp2", .anchor = anchor_unit, .check = check_mpa, .audio = &audio_mpa,
+    { .id = AV_CODEC_ID_MP2, .name = "mp2", .check = check_mpa, .audio = &audio_mpa,
       .verify = verify_mpa },
-    { .id = AV_CODEC_ID_MP3, .name = "mp3", .anchor = anchor_unit, .check = check_mpa, .audio = &audio_mpa,
+    { .id = AV_CODEC_ID_MP3, .name = "mp3", .check = check_mpa, .audio = &audio_mpa,
       .verify = verify_mpa },
-    { .id = AV_CODEC_ID_AAC, .name = "aac", .anchor = anchor_unit, .check = check_adts, .audio = &audio_adts,
+    { .id = AV_CODEC_ID_AAC, .name = "aac", .check = check_adts, .audio = &audio_adts,
       .verify = verify_adts },
-    { .id = AV_CODEC_ID_AAC_LATM, .name = "aac_latm", .anchor = anchor_unit, .check = loas, .audio = &audio_latm,
+    { .id = AV_CODEC_ID_AAC_LATM, .name = "aac_latm", .check = loas, .audio = &audio_latm,
       .verify = verify_latm },
-    { .id = AV_CODEC_ID_DVD_SUBTITLE, .name = "dvd_subtitle", .anchor = anchor_unit,
+    { .id = AV_CODEC_ID_DVD_SUBTITLE, .name = "dvd_subtitle",
       .check = ff_discrip_spu_check, .disc_parser = 1,
       .verify = ff_discrip_spu_verify },
     /* closed captions as text cues (made by the caption converter) */
-    { .id = AV_CODEC_ID_SUBRIP, .name = "subrip", .anchor = anchor_unit },
+    { .id = AV_CODEC_ID_SUBRIP, .name = "subrip" },
 };
 
 const DRCodec *ff_discrip_codec(enum AVCodecID id)
