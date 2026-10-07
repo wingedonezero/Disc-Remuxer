@@ -9,7 +9,7 @@ import dataclasses
 import struct
 
 from helpers import AV_NOPTS_VALUE, DATA, ffi, lib
-from helpers.discrip import Handles, codec_id, events_into, fn, pictures
+from helpers.discrip import Handles, codec_id, events_into, fn, pictures, spu
 
 M2V = (DATA / "testsrc_1200.m2v").read_bytes()
 FRAME = 36036000  # 1001/30000 s
@@ -22,33 +22,21 @@ F_KEY, F_NO_STOP = lib.DR_F_KEY, lib.DR_F_NO_STOP
 
 # ---- units ----
 
-def spu(stop, dspxa, cmds, mark):
-    """A DVD-Video sub-picture unit: SPDSZ, SP_DCSQTA, 4 bytes of pixel data,
-    SP_DCSQ 1 (delay 0: STA_DSP, cmds, SET_DSPXA when dspxa), SP_DCSQ 2
-    (delay stop: STP_DSP) when there is a stop. mark makes units differ."""
-    u = bytearray([0, 0, 0, 0, mark, 0x22, 0x33, 0x44])
-    d1 = len(u)
-    seq = bytearray([0x01]) + bytes(cmds)
-    if dspxa:
-        seq += bytes([0x06, 0, 4, 0, 6])
-    seq.append(0xFF)
-    d2 = d1 + 4 + len(seq)
-    u += bytes([0, 0]) + struct.pack(">H", d2 if stop is not None else d1) + seq
-    if stop is not None:
-        u += struct.pack(">H", stop) + struct.pack(">H", d2) + bytes([0x02, 0xFF])
-    u[0:2] = struct.pack(">H", len(u))
-    u[2:4] = struct.pack(">H", d1)
-    return bytes(u)
+def darea(x1, x2, y1, y2):
+    """The 6 bytes of SET_DAREA: start and end column, start and end line,
+    12 bits each."""
+    return bytes([x1 >> 4, (x1 & 15) << 4 | x2 >> 8, x2 & 255, y1 >> 4, (y1 & 15) << 4 | y2 >> 8, y2 & 255])
 
 
-def spu_hd(stop):
+def spu_hd(stop, area=(0, 0, 0, 0)):
     """An HD DVD sub-picture unit: a zero word, 32-bit size and SP_DCSQTA, 4
     bytes of pixel data, SP_DCSQ 1 with the 8-bit commands (SET_COLOR 0x83,
-    SET_CONTR 0x84, SET_DAREA 0x85, SET_DSPXA 0x86), SP_DCSQ 2 with STP_DSP."""
+    SET_CONTR 0x84, SET_DAREA 0x85 with area = x1, x2, y1, y2, SET_DSPXA
+    0x86), SP_DCSQ 2 with STP_DSP."""
     u = bytearray(10) + bytes([0x11, 0x22, 0x33, 0x44])
     d1 = len(u)
     seq = bytearray([0x01, 0x83]) + b"\x10" * 768 + b"\x84" + b"\x0f" * 256
-    seq += bytes([0x85, 0, 0, 0, 0, 0, 0]) + bytes([0x86, 0, 0, 0, 10, 0, 0, 0, 12, 0xFF])
+    seq += b"\x85" + darea(*area) + bytes([0x86, 0, 0, 0, 10, 0, 0, 0, 12, 0xFF])
     d2 = d1 + 6 + len(seq)
     u += bytes([0, 0]) + struct.pack(">I", d2) + seq
     u += struct.pack(">H", stop) + struct.pack(">I", d2) + bytes([0x02, 0xFF])
@@ -68,10 +56,11 @@ class Run:
     snap_before_video: int
 
 
-def run(payloads, subs_first):
+def run(payloads, subs_first, canvas=(0, 0)):
     """The video (every picture on its grid from BASE) and the sub-picture
     payloads (bytes, time) of one segment; the payloads go in before the
-    video when subs_first."""
+    video when subs_first. canvas: the track's width and height (0, 0: not
+    known)."""
     vid = codec_id("mpeg2video")
     sid = codec_id("dvd_subtitle")
     out, events = [], []
@@ -86,38 +75,38 @@ def run(payloads, subs_first):
         return 0
     keep = Handles()
     v = ffi.new("DRVideo **")
-    vc = ffi.new("DRCutter **")
+    vc = ffi.new("DRFrames **")
     s = ffi.new("DRSpu **")
-    sc = ffi.new("DRCutter **")
+    sc = ffi.new("DRFrames **")
     st = ffi.new("DRSpuStats *")
-    cut = ffi.new("DRCutterStats *")
+    cut = ffi.new("DRFramesStats *")
     t = ffi.new("int64_t *")
     assert lib.ff_discrip_video_open(v, ffi.NULL, vid, 0, lib.tb_py_frame, keep(drop), ffi.NULL, ffi.NULL) == 0
-    assert lib.ff_discrip_cutter_open(vc, ffi.NULL, vid, fn("ff_discrip_video_unit"), v[0]) == 0
-    assert lib.ff_discrip_spu_open(s, ffi.NULL, 1, v[0], lib.tb_py_frame, keep(on_frame), lib.tb_py_event,
+    assert lib.ff_discrip_frames_open(vc, ffi.NULL, vid, fn("ff_discrip_video_unit"), v[0]) == 0
+    assert lib.ff_discrip_spu_open(s, ffi.NULL, 1, v[0], canvas[0], canvas[1], lib.tb_py_frame, keep(on_frame), lib.tb_py_event,
                                    keep(events_into(events))) == 0
-    assert lib.ff_discrip_cutter_open(sc, ffi.NULL, sid, fn("ff_discrip_spu_unit"), s[0]) == 0
+    assert lib.ff_discrip_frames_open(sc, ffi.NULL, sid, fn("ff_discrip_spu_unit"), s[0]) == 0
     snap = lib.ff_discrip_video_snap(v[0], BASE, t)
 
     def subs():
         for data, time in payloads:
-            assert lib.ff_discrip_cutter_write(sc[0], data, len(data), AV_NOPTS_VALUE if time is None else time) == 0
+            assert lib.ff_discrip_frames_write(sc[0], data, len(data), AV_NOPTS_VALUE if time is None else time) == 0
     if subs_first:
         subs()
         assert out == [], "units wait for the video's grid"
     for a, b, disp, _ in pictures(M2V):
-        assert lib.ff_discrip_cutter_write(vc[0], M2V[a:b], b - a, BASE + disp * FRAME) == 0
+        assert lib.ff_discrip_frames_write(vc[0], M2V[a:b], b - a, BASE + disp * FRAME) == 0
     if not subs_first:
         subs()
-    assert lib.ff_discrip_cutter_flush(vc[0]) == 0
+    assert lib.ff_discrip_frames_flush(vc[0]) == 0
     assert lib.ff_discrip_video_flush(v[0]) == 0
-    assert lib.ff_discrip_cutter_flush(sc[0]) == 0
+    assert lib.ff_discrip_frames_flush(sc[0]) == 0
     assert lib.ff_discrip_spu_flush(s[0]) == 0
     lib.ff_discrip_spu_stats(s[0], st)
-    lib.ff_discrip_cutter_stats(sc[0], cut)
-    lib.ff_discrip_cutter_close(sc)
+    lib.ff_discrip_frames_stats(sc[0], cut)
+    lib.ff_discrip_frames_close(sc)
     lib.ff_discrip_spu_close(s)
-    lib.ff_discrip_cutter_close(vc)
+    lib.ff_discrip_frames_close(vc)
     lib.ff_discrip_video_close(v)
     return Run(out, events, st, cut, snap)
 
@@ -227,3 +216,26 @@ def test_colour_changes_and_forced_starts_are_counted():
     r = run([(spu(10, True, colcon, 1), grid(1, 0)), (spu(10, True, [0x00], 2), grid(2, 0))], False)
     assert len(r.out) == 2
     assert (r.st.colcon, r.st.forced) == (1, 1)
+
+
+def test_units_drawn_outside_the_canvas_are_counted_and_kept():
+    # HD DVD: 1920x1080; the last column is 1919, the last line 1079
+    inside = spu_hd(10, (300, 1919, 900, 1079))
+    wide = spu_hd(10, (300, 1920, 900, 1000))
+    low = spu_hd(10, (300, 600, 900, 1080))
+    r = run([(inside, grid(1, 0)), (wide, grid(2, 0)), (low, grid(3, 0))], False, (1920, 1080))
+    assert [o[0] for o in r.out] == [inside, wide, low], "kept, bytes unchanged"
+    assert r.st.outside == 2
+    # the same units on a 720x480 canvas: all outside
+    assert run([(inside, grid(1, 0))], False, (720, 480)).st.outside == 1
+    # canvas not known: not checked
+    assert run([(wide, grid(1, 0))], False).st.outside == 0
+
+
+def test_dvd_units_are_checked_against_their_canvas():
+    # SET_DAREA 0x05 has the same layout as 0x85
+    ok = spu(10, True, [0x05] + list(darea(10, 719, 400, 479)), 1)
+    out = spu(10, True, [0x05] + list(darea(10, 720, 400, 479)), 2)
+    r = run([(ok, grid(1, 0)), (out, grid(2, 0))], False, (720, 480))
+    assert len(r.out) == 2
+    assert r.st.outside == 1

@@ -42,7 +42,41 @@ typedef struct MLPParseContext
     int in_sync;
 
     int num_substreams;
+
+    FFDiscCut disc;
 } MLPParseContext;
+
+/* Disc mode (PARSER_FLAG_DISC): an access unit is as long as its length
+ * field says (12 bits, in 16-bit words, after the check nibble), at least 8
+ * bytes; where none starts, the next one is looked for at a major sync (its
+ * sync word F8 72 6F BA / BB 4 bytes in). Without disc mode an AU whose
+ * parity or checksum fails drops every AU up to the next major sync. */
+static int disc_major_sync(const uint8_t *p, int n)
+{
+    return n >= 8 && p[4] == 0xF8 && p[5] == 0x72 && p[6] == 0x6F && (p[7] & 0xFE) == 0xBA;
+}
+
+static int disc_unit_size(void *logctx, const uint8_t *p, int avail, int final, void *state)
+{
+    int len;
+
+    if (avail < 8)
+        return 0;
+    len = (((p[0] & 0xF) << 8) | p[1]) * 2;
+    if (len < 8)
+        return DISC_CUT_NONE;
+    return len <= avail ? len : 0;
+}
+
+static int disc_resync(const uint8_t *p, int avail)
+{
+    for (int i = 0; i + 8 <= avail; i++)
+        if (disc_major_sync(p + i, avail - i))
+            return i;
+    return -1;
+}
+
+static const FFDiscCutRule disc_rule = { disc_unit_size, disc_resync, 0 };
 
 static av_cold int mlp_init(AVCodecParserContext *s)
 {
@@ -61,6 +95,9 @@ static int mlp_parse(AVCodecParserContext *s,
     int next;
     int ret;
     int i, p = 0;
+
+    if (s->flags & PARSER_FLAG_DISC)
+        return ff_parser_disc_cut(s, avctx, &disc_rule, &mp->disc, poutbuf, poutbuf_size, buf, buf_size);
 
     s->key_frame = 0;
 
@@ -205,10 +242,18 @@ lost_sync:
     return 1;
 }
 
+static av_cold void mlp_parse_close(AVCodecParserContext *s)
+{
+    MLPParseContext *mp = s->priv_data;
+
+    ff_parser_disc_cut_close(&mp->disc);
+    ff_parse_close(s);
+}
+
 const FFCodecParser ff_mlp_parser = {
     PARSER_CODEC_LIST(AV_CODEC_ID_MLP, AV_CODEC_ID_TRUEHD),
     .priv_data_size = sizeof(MLPParseContext),
     .init           = mlp_init,
     .parse          = mlp_parse,
-    .close          = ff_parse_close,
+    .close          = mlp_parse_close,
 };

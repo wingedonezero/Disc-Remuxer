@@ -41,6 +41,7 @@ enum {
     MSG_TITLE_FAILED         = 6003,
     MSG_FOLDER_FAILED        = 6007,
     MSG_UNTESTED             = 6008,
+    MSG_DETAILS_DIFFER       = 6011,
     MSG_CHAPTERS             = 6009,
     MSG_LOG_FILE             = 6010,
     MSG_SUMMARY              = 6020,

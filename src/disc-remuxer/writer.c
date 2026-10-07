@@ -14,6 +14,7 @@
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavformat/discinfo.h>
 #include <libavutil/avstring.h>
 #include <libavutil/bprint.h>
 #include <libavutil/channel_layout.h>
@@ -26,6 +27,7 @@
 #include "log.h"
 #include "msg.h"
 #include "names.h"
+#include "check.h"
 #include "settings.h"
 #include "writer.h"
 
@@ -59,6 +61,7 @@ static const char *es_extension(enum AVCodecID id)
     case AV_CODEC_ID_PCM_S16LE:
     case AV_CODEC_ID_PCM_S24LE:    return "wav";
     case AV_CODEC_ID_DVD_SUBTITLE: return "sub";
+    case AV_CODEC_ID_SUBRIP:       return "srt";
     default:                       return "bin";
     }
 }
@@ -85,6 +88,7 @@ const char *codec_label(enum AVCodecID id, int profile)
     case AV_CODEC_ID_PCM_S16LE:
     case AV_CODEC_ID_PCM_S24LE:    return "LPCM";
     case AV_CODEC_ID_DVD_SUBTITLE: return "VobSub";
+    case AV_CODEC_ID_SUBRIP:       return "CC";      /* closed captions made into text */
     default:                       return avcodec_get_name(id);
     }
 }
@@ -97,6 +101,7 @@ typedef struct EsOut {
     FILE         *f;
     FILE         *idx;              /* sub-pictures: the VobSub index next to the .sub */
     int64_t       sub_pos;          /* bytes written to the .sub */
+    int64_t       cues;             /* captions: SRT cues written */
     int           wav;              /* a WAV header to complete at the end */
     int           opened;           /* the file name is chosen */
     char            layout[64];     /* audio: the channel layout in the name ("" unknown) */
@@ -105,7 +110,36 @@ typedef struct EsOut {
     int             layout_done;    /* a frame was decoded (or decoding gave up) */
     AVPacket    **hold;
     int           nb_hold;
+    DetailsProbe *probe;            /* video / audio: the disc stream's details for the end check */
+    int           checked;          /* the end check ran: 1 pass, -1 fail, 0 not run */
+    char          problems[1024];   /* its findings */
 } EsOut;
+
+/* The end check of a written file: its details (read back with FFmpeg's
+ * decoders) against the disc stream's, read while ripping. */
+static void end_check(const AVStream *st, EsOut *o)
+{
+    Details disc, file;
+    int n;
+
+    if (!o->probe || !o->opened)
+        return;
+    details_probe_get(o->probe, &disc);
+    if (!disc.valid) {
+        o->checked = -1;
+        snprintf(o->problems, sizeof(o->problems), "the disc stream's first frame could not be decoded");
+        return;
+    }
+    if (details_of_file(o->name, st->codecpar->codec_type, &file) < 0 || !file.valid) {
+        o->checked = -1;
+        snprintf(o->problems, sizeof(o->problems), "the written file cannot be read back");
+        return;
+    }
+    n = details_compare(&disc, &file, o->problems, sizeof(o->problems));
+    o->checked = n ? -1 : 1;
+    if (!n)
+        snprintf(o->problems, sizeof(o->problems), "%d fields", disc.n);
+}
 
 static void put_le(FILE *f, uint64_t v, int n)
 {
@@ -306,6 +340,31 @@ static int es_open(const AVFormatContext *ctx, const AVStream *st, EsOut *o, con
     return 0;
 }
 
+/* HH:MM:SS,mmm of a time in ms. */
+static void srt_time(FILE *f, int64_t ms)
+{
+    fprintf(f, "%02"PRId64":%02"PRId64":%02"PRId64",%03"PRId64, ms / 3600000, ms / 60000 % 60, ms / 1000 % 60,
+            ms % 1000);
+}
+
+/* A caption cue as SRT: its number, start --> end, its text lines, an
+ * empty line. */
+static int srt_write(EsOut *o, const AVStream *st, const AVPacket *pkt)
+{
+    int64_t start = av_rescale_q(pkt->pts, st->time_base, (AVRational){ 1, 1000 });
+    int64_t end   = av_rescale_q(pkt->pts + pkt->duration, st->time_base, (AVRational){ 1, 1000 });
+
+    fprintf(o->f, "%"PRId64"\n", ++o->cues);
+    srt_time(o->f, start);
+    fputs(" --> ", o->f);
+    srt_time(o->f, end);
+    fputc('\n', o->f);
+    if (fwrite(pkt->data, 1, pkt->size, o->f) != (size_t)pkt->size || fputs("\n\n", o->f) < 0)
+        return AVERROR(EIO);
+    o->st.bytes += pkt->size;
+    return 0;
+}
+
 static int es_write(EsOut *o, const AVPacket *pkt)
 {
     if (o->idx)
@@ -363,6 +422,65 @@ static int64_t meta_int(AVDictionary *m, const char *key)
     return e ? strtoll(e->value, NULL, 10) : 0;
 }
 
+/* A video track's details from the demuxer: line-21 caption data taken
+ * out of the video and not kept (a format without caption tracks), with
+ * the disc's caption marks. A warning when the data carried caption text. */
+static void video_detail(const AVStream *st, char *json, size_t size)
+{
+    const AVDictionaryEntry *l21 = av_dict_get(st->metadata, "line21", NULL, 0);
+    int64_t blocks = meta_int(st->metadata, "cc_blocks"), text = meta_int(st->metadata, "cc_text");
+    char jl[64];
+
+    if (blocks)
+        log_text(text ? LOG_WARNING : LOG_INFO, "      line-21 caption data taken out of the video, not kept: %"PRId64
+                 " caption blocks, %s%s%s%s", blocks, text ? "WITH caption text" : "no caption text",
+                 l21 ? " (the disc marks captions on " : "", l21 ? l21->value : "", l21 ? ")" : "");
+    else if (l21)
+        log_text(LOG_INFO, "      the disc marks line-21 captions on %s, but the video carries none", l21->value);
+    if (blocks || l21)
+        snprintf(json, size, ",\"line21\":%s,\"cc_blocks\":%"PRId64",\"cc_text\":%"PRId64,
+                 json_str(jl, sizeof(jl), l21 ? l21->value : ""), blocks, text);
+}
+
+/* A subtitle track's details from the demuxer: what the units are, the
+ * canvas they are drawn on and whether every unit fits it, and how many had
+ * no stop time (shown until the next one). One line in the log; the same
+ * as JSON fields appended to the track's record (json, starting with a comma). */
+static void subtitle_detail(const AVStream *st, int opened, char *json, size_t size)
+{
+    const AVDictionaryEntry *cap = av_dict_get(st->metadata, "caption", NULL, 0);
+    const AVDictionaryEntry *pic = av_dict_get(st->metadata, "picture", NULL, 0);
+    if (cap) {
+        int64_t blocks = meta_int(st->metadata, "cc_blocks"), cues = meta_int(st->metadata, "cues");
+        char jp[256];
+        log_text(LOG_INFO, "      %s; %"PRId64" caption blocks -> %"PRId64" cues%s", cap->value, blocks, cues,
+                 blocks && !cues ? " (the caption data carries no caption text)" : "");
+        snprintf(json, size, ",\"caption\":%s,\"cc_blocks\":%"PRId64",\"cues\":%"PRId64,
+                 json_str(jp, sizeof(jp), cap->value), blocks, cues);
+        return;
+    }
+    int64_t no_stop = meta_int(st->metadata, "no_stop"), outside = meta_int(st->metadata, "outside");
+    int w = st->codecpar->width, h = st->codecpar->height;
+    char jp[256];
+    AVBPrint b;
+
+    av_bprint_init(&b, 0, AV_BPRINT_SIZE_AUTOMATIC);
+    av_bprintf(&b, "%s", pic ? pic->value : "sub-pictures");
+    if (w > 0 && h > 0) {
+        av_bprintf(&b, "; drawn on %dx%d", w, h);
+        if (opened && outside)
+            av_bprintf(&b, ", %"PRId64" outside it", outside);
+        else if (opened)
+            av_bprintf(&b, ", all inside it");
+    }
+    if (no_stop)
+        av_bprintf(&b, "; %"PRId64" without a stop time, each shown until the next one", no_stop);
+    log_text(outside ? LOG_WARNING : LOG_INFO, "      %s", b.str);
+    av_bprint_finalize(&b, NULL);
+    snprintf(json, size, ",\"picture\":%s,\"width\":%d,\"height\":%d,\"no_stop\":%"PRId64",\"outside\":%"PRId64,
+             json_str(jp, sizeof(jp), pic ? pic->value : ""), w, h, no_stop, outside);
+}
+
 static void hms(char *buf, size_t size, double s)
 {
     int64_t t = (int64_t)(s + 0.5);
@@ -372,7 +490,8 @@ static void hms(char *buf, size_t size, double s)
 int demux_title(const TitleJob *job, TitleOutcome *res)
 {
     AVFormatContext *ctx = NULL;
-    const AVDictionaryEntry *e;
+    const DiscInfo *info;
+    const char *tname;
     EsOut *out = NULL;
     AVPacket *pkt = NULL;
     char dir[4096], prefix[4200], dur[32], js[4300];
@@ -385,11 +504,12 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         res->failed = 1;
         return ret;
     }
-    e = av_dict_get(ctx->metadata, "title", NULL, 0);
-    title_name(setting_text("output.file_name_template"), e ? e->value : NULL, NULL, NULL, job->title,
+    info = disc_info(ctx);
+    tname = info && job->title < info->nb_titles ? info->titles[job->title].name : NULL;
+    title_name(setting_text("output.file_name_template"), tname, NULL, NULL, job->title,
                res->name, sizeof(res->name));
     hms(dur, sizeof(dur), ctx->duration > 0 ? ctx->duration / (double)AV_TIME_BASE : 0);
-    log_step("=== Title %d/%d: #%d %s (%s) ===", job->ordinal, job->count, job->title, e ? e->value : "", dur);
+    log_step("=== Title %d/%d: #%d %s (%s) ===", job->ordinal, job->count, job->title, tname ? tname : "", dur);
     log_json("title_start", "\"title\":%d,\"name\":%s,\"ordinal\":%d,\"count\":%d", job->title,
              json_str(js, sizeof(js), res->name), job->ordinal, job->count);
 
@@ -435,10 +555,20 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         }
     }
 
+    for (unsigned i = 0; i < ctx->nb_streams; i++) {
+        enum AVMediaType t = ctx->streams[i]->codecpar->codec_type;
+        if ((t == AVMEDIA_TYPE_VIDEO || t == AVMEDIA_TYPE_AUDIO) &&
+            details_probe_open(&out[i].probe, ctx->streams[i]->codecpar) < 0)
+            log_text(LOG_DETAIL, "Track %u: no decoder for %s: its details are not checked", i,
+                     avcodec_get_name(ctx->streams[i]->codecpar->codec_id));
+    }
     while ((ret = av_read_frame(ctx, pkt)) >= 0) {
         const AVStream *st = ctx->streams[pkt->stream_index];
         EsOut *o = &out[pkt->stream_index];
         int64_t progress;
+
+        if (o->probe)
+            details_probe_packet(o->probe, pkt);
 
         if (av_opt_get_int(ctx, "progress", AV_OPT_SEARCH_CHILDREN, &progress) >= 0)
             log_progress(job->title, progress / 10000.0);
@@ -470,7 +600,8 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
             av_packet_unref(pkt);
             goto end;
         }
-        ret = o->idx ? vobsub_write(o, st, pkt) : es_write(o, pkt);
+        ret = o->idx ? vobsub_write(o, st, pkt) :
+              st->codecpar->codec_id == AV_CODEC_ID_SUBRIP ? srt_write(o, st, pkt) : es_write(o, pkt);
         av_packet_unref(pkt);
         if (ret < 0)
             goto end;
@@ -504,17 +635,29 @@ end:
         res->failed = 1;
     } else {
         int64_t untested = meta_int(ctx->metadata, "untested");
+        int checked = 0, check_failed = 0, unchecked = 0;
+
+        for (unsigned i = 0; i < ctx->nb_streams; i++) {
+            enum AVMediaType t = ctx->streams[i]->codecpar->codec_type;
+            end_check(ctx->streams[i], &out[i]);
+            checked      += out[i].checked != 0;
+            check_failed += out[i].checked < 0;
+            unchecked    += out[i].opened && !out[i].probe && (t == AVMEDIA_TYPE_VIDEO || t == AVMEDIA_TYPE_AUDIO);
+        }
         log_text(LOG_INFO, "Tracks:");
         for (unsigned i = 0; i < ctx->nb_streams; i++) {
             const AVStream *st = ctx->streams[i];
             EsOut *o = &out[i];
             int64_t frames = meta_int(st->metadata, "frames"), warn = meta_int(st->metadata, "warnings");
-            char what[160], state[96], delay[48] = "", jc[64], jl[32], jy[96], jf[4300];
+            char what[160], state[96], delay[48] = "", jc[64], jl[32], jy[96], jf[4300], extra[2048] = "";
             const char *unit = st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE ? "subtitles" : "frames";
+            int empty_cc = !o->opened && av_dict_get(st->metadata, "caption", NULL, 0);
 
             snprintf(what, sizeof(what), "%s %s%s%s", *o->st.lang ? o->st.lang : "   ",
                      codec_label(st->codecpar->codec_id, st->codecpar->profile), *o->layout ? " " : "", o->layout);
-            if (!o->opened)
+            if (empty_cc)
+                snprintf(state, sizeof(state), "no caption text: no file");
+            else if (!o->opened)
                 snprintf(state, sizeof(state), "no data: no file");
             else if (warn)
                 snprintf(state, sizeof(state), "%"PRId64" warning%s", warn, warn == 1 ? "" : "s");
@@ -522,19 +665,44 @@ end:
                 snprintf(state, sizeof(state), "OK");
             if (o->opened && st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
                 snprintf(delay, sizeof(delay), ", delay %"PRId64" ms", o->st.delay_ms);
-            log_text(!o->opened ? LOG_WARNING : warn ? LOG_INFO : LOG_OK, "  %02u  %-30s %8"PRId64" %-9s  %s%s",
+            log_text(!o->opened && !empty_cc ? LOG_WARNING : warn || empty_cc ? LOG_INFO : LOG_OK,
+                     "  %02u  %-30s %8"PRId64" %-9s  %s%s",
                      i, what, frames, unit, state, delay);
+            if (st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE)
+                subtitle_detail(st, o->opened, extra, sizeof(extra));
+            else if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
+                video_detail(st, extra, sizeof(extra));
+            if (o->checked < 0)
+                log_text(LOG_ERROR, "      the file's stream details differ from the disc stream's: %s", o->problems);
+            if (o->checked) {
+                char jp[1100];
+                size_t l = strlen(extra);
+                snprintf(extra + l, sizeof(extra) - l, ",\"details_check\":\"%s\",\"details\":%s",
+                         o->checked > 0 ? "pass" : "fail", json_str(jp, sizeof(jp), o->problems));
+            }
             if (o->opened)
                 log_text(LOG_DETAIL, "      %s", o->name);
             res->warnings += warn;
             log_json("track", "\"title\":%d,\"index\":%u,\"codec\":%s,\"language\":%s,\"layout\":%s,"
-                     "\"frames\":%"PRId64",\"warnings\":%"PRId64",\"delay_ms\":%"PRId64",\"file\":%s", job->title, i,
-                     json_str(jc, sizeof(jc), codec_label(st->codecpar->codec_id, st->codecpar->profile)),
+                     "\"frames\":%"PRId64",\"warnings\":%"PRId64",\"delay_ms\":%"PRId64",\"file\":%s%s", job->title,
+                     i, json_str(jc, sizeof(jc), codec_label(st->codecpar->codec_id, st->codecpar->profile)),
                      json_str(jl, sizeof(jl), o->st.lang), json_str(jy, sizeof(jy), o->layout), frames, warn,
-                     o->st.delay_ms, json_str(jf, sizeof(jf), o->opened ? o->name : ""));
+                     o->st.delay_ms, json_str(jf, sizeof(jf), o->opened ? o->name : ""), extra);
         }
+        if (checked)
+            log_text(check_failed ? LOG_ERROR : LOG_OK, "Stream details (read back from the files): %d of %d "
+                     "video / audio track%s match the disc streams%s", checked - check_failed, checked,
+                     checked == 1 ? "" : "s", check_failed ? "" : ": PASS");
+        if (unchecked)
+            log_text(LOG_WARNING, "Stream details: %d video / audio track%s not checked (no decoder)", unchecked,
+                     unchecked == 1 ? "" : "s");
+        res->warnings += unchecked;
         log_msg(MSG_CHAPTERS, LOG_INFO, "Chapters: %u", ctx->nb_chapters);
-        if (untested) {
+        if (check_failed) {
+            log_msg(MSG_DETAILS_DIFFER, LOG_ERROR, "Title #%d: its files are written, but %d of them do not keep "
+                    "the disc stream's details (see above)", job->title, check_failed);
+            res->failed = 1;
+        } else if (untested) {
             log_msg(MSG_UNTESTED, LOG_ERROR, "Title #%d: %"PRId64" feature(s) met that no real disc has tested: "
                     "its files are written, but check the log before using them", job->title, untested);
             res->failed = 1;
@@ -554,6 +722,7 @@ end:
         av_free(o->hold);
         av_frame_free(&o->frame);
         avcodec_free_context(&o->avctx);
+        details_probe_close(&o->probe);
         av_free(o->name);
     }
     av_free(out);

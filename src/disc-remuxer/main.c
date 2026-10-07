@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 
 #include <libavformat/avformat.h>
+#include <libavformat/discinfo.h>
 #include <libavutil/avutil.h>
 
 #include "log.h"
@@ -72,89 +73,131 @@ static void hms(char *buf, size_t size, int64_t us)
     snprintf(buf, size, "%d:%02d:%02d", (int)(t / 3600), (int)(t / 60 % 60), (int)(t % 60));
 }
 
-static int64_t meta_int(AVDictionary *m, const char *key, int64_t def)
+/* The disc demuxer: it tells the kind of disc and follows the contract of
+ * docs/FORMATS.md (the disc info, each track's result at the end, read
+ * progress as an option). */
+#define DISC_FORMAT "disc"
+#define ONLY_DISC_INFO (-1)
+
+/* A size in GB / MB of 1024^3 / 1024^2 bytes, one decimal, cut off (not rounded). */
+static void size_text(char *buf, size_t size, int64_t bytes)
 {
-    const AVDictionaryEntry *e = av_dict_get(m, key, NULL, 0);
-    return e ? strtoll(e->value, NULL, 10) : def;
+    int gb = bytes >= (1LL << 30);
+    int64_t tenths = bytes * 10 / (gb ? 1LL << 30 : 1LL << 20);
+
+    snprintf(buf, size, "%"PRId64".%d %s", tenths / 10, (int)(tenths % 10), gb ? "GB" : "MB");
 }
 
-/* The format demuxers, tried in this order. Each one follows the same
- * contract (docs/FORMATS.md): the disc and its titles in the metadata on
- * open, each track's result at the end, read progress as an option. */
-static const char *const formats[] = { "hddvd", NULL };
+/* A linked stream's index for JSON, or null (-1: none). */
+static const char *json_index(char *buf, size_t size, int v)
+{
+    if (v < 0)
+        return "null";
+    snprintf(buf, size, "%d", v);
+    return buf;
+}
 
-/* Which demuxer reads source (NULL: none, logged); logs the disc line. */
-static const char *source_format(const char *source, int *nb_titles)
+/* A stream detail for JSON: the number, or null when not known (0). */
+static const char *json_num(char *buf, size_t size, int64_t v)
+{
+    if (!v)
+        return "null";
+    snprintf(buf, size, "%"PRId64, v);
+    return buf;
+}
+
+/* One title's line (and, with detail, its files and streams) plus its JSON
+ * record. */
+static void title_overview(const DiscTitleInfo *t, int detail)
+{
+    char dur[32], size[32], streams[4096] = "", files[2048] = "", js[512], jl[16];
+    int nv = 0, na = 0, ns = 0;
+
+    hms(dur, sizeof(dur), t->duration);
+    size_text(size, sizeof(size), t->size);
+    for (int i = 0; i < t->nb_streams; i++) {
+        const DiscStreamInfo *k = &t->streams[i];
+        char jc[64], jsl[16], n1[24], n2[24], n3[24], n4[24], n5[24], n6[24], ji[24], jf[24];
+        nv += k->type == AVMEDIA_TYPE_VIDEO;
+        na += k->type == AVMEDIA_TYPE_AUDIO;
+        ns += k->type == AVMEDIA_TYPE_SUBTITLE;
+        snprintf(streams + strlen(streams), sizeof(streams) - strlen(streams),
+                 "%s{\"index\":%d,\"kind\":\"%s\",\"codec\":%s,\"language\":%s,\"inner_track\":%s,"
+                 "\"from_track\":%s,\"width\":%s,"
+                 "\"height\":%s,\"channels\":%s,\"sample_rate\":%s,\"bits\":%s,\"bit_rate\":%s}",
+                 i ? "," : "", i, av_get_media_type_string(k->type),
+                 json_str(jc, sizeof(jc), codec_label(k->codec, AV_PROFILE_UNKNOWN)),
+                 json_str(jsl, sizeof(jsl), k->language), json_index(ji, sizeof(ji), k->inner_track),
+                 json_index(jf, sizeof(jf), k->from_track), json_num(n1, sizeof(n1), k->width),
+                 json_num(n2, sizeof(n2), k->height), json_num(n3, sizeof(n3), k->channels),
+                 json_num(n4, sizeof(n4), k->sample_rate), json_num(n5, sizeof(n5), k->bits),
+                 json_num(n6, sizeof(n6), k->bit_rate));
+    }
+    for (int i = 0; i < t->nb_files; i++) {
+        char jf[300];
+        snprintf(files + strlen(files), sizeof(files) - strlen(files), "%s%s", i ? "," : "",
+                 json_str(jf, sizeof(jf), t->files[i]));
+    }
+    log_text(LOG_INFO, "  #%-2d %-40s %9s  %-6s %d audio, %d subtitle%s, %d chapter%s", t->index,
+             t->name ? t->name : "", dur,
+             nv ? codec_label(t->streams[0].codec, 0) : "-", na, ns, ns == 1 ? "" : "s",
+             t->nb_chapters, t->nb_chapters == 1 ? "" : "s");
+    if (detail) {
+        char list[1024] = "";
+        for (int i = 0; i < t->nb_files; i++)
+            snprintf(list + strlen(list), sizeof(list) - strlen(list), "%s%s", i ? ", " : "", t->files[i]);
+        log_text(LOG_INFO, "       %s, %s%s%s%s", size, list, t->language[0] ? ", language " : "", t->language,
+                 t->selected ? "" : ", not selected (shorter than the minimum length)");
+        for (int i = 0; i < t->nb_streams; i++) {
+            const DiscStreamInfo *k = &t->streams[i];
+            char extra[64] = "", link[96] = "";
+            if (k->type == AVMEDIA_TYPE_SUBTITLE && k->width)
+                snprintf(extra, sizeof(extra), "  %dx%d", k->width, k->height);
+            if (k->from_track >= 0)
+                snprintf(link, sizeof(link), "  (taken out of track %d)", k->from_track);
+            else if (k->inner_track >= 0)
+                snprintf(link, sizeof(link), "  (track %d is taken out of it)", k->inner_track);
+            log_text(LOG_INFO, "       %-2d %-8s %-8s %-3s%s%s", i, av_get_media_type_string(k->type),
+                     codec_label(k->codec, AV_PROFILE_UNKNOWN), k->language, extra, link);
+        }
+    }
+    log_json("title", "\"index\":%d,\"name\":%s,\"duration\":%.3f,\"chapters\":%d,\"size\":%"PRId64",\"language\":%s,"
+             "\"selected\":%s,\"files\":[%s],\"tracks\":[%s]", t->index,
+             json_str(js, sizeof(js), t->name ? t->name : ""), t->duration / (double)AV_TIME_BASE, t->nb_chapters,
+             t->size, json_str(jl, sizeof(jl), t->language), t->selected ? "true" : "false", files, streams);
+}
+
+/* The disc line and the overview of its titles (with the JSON disc and title
+ * records), from one open of source with the disc info only; detail: each
+ * title's files and streams too. NULL when source cannot be read as a disc
+ * (logged), else the demuxer to open its titles with. */
+static const char *disc_overview(const char *source, int detail, int *nb_titles)
 {
     AVFormatContext *ctx = NULL;
-    const char *format = NULL;
-    int ret = AVERROR_INVALIDDATA;
+    const DiscInfo *d;
+    char revs[32] = "", js1[64], js2[256], js3[64];
+    int ret;
 
-    for (int i = 0; formats[i] && !format; i++)
-        if ((ret = open_title(formats[i], source, 0, &ctx)) >= 0)
-            format = formats[i];
-    if (!format) {
+    if ((ret = open_title(DISC_FORMAT, source, ONLY_DISC_INFO, &ctx)) < 0 || !(d = disc_info(ctx))) {
         log_msg(MSG_SOURCE_UNSUPPORTED, LOG_ERROR, "%s cannot be read as a disc this program supports (%s); "
-                "only HD DVD images are wired so far", source, av_err2str(ret));
+                "only HD DVD images are wired so far", source, av_err2str(ret < 0 ? ret : AVERROR_BUG));
+        avformat_close_input(&ctx);
         return NULL;
     }
-    *nb_titles = (int)meta_int(ctx->metadata, "titles", 0);
-    {
-        const AVDictionaryEntry *disc  = av_dict_get(ctx->metadata, "disc", NULL, 0);
-        const AVDictionaryEntry *label = av_dict_get(ctx->metadata, "label", NULL, 0);
-        const AVDictionaryEntry *fs    = av_dict_get(ctx->metadata, "filesystem", NULL, 0);
-        int64_t rev = meta_int(ctx->metadata, "udf_revision", 0);
-        char revs[32] = "", js1[64], js2[256], js3[64];
-        if (rev)
-            snprintf(revs, sizeof(revs), " %x.%02x", (unsigned)(rev >> 8), (unsigned)(rev & 0xff));
-        log_msg(MSG_SOURCE, LOG_INFO, "Disc: %s '%s', %s%s, %s, %d title%s", disc ? disc->value : format,
-                label ? label->value : "", fs ? fs->value : "?", revs,
-                meta_int(ctx->metadata, "encrypted", 0) ? "encrypted" : "not encrypted",
-                *nb_titles, *nb_titles == 1 ? "" : "s");
-        log_json("disc", "\"kind\":%s,\"label\":%s,\"filesystem\":%s,\"encrypted\":%s,\"titles\":%d",
-                 json_str(js1, sizeof(js1), disc ? disc->value : format), json_str(js2, sizeof(js2), label ? label->value : ""),
-                 json_str(js3, sizeof(js3), fs ? fs->value : ""), meta_int(ctx->metadata, "encrypted", 0) ? "true" : "false",
-                 *nb_titles);
-    }
+    *nb_titles = d->nb_titles;
+    if (d->udf_revision)
+        snprintf(revs, sizeof(revs), " %x.%02x", (unsigned)(d->udf_revision >> 8), (unsigned)(d->udf_revision & 0xff));
+    log_msg(MSG_SOURCE, LOG_INFO, "Disc: %s '%s', %s%s, %s, %d title%s", d->kind, d->label ? d->label : "",
+            d->filesystem ? d->filesystem : "?", revs, d->encrypted ? "encrypted" : "not encrypted",
+            d->nb_titles, d->nb_titles == 1 ? "" : "s");
+    log_json("disc", "\"kind\":%s,\"label\":%s,\"filesystem\":%s,\"encrypted\":%s,\"titles\":%d",
+             json_str(js1, sizeof(js1), d->kind), json_str(js2, sizeof(js2), d->label ? d->label : ""),
+             json_str(js3, sizeof(js3), d->filesystem ? d->filesystem : ""), d->encrypted ? "true" : "false",
+             d->nb_titles);
+    for (int t = 0; t < d->nb_titles; t++)
+        title_overview(&d->titles[t], detail);
     avformat_close_input(&ctx);
-    return format;
-}
-
-/* The overview of a disc's titles (and JSON title records). */
-static void overview(const char *format, const char *source, int nb_titles)
-{
-    for (int t = 0; t < nb_titles; t++) {
-        AVFormatContext *ctx = NULL;
-        const AVDictionaryEntry *e;
-        char dur[32], tracks[1024] = "", js[512];
-        int nv = 0, na = 0, ns = 0, ret;
-
-        if ((ret = open_title(format, source, t, &ctx)) < 0) {
-            log_text(LOG_WARNING, "  #%-2d cannot be opened: %s", t, av_err2str(ret));
-            continue;
-        }
-        e = av_dict_get(ctx->metadata, "title", NULL, 0);
-        hms(dur, sizeof(dur), ctx->duration);
-        for (unsigned i = 0; i < ctx->nb_streams; i++) {
-            const AVCodecParameters *p = ctx->streams[i]->codecpar;
-            const AVDictionaryEntry *l = av_dict_get(ctx->streams[i]->metadata, "language", NULL, 0);
-            char jc[64], jl[16];
-            nv += p->codec_type == AVMEDIA_TYPE_VIDEO;
-            na += p->codec_type == AVMEDIA_TYPE_AUDIO;
-            ns += p->codec_type == AVMEDIA_TYPE_SUBTITLE;
-            snprintf(tracks + strlen(tracks), sizeof(tracks) - strlen(tracks), "%s{\"index\":%u,\"kind\":\"%s\","
-                     "\"codec\":%s,\"language\":%s}", i ? "," : "", i, av_get_media_type_string(p->codec_type),
-                     json_str(jc, sizeof(jc), codec_label(p->codec_id, p->profile)), json_str(jl, sizeof(jl), l ? l->value : ""));
-        }
-        log_text(LOG_INFO, "  #%-2d %-40s %9s  %-6s %d audio, %d subtitle%s, %"PRId64" chapter%s", t,
-                 e ? e->value : "", dur, nv ? codec_label(ctx->streams[0]->codecpar->codec_id, 0) : "-",
-                 na, ns, ns == 1 ? "" : "s", meta_int(ctx->metadata, "chapters", 0),
-                 meta_int(ctx->metadata, "chapters", 0) == 1 ? "" : "s");
-        log_json("title", "\"index\":%d,\"name\":%s,\"duration\":%.3f,\"chapters\":%"PRId64",\"tracks\":[%s]", t,
-                 json_str(js, sizeof(js), e ? e->value : ""), ctx->duration / (double)AV_TIME_BASE,
-                 meta_int(ctx->metadata, "chapters", 0), tracks);
-        avformat_close_input(&ctx);
-    }
+    return DISC_FORMAT;
 }
 
 /* "all" | "3" | "1,3-5" into a 0/1 list of nb_titles; returns the count
@@ -240,9 +283,8 @@ static int cmd_info(const char *source)
     int nb;
 
     log_msg(MSG_SOURCE, LOG_INFO, "Source: %s", source);
-    if (!(format = source_format(source, &nb)))
+    if (!(format = disc_overview(source, 1, &nb)))
         return 1;
-    overview(format, source, nb);
     return 0;
 }
 
@@ -269,11 +311,10 @@ static int cmd_demux(const char *source, const char *titles, const char *out_dir
     settings_log_changed();
     log_msg(MSG_OUTPUT_FOLDER, LOG_INFO, "Output folder: %s", out_dir);
 
-    if (!(format = source_format(source, &nb))) {
+    if (!(format = disc_overview(source, 0, &nb))) {
         log_close_files();
         return 1;
     }
-    overview(format, source, nb);
     sel = calloc(nb ? nb : 1, 1);
     if ((count = parse_titles(titles, nb, sel)) <= 0) {
         if (!count)

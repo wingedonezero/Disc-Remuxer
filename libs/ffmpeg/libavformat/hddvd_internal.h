@@ -245,7 +245,7 @@ typedef struct HDDVDClip {
     /* audio streams whose content was probed: their codec (NONE: left out) */
     uint8_t          probed[HDDVD_VTI_MAX_AUDIO];
     enum AVCodecID   probe_codec[HDDVD_VTI_MAX_AUDIO];
-    uint8_t          probe_core[HDDVD_VTI_MAX_AUDIO];   /**< DTS-HD: also carries a DTS core */
+    uint8_t          probe_dtshd[HDDVD_VTI_MAX_AUDIO];  /**< DTS-HD: a DTS stream with an extension */
 } HDDVDClip;
 
 typedef struct HDDVDChapterMark {
@@ -254,6 +254,13 @@ typedef struct HDDVDChapterMark {
 } HDDVDChapterMark;
 
 /** A track of a title: one stream of its EVOBs. */
+/* Sub-picture coding 4 (attribute record entry byte 0 bits 7..5): units of
+ * 8-bit pixels with their own 256-entry palette and contrast table
+ * (commands 0x83 / 0x84), drawn on a 1920x1080 canvas whatever the video's
+ * frame size (on 720x480 MPEG-2 titles too). Codings 0 and 1 are drawn on
+ * the video's frame size. */
+#define HDDVD_SUBPIC_CODING_HD 4
+
 typedef struct HDDVDTrack {
     enum AVMediaType type;
     enum AVCodecID   codec;
@@ -261,10 +268,11 @@ typedef struct HDDVDTrack {
     int              number;        /**< audio: stream number 0..7; sub-picture: stream number 0..31 */
     int              coding;        /**< audio / sub-picture coding mode from the attribute record */
     char             lang[4];       /**< ISO 639-2 when known, else as written; "" none */
-    int              width, height; /**< sub-pictures */
+    int              width, height; /**< sub-pictures: the canvas (HDDVD_SUBPIC_CODING_HD: 1920x1080) */
     const uint32_t  *palette;       /**< sub-pictures: 16 entries of the attribute record */
-    int              core;          /**< audio: 1 = holds a core that the next track carries
-                                         on its own (DTS-HD), 2 = that core track */
+    int              inner_track;   /**< audio: the track taken out of this one (DTS out of
+                                         DTS-HD), -1 none */
+    int              from_track;    /**< audio: the track this one is taken out of, -1 none */
 } HDDVDTrack;
 
 typedef struct HDDVDTitle {
@@ -386,6 +394,23 @@ int ff_hddvd_aacs_sector(void *logctx, HDDVDAACS *aacs, DiscIOFS *fs, HDDVDClip 
  * @return 1 usable, 0 not usable (logged), < 0 read error / no such block
  */
 int ff_hddvd_clip_block(void *logctx, HDDVDAACS *aacs, DiscIOFS *fs, HDDVDClip *clip, uint32_t block, uint8_t *buf);
+
+/** An EVOB's stream read through FFmpeg's MPEG-PS demuxer as disc sectors. */
+typedef struct HDDVDClipPS {
+    struct AVFormatContext *ctx;
+    struct AVIOContext     *pb;
+} HDDVDClipPS;
+
+/**
+ * Open the MPEG-PS demuxer (mpeg.c, options disc=1 and lpcm_header=5) over
+ * the 2048-byte blocks read gives (one per call; AVERROR_EOF at the end),
+ * raw payloads with their own times (no parsing, no filled-in or corrected
+ * timestamps). parent (may be NULL): the context whose whitelists and
+ * interrupt callback the demuxer takes.
+ */
+int ff_hddvd_clip_ps_open(HDDVDClipPS *ps, struct AVFormatContext *parent,
+                          int (*read)(void *opaque, uint8_t *buf, int size), void *opaque);
+void ff_hddvd_clip_ps_close(HDDVDClipPS *ps);
 
 /* ---- tracks ---- */
 

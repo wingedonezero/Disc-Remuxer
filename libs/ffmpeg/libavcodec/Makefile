@@ -1285,6 +1285,7 @@ OBJS-$(CONFIG_MPEGAUDIO_PARSER)        += mpegaudio_parser.o
 OBJS-$(CONFIG_MPEGVIDEO_PARSER)        += mpegvideo_parser.o mpeg12data.o
 OBJS-$(CONFIG_OPUS_PARSER)             += vorbis_data.o
 OBJS-$(CONFIG_PNG_PARSER)              += png_parser.o
+OBJS-$(CONFIG_PCM_DVD_PARSER)          += pcm_dvd_parser.o
 OBJS-$(CONFIG_PNM_PARSER)              += pnm_parser.o pnm.o
 OBJS-$(CONFIG_PRORES_RAW_PARSER)       += prores_raw_parser.o
 OBJS-$(CONFIG_QOI_PARSER)              += qoi_parser.o

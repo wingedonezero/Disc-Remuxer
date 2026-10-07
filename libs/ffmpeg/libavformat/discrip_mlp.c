@@ -107,21 +107,6 @@ int ff_discrip_mlp_check(const uint8_t *p, int n)
     return !major_sync(p, n) || major_sync_ok(p, n);
 }
 
-/* The core's cutter for AUs: an AU is as long as its length field says;
- * FFmpeg's parser instead drops every AU up to the next major sync when one
- * AU's parity or checksum fails. */
-int ff_discrip_mlp_unit_size(void *log, const uint8_t *p, int avail, int final, void *state)
-{
-    int len;
-
-    if (avail < 8)
-        return 0;
-    len = au_length(p);
-    if (len < 8)
-        return DR_CUT_NONE;
-    return len <= avail ? len : 0;
-}
-
 /* An output AU: as long as its length field, a major sync with a valid
  * checksum. */
 int ff_discrip_mlp_verify(const uint8_t *p, int n)
@@ -129,15 +114,6 @@ int ff_discrip_mlp_verify(const uint8_t *p, int n)
     if (n < 8 || au_length(p) != n)
         return DR_UNIT_BAD;
     return ff_discrip_mlp_check(p, n) ? DR_UNIT_OK : DR_UNIT_CRC;
-}
-
-/* The next AU that starts with a major sync (its sync word 4 bytes in). */
-int ff_discrip_mlp_resync(const uint8_t *p, int avail)
-{
-    for (int i = 0; i + 8 <= avail; i++)
-        if (major_sync(p + i, avail - i))
-            return i;
-    return -1;
 }
 
 static int sync_mlp(const uint8_t *p, int n)

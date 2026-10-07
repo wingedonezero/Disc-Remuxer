@@ -1,7 +1,8 @@
 /*
- * The shared rip core: sub-picture units (DVD-Video and HD DVD). The unit
- * cutter, each unit's duration from its display control sequences, and its
- * time on the video grid of its segment.
+ * The shared rip core: sub-picture units (DVD-Video and HD DVD), as FFmpeg's
+ * DVD subtitle parser finds them in disc mode: each unit's check, its
+ * duration from its display control sequences, and its time on the video
+ * grid of its segment.
  *
  * This file is part of FFmpeg.
  *
@@ -52,6 +53,8 @@ typedef struct Control {
     int dspxa;                   /* SET_DSPXA seen: the unit shows a picture */
     int forced;                  /* FSTA_DSP seen */
     int colcon;                  /* CHG_COLCON seen */
+    int area;                    /* SET_DAREA seen: x2 / y2 the largest end column / line */
+    int x2, y2;
 } Control;
 
 /* 1 when the header can be read from avail bytes. */
@@ -77,7 +80,8 @@ static int header(const uint8_t *b, int64_t avail, Header *h)
  * unit), CHG_COLCON its 16-bit size + 3; the HD DVD commands SET_COLOR 0x83
  * 769, SET_CONTR 0x84 257, SET_DAREA 0x85 7, SET_DSPXA 0x86 9 (32-bit
  * addresses inside the unit), CHG_COLCON 0x87 as 0x07. STP_DSP takes its
- * sequence's delay (the last one counts). */
+ * sequence's delay (the last one counts). SET_DAREA: start and end column
+ * (12 bits each), start and end line (12 bits each). */
 static int control(const uint8_t *b, int64_t len, Control *c)
 {
     Header h;
@@ -106,7 +110,14 @@ static int control(const uint8_t *b, int64_t len, Control *c)
             case 0x03:
             case 0x04:                k = 3; break;
             case 0x05:
-            case 0x85:                k = 7; break;
+            case 0x85:
+                if (len - p < 7)
+                    return 0;
+                c->area = 1;
+                c->x2 = FFMAX(c->x2, (b[p + 2] & 0x0F) << 8 | b[p + 3]);
+                c->y2 = FFMAX(c->y2, (b[p + 5] & 0x0F) << 8 | b[p + 6]);
+                k = 7;
+                break;
             case 0x06:
                 c->dspxa = 1;
                 if (len - p < 5 || AV_RB16(b + p + 1) >= len || AV_RB16(b + p + 3) >= len)
@@ -143,30 +154,6 @@ static int control(const uint8_t *b, int64_t len, Control *c)
     }
 }
 
-/* The cutter (DRCodec.unit_size): with 10 bytes or more, a unit starts only
- * where the header states a size of at least 9 and a first control sequence
- * that leaves 5 bytes; the unit is as long as its size. */
-int ff_discrip_spu_unit_size(void *log, const uint8_t *buf, int avail, int final, void *state)
-{
-    Header h;
-
-    if (avail >= 10) {
-        header(buf, avail, &h);
-        if (h.size < 9 || h.dcsq > h.size - 5)
-            return DR_CUT_NONE;
-    }
-    if (!header(buf, avail, &h) || h.size > avail)
-        return 0;
-    return h.size;
-}
-
-/* Where no unit starts, the bytes kept so far are given up: the next unit
- * is looked for in the bytes still to come. */
-int ff_discrip_spu_resync(const uint8_t *buf, int avail)
-{
-    return avail;
-}
-
 /* A unit whose display control sequences do not parse is left out. */
 int ff_discrip_spu_check(const uint8_t *data, int size)
 {
@@ -196,12 +183,13 @@ typedef struct Held {
 struct DRSpu {
     void       *log;
     int         track;
+    int         width, height;   /* the canvas the units are drawn on, 0 = not known */
     DRVideo    *video;
     DRFrameCb   cb;    void *opaque;
     DREventCb   event; void *event_opaque;
     Held       *q;               /* units waiting for the video's grid */
     int         head, n, cap;
-    int         warned_colcon;
+    int         warned_colcon, warned_outside;
     DRSpuStats  st;
 };
 
@@ -253,7 +241,7 @@ int ff_discrip_spu_unit(void *opaque, const DRUnit *u)
 
     s->st.units++;
     if (!control(u->data, u->size, &c)) {
-        av_log(s->log, AV_LOG_ERROR, "Rip core: sub-picture track %d: a unit the cutter passed does not parse\n",
+        av_log(s->log, AV_LOG_ERROR, "Rip core: sub-picture track %d: a unit the parser passed does not parse\n",
                s->track);
         return AVERROR_BUG;
     }
@@ -263,6 +251,14 @@ int ff_discrip_spu_unit(void *opaque, const DRUnit *u)
         s->warned_colcon = 1;
     }
     s->st.colcon += c.colcon;
+    if (s->width && c.area && (c.x2 >= s->width || c.y2 >= s->height)) {
+        if (!s->warned_outside)
+            av_log(s->log, AV_LOG_WARNING, "Rip core: sub-picture track %d: the unit at byte %"PRId64" is drawn "
+                   "up to column %d, line %d, outside the track's %dx%d canvas\n", s->track, u->pos, c.x2, c.y2,
+                   s->width, s->height);
+        s->warned_outside = 1;
+        s->st.outside++;
+    }
     s->st.forced += c.forced;
     h.f.dur = (c.stop ? c.stop : 1) * DELAY_TICKS;
     if (c.dspxa && !c.stop) {
@@ -315,10 +311,14 @@ int ff_discrip_spu_flush(DRSpu *s)
            " without a time, %"PRId64" before the video, %"PRId64" without a stop time), largest move to the "
            "video grid %"PRId64" ticks\n", s->track, s->st.units, s->st.out, s->st.untimed, s->st.early,
            s->st.no_stop, s->st.max_shift);
+    if (s->width)
+        av_log(s->log, AV_LOG_VERBOSE, "Rip core: sub-picture track %d: units inside the %dx%d canvas: "
+               "%"PRId64" of %"PRId64": %s\n", s->track, s->width, s->height, s->st.units - s->st.outside,
+               s->st.units, s->st.outside ? "FAIL" : "PASS");
     return 0;
 }
 
-int ff_discrip_spu_open(DRSpu **sp, void *logctx, int track, DRVideo *video,
+int ff_discrip_spu_open(DRSpu **sp, void *logctx, int track, DRVideo *video, int width, int height,
                         DRFrameCb cb, void *opaque, DREventCb ev, void *ev_opaque)
 {
     DRSpu *s;
@@ -330,6 +330,8 @@ int ff_discrip_spu_open(DRSpu **sp, void *logctx, int track, DRVideo *video,
         return AVERROR(ENOMEM);
     s->log    = logctx;
     s->track  = track;
+    s->width  = width;
+    s->height = height;
     s->video  = video;
     s->cb     = cb;
     s->opaque = opaque;

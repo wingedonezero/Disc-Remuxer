@@ -102,6 +102,14 @@ typedef enum {
  */
 int ff_ac3_parse_header(GetBitContext *gbc, AC3HeaderInfo *hdr);
 
+/**
+ * Disc mode: the stream header of a syncframe as the disc reader takes it:
+ * E-AC-3 bitstream information up to the channel map (the frame must hold it;
+ * a dependent stream's channel map must give the channels its audio coding
+ * mode and LFE give); AC-3: the syncinfo. 1 valid, 0 not.
+ */
+int avpriv_ac3_disc_stream_header(const uint8_t *buf, int size);
+
 int avpriv_ac3_parse_header(AC3HeaderInfo **hdr, const uint8_t *buf,
                             size_t size);
 

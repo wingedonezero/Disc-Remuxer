@@ -123,7 +123,8 @@ def test_tracks_follow_the_attribute_record():
     im = disc([evob("A.EVO", 1, 10)], [1], [attr], one_title("A.MAP", ""), [b""])
     # a first byte of 0x20 or more: no track; sub-pictures: the stream number of the first
     # display mode with bit 5, codings 0 / 1 / 4 only, the palette's upper half
-    # when the first display mode's bit 5 is set
+    # when the first display mode's bit 5 is set; coding 4 is drawn on 1920x1080,
+    # codings 0 / 1 on the video's frame size
     assert tracks_of(im) == [
         "title A.EVO",
         "  0|video|vc1|0|0|",
@@ -134,7 +135,7 @@ def test_tracks_follow_the_attribute_record():
         "  5|audio|pcm_dvd|5|4|",
         "  6|subtitle|dvd_subtitle|7|1||720x480|00108090",
         "  7|subtitle|dvd_subtitle|8|3||720x480|00108080",
-        "  8|subtitle|dvd_subtitle|9|4||720x480|00108080",
+        "  8|subtitle|dvd_subtitle|9|4||1920x1080|00108080",
     ]
 
 
@@ -165,6 +166,27 @@ def test_video_coding_and_sub_picture_frame_size():
     for i, (_, codec, size) in reversed(list(enumerate(cases))):
         want += [f"title {names[i]}", f"  0|video|{codec}|0|0|", f"  1|subtitle|dvd_subtitle|1|0||{size}|00108090"]
     assert tracks_of(im) == want
+
+
+def test_coding_4_sub_pictures_are_drawn_on_1920x1080_on_any_video():
+    # MPEG-2 720x480 (as on BRUCE_ALMIGHTY's extras) and VC-1 1920x1080: coding 4 is
+    # 1920x1080 on both; codings 0 and 1 follow the video's frame size
+    sd = attr_record([0x00, 0, 0x50], [], [[0x80, 0x20, 0, 0, 0], [0x00, 0x21, 0, 0, 0], [0x20, 0x22, 0, 0, 0]],
+                     PALETTE)
+    hd = attr_record([0x60, 0, 0xc0], [], [[0x80, 0x20, 0, 0, 0], [0x00, 0x21, 0, 0, 0]], PALETTE)
+    body = f"<Title>{clip('A.MAP', T, T, False)}</Title><Title>{clip('B.MAP', T, T, False)}</Title>"
+    im = disc([evob("A.EVO", 1, 10), evob("B.EVO", 2, 10)], [1, 2], [sd, hd], playlist("", body), [b"", b""])
+    assert tracks_of(im) == [
+        "title B.EVO",
+        "  0|video|vc1|0|0|",
+        "  1|subtitle|dvd_subtitle|1|0||1920x1080|00108090",
+        "  2|subtitle|dvd_subtitle|2|1||1920x1080|00108090",
+        "title A.EVO",
+        "  0|video|mpeg2video|0|0|",
+        "  1|subtitle|dvd_subtitle|1|0||1920x1080|00108090",
+        "  2|subtitle|dvd_subtitle|2|1||720x480|00108090",
+        "  3|subtitle|dvd_subtitle|3|2||720x480|00108090",
+    ]
 
 
 def test_a_stream_with_the_codec_and_number_of_an_earlier_one_is_left_out():
@@ -261,6 +283,17 @@ def test_the_first_frame_must_be_a_valid_header():
     assert ddplus([pack([ps1_packet(0xc0, 90000, bad + e() * 3)])]) == []
     good = eac3_frame(256, 1, 0xa000)  # L, R
     assert ddplus([pack([ps1_packet(0xc0, 90000, good + e() * 3)])]) == EAC3
+    # channel map bit 13 is a speaker pair (top back left / right): 2 channels
+    pair = eac3_frame(256, 1, 0x0004)
+    assert ddplus([pack([ps1_packet(0xc0, 90000, pair + e() * 3)])]) == EAC3
+    assert ddplus([pack([ps1_packet(0xc0, 90000, eac3_frame(256, 1, 0xa004) + e() * 3)])]) == []
+
+
+def test_a_frame_start_found_after_other_data_needs_a_valid_header():
+    # the dependent stream frame after the 100 bytes has a channel map that does
+    # not fit its mode: the search moves on to the next frame start
+    bad = eac3_frame(256, 1, 0x8000)
+    assert ddplus([pack([ps1_packet(0xc0, 90000, bytes(100) + bad + e() * 4)])]) == EAC3
 
 
 def test_a_pack_with_more_than_two_packets_fails_the_probe():
@@ -308,14 +341,15 @@ def dts_extss(size, asset):
     return bytes(f)
 
 
-def test_a_dts_stream_is_dts_or_dts_hd_with_its_core_as_a_second_track():
+def test_a_dts_stream_is_dts_or_dts_hd_with_the_dts_stream_inside_as_a_second_track():
     core = dts_core(900)
     assert dts([pack([ps1_packet(0x88, 90000, core + core)])]) == \
         ["title A.EVO", "  0|video|vc1|0|0|", "  1|audio|dts|1|0|"]
-    # an extension substream after the first core frame: DTS-HD, then its core
+    # an extension substream after the first core frame: DTS-HD, then the DTS
+    # stream inside it as a track taken out of it
     unit = dts_core(600) + dts_extss(200, 184)
     assert dts([pack([ps1_packet(0x88, 90000, unit + unit)])]) == \
-        ["title A.EVO", "  0|video|vc1|0|0|", "  1|audio|dts|1|0||with core", "  2|audio|dts|1|0||core"]
+        ["title A.EVO", "  0|video|vc1|0|0|", "  1|audio|dts|1|0||gives track 2", "  2|audio|dts|1|0||from track 1"]
 
 
 def test_a_dts_stream_without_a_frame_or_with_a_bad_first_header_leaves_the_title_out():

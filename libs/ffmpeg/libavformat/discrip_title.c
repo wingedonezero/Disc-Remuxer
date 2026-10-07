@@ -1,6 +1,6 @@
 /*
  * The shared rip core: one title through all stages. Per segment each track
- * has a cutter and a timing stage (video grid, audio durations, sub-pictures
+ * has a frame step (FFmpeg's parser) and a timing stage (video grid, audio durations, sub-pictures
  * on the video grid); the joiner lays the segments end to end; each audio
  * output track then passes the junction (or the PCM strategy for linear
  * PCM); every output frame is checked and queued for the format demuxer.
@@ -43,14 +43,14 @@ typedef struct Track {
     DRTitle      *title;
     int           index;
     DRTitleTrack  cfg;
-    DRLpcm        lpcm;          /* linear PCM: the headers seen (shared by cutter and audio stage) */
+    DRLpcm        lpcm;          /* linear PCM: the headers seen (the frame step's format and the audio stage) */
 
     /* the current segment */
-    DRCutter     *cut;
+    DRFrames     *cut;
     DRVideo      *video;
     DRAudio      *audio;
     DRSpu        *spu;
-    int64_t       bytes;         /* payload bytes given to the cutter */
+    int64_t       bytes;         /* payload bytes given to the frame step */
     int64_t       tail_from;     /* stream offset where the payloads from the source's tail begin, -1 */
 
     /* the output side */
@@ -59,6 +59,14 @@ typedef struct Track {
     DRJunction   *junction;
     DRPcm        *pcm;
     DRVerify     *verify;
+    DRFrame       held;          /* sub-pictures: a unit without a stop time, waiting for the next one */
+    int           holding;
+    int64_t       extended;      /* sub-pictures: units without a stop time shown until the next one */
+    int64_t       outside;       /* sub-pictures: units drawn outside the canvas */
+    DRCcx        *ccx;           /* captions: the converter, from the first block on */
+    int64_t       cc_blocks;     /* captions: caption blocks given to the converter */
+    int64_t       cc_last_ms;    /* captions: the last block's time (ms) */
+    int64_t       cc_cues;       /* captions: cues given out */
     DRFrame      *wait;          /* audio frames waiting for the video */
     int           wait_head, nb_wait, wait_cap;
     int64_t       out;           /* frames given out */
@@ -82,6 +90,12 @@ struct DRTitle {
     int           video_done;
     int           finished;
     int64_t       review;        /* untested features met (audio reviews) */
+    int           error;         /* the title failed: every later call returns this */
+    int           cc_track;      /* the caption track, -1 none */
+    char         *cc_helper;     /* the caption converter's path (cfg.cc_helper points here) */
+    int64_t       cc_dropped;    /* caption blocks in the video of a title without a caption track */
+    int64_t       cc_text;       /* and their entries that carry caption bytes (not the null code) */
+    int64_t       user_data;     /* other GOP user data taken out of the video */
     Out          *q;             /* output frames ready */
     int           q_head, q_n, q_cap;
 };
@@ -402,6 +416,178 @@ static int wait_add(Track *k, DRFrame *f)
     return 0;
 }
 
+/* Sub-pictures: a unit without a stop time stays on screen until the next
+ * unit of its track replaces it (the disc's decoder model), so it waits for
+ * that unit and lasts until its start; a unit with a stop time keeps it. The
+ * last unit of the title without a stop time lasts until the video's end. */
+static int spu_held_out(DRTitle *t, Track *k, int64_t until)
+{
+    DRFrame *h = &k->held;
+    char b[32];
+
+    k->holding = 0;
+    if (until > h->time) {
+        h->dur = until - h->time;
+        k->extended++;
+    } else {
+        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: a sub-picture without a stop time is followed by one "
+               "that does not start later: it keeps its one delay step\n", k->index, hms(b, sizeof(b), h->time));
+        k->warnings++;
+    }
+    return emit(t, k, h);
+}
+
+static int spu_joined(DRTitle *t, Track *k, DRFrame *f)
+{
+    int ret;
+
+    if (k->holding && f->time != AV_NOPTS_VALUE && (ret = spu_held_out(t, k, f->time)) < 0) {
+        ff_discrip_frame_unref(f);
+        return ret;
+    }
+    if (!(f->flags & DR_F_NO_STOP) || f->time == AV_NOPTS_VALUE)
+        return emit(t, k, f);
+    if (k->holding && (ret = emit(t, k, &k->held)) < 0) {
+        ff_discrip_frame_unref(f);
+        return ret;
+    }
+    k->held    = *f;
+    k->holding = 1;
+    memset(f, 0, sizeof(*f));
+    return 0;
+}
+
+/* The end of the title: a sub-picture still waiting lasts until the video's end. */
+static int spu_finish(DRTitle *t, Track *k)
+{
+    char b[32], e[32];
+    int ret;
+
+    if (!k->holding)
+        return 0;
+    av_log(t->log, AV_LOG_WARNING, "Track %d at %s: the last sub-picture has no stop time: shown until the "
+           "video's end at %s [untested on real discs]\n", k->index, hms(b, sizeof(b), k->held.time),
+           hms(e, sizeof(e), t->vend));
+    t->review++;
+    if ((ret = spu_held_out(t, k, t->vend)) < 0)
+        return ret;
+    return 0;
+}
+
+/* ---- closed captions ----
+ * The MPEG-2 rules take GOP-level user data out of the video as side units,
+ * timed on the picture they belong to. A DVD caption block among them goes
+ * to the caption track as its CEA-608 entries; on the title timeline each
+ * block goes to the converter at its time in milliseconds (truncated). */
+
+static int cc_side(void *opaque, DRFrame *f)
+{
+    DRTitle *t = opaque;
+    uint8_t tri[63 * 3];
+    int n = ff_discrip_cc_check(f->data, f->size), m;
+    Track *k;
+
+    if (!n) {
+        t->user_data++;
+        ff_discrip_frame_unref(f);
+        return 0;
+    }
+    m = ff_discrip_cc_triplets(f->data, n, tri);
+    if (t->cc_track < 0) {
+        /* left out: counted, with the entries that carry caption bytes
+         * (parity bits aside, not 0: the null code 80 80 and padding 00 00
+         * carry nothing) */
+        t->cc_dropped++;
+        for (int i = 0; i < m; i++)
+            t->cc_text += (tri[3 * i + 1] & 0x7F) || (tri[3 * i + 2] & 0x7F);
+        ff_discrip_frame_unref(f);
+        return 0;
+    }
+    k = &t->t[t->cc_track];
+    if (!m) {
+        ff_discrip_frame_unref(f);
+        return 0;
+    }
+    /* the frame keeps its time; its bytes become the entries */
+    av_buffer_unref(&f->buf);
+    if (!(f->buf = av_buffer_alloc(3 * m + AV_INPUT_BUFFER_PADDING_SIZE)))
+        return AVERROR(ENOMEM);
+    memcpy(f->buf->data, tri, 3 * m);
+    memset(f->buf->data + 3 * m, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+    f->data = f->buf->data;
+    f->size = 3 * m;
+    return ff_discrip_join_push(t->join, k->index, f);
+}
+
+static int cc_joined(DRTitle *t, Track *k, DRFrame *f)
+{
+    int64_t ms = f->time / (DR_TICKS_PER_SECOND / 1000);
+    int ret = 0;
+
+    if (!k->ccx) {
+        if (!t->cfg.cc_helper || !*t->cfg.cc_helper) {
+            av_log(t->log, AV_LOG_ERROR, "Captions: track %d: the converter program (%s) is not known: the "
+                   "captions cannot be made into text\n", k->index, DR_CCX_PROGRAM);
+            ret = AVERROR(ENOENT);
+        } else {
+            ret = ff_discrip_ccx_start(&k->ccx, t->log, t->cfg.cc_helper);
+        }
+    }
+    if (ret >= 0)
+        ret = ff_discrip_ccx_block(k->ccx, ms, f->data, f->size / 3);
+    if (ret >= 0) {
+        k->cc_blocks++;
+        k->cc_last_ms = ms;
+    }
+    ff_discrip_frame_unref(f);
+    return ret;
+}
+
+/* The end of the title: the screen is cleared at the end of the video
+ * (erase displayed memory, CEA-608, sent twice as control codes are), so a
+ * caption still shown lasts until then; the converter's cues go out. */
+static int cc_finish(DRTitle *t, Track *k)
+{
+    static const uint8_t edm[6] = { 0x04, 0x94, 0x2C, 0x04, 0x94, 0x2C };
+    int64_t end_ms = t->vend / (DR_TICKS_PER_SECOND / 1000), tick = DR_TICKS_PER_SECOND / 1000;
+    DRCue *cues = NULL;
+    int n = 0, ret;
+
+    if (!k->ccx) {
+        av_log(t->log, AV_LOG_WARNING, "Captions: track %d: the video carries no caption block: no cues\n",
+               k->index);
+        k->warnings++;
+        return 0;
+    }
+    if (end_ms >= k->cc_last_ms && (ret = ff_discrip_ccx_block(k->ccx, end_ms, edm, 2)) < 0)
+        return ret;
+    ret = ff_discrip_ccx_finish(k->ccx, &cues, &n);
+    ff_discrip_ccx_close(&k->ccx);
+    if (ret < 0)
+        return ret;
+    for (int i = 0; i < n && ret >= 0; i++) {
+        DRFrame f = { .time = cues[i].start_ms * tick, .src = cues[i].start_ms * tick, .flags = DR_F_KEY,
+                      .dur = FFMAX(cues[i].end_ms - cues[i].start_ms, 0) * tick, .pos = -1 };
+        size_t len = strlen(cues[i].text);
+
+        if (!(f.buf = av_buffer_alloc(len + AV_INPUT_BUFFER_PADDING_SIZE))) {
+            ret = AVERROR(ENOMEM);
+            break;
+        }
+        memcpy(f.buf->data, cues[i].text, len);
+        memset(f.buf->data + len, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+        f.data = f.buf->data;
+        f.size = len;
+        ret = emit(t, k, &f);
+    }
+    k->cc_cues = n;
+    ff_discrip_cues_free(&cues, n);
+    if (ret >= 0)
+        av_log(t->log, AV_LOG_VERBOSE, "Captions: track %d: %"PRId64" caption blocks -> %d cues (CCExtractor %s)\n",
+               k->index, k->cc_blocks, n, DR_CCX_VERSION);
+    return ret;
+}
+
 /* A frame on the title timeline from the joiner. */
 static int joined(void *opaque, int track, DRFrame *f)
 {
@@ -425,8 +611,10 @@ static int joined(void *opaque, int track, DRFrame *f)
             return ret;
         }
         return release(t);
+    case DR_KIND_CAPTION:
+        return cc_joined(t, k, f);
     default:
-        return emit(t, k, f);
+        return spu_joined(t, k, f);
     }
 }
 
@@ -461,6 +649,8 @@ static int seg_open(DRTitle *t)
 
         k->bytes     = 0;
         k->tail_from = -1;
+        if (k->cfg.kind == DR_KIND_CAPTION)
+            continue;                    /* fed by the video's side units */
         switch (k->cfg.kind) {
         case DR_KIND_VIDEO:
             ret   = ff_discrip_video_open(&k->video, t->log, k->cfg.codec, i, seg_frame, k, on_seg_event, t);
@@ -473,19 +663,21 @@ static int seg_open(DRTitle *t)
             stage = k->audio;
             break;
         default:
-            ret   = ff_discrip_spu_open(&k->spu, t->log, i, t->t[0].video, seg_frame, k, on_seg_event, t);
+            ret   = ff_discrip_spu_open(&k->spu, t->log, i, t->t[0].video, k->cfg.width, k->cfg.height, seg_frame, k, on_seg_event, t);
             unit  = ff_discrip_spu_unit;
             stage = k->spu;
             break;
         }
         if (ret < 0)
             return ret;
-        if ((ret = ff_discrip_cutter_open(&k->cut, t->log, k->cfg.codec, unit, stage)) < 0)
+        if ((ret = ff_discrip_frames_open(&k->cut, t->log, k->cfg.codec, unit, stage)) < 0)
             return ret;
-        if (k->cfg.codec == AV_CODEC_ID_PCM_DVD) {
-            ff_discrip_cutter_set_state(k->cut, &k->lpcm);
+        if (k->cfg.codec == AV_CODEC_ID_PCM_DVD)
             ff_discrip_audio_set_state(k->audio, &k->lpcm);
-        }
+        if (k->cfg.kind == DR_KIND_AUDIO && (k->cfg.audio_flags & DR_AUDIO_EXTENDED))
+            ff_discrip_frames_take_any(k->cut);
+        if (k->cfg.kind == DR_KIND_VIDEO)
+            ff_discrip_video_set_side(k->video, cc_side, t);
     }
     return 0;
 }
@@ -494,7 +686,7 @@ static void seg_close(DRTitle *t)
 {
     for (int i = t->cfg.nb_tracks - 1; i >= 0; i--) {
         Track *k = &t->t[i];
-        ff_discrip_cutter_close(&k->cut);
+        ff_discrip_frames_close(&k->cut);
         ff_discrip_spu_close(&k->spu);
         ff_discrip_audio_close(&k->audio);
         ff_discrip_video_close(&k->video);
@@ -508,15 +700,23 @@ static int seg_end(DRTitle *t)
     Track *v = &t->t[0];
     int ret;
 
-    if ((ret = ff_discrip_cutter_flush(v->cut)) < 0 || (ret = ff_discrip_video_flush(v->video)) < 0)
+    if ((ret = ff_discrip_frames_flush(v->cut)) < 0 || (ret = ff_discrip_video_flush(v->video)) < 0)
         return ret;
     for (int i = 1; i < t->cfg.nb_tracks; i++) {
         Track *k = &t->t[i];
-        if ((ret = ff_discrip_cutter_flush(k->cut)) < 0)
+        if (k->cfg.kind == DR_KIND_CAPTION)
+            continue;
+        if ((ret = ff_discrip_frames_flush(k->cut)) < 0)
             return ret;
         ret = k->spu ? ff_discrip_spu_flush(k->spu) : ff_discrip_audio_flush(k->audio);
         if (ret < 0)
             return ret;
+        if (k->spu) {
+            DRSpuStats ss;
+            ff_discrip_spu_stats(k->spu, &ss);
+            k->outside  += ss.outside;
+            k->warnings += ss.outside > 0;  /* the stage warns once per segment */
+        }
         if (k->audio) {
             DRAudioStats as;
             ff_discrip_audio_stats(k->audio, &as);
@@ -542,8 +742,16 @@ int ff_discrip_title_open(DRTitle **tp, void *logctx, const DRTitleConfig *cfg)
         return AVERROR(ENOMEM);
     t->log  = logctx;
     t->cfg  = *cfg;
+    /* the title keeps its own copy of the converter's path */
+    t->cfg.cc_helper = NULL;
+    if (cfg->cc_helper && !(t->cc_helper = av_strdup(cfg->cc_helper))) {
+        av_free(t);
+        return AVERROR(ENOMEM);
+    }
+    t->cfg.cc_helper = t->cc_helper;
     t->vmax = INT64_MIN;
     t->vend = 0;
+    t->cc_track = -1;
     if (!(t->t = av_calloc(cfg->nb_tracks, sizeof(*t->t))) ||
         !(t->ev_count = av_calloc(cfg->nb_tracks * EVENT_KINDS, sizeof(*t->ev_count))) ||
         !(kinds = av_calloc(cfg->nb_tracks, sizeof(*kinds)))) {
@@ -556,7 +764,14 @@ int ff_discrip_title_open(DRTitle **tp, void *logctx, const DRTitleConfig *cfg)
         k->index    = i;
         k->cfg      = cfg->tracks[i];
         k->lpcm.hd  = cfg->lpcm_hd;
-        kinds[i]    = k->cfg.kind;
+        kinds[i]    = k->cfg.kind == DR_KIND_CAPTION ? DR_KIND_SUBTITLE : k->cfg.kind;  /* each keeps its time */
+        if (k->cfg.kind == DR_KIND_CAPTION) {
+            if (t->cc_track >= 0) {
+                ret = AVERROR(EINVAL);   /* one caption track per title */
+                goto fail;
+            }
+            t->cc_track = i;
+        }
         if ((ret = ff_discrip_verify_open(&k->verify, logctx, k->cfg.codec, i, k->cfg.kind, on_event, t)) < 0)
             goto fail;
     }
@@ -577,7 +792,7 @@ fail:
     return ret;
 }
 
-int ff_discrip_title_segment(DRTitle *t)
+static int title_segment(DRTitle *t)
 {
     int ret;
 
@@ -591,7 +806,7 @@ int ff_discrip_title_segment(DRTitle *t)
     return seg_open(t);
 }
 
-int ff_discrip_title_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time, int tail)
+static int title_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time, int tail)
 {
     Track *k;
     int ret;
@@ -599,6 +814,8 @@ int ff_discrip_title_payload(DRTitle *t, int track, const uint8_t *data, int siz
     if (track < 0 || track >= t->cfg.nb_tracks || !t->segments || t->finished)
         return AVERROR(EINVAL);
     k = &t->t[track];
+    if (k->cfg.kind == DR_KIND_CAPTION)
+        return AVERROR(EINVAL);          /* its data comes from the video */
     if (k->cfg.codec == AV_CODEC_ID_PCM_DVD) {
         int h = t->cfg.lpcm_hd ? 5 : 3;
         if (size < h) {
@@ -608,16 +825,18 @@ int ff_discrip_title_payload(DRTitle *t, int track, const uint8_t *data, int siz
         }
         if ((ret = ff_discrip_lpcm_header(&k->lpcm, t->log, data, h, t->cfg.lpcm_hd)) < 0)
             return ret;
+        /* the frame format for FFmpeg's LPCM parser (DVD-Video / HD DVD frames) */
+        ff_discrip_frames_set_pcm_format(k->cut, k->lpcm.channels, k->lpcm.bits, k->lpcm.spf);
         data += h;
         size -= h;
     }
     if (tail && k->tail_from < 0)
         k->tail_from = k->bytes;
     k->bytes += size;
-    return ff_discrip_cutter_write(k->cut, data, size, time);
+    return ff_discrip_frames_write(k->cut, data, size, time);
 }
 
-int ff_discrip_title_finish(DRTitle *t)
+static int title_finish(DRTitle *t)
 {
     int ret;
 
@@ -636,6 +855,13 @@ int ff_discrip_title_finish(DRTitle *t)
             return ret;
         if (k->junction && (ret = ff_discrip_junction_finish(k->junction)) < 0)
             return ret;
+        if ((ret = spu_finish(t, k)) < 0)
+            return ret;
+        if (k->cfg.kind == DR_KIND_CAPTION && (ret = cc_finish(t, k)) < 0)
+            return ret;
+        if (k->extended)
+            av_log(t->log, AV_LOG_VERBOSE, "Rip core: track %d: %"PRId64" sub-pictures without a stop time shown "
+                   "until the next one starts\n", i, k->extended);
     }
     for (int i = 0; i < t->cfg.nb_tracks; i++) {
         Track *k = &t->t[i];
@@ -648,12 +874,25 @@ int ff_discrip_title_finish(DRTitle *t)
                 av_log(t->log, AV_LOG_VERBOSE, "Rip core: track %d: %"PRId64" %s events, the first %d logged\n",
                        i, t->ev_count[i * EVENT_KINDS + e], ff_discrip_event_name(e), EVENT_LOGGED);
     }
+    if (t->cc_text) {
+        av_log(t->log, AV_LOG_WARNING, "Captions: the video carries %"PRId64" caption blocks with %"PRId64" caption "
+               "byte pairs, and the title has no caption track: taken out of the video and left out\n",
+               t->cc_dropped, t->cc_text);
+        t->t[0].warnings++;
+    } else if (t->cc_dropped) {
+        av_log(t->log, AV_LOG_VERBOSE, "Captions: the video carries %"PRId64" caption blocks without caption text: "
+               "taken out of the video\n", t->cc_dropped);
+    }
+    av_log(t->log, AV_LOG_DEBUG, "Rip core: GOP user data taken out of the video: %"PRId64" caption blocks, %"
+           PRId64" other\n", t->cc_track >= 0 ? t->t[t->cc_track].cc_blocks : t->cc_dropped, t->user_data);
     t->finished = 1;
     return 0;
 }
 
 int ff_discrip_title_frame(DRTitle *t, int *track, DRFrame *f)
 {
+    if (t->error)
+        return t->error;
     if (!t->q_n)
         return t->finished ? AVERROR_EOF : AVERROR(EAGAIN);
     *track = t->q[t->q_head].track;
@@ -662,6 +901,34 @@ int ff_discrip_title_frame(DRTitle *t, int *track, DRFrame *f)
     if (!--t->q_n)
         t->q_head = 0;
     return 0;
+}
+
+/* A failure leaves a stage in the middle of its work (a payload half given
+ * to a frame step, frames half handed on): the title stays failed, every later
+ * call returns the same error instead of going on with broken state. */
+static int sticky(DRTitle *t, int ret)
+{
+    if (ret < 0 && ret != AVERROR(EAGAIN) && ret != AVERROR(EINVAL) && !t->error) {
+        t->error = ret;
+        av_log(t->log, AV_LOG_ERROR, "Rip core: the title failed (%s): nothing more is read or given out\n",
+               av_err2str(ret));
+    }
+    return ret;
+}
+
+int ff_discrip_title_segment(DRTitle *t)
+{
+    return t->error ? t->error : sticky(t, title_segment(t));
+}
+
+int ff_discrip_title_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time, int tail)
+{
+    return t->error ? t->error : sticky(t, title_payload(t, track, data, size, time, tail));
+}
+
+int ff_discrip_title_finish(DRTitle *t)
+{
+    return t->error ? t->error : sticky(t, title_finish(t));
 }
 
 int ff_discrip_title_chapters(const DRTitle *t, const DRChapterPlan *plan, DRChapter **out, int *nb_out)
@@ -687,6 +954,30 @@ int ff_discrip_title_track_result(const DRTitle *t, int track, int64_t *frames, 
     *frames   = st.frames - st.markers;
     *warnings = t->t[track].warnings;
     *delay    = st.frames ? st.delay : 0;
+    return 0;
+}
+
+int ff_discrip_title_cc_result(const DRTitle *t, int track, int64_t *blocks, int64_t *cues)
+{
+    if (track < 0 || track >= t->cfg.nb_tracks || t->t[track].cfg.kind != DR_KIND_CAPTION)
+        return AVERROR(EINVAL);
+    *blocks = t->t[track].cc_blocks;
+    *cues   = t->t[track].cc_cues;
+    return 0;
+}
+
+void ff_discrip_title_cc_dropped(const DRTitle *t, int64_t *blocks, int64_t *text)
+{
+    *blocks = t->cc_dropped;
+    *text   = t->cc_text;
+}
+
+int ff_discrip_title_spu_result(const DRTitle *t, int track, int64_t *no_stop, int64_t *outside)
+{
+    if (track < 0 || track >= t->cfg.nb_tracks || t->t[track].cfg.kind != DR_KIND_SUBTITLE)
+        return AVERROR(EINVAL);
+    *no_stop = t->t[track].extended;
+    *outside = t->t[track].outside;
     return 0;
 }
 
@@ -716,6 +1007,9 @@ void ff_discrip_title_close(DRTitle **tp)
             for (int j = 0; j < k->nb_wait; j++)
                 ff_discrip_frame_unref(&k->wait[k->wait_head + j]);
             av_free(k->wait);
+            if (k->holding)
+                ff_discrip_frame_unref(&k->held);
+            ff_discrip_ccx_close(&k->ccx);
             ff_discrip_junction_close(&k->junction);
             ff_discrip_pcm_close(&k->pcm);
             ff_discrip_verify_close(&k->verify);
@@ -728,5 +1022,6 @@ void ff_discrip_title_close(DRTitle **tp)
     av_free(t->ev_count);
     ff_discrip_join_close(&t->join);
     av_free(t->t);
+    av_free(t->cc_helper);
     av_freep(tp);
 }

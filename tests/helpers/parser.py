@@ -1,5 +1,5 @@
 """FFmpeg's parsers run the way libavformat runs them (bridge.c
-tb_parser_run)."""
+tb_parser_run), and MPEG-PS demuxers run over bytes in memory (tb_ps_read)."""
 
 from helpers import ffi, extern, lib
 
@@ -20,3 +20,20 @@ def run(codec_name, packets):
     h = ffi.new_handle(frames)
     ret = lib.tb_parser_run(codec_name.encode(), ptrs, sizes, pts, len(packets), lib.tb_py_parser_frame, h)
     return ret, frames
+
+
+@extern
+def tb_py_ps_packet(opaque, id, codec, data, size, pts):
+    ffi.from_handle(opaque).append((id, codec, bytes(ffi.buffer(data, size)), pts))
+
+
+def ps_read(stream, disc=True, lpcm_header=3):
+    """The packets FFmpeg's MPEG-PS demuxer (mpeg.c) gives over stream
+    (bytes): as disc sectors (option disc, with the LPCM header length) or as
+    an ordinary program stream. (return code or packet count, [(stream id,
+    codec id, payload, pts)])."""
+    data = ffi.new("uint8_t[]", stream)
+    out = []
+    h = ffi.new_handle(out)
+    ret = lib.tb_ps_read(1 if disc else 0, lpcm_header, data, len(stream), lib.tb_py_ps_packet, h)
+    return ret, out

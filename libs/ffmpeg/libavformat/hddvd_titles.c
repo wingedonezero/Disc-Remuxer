@@ -53,6 +53,11 @@
 
 #include "libavcodec/avcodec.h"
 
+#include "avformat.h"
+#include "avio.h"
+#include "demux.h"
+#include "internal.h"
+
 #include "disclang.h"
 #include "hddvd_internal.h"
 
@@ -773,8 +778,10 @@ char *ff_hddvd_titles_dump(const HDDVDTitlePlan *plan)
             const HDDVDTrack *r = &t->tracks[k];
             av_bprintf(&bp, "  track %d|%s|%s|%d|%d|%s", k, av_get_media_type_string(r->type),
                        avcodec_get_name(r->codec), r->index, r->number, r->lang);
-            if (r->core)
-                av_bprintf(&bp, "|%s", r->core == 1 ? "with core" : "core");
+            if (r->inner_track >= 0)
+                av_bprintf(&bp, "|gives track %d", r->inner_track);
+            if (r->from_track >= 0)
+                av_bprintf(&bp, "|from track %d", r->from_track);
             if (r->type == AVMEDIA_TYPE_SUBTITLE)
                 av_bprintf(&bp, "|%dx%d|%08"PRIx32, r->width, r->height, r->palette ? r->palette[0] : 0);
             av_bprintf(&bp, "\n");
@@ -794,4 +801,61 @@ char *ff_hddvd_titles_dump(const HDDVDTitlePlan *plan)
     if (av_bprint_finalize(&bp, &s) < 0)
         return NULL;
     return s;
+}
+
+/* ---- an EVOB's stream through FFmpeg's MPEG-PS demuxer ---- */
+
+#define CLIP_BLOCK 2048
+
+int ff_hddvd_clip_ps_open(HDDVDClipPS *ps, AVFormatContext *parent,
+                          int (*read)(void *opaque, uint8_t *buf, int size), void *opaque)
+{
+    extern const FFInputFormat ff_mpegps_demuxer;
+    AVDictionary *opts = NULL;
+    uint8_t *buf;
+    int ret;
+
+    memset(ps, 0, sizeof(*ps));
+    if (!(buf = av_malloc(CLIP_BLOCK)))
+        return AVERROR(ENOMEM);
+    if (!(ps->pb = avio_alloc_context(buf, CLIP_BLOCK, 0, opaque, read, NULL, NULL))) {
+        av_free(buf);
+        return AVERROR(ENOMEM);
+    }
+    ps->pb->seekable = 0;
+    if (!(ps->ctx = avformat_alloc_context()))
+        return AVERROR(ENOMEM);
+    if (parent && (ret = ff_copy_whiteblacklists(ps->ctx, parent)) < 0) {
+        avformat_free_context(ps->ctx);
+        ps->ctx = NULL;
+        return ret;
+    }
+    /* raw PES payloads with their own times: no parsing, no filled-in or
+     * corrected timestamps (the rip core times every unit) */
+    ps->ctx->flags = AVFMT_FLAG_CUSTOM_IO | AVFMT_FLAG_NOPARSE | AVFMT_FLAG_NOFILLIN;
+    ps->ctx->correct_ts_overflow = 0;
+    ps->ctx->ctx_flags |= AVFMTCTX_UNSEEKABLE;
+    ps->ctx->probesize = 0;
+    ps->ctx->max_analyze_duration = 0;
+    if (parent)
+        ps->ctx->interrupt_callback = parent->interrupt_callback;
+    ps->ctx->pb = ps->pb;
+    ps->ctx->io_open = NULL;
+    /* disc sectors; HD DVD's LPCM audio frame header is 5 bytes */
+    if ((ret = av_dict_set(&opts, "disc", "1", 0)) < 0 ||
+        (ret = av_dict_set(&opts, "lpcm_header", "5", 0)) < 0) {
+        av_dict_free(&opts);
+        return ret;
+    }
+    ret = avformat_open_input(&ps->ctx, "", &ff_mpegps_demuxer.p, &opts);
+    av_dict_free(&opts);
+    return ret;
+}
+
+void ff_hddvd_clip_ps_close(HDDVDClipPS *ps)
+{
+    avformat_close_input(&ps->ctx);
+    if (ps->pb)
+        av_freep(&ps->pb->buffer);
+    avio_context_free(&ps->pb);
 }

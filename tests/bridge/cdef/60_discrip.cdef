@@ -10,7 +10,8 @@
 #define DR_F_TAIL ...
 #define DR_F_BATCH ...
 #define DR_F_NO_STOP ...
-#define DR_AUDIO_CORE_ONLY ...
+#define DR_AUDIO_EXTRACTED ...
+#define DR_AUDIO_EXTENDED ...
 #define DR_CHAPTER_00 ...
 
 typedef struct DRFrame {
@@ -48,7 +49,7 @@ typedef struct DRUnit {
 
 typedef int (*DRUnitCb)(void *opaque, const DRUnit *unit);
 
-typedef struct DRCutterStats {
+typedef struct DRFramesStats {
     int64_t bytes;
     int64_t records;
     int64_t units;
@@ -57,15 +58,16 @@ typedef struct DRCutterStats {
     int64_t skipped;
     int64_t skipped_bytes;
     int64_t joined;
-} DRCutterStats;
+} DRFramesStats;
 
-typedef struct DRCutter DRCutter;
-int ff_discrip_cutter_open(DRCutter **cutter, void *logctx, int codec, DRUnitCb cb, void *opaque);
-int ff_discrip_cutter_write(DRCutter *c, const uint8_t *data, int size, int64_t time);
-int ff_discrip_cutter_flush(DRCutter *c);
-void ff_discrip_cutter_stats(const DRCutter *c, DRCutterStats *stats);
-void ff_discrip_cutter_set_state(DRCutter *c, void *state);
-void ff_discrip_cutter_close(DRCutter **cutter);
+typedef struct DRFrames DRFrames;
+int ff_discrip_frames_open(DRFrames **frames, void *logctx, int codec, DRUnitCb cb, void *opaque);
+int ff_discrip_frames_write(DRFrames *c, const uint8_t *data, int size, int64_t time);
+int ff_discrip_frames_flush(DRFrames *c);
+void ff_discrip_frames_stats(const DRFrames *c, DRFramesStats *stats);
+void ff_discrip_frames_take_any(DRFrames *c);
+void ff_discrip_frames_set_pcm_format(DRFrames *c, int channels, int bits, int samples_per_frame);
+void ff_discrip_frames_close(DRFrames **frames);
 
 typedef struct DRAudioStats {
     int64_t units;
@@ -160,7 +162,7 @@ int  ff_discrip_junction_finish(DRJunction *j);
 void ff_discrip_junction_stats(const DRJunction *j, DRJunctionStats *st);
 void ff_discrip_junction_close(DRJunction **j);
 
-enum DRTrackKind { DR_KIND_VIDEO = 1, DR_KIND_AUDIO = 2, DR_KIND_SUBTITLE = 3 };
+enum DRTrackKind { DR_KIND_VIDEO = 1, DR_KIND_AUDIO = 2, DR_KIND_SUBTITLE = 3, DR_KIND_CAPTION = 4 };
 
 typedef int (*DRJoinOutCb)(void *opaque, int track, DRFrame *frame);
 
@@ -234,10 +236,11 @@ typedef struct DRSpuStats {
     int64_t forced;
     int64_t colcon;
     int64_t max_shift;
+    int64_t outside;
 } DRSpuStats;
 
 typedef struct DRSpu DRSpu;
-int  ff_discrip_spu_open(DRSpu **s, void *logctx, int track, DRVideo *v,
+int  ff_discrip_spu_open(DRSpu **s, void *logctx, int track, DRVideo *v, int width, int height,
                          DRFrameCb cb, void *opaque, DREventCb event, void *event_opaque);
 int  ff_discrip_spu_unit(void *spu, const DRUnit *unit);
 int  ff_discrip_spu_flush(DRSpu *s);
@@ -320,6 +323,7 @@ typedef struct DRTitleTrack {
     int codec;
     int kind;
     int audio_flags;
+    int width, height;
 } DRTitleTrack;
 
 typedef struct DRTitleConfig {
@@ -331,6 +335,7 @@ typedef struct DRTitleConfig {
     int                 nb_marks;
     DREventCb           event;
     void               *event_opaque;
+    const char         *cc_helper;
 } DRTitleConfig;
 
 typedef struct DRTitle DRTitle;
@@ -341,6 +346,17 @@ int  ff_discrip_title_finish(DRTitle *t);
 int  ff_discrip_title_frame(DRTitle *t, int *track, DRFrame *frame);
 int  ff_discrip_title_chapters(const DRTitle *t, const DRChapterPlan *plan, DRChapter **out, int *nb_out);
 int64_t ff_discrip_title_review(const DRTitle *t);
+int ff_discrip_title_spu_result(const DRTitle *t, int track, int64_t *no_stop, int64_t *outside);
+int ff_discrip_title_cc_result(const DRTitle *t, int track, int64_t *blocks, int64_t *cues);
+void ff_discrip_title_cc_dropped(const DRTitle *t, int64_t *blocks, int64_t *text);
+typedef struct DRCue { int64_t start_ms, end_ms; char *text; } DRCue;
+typedef struct DRCcx DRCcx;
+int  ff_discrip_ccx_start(DRCcx **c, void *logctx, const char *program);
+int  ff_discrip_ccx_block(DRCcx *c, int64_t ms, const uint8_t *triplets, int count);
+int  ff_discrip_ccx_finish(DRCcx *c, DRCue **cues, int *nb_cues);
+void ff_discrip_ccx_close(DRCcx **c);
+int  ff_discrip_srt_parse(void *logctx, const char *srt, int size, DRCue **cues, int *nb_cues);
+void ff_discrip_cues_free(DRCue **cues, int nb);
 int64_t ff_discrip_title_duration(const DRTitle *t);
 const char *ff_discrip_event_name(int kind);
 void ff_discrip_title_close(DRTitle **t);

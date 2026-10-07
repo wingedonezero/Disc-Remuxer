@@ -1,4 +1,4 @@
-"""libavformat/discrip_units.c: the rip core's stage 1. Payloads are cut
+"""libavformat/discrip_frames.c: the rip core's stage 1 (the frame step). Payloads are cut
 into units by FFmpeg's parser; a payload's time goes to the first unit whose
 anchor (audio: the frame start; MPEG-2 video: the picture start code) lies
 in that payload's bytes (ISO/IEC 13818-1 2.4.3.7). Every expectation is
@@ -6,6 +6,7 @@ computed here from the built stream's layout, independently of the code."""
 
 import dataclasses
 
+from synth.a52 import with_crcs
 from helpers import AV_NOPTS_VALUE, ffi, lib
 from helpers.discrip import Handles, codec_id
 
@@ -21,7 +22,7 @@ class Out:
 
 
 def run(codec, payloads):
-    """Runs the cutter for codec over the payloads (bytes, time):
+    """Runs the frame step for codec over the payloads (bytes, time):
     (units, stats)."""
     cid = codec_id(codec)
     assert cid is not None, "codec name"
@@ -32,15 +33,15 @@ def run(codec, payloads):
         outs.append(Out(u.pos, u.size, u.time, data[:4]))
         return 0
     keep = Handles()
-    c = ffi.new("DRCutter **")
-    assert lib.ff_discrip_cutter_open(c, ffi.NULL, cid, lib.tb_py_unit, keep(on_unit)) == 0
+    c = ffi.new("DRFrames **")
+    assert lib.ff_discrip_frames_open(c, ffi.NULL, cid, lib.tb_py_unit, keep(on_unit)) == 0
     for data, time in payloads:
-        assert lib.ff_discrip_cutter_write(c[0], bytes(data), len(data),
+        assert lib.ff_discrip_frames_write(c[0], bytes(data), len(data),
                                            AV_NOPTS_VALUE if time is None else time) == 0
-    assert lib.ff_discrip_cutter_flush(c[0]) == 0
-    st = ffi.new("DRCutterStats *")
-    lib.ff_discrip_cutter_stats(c[0], st)
-    lib.ff_discrip_cutter_close(c)
+    assert lib.ff_discrip_frames_flush(c[0]) == 0
+    st = ffi.new("DRFramesStats *")
+    lib.ff_discrip_frames_stats(c[0], st)
+    lib.ff_discrip_frames_close(c)
     return outs, st
 
 
@@ -60,8 +61,9 @@ def expected_time(payloads, anchors, a):
 
 def ac3_frame():
     """One AC-3 syncframe: 48 kHz, 192 kbit/s (768 bytes), bsid 8, 2/0; the
-    rest is zero (the parser reads only the header)."""
-    return bytes([0x0B, 0x77, 0x00, 0x00, 0x14, 0x40, 0x40]) + bytes(768 - 7)
+    rest is zero, with valid CRCs (the disc frame rules check them after
+    bytes that are no frame)."""
+    return with_crcs(bytes([0x0B, 0x77, 0x00, 0x00, 0x14, 0x40, 0x40]) + bytes(768 - 7))
 
 
 def chunks(data, n):
@@ -149,8 +151,8 @@ def test_mpeg2_times_go_to_the_picture_start_code_not_the_sequence_header():
 
 def test_a_codec_without_a_table_entry_is_refused():
     keep = Handles()
-    c = ffi.new("DRCutter **")
-    ret = lib.ff_discrip_cutter_open(c, ffi.NULL, codec_id("hevc"), lib.tb_py_unit, keep(lambda u: 0))
-    lib.ff_discrip_cutter_close(c)
+    c = ffi.new("DRFrames **")
+    ret = lib.ff_discrip_frames_open(c, ffi.NULL, codec_id("hevc"), lib.tb_py_unit, keep(lambda u: 0))
+    lib.ff_discrip_frames_close(c)
     assert ret < 0
     assert c[0] == ffi.NULL

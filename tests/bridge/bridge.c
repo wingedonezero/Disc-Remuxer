@@ -11,6 +11,7 @@
 #include "libavcodec/avcodec.h"
 #include "libavcodec/codec_desc.h"
 #include "libavformat/avformat.h"
+#include "libavformat/demux.h"
 #include "libavutil/aes.h"
 #include "libavutil/log.h"
 
@@ -167,3 +168,66 @@ static dvdcss_t tb_dvdcss_open_stream_uncached(void *p_stream, dvdcss_stream_cb 
 /* The versions our library headers give (the linked libraries must match). */
 static const char *tb_gcrypt_header_version(void) { return GCRYPT_VERSION; }
 static const char *tb_aacs_header_version(void) { return AACS_VERSION_STRING; }
+
+/* Runs FFmpeg's MPEG-PS demuxer (mpeg.c; `which`: 0 as it is, 1 as disc sectors with the
+ * LPCM header length) over the bytes in memory, the way the disc demuxers do (no
+ * parsing, no filled-in times); each packet goes to cb with its stream id,
+ * the codec the demuxer gave the stream, its bytes and pts. Returns the
+ * number of packets, or an AVERROR. */
+typedef void (*tb_ps_packet_cb)(void *opaque, int id, int codec, const uint8_t *data, int size, int64_t pts);
+
+typedef struct TbMem { const uint8_t *data; int size, pos; } TbMem;
+
+static int tb_mem_read(void *opaque, uint8_t *buf, int n)
+{
+    TbMem *m = opaque;
+    int k = FFMIN(n, m->size - m->pos);
+    if (k <= 0)
+        return AVERROR_EOF;
+    memcpy(buf, m->data + m->pos, k);
+    m->pos += k;
+    return k;
+}
+
+static int tb_ps_read(int which, int lpcm_header, const uint8_t *data, int size, tb_ps_packet_cb cb, void *opaque)
+{
+    extern const FFInputFormat ff_mpegps_demuxer;
+    const FFInputFormat *f = &ff_mpegps_demuxer;
+    TbMem m = { data, size, 0 };
+    AVFormatContext *s = avformat_alloc_context();
+    uint8_t *buf = av_malloc(4096);
+    AVPacket *pkt = av_packet_alloc();
+    AVDictionary *opts = NULL;
+    int n = 0, ret;
+
+    if (!s || !buf || !pkt || !(s->pb = avio_alloc_context(buf, 4096, 0, &m, tb_mem_read, NULL, NULL))) {
+        av_free(buf);
+        ret = AVERROR(ENOMEM);
+        goto end;
+    }
+    s->flags |= AVFMT_FLAG_CUSTOM_IO | AVFMT_FLAG_NOPARSE | AVFMT_FLAG_NOFILLIN;
+    s->probesize = 0;
+    if (which) {                /* disc sectors */
+        av_dict_set_int(&opts, "disc", 1, 0);
+        av_dict_set_int(&opts, "lpcm_header", lpcm_header, 0);
+    }
+    ret = avformat_open_input(&s, "", &f->p, &opts);
+    av_dict_free(&opts);
+    if (ret < 0)
+        goto end;
+    while ((ret = av_read_frame(s, pkt)) >= 0) {
+        AVStream *st = s->streams[pkt->stream_index];
+        cb(opaque, st->id, st->codecpar->codec_id, pkt->data, pkt->size, pkt->pts);
+        av_packet_unref(pkt);
+        n++;
+    }
+    ret = ret == AVERROR_EOF ? n : ret;
+end:
+    if (s && s->pb) {
+        av_freep(&s->pb->buffer);
+        avio_context_free(&s->pb);
+    }
+    avformat_close_input(&s);
+    av_packet_free(&pkt);
+    return ret;
+}

@@ -120,9 +120,7 @@ static int sync_always(const uint8_t *data, int size)
 
 /* Each unit is timed by its own first syncframe. A unit whose length or rate
  * is not the stream's (the first sync unit's) is timed by its own values and
- * reported for review. An AC-3 unit is cut to its first syncframe: the bytes
- * after it are E-AC-3 frames the parser joined to it, not part of an AC-3
- * track. */
+ * reported for review. */
 static int duration_ac3(DRAudio *a, DRFrame *f)
 {
     const DRAudioHeader *s = ff_discrip_audio_header(a);
@@ -130,8 +128,6 @@ static int duration_ac3(DRAudio *a, DRFrame *f)
 
     if (ac3_header(f->data, f->size, &h) < 0 || !h.sample_rate)
         return AVERROR_INVALIDDATA;
-    if (!is_eac3(&h) && h.frame_size < f->size)
-        f->size = h.frame_size;
     if (h.sample_rate != s->rate || h.num_blocks * 256 != s->samples)
         ff_discrip_audio_review(a, REVIEW_FRAME_LENGTH, "a frame's length or sample rate differs from the "
                                 "stream's first frame (timed by its own values)");
@@ -163,10 +159,19 @@ static void inspect_eac3(DRAudio *a, const DRFrame *f)
     }
 }
 
+/* An AC-3 track keeps each unit's AC-3 frame alone: the parser joins the
+ * E-AC-3 frames after an AC-3 frame to it (they belong to the same time),
+ * and FFmpeg's eac3_core filter takes them off. */
+static const char *filter_ac3(int flags)
+{
+    return "eac3_core";
+}
+
 static const DRAudioRules audio_ac3 = {
     .header   = header_ac3,
     .sync     = sync_always,
     .duration = duration_ac3,
+    .filter   = filter_ac3,
 };
 
 static const DRAudioRules audio_eac3 = {
@@ -225,9 +230,10 @@ static int header_dts(DRAudio *a, const DRFrame *f, DRAudioHeader *out)
     return -1;
 }
 
-/* A unit with a core is timed by its core frame header (npcmblocks x 32
- * samples); a core-only track keeps only the core frame. A unit without a
- * core is timed by FFmpeg's parser (extension substream asset) and reviewed. */
+/* A unit with a core frame is timed by its core frame header (npcmblocks x
+ * 32 samples). A unit without one is timed by FFmpeg's parser (extension
+ * substream asset) and reviewed; a DTS track taken out of DTS-HD has no
+ * such units. */
 static int duration_dts(DRAudio *a, DRFrame *f)
 {
     const DRAudioHeader *s = ff_discrip_audio_header(a);
@@ -235,11 +241,9 @@ static int duration_dts(DRAudio *a, DRFrame *f)
     int rate, samples;
 
     if (dts_core(f->data, f->size, &h) >= 0) {
-        if ((ff_discrip_audio_flags(a) & DR_AUDIO_CORE_ONLY) && h.frame_size < f->size)
-            f->size = h.frame_size;
         rate    = dts_rates[h.sr_code];
         samples = h.npcmblocks * 32;
-    } else if (dts_exss_sync(f->data, f->size) && !(ff_discrip_audio_flags(a) & DR_AUDIO_CORE_ONLY) &&
+    } else if (dts_exss_sync(f->data, f->size) && !(ff_discrip_audio_flags(a) & DR_AUDIO_EXTRACTED) &&
                f->samples > 0 && f->rate > 0) {
         ff_discrip_audio_review(a, REVIEW_DTS_SUBSTREAM_ONLY, "DTS-HD extension substream without a core "
                                 "(DTS Express / LBR), timed by FFmpeg's parser");
@@ -254,10 +258,18 @@ static int duration_dts(DRAudio *a, DRFrame *f)
     return 0;
 }
 
+/* A DTS track taken out of a DTS-HD stream keeps each unit's DTS frame
+ * alone (FFmpeg's dca_core filter takes the DTS-HD extension off). */
+static const char *filter_dts(int flags)
+{
+    return flags & DR_AUDIO_EXTRACTED ? "dca_core" : NULL;
+}
+
 static const DRAudioRules audio_dts = {
     .header   = header_dts,
     .sync     = sync_always,
     .duration = duration_dts,
+    .filter   = filter_dts,
 };
 
 /* ---- MPEG-1 / MPEG-2 audio (ISO/IEC 11172-3, 13818-3) ----
@@ -430,20 +442,6 @@ static const DRAudioRules audio_latm = {
  * unit; it lasts its samples (rate / 600 on DVD-Video, rate / 1200 on HD
  * DVD) and leaves as little-endian PCM. */
 
-static int lpcm_unit_size(void *log, const uint8_t *buf, int avail, int final, void *state)
-{
-    const DRLpcm *p = state;
-
-    if (!p || !p->init)
-        return 0;
-    return avail >= p->frame_bytes ? p->frame_bytes : 0;
-}
-
-static int lpcm_resync(const uint8_t *buf, int avail)
-{
-    return avail;
-}
-
 static int header_lpcm(DRAudio *a, const DRFrame *f, DRAudioHeader *out)
 {
     const DRLpcm *p = ff_discrip_audio_state(a);
@@ -561,21 +559,21 @@ static const DRCodec codecs[] = {
     { .id = AV_CODEC_ID_MPEG2VIDEO, .name = "mpeg2video", .anchor = anchor_mpegvideo, .video = &ff_discrip_video_mpv,
       .verify = verify_mpegvideo },
     { .id = AV_CODEC_ID_VC1, .name = "vc1", .anchor = anchor_vc1, .video = &ff_discrip_video_vc1, .verify = verify_vc1,
-      .unit_size = ff_discrip_vc1_unit_size, .resync = ff_discrip_vc1_resync, .cut_state_size = sizeof(DRVc1Cut) },
+      .disc_parser = 1 },
     { .id = AV_CODEC_ID_AC3, .name = "ac3", .anchor = anchor_unit, .check = check_ac3, .audio = &audio_ac3,
-      .verify = verify_ac3 },
+      .verify = verify_ac3, .disc_parser = 1 },
     { .id = AV_CODEC_ID_EAC3, .name = "eac3", .anchor = anchor_unit, .check = check_eac3, .audio = &audio_eac3,
       .verify = verify_ac3 },
     { .id = AV_CODEC_ID_TRUEHD, .name = "truehd", .anchor = anchor_unit, .check = ff_discrip_mlp_check,
-      .audio = &ff_discrip_audio_mlp, .unit_size = ff_discrip_mlp_unit_size, .resync = ff_discrip_mlp_resync,
+      .audio = &ff_discrip_audio_mlp, .disc_parser = 1,
       .verify = ff_discrip_mlp_verify },
     { .id = AV_CODEC_ID_MLP, .name = "mlp", .anchor = anchor_unit, .check = ff_discrip_mlp_check,
-      .audio = &ff_discrip_audio_mlp, .unit_size = ff_discrip_mlp_unit_size, .resync = ff_discrip_mlp_resync,
+      .audio = &ff_discrip_audio_mlp, .disc_parser = 1,
       .verify = ff_discrip_mlp_verify },
     { .id = AV_CODEC_ID_DTS, .name = "dts", .anchor = anchor_unit, .check = check_dts, .audio = &audio_dts,
-      .verify = verify_dts },
+      .verify = verify_dts, .disc_parser = 1 },
     { .id = AV_CODEC_ID_PCM_DVD, .name = "pcm_dvd", .anchor = anchor_unit, .audio = &audio_lpcm,
-      .unit_size = lpcm_unit_size, .resync = lpcm_resync },
+      .disc_parser = 1 },
     { .id = AV_CODEC_ID_MP1, .name = "mp1", .anchor = anchor_unit, .check = check_mpa, .audio = &audio_mpa,
       .verify = verify_mpa },
     { .id = AV_CODEC_ID_MP2, .name = "mp2", .anchor = anchor_unit, .check = check_mpa, .audio = &audio_mpa,
@@ -587,8 +585,10 @@ static const DRCodec codecs[] = {
     { .id = AV_CODEC_ID_AAC_LATM, .name = "aac_latm", .anchor = anchor_unit, .check = loas, .audio = &audio_latm,
       .verify = verify_latm },
     { .id = AV_CODEC_ID_DVD_SUBTITLE, .name = "dvd_subtitle", .anchor = anchor_unit,
-      .check = ff_discrip_spu_check, .unit_size = ff_discrip_spu_unit_size, .resync = ff_discrip_spu_resync,
+      .check = ff_discrip_spu_check, .disc_parser = 1,
       .verify = ff_discrip_spu_verify },
+    /* closed captions as text cues (made by the caption converter) */
+    { .id = AV_CODEC_ID_SUBRIP, .name = "subrip", .anchor = anchor_unit },
 };
 
 const DRCodec *ff_discrip_codec(enum AVCodecID id)

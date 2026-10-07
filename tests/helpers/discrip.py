@@ -3,6 +3,7 @@ behind each opaque pointer), frames collected as Out values, the audio stage
 run over built payloads."""
 
 import dataclasses
+import struct
 
 from helpers import AV_NOPTS_VALUE, extern, ffi, lib
 
@@ -98,34 +99,36 @@ def event_dict(ev):
 class Run:
     outs: list
     audio: object
-    cutter: object
+    frames: object
 
 
 def run(codec, payloads, marker=None, flags=0):
-    """Payloads [(bytes, time or None)] of one segment through the cutter
-    and the audio stage (flags: audio flags, e.g. DR_AUDIO_CORE_ONLY)."""
+    """Payloads [(bytes, time or None)] of one segment through the frame step
+    and the audio stage (flags: audio flags, e.g. DR_AUDIO_EXTRACTED)."""
     cid = codec_id(codec)
     assert cid is not None
     outs = []
     keep = Handles()
     a = ffi.new("DRAudio **")
-    c = ffi.new("DRCutter **")
+    c = ffi.new("DRFrames **")
     assert lib.ff_discrip_audio_open(a, ffi.NULL, cid, flags, lib.tb_py_frame, keep(collect(outs))) == 0
-    assert lib.ff_discrip_cutter_open(c, ffi.NULL, cid, fn("ff_discrip_audio_unit"), a[0]) == 0
+    assert lib.ff_discrip_frames_open(c, ffi.NULL, cid, fn("ff_discrip_audio_unit"), a[0]) == 0
+    if flags & lib.DR_AUDIO_EXTENDED:
+        lib.ff_discrip_frames_take_any(c[0])
     for data, time in payloads:
-        assert lib.ff_discrip_cutter_write(c[0], bytes(data), len(data),
+        assert lib.ff_discrip_frames_write(c[0], bytes(data), len(data),
                                            AV_NOPTS_VALUE if time is None else time) == 0
-    assert lib.ff_discrip_cutter_flush(c[0]) == 0
+    assert lib.ff_discrip_frames_flush(c[0]) == 0
     if marker is not None:
         assert lib.ff_discrip_audio_marker(a[0], marker) == 0
     assert lib.ff_discrip_audio_flush(a[0]) == 0
     audio = ffi.new("DRAudioStats *")
-    cutter = ffi.new("DRCutterStats *")
+    frames = ffi.new("DRFramesStats *")
     lib.ff_discrip_audio_stats(a[0], audio)
-    lib.ff_discrip_cutter_stats(c[0], cutter)
-    lib.ff_discrip_cutter_close(c)
+    lib.ff_discrip_frames_stats(c[0], frames)
+    lib.ff_discrip_frames_close(c)
     lib.ff_discrip_audio_close(a)
-    return Run(outs, audio, cutter)
+    return Run(outs, audio, frames)
 
 
 def dur(samples, rate):
@@ -180,3 +183,22 @@ def video_ref(video, keep):
 def events_into(lst):
     """A DREventCb body appending every event to lst (as a dict)."""
     return lambda ev: lst.append(event_dict(ev))
+
+
+def spu(stop, dspxa, cmds, mark):
+    """A DVD-Video sub-picture unit: SPDSZ, SP_DCSQTA, 4 bytes of pixel data,
+    SP_DCSQ 1 (delay 0: STA_DSP, cmds, SET_DSPXA when dspxa), SP_DCSQ 2
+    (delay stop: STP_DSP) when there is a stop. mark makes units differ."""
+    u = bytearray([0, 0, 0, 0, mark, 0x22, 0x33, 0x44])
+    d1 = len(u)
+    seq = bytearray([0x01]) + bytes(cmds)
+    if dspxa:
+        seq += bytes([0x06, 0, 4, 0, 6])
+    seq.append(0xFF)
+    d2 = d1 + 4 + len(seq)
+    u += bytes([0, 0]) + struct.pack(">H", d2 if stop is not None else d1) + seq
+    if stop is not None:
+        u += struct.pack(">H", stop) + struct.pack(">H", d2) + bytes([0x02, 0xFF])
+    u[0:2] = struct.pack(">H", len(u))
+    u[2:4] = struct.pack(">H", d1)
+    return bytes(u)
