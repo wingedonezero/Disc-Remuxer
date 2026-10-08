@@ -27,6 +27,9 @@
 #include "libavformat/hddvd_internal.h"
 
 #include <dvdread/dvd_udf.h>
+#include <dvdnav/dvdnav.h>
+
+#include "dvdnav_selftest.h"
 #include <expat.h>
 #include <gcrypt.h>
 #include <libaacs/aacs.h>

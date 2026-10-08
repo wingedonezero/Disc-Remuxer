@@ -48,6 +48,7 @@ def main():
     ffi.set_source(
         "_bridge",
         (HERE / "bridge.c").read_text(),
+        include_dirs=[str(HERE)],
         extra_compile_args=shlex.split(os.environ["BRIDGE_CFLAGS"])
         + ["-g", "-Werror=incompatible-pointer-types", "-Werror=int-conversion",
            "-Werror=implicit-function-declaration", "-Wno-unused-function"],

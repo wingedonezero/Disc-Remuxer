@@ -22,11 +22,13 @@ def sectors_for(nbytes):
     return max((nbytes + S - 1) // S, 1)
 
 
+def bcd(v):
+    return (v // 10) << 4 | (v % 10)
+
+
 def time(secs):
     """dvd_time_t for secs seconds at 25 frames per second (BCD, frame byte
     0x40 | frames)."""
-    def bcd(v):
-        return (v // 10) << 4 | (v % 10)
     return bytes([bcd(secs // 3600), bcd(secs // 60 % 60), bcd(secs % 60), 0x40])
 
 
@@ -74,7 +76,8 @@ class Pgc:
     """One program chain. programs: the first cell of each program (1-based;
     empty = one program at cell 1); playback_time None = the sum of the
     cells' times; entry_id: the search pointer's entry id (0x80 | title for
-    a title's entry PGC)."""
+    a title's entry PGC); next_pgc_nr / prev_pgc_nr / goup_pgc_nr: the
+    chain's links (0 = none)."""
     cells: list
     programs: list = dataclasses.field(default_factory=list)
     playback_time: bytes = None
@@ -84,6 +87,9 @@ class Pgc:
     post: list = dataclasses.field(default_factory=list)
     cell_cmds: list = dataclasses.field(default_factory=list)
     entry_id: int = 0
+    next_pgc_nr: int = 0
+    prev_pgc_nr: int = 0
+    goup_pgc_nr: int = 0
 
 
 @dataclasses.dataclass
@@ -177,6 +183,9 @@ def pgc_bytes(p):
     total = sum(bcd_secs(c.playback_time) for c in p.cells)
     d[4:8] = p.playback_time if p.playback_time is not None else time(total)
     be32(d, 8, p.prohibited_ops)
+    be16(d, 0x9c, p.next_pgc_nr)
+    be16(d, 0x9e, p.prev_pgc_nr)
+    be16(d, 0xa0, p.goup_pgc_nr)
     d[0xa2] = p.pg_playback_mode
     if p.pre or p.post or p.cell_cmds:
         be16(d, 0xe4, len(d))
@@ -223,9 +232,10 @@ class Title:
     title_set_starting_sector: int = 0
 
 
-def vmg_ifo(titles, nr_vts):
+def vmg_ifo(titles, nr_vts, first_play=None):
     """VIDEO_TS.IFO: VMGI_MAT in sector 0, TT_SRPT and VTS_ATRT after it;
-    no first-play PGC, no menus."""
+    no menus. first_play: the first-play PGC (a Pgc, written after the
+    VMGI_MAT in sector 0), or None for none."""
     tt = bytearray(8 + 12 * len(titles))
     be16(tt, 0, len(titles))
     be32(tt, 4, len(tt) - 1)
@@ -260,6 +270,12 @@ def vmg_ifo(titles, nr_vts):
     d[0x2a] = 1  # disc_side
     be16(d, 0x3e, nr_vts)
     be32(d, 0x80, 0x3ff)  # vmgi_last_byte
+    if first_play is not None:
+        fp = pgc_bytes(first_play)
+        assert len(fp) <= S - 0x400, "the first-play PGC must fit in sector 0"
+        d[0x400:0x400 + len(fp)] = fp
+        be32(d, 0x80, 0x400 + len(fp) - 1)  # vmgi_last_byte
+        be32(d, 0x84, 0x400)  # first_play_pgc
     be32(d, 0xc4, tt_at)  # tt_srpt
     be32(d, 0xd0, atrt_at)  # vts_atrt
     return d
@@ -272,10 +288,17 @@ END_OF_CELL = 0x3fffffff
 @dataclasses.dataclass
 class Nav:
     """A NAV pack (pack header, system header, PCI and DSI packets). lbn:
-    nv_pck_lbn of the PCI and the DSI; vobu_ea: dsi_gi.vobu_ea; category,
-    ilvu_ea: sml_pbi; next_vobu: vobu_sri.next_vobu (0x3fffffff = end of
-    cell; bit 31 = a video VOBU)."""
+    nv_pck_lbn of the PCI and the DSI (pci_lbn: the PCI's, when it differs);
+    vobu_ea: dsi_gi.vobu_ea; c_eltm: dsi_gi.c_eltm, the time elapsed in the
+    cell as (hours, minutes, seconds, frames) at 25 frames/s; hli_ss:
+    pci.hli.hl_gi.hli_ss (non-zero: the VOBU has buttons); category, ilvu_ea:
+    sml_pbi; fwda: vobu_sri.fwda[0..15] (farthest first); next_vobu:
+    vobu_sri.next_vobu (0x3fffffff = end of cell; bit 31 = a video VOBU)."""
     lbn: int = 0
+    pci_lbn: int = None
+    c_eltm: tuple = (0, 0, 0, 0)
+    hli_ss: int = 0
+    fwda: list = dataclasses.field(default_factory=list)
     vobu_s_ptm: int = 0
     vobu_e_ptm: int = 0
     vobu_ea: int = 0
@@ -289,11 +312,20 @@ class Nav:
         s[0x0e:0x14] = bytes([0, 0, 1, 0xbb, 0, 0x12])
         s[0x26:0x2d] = bytes([0, 0, 1, 0xbf, 0x03, 0xd4, 0])
         s[0x400:0x407] = bytes([0, 0, 1, 0xbf, 0x03, 0xfa, 1])
-        be32(s, 0x2d, self.lbn)
+        be32(s, 0x2d, self.lbn if self.pci_lbn is None else self.pci_lbn)
         be32(s, 0x39, self.vobu_s_ptm)
         be32(s, 0x3d, self.vobu_e_ptm)
         be32(s, 0x40b, self.lbn)
         be32(s, 0x40f, self.vobu_ea)
+        h, m, sec, f = self.c_eltm
+        s[0x423:0x427] = bytes([bcd(h), bcd(m), bcd(sec), 0x40 | bcd(f)])  # 0x40: 25 frames/s
+        # pci.hli.hl_gi.hli_ss: the low 2 bits of the PCI's 16-bit word 0x60
+        # (PCI data from 0x2d: pci_gi 0x3c bytes, nsml_agli 0x24 bytes)
+        s[0x2d + 0x61] = self.hli_ss & 3
+        # dsi.vobu_sri.fwda[k]: DSI data from 0x407, vobu_sri at 0xea (after
+        # dsi_gi, sml_pbi, sml_agli), fwda after next_video
+        for k, fw in enumerate(self.fwda):
+            be32(s, 0x407 + 0xea + 4 + 4 * k, fw)
         be16(s, 0x427, self.category)
         be32(s, 0x429, self.ilvu_ea)
         be32(s, 0x541, self.next_vobu)
