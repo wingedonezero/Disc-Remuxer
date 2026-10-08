@@ -93,9 +93,12 @@ dvdnav_status_t dvdnav_dup(dvdnav_t **dest, dvdnav_t *src) {
   if (!this->vm)
     goto fail;
 
-  this->path = strdup(src->path);
-  if (!this->path)
-    goto fail;
+  /* a navigator opened from a stream has no path */
+  if (src->path) {
+    this->path = strdup(src->path);
+    if (!this->path)
+      goto fail;
+  }
 
   /* Start the read-ahead cache. */
   this->cache = dvdnav_read_cache_new(this);
@@ -108,7 +111,9 @@ dvdnav_status_t dvdnav_dup(dvdnav_t **dest, dvdnav_t *src) {
 fail:
     printerr("Error initialising the DVD VM.");
     pthread_mutex_destroy(&this->vm_lock);
-    vm_free_vm(this->vm);
+    /* a copy: release its shares, never the reader of the source */
+    if (this->vm)
+      vm_free_copy(this->vm);
     free(this->path);
     free(this);
     return DVDNAV_STATUS_ERR;
