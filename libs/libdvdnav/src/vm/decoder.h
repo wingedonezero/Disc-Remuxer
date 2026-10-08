@@ -80,22 +80,39 @@ typedef struct {
 typedef struct {
   uint16_t SPRM[24];
   uint16_t GPRM[16];
-  uint8_t  GPRM_mode[16];  /* Need to have some thing to indicate normal/counter mode for every GPRM */
-  struct timeval GPRM_time[16]; /* For counter mode */
+  uint16_t GPRM_mode;      /* bit r set: GPRM r is in counter mode */
+  uint32_t GPRM_time[16];  /* counter mode: playback clock value when the counter was set */
+  uint32_t time_counter;   /* the playback clock, in units of 512/90000 s (see below) */
+  uint32_t SPRM_flags;     /* bit n set: a command has read system register n (since vm_reset) */
+  /* sets of a counter-mode GPRM to a non-zero value (the counter restarts
+   * from 0 all the same), and the first of them */
+  uint32_t counter_sets_ignored;
+  uint8_t  ignored_counter_reg;
+  uint16_t ignored_counter_value;
 } registers_t;
+
+/* The playback clock counts the time the disc has played, not wall-clock
+ * time, so GPRM counters (timers in menus) give the same result however
+ * fast the disc is navigated. It advances by the elapsed cell time of the
+ * NAV packets (dsi_gi.c_eltm) and by the length of skipped stills.
+ * One unit is 512 ticks of the 90 kHz clock. */
+#define VM_CLOCK_UNIT_TICKS 512
+
+struct vm_s;
 
 /* a VM command data set */
 typedef struct {
   uint64_t instruction;
   uint64_t examined;
   registers_t *registers;
+  struct vm_s *vm;        /* the VM running the command; registers are its registers */
 } command_t;
 
-/* the big VM function, executing the given commands and writing
- * the link where to continue, the return value indicates if a jump
- * has been performed */
+/* the big VM function, executing the given commands with the registers of
+ * the given VM and writing the link where to continue, the return value
+ * indicates if a jump has been performed */
 int32_t vmEval_CMD(const vm_cmd_t commands[], int32_t num_commands,
-               registers_t *registers, link_t *return_values);
+               struct vm_s *vm, link_t *return_values);
 
 /* extracts some bits from the command */
 uint32_t vm_getbits(command_t* command, int32_t start, int32_t count);

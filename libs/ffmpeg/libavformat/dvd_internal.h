@@ -77,6 +77,23 @@ typedef struct DVDPgc {
     DVDCell  *cells;                    /**< nr_of_cells */
 } DVDPgc;
 
+/** What a title-VOB sector's NAV pack says about its VOBU (recorded when
+ *  the navigation reads it, dvd_scan.c), or that the sector is no NAV pack. */
+typedef struct DVDVobuRec {
+    uint32_t key;                       /**< the sector, relative to the title VOBs (+ DVDIfo.title_vob_base) */
+    uint16_t vobu_ea;
+    uint16_t ilvu_ea;
+    uint32_t next;                      /**< sml_pbi category & 0x6000 << 16 | distance to the next VOBU
+                                             (0x10000000: none); 0xffffffff: the sector is no NAV pack */
+    uint32_t vobu_s_ptm, vobu_e_ptm;
+} DVDVobuRec;
+
+/** VOBU records sorted by key, each key once (the first one recorded). */
+typedef struct DVDVobuRecs {
+    DVDVobuRec *recs;
+    int         nb, alloc;
+} DVDVobuRecs;
+
 /** A table of an IFO read whole (its length from its header). */
 typedef struct DVDTable {
     uint8_t  *data;
@@ -119,6 +136,12 @@ typedef struct DVDIfo {
     DVDTable     ptt_srpt;              /**< VTS_PTT_SRPT as recorded */
     uint32_t    *vobu_map;              /**< VTS_VOBU_ADMAP: the VOBU starts, sorted, without repeats */
     int          nb_vobu_map;
+
+    /* the navigation scan (dvd_scan.c) */
+    uint32_t     title_vob_base;        /**< image: the title VOBs' absolute first sector (VOBU records of all
+                                             such title sets are kept on the disc by absolute sector); 0 */
+    DVDVobuRecs  vobus;                 /**< VOBU records of its title VOBs (title_vob_base 0) */
+    int          entered_by_navigation; /**< the navigation played one of its cells (title or menu) */
 } DVDIfo;
 
 /** A node of the disc's text data (TXTDT_MG): an item kind below 0x30
@@ -153,6 +176,7 @@ typedef struct DVDDisc {
     DVDTable     tt_srpt;               /**< TT_SRPT as recorded */
     uint32_t    *title_set_start;       /**< per title set, the start the title table gives (0: none) */
     DVDText     *text;                  /**< text data (NULL: none) */
+    DVDVobuRecs  vobus;                 /**< VOBU records of title sets with a title_vob_base */
     char        *volume_name;           /**< the volume label, else the provider identifier */
     char        *text_name;             /**< the disc's name in its text data, NULL when none */
 } DVDDisc;
@@ -178,6 +202,56 @@ static inline uint32_t ff_dvd_header32(const DVDIfo *f, int off)
     const uint8_t *p = f->header + off;
     return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3];
 }
+
+/* ---- dvd_nav.c ---- */
+struct dvdnav_s;
+/** What the navigator's reads are handed to. */
+typedef struct DVDNavHooks {
+    void *opaque;
+    /** A VOB sector the navigator reads: of information file set (0: the
+     *  VMG), its menu VOB or title VOBs, sector relative to them. < 0 makes
+     *  the read fail. */
+    int (*vob_read)(void *opaque, int set, int menu, uint32_t sector, const uint8_t *data);
+} DVDNavHooks;
+/** A libdvdnav navigator on the disc: libdvdread reads its files through
+ *  callbacks serving the disc's structure (the IFOs as read here, the VOBs
+ *  from the disc layer). hooks may be NULL. The disc must outlive the
+ *  navigator (dvdnav_close). */
+int  ff_dvd_nav_open(DVDDisc *d, const DVDNavHooks *hooks, struct dvdnav_s **out);
+
+/** Read sector of a title set's title VOBs (menu 0) or menu VOB through
+ *  the disc layer, as the navigator reads it. */
+int  ff_dvd_vob_read(DVDDisc *d, DVDIfo *f, int menu, uint32_t sector, uint8_t *buf);
+
+/* ---- dvd_scan.c ---- */
+/** One result of the navigation scan: the cells the navigation played in
+ *  title (TT_SRPT number, low 8 bits) / program chain pgc (low 8 bits),
+ *  and the name of the path that played them ("A1", "B2", ...). */
+typedef struct DVDScanResult {
+    char      name[16];
+    uint8_t   title, pgc;
+    int       nb_cells;
+    uint8_t  *cells;
+} DVDScanResult;
+
+typedef struct DVDScan {
+    DVDScanResult *results;             /**< sorted by title, then pgc */
+    int            nb_results;
+} DVDScan;
+
+/** The navigation scan: the disc played from its start and every title,
+ *  every reachable menu button pressed, per region the disc allows, and
+ *  the cells played per title / program chain recorded. trace (may be
+ *  NULL) receives every navigator command, event, sector read and path
+ *  line. < 0 when the scan failed (no results: the titles keep the order
+ *  of the title table). VOBU records and DVDIfo.entered_by_navigation are
+ *  left on the disc. */
+int  ff_dvd_scan(DVDDisc *d, void (*trace)(void *opaque, const char *line), void *opaque, DVDScan *out);
+void ff_dvd_scan_free(DVDScan *s);
+void ff_dvd_vobu_recs_free(DVDVobuRecs *v);
+/** The VOBU record of title-VOB sector of f (NULL: none); *next_key (when
+ *  not NULL): the key after it, -1 when none. */
+const DVDVobuRec *ff_dvd_vobu_find(const DVDDisc *d, const DVDIfo *f, uint32_t sector, int64_t *next_key);
 
 /* ---- dvd_disc.c ---- */
 /** Read the disc's structure: the VMG, its title table and text data, and

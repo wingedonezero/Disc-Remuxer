@@ -386,6 +386,7 @@ void ff_dvd_disc_free(DVDDisc *d)
     d->nb_ifos = 0;
     ff_dvd_table_free(&d->tt_srpt);
     av_freep(&d->title_set_start);
+    ff_dvd_vobu_recs_free(&d->vobus);
     text_free(&d->text);
     av_freep(&d->volume_name);
     av_freep(&d->text_name);

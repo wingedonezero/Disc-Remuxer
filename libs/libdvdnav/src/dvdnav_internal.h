@@ -203,8 +203,9 @@ struct dvdnav_s {
   int spu_clut_changed;           /* The SPU CLUT changed */
   int started;                    /* vm_start has been called? */
   int use_read_ahead;             /* 1 - use read-ahead cache, 0 - don't */
+  int nav_only;                   /* 1 - return NAV packets only, skip data blocks (see dvdnav_set_nav_only_flag) */
   int pgc_based;                  /* positioning works PGC based instead of PG based */
-  int cur_cell_time;              /* time expired since the beginning of the current cell, read from the dsi */
+  uint32_t cur_cell_time;         /* time expired since the beginning of the current cell, read from the dsi */
 
   /* VM */
   vm_t *vm;

@@ -782,9 +782,21 @@ DVDREAD_API void ifoFree_UD_PGCIT(ifo_handle_t *ifofile) {
   ifofile->ud_pgcit = NULL;
 }
 
+ifo_handle_t *ifoAddRef(ifo_handle_t *ifofile) {
+  if(ifofile)
+    PRIV(ifofile)->extra_refs++;
+  return ifofile;
+}
+
 void ifoClose(ifo_handle_t *ifofile) {
   if(!ifofile)
     return;
+
+  /* Only the last reference frees the handle. */
+  if(PRIV(ifofile)->extra_refs > 0) {
+    PRIV(ifofile)->extra_refs--;
+    return;
+  }
 
   switch(ifofile->ifo_format) {
     case IFO_VIDEO:
@@ -3199,8 +3211,12 @@ static int ifoRead_PGCIT_internal(ifo_handle_t *ifofile, pgcit_t *pgcit,
   for(i = 0; i < pgcit->nr_of_pgci_srp; i++) {
     int dup;
     if((dup = find_dup_pgc(pgcit->pgci_srp, pgcit->pgci_srp[i].pgc_start_byte, i)) >= 0) {
+      /* a duplicate of a PGC that could not be read is left out too */
       pgcit->pgci_srp[i].pgc = pgcit->pgci_srp[dup].pgc;
-      pgcit->pgci_srp[i].pgc->ref_count++;
+      if(pgcit->pgci_srp[i].pgc)
+        pgcit->pgci_srp[i].pgc->ref_count++;
+      else
+        Log0(ifop->ctx, "Unable to read invalid PCG (duplicate of PGC %d)", dup + 1);
       continue;
     }
     pgcit->pgci_srp[i].pgc = calloc(1, sizeof(pgc_t));

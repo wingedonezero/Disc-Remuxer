@@ -59,9 +59,17 @@ DVDREAD_API ifo_handle_t *ifoOpenVMGI(dvd_reader_t *);
 DVDREAD_API ifo_handle_t *ifoOpenVTSI(dvd_reader_t *, int);
 
 /**
+ * ifoAddRef(ifofile);
+ * Takes one more reference to an open IFO handle, so that it can be shared:
+ * every reference is released with its own ifoClose() call and the handle is
+ * freed by the last one. Returns the handle (NULL stays NULL).
+ */
+DVDREAD_API ifo_handle_t *ifoAddRef(ifo_handle_t *);
+
+/**
  * ifoClose(ifofile);
- * Cleans up the IFO information.  This will free all data allocated for the
- * substructures.
+ * Releases one reference to the IFO handle. The last one cleans up the IFO
+ * information: this will free all data allocated for the substructures.
  */
 DVDREAD_API void ifoClose(ifo_handle_t *);
 

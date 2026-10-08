@@ -27,6 +27,9 @@
 #include "libavformat/hddvd_internal.h"
 
 #include <dvdread/dvd_udf.h>
+#include <dvdnav/dvdnav.h>
+
+#include "dvdnav_selftest.h"
 #include <expat.h>
 #include <gcrypt.h>
 #include <libaacs/aacs.h>
@@ -397,4 +400,25 @@ static char *tb_bluray_clean_title(const char *s)
     char *t = ff_bluray_clean_title(s), *out = t ? strdup(t) : NULL;
     av_free(t);
     return out;
+}
+
+/* libavformat/dvd_nav.c: a navigator on the disc as the disc layer reads it,
+ * one title played (dr_nav_play). */
+static int tb_dvd_nav_trace(DVDDisc *d, int title, unsigned opts, int max_steps,
+                            dr_nav_event *ev, int max_events, dr_nav_result *res)
+{
+    dvdnav_t *nav;
+    int ret = ff_dvd_nav_open(d, NULL, &nav);
+
+    memset(res, 0, sizeof(*res));
+    if (ret < 0)
+        return res->status = -1;
+    return dr_nav_play(nav, title, opts, max_steps, ev, max_events, res);
+}
+
+/* libavformat/dvd_scan.c: the navigation scan (trace: NULL, or the Python
+ * callback receiving its trace lines). */
+static int tb_dvd_scan(DVDDisc *d, void (*trace)(void *, const char *), DVDScan *out)
+{
+    return ff_dvd_scan(d, trace, NULL, out);
 }
