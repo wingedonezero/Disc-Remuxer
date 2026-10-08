@@ -72,6 +72,7 @@ typedef struct vm_s {
   dvdnav_stream_cb streamcb;
   dvd_reader_t *dvd;
   dvd_reader_stream_cb dvdstreamcb;
+  dvd_reader_filesystem_h *files; /* application file callbacks, handed to the reader at open */
   ifo_handle_t *vmgi;
   ifo_handle_t *vtsi;
   dvd_state_t   state;

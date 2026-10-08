@@ -151,15 +151,19 @@ dvdnav_status_t dvdnav_free_dup(dvdnav_t *this) {
 static dvdnav_status_t dvdnav_open_common(dvdnav_t** dest,
                                           void *priv, const dvdnav_logger_cb *logcb,
                                           const char *path,
-                                          dvdnav_stream_cb *stream_cb) {
+                                          dvdnav_stream_cb *stream_cb,
+                                          dvd_reader_filesystem_h *files) {
   dvdnav_t *this;
   struct timeval time;
 
   /* Create a new structure */
   (*dest) = NULL;
   this = (dvdnav_t*)calloc(1, sizeof(dvdnav_t));
-  if(!this)
+  if(!this) {
+    if(files)
+      files->close(files);
     return DVDNAV_STATUS_ERR;
+  }
 
   this->priv = priv;
   if(logcb)
@@ -172,8 +176,12 @@ static dvdnav_status_t dvdnav_open_common(dvdnav_t** dest,
   /* Initialise the VM */
   this->vm = vm_new_vm(priv, logcb);
   if(!this->vm) {
+    if(files)
+      files->close(files);
     goto fail;
   }
+  /* vm_reset hands the callbacks to the reader (or closes them on failure) */
+  this->vm->files = files;
   if(!vm_reset(this->vm, path, priv, stream_cb)) {
     goto fail;
   }
@@ -213,24 +221,37 @@ fail:
 }
 
 dvdnav_status_t dvdnav_open(dvdnav_t** dest, const char *path) {
-  return dvdnav_open_common(dest, NULL, NULL, path, NULL);
+  return dvdnav_open_common(dest, NULL, NULL, path, NULL, NULL);
 }
 
 dvdnav_status_t dvdnav_open2(dvdnav_t** dest,
                              void *priv,const dvdnav_logger_cb *logcb,
                              const char *path) {
-  return dvdnav_open_common(dest, priv, logcb, path, NULL);
+  return dvdnav_open_common(dest, priv, logcb, path, NULL, NULL);
 }
 
 dvdnav_status_t dvdnav_open_stream(dvdnav_t** dest,
                                    void *priv, dvdnav_stream_cb *stream_cb) {
-  return dvdnav_open_common(dest, priv, NULL, NULL, stream_cb);
+  return dvdnav_open_common(dest, priv, NULL, NULL, stream_cb, NULL);
 }
 
 dvdnav_status_t dvdnav_open_stream2(dvdnav_t** dest,
                                     void *priv,const dvdnav_logger_cb *logcb,
                                     dvdnav_stream_cb *stream_cb) {
-  return dvdnav_open_common(dest, priv, logcb, NULL, stream_cb);
+  return dvdnav_open_common(dest, priv, logcb, NULL, stream_cb, NULL);
+}
+
+dvdnav_status_t dvdnav_open_files(dvdnav_t** dest,
+                                  void *priv, const dvdnav_logger_cb *logcb,
+                                  const char *path,
+                                  dvd_reader_filesystem_h *fs) {
+  if(!path || !fs) {
+    if(fs)
+      fs->close(fs);
+    (*dest) = NULL;
+    return DVDNAV_STATUS_ERR;
+  }
+  return dvdnav_open_common(dest, priv, logcb, path, NULL, fs);
 }
 
 dvdnav_status_t dvdnav_close(dvdnav_t *this) {

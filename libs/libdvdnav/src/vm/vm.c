@@ -421,12 +421,23 @@ int vm_reset(vm_t *vm, const char *dvdroot,
     vm_close(vm);
   }
   if (!vm->dvd) {
+    /* the path names a directory of the application file callbacks, not a real file */
+    int from_files = 0;
     /* dvdread stream callback handlers for redirection */
 #if DVDREAD_VERSION >= DVDREAD_VERSION_CODE(6,1,0)
     dvd_logger_cb dvdread_logcb = { .pf_log = dvd_reader_logger_handler };
     /* Only install log handler if we have one ourself */
     dvd_logger_cb *p_dvdread_logcb = vm->logcb.pf_log ? &dvdread_logcb : NULL;
-    if(dvdroot)
+    if(dvdroot && vm->files) {
+        dvd_reader_filesystem_h *files = vm->files;
+        /* the reader owns the callbacks once it is open; on failure we close them */
+        vm->files = NULL;
+        from_files = 1;
+        vm->dvd = DVDOpenFiles(vm, p_dvdread_logcb, dvdroot, files);
+        if(!vm->dvd)
+            files->close(files);
+    }
+    else if(dvdroot)
         vm->dvd = DVDOpen2(vm, p_dvdread_logcb, dvdroot);
     else if(vm->priv && vm->dvdstreamcb.pf_read)
         vm->dvd = DVDOpenStream2(vm, p_dvdread_logcb, &vm->dvdstreamcb);
@@ -470,7 +481,9 @@ int vm_reset(vm_t *vm, const char *dvdroot,
       /* return 0; Not really used for now.. */
     }
     /* ifoRead_TXTDT_MGI(vmgi); Not implemented yet */
-    if(dvd_read_name(vm, vm->dvd_name, vm->dvd_serial, dvdroot) != 1) {
+    /* dvd_read_name() opens the path on the real file system */
+    if(!from_files &&
+       dvd_read_name(vm, vm->dvd_name, vm->dvd_serial, dvdroot) != 1) {
       Log1(vm, "vm: dvd_read_name failed");
     }
   }
