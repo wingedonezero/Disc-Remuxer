@@ -38,15 +38,7 @@ static void print_message( const char *prefix, const char *psz_string,
  *****************************************************************************/
 void print_error( dvdcss_t dvdcss, const char *psz_string, ... )
 {
-    if( dvdcss->pf_log )
-    {
-        va_list args;
-
-        va_start( args, psz_string );
-        dvdcss->pf_log( dvdcss->p_log, DVDCSS_LOG_ERROR, psz_string, args );
-        va_end( args );
-    }
-    else if( dvdcss->b_errors )
+    if( dvdcss->b_errors )
     {
         va_list args;
 
@@ -63,15 +55,7 @@ void print_error( dvdcss_t dvdcss, const char *psz_string, ... )
  *****************************************************************************/
 void print_debug( const dvdcss_t dvdcss, const char *psz_string, ... )
 {
-    if( dvdcss->pf_log )
-    {
-        va_list args;
-
-        va_start( args, psz_string );
-        dvdcss->pf_log( dvdcss->p_log, DVDCSS_LOG_DEBUG, psz_string, args );
-        va_end( args );
-    }
-    else if( dvdcss->b_debug )
+    if( dvdcss->b_debug )
     {
         va_list args;
 

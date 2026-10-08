@@ -46,7 +46,6 @@
 #include "vm.h"
 #include "play.h"
 #include "getset.h"
-#include "rand.h"
 #include "dvdnav_internal.h"
 #include "logger.h"
 
@@ -340,10 +339,8 @@ int vm_start(vm_t *vm) {
 
     vm->stopped = 0;
   }
-  /* Set pgc to FP (First Play) pgc; without one, the first program chain of
-   * the video manager menus: a disc with neither cannot be started */
-  if (!set_FP_PGC(vm) || !(vm->state).pgc)
-    return vm_failed(vm, VM_WHERE("no first play program chain and no menu program chain 1"));
+  /* Set pgc to FP (First Play) pgc */
+  set_FP_PGC(vm);
   process_command(vm, play_PGC(vm));
   return !vm->stopped;
 }
@@ -375,10 +372,9 @@ int vm_reset(vm_t *vm, const char *dvdroot,
   /*  Setup State */
   memset(vm->state.registers.SPRM, 0, sizeof(vm->state.registers.SPRM));
   memset(vm->state.registers.GPRM, 0, sizeof(vm->state.registers.GPRM));
-  vm->state.registers.GPRM_mode = 0;
+  memset(vm->state.registers.GPRM_mode, 0, sizeof(vm->state.registers.GPRM_mode));
+  memset(vm->state.registers.GPRM_mode, 0, sizeof(vm->state.registers.GPRM_mode));
   memset(vm->state.registers.GPRM_time, 0, sizeof(vm->state.registers.GPRM_time));
-  vm->state.registers.time_counter = 0;
-  vm->state.registers.SPRM_flags = 0;
   vm->state.registers.SPRM[0]  = ('e'<<8)|'n'; /* Player Menu Language code */
   vm->state.AST_REG            = 15;           /* 15 why? */
   vm->state.SPST_REG           = 62;           /* 62 why? */
@@ -425,23 +421,12 @@ int vm_reset(vm_t *vm, const char *dvdroot,
     vm_close(vm);
   }
   if (!vm->dvd) {
-    /* the path names a directory of the application file callbacks, not a real file */
-    int from_files = 0;
     /* dvdread stream callback handlers for redirection */
 #if DVDREAD_VERSION >= DVDREAD_VERSION_CODE(6,1,0)
     dvd_logger_cb dvdread_logcb = { .pf_log = dvd_reader_logger_handler };
     /* Only install log handler if we have one ourself */
     dvd_logger_cb *p_dvdread_logcb = vm->logcb.pf_log ? &dvdread_logcb : NULL;
-    if(dvdroot && vm->files) {
-        dvd_reader_filesystem_h *files = vm->files;
-        /* the reader owns the callbacks once it is open; on failure we close them */
-        vm->files = NULL;
-        from_files = 1;
-        vm->dvd = DVDOpenFiles(vm, p_dvdread_logcb, dvdroot, files);
-        if(!vm->dvd)
-            files->close(files);
-    }
-    else if(dvdroot)
+    if(dvdroot)
         vm->dvd = DVDOpen2(vm, p_dvdread_logcb, dvdroot);
     else if(vm->priv && vm->dvdstreamcb.pf_read)
         vm->dvd = DVDOpenStream2(vm, p_dvdread_logcb, &vm->dvdstreamcb);
@@ -485,9 +470,7 @@ int vm_reset(vm_t *vm, const char *dvdroot,
       /* return 0; Not really used for now.. */
     }
     /* ifoRead_TXTDT_MGI(vmgi); Not implemented yet */
-    /* dvd_read_name() opens the path on the real file system */
-    if(!from_files &&
-       dvd_read_name(vm, vm->dvd_name, vm->dvd_serial, dvdroot) != 1) {
+    if(dvd_read_name(vm, vm->dvd_name, vm->dvd_serial, dvdroot) != 1) {
       Log1(vm, "vm: dvd_read_name failed");
     }
   }
@@ -507,43 +490,50 @@ int vm_reset(vm_t *vm, const char *dvdroot,
     Log2(vm, "DVD disk reports itself with Region mask 0x%08x. Regions:%s",
       vm->vmgi->vmgi_mat->vmg_category, buffer);
   }
-  if (vm->vmgi) {
-    /* the random program order of this disc (rand.h) */
-    vm->state.rnd = 0;
-    vm_rand_seed(&vm->state.rnd, vm->vmgi->vmgi_mat->vmg_last_sector);
-    vm_rand_seed(&vm->state.rnd, vm->vmgi->vmgi_mat->vmgi_last_sector);
-    vm_rand_seed(&vm->state.rnd, vm->vmgi->vmgi_mat->vmgm_vobu_admap);
-  }
   return 1;
 }
 
 
 /* copying and merging */
 
-/* A copy is a full snapshot of the VM in any state (also before a PGC is
- * set). It shares the source's reader and IFO handles: the handles are
- * reference counted (a copy that moves to another VTS releases its share
- * and opens that VTSI for itself), the reader is not, so copies must be
- * freed with vm_free_copy() before the original is freed. */
 vm_t *vm_new_copy(vm_t *source) {
   vm_t *target = vm_new_vm(source->priv, &source->logcb);
+  int vtsN;
+  int pgcN = get_PGCN(source);
+  int pgN  = (source->state).pgN;
 
-  if (target == NULL)
-    return NULL;
+  if (target == NULL || pgcN == 0)
+    goto fail;
 
   memcpy(target, source, sizeof(vm_t));
-  ifoAddRef(target->vmgi);
-  ifoAddRef(target->vtsi);
+
+  /* open a new vtsi handle, because the copy might switch to another VTS */
+  target->vtsi = NULL;
+  vtsN = (target->state).vtsN;
+  if (vtsN > 0) {
+    (target->state).vtsN = 0;
+    if (!ifoOpenNewVTSI(target, target->dvd, vtsN))
+      goto fail;
+
+    /* restore pgc pointer into the new vtsi */
+    if (!set_PGCN(target, pgcN))
+      goto fail;
+
+    (target->state).pgN = pgN;
+  }
 
   return target;
+
+fail:
+  if (target != NULL)
+    vm_free_vm(target);
+
+  return NULL;
 }
 
 void vm_merge(vm_t *target, vm_t *source) {
-  /* the target's shares are released, the source's move to the target */
   if(target->vtsi)
     ifoClose(target->vtsi);
-  if(target->vmgi)
-    ifoClose(target->vmgi);
   memcpy(target, source, sizeof(vm_t));
   memset(source, 0, sizeof(vm_t));
 }
@@ -551,8 +541,6 @@ void vm_merge(vm_t *target, vm_t *source) {
 void vm_free_copy(vm_t *vm) {
   if(vm->vtsi)
     ifoClose(vm->vtsi);
-  if(vm->vmgi)
-    ifoClose(vm->vmgi);
   free(vm);
 }
 
@@ -579,9 +567,6 @@ void vm_position_get(vm_t *vm, vm_position_t *position) {
   /* still already determined */
   if (position->still)
     return;
-#if 0
-  /* Disabled: it turns short regular cells into stills, and an invented
-   * still of 0xff is an infinite one that waits for the user. */
   /* This is a rough fix for some strange still situations on some strange DVDs.
    * There are discs (like the German "Back to the Future" RC2) where the only
    * indication of a still is a cell playback time higher than the time the frames
@@ -609,7 +594,6 @@ void vm_position_get(vm_t *vm, vm_position_t *position) {
     if (time > 0xff) time = 0xff;
     position->still = time;
   }
-#endif
 }
 
 void vm_get_next_cell(vm_t *vm) {
@@ -657,13 +641,6 @@ int vm_jump_title_part(vm_t *vm, int title, int part) {
 
   if(!set_PTT(vm, title, part))
     return 0;
-  if(vm->title_play_follows_jumps) {
-    /* Play the title as a player does: the title PGC's pre commands run and
-     * any jump they make is followed (back to a menu, to another PGC, ...).
-     * vm_jump_title_program() still ignores such jumps. */
-    process_command(vm, play_PGC_PG(vm, vm->state.pgN));
-    return 1;
-  }
   /* Some DVDs do not want us to jump directly into a title and have
    * PGC pre commands taking us back to some menu. Since we do not like that,
    * we do not execute PGC pre commands that would do a jump. */
@@ -766,29 +743,15 @@ int vm_jump_resume(vm_t *vm) {
 int vm_exec_cmd(vm_t *vm, const vm_cmd_t *cmd) {
   link_t link_values;
 
-  if(vmEval_CMD(cmd, 1, vm, &link_values))
+  if(vmEval_CMD(cmd, 1, &vm->state.registers, &link_values))
     return process_command(vm, link_values);
   else
     return 0; /*  It updated some state that's all... */
 }
 
-/* broken assumptions (see vm.h) */
-int vm_failed(vm_t *vm, const char *what) {
-  if(vm->failures++ == 0)
-    vm->first_failure = what;
-  Log0(vm, "broken navigation data, VM stopped: %s", what);
-  vm->stopped = 1;
-  return 0;
-}
-
 /* link processing */
 
-/* Links followed by one process_command() before the VM is stopped: a
- * disc whose links never reach something to play would loop forever. */
-#define VM_MAX_LINKS 2500
-
 static int process_command(vm_t *vm, link_t link_values) {
-  int links = 0;
 
   while(link_values.command != PlayThis) {
 
@@ -800,12 +763,6 @@ static int process_command(vm_t *vm, link_t link_values) {
     vm_print_current_domain_state(vm);
     Log3(vm, "Before printout ends.");
 #endif
-
-    if(links++ > VM_MAX_LINKS) {
-      Log1(vm, "More than %d links without anything to play, stopping", VM_MAX_LINKS);
-      vm->stopped = 1;
-      return 0;
-    }
 
     switch(link_values.command) {
 
@@ -837,7 +794,7 @@ static int process_command(vm_t *vm, link_t link_values) {
       /* BUTTON number:data1 */
       if(link_values.data1 != 0)
         vm->state.HL_BTNN_REG = link_values.data1 << 10;
-      if(!VM_CHECK(vm, vm->state.cellN > 1)) return 0;
+      assert(vm->state.cellN > 1);
       vm->state.cellN -= 1;
       link_values = play_Cell(vm);
       break;
@@ -864,17 +821,7 @@ static int process_command(vm_t *vm, link_t link_values) {
       /* BUTTON number:data1 */
       if(link_values.data1 != 0)
         vm->state.HL_BTNN_REG = link_values.data1 << 10;
-      if(vm->state.pgN == 1 || vm->state.pgc->pg_playback_mode != 0) {
-        /* No previous program (the first one, or a random / shuffle chain):
-         * go to the previous program chain, as LinkPrevPGC does. */
-        if(!VM_CHECK(vm, vm->state.pgc->prev_pgc_nr != 0)) return 0;
-        if(set_PGCN(vm, vm->state.pgc->prev_pgc_nr))
-          link_values = play_PGC(vm);
-        else
-          link_values.command = Exit;
-        break;
-      }
-      if(!VM_CHECK(vm, vm->state.pgN > 1)) return 0;
+      assert(vm->state.pgN > 1);
       vm->state.pgN -= 1;
       link_values = play_PG(vm);
       break;
@@ -892,7 +839,7 @@ static int process_command(vm_t *vm, link_t link_values) {
       /* BUTTON number:data1 */
       if(link_values.data1 != 0)
         vm->state.HL_BTNN_REG = link_values.data1 << 10;
-      if(!VM_CHECK(vm, vm->state.pgc->next_pgc_nr != 0)) return 0;
+      assert(vm->state.pgc->next_pgc_nr != 0);
       if(set_PGCN(vm, vm->state.pgc->next_pgc_nr))
         link_values = play_PGC(vm);
       else
@@ -904,7 +851,7 @@ static int process_command(vm_t *vm, link_t link_values) {
       /* BUTTON number:data1 */
       if(link_values.data1 != 0)
         vm->state.HL_BTNN_REG = link_values.data1 << 10;
-      if(!VM_CHECK(vm, vm->state.pgc->prev_pgc_nr != 0)) return 0;
+      assert(vm->state.pgc->prev_pgc_nr != 0);
       if(set_PGCN(vm, vm->state.pgc->prev_pgc_nr))
         link_values = play_PGC(vm);
       else
@@ -916,7 +863,7 @@ static int process_command(vm_t *vm, link_t link_values) {
       /* BUTTON number:data1 */
       if(link_values.data1 != 0)
         vm->state.HL_BTNN_REG = link_values.data1 << 10;
-      if(!VM_CHECK(vm, vm->state.pgc->goup_pgc_nr != 0)) return 0;
+      assert(vm->state.pgc->goup_pgc_nr != 0);
       if(set_PGCN(vm, vm->state.pgc->goup_pgc_nr))
         link_values = play_PGC(vm);
       else
@@ -941,7 +888,7 @@ static int process_command(vm_t *vm, link_t link_values) {
 
         vm->state.domain = DVD_DOMAIN_VTSTitle;
         if (!ifoOpenNewVTSI(vm, vm->dvd, vm->state.rsm_vtsN))
-          return vm_failed(vm, VM_WHERE("ifoOpenNewVTSI(vm, vm->dvd, vm->state.rsm_vtsN) failed"));
+          assert(0);
         set_PGCN(vm, vm->state.rsm_pgcN);
 
         /* These should never be set in SystemSpace and/or MenuSpace */
@@ -956,7 +903,7 @@ static int process_command(vm_t *vm, link_t link_values) {
           vm->state.HL_BTNN_REG = link_values.data1 << 10;
 
         if(vm->state.rsm_cellN == 0) {
-          if(!VM_CHECK(vm, vm->state.cellN)) return 0; /*  Checking if this ever happens */
+          assert(vm->state.cellN); /*  Checking if this ever happens */
           vm->state.pgN = 1;
           link_values = play_PG(vm);
         } else {
@@ -965,9 +912,9 @@ static int process_command(vm_t *vm, link_t link_values) {
           link_values.command = PlayThis;
           link_values.data1 = vm->state.rsm_blockN & 0xffff;
           link_values.data2 = vm->state.rsm_blockN >> 16;
-          if(!set_PGN(vm, get_PGN(vm))) {
+          if(!set_PGN(vm)) {
             /* Were at the end of the PGC, should not happen for a RSM */
-            return vm_failed(vm, VM_WHERE("set_PGN(vm) failed"));
+            assert(0);
             link_values.command = LinkTailPGC;
             link_values.data1 = 0;  /* No button */
           }
@@ -977,7 +924,7 @@ static int process_command(vm_t *vm, link_t link_values) {
     case LinkPGCN:
       /* Link to Program Chain Number:data1 */
       if(!set_PGCN(vm, link_values.data1))
-        return vm_failed(vm, VM_WHERE("set_PGCN(vm, link_values.data1) failed"));
+        assert(0);
       link_values = play_PGC(vm);
       break;
 
@@ -985,18 +932,13 @@ static int process_command(vm_t *vm, link_t link_values) {
       /* Link to Part of current Title Number:data1 */
       /* BUTTON number:data2 */
       /* PGC Pre-Commands are not executed */
-      if(!VM_CHECK(vm, vm->state.domain == DVD_DOMAIN_VTSTitle)) return 0;
+      assert(vm->state.domain == DVD_DOMAIN_VTSTitle);
       if(link_values.data2 != 0)
         vm->state.HL_BTNN_REG = link_values.data2 << 10;
       if(!set_VTS_PTT(vm, vm->state.vtsN, vm->state.VTS_TTN_REG, link_values.data1))
         link_values.command = Exit;
-      else {
-        /* in a random / shuffle chain the part's program is not used: a new
-         * cycle starts with a random program */
-        if(vm->state.pgc->pg_playback_mode != 0 && !vm_random_start(vm))
-          return 0;
+      else
         link_values = play_PG(vm);
-      }
       break;
 
     case LinkPGN:
@@ -1029,7 +971,7 @@ static int process_command(vm_t *vm, link_t link_values) {
       /* or the Video Manager domain (VMG) */
       /* Stop SPRM9 Timer */
       /* Set SPRM1 and SPRM2 */
-      if(!VM_CHECK(vm, vm->state.domain == DVD_DOMAIN_VMGM || vm->state.domain == DVD_DOMAIN_FirstPlay)) return 0; /* ?? */
+      assert(vm->state.domain == DVD_DOMAIN_VMGM || vm->state.domain == DVD_DOMAIN_FirstPlay); /* ?? */
       if(set_TT(vm, link_values.data1))
         link_values = play_PGC(vm);
       else
@@ -1042,7 +984,7 @@ static int process_command(vm_t *vm, link_t link_values) {
       /* or the Video Title Set Domain(VTS) */
       /* Stop SPRM9 Timer */
       /* Set SPRM1 and SPRM2 */
-      if(!VM_CHECK(vm, vm->state.domain == DVD_DOMAIN_VTSMenu || vm->state.domain == DVD_DOMAIN_VTSTitle)) return 0; /* ?? */
+      assert(vm->state.domain == DVD_DOMAIN_VTSMenu || vm->state.domain == DVD_DOMAIN_VTSTitle); /* ?? */
       if(!set_VTS_TT(vm, vm->state.vtsN, link_values.data1))
         link_values.command = Exit;
       else
@@ -1055,7 +997,7 @@ static int process_command(vm_t *vm, link_t link_values) {
       /* or the Video Title Set Domain(VTS) */
       /* Stop SPRM9 Timer */
       /* Set SPRM1 and SPRM2 */
-      if(!VM_CHECK(vm, vm->state.domain == DVD_DOMAIN_VTSMenu || vm->state.domain == DVD_DOMAIN_VTSTitle)) return 0; /* ?? */
+      assert(vm->state.domain == DVD_DOMAIN_VTSMenu || vm->state.domain == DVD_DOMAIN_VTSTitle); /* ?? */
       if(!set_VTS_PTT(vm, vm->state.vtsN, link_values.data1, link_values.data2))
         link_values.command = Exit;
       else
@@ -1067,9 +1009,9 @@ static int process_command(vm_t *vm, link_t link_values) {
       /* Only allowed from the VTS Menu Domain(VTSM) */
       /* or the Video Manager domain (VMG) */
       /* Stop SPRM9 Timer and any GPRM counters */
-      if(!VM_CHECK(vm, vm->state.domain == DVD_DOMAIN_VMGM || vm->state.domain == DVD_DOMAIN_VTSMenu)) return 0; /* ?? */
+      assert(vm->state.domain == DVD_DOMAIN_VMGM || vm->state.domain == DVD_DOMAIN_VTSMenu); /* ?? */
       if (!set_FP_PGC(vm))
-        return vm_failed(vm, VM_WHERE("set_FP_PGC(vm) failed"));
+        assert(0);
       link_values = play_PGC(vm);
       break;
 
@@ -1077,14 +1019,14 @@ static int process_command(vm_t *vm, link_t link_values) {
       /* Jump to Video Manager domain - Title Menu:data1 or any PGC in VMG */
       /* Allowed from anywhere except the VTS Title domain */
       /* Stop SPRM9 Timer and any GPRM counters */
-      if(!VM_CHECK(vm, vm->state.domain != DVD_DOMAIN_VTSTitle)) return 0; /* ?? */
+      assert(vm->state.domain != DVD_DOMAIN_VTSTitle); /* ?? */
       if(vm->vmgi == NULL || vm->vmgi->pgci_ut == NULL) {
         link_values.command = Exit;
         break;
       }
       vm->state.domain = DVD_DOMAIN_VMGM;
       if(!set_MENU(vm, link_values.data1))
-        return vm_failed(vm, VM_WHERE("set_MENU(vm, link_values.data1) failed"));
+        assert(0);
       link_values = play_PGC(vm);
       break;
 
@@ -1096,11 +1038,11 @@ static int process_command(vm_t *vm, link_t link_values) {
       /* VTS_TTN_REG:data2 */
       /* get_MENU:data3 */
       if(link_values.data1 != 0) {
-          if(!VM_CHECK(vm, vm->state.domain == DVD_DOMAIN_VTSMenu ||
-                  vm->state.domain == DVD_DOMAIN_VMGM || vm->state.domain == DVD_DOMAIN_FirstPlay)) return 0; /* ?? */
+          assert(vm->state.domain == DVD_DOMAIN_VTSMenu ||
+                  vm->state.domain == DVD_DOMAIN_VMGM || vm->state.domain == DVD_DOMAIN_FirstPlay); /* ?? */
         if (link_values.data1 != vm->state.vtsN) {
           /* the normal case */
-          if(!VM_CHECK(vm, vm->state.domain != DVD_DOMAIN_VTSMenu)) return 0;
+          assert(vm->state.domain != DVD_DOMAIN_VTSMenu);
           if (!ifoOpenNewVTSI(vm, vm->dvd, link_values.data1))  /* Also sets vm->state.vtsN */
             vm->vtsi = NULL;
         } else {
@@ -1115,7 +1057,7 @@ static int process_command(vm_t *vm, link_t link_values) {
         vm->state.domain = DVD_DOMAIN_VTSMenu;
       } else {
         /*  This happens on 'The Fifth Element' region 2. */
-        if(!VM_CHECK(vm, vm->state.domain == DVD_DOMAIN_VTSMenu)) return 0;
+        assert(vm->state.domain == DVD_DOMAIN_VTSMenu);
       }
       /*  I don't know what title is supposed to be used for. */
       /*  Alien or Aliens has this != 1, I think. */
@@ -1125,27 +1067,27 @@ static int process_command(vm_t *vm, link_t link_values) {
       /* so if one changes, the others must change to match it. */
       vm->state.TTN_REG     = get_TT(vm, vm->state.vtsN, vm->state.VTS_TTN_REG);
       if(!set_MENU(vm, link_values.data3))
-        return vm_failed(vm, VM_WHERE("set_MENU(vm, link_values.data3) failed"));
+        assert(0);
       link_values = play_PGC(vm);
       break;
 
     case JumpSS_VMGM_PGC:
       /* set_PGCN:data1 */
       /* Stop SPRM9 Timer and any GPRM counters */
-      if(!VM_CHECK(vm, vm->state.domain != DVD_DOMAIN_VTSTitle)) return 0; /* ?? */
+      assert(vm->state.domain != DVD_DOMAIN_VTSTitle); /* ?? */
       if(vm->vmgi == NULL || vm->vmgi->pgci_ut == NULL) {
         link_values.command = Exit;
         break;
       }
       vm->state.domain = DVD_DOMAIN_VMGM;
       if(!set_PGCN(vm, link_values.data1))
-        return vm_failed(vm, VM_WHERE("set_PGCN(vm, link_values.data1) failed"));
+        assert(0);
       link_values = play_PGC(vm);
       break;
 
     case CallSS_FP:
       /* set_RSMinfo:data1 */
-      if(!VM_CHECK(vm, vm->state.domain == DVD_DOMAIN_VTSTitle)) return 0; /* ?? */
+      assert(vm->state.domain == DVD_DOMAIN_VTSTitle); /* ?? */
       /* Must be called before domain is changed */
       set_RSMinfo(vm, link_values.data1, /* We dont have block info */ 0);
       set_FP_PGC(vm);
@@ -1155,7 +1097,7 @@ static int process_command(vm_t *vm, link_t link_values) {
     case CallSS_VMGM_MENU:
       /* set_MENU:data1 */
       /* set_RSMinfo:data2 */
-      if(!VM_CHECK(vm, vm->state.domain == DVD_DOMAIN_VTSTitle)) return 0; /* ?? */
+      assert(vm->state.domain == DVD_DOMAIN_VTSTitle); /* ?? */
       /* Must be called before domain is changed */
       if(vm->vmgi == NULL || vm->vmgi->pgci_ut == NULL) {
         link_values.command = Exit;
@@ -1164,14 +1106,14 @@ static int process_command(vm_t *vm, link_t link_values) {
       set_RSMinfo(vm, link_values.data2, /* We dont have block info */ 0);
       vm->state.domain = DVD_DOMAIN_VMGM;
       if(!set_MENU(vm, link_values.data1))
-        return vm_failed(vm, VM_WHERE("set_MENU(vm, link_values.data1) failed"));
+        assert(0);
       link_values = play_PGC(vm);
       break;
 
     case CallSS_VTSM:
       /* set_MENU:data1 */
       /* set_RSMinfo:data2 */
-      if(!VM_CHECK(vm, vm->state.domain == DVD_DOMAIN_VTSTitle)) return 0; /* ?? */
+      assert(vm->state.domain == DVD_DOMAIN_VTSTitle); /* ?? */
       /* Must be called before domain is changed */
       if(vm->vtsi == NULL || vm->vtsi->pgci_ut == NULL) {
         link_values.command = Exit;
@@ -1180,14 +1122,14 @@ static int process_command(vm_t *vm, link_t link_values) {
       set_RSMinfo(vm, link_values.data2, /* We dont have block info */ 0);
       vm->state.domain = DVD_DOMAIN_VTSMenu;
       if(!set_MENU(vm, link_values.data1))
-        return vm_failed(vm, VM_WHERE("set_MENU(vm, link_values.data1) failed"));
+        assert(0);
       link_values = play_PGC(vm);
       break;
 
     case CallSS_VMGM_PGC:
       /* set_PGC:data1 */
       /* set_RSMinfo:data2 */
-      if(!VM_CHECK(vm, vm->state.domain == DVD_DOMAIN_VTSTitle)) return 0; /* ?? */
+      assert(vm->state.domain == DVD_DOMAIN_VTSTitle); /* ?? */
       /* Must be called before domain is changed */
       if(vm->vmgi == NULL || vm->vmgi->pgci_ut == NULL) {
         link_values.command = Exit;
@@ -1196,13 +1138,13 @@ static int process_command(vm_t *vm, link_t link_values) {
       set_RSMinfo(vm, link_values.data2, /* We dont have block info */ 0);
       vm->state.domain = DVD_DOMAIN_VMGM;
       if(!set_PGCN(vm, link_values.data1))
-        return vm_failed(vm, VM_WHERE("set_PGCN(vm, link_values.data1) failed"));
+        assert(0);
       link_values = play_PGC(vm);
       break;
 
     case PlayThis:
       /* Should never happen. */
-      return vm_failed(vm, VM_WHERE("PlayThis link in process_command"));
+      assert(0);
       break;
     }
 
