@@ -282,10 +282,11 @@ static int open_title(AVFormatContext *s, const BlurayTitle *t, int part)
     c->seg0 = s0;
     for (int k = s0; k < s1; k++) {
         int64_t size = ff_bluray_seg_size(&t->segs[k]);
-        if (t->segs[k].interleaved) {
-            av_log(s, AV_LOG_ERROR, "Blu-ray: title %s: 3-D titles are not read yet\n", t->name);
-            return AVERROR_PATCHWELCOME;
-        }
+        /* 3-D: the base view's stream files alone (the second view is not
+         * read in this step) */
+        if (t->segs[k].interleaved)
+            av_log(s, AV_LOG_VERBOSE, "Blu-ray: title %s: segment %s is 3-D: its base view is read\n", t->name,
+                   t->segs[k].desc);
         if (size % BLURAY_UNIT)
             av_log(s, AV_LOG_WARNING, "Blu-ray: segment %s: its last %"PRId64" bytes are no whole unit and are not "
                    "read [untested on real discs]\n", t->segs[k].path, size % BLURAY_UNIT);
