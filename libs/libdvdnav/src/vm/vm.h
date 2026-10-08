@@ -86,6 +86,7 @@ typedef struct vm_s {
   int           stopped;
   int         (*rnd_fn)(void *priv); /* random numbers of the Rnd operation, NULL: rand() */
   void         *rnd_priv;
+  int           title_play_follows_jumps; /* see dvdnav_set_title_play_follows_jumps() */
   unsigned int  failures;      /* broken assumptions met, see vm_failed() */
   const char   *first_failure; /* where and what the first one was */
 } vm_t;

@@ -244,6 +244,15 @@ DVDNAV_API dvdnav_status_t dvdnav_set_random_source(dvdnav_t *self,
                                          int (*fn)(void *priv), void *priv);
 
 /*
+ * Sets whether dvdnav_title_play() / dvdnav_part_play() follow a jump made by
+ * the title PGC's pre commands, as a player does (follow != 0), or ignore it
+ * and play the title's program anyway (0, the default). A navigation scan
+ * that must find what the disc plays turns it on; reading one title's own
+ * program chain needs it off. Copies made with dvdnav_dup() keep it.
+ */
+DVDNAV_API dvdnav_status_t dvdnav_set_title_play_follows_jumps(dvdnav_t *self, int32_t follow);
+
+/*
  * Query whether read-ahead caching/buffering will be used.
  */
 DVDNAV_API dvdnav_status_t dvdnav_get_readahead_flag(dvdnav_t *self, int32_t *read_ahead_flag);
