@@ -301,7 +301,13 @@ link_t play_Cell_post(vm_t *vm) {
 #endif
       if(vmEval_CMD(&(vm->state).pgc->command_tbl->cell_cmds[cell->cell_cmd_nr - 1], 1,
                     vm, &link_values)) {
-        return link_values;
+        if(link_values.command != LinkNoLink)
+          return link_values;
+        /* A link to nowhere: continue with the next cell, as if the
+         * command had not linked (its button number is not used). */
+#ifdef TRACE
+        Log3(vm, "Cell command linked to nowhere, continuing");
+#endif
       } else {
 #ifdef TRACE
         Log3(vm, "Cell command didn't do a Jump, Link or Call");
