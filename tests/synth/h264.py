@@ -61,9 +61,10 @@ def nal(t, rbsp, ref_idc=3, sc=b"\0\0\0\1"):
 
 
 def sps(sps_id=0, log2_frame_num=4, poc_type=0, log2_poc_lsb=6, frame_mbs_only=1, timing=(1001, 48000),
-        hrd=True, pic_struct=True, sc=b"\0\0\0\1"):
-    """A High profile SPS, 1920 x 1080, with a VUI (timing info, NAL HRD
-    parameters, pic_struct_present_flag)."""
+        hrd=True, pic_struct=True, mbs=(120, 68), crop_bottom=4, aspect_ratio_idc=None, sc=b"\0\0\0\1"):
+    """A High profile SPS, 1920 x 1080 (mbs: macroblocks across and down,
+    crop_bottom: frame_crop_bottom_offset), with a VUI (aspect_ratio_idc,
+    timing info, NAL HRD parameters, pic_struct_present_flag)."""
     b = Bits()
     b.u(100, 8).u(0, 8).u(41, 8).ue(sps_id)
     b.ue(1).ue(0).ue(0).u(0, 1).u(0, 1)          # 4:2:0, 8 bit, no scaling matrices
@@ -71,13 +72,20 @@ def sps(sps_id=0, log2_frame_num=4, poc_type=0, log2_poc_lsb=6, frame_mbs_only=1
     if poc_type == 0:
         b.ue(log2_poc_lsb - 4)
     b.ue(4).u(0, 1)                              # max_num_ref_frames, gaps
-    b.ue(119).ue(67 if frame_mbs_only else 33).u(frame_mbs_only, 1)
+    b.ue(mbs[0] - 1).ue(mbs[1] - 1 if frame_mbs_only else mbs[1] // 2 - 1).u(frame_mbs_only, 1)
     if not frame_mbs_only:
         b.u(0, 1)                                # mb_adaptive_frame_field_flag
     b.u(1, 1)                                    # direct_8x8_inference_flag
-    b.u(1, 1).ue(0).ue(0).ue(0).ue(4)            # cropping to 1080 lines
+    if crop_bottom:
+        b.u(1, 1).ue(0).ue(0).ue(0).ue(crop_bottom)  # cropping (to 1080 lines)
+    else:
+        b.u(0, 1)
     b.u(1, 1)                                    # vui_parameters_present_flag
-    b.u(0, 1).u(0, 1).u(0, 1).u(0, 1)            # aspect ratio, overscan, video signal, chroma loc
+    if aspect_ratio_idc is None:
+        b.u(0, 1)
+    else:
+        b.u(1, 1).u(aspect_ratio_idc, 8)
+    b.u(0, 1).u(0, 1).u(0, 1)                    # overscan, video signal, chroma loc
     if timing:
         b.u(1, 1).u(timing[0], 32).u(timing[1], 32).u(1, 1)
     else:
@@ -95,9 +103,9 @@ def sps(sps_id=0, log2_frame_num=4, poc_type=0, log2_poc_lsb=6, frame_mbs_only=1
     return nal(7, b.trailing(), sc=sc)
 
 
-def pps(pps_id=0, sps_id=0, bottom_field_pic_order=0, sc=b"\0\0\0\1"):
+def pps(pps_id=0, sps_id=0, bottom_field_pic_order=0, cabac=1, sc=b"\0\0\0\1"):
     b = Bits()
-    b.ue(pps_id).ue(sps_id).u(1, 1).u(bottom_field_pic_order, 1).ue(0)
+    b.ue(pps_id).ue(sps_id).u(cabac, 1).u(bottom_field_pic_order, 1).ue(0)
     b.ue(2).ue(1).u(0, 1).u(0, 2).se(0).se(0).se(0).u(1, 1).u(0, 1).u(0, 1)
     return nal(8, b.trailing(), sc=sc)
 
@@ -169,6 +177,20 @@ def slice_(kind, frame_num, poc_lsb, idr=False, ref=True, first_mb=0, pps_id=0, 
     b.se(0)                                      # slice_qp_delta
     body = b.aligned() + bytes((0x55 + i) & 0xff or 1 for i in range(size))
     return nal(5 if idr else 1, body, ref_idc=3 if ref else 0, sc=sc)
+
+
+def idr_grey(mbs, log2_frame_num=4, log2_poc_lsb=6, sc=b"\0\0\1"):
+    """An IDR picture a decoder decodes: one I slice (CAVLC: pps(cabac=0))
+    of mbs macroblocks, each Intra 16x16 with DC prediction and no residual
+    (mb_type 3, chroma DC, qp delta 0, an empty luma DC block), deblocking
+    off: a grey picture."""
+    b = Bits()
+    b.ue(0).ue(7).ue(0).u(0, log2_frame_num).ue(0).u(0, log2_poc_lsb)
+    b.u(0, 1).u(0, 1)                            # no_output_of_prior_pics, long_term_reference_flag
+    b.se(0).ue(1)                                # slice_qp_delta, disable_deblocking_filter_idc
+    for _ in range(mbs):
+        b.ue(3).ue(0).se(0).u(1, 1)              # mb_type, intra_chroma_pred_mode, mb_qp_delta, coeff_token
+    return nal(5, b.trailing(), sc=sc)
 
 
 def filler(n=16):

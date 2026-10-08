@@ -10,8 +10,11 @@ reference's is not the stream's) and the 3-D second view's profile text."""
 import json
 import subprocess
 
+import pytest
+
 from helpers import DATA, DIST
 from synth import bluray as bd
+from synth import h264
 from synth.bluray import Item, Stream
 
 M2V = (DATA / "testsrc_1200.m2v").read_bytes()
@@ -83,3 +86,32 @@ def test_details_read_to_the_end_of_a_short_clip(tmp_path):
     second = M2V.find(b"\x00\x00\x01\x00", M2V.find(b"\x00\x00\x01\x00") + 4)
     t = info(disc(tmp_path, video=M2V[:second]))[0]
     assert (t["tracks"][0]["width"], t["tracks"][0]["height"]) == (64, 48)
+
+
+def avc_disc(tmp_path, mbs, aspect_ratio_idc, attr):
+    """A clip of SD AVC only: three grey IDR pictures of mbs macroblocks
+    whose SPS gives the sample aspect ratio (aspect_ratio_idc)."""
+    au = (h264.aud(0) + h264.sps(mbs=mbs, crop_bottom=0, aspect_ratio_idc=aspect_ratio_idc, timing=(1, 50),
+                                 hrd=False, pic_struct=False) +
+          h264.pps(cabac=0) + h264.idr_grey(mbs[0] * mbs[1]))
+    packets = stream_packets(0x1011, [au] * 3, 0xe0)
+    data = bd.source_units(packets)
+    clips = {1: bd.clpi(packets=len(data) // 192, stcs=((0, 0x1001, S, E),), streams=((0x1011, 0x1b, attr),))}
+    item = Item("00001", S, E, videos=[Stream(0x1011, 0x1b, attr)])
+    files = bd.bdmv(clips, {1: bd.mpls([item])})
+    files["BDMV/STREAM/00001.m2ts"] = data
+    return bd.write(tmp_path / "disc", files)
+
+
+@pytest.mark.parametrize("mbs, idc, attr, size, aspect", [
+    # a whole 720-sample line of a 4:3 picture with horizontal overscan
+    # (H.264 Table E-1): 15:11 by the numbers, shown as the 4:3 the clip's
+    # attributes call it
+    ((45, 36), 2, b"\x23\x20", (720, 576), "4:3"),     # 12:11, 576 lines
+    ((45, 30), 3, b"\x14\x20", (720, 480), "4:3"),     # 10:11, 480 lines
+    ((45, 36), 4, b"\x23\x30", (720, 576), "16:9"),    # 16:11: 20:11 by the numbers
+    ((45, 36), 1, b"\x23\x20", (720, 576), "5:4"),     # square pixels: the ratio itself
+])
+def test_sd_avc_aspect(tmp_path, mbs, idc, attr, size, aspect):
+    v = info(avc_disc(tmp_path, mbs, idc, attr))[0]["tracks"][0]
+    assert (v["width"], v["height"], v["aspect"]) == (*size, aspect)

@@ -211,15 +211,7 @@ OBJS-$(CONFIG_DTS_MUXER)                 += rawenc.o
 OBJS-$(CONFIG_DV_MUXER)                  += dvenc.o
 OBJS-$(CONFIG_DVBSUB_DEMUXER)            += dvbsub.o rawdec.o
 OBJS-$(CONFIG_DVBTXT_DEMUXER)            += dvbtxt.o rawdec.o
-OBJS-$(CONFIG_DVDVIDEO_DEMUXER)          += dvdvideodec.o dvdvideo_chapters.o \
-                                            dvdvideo_ifo.o dvdvideo_play.o     \
-                                            dvdvideo_source.o dvdvideo_css.o   \
-                                            dvdvideo_streams.o dvdclut.o       \
-                                            dvdvideo_scan.o dvdvideo_disc.o    \
-                                            dvdvideo_vobu.o dvdvideo_cells.o   \
-                                            dvdvideo_titles.o                  \
-                                            discio_read.o discio_fs.o discio_iso9660.o \
-                                            discio_udf_netbsd.o discio_udf_linux.o
+OBJS-$(CONFIG_DVDVIDEO_DEMUXER)          += dvdvideodec.o dvdclut.o
 OBJS-$(CONFIG_DXA_DEMUXER)               += dxa.o
 OBJS-$(CONFIG_EA_CDATA_DEMUXER)          += eacdata.o
 OBJS-$(CONFIG_EA_DEMUXER)                += electronicarts.o
@@ -278,7 +270,7 @@ OBJS-$(CONFIG_H264_MUXER)                += rawenc.o
 OBJS-$(CONFIG_HASH_MUXER)                += hashenc.o
 OBJS-$(CONFIG_HCA_DEMUXER)               += hca.o
 OBJS-$(CONFIG_HCOM_DEMUXER)              += hcom.o pcm.o
-OBJS-$(CONFIG_DISC_DEMUXER)              += discdec.o disctitle.o hddvddec.o \
+OBJS-$(CONFIG_DISC_DEMUXER)              += discdec.o disctitle.o hddvddec.o dvddec.o dvd_disc.o dvd_ifo.o \
                                             bluraydec.o bluray_aacs.o bluray_disc.o bluray_titles.o bluray_tracks.o bluray_probe.o bluray_details.o bluray_files.o bluray_mpls.o bluray_rpls.o bluray_clpi.o bluray_index.o bluray_meta.o hddvd_vti.o hddvd_xpl.o \
                                             disctl_frames.o disctl_codecs.o disctl_audio.o disctl_mlp.o disctl_junction.o disctl_join.o disctl_video.o disctl_mpv.o disctl_vc1.o disctl_h264.o disctl_hevc.o disctl_pgs.o disctl_spu.o disctl_cc.o disctl_ccx.o disctl_chapters.o disctl_verify.o disctl_seamless.o disctl_lpcm.o disctl_pcm.o disctl_title.o \
                                             hddvd_titles.o hddvd_aacs.o hddvd_tracks.o disclang.o avlanguage.o \

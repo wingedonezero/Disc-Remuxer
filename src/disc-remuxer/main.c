@@ -55,7 +55,7 @@ static void usage(FILE *f)
           "                       setting output.split_joined_titles does it for every title\n"
           "  -v, -vv              more detail on the terminal\n"
           "\n"
-          "Only HD DVD images are wired so far; DVD and Blu-ray follow.\n", f);
+          "HD DVD and Blu-ray (UHD, 3-D) are wired; DVD follows.\n", f);
 }
 
 /* Library state (key caches, key files) stays next to the program. */

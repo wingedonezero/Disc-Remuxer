@@ -26,6 +26,7 @@
 #include <string.h>
 
 #include "libavcodec/defs.h"
+#include "libavutil/avstring.h"
 #include "libavutil/dict.h"
 #include "libavutil/error.h"
 #include "libavutil/log.h"
@@ -33,6 +34,7 @@
 #include "libavutil/opt.h"
 
 #include "avformat.h"
+
 #include "demux.h"
 #include "disc.h"
 #include "discinfo.h"
@@ -40,10 +42,30 @@
 
 /* The format parts, by the disc kind the readers tell. */
 static const DiscFormat *const parts[] = {
+    &ff_disc_dvd,
     &ff_disc_hddvd,
     &ff_disc_bluray,
     NULL
 };
+
+/* A DVD folder opened as the VIDEO_TS folder itself, or a ".dvdmedia"
+ * folder, holding VIDEO_TS.IFO at its top. */
+static int dvd_flat_folder(DiscIOFS *fs, const char *path)
+{
+    static const char *const ends[] = { "/VIDEO_TS", ".dvdmedia" };
+    size_t n = strlen(path);
+    DiscIOFile *f = NULL;
+    int named = 0;
+
+    while (n > 1 && path[n - 1] == '/')
+        n--;
+    for (int i = 0; i < FF_ARRAY_ELEMS(ends); i++)
+        named |= n >= strlen(ends[i]) && !av_strncasecmp(path + n - strlen(ends[i]), ends[i], strlen(ends[i]));
+    if (!named || fs->ops->open_file(fs, "/VIDEO_TS.IFO", &f) < 0)
+        return 0;
+    ff_discio_file_free(&f);
+    return 1;
+}
 
 static const char *kind_name(enum DiscIODiscFormat k)
 {
@@ -148,6 +170,10 @@ static int disc_read_header(AVFormatContext *s)
             return ret;
     }
     kind = ff_discio_disc_format(d->fs);
+    if (kind == DISCIO_DISC_NONE && !d->image && dvd_flat_folder(d->fs, s->url)) {
+        kind = DISCIO_DISC_DVD;
+        d->dvd_flat = 1;
+    }
     for (int i = 0; parts[i] && !d->fmt; i++)
         if (parts[i]->kind == kind)
             d->fmt = parts[i];
@@ -218,7 +244,7 @@ static const AVClass disc_class = {
 
 const FFInputFormat ff_disc_demuxer = {
     .p.name         = "disc",
-    .p.long_name    = NULL_IF_CONFIG_SMALL("Disc (HD DVD, Blu-ray; DVD-Video to come)"),
+    .p.long_name    = NULL_IF_CONFIG_SMALL("Disc (DVD-Video, HD DVD, Blu-ray)"),
     .p.priv_class   = &disc_class,
     .p.flags        = AVFMT_SHOW_IDS | AVFMT_NOFILE | AVFMT_NO_BYTE_SEEK |
                       AVFMT_NOGENSEARCH | AVFMT_NOBINSEARCH,

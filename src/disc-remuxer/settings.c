@@ -25,8 +25,6 @@ typedef struct Setting {
 } Setting;
 
 static const char *const udf_readers[]  = { "netbsd", "linux", NULL };
-static const char *const cell_modes[]   = { "auto", "walk", "trim", "walk_trim", NULL };
-static const char *const title_orders[] = { "auto", "scan_first", "table", NULL };
 static const char *const dv_layers[]    = { "merged", "separate", NULL };
 
 static const Setting registry[] = {
@@ -38,16 +36,6 @@ static const Setting registry[] = {
     { "read", "prefer_iso_for_old_udf102", SET_BOOL, "true", 0, 0, NULL,
       "Read a DVD image whose UDF 1.02 file system was recorded before 2006 through its ISO 9660 file "
       "system, when that holds a valid DVD-Video structure." },
-    { "dvd", "cell_mode", SET_CHOICE, "auto", 0, 0, cell_modes,
-      "How a DVD title's cells are chosen: walk = the cells the disc's navigation plays, trim = cells "
-      "that do not look like content are trimmed off the program chain's ends, walk_trim = walk, trim "
-      "where walk finds nothing, auto = walk when the navigation found titles, else trim." },
-    { "dvd", "title_order", SET_CHOICE, "auto", 0, 0, title_orders,
-      "Order of a DVD's titles: scan_first = the titles the disc's navigation leads to first, then the "
-      "others; table = the disc's title table order; auto = scan_first with the cell modes auto and "
-      "walk, table with trim and walk_trim." },
-    { "dvd", "min_title_length", SET_INT, "120", 0, 86400, NULL,
-      "DVD titles shorter than this many seconds are listed but not selected." },
     { "aacs", "key_files", SET_LIST, "", 0, 0, NULL,
       "AACS key files (KEYDB.cfg format), read in this order; the first one holding a key for the disc "
       "is used. Empty: .config/aacs/KEYDB.cfg next to the program." },

@@ -68,7 +68,8 @@ Rules:
 | `disclang.c` | stays: language codes for every format part |
 | `discdec.c`, `disc.h` (step 1, done) | the disc layer, the only disc demuxer the program opens; `disc.h` is what a format part gives it |
 | `disctitle.c` (step 6, done) | the disc layer's title reader: what `hddvddec.c` did that is not HD DVD (the clips through `mpeg.c`, the time reference, the payloads to the title timeline, its frames out, chapters, results); a format part fills `DiscTitleSource` (clips, block reading, tracks, chapter marks, LPCM header size, lead-in tolerance). Blu-ray (B5a): clips of 6144-byte units through `mpegts.c` in disc mode, each track's PID and PES keys (`DiscTsFeed`), the segment's time reference found before it is read (the video's first PTS in its first 2000 units) |
-| `dvdvideodec.c`, `dvdvideo_*.c` | the DVD format part (no longer a demuxer of its own); its playback reading through libdvdnav (`dvdvideo_play.c`) gives way to the navigation scan + title plan, with sectors fed into `mpeg.c` |
+| `dvdvideodec.c` | FFmpeg's own DVD-Video demuxer, unchanged (upstream again since 2026-10-08, with libdvdread, libdvdnav and libdvdcss); not opened by the program. DVD is being rebuilt as a format part of the disc layer, step by step as Blu-ray was |
+| `dvddec.c`, `dvd_*.c` | the DVD format part `ff_disc_dvd` (step D1, done: the disc's structure, `dvd_disc.c` / `dvd_ifo.c`: every IFO through the disc readers with its BUP and checks, the title table, the text data, the names); the title list, CSS, tracks and the title reader follow (D2-D5) |
 | `hddvddec.c`, `hddvd_*.c` | the HD DVD format part `ff_disc_hddvd` (step 1, done: no demuxer of its own any more; step 6, done: only HD DVD's structure, the reading is the title reader's) |
 | `bluraydec.c`, `bluray_*.c` (Blu-ray step B1, done) | the Blu-ray format part `ff_disc_bluray` (BDMV, BDAV, AVCHD): the disc's structure and name (B1), its title list (B2, `bluray_titles.c`) AACS (B3, `bluray_aacs.c`: keys at the open, `ff_bluray_aacs_unit()` per aligned unit for the title reader) the tracks (B4a, `bluray_tracks.c`), the stream probes (B4b, `bluray_probe.c`) and the title checks (B4c: the stream-table repair, titles whose tracks cannot be taken skipped); a title opened for the title reader (B5a: segments, PES keys per track kind); codecs read so far: AVC (`h264_parser.c` disc mode, `disctl_h264.c`), HEVC (`hevc/parser.c` disc mode, `disctl_hevc.c`; a Dolby Vision enhancement layer is a second layer of the title, merged into the video's frames (the single-track form) or, with option `dolby_vision=separate`, a stream of its own), MPEG-2 and VC-1 (the HD DVD rules unchanged), 3-D titles (the base view's stream files; with option `second_view` both views read interleaved and the MVC dependent view written as a second layer: `.mvc` next to the base view's `.h264`, each named by its eye from the playlist), AC-3, DTS / DTS-HD, TrueHD, PGS (`hdmv_pgs_parser.c`, `disctl_pgs.c`; `.sup` stream files; forced-only copies as a player shows them with subtitles off), LPCM (`pcm_bluray_parser.c`: units = 4-byte header + payload; `disctl_lpcm.c`: the format of the first unit kept, each sample frame little-endian in the channel mask's order without the padding channel; `.wav`); the other tracks are left out until their step. Not supported yet: recordable discs' AACS, the segment keys of .fmts clips, BD+. Waiting for a disc that needs it (user): names recorded in the Japanese broadcast character code (ARIB STD-B24, BDAV discs recorded off Japanese TV) are not decoded yet |
 | `hddvd_tracks.c` | stays (stream table, languages); step 4, done: its content probe reads through the line (`mpeg.c` disc mode, FFmpeg's AC-3 / DTS parsers in disc mode) instead of its own pack reader and frame finding |
@@ -121,11 +122,11 @@ their logs for changed warnings).
    64 MiB of a clip), the format's own values come from the format part
    (LPCM header size, audio lead-in tolerance). Then the rip core's files
    were renamed to the title timeline's words (`disctl_`, done).
-   **DVD on the same line** comes later (user, 2026-10-06), done as HD DVD
-   was (decomp check first): the DVD part becomes a format part filling
-   `DiscTitleSource` (its segments, CSS, `lpcm_header` 3, its tolerance), its
-   titles through the title timeline, libdvdnav playback reading removed;
-   checked against the DVD corpus checks.
+   **DVD on the same line** (restarted 2026-10-08: the first DVD code and
+   our DVD library changes are reverted to upstream): a new DVD format part
+   filling `DiscTitleSource` (its segments, CSS, `lpcm_header` 3, its
+   tolerance), its titles through the title timeline, built step by step as
+   Blu-ray was.
 7. **Blu-ray** (TS demuxer decided there), then the **Matroska writer** once
    every format's streams are right (user, 2026-10-06: Blu-ray adds many
    pieces, e.g. more than one video stream and HDR, so the writer is built
@@ -154,10 +155,9 @@ decryption), feeds them into FFmpeg's `mpeg.c` as disc sectors (option
 `disc`), and runs the packets through the title timeline (`disctl_*`): its frame step gives each
 track's payloads to the track's FFmpeg parser (in disc mode where the parser
 has the disc reader's rule: VC-1, TrueHD / MLP, sub-pictures, LPCM) and
-pairs PES times with the frames; then the timing, the joins and the checks. The DVD-Video
-demuxer (FFmpeg's, split into helper files, every read through the readers,
-CSS in the demuxer) still reads by playback through libdvdnav into FFmpeg's
-`mpeg.c` and is not opened by the program.
+pairs PES times with the frames; then the timing, the joins and the checks. Blu-ray
+goes the same way through `mpegts.c`. FFmpeg's own DVD-Video demuxer is
+unchanged and not opened by the program; DVD gets a format part of its own.
 
 ## The program (`src/disc-remuxer/`, C)
 

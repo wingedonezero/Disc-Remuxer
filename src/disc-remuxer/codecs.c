@@ -112,10 +112,14 @@ const char *aspect_text(const DiscStreamInfo *k, char *buf, size_t size)
     *buf = 0;
     if (k->aspect.num <= 0 || k->aspect.den <= 0)
         return buf;
+    /* 1.818 and 1.364: a whole 720-sample line of a 16:9 and of a 4:3
+     * picture with horizontal overscan (pixels 16:11 / 40:33 and 12:11 /
+     * 10:11, H.264 and H.265 Table E-1), which a Blu-ray clip's attributes
+     * call 16:9 and 4:3 */
     r = (int)((int64_t)k->aspect.num * 1000 / k->aspect.den);
     if ((r >= 1776 && r <= 1778) || (r >= 1815 && r <= 1819))
         snprintf(buf, size, "16:9");
-    else if ((r >= 1333 && r <= 1335) || (r >= 1499 && r <= 1501))
+    else if ((r >= 1333 && r <= 1335) || (r >= 1362 && r <= 1364) || (r >= 1499 && r <= 1501))
         snprintf(buf, size, "4:3");
     else
         snprintf(buf, size, "%d:%d", k->aspect.num, k->aspect.den);
