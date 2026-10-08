@@ -375,6 +375,7 @@ int vm_reset(vm_t *vm, const char *dvdroot,
   vm->state.registers.GPRM_mode = 0;
   memset(vm->state.registers.GPRM_time, 0, sizeof(vm->state.registers.GPRM_time));
   vm->state.registers.time_counter = 0;
+  vm->state.registers.SPRM_flags = 0;
   vm->state.registers.SPRM[0]  = ('e'<<8)|'n'; /* Player Menu Language code */
   vm->state.AST_REG            = 15;           /* 15 why? */
   vm->state.SPST_REG           = 62;           /* 62 why? */
