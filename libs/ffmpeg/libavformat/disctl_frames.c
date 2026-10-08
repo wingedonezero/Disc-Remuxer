@@ -62,6 +62,8 @@ struct DRFrames {
     unsigned feed_cap;
 
     DRFramesStats st;
+    int64_t  split_units;      /* H.264 / HEVC: frames whose first bytes lie in an earlier payload than their
+                                  anchor (a delimiter or SEI muxed into the packet before) */
 };
 
 int ff_disctl_frames_open(DRFrames **frames, void *logctx, enum AVCodecID codec,
@@ -105,6 +107,10 @@ void ff_disctl_frames_close(DRFrames **frames)
 
     if (!c)
         return;
+    if (c->split_units)
+        av_log(c->log, AV_LOG_WARNING, "Title timeline: %s: %"PRId64" frames begin in the packet before the one "
+               "with their picture (a badly muxed stream?): each takes the time of the packet with its picture\n",
+               c->codec->name, c->split_units);
     av_parser_close(c->parser);
     avcodec_free_context(&c->avctx);
     av_freep(&c->rec);
@@ -163,6 +169,31 @@ static void drop_records(DRFrames *c, int64_t a)
                " (%"PRId64" bytes) belongs to no unit\n", c->codec->name, r->time, r->pos, r->span);
         c->st.records_unused++;
     }
+}
+
+/* H.264 / HEVC: the unit's first NAL unit (a delimiter, SEI, ...) at stream
+ * offset off + its start code lies in an earlier payload than its anchor
+ * at stream offset a, the first unit that takes a payload's time (H.222.0
+ * 2.4.3.7 gives a payload's time to the access unit whose first byte it
+ * carries; the anchor rule takes the time of the payload with the picture
+ * and so keeps the time a muxer meant when it put the delimiter into the
+ * packet before): logged. */
+static void split_check(DRFrames *c, const uint8_t *data, int64_t off, int64_t a)
+{
+    int64_t first = off;
+    int k;
+
+    for (k = 0; k + 2 < (int)(a - off) && !(!data[k] && !data[k + 1] && data[k + 2] == 1); k++)
+        ;
+    first = off + k;
+    for (int i = c->rec_head; i < c->nb_rec && c->rec[i].pos <= a; i++)
+        if (c->rec[i].pos + c->rec[i].span > a) {
+            if (c->rec[i].pos > first && c->split_units++ < 5)
+                av_log(c->log, AV_LOG_WARNING, "Title timeline: %s: a frame at stream offset %"PRId64" begins in "
+                       "the packet before the one with its picture (a badly muxed stream?): it takes the time of "
+                       "the packet with its picture\n", c->codec->name, first);
+            break;
+        }
 }
 
 /* The time for a unit whose anchor is at stream offset a: the first record
@@ -232,6 +263,8 @@ static int unit_take(DRFrames *c, const uint8_t *data, int size, int64_t off)
         return 0;
     }
     a = c->codec->anchor ? c->codec->anchor(data, size) : 0;
+    if (a > 0 && c->codec->parser_picture)
+        split_check(c, data, off, off + a);
     if (a >= 0)
         time = take_time(c, off + a);
     else

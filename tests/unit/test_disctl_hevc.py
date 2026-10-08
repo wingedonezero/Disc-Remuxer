@@ -384,3 +384,19 @@ def test_an_end_of_sequence_unit_before_a_picture_that_is_no_random_access_point
     out, warnings = run_title([s1])
     assert out[5] == s1[5][0]
     assert warnings == 1
+
+
+def test_a_delimiter_muxed_into_the_packet_before_keeps_the_frame_at_its_picture_time():
+    # a badly muxed stream: picture 5's delimiter and SEI ride at the end of
+    # picture 4's packet; picture 5 keeps the time of the packet with its
+    # picture (the anchor rule), and the frames' bytes are unchanged
+    units = stream(gops=2)
+    head = H.aud() + H.sei([H.pic_timing(0)])
+    payloads = [(u, t) for u, t, _ in units]
+    assert payloads[5][0].startswith(head)
+    payloads[4] = (payloads[4][0] + head, payloads[4][1])
+    payloads[5] = (payloads[5][0][len(head):], payloads[5][1])
+    s, _, ret = run(payloads)
+    assert ret == 0
+    assert [o[1] for o in s.out] == [t for _, t, _ in units]
+    assert [o[0] for o in s.out] == [without(u) for u, _, _ in units]

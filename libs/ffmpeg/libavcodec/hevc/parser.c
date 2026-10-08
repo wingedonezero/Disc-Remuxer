@@ -671,7 +671,7 @@ static int disc_picture(AVCodecParserContext *s, AVCodecContext *avctx, const ui
     HEVCParserContext *p = s->priv_data;
     const HEVCPPS *pps = NULL;
     const HEVCSPS *sps;
-    int ps = -1, recovery = 0, num = 0, den = 0, ffi;
+    int ps = -1, recovery = 0, num = 0, den = 0, ffi, pps_id = -1;
 
     /* the SEI in front of the picture; its first slice segment's PPS */
     for (int i = 0; i + 4 < size; i++) {
@@ -692,12 +692,15 @@ static int disc_picture(AVCodecParserContext *s, AVCodecContext *avctx, const ui
         if (disc_vcl(t)) {
             HEVCDiscSlice h;
             if (disc_slice(buf + i + 3, e - i - 3, &h) && h.pps_id < HEVC_MAX_PPS_COUNT)
-                pps = p->ps.pps_list[h.pps_id];
+                pps_id = h.pps_id;
             break;
         }
         i = e - 1;
     }
-    if (parse_nal_units(s, buf, size, avctx) < 0 || !pps || !(sps = pps->sps)) {
+    /* the PPS looked up after FFmpeg's parse, which reads the parameter sets
+     * of the access unit again and replaces the stored ones */
+    if (parse_nal_units(s, buf, size, avctx) < 0 || pps_id < 0 || !(pps = p->ps.pps_list[pps_id]) ||
+        !(sps = pps->sps)) {
         av_log(avctx, AV_LOG_ERROR, "Title timeline: HEVC: a picture's headers cannot be read\n");
         return AVERROR_INVALIDDATA;
     }
