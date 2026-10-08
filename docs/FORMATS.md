@@ -14,6 +14,7 @@ things, listed here.
 | Option | Meaning |
 |---|---|
 | `title` | the title to open (index in the disc's title list, from 0); -1: only the disc info |
+| `second_view` | 3-D titles: both views are read (the stream files interleaved at their extent start points) and the second view is a stream of its own (H.264, disposition dependent): each picture with the base-view frame of the same time; streams carry `eye` (`left` / `right`, from the playlist's MVC_Base_view_R_flag). The program sets it for `--second-view` / setting `bluray.second_view` |
 | `part` | with `title`: only that part of it (from 0, as the title's parts list them), opened as a title of its own; -1 (default): the whole title. The program sets it for `--split` / setting `output.split_joined_titles` |
 | `read_attempts`, `udf_reader` | from the settings `read.attempts`, `read.udf_reader` |
 | `keydb` | key files (setting `aacs.key_files`), where the format has keys |

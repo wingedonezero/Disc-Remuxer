@@ -60,6 +60,10 @@ static const Setting registry[] = {
       "own chapters and its audio as the file holds it. Off: such a title is one timeline (the audio's overlaps "
       "at the joins are evened out by dropping whole frames). The demux option --split <titles> turns it on "
       "for chosen titles of one run." },
+    { "bluray", "second_view", SET_BOOL, "false", 0, 0, NULL,
+      "3-D titles: also write the second view (the MVC dependent view, a .mvc file next to the base view's "
+      ".h264; each file names its eye, from the playlist). Off: a 3-D title is written in 2-D. The demux "
+      "option --second-view <titles> turns it on for chosen titles of one run." },
     { "log", "debug_file", SET_BOOL, "false", 0, 0, NULL,
       "Also write a debug log with every detail into the output folder, next to the log." },
 };

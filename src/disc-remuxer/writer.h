@@ -14,14 +14,16 @@ const char *codec_label(enum AVCodecID id, int profile);
 /* Opens title `title` of source with demuxer `format` and the settings
  * (read attempts, UDF reader, AACS key files); part >= 0: only that part of
  * the title (one of the stream files a title plays back to back), -1 the
- * whole title. Returns 0 or an AVERROR. */
-int open_title(const char *format, const char *source, int title, int part, AVFormatContext **ctx);
+ * whole title; second_view: a 3-D title's second view is read too. Returns 0
+ * or an AVERROR. */
+int open_title(const char *format, const char *source, int title, int part, int second_view, AVFormatContext **ctx);
 
 typedef struct TitleJob {
     const char *format;        /* demuxer */
     const char *source;
     int         title;         /* index in the disc's title list */
     int         part, nb_parts;/* part >= 0: only that part of the title's nb_parts (files _p1, _p2, ...) */
+    int         second_view;   /* a 3-D title's second view as a track of its own */
     int         ordinal, count;/* this is title <ordinal> of <count> selected */
     const char *out_dir;
     int         sub_folder;    /* the title's files in a folder of its name */

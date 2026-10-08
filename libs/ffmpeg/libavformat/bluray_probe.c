@@ -63,17 +63,24 @@
 
 /* ---- the segment as aligned units ---- */
 
-static int64_t item_length(const BluraySegItem *it)
+static int64_t item_length(const BluraySegItem *it, int both)
 {
+    if (it->dep && both)
+        return it->length;                  /* 3-D: both views interleaved */
     return it->dep ? (int64_t)it->clip->packets * PACKET : it->length;   /* 3-D: the base view only */
+}
+
+int64_t ff_bluray_seg_size_views(const BluraySegment *s, int both)
+{
+    int64_t n = 0;
+    for (int i = 0; i < s->nb_items; i++)
+        n += item_length(&s->items[i], both && s->interleaved);
+    return n;
 }
 
 int64_t ff_bluray_seg_size(const BluraySegment *s)
 {
-    int64_t n = 0;
-    for (int i = 0; i < s->nb_items; i++)
-        n += item_length(&s->items[i]);
-    return n;
+    return ff_bluray_seg_size_views(s, 0);
 }
 
 void ff_bluray_seg_reader_init(BluraySegReader *u, void *log, DiscIOFS *fs, BlurayAACS *aacs,
@@ -82,10 +89,41 @@ void ff_bluray_seg_reader_init(BluraySegReader *u, void *log, DiscIOFS *fs, Blur
     *u = (BluraySegReader){ .log = log, .fs = fs, .aacs = aacs, .s = s, .item = -1 };
 }
 
+void ff_bluray_seg_reader_both(BluraySegReader *u)
+{
+    u->both = u->s->interleaved;
+}
+
 void ff_bluray_seg_reader_close(BluraySegReader *u)
 {
     ff_discio_file_free(&u->f);
+    ff_discio_file_free(&u->f2);
+    av_freep(&u->chunks);
+    u->nb_chunks = 0;
     u->item = -1;
+}
+
+/* The runs of a 3-D item read with both views: the two stream files cut at
+ * their extent start points, run i of the file read first, then run i of
+ * the other (which file is first: the pair's interleave order). */
+static int item_chunks(BluraySegReader *u, const BluraySegItem *it)
+{
+    const BlurayClip *a = it->clip, *c = it->dep;
+    const BlurayClip *first = c->interleave == 2 ? c : a, *second = c->interleave == 2 ? a : c;
+    int n = first->nb_ss_extents;
+    int64_t pos = 0;
+
+    if (!(u->chunks = av_calloc(2 * n, sizeof(*u->chunks))))
+        return AVERROR(ENOMEM);
+    for (int i = 0; i < n; i++)
+        for (int k = 0; k < 2; k++) {
+            const BlurayClip *x = k ? second : first;
+            int64_t s0 = (int64_t)x->ss_extents[i] * PACKET;
+            int64_t s1 = i + 1 < n ? (int64_t)x->ss_extents[i + 1] * PACKET : (int64_t)x->packets * PACKET;
+            u->chunks[u->nb_chunks++] = (BlurayChunk){ pos, s0, s1 - s0, x == c };
+            pos += s1 - s0;
+        }
+    return pos == it->length ? 0 : AVERROR_BUG;
 }
 
 int ff_bluray_seg_read(BluraySegReader *u, int64_t pos, uint8_t *buf)
@@ -95,28 +133,55 @@ int ff_bluray_seg_read(BluraySegReader *u, int64_t pos, uint8_t *buf)
 
     for (int i = 0; i < u->s->nb_items; i++) {
         const BluraySegItem *it = &u->s->items[i];
-        int64_t len = item_length(it);
+        int both = it->dep && u->both, lo = 0, hi;
+        int64_t len = item_length(it, u->both), off = (it->dep ? 0 : it->start) + pos - base;
+        BlurayClip *clip = it->clip;
+        DiscIOFile *f;
         if (pos >= base + len) {
             base += len;
             continue;
         }
         if (u->item != i) {
             ff_bluray_seg_reader_close(u);
-            if ((ret = u->fs->ops->open_file(u->fs, it->clip->stream_path, &u->f)) < 0) {
-                av_log(u->log, AV_LOG_ERROR, "Blu-ray: %s cannot be opened: %s\n", it->clip->stream_path,
-                       av_err2str(ret));
+            if ((ret = u->fs->ops->open_file(u->fs, it->clip->stream_path, &u->f)) < 0 ||
+                (both && (ret = u->fs->ops->open_file(u->fs, it->dep->stream_path, &u->f2)) < 0)) {
+                av_log(u->log, AV_LOG_ERROR, "Blu-ray: %s cannot be opened: %s\n",
+                       u->f ? it->dep->stream_path : it->clip->stream_path, av_err2str(ret));
+                return ret;
+            }
+            if (both && (ret = item_chunks(u, it)) < 0) {
+                av_log(u->log, AV_LOG_ERROR, "Blu-ray: the views of %s cannot be read interleaved\n",
+                       it->clip->stream_path);
                 return ret;
             }
             u->item = i;
         }
         if (pos + UNIT > base + len)
             return AVERROR_EOF;             /* a part unit at the end */
-        if ((ret = ff_discio_file_read(u->fs, u->f, (it->dep ? 0 : it->start) + pos - base, buf, UNIT)) < 0) {
+        f = u->f;
+        if (both) {
+            /* the run holding the unit (runs are whole units: extents are
+             * multiples of 32 source packets) */
+            hi = u->nb_chunks - 1;
+            while (lo < hi) {
+                int m = (lo + hi + 1) / 2;
+                if (u->chunks[m].pos <= pos - base)
+                    lo = m;
+                else
+                    hi = m - 1;
+            }
+            off = u->chunks[lo].off + pos - base - u->chunks[lo].pos;
+            if (u->chunks[lo].view) {
+                f    = u->f2;
+                clip = it->dep;
+            }
+        }
+        if ((ret = ff_discio_file_read(u->fs, f, off, buf, UNIT)) < 0) {
             av_log(u->log, AV_LOG_ERROR, "Blu-ray: error '%s' occurred while reading '%s' at offset '%"PRId64"'\n",
-                   av_err2str(ret), it->clip->stream_path, (it->dep ? 0 : it->start) + pos - base);
+                   av_err2str(ret), clip->stream_path, off);
             return ret;
         }
-        return ff_bluray_aacs_unit(u->log, u->aacs, it->clip, buf);
+        return ff_bluray_aacs_unit(u->log, u->aacs, clip, buf);
     }
     return AVERROR_EOF;
 }

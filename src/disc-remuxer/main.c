@@ -47,6 +47,8 @@ static void usage(FILE *f)
           "  --config <file>      settings file to use (default: disc-remuxer.toml next to the program)\n"
           "  --set group.key=val  change a setting for this run only (repeatable)\n"
           "  --json               JSON records on stdout, one per line, instead of text\n"
+          "  --second-view <titles>  demux: also write the second view of these 3-D titles (the .mvc\n"
+          "                       next to the base view); setting bluray.second_view does it for every title\n"
           "  --split <titles>     demux: write these titles' parts one by one (a title that plays whole\n"
           "                       stream files back to back, e.g. episodes; info lists the parts);\n"
           "                       setting output.split_joined_titles does it for every title\n"
@@ -235,7 +237,7 @@ static const char *disc_overview(const char *source, int detail, int *nb_titles,
     char revs[32] = "", js1[64], js2[256], js3[64], js4[1024], jname[1100];
     int ret;
 
-    if ((ret = open_title(DISC_FORMAT, source, ONLY_DISC_INFO, -1, &ctx)) < 0 || !(d = disc_info(ctx))) {
+    if ((ret = open_title(DISC_FORMAT, source, ONLY_DISC_INFO, -1, 0, &ctx)) < 0 || !(d = disc_info(ctx))) {
         log_msg(MSG_SOURCE_UNSUPPORTED, LOG_ERROR, "%s cannot be read as a disc this program supports (%s); "
                 "HD DVD and Blu-ray are wired so far", source, av_err2str(ret < 0 ? ret : AVERROR_BUG));
         avformat_close_input(&ctx);
@@ -353,9 +355,10 @@ static int cmd_info(const char *source)
     return 0;
 }
 
-static int cmd_demux(const char *source, const char *titles, const char *out_dir, const char *split)
+static int cmd_demux(const char *source, const char *titles, const char *out_dir, const char *split,
+                     const char *second)
 {
-    char name[512], logp[PATH_MAX + 600], dbgp[PATH_MAX + 600], *sel, *spl = NULL;
+    char name[512], logp[PATH_MAX + 600], dbgp[PATH_MAX + 600], *sel, *spl = NULL, *sv = NULL;
     const char *format;
     int nb, count, ordinal = 0, failed = 0, done = 0, errors, warnings, *nb_parts = NULL;
     int64_t track_warnings = 0;
@@ -383,12 +386,14 @@ static int cmd_demux(const char *source, const char *titles, const char *out_dir
     }
     sel = calloc(nb ? nb : 1, 1);
     spl = calloc(nb ? nb : 1, 1);
-    if (!sel || !spl || (count = parse_titles(titles, nb, sel)) <= 0 ||
-        (split && parse_titles(split, nb, spl) < 0)) {
-        if (sel && spl && !count)
+    sv  = calloc(nb ? nb : 1, 1);
+    if (!sel || !spl || !sv || (count = parse_titles(titles, nb, sel)) <= 0 ||
+        (split && parse_titles(split, nb, spl) < 0) || (second && parse_titles(second, nb, sv) < 0)) {
+        if (sel && spl && sv && !count)
             log_msg(MSG_TITLE_SELECTION, LOG_ERROR, "No title selected");
         free(sel);
         free(spl);
+        free(sv);
         free(nb_parts);
         log_close_files();
         return 2;
@@ -400,13 +405,15 @@ static int cmd_demux(const char *source, const char *titles, const char *out_dir
                     "back): written whole", t);
     if (setting_bool("output.split_joined_titles"))
         memset(spl, 1, nb);
+    if (setting_bool("bluray.second_view"))
+        memset(sv, 1, nb);
     for (int t = 0; t < nb; t++) {
         int parts = spl[t] ? nb_parts[t] : 0, part_failed = 0;
         if (!sel[t])
             continue;
         ++ordinal;
         for (int p = parts ? 0 : -1; p < parts; p++) {
-            TitleJob job = { format, source, t, p, parts, ordinal, count, out_dir, count > 1 };
+            TitleJob job = { format, source, t, p, parts, sv[t], ordinal, count, out_dir, count > 1 };
             TitleOutcome res;
             demux_title(&job, &res);
             part_failed    += res.failed;
@@ -417,6 +424,7 @@ static int cmd_demux(const char *source, const char *titles, const char *out_dir
     }
     free(sel);
     free(spl);
+    free(sv);
     free(nb_parts);
 
     log_counts(&errors, &warnings);
@@ -440,7 +448,7 @@ static void cmd_version(void)
 
 int main(int argc, char **argv)
 {
-    const char *config = NULL, *split = NULL, **sets = calloc(argc, sizeof(char *));
+    const char *config = NULL, *split = NULL, *second = NULL, **sets = calloc(argc, sizeof(char *));
     int json = 0, verbose = 0, nb_sets = 0, i, ret;
 
     for (i = 1; i < argc && argv[i][0] == '-'; i++) {
@@ -456,6 +464,8 @@ int main(int argc, char **argv)
             sets[nb_sets++] = argv[++i];
         else if (!strcmp(argv[i], "--split") && i + 1 < argc)
             split = argv[++i];
+        else if (!strcmp(argv[i], "--second-view") && i + 1 < argc)
+            second = argv[++i];
         else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
             usage(stdout);
             return 0;
@@ -490,7 +500,7 @@ int main(int argc, char **argv)
     } else if (!strcmp(argv[i], "info") && i + 1 < argc) {
         ret = cmd_info(argv[i + 1]);
     } else if (!strcmp(argv[i], "demux") && i + 3 < argc) {
-        ret = cmd_demux(argv[i + 1], argv[i + 2], argv[i + 3], split);
+        ret = cmd_demux(argv[i + 1], argv[i + 2], argv[i + 3], split, second);
     } else {
         fprintf(stderr, "disc-remuxer: unknown command or missing arguments: %s\n\n", argv[i]);
         usage(stderr);

@@ -72,7 +72,28 @@ typedef struct Track {
     int           wait_head, nb_wait, wait_cap;
     int64_t       out;           /* frames given out */
     int64_t       warnings;      /* warnings logged about the track */
+    /* a second layer: the bytes of the picture being cut, and its pictures
+     * waiting for their master video frame */
+    uint8_t      *acc;
+    int           acc_len, acc_cap;
+    int64_t       acc_pos;       /* stream offset of acc[0] */
+    int           acc_started;   /* a delimiter was found in this segment */
+    int           acc_scan;      /* where the search for the next delimiter goes on in acc */
+    int64_t      (*rec)[2];      /* payload times not yet taken: {stream offset of the payload, time} */
+    int           nb_rec, rec_cap;
+    DRFrame      *lq;
+    int           lq_head, lq_n, lq_cap;
+    int64_t       layer_dropped[32];  /* NAL units taken out, per type */
+    int64_t       layer_stuffing;
+    int64_t       layer_alone;   /* pictures without a master video frame (left out) */
 } Track;
+
+/* A master video frame given out while the title has a second layer: the
+ * values its layer picture leaves with. */
+typedef struct LayerKey {
+    int64_t  src, time, dur;
+    unsigned flags;
+} LayerKey;
 
 #define EVENT_KINDS  64
 #define EVENT_LOGGED 50          /* structured event lines per kind and track; the rest are counted */
@@ -99,6 +120,10 @@ struct DRTitle {
     int64_t       user_data;     /* other GOP user data taken out of the video */
     Out          *q;             /* output frames ready */
     int           q_head, q_n, q_cap;
+    int           layer;         /* the second layer's track, -1 none */
+    LayerKey     *bq;            /* master video frames waiting for their layer picture */
+    int           bq_head, bq_n, bq_cap;
+    int64_t       layer_missing; /* master video frames without a layer picture */
 };
 
 static const char *const event_names[] = {
@@ -589,6 +614,244 @@ static int cc_finish(DRTitle *t, Track *k)
     return ret;
 }
 
+static int seg_frame(void *opaque, DRFrame *f);
+
+/* ---- a second layer (the dependent view of a 3-D video) ----
+ * Its pictures and the master video's frames come in the same (decoding)
+ * order; a picture belongs to the master frame with the same time from the
+ * disc (within LAYER_TOLERANCE) and leaves with that frame's time, duration
+ * and key flag. A picture without a master frame is left out; a master frame
+ * without a picture is counted (the layer's stream would miss a picture). */
+
+#define LAYER_TOLERANCE (DR_TICKS_PER_SECOND / 1000)
+#define LAYER_WINDOW    64              /* pictures looked at for a master frame's partner */
+
+static int layer_key(DRTitle *t, const DRFrame *f)
+{
+    if (t->bq_head + t->bq_n == t->bq_cap) {
+        if (t->bq_head) {
+            memmove(t->bq, t->bq + t->bq_head, t->bq_n * sizeof(*t->bq));
+            t->bq_head = 0;
+        } else {
+            int cap = t->bq_cap ? 2 * t->bq_cap : 64;
+            LayerKey *q = av_realloc_array(t->bq, cap, sizeof(*q));
+            if (!q)
+                return AVERROR(ENOMEM);
+            t->bq     = q;
+            t->bq_cap = cap;
+        }
+    }
+    t->bq[t->bq_head + t->bq_n++] = (LayerKey){ f->src, f->time, f->dur, f->flags };
+    return 0;
+}
+
+static int layer_add(Track *k, DRFrame *f)
+{
+    if (k->lq_head + k->lq_n == k->lq_cap) {
+        if (k->lq_head) {
+            memmove(k->lq, k->lq + k->lq_head, k->lq_n * sizeof(*k->lq));
+            k->lq_head = 0;
+        } else {
+            int cap = k->lq_cap ? 2 * k->lq_cap : 64;
+            DRFrame *q = av_realloc_array(k->lq, cap, sizeof(*q));
+            if (!q) {
+                ff_disctl_frame_unref(f);
+                return AVERROR(ENOMEM);
+            }
+            k->lq     = q;
+            k->lq_cap = cap;
+        }
+    }
+    k->lq[k->lq_head + k->lq_n++] = *f;
+    memset(f, 0, sizeof(*f));
+    return 0;
+}
+
+static void layer_drop_head(Track *k)
+{
+    DRFrame *f = &k->lq[k->lq_head];
+    if (!k->layer_alone++)
+        av_log(k->title->log, AV_LOG_WARNING, "Title timeline: track %d: a second-layer picture at %"PRId64" ticks "
+               "has no video frame of its time: left out\n", k->index, f->src);
+    ff_disctl_frame_unref(f);
+    k->lq_head++;
+    if (!--k->lq_n)
+        k->lq_head = 0;
+}
+
+static void layer_miss_head(DRTitle *t)
+{
+    if (!t->layer_missing++)
+        av_log(t->log, AV_LOG_ERROR, "Title timeline: the video frame at %"PRId64" ticks has no second-layer "
+               "picture\n", t->bq[t->bq_head].src);
+    t->bq_head++;
+    if (!--t->bq_n)
+        t->bq_head = 0;
+}
+
+/* Pairs the waiting master frames with the waiting pictures; final: what
+ * is left has no partner. */
+static int layer_match(DRTitle *t, int final)
+{
+    Track *k;
+    int ret;
+
+    if (t->layer < 0)
+        return 0;
+    k = &t->t[t->layer];
+    while (t->bq_n) {
+        const LayerKey *b = &t->bq[t->bq_head];
+        int m = -1;
+        for (int i = 0; i < k->lq_n && i < LAYER_WINDOW && m < 0; i++)
+            if (FFABS(k->lq[k->lq_head + i].src - b->src) < LAYER_TOLERANCE)
+                m = i;
+        if (m < 0) {
+            if (!final && k->lq_n < LAYER_WINDOW)
+                return 0;                   /* its picture may still come */
+            layer_miss_head(t);
+            continue;
+        }
+        while (m-- > 0)
+            layer_drop_head(k);
+        {
+            DRFrame f = k->lq[k->lq_head];
+            k->lq_head++;
+            if (!--k->lq_n)
+                k->lq_head = 0;
+            f.time  = b->time;
+            f.dur   = b->dur;
+            f.flags = (f.flags & ~DR_F_KEY) | (b->flags & DR_F_KEY);
+            t->bq_head++;
+            if (!--t->bq_n)
+                t->bq_head = 0;
+            if ((ret = emit(t, k, &f)) < 0)
+                return ret;
+        }
+    }
+    while (final && k->lq_n)
+        layer_drop_head(k);
+    return 0;
+}
+
+/* The next MVC delimiter (00 00 01 + nal_unit_type 24, the start of a
+ * dependent-view access unit) at or after i in p, or -1. */
+static int layer_next(const uint8_t *p, int n, int i)
+{
+    for (; i + 3 < n; i++)
+        if (!p[i] && !p[i + 1] && p[i + 2] == 1 && (p[i + 3] & 0x1f) == 24)
+            return i;
+    return -1;
+}
+
+/* One picture of the second layer: acc[0..n), cleaned as the master
+ * video's units are (ff_disctl_h264_clean), into the joiner with the time
+ * of the last payload that starts at or before it (and after the picture
+ * before it: each time is taken once). */
+static int layer_picture(Track *k, int n)
+{
+    DRFrame f = { .time = AV_NOPTS_VALUE, .pos = k->acc_pos };
+    int changed, out, used = 0;
+
+    while (used < k->nb_rec && k->rec[used][0] <= k->acc_pos)
+        f.time = k->rec[used++][1];
+    memmove(k->rec, k->rec + used, (k->nb_rec - used) * sizeof(*k->rec));
+    k->nb_rec -= used;
+    if (!(f.buf = av_buffer_alloc(n + AV_INPUT_BUFFER_PADDING_SIZE)))
+        return AVERROR(ENOMEM);
+    out = ff_disctl_h264_clean(k->acc, n, f.buf->data, k->layer_dropped, &k->layer_stuffing, &changed);
+    if (!changed) {
+        memcpy(f.buf->data, k->acc, n);
+        out = n;
+    }
+    memset(f.buf->data + out, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+    f.data = f.buf->data;
+    f.size = out;
+    memmove(k->acc, k->acc + n, k->acc_len - n);
+    k->acc_len -= n;
+    k->acc_pos += n;
+    k->acc_scan = 4;
+    if (!out) {
+        ff_disctl_frame_unref(&f);
+        return 0;
+    }
+    return seg_frame(k, &f);
+}
+
+/* Bytes of acc up to the delimiter found at d, with the zero bytes in
+ * front of it (they go with the delimiter). */
+static int layer_cut(const Track *k, int d)
+{
+    while (d > 0 && !k->acc[d - 1])
+        d--;
+    return d;
+}
+
+/* A second-layer payload: its bytes are cut into pictures at the MVC
+ * delimiters; a picture takes the time of the payload it starts in
+ * (ISO/IEC 13818-1 2.4.3.7). Bytes before a segment's first delimiter start
+ * no picture. */
+static int layer_payload(DRTitle *t, Track *k, const uint8_t *data, int size, int64_t time)
+{
+    int ret, d;
+
+    if (k->acc_len + size > k->acc_cap) {
+        int cap = FFMAX(2 * k->acc_cap, k->acc_len + size);
+        uint8_t *a = av_realloc(k->acc, cap);
+        if (!a)
+            return AVERROR(ENOMEM);
+        k->acc     = a;
+        k->acc_cap = cap;
+    }
+    if (time != AV_NOPTS_VALUE) {
+        if (k->nb_rec == k->rec_cap) {
+            int cap = k->rec_cap ? 2 * k->rec_cap : 16;
+            int64_t (*r)[2] = av_realloc_array(k->rec, cap, sizeof(*r));
+            if (!r)
+                return AVERROR(ENOMEM);
+            k->rec     = r;
+            k->rec_cap = cap;
+        }
+        k->rec[k->nb_rec][0] = k->acc_pos + k->acc_len;
+        k->rec[k->nb_rec][1] = time;
+        k->nb_rec++;
+    }
+    memcpy(k->acc + k->acc_len, data, size);
+    k->acc_len += size;
+    k->bytes   += size;
+    if (!k->acc_started) {
+        if ((d = layer_next(k->acc, k->acc_len, 0)) < 0)
+            return 0;
+        if ((d = layer_cut(k, d)) > 0) {
+            av_log(t->log, AV_LOG_WARNING, "Title timeline: track %d: %d bytes before the segment's first MVC "
+                   "delimiter start no picture: left out [untested on real discs]\n", k->index, d);
+            memmove(k->acc, k->acc + d, k->acc_len - d);
+            k->acc_len -= d;
+            k->acc_pos += d;
+        }
+        k->acc_started = 1;
+        k->acc_scan    = 4;
+    }
+    /* the search goes on where it stopped (the last 3 bytes again: a start
+     * code may span two payloads) */
+    while ((d = layer_next(k->acc, k->acc_len, k->acc_scan)) > 0 && (d = layer_cut(k, d)) > 0)
+        if ((ret = layer_picture(k, d)) < 0)
+            return ret;
+    k->acc_scan = FFMAX(4, k->acc_len - 3);
+    return 0;
+}
+
+/* The segment's end: the last picture of the second layer. */
+static int layer_flush(Track *k)
+{
+    int ret = k->acc_started && k->acc_len ? layer_picture(k, k->acc_len) : 0;
+    k->acc_len     = 0;
+    k->acc_pos     = 0;
+    k->acc_started = 0;
+    k->acc_scan    = 4;
+    k->nb_rec      = 0;
+    return ret;
+}
+
 /* A frame on the title timeline from the joiner. */
 static int joined(void *opaque, int track, DRFrame *f)
 {
@@ -603,9 +866,17 @@ static int joined(void *opaque, int track, DRFrame *f)
             t->vmax = FFMAX(t->vmax, f->time);
             t->vend = FFMAX(t->vend, f->time + f->dur);
         }
-        if ((ret = emit(t, k, f)) < 0)
+        if (t->layer >= 0 && (f->dur || f->size) && (ret = layer_key(t, f)) < 0) {
+            ff_disctl_frame_unref(f);
+            return ret;
+        }
+        if ((ret = emit(t, k, f)) < 0 || (ret = layer_match(t, 0)) < 0)
             return ret;
         return release(t);
+    case DR_KIND_LAYER:
+        if ((ret = layer_add(k, f)) < 0)
+            return ret;
+        return layer_match(t, 0);
     case DR_KIND_AUDIO:
         if ((ret = wait_add(k, f)) < 0) {
             ff_disctl_frame_unref(f);
@@ -652,6 +923,14 @@ static int seg_open(DRTitle *t)
         k->tail_from = -1;
         if (k->cfg.kind == DR_KIND_CAPTION)
             continue;                    /* fed by the video's side units */
+        if (k->cfg.kind == DR_KIND_LAYER) {
+            k->acc_len     = 0;          /* its pictures go to the joiner as they are cut */
+            k->acc_pos     = 0;
+            k->acc_started = 0;
+            k->acc_scan    = 4;
+            k->nb_rec      = 0;
+            continue;
+        }
         switch (k->cfg.kind) {
         case DR_KIND_VIDEO:
             ret   = ff_disctl_video_open(&k->video, t->log, k->cfg.codec, i, seg_frame, k, on_seg_event, t);
@@ -709,7 +988,9 @@ static int seg_end(DRTitle *t)
         return ret;
     for (int i = 1; i < t->cfg.nb_tracks; i++) {
         Track *k = &t->t[i];
-        if (k->cfg.kind == DR_KIND_CAPTION)
+        if (k->cfg.kind == DR_KIND_LAYER && (ret = layer_flush(k)) < 0)
+            return ret;
+        if (k->cfg.kind == DR_KIND_CAPTION || k->cfg.kind == DR_KIND_LAYER)
             continue;
         if ((ret = ff_disctl_frames_flush(k->cut)) < 0)
             return ret;
@@ -758,6 +1039,7 @@ int ff_disctl_title_open(DRTitle **tp, void *logctx, const DRTitleConfig *cfg)
     t->vmax = INT64_MIN;
     t->vend = 0;
     t->cc_track = -1;
+    t->layer = -1;
     if (!(t->t = av_calloc(cfg->nb_tracks, sizeof(*t->t))) ||
         !(t->ev_count = av_calloc(cfg->nb_tracks * EVENT_KINDS, sizeof(*t->ev_count))) ||
         !(kinds = av_calloc(cfg->nb_tracks, sizeof(*kinds)))) {
@@ -777,6 +1059,14 @@ int ff_disctl_title_open(DRTitle **tp, void *logctx, const DRTitleConfig *cfg)
                 goto fail;
             }
             t->cc_track = i;
+        }
+        if (k->cfg.kind == DR_KIND_LAYER) {
+            if (t->layer >= 0 || k->cfg.codec != AV_CODEC_ID_H264) {
+                ret = AVERROR(EINVAL);   /* one second layer per title, H.264 (MVC) so far */
+                goto fail;
+            }
+            t->layer = i;
+            continue;
         }
         if ((ret = ff_disctl_verify_open(&k->verify, logctx, k->cfg.codec, i, k->cfg.kind, on_event, t)) < 0)
             goto fail;
@@ -822,6 +1112,8 @@ static int title_payload(DRTitle *t, int track, const uint8_t *data, int size, i
     k = &t->t[track];
     if (k->cfg.kind == DR_KIND_CAPTION)
         return AVERROR(EINVAL);          /* its data comes from the video */
+    if (k->cfg.kind == DR_KIND_LAYER)
+        return layer_payload(t, k, data, size, time);
     if (k->cfg.codec == AV_CODEC_ID_PCM_DVD) {
         int h = t->cfg.lpcm_hd ? 5 : 3;
         if (size < h) {
@@ -842,6 +1134,40 @@ static int title_payload(DRTitle *t, int track, const uint8_t *data, int size, i
     return ff_disctl_frames_write(k->cut, data, size, time);
 }
 
+/* The second layer's result at the title's end: what was taken out, and
+ * an error when video frames have no picture. */
+static int layer_report(DRTitle *t)
+{
+    static const char *const names[32] = { [10] = "ends of sequence", [11] = "ends of stream",
+                                           [12] = "filler data units" };
+    Track *k = &t->t[t->layer];
+
+    for (int n = 0; n < 32; n++) {
+        if (!k->layer_dropped[n])
+            continue;
+        if (names[n])
+            av_log(t->log, AV_LOG_VERBOSE, "Title timeline: track %d: %"PRId64" %s taken out of the second layer\n",
+                   t->layer, k->layer_dropped[n], names[n]);
+        else
+            av_log(t->log, AV_LOG_WARNING, "Title timeline: track %d: %"PRId64" NAL units of type %d (they start no "
+                   "unit) taken out of the second layer [untested on real discs]\n", t->layer, k->layer_dropped[n], n);
+    }
+    if (k->layer_stuffing)
+        av_log(t->log, AV_LOG_VERBOSE, "Title timeline: track %d: %"PRId64" zero stuffing bytes taken out\n",
+               t->layer, k->layer_stuffing);
+    if (k->layer_alone) {
+        av_log(t->log, AV_LOG_WARNING, "Title timeline: track %d: %"PRId64" second-layer pictures without a video "
+               "frame of their time left out\n", t->layer, k->layer_alone);
+        k->warnings++;
+    }
+    if (t->layer_missing) {
+        av_log(t->log, AV_LOG_ERROR, "Title timeline: %"PRId64" video frames have no second-layer picture: the "
+               "second layer's stream would miss pictures\n", t->layer_missing);
+        return AVERROR_INVALIDDATA;
+    }
+    return 0;
+}
+
 static int title_finish(DRTitle *t)
 {
     int ret;
@@ -853,7 +1179,9 @@ static int title_finish(DRTitle *t)
     if ((ret = ff_disctl_join_finish(t->join)) < 0)
         return ret;
     t->video_done = 1;
-    if ((ret = release(t)) < 0)
+    if ((ret = release(t)) < 0 || (ret = layer_match(t, 1)) < 0)
+        return ret;
+    if (t->layer >= 0 && (ret = layer_report(t)) < 0)
         return ret;
     for (int i = 1; i < t->cfg.nb_tracks; i++) {
         Track *k = &t->t[i];
@@ -871,7 +1199,7 @@ static int title_finish(DRTitle *t)
     }
     for (int i = 0; i < t->cfg.nb_tracks; i++) {
         Track *k = &t->t[i];
-        if ((ret = ff_disctl_verify_finish(k->verify)) < 0)
+        if (k->verify && (ret = ff_disctl_verify_finish(k->verify)) < 0)
             return ret;
         av_log(t->log, AV_LOG_VERBOSE, "Title timeline: track %d (%s): %"PRId64" frames\n", i,
                avcodec_get_name(k->cfg.codec), k->out);
@@ -956,6 +1284,12 @@ int ff_disctl_title_track_result(const DRTitle *t, int track, int64_t *frames, i
 
     if (track < 0 || track >= t->cfg.nb_tracks)
         return AVERROR(EINVAL);
+    if (!t->t[track].verify) {           /* a second layer: its frames are its video frames' */
+        *frames   = t->t[track].out;
+        *warnings = t->t[track].warnings;
+        *delay    = 0;
+        return 0;
+    }
     ff_disctl_verify_stats(t->t[track].verify, &st);
     *frames   = st.frames - st.markers;
     *warnings = t->t[track].warnings;
@@ -1028,11 +1362,17 @@ void ff_disctl_title_close(DRTitle **tp)
             ff_disctl_junction_close(&k->junction);
             ff_disctl_pcm_close(&k->pcm);
             ff_disctl_verify_close(&k->verify);
+            for (int j = 0; j < k->lq_n; j++)
+                ff_disctl_frame_unref(&k->lq[k->lq_head + j]);
+            av_free(k->lq);
+            av_free(k->acc);
+            av_free(k->rec);
         }
     }
     for (int i = 0; i < t->q_n; i++)
         ff_disctl_frame_unref(&t->q[t->q_head + i].f);
     av_free(t->q);
+    av_free(t->bq);
     av_free(t->pend);
     av_free(t->ev_count);
     ff_disctl_join_close(&t->join);

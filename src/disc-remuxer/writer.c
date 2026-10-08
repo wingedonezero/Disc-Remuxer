@@ -97,6 +97,18 @@ const char *codec_label(enum AVCodecID id, int profile)
     }
 }
 
+/* A 3-D video's second view (its pictures are decoded with the base
+ * view's): MVC in names and logs, no read-back check of its own. */
+static int second_view(const AVStream *st)
+{
+    return st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && (st->disposition & AV_DISPOSITION_DEPENDENT);
+}
+
+static const char *stream_label(const AVStream *st, int profile)
+{
+    return second_view(st) ? "MVC" : codec_label(st->codecpar->codec_id, profile);
+}
+
 #define HOLD_MAX 64   /* audio packets kept while their channel layout is not known yet */
 
 typedef struct EsOut {
@@ -303,7 +315,14 @@ static int es_open(const AVFormatContext *ctx, const AVStream *st, EsOut *o, con
     int audio = par->codec_type == AVMEDIA_TYPE_AUDIO;
     int profile = o->avctx ? o->avctx->profile : par->profile;
 
+    const AVDictionaryEntry *eye = av_dict_get(st->metadata, "eye", NULL, 0);
+    int second = second_view(st);
+
     o->opened = 1;
+    if (eye) {
+        snprintf(layout, sizeof(layout), "_%s eye", eye->value);
+        snprintf(o->layout, sizeof(o->layout), "%s eye", eye->value);
+    }
     if (audio) {
         const AVChannelLayout *cl = par->ch_layout.nb_channels ? &par->ch_layout :
                                     o->frame && o->frame->ch_layout.nb_channels ? &o->frame->ch_layout : NULL;
@@ -318,7 +337,8 @@ static int es_open(const AVFormatContext *ctx, const AVStream *st, EsOut *o, con
         snprintf(delay, sizeof(delay), " DELAY %"PRId64"ms", o->st.delay_ms);
     }
     if (!(o->name = av_asprintf("%s_%02d_%s_%s%s%s.%s", prefix, st->index, *o->st.lang ? o->st.lang : "und",
-                                codec_label(par->codec_id, profile), layout, delay, es_extension(par->codec_id))))
+                                stream_label(st, profile), layout, delay,
+                                second ? "mvc" : es_extension(par->codec_id))))
         return AVERROR(ENOMEM);
     o->st.file = o->name;
     if (!(o->f = fopen(o->name, "wb")))
@@ -420,7 +440,7 @@ static int es_flush_hold(const AVFormatContext *ctx, const AVStream *st, EsOut *
     return ret;
 }
 
-int open_title(const char *format, const char *source, int title, int part, AVFormatContext **ctx)
+int open_title(const char *format, const char *source, int title, int part, int second_view, AVFormatContext **ctx)
 {
     const AVInputFormat *fmt = av_find_input_format(format);
     AVDictionary *opts = NULL;
@@ -433,6 +453,8 @@ int open_title(const char *format, const char *source, int title, int part, AVFo
     av_dict_set_int(&opts, "title", title, 0);
     if (part >= 0)
         av_dict_set_int(&opts, "part", part, 0);
+    if (second_view)
+        av_dict_set_int(&opts, "second_view", 1, 0);
     av_dict_set_int(&opts, "read_attempts", setting_int("read.attempts"), 0);
     av_dict_set(&opts, "udf_reader", setting_text("read.udf_reader"), 0);
     if (nb_keys) {
@@ -539,7 +561,7 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         snprintf(jpart, sizeof(jpart), ",\"part\":%d", job->part + 1);
     } else
         snprintf(who, sizeof(who), "Title #%d", job->title);
-    if ((ret = open_title(job->format, job->source, job->title, job->part, &ctx)) < 0) {
+    if ((ret = open_title(job->format, job->source, job->title, job->part, job->second_view, &ctx)) < 0) {
         log_step("=== Title %d/%d: %s ===", job->ordinal, job->count, who + 6);
         log_msg(MSG_TITLE_OPEN_FAILED, LOG_ERROR, "%s cannot be opened: %s", who, av_err2str(ret));
         res->failed = 1;
@@ -607,6 +629,11 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
 
     for (unsigned i = 0; i < ctx->nb_streams; i++) {
         enum AVMediaType t = ctx->streams[i]->codecpar->codec_type;
+        if (second_view(ctx->streams[i])) {
+            log_text(LOG_DETAIL, "Track %u: the second view of a 3-D video: its details are not checked (its "
+                     "pictures are decoded with the base view's)", i);
+            continue;
+        }
         if ((t == AVMEDIA_TYPE_VIDEO || t == AVMEDIA_TYPE_AUDIO) && !out[i].probe_late &&
             details_probe_open(&out[i].probe, ctx->streams[i]->codecpar) < 0)
             log_text(LOG_DETAIL, "Track %u: no decoder for %s: its details are not checked", i,
@@ -710,7 +737,8 @@ end:
             end_check(ctx->streams[i], &out[i]);
             checked      += out[i].checked != 0;
             check_failed += out[i].checked < 0;
-            unchecked    += out[i].opened && !out[i].probe && (t == AVMEDIA_TYPE_VIDEO || t == AVMEDIA_TYPE_AUDIO);
+            unchecked    += out[i].opened && !out[i].probe && (t == AVMEDIA_TYPE_VIDEO || t == AVMEDIA_TYPE_AUDIO) &&
+                            !second_view(ctx->streams[i]);
         }
         log_text(LOG_INFO, "Tracks:");
         for (unsigned i = 0; i < ctx->nb_streams; i++) {
@@ -722,7 +750,7 @@ end:
             int empty_cc = !o->opened && av_dict_get(st->metadata, "caption", NULL, 0);
 
             snprintf(what, sizeof(what), "%s %s%s%s", *o->st.lang ? o->st.lang : "   ",
-                     codec_label(st->codecpar->codec_id, st->codecpar->profile), *o->layout ? " " : "", o->layout);
+                     stream_label(st, st->codecpar->profile), *o->layout ? " " : "", o->layout);
             if (empty_cc)
                 snprintf(state, sizeof(state), "no caption text: no file");
             else if (o->no_forced)
@@ -756,7 +784,7 @@ end:
             res->warnings += warn;
             log_json("track", "\"title\":%d%s,\"index\":%u,\"codec\":%s,\"language\":%s,\"layout\":%s,"
                      "\"frames\":%"PRId64",\"warnings\":%"PRId64",\"delay_ms\":%"PRId64",\"file\":%s%s", job->title,
-                     jpart, i, json_str(jc, sizeof(jc), codec_label(st->codecpar->codec_id, st->codecpar->profile)),
+                     jpart, i, json_str(jc, sizeof(jc), stream_label(st, st->codecpar->profile)),
                      json_str(jl, sizeof(jl), o->st.lang), json_str(jy, sizeof(jy), o->layout), frames, warn,
                      o->st.delay_ms, json_str(jf, sizeof(jf), o->opened ? o->name : ""), extra);
         }

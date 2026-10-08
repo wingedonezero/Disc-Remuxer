@@ -103,6 +103,7 @@ typedef struct DiscContext {
     int               opt_udf_reader;
     int               opt_title;        /**< -1: every title listed, none read */
     int               opt_part;         /**< -1: the whole title, else that part of it (DiscTitleInfo.parts) */
+    int               opt_second_view;  /**< 3-D titles: the second view is read (a track of its own) */
     int               opt_min_length;
     char            **opt_keydb;
     unsigned          nb_opt_keydb;

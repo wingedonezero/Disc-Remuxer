@@ -127,7 +127,9 @@ static int place_frame(DRJoin *j, int track, DRFrame *f)
         src = ts;
     } else {
         int64_t gap = t->e - ts;
-        if (gap > 0 && gap > f->dur && t->kind == DR_KIND_SUBTITLE) {
+        if (gap > 0 && t->kind == DR_KIND_LAYER) {
+            /* decoding order: an earlier time than the picture before it */
+        } else if (gap > 0 && gap > f->dur && t->kind == DR_KIND_SUBTITLE) {
             /* a sub-picture replaces the one shown before it: it keeps its
              * time (the reference moves it to the end of the one before) */
             av_log(j->log, AV_LOG_DEBUG, "Title timeline: joiner: subtitle track %d: a unit at %"PRId64" ticks starts "
@@ -155,12 +157,12 @@ static int seed(DRJoin *j, int track, int final)
 {
     Track *t = &j->t[track];
 
-    if (t->kind == DR_KIND_SUBTITLE) {
+    if (t->kind == DR_KIND_SUBTITLE || t->kind == DR_KIND_LAYER) {
         if (!t->nb_wait)
             return 0;
         if (t->wait[0].time == AV_NOPTS_VALUE || t->wait[0].time < 0) {
-            av_log(j->log, AV_LOG_ERROR, "Title timeline: joiner: subtitle track %d: its first frame in segment %d "
-                   "has no time\n", track, j->seg);
+            av_log(j->log, AV_LOG_ERROR, "Title timeline: joiner: %s track %d: its first frame in segment %d "
+                   "has no time\n", t->kind == DR_KIND_LAYER ? "layer" : "subtitle", track, j->seg);
             return AVERROR_INVALIDDATA;
         }
         t->e = t->wait[0].time;

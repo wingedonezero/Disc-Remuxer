@@ -486,24 +486,41 @@ int ff_bluray_probe_stream(void *log, DiscIOFS *fs, BlurayAACS *aacs, const Blur
  */
 int ff_bluray_pid_scan(void *log, DiscIOFS *fs, BlurayAACS *aacs, const BluraySegment *s, uint16_t pid, int limit);
 
+/** One run of a 3-D item's two views read interleaved: bytes [pos, pos +
+ *  len) of the item are bytes [off, off + len) of the base (view 0) or the
+ *  dependent-view (view 1) clip's stream file. */
+typedef struct BlurayChunk {
+    int64_t pos, off, len;
+    int     view;
+} BlurayChunk;
+
 /** A segment's stream data as 6144-byte aligned units (32 source packets):
  *  its items' byte ranges one after another (a 3-D item: its base-view clip
- *  only), each unit made usable by ff_bluray_aacs_unit (bluray_probe.c). */
+ *  only, or with both its views interleaved at their extent start points),
+ *  each unit made usable by ff_bluray_aacs_unit (bluray_probe.c). */
 typedef struct BluraySegReader {
     void                *log;
     DiscIOFS            *fs;
     BlurayAACS          *aacs;
     const BluraySegment *s;
+    int                  both;         /**< 3-D items: both views */
     int                  item;         /**< the open item, -1 none */
-    DiscIOFile          *f;
+    DiscIOFile          *f;            /**< its (base-view) stream file */
+    DiscIOFile          *f2;           /**< both: its dependent view's stream file */
+    BlurayChunk         *chunks;       /**< both: the open 3-D item's runs */
+    int                  nb_chunks;
 } BluraySegReader;
 
 #define BLURAY_UNIT 6144
 
-/** Bytes of the segment's stream data. */
+/** Bytes of the segment's stream data (3-D items: the base view only). */
 int64_t ff_bluray_seg_size(const BluraySegment *s);
+/** The same with both views of its 3-D items (both 1). */
+int64_t ff_bluray_seg_size_views(const BluraySegment *s, int both);
 void    ff_bluray_seg_reader_init(BluraySegReader *u, void *log, DiscIOFS *fs, BlurayAACS *aacs,
                                   const BluraySegment *s);
+/** The reader reads both views of the segment's 3-D items (before the first read). */
+void    ff_bluray_seg_reader_both(BluraySegReader *u);
 /** The unit at pos (a multiple of 6144) into buf: 0, AVERROR_EOF past the
  *  end (also for a part unit at the end), < 0 error (logged). */
 int     ff_bluray_seg_read(BluraySegReader *u, int64_t pos, uint8_t *buf);

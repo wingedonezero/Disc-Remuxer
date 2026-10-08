@@ -191,6 +191,7 @@ static int disc_read_packet(AVFormatContext *s, AVPacket *pkt)
 static const AVOption disc_options[] = {
     {"title",           "the title to open (0 = the first of the disc's title list; -1 = none: only the disc info)", OFFSET(opt_title), AV_OPT_TYPE_INT, { .i64=0 }, -1, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
     {"part",            "with title: only that part of it (a title playing whole stream files back to back), from 0; -1 = the whole title", OFFSET(opt_part), AV_OPT_TYPE_INT, { .i64=-1 }, -1, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
+    {"second_view",     "3-D titles: read the second view as a track of its own (a second layer of the video)", OFFSET(opt_second_view), AV_OPT_TYPE_BOOL, { .i64=0 }, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
     {"min_length",      "titles shorter than this (seconds) are listed, not selected", OFFSET(opt_min_length), AV_OPT_TYPE_INT, { .i64=0 }, 0, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
     {"keydb",           "AACS key files (KEYDB.cfg), read in this order",          OFFSET(opt_keydb),          AV_OPT_TYPE_STRING | AV_OPT_TYPE_FLAG_ARRAY, { .arr = NULL }, 0, 0, AV_OPT_FLAG_DECODING_PARAM },
     {"read_attempts",   "read attempts per request on the disc",                    OFFSET(opt_read_attempts),  AV_OPT_TYPE_INT,    { .i64=DISCIO_DEFAULT_ATTEMPTS }, 1, 100, AV_OPT_FLAG_DECODING_PARAM },

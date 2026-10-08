@@ -400,12 +400,17 @@ void ff_disctl_junction_close(DRJunction **j);
  * master video. Segment 0 starts the timeline at its first video time;
  * segment k is placed where the video of segment k-1 really ended. Frames are
  * given segment by segment, in order. Audio earlier than expected by more
- * than its duration is moved to the expected time; sub-pictures keep their
- * times (a sub-picture replaces the one shown before it). */
+ * than its duration is moved to the expected time; sub-pictures and the
+ * pictures of a second layer keep their times (a sub-picture replaces the
+ * one shown before it; a layer's pictures come in decoding order). */
 
 /** DR_KIND_CAPTION: line-21 closed captions taken out of the title's MPEG-2
- *  video (no payloads of its own), given out as text cues. */
-enum DRTrackKind { DR_KIND_VIDEO = 1, DR_KIND_AUDIO = 2, DR_KIND_SUBTITLE = 3, DR_KIND_CAPTION = 4 };
+ *  video (no payloads of its own), given out as text cues. DR_KIND_LAYER:
+ *  a second layer of the master video (the dependent view of a 3-D video):
+ *  each payload one picture, cleaned as the master video's units are, given
+ *  out with the master video frame that has its time (ff_disctl_title_*). */
+enum DRTrackKind { DR_KIND_VIDEO = 1, DR_KIND_AUDIO = 2, DR_KIND_SUBTITLE = 3, DR_KIND_CAPTION = 4,
+                   DR_KIND_LAYER = 5 };
 
 /** Hands a joined frame of a track on (taken over). */
 typedef int (*DRJoinOutCb)(void *opaque, int track, DRFrame *frame);
@@ -839,6 +844,16 @@ extern const DRAudioRules ff_disctl_audio_mlp;
 extern const DRVideoRules ff_disctl_video_mpv;
 extern const DRVideoRules ff_disctl_video_vc1;
 extern const DRVideoRules ff_disctl_video_h264;
+
+/** An H.264 unit (n bytes of Annex B NAL units) into out (room for n): the
+ *  NAL units that leave a frame taken out (end of sequence, end of stream,
+ *  filler data, and the types that start no unit; counted per type in
+ *  dropped_units) and zero stuffing in front of a start code cut to one zero
+ *  byte (bytes counted in stuffing); bytes before the first start code are
+ *  not kept. *changed: 0 when nothing was taken out (out is then the unit's
+ *  NAL units as they are). Returns the bytes written. */
+int ff_disctl_h264_clean(const uint8_t *p, int n, uint8_t *out, int64_t dropped_units[32], int64_t *stuffing,
+                         int *changed);
 int ff_disctl_mlp_check(const uint8_t *data, int size);
 int ff_disctl_spu_check(const uint8_t *data, int size);
 /* PGS display sets (disctl_pgs.c): 1 when data is one display set (from a

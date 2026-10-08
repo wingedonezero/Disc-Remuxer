@@ -67,20 +67,12 @@ static int next_sc(const uint8_t *p, int n, int i)
     return -1;
 }
 
-/* Rebuild the unit without the NAL units that leave it and without zero
- * stuffing; each kept unit keeps its own start code (with one zero byte in
- * front when the disc has one or more there). */
-static int split_h264(DRVideo *v, DRFrame *f)
+int ff_disctl_h264_clean(const uint8_t *p, int n, uint8_t *out, int64_t dropped_units[32], int64_t *stuffing,
+                         int *changed)
 {
-    H264State *s = ff_disctl_video_priv(v);
-    const uint8_t *p = f->data;
-    int n = f->size, i = next_sc(p, n, 0), changed = 0, out = 0;
-    AVBufferRef *buf;
+    int i = next_sc(p, n, 0), o = 0;
 
-    if (i < 0)
-        return 0;                       /* no NAL unit: picture() leaves it out */
-    if (!(buf = av_buffer_alloc(n + AV_INPUT_BUFFER_PADDING_SIZE)))
-        return AVERROR(ENOMEM);
+    *changed = 0;
     while (i >= 0) {
         int zeros = 0, t = i + 3 < n ? p[i + 3] & 0x1f : -1, e = next_sc(p, n, i + 3), end;
 
@@ -91,21 +83,37 @@ static int split_h264(DRVideo *v, DRFrame *f)
             end--;                      /* zero bytes go with the next start code */
         if (t < 0 || dropped(t)) {
             if (t >= 0)
-                s->dropped[t]++;
-            changed = 1;
+                dropped_units[t]++;
+            *changed = 1;
         } else {
             int z = zeros ? 1 : 0;
             if (zeros > 1) {
-                s->stuffing += zeros - 1;
-                changed = 1;
+                *stuffing += zeros - 1;
+                *changed = 1;
             }
-            memset(buf->data + out, 0, z);
-            memcpy(buf->data + out + z, p + i, end - i);
-            out += z + end - i;
+            memset(out + o, 0, z);
+            memcpy(out + o + z, p + i, end - i);
+            o += z + end - i;
         }
         i = e;
     }
-    if (!changed || out == n) {
+    return o;
+}
+
+/* Rebuild the unit without the NAL units that leave it and without zero
+ * stuffing (ff_disctl_h264_clean). */
+static int split_h264(DRVideo *v, DRFrame *f)
+{
+    H264State *s = ff_disctl_video_priv(v);
+    AVBufferRef *buf;
+    int out, changed;
+
+    if (next_sc(f->data, f->size, 0) < 0)
+        return 0;                       /* no NAL unit: picture() leaves it out */
+    if (!(buf = av_buffer_alloc(f->size + AV_INPUT_BUFFER_PADDING_SIZE)))
+        return AVERROR(ENOMEM);
+    out = ff_disctl_h264_clean(f->data, f->size, buf->data, s->dropped, &s->stuffing, &changed);
+    if (!changed || out == f->size) {
         av_buffer_unref(&buf);
         return 0;
     }
