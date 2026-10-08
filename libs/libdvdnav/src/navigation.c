@@ -196,6 +196,50 @@ uint32_t dvdnav_get_vm_failures(dvdnav_t *this, const char **first) {
   return this->vm->failures;
 }
 
+dvdnav_status_t dvdnav_current_title_program2(dvdnav_t *this, int32_t *title,
+                                              int32_t *vtsn, int32_t *pgcn,
+                                              int32_t *pgn, int32_t *celln) {
+  int32_t part;
+
+  pthread_mutex_lock(&this->vm_lock);
+  if (!this->vm->vtsi && !this->vm->vmgi) {
+    printerr("Bad VM state.");
+    pthread_mutex_unlock(&this->vm_lock);
+    return DVDNAV_STATUS_ERR;
+  }
+  if (!this->started) {
+    printerr("Virtual DVD machine not started.");
+    pthread_mutex_unlock(&this->vm_lock);
+    return DVDNAV_STATUS_ERR;
+  }
+  if (!this->vm->state.pgc) {
+    printerr("No current PGC.");
+    pthread_mutex_unlock(&this->vm_lock);
+    return DVDNAV_STATUS_ERR;
+  }
+  switch (this->vm->state.domain) {
+  case DVD_DOMAIN_VTSMenu:
+  case DVD_DOMAIN_VMGM:
+    *title = 0;
+    *vtsn = this->vm->state.domain == DVD_DOMAIN_VTSMenu ? this->vm->state.vtsN : 0;
+    break;
+  case DVD_DOMAIN_VTSTitle:
+    if (!vm_get_current_title_part(this->vm, title, &part))
+      *title = -1;
+    *vtsn = this->vm->state.vtsN;
+    break;
+  default:
+    printerr("Not in a title or menu.");
+    pthread_mutex_unlock(&this->vm_lock);
+    return DVDNAV_STATUS_ERR;
+  }
+  *pgcn = this->vm->state.pgcN;
+  *pgn = this->vm->state.pgN;
+  *celln = this->vm->state.cellN;
+  pthread_mutex_unlock(&this->vm_lock);
+  return DVDNAV_STATUS_OK;
+}
+
 dvdnav_status_t dvdnav_title_play(dvdnav_t *this, int32_t title) {
   return dvdnav_part_play(this, title, 1);
 }
