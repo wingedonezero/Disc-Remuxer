@@ -77,7 +77,7 @@ const char *codec_label(enum AVCodecID id, int profile)
     case AV_CODEC_ID_HEVC:         return "MpegH";
     case AV_CODEC_ID_AC3:          return "DD";
     case AV_CODEC_ID_EAC3:         return "DDplus";
-    case AV_CODEC_ID_TRUEHD:       return "TrueHD";
+    case AV_CODEC_ID_TRUEHD:       return profile == AV_PROFILE_TRUEHD_ATMOS ? "TrueHD Atmos" : "TrueHD";
     case AV_CODEC_ID_MLP:          return "MLP";
     case AV_CODEC_ID_DTS:          return profile == AV_PROFILE_DTS_HD_MA ? "DTS-HD MA" :
                                           profile == AV_PROFILE_DTS_HD_HRA ? "DTS-HD HR" : "DTS";
@@ -121,6 +121,7 @@ typedef struct EsOut {
     int64_t       cues;             /* captions: SRT cues written */
     int           wav;              /* a WAV header to complete at the end */
     int           opened;           /* the file name is chosen */
+    int           profile;          /* the codec profile the name was chosen with (e.g. TrueHD + Atmos) */
     char            layout[64];     /* audio: the channel layout in the name ("" unknown) */
     AVCodecContext *avctx;          /* audio: FFmpeg's decoder, for the channel layout */
     AVFrame        *frame;
@@ -167,10 +168,13 @@ static void put_le(FILE *f, uint64_t v, int n)
 }
 
 /* RIFF WAVE header: WAVE_FORMAT_PCM for up to 2 channels of 16 bits, else
- * WAVE_FORMAT_EXTENSIBLE with the channel mask; sizes filled in at the end. */
+ * WAVE_FORMAT_EXTENSIBLE with the channel mask and the bits that carry the
+ * sound (20-bit samples ride in 24-bit words: 20 of 24 valid); sizes filled
+ * in at the end. */
 static void wav_header(FILE *f, const AVCodecParameters *par, int64_t data)
 {
     int ch = par->ch_layout.nb_channels, bits = par->codec_id == AV_CODEC_ID_PCM_S24LE ? 24 : 16;
+    int valid = par->bits_per_coded_sample > 0 && par->bits_per_coded_sample < bits ? par->bits_per_coded_sample : bits;
     int ext = ch > 2 || bits > 16, fmt = ext ? 40 : 16;
     uint64_t riff = 4 + 8 + fmt + 8 + data;
 
@@ -181,7 +185,7 @@ static void wav_header(FILE *f, const AVCodecParameters *par, int64_t data)
     if (ext) {
         static const uint8_t pcm_guid[14] = { 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00,
                                               0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71 };
-        put_le(f, 22, 2); put_le(f, bits, 2);
+        put_le(f, 22, 2); put_le(f, valid, 2);
         put_le(f, par->ch_layout.order == AV_CHANNEL_ORDER_NATIVE ? par->ch_layout.u.mask : 0, 4);
         put_le(f, 1, 2); fwrite(pcm_guid, 1, sizeof(pcm_guid), f);
     }
@@ -319,7 +323,8 @@ static int es_open(const AVFormatContext *ctx, const AVStream *st, EsOut *o, con
     const AVDictionaryEntry *dv = av_dict_get(st->metadata, "dolby_vision", NULL, 0);
     int second = second_view(st);
 
-    o->opened = 1;
+    o->opened  = 1;
+    o->profile = profile;
     if (eye) {
         snprintf(layout, sizeof(layout), "_%s eye", eye->value);
         snprintf(o->layout, sizeof(o->layout), "%s eye", eye->value);
@@ -354,6 +359,10 @@ static int es_open(const AVFormatContext *ctx, const AVStream *st, EsOut *o, con
     if (par->codec_id == AV_CODEC_ID_PCM_S16LE || par->codec_id == AV_CODEC_ID_PCM_S24LE) {
         o->wav = 1;
         wav_header(o->f, par, 0);
+        if (par->bits_per_coded_sample > 16 && par->bits_per_coded_sample < 24)
+            log_text(LOG_INFO, "Track %d: %d-bit samples in 24-bit words, as on the disc (the WAV header says %d "
+                     "valid bits) [untested on real discs]", st->index, par->bits_per_coded_sample,
+                     par->bits_per_coded_sample);
     }
     if (par->codec_id == AV_CODEC_ID_DVD_SUBTITLE) {
         char *idx = av_strdup(o->name);
@@ -759,7 +768,7 @@ end:
             int empty_cc = !o->opened && av_dict_get(st->metadata, "caption", NULL, 0);
 
             snprintf(what, sizeof(what), "%s %s%s%s", *o->st.lang ? o->st.lang : "   ",
-                     stream_label(st, st->codecpar->profile), *o->layout ? " " : "", o->layout);
+                     stream_label(st, o->opened ? o->profile : st->codecpar->profile), *o->layout ? " " : "", o->layout);
             if (empty_cc)
                 snprintf(state, sizeof(state), "no caption text: no file");
             else if (o->no_forced)
@@ -793,7 +802,7 @@ end:
             res->warnings += warn;
             log_json("track", "\"title\":%d%s,\"index\":%u,\"codec\":%s,\"language\":%s,\"layout\":%s,"
                      "\"frames\":%"PRId64",\"warnings\":%"PRId64",\"delay_ms\":%"PRId64",\"file\":%s%s", job->title,
-                     jpart, i, json_str(jc, sizeof(jc), stream_label(st, st->codecpar->profile)),
+                     jpart, i, json_str(jc, sizeof(jc), stream_label(st, o->opened ? o->profile : st->codecpar->profile)),
                      json_str(jl, sizeof(jl), o->st.lang), json_str(jy, sizeof(jy), o->layout), frames, warn,
                      o->st.delay_ms, json_str(jf, sizeof(jf), o->opened ? o->name : ""), extra);
         }
