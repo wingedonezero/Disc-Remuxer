@@ -211,15 +211,7 @@ OBJS-$(CONFIG_DTS_MUXER)                 += rawenc.o
 OBJS-$(CONFIG_DV_MUXER)                  += dvenc.o
 OBJS-$(CONFIG_DVBSUB_DEMUXER)            += dvbsub.o rawdec.o
 OBJS-$(CONFIG_DVBTXT_DEMUXER)            += dvbtxt.o rawdec.o
-OBJS-$(CONFIG_DVDVIDEO_DEMUXER)          += dvdvideodec.o dvdvideo_chapters.o \
-                                            dvdvideo_ifo.o dvdvideo_play.o     \
-                                            dvdvideo_source.o dvdvideo_css.o   \
-                                            dvdvideo_streams.o dvdclut.o       \
-                                            dvdvideo_scan.o dvdvideo_disc.o    \
-                                            dvdvideo_vobu.o dvdvideo_cells.o   \
-                                            dvdvideo_titles.o                  \
-                                            discio_read.o discio_fs.o discio_iso9660.o \
-                                            discio_udf_netbsd.o discio_udf_linux.o
+OBJS-$(CONFIG_DVDVIDEO_DEMUXER)          += dvdvideodec.o dvdclut.o
 OBJS-$(CONFIG_DXA_DEMUXER)               += dxa.o
 OBJS-$(CONFIG_EA_CDATA_DEMUXER)          += eacdata.o
 OBJS-$(CONFIG_EA_DEMUXER)                += electronicarts.o
