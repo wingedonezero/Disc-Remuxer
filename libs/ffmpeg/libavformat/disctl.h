@@ -48,6 +48,9 @@
                                     its stage it lasts one delay step; the title pipeline makes
                                     it last until the track's next unit starts (the last one:
                                     until the video's end) */
+#define DR_F_SEQ_END  0x0100   /**< video (HEVC): the frame carries an end of sequence / end of
+                                    bitstream unit; the title timeline decides on it when it
+                                    knows the next picture (ff_disctl_hevc_seq_end) */
 
 typedef struct DRFrame {
     AVBufferRef *buf;      /**< owns the bytes (NULL for a marker) */
@@ -861,17 +864,26 @@ typedef struct DRHevcDropped {
     int64_t other_layer;        /**< NAL units with a nuh_layer_id other than 0 */
     int64_t short_units;        /**< NAL units too short for their 2-byte header */
     int64_t stuffing;           /**< zero bytes */
+    int64_t unspecified;        /**< NAL units of the unspecified types 48-61 (kept) */
 } DRHevcDropped;
 /** An HEVC unit (n bytes of Annex B NAL units) into out (room for n): the
- *  NAL units that leave a frame taken out (end of sequence, end of
- *  bitstream, filler data, the reserved types, units of another layer,
- *  units too short for their header) and zero stuffing in front of a start
- *  code cut to one zero byte, all counted in d; bytes before the first start
- *  code are not kept. *changed: 0 when nothing was taken out. Returns the
- *  bytes written. */
-int ff_disctl_hevc_clean(const uint8_t *p, int n, uint8_t *out, DRHevcDropped *d, int *changed);
+ *  NAL units that leave a frame taken out (filler data, the reserved types,
+ *  units of another layer, units too short for their header) and zero
+ *  stuffing in front of a start code cut to one zero byte, all counted in d;
+ *  end of sequence / end of bitstream units stay (*seq_end set: the title
+ *  timeline decides on them); bytes before the first start code are not
+ *  kept. *changed: 0 when nothing was taken out. Returns the bytes written. */
+int ff_disctl_hevc_clean(const uint8_t *p, int n, uint8_t *out, DRHevcDropped *d, int *changed, int *seq_end);
 /** Log what was taken out (what: the track's words, e.g. "HEVC"). */
 void ff_disctl_hevc_dropped_log(const DRHevcDropped *d, const char *what);
+/** An HEVC frame f with DR_F_SEQ_END, now that the next picture is known
+ *  (next: the next frame, NULL at the title's end): the end of sequence /
+ *  end of bitstream units are taken out of f when nothing depends on them
+ *  (the title ends, or the next picture is an IDR or BLA picture, which
+ *  starts a coded video sequence anyway) and kept otherwise. Returns 0 taken
+ *  out, 1 kept before a CRA picture, 2 kept before a picture that is no
+ *  random access point (a stream fault), < 0 on failure. */
+int ff_disctl_hevc_seq_end(DRFrame *f, const DRFrame *next);
 int ff_disctl_mlp_check(const uint8_t *data, int size);
 int ff_disctl_spu_check(const uint8_t *data, int size);
 /* PGS display sets (disctl_pgs.c): 1 when data is one display set (from a

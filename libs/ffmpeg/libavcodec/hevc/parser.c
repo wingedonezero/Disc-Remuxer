@@ -372,6 +372,7 @@ typedef struct HEVCDiscCut {
     int suffix[DISC_SUFFIX_MAX + 1];    ///< the units the trailing-unit search went over
     int nb_suffix, suffix_k;
     int no_unit;            ///< the chunk given out is no frame
+    int64_t pictures;       ///< pictures cut so far (where a warning points)
 } HEVCDiscCut;
 
 static int disc_vcl(int t)
@@ -466,6 +467,7 @@ static int disc_end(HEVCDiscCut *st, int end, int no_unit)
     st->nb_nal = st->scan = st->done = st->nb_suffix = st->suffix_k = 0;
     st->phase   = DISC_PREFIX;
     st->no_unit = no_unit;
+    st->pictures += !no_unit;
     return end;
 }
 
@@ -522,9 +524,12 @@ static int disc_unit_size(void *log, const uint8_t *buf, int avail, int final, v
                 if (!complete)
                     return 0;
                 if (!disc_slice(nal, size, &h) || !h.first || !disc_has_sets(st->p, h.pps_id)) {
-                    av_log(log, AV_LOG_DEBUG, "Title timeline: HEVC: a picture %s: left out with the units in "
-                           "front of it\n", !h.first ? "whose first slice segment does not start a picture" :
-                           "without its parameter sets");
+                    /* no decoder can decode it (H.265 7.4.2.4.2): damaged
+                     * data, or a stream read from the middle */
+                    av_log(log, AV_LOG_WARNING, "Title timeline: HEVC: a picture %s after picture %"PRId64
+                           " of the segment: it cannot be decoded and is left out with the units in front of it (damaged data?) "
+                           "[untested on real discs]\n", !h.first ? "that does not start with its first slice "
+                           "segment" : "without its parameter sets", st->pictures);
                     return disc_end(st, end, 1);
                 }
                 st->first = h;
@@ -540,13 +545,24 @@ static int disc_unit_size(void *log, const uint8_t *buf, int avail, int final, v
         }
         if (st->phase == DISC_SLICES) {
             if (disc_vcl(t)) {
+                int ok;
                 if (!complete)
                     return 0;
-                if (disc_slice(nal, size, &h) && !h.first && h.pps_id == st->first.pps_id) {
-                    st->done++;
-                    continue;
-                }
-                return disc_end(st, st->nal[j].zr, 0);
+                /* only first_slice_segment_in_pic_flag starts a picture
+                 * (H.265 7.4.7.1); a slice segment of another PPS or one
+                 * whose header cannot be read is damaged data of this
+                 * picture: kept with it (a decoder skips that slice
+                 * segment and decodes the rest of the picture) */
+                ok = disc_slice(nal, size, &h);
+                if (ok && h.first)
+                    return disc_end(st, st->nal[j].zr, 0);
+                if (!ok || h.pps_id != st->first.pps_id)
+                    av_log(log, AV_LOG_WARNING, "Title timeline: HEVC: a slice segment %s in picture %"PRId64
+                           " of the segment: kept in it (damaged data?) [untested on real discs]\n", ok ?
+                           "of another picture parameter set than its picture's" : "whose header cannot be read",
+                           st->pictures + 1);
+                st->done++;
+                continue;
             }
             st->phase = DISC_SUFFIX;
         }

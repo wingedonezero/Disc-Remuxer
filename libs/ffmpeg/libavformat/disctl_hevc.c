@@ -11,12 +11,18 @@
  *
  * A frame keeps the NAL units of its access unit as they are on the disc,
  * each with its start code (a 00 00 00 01 start code stays one), access unit
- * delimiters included, except what is no part of a picture: end of sequence
- * (36), end of bitstream (37), filler data (38), the reserved nal_unit_types
- * (10-15, 22-31, 41-61), units of another layer (nuh_layer_id other than 0),
- * units too short for their 2-byte header and zero stuffing
- * (trailing_zero_8bits). A stream file and a Matroska file of a title carry
- * the same NAL units.
+ * delimiters and the unspecified types (48-63, used by applications)
+ * included, except what no decoder uses: filler data (38), the reserved
+ * nal_unit_types (10-15, 22-31, 41-47; H.265 7.4.2.2: decoders discard
+ * them), units of another layer (nuh_layer_id other than 0: on a disc the
+ * second layer is a stream of its own), units too short for their 2-byte
+ * header and zero stuffing (trailing_zero_8bits). An end of sequence (36) or
+ * end of bitstream (37) unit makes the next picture start a coded video
+ * sequence (7.4.3.6): the title timeline takes it out where that changes
+ * nothing (before an IDR or BLA picture, at the title's end) and keeps it
+ * before a CRA picture, whose leading pictures it marks as not to be shown
+ * (ff_disctl_hevc_seq_end). A stream file and a Matroska file of a title
+ * carry the same NAL units.
  *
  * This file is part of FFmpeg.
  *
@@ -53,7 +59,7 @@ typedef struct HEVCState {
 /* Whether a NAL unit of type t leaves the frame. */
 static int dropped(int t)
 {
-    return (t >= 10 && t <= 15) || (t >= 22 && t <= 31) || (t >= 36 && t <= 38) || (t >= 41 && t <= 61);
+    return (t >= 10 && t <= 15) || (t >= 22 && t <= 31) || t == 38 || (t >= 41 && t <= 47);
 }
 
 /* The next start code 00 00 01 at or after i, or -1. */
@@ -65,11 +71,11 @@ static int next_sc(const uint8_t *p, int n, int i)
     return -1;
 }
 
-int ff_disctl_hevc_clean(const uint8_t *p, int n, uint8_t *out, DRHevcDropped *d, int *changed)
+int ff_disctl_hevc_clean(const uint8_t *p, int n, uint8_t *out, DRHevcDropped *d, int *changed, int *seq_end)
 {
     int i = next_sc(p, n, 0), o = 0;
 
-    *changed = 0;
+    *changed = *seq_end = 0;
     while (i >= 0) {
         int zeros = 0, e = next_sc(p, n, i + 3), end, t, layer;
 
@@ -90,6 +96,10 @@ int ff_disctl_hevc_clean(const uint8_t *p, int n, uint8_t *out, DRHevcDropped *d
             *changed = 1;
         } else {
             int z = zeros ? 1 : 0;
+            if (t == 36 || t == 37)
+                *seq_end = 1;
+            else if (t >= 48 && t <= 61)
+                d->unspecified++;
             if (zeros > 1) {
                 d->stuffing += zeros - 1;
                 *changed = 1;
@@ -105,26 +115,81 @@ int ff_disctl_hevc_clean(const uint8_t *p, int n, uint8_t *out, DRHevcDropped *d
 
 void ff_disctl_hevc_dropped_log(const DRHevcDropped *d, const char *what)
 {
-    static const char *const names[64] = { [36] = "ends of sequence", [37] = "ends of bitstream",
-                                           [38] = "filler data units" };
-
+    if (d->units[38])
+        av_log(NULL, AV_LOG_INFO, "Title timeline: %s: %"PRId64" filler data units taken out of the frames (no "
+               "decoding meaning, H.265 7.4.3.8)\n", what, d->units[38]);
     for (int t = 0; t < 64; t++)
-        if (d->units[t] && names[t])
-            av_log(NULL, AV_LOG_VERBOSE, "Title timeline: %s: %"PRId64" %s taken out of the frames\n", what,
-                   d->units[t], names[t]);
-    for (int t = 0; t < 64; t++)
-        if (d->units[t] && !names[t])
+        if (d->units[t] && t != 38)
             av_log(NULL, AV_LOG_WARNING, "Title timeline: %s: %"PRId64" NAL units of the reserved type %d taken "
-                   "out of the frames [untested on real discs]\n", what, d->units[t], t);
+                   "out of the frames (decoders discard them, H.265 7.4.2.2; a badly made stream?) [untested on "
+                   "real discs]\n", what, d->units[t], t);
     if (d->other_layer)
-        av_log(NULL, AV_LOG_WARNING, "Title timeline: %s: %"PRId64" NAL units of another layer (nuh_layer_id "
-               "not 0) taken out of the frames [untested on real discs]\n", what, d->other_layer);
+        av_log(NULL, AV_LOG_WARNING, "Title timeline: %s: %"PRId64" NAL units of another layer (nuh_layer_id not "
+               "0; a Blu-ray carries a second layer as a stream of its own) taken out of the frames [untested on "
+               "real discs]\n", what, d->other_layer);
     if (d->short_units)
-        av_log(NULL, AV_LOG_WARNING, "Title timeline: %s: %"PRId64" NAL units too short for their header taken "
-               "out of the frames [untested on real discs]\n", what, d->short_units);
+        av_log(NULL, AV_LOG_WARNING, "Title timeline: %s: %"PRId64" NAL units too short for their header (damaged "
+               "data) taken out of the frames [untested on real discs]\n", what, d->short_units);
+    if (d->unspecified)
+        av_log(NULL, AV_LOG_WARNING, "Title timeline: %s: %"PRId64" NAL units of the unspecified types 48-61 "
+               "(application data) kept [untested on real discs]\n", what, d->unspecified);
     if (d->stuffing)
-        av_log(NULL, AV_LOG_VERBOSE, "Title timeline: %s: %"PRId64" zero stuffing bytes taken out\n", what,
+        av_log(NULL, AV_LOG_INFO, "Title timeline: %s: %"PRId64" zero stuffing bytes taken out\n", what,
                d->stuffing);
+}
+
+/* The first coded slice segment's nal_unit_type of an Annex B unit, -1 for
+ * none. */
+static int first_vcl(const uint8_t *p, int n)
+{
+    for (int i = next_sc(p, n, 0); i >= 0 && i + 4 < n; i = next_sc(p, n, i + 3)) {
+        int t = (p[i + 3] >> 1) & 0x3f;
+        if ((p[i + 3] & 1) || p[i + 4] >> 3)
+            continue;                   /* another layer */
+        if (t <= 31)
+            return t;
+    }
+    return -1;
+}
+
+int ff_disctl_hevc_seq_end(DRFrame *f, const DRFrame *next)
+{
+    int t = next ? first_vcl(next->data, next->size) : -2;
+    AVBufferRef *buf;
+    int o = 0, i, from = 0;
+
+    if (t >= 21 && t <= 23)
+        return 1;                       /* CRA (or reserved IRAP): its leading pictures depend on it */
+    if (t != -2 && (t < 16 || t > 20))
+        return 2;                       /* no random access point follows: a stream fault, kept as it is */
+    if (!(buf = av_buffer_alloc(f->size + AV_INPUT_BUFFER_PADDING_SIZE)))
+        return AVERROR(ENOMEM);
+    /* each NAL unit from the zero bytes in front of its start code to the
+     * next one's; the end units left out */
+    for (i = next_sc(f->data, f->size, 0); i >= 0; ) {
+        int e = next_sc(f->data, f->size, i + 3), z = i, ez = e < 0 ? f->size : e;
+        while (z > from && !f->data[z - 1])
+            z--;
+        while (e >= 0 && ez > i + 3 && !f->data[ez - 1])
+            ez--;
+        if (i == next_sc(f->data, f->size, 0) && z > 0) {
+            memcpy(buf->data, f->data, z);  /* bytes before the first unit stay */
+            o = z;
+        }
+        if (i + 3 >= f->size || (((f->data[i + 3] >> 1) & 0x3f) != 36 && ((f->data[i + 3] >> 1) & 0x3f) != 37)) {
+            memcpy(buf->data + o, f->data + z, ez - z);
+            o += ez - z;
+        }
+        from = ez;
+        i = e;
+    }
+    memset(buf->data + o, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+    av_buffer_unref(&f->buf);
+    f->buf   = buf;
+    f->data  = buf->data;
+    f->size  = o;
+    f->flags &= ~DR_F_SEQ_END;
+    return 0;
 }
 
 /* Rebuild the unit without the NAL units that leave it and without zero
@@ -133,13 +198,15 @@ static int split_hevc(DRVideo *v, DRFrame *f)
 {
     HEVCState *s = ff_disctl_video_priv(v);
     AVBufferRef *buf;
-    int out, changed;
+    int out, changed, seq_end;
 
     if (next_sc(f->data, f->size, 0) < 0)
         return 0;                       /* no NAL unit: picture() leaves it out */
     if (!(buf = av_buffer_alloc(f->size + AV_INPUT_BUFFER_PADDING_SIZE)))
         return AVERROR(ENOMEM);
-    out = ff_disctl_hevc_clean(f->data, f->size, buf->data, &s->dropped, &changed);
+    out = ff_disctl_hevc_clean(f->data, f->size, buf->data, &s->dropped, &changed, &seq_end);
+    if (seq_end)
+        f->flags |= DR_F_SEQ_END;
     if (!changed || out == f->size) {
         av_buffer_unref(&buf);
         return 0;

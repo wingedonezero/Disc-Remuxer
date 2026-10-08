@@ -159,7 +159,7 @@ def test_the_cut_does_not_depend_on_how_the_payloads_arrive():
     assert [o[:3] for o in pieces.out] == [o[:3] for o in whole.out]
 
 
-def test_end_filler_reserved_and_other_layer_units_and_zero_stuffing_are_taken_out():
+def test_filler_reserved_and_other_layer_units_and_zero_stuffing_are_taken_out():
     units = stream(gops=3)
     dirty = []
     for i, (u, t, _) in enumerate(units):
@@ -171,16 +171,32 @@ def test_end_filler_reserved_and_other_layer_units_and_zero_stuffing_are_taken_o
             u = u + b"\0\0\0\0"                         # trailing_zero_8bits
         if i == 8:
             u = u + H.slice_(H.TRAIL_R, H.SLICE_P, 0, layer=1)  # a second layer's unit
-        if i == len(units) - 1:
-            u = u + H.end_of_seq()
         dirty.append((u, t))
     s, _, ret = run(dirty)
     assert ret == 0
     assert len(s.out) == len(units)
     for o, (u, _, _) in zip(s.out, units):
         assert o[0] == without(u)
-        assert not {H.FD, H.EOS, 45} & set(H.nal_types(o[0]))
+        assert not {H.FD, 45} & set(H.nal_types(o[0]))
         assert H.nal_types(o[0])[0] == H.AUD, "the delimiter stays"
+
+
+def test_unspecified_units_stay_and_an_end_of_sequence_unit_marks_its_frame():
+    units = stream(gops=2)
+    built = []
+    for i, (u, t, _) in enumerate(units):
+        if i == 3:
+            u = u + H.nal(57, b"\x21" * 6)             # unspecified (application data)
+        if i == N - 1:
+            u = u + H.end_of_seq()
+        built.append((u, t))
+    s, _, ret = run(built)
+    assert ret == 0
+    assert s.out[3][0] == built[3][0], "kept as on the disc"
+    end = s.out[N - 1]
+    assert end[0] == built[N - 1][0], "the end unit stays for the title timeline to decide"
+    assert end[3] & lib.DR_F_SEQ_END
+    assert not any(o[3] & lib.DR_F_SEQ_END for i, o in enumerate(s.out) if i != N - 1)
 
 
 def test_a_picture_before_its_parameter_sets_is_left_out():
@@ -203,6 +219,26 @@ def test_slice_segments_of_one_picture_stay_together_and_a_first_slice_segment_s
         for m in range(4):
             au += H.slice_(H.IDR_N_LP if head else H.TRAIL_R, H.SLICE_I if head else H.SLICE_P, i % 12,
                            first=m == 0, address=m * 500)
+        units.append((au, BASE + i * 2 * FIELD))
+    s, _, ret = run(units)
+    assert ret == 0
+    assert len(s.out) == len(units)
+    assert [o[0] for o in s.out] == [u for u, _ in units]
+
+
+def test_a_slice_segment_of_another_pps_stays_in_its_picture():
+    # damaged data: the second slice segment of picture 4 names PPS 1; only
+    # first_slice_segment_in_pic_flag starts a picture (H.265 7.4.7.1), so the
+    # picture keeps all its slice segments (a decoder skips the bad one)
+    units = []
+    for i in range(24):
+        head = i % 12 == 0
+        au = H.aud()
+        if head:
+            au += H.vps() + H.sps() + H.pps() + H.pps(pps_id=1)
+        for m in range(3):
+            au += H.slice_(H.IDR_N_LP if head else H.TRAIL_R, H.SLICE_I if head else H.SLICE_P, i % 12,
+                           first=m == 0, address=m * 500, pps_id=1 if (i == 4 and m == 1) else 0)
         units.append((au, BASE + i * 2 * FIELD))
     s, _, ret = run(units)
     assert ret == 0
@@ -254,3 +290,68 @@ def test_field_pictures_without_their_picture_timing_stop_the_track():
     units = stream(gops=1, sps=H.sps(field_seq=True), timing_sei=False)
     _, _, ret = run([(u, t) for u, t, _ in units])
     assert ret < 0
+
+
+# ---- the title timeline: end of sequence units between segments ----
+
+def run_title(segments):
+    """Video-only title: each segment's units (bytes, PES time) through the
+    title timeline; the video frames' bytes in output order."""
+    tr = ffi.new("DRTitleTrack[]", [[codec_id("hevc"), lib.DR_KIND_VIDEO, 0]])
+    cfg = ffi.new("DRTitleConfig *", {"nb_tracks": 1, "tracks": tr, "tolerance": 1080000, "lpcm_hd": 0})
+    t = ffi.new("DRTitle **")
+    out = []
+
+    def drain():
+        while True:
+            f = ffi.new("DRFrame *")
+            k = ffi.new("int *")
+            r = lib.ff_disctl_title_frame(t[0], k, f)
+            if r:
+                return r
+            out.append(bytes(ffi.buffer(f.data, f.size)) if f.size else b"")
+            lib.ff_disctl_frame_unref(f)
+    assert lib.ff_disctl_title_open(t, ffi.NULL, cfg) == 0
+    for seg in segments:
+        assert lib.ff_disctl_title_segment(t[0]) == 0
+        for u, time in seg:
+            assert lib.ff_disctl_title_payload(t[0], 0, u, len(u), time, 0) == 0
+            drain()
+    assert lib.ff_disctl_title_finish(t[0]) == 0
+    drain()
+    w = ffi.new("int64_t *")
+    assert lib.ff_disctl_title_track_result(t[0], 0, ffi.new("int64_t *"), w, ffi.new("int64_t *")) == 0
+    lib.ff_disctl_title_close(t)
+    return out, w[0]
+
+
+def ending(units):
+    """The segment's units with an end of sequence unit after the last picture."""
+    return units[:-1] + [(units[-1][0] + H.end_of_seq(), units[-1][1])]
+
+
+def test_an_end_of_sequence_unit_before_an_idr_picture_and_at_the_end_is_taken_out():
+    s1 = ending([(u, t) for u, t, _ in stream(gops=2)])
+    s2 = ending([(u, t) for u, t, _ in stream(gops=2)])
+    out, warnings = run_title([s1, s2])
+    assert len(out) == 4 * N
+    assert all(H.EOS not in H.nal_types(o) for o in out), "nothing depends on them"
+    assert out[2 * N - 1] == without(s1[-1][0], lambda t, l: t == H.EOS)
+    assert warnings == 0
+
+
+def test_an_end_of_sequence_unit_before_a_cra_picture_is_kept():
+    s1 = ending([(u, t) for u, t, _ in stream(gops=2)])
+    s2 = [(u, t) for u, t, _ in gop(0, head_type=H.CRA) + gop(1)]
+    out, warnings = run_title([s1, s2])
+    assert len(out) == 4 * N
+    assert out[2 * N - 1] == s1[-1][0], "the CRA picture's leading pictures depend on it"
+    assert warnings == 1
+
+
+def test_an_end_of_sequence_unit_before_a_picture_that_is_no_random_access_point_is_kept():
+    s1 = [(u, t) for u, t, _ in stream(gops=2)]
+    s1[5] = (s1[5][0] + H.end_of_seq(), s1[5][1])     # a stream fault: a P picture follows
+    out, warnings = run_title([s1])
+    assert out[5] == s1[5][0]
+    assert warnings == 1

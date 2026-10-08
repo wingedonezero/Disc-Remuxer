@@ -86,6 +86,12 @@ typedef struct Track {
     int64_t       layer_dropped[32];  /* NAL units taken out, per type */
     int64_t       layer_stuffing;
     int64_t       layer_alone;   /* pictures without a master video frame (left out) */
+    /* HEVC: a frame with an end of sequence / end of bitstream unit, waiting
+     * for the next picture (ff_disctl_hevc_seq_end) */
+    DRFrame       seq_held;
+    int           seq_holding;
+    int64_t       seq_removed;   /* end units taken out */
+    int64_t       seq_kept;      /* end units kept */
 } Track;
 
 /* A master video frame given out while the title has a second layer: the
@@ -340,6 +346,55 @@ static int track_out(void *opaque, DRFrame *f)
 {
     Track *k = opaque;
     return emit(k->title, k, f);
+}
+
+static int layer_key(DRTitle *t, const DRFrame *f);
+static int layer_match(DRTitle *t, int final);
+
+/* A video frame on its way out: its second-layer key taken, given out,
+ * second-layer pictures matched. */
+static int video_out(DRTitle *t, Track *k, DRFrame *f)
+{
+    int ret;
+
+    if (t->layer >= 0 && (f->dur || f->size) && (ret = layer_key(t, f)) < 0) {
+        ff_disctl_frame_unref(f);
+        return ret;
+    }
+    if ((ret = emit(t, k, f)) < 0)
+        return ret;
+    return layer_match(t, 0);
+}
+
+/* The held HEVC frame with an end of sequence / end of bitstream unit, now
+ * that the next frame is known (next: NULL at the title's end): decided
+ * and given out. */
+static int seq_end_out(DRTitle *t, Track *k, const DRFrame *next)
+{
+    DRFrame f = k->seq_held;
+    char a[32];
+    int ret;
+
+    k->seq_holding = 0;
+    memset(&k->seq_held, 0, sizeof(k->seq_held));
+    if ((ret = ff_disctl_hevc_seq_end(&f, next)) < 0) {
+        ff_disctl_frame_unref(&f);
+        return ret;
+    }
+    if (!ret) {
+        k->seq_removed++;
+        av_log(t->log, AV_LOG_VERBOSE, "Title timeline: track %d: end of sequence unit at %s taken out (%s: it "
+               "changes nothing there)\n", k->index, hms(a, 32, f.time),
+               next ? "an IDR or BLA picture follows" : "the title ends");
+    } else {
+        k->seq_kept++;
+        k->warnings++;
+        av_log(t->log, AV_LOG_WARNING, "Title timeline: track %d: end of sequence unit at %s kept: %s [untested on "
+               "real discs]\n", k->index, hms(a, 32, f.time), ret == 1 ?
+               "a CRA picture follows, whose leading pictures it marks as not to be shown (H.265 7.4.3.6)" :
+               "the next picture is no random access point (a stream fault, H.265 7.4.2.4.3)");
+    }
+    return video_out(t, k, &f);
 }
 
 /* The video as the junction sees it: what the joiner has handed on. */
@@ -866,11 +921,17 @@ static int joined(void *opaque, int track, DRFrame *f)
             t->vmax = FFMAX(t->vmax, f->time);
             t->vend = FFMAX(t->vend, f->time + f->dur);
         }
-        if (t->layer >= 0 && (f->dur || f->size) && (ret = layer_key(t, f)) < 0) {
+        if (k->seq_holding && f->size && !(f->flags & DR_F_MARKER) && (ret = seq_end_out(t, k, f)) < 0) {
             ff_disctl_frame_unref(f);
             return ret;
         }
-        if ((ret = emit(t, k, f)) < 0 || (ret = layer_match(t, 0)) < 0)
+        if (f->flags & DR_F_SEQ_END) {
+            k->seq_held    = *f;
+            k->seq_holding = 1;
+            memset(f, 0, sizeof(*f));
+            return release(t);
+        }
+        if ((ret = video_out(t, k, f)) < 0)
             return ret;
         return release(t);
     case DR_KIND_LAYER:
@@ -1178,6 +1239,15 @@ static int title_finish(DRTitle *t)
         return ret;
     if ((ret = ff_disctl_join_finish(t->join)) < 0)
         return ret;
+    for (int i = 0; i < t->cfg.nb_tracks; i++) {
+        Track *k = &t->t[i];
+        if (k->seq_holding && (ret = seq_end_out(t, k, NULL)) < 0)
+            return ret;
+        if (k->seq_removed)
+            av_log(t->log, AV_LOG_INFO, "Title timeline: track %d: %"PRId64" end of sequence units taken out (at "
+                   "the ends of stream files, before an IDR picture or at the title's end: they change nothing "
+                   "there)\n", i, k->seq_removed);
+    }
     t->video_done = 1;
     if ((ret = release(t)) < 0 || (ret = layer_match(t, 1)) < 0)
         return ret;
@@ -1358,6 +1428,8 @@ void ff_disctl_title_close(DRTitle **tp)
             av_free(k->wait);
             if (k->holding)
                 ff_disctl_frame_unref(&k->held);
+            if (k->seq_holding)
+                ff_disctl_frame_unref(&k->seq_held);
             ff_disctl_ccx_close(&k->ccx);
             ff_disctl_junction_close(&k->junction);
             ff_disctl_pcm_close(&k->pcm);
