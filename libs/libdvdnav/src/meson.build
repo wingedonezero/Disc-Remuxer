@@ -13,6 +13,7 @@ dvdnav_src = files(
     'vm/decoder.c',
     'vm/getset.c',
     'vm/play.c',
+    'vm/rand.c',
     'vm/vm.c',
     'vm/vmcmd.c',
     'vm/vmget.c',

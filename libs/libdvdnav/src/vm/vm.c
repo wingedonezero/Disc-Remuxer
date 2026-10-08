@@ -46,6 +46,7 @@
 #include "vm.h"
 #include "play.h"
 #include "getset.h"
+#include "rand.h"
 #include "dvdnav_internal.h"
 #include "logger.h"
 
@@ -504,6 +505,13 @@ int vm_reset(vm_t *vm, const char *dvdroot,
     Log2(vm, "DVD disk reports itself with Region mask 0x%08x. Regions:%s",
       vm->vmgi->vmgi_mat->vmg_category, buffer);
   }
+  if (vm->vmgi) {
+    /* the random program order of this disc (rand.h) */
+    vm->state.rnd = 0;
+    vm_rand_seed(&vm->state.rnd, vm->vmgi->vmgi_mat->vmg_last_sector);
+    vm_rand_seed(&vm->state.rnd, vm->vmgi->vmgi_mat->vmgi_last_sector);
+    vm_rand_seed(&vm->state.rnd, vm->vmgi->vmgi_mat->vmgm_vobu_admap);
+  }
   return 1;
 }
 
@@ -935,7 +943,7 @@ static int process_command(vm_t *vm, link_t link_values) {
           link_values.command = PlayThis;
           link_values.data1 = vm->state.rsm_blockN & 0xffff;
           link_values.data2 = vm->state.rsm_blockN >> 16;
-          if(!set_PGN(vm)) {
+          if(!set_PGN(vm, get_PGN(vm))) {
             /* Were at the end of the PGC, should not happen for a RSM */
             return vm_failed(vm, VM_WHERE("set_PGN(vm) failed"));
             link_values.command = LinkTailPGC;
@@ -960,8 +968,13 @@ static int process_command(vm_t *vm, link_t link_values) {
         vm->state.HL_BTNN_REG = link_values.data2 << 10;
       if(!set_VTS_PTT(vm, vm->state.vtsN, vm->state.VTS_TTN_REG, link_values.data1))
         link_values.command = Exit;
-      else
+      else {
+        /* in a random / shuffle chain the part's program is not used: a new
+         * cycle starts with a random program */
+        if(vm->state.pgc->pg_playback_mode != 0)
+          vm_random_start(vm);
         link_values = play_PG(vm);
+      }
       break;
 
     case LinkPGN:

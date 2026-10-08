@@ -38,6 +38,10 @@ typedef struct {
   int32_t   cell_restart; /* get cell to restart */
   int       blockN;
 
+  /* Random / shuffle program chains (pg_playback_mode != 0), see rand.h */
+  int       pgN_step;     /* programs played so far in the current chain */
+  uint32_t  rnd;          /* generator state, seeded from the VMGI in vm_reset */
+
   /* Resume info */
   int      rsm_vtsN;
   int      rsm_blockN;    /* of nav_packet */
