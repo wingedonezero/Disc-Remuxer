@@ -659,20 +659,12 @@ int vm_jump_title_program(vm_t *vm, int title, int pgcn, int pgn) {
 }
 
 int vm_jump_title_part(vm_t *vm, int title, int part) {
-  link_t link;
-
   if(!set_PTT(vm, title, part))
     return 0;
-  /* Some DVDs do not want us to jump directly into a title and have
-   * PGC pre commands taking us back to some menu. Since we do not like that,
-   * we do not execute PGC pre commands that would do a jump. */
-  /* process_command(vm, play_PGC_PG(vm, vm->state.pgN)); */
-  link = play_PGC_PG(vm, vm->state.pgN);
-  if (link.command != PlayThis)
-    /* jump occurred -> ignore it and play the PG anyway */
-    process_command(vm, play_PG(vm));
-  else
-    process_command(vm, link);
+  /* Play the title as a player does: the title PGC's pre commands run and
+   * any jump they make is followed (back to a menu, to another PGC, ...).
+   * vm_jump_title_program() still ignores such jumps. */
+  process_command(vm, play_PGC_PG(vm, vm->state.pgN));
   return 1;
 }
 
