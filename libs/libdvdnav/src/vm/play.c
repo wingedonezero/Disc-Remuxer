@@ -182,6 +182,12 @@ link_t play_PG(vm_t *vm) {
   Log3(vm, "play_PG: (vm->state).pgN (%i)", (vm->state).pgN);
 #endif
 
+  if((vm->state).pgN == 0) {
+    /* a link to program 0 (there is none): stop */
+    link_t link_values = { Exit, 0, 0, 0 };
+    (vm->state).pgN = 1;
+    return link_values;
+  }
   PLAY_CHECK(vm, (vm->state).pgN > 0);
   if((vm->state).pgN > (vm->state).pgc->nr_of_programs) {
 #ifdef TRACE
