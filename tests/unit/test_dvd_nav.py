@@ -163,3 +163,24 @@ def test_corpus_titles_play_the_same_through_the_disc_layer():
                 differ.append((path.name, t))
         d.close()
     assert differ == []
+
+
+def test_a_duplicate_of_a_program_chain_libdvdread_cannot_read_is_left_out(tmp_path):
+    # program chains 2 and 3 of the title set share a start far past the IFO
+    # (beyond what the navigator's files report): libdvdread cannot read the
+    # first and took a reference on it through NULL (the process crashed)
+    p = Pgc(cells=[cell(0, 9)])
+    folder = build(tmp_path, [p, Pgc(cells=[cell(0, 9)]), Pgc(cells=[cell(0, 9)])], [[(1, 1)]], vobus(0, 9), 10)
+    for name in ("VTS_01_0.IFO", "VTS_01_0.BUP"):
+        f = folder / "VIDEO_TS" / name
+        b = bytearray(f.read_bytes())
+        pgcit = int.from_bytes(b[0xcc:0xd0], "big") * S
+        for k in (1, 2):
+            b[pgcit + 8 + 8 * k + 4:pgcit + 8 + 8 * k + 8] = (0xf0000000).to_bytes(4, "big")
+        f.write_bytes(b)
+    install_log(lib.AV_LOG_VERBOSE)
+    d = Disc.folder(folder)
+    res, ev = trace_disc(d.d, 1)
+    assert cells(ev) == [(1, 1)] and stopped(res, ev)
+    assert any("duplicate of PGC 2" in line for line in LOG)
+    d.close()
