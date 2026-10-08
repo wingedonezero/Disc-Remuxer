@@ -51,3 +51,9 @@ typedef struct DVDScan {
 void ff_dvd_scan_free(DVDScan *s);
 extern "Python" void tb_py_scan_line(void *opaque, const char *line);
 int tb_dvd_scan(DVDDisc *d, void (*trace)(void *, const char *), DVDScan *out);
+
+/* libavformat/dvd_titles.c through the bridge: scan + title list as text */
+int tb_dvd_titles(DVDDisc *d, int cell_mode, int cell_check, int min_length, int *scan_ret, char **dump);
+int tb_dvd_titles_from(DVDDisc *d, DVDScanResult *res, int nb, int cell_mode, int cell_check,
+                       int min_length, char **dump);
+int ff_dvd_cell_check(DVDDisc *d, int vts, int pgcn, int cell, int mode);

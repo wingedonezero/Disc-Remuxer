@@ -422,3 +422,39 @@ static int tb_dvd_scan(DVDDisc *d, void (*trace)(void *, const char *), DVDScan 
 {
     return ff_dvd_scan(d, trace, NULL, out);
 }
+
+/* libavformat/dvd_titles.c: the navigation scan, then the title list built
+ * from it, as ff_dvd_titles_dump() text (*dump, av_free() it); scan_ret:
+ * the scan's return value. */
+static int tb_dvd_titles(DVDDisc *d, int cell_mode, int cell_check, int min_length, int *scan_ret, char **dump)
+{
+    DVDScan scan = { 0 };
+    DVDTitleList list = { 0 };
+    DVDTitleOptions o = { cell_mode, cell_check, min_length };
+    int ret;
+
+    *dump = NULL;
+    *scan_ret = ff_dvd_scan(d, NULL, NULL, &scan);
+    ret = ff_dvd_titles_build(d, &scan, &o, &list);
+    if (ret >= 0 && !(*dump = ff_dvd_titles_dump(&list)))
+        ret = AVERROR(ENOMEM);
+    ff_dvd_titles_free(&list);
+    ff_dvd_scan_free(&scan);
+    return ret;
+}
+
+/* The title list from given scan results (no scan run). */
+static int tb_dvd_titles_from(DVDDisc *d, DVDScanResult *res, int nb, int cell_mode, int cell_check,
+                              int min_length, char **dump)
+{
+    DVDScan scan = { res, nb };
+    DVDTitleList list = { 0 };
+    DVDTitleOptions o = { cell_mode, cell_check, min_length };
+    int ret = ff_dvd_titles_build(d, &scan, &o, &list);
+
+    *dump = NULL;
+    if (ret >= 0 && !(*dump = ff_dvd_titles_dump(&list)))
+        ret = AVERROR(ENOMEM);
+    ff_dvd_titles_free(&list);
+    return ret;
+}

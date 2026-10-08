@@ -475,6 +475,8 @@ int open_title(const char *format, const char *source, int title, int part, int 
     av_dict_set(&opts, "dolby_vision", setting_text("bluray.dolby_vision"), 0);
     av_dict_set_int(&opts, "read_attempts", setting_int("read.attempts"), 0);
     av_dict_set(&opts, "udf_reader", setting_text("read.udf_reader"), 0);
+    av_dict_set(&opts, "dvd_cell_mode", setting_text("dvd.cell_mode"), 0);
+    av_dict_set(&opts, "dvd_cell_check", setting_text("dvd.cell_check"), 0);
     if (nb_keys) {
         AVBPrint bp;
         av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);

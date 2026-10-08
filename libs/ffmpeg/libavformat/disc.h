@@ -108,6 +108,8 @@ typedef struct DiscContext {
     int               opt_dolby_vision; /**< Dolby Vision enhancement layer: 0 merged into the video's frames,
                                              1 a track of its own */
     int               opt_min_length;
+    int               opt_dvd_cell_mode;  /**< DVD: a title's cells (DVD_CELL_MODE_*) */
+    int               opt_dvd_cell_check; /**< DVD: the VOBUs a full cell check reads (DVD_CELL_CHECK_*) */
     char            **opt_keydb;
     unsigned          nb_opt_keydb;
     int64_t           progress;         /**< exported: how far the title is read (1/10000) */
