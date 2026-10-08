@@ -29,3 +29,8 @@ typedef struct DVDDisc {
 
 int  ff_dvd_disc_open(void *log, DiscIOFS *fs, const char *dir, int folder, const char *label, DVDDisc *d);
 void ff_dvd_disc_free(DVDDisc *d);
+
+/* libavformat/dvd_nav.c through the bridge: a navigator on the disc, one
+ * title played (dr_nav_play, 36_dvdnav.cdef). */
+int tb_dvd_nav_trace(DVDDisc *d, int title, unsigned opts, int max_steps,
+                     dr_nav_event *ev, int max_events, dr_nav_result *res);

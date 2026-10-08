@@ -51,8 +51,14 @@ enum {
 
 /* Opens the disc folder, plays title (dvdnav_title_play) and steps the
  * navigator up to max_steps times or to a STOP, skipping stills and waits;
- * the recorded events go to ev[max_events]. Returns res->status. */
+ * the recorded events go to ev[max_events]. The Rnd operation draws from a
+ * fixed sequence (the same in every trace). Returns res->status. */
 int dr_nav_trace(const char *folder, int title, unsigned opts, int max_steps,
                  dr_nav_event *ev, int max_events, dr_nav_result *res);
+
+/* The same on a navigator opened elsewhere (closed at the end). */
+struct dvdnav_s;
+int dr_nav_play(struct dvdnav_s *nav, int title, unsigned opts, int max_steps,
+                dr_nav_event *ev, int max_events, dr_nav_result *res);
 
 #endif

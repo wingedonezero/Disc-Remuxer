@@ -179,6 +179,13 @@ static inline uint32_t ff_dvd_header32(const DVDIfo *f, int off)
     return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3];
 }
 
+/* ---- dvd_nav.c ---- */
+struct dvdnav_s;
+/** A libdvdnav navigator on the disc: libdvdread reads its files through
+ *  callbacks serving the disc's structure (the IFOs as read here, the VOBs
+ *  from the disc layer). The disc must outlive the navigator (dvdnav_close). */
+int  ff_dvd_nav_open(DVDDisc *d, struct dvdnav_s **out);
+
 /* ---- dvd_disc.c ---- */
 /** Read the disc's structure: the VMG, its title table and text data, and
  *  every title set (a title set that cannot be loaded stays a placeholder).

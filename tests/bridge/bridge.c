@@ -401,3 +401,17 @@ static char *tb_bluray_clean_title(const char *s)
     av_free(t);
     return out;
 }
+
+/* libavformat/dvd_nav.c: a navigator on the disc as the disc layer reads it,
+ * one title played (dr_nav_play). */
+static int tb_dvd_nav_trace(DVDDisc *d, int title, unsigned opts, int max_steps,
+                            dr_nav_event *ev, int max_events, dr_nav_result *res)
+{
+    dvdnav_t *nav;
+    int ret = ff_dvd_nav_open(d, &nav);
+
+    memset(res, 0, sizeof(*res));
+    if (ret < 0)
+        return res->status = -1;
+    return dr_nav_play(nav, title, opts, max_steps, ev, max_events, res);
+}

@@ -175,8 +175,7 @@ static void hf_close(dvd_reader_filesystem_h *fs) { free(fs); }
 int dr_nav_trace(const char *folder, int title, unsigned opts, int max_steps,
                  dr_nav_event *ev, int max_events, dr_nav_result *res)
 {
-    dvdnav_t *nav = NULL, *copy = NULL, *play;
-    uint8_t buf[DVD_VIDEO_LB_LEN];
+    dvdnav_t *nav = NULL;
     unsigned opened = 0;
 
     memset(res, 0, sizeof(*res));
@@ -192,6 +191,30 @@ int dr_nav_trace(const char *folder, int title, unsigned opts, int max_steps,
     } else if (dvdnav_open(&nav, folder) != DVDNAV_STATUS_OK) {
         return res->status = -1;
     }
+    dr_nav_play(nav, title, opts, max_steps, ev, max_events, res);
+    res->files_opened = opened;
+    return res->status;
+}
+
+/* The Rnd operation's numbers in a trace: the same sequence for every
+ * trace (a linear congruential generator from a fixed seed), so two runs of
+ * a disc that draws random numbers can be compared. */
+static int trace_rnd(void *priv)
+{
+    uint32_t *state = priv;
+    *state = *state * 1103515245u + 12345u;
+    return (int)((*state >> 1) & 0x7fffffff);
+}
+
+int dr_nav_play(dvdnav_t *nav, int title, unsigned opts, int max_steps,
+                dr_nav_event *ev, int max_events, dr_nav_result *res)
+{
+    dvdnav_t *copy = NULL, *play;
+    uint8_t buf[DVD_VIDEO_LB_LEN];
+    uint32_t rnd_state = 1;
+
+    memset(res, 0, sizeof(*res));
+    dvdnav_set_random_source(nav, trace_rnd, &rnd_state);
     dvdnav_set_readahead_flag(nav, 0);
     dvdnav_set_PGC_positioning_flag(nav, 1);
     dvdnav_set_title_play_follows_jumps(nav, !!(opts & DR_NAV_FOLLOW_JUMPS));
@@ -250,6 +273,5 @@ end:
     if (copy)
         dvdnav_free_dup(copy);
     dvdnav_close(nav);
-    res->files_opened = opened;
     return res->status;
 }
