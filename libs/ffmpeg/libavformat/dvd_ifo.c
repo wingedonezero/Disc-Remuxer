@@ -675,6 +675,8 @@ static int load(DVDDisc *d, DVDIfo *f)
         /* the title VOBs from the IFO header, when the file system agrees
          * (or has no single piece for them) */
         uint32_t start = ff_dvd_header32(f, DVD_TT_SRPT) + (uint32_t)f->ifo_sector;
+        if (ff_dvd_header32(f, DVD_TT_SRPT))
+            f->title_vob_base = start;  /* the title VOB stream the navigation reads (dvd_nav.c) */
         if (!f->title_vob_sector || f->title_vob_sector == start)
             f->title_vob_start = start;
         else
@@ -720,5 +722,6 @@ void ff_dvd_ifo_free(DVDIfo **pf)
     av_freep(&f->pgc_same_as);
     ff_dvd_table_free(&f->ptt_srpt);
     av_freep(&f->vobu_map);
+    ff_dvd_vobu_recs_free(&f->vobus);
     av_freep(pf);
 }

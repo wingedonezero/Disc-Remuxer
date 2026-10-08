@@ -15,10 +15,12 @@
  *   reach the callbacks.
  * - the menu VOB (VIDEO_TS.VOB, VTS_nn_0.VOB) and the title VOBs, as one
  *   file VTS_nn_1.VOB: in a disc folder the files (the title VOB files
- *   joined as bytes); in an image the sectors the IFO header gives from the
- *   IFO's sector (vmgm_vobs / vtsm_vobs, vtstt_vobs; the BUP's offset from
- *   vmg/vts_last_sector - vmgi/vtsi_last_sector).
- * A title set that could not be loaded has no files.
+ *   joined as bytes); in an image the sectors from where the IFO header
+ *   puts them (vmgm_vobs / vtsm_vobs, vtstt_vobs, from the IFO's sector):
+ *   a title set's menu VOB up to its title VOBs, the title VOBs and the
+ *   video manager's menu VOB up to the end of the image.
+ * A title set that could not be loaded has no files. Every VOB sector read
+ * is handed to the caller's read hook (DVDNavHooks), if any.
  *
  * This file is part of FFmpeg.
  *
@@ -70,6 +72,7 @@ typedef struct NavSet {
 typedef struct NavFS {
     dvd_reader_filesystem_h fs;         /* first: libdvdread hands this back */
     DVDDisc *d;
+    DVDNavHooks hooks;
     NavSet   sets[DVD_MAX_TITLE_SETS + 1];
 } NavFS;
 
@@ -286,7 +289,7 @@ static int read_ifo(NavFS *n, NavSet *s, int64_t pos, uint8_t *buf, int len)
 }
 
 /* Bytes of the title VOB files of a folder, joined. */
-static int read_joined(NavFS *n, DVDIfo *f, int64_t pos, uint8_t *buf, int len)
+static int read_joined(DVDDisc *d, DVDIfo *f, int64_t pos, uint8_t *buf, int len)
 {
     for (int i = 0; i < f->nb_title_vobs && len > 0; i++) {
         DiscIOFile *v = f->title_vobs[i];
@@ -295,7 +298,7 @@ static int read_joined(NavFS *n, DVDIfo *f, int64_t pos, uint8_t *buf, int len)
             continue;
         }
         int k = (int)FFMIN(len, v->size - pos), ret;
-        if ((ret = ff_discio_file_read(n->d->fs, v, pos, buf, k)) < 0)
+        if ((ret = ff_discio_file_read(d->fs, v, pos, buf, k)) < 0)
             return ret;
         buf += k;
         len -= k;
@@ -323,11 +326,21 @@ static ssize_t nav_file_read(void *p, char *buf, size_t size)
                                   (uint8_t *)buf, len);
         break;
     default:
-        ret = file->n->d->folder ? read_joined(file->n, s->f, file->pos, (uint8_t *)buf, len)
+        ret = file->n->d->folder ? read_joined(file->n->d, s->f, file->pos, (uint8_t *)buf, len)
                                  : ff_discio_file_read(file->n->d->fs, s->title, file->pos, (uint8_t *)buf, len);
     }
     if (ret < 0)
         return -1;
+    if (file->kind != FILE_IFO && file->n->hooks.vob_read) {
+        /* whole sectors only (libdvdread reads VOBs by the sector) */
+        for (int64_t at = file->pos; at + DVD_SECTOR <= file->pos + len; at += DVD_SECTOR) {
+            if (at % DVD_SECTOR)
+                break;
+            if (file->n->hooks.vob_read(file->n->hooks.opaque, s->f->index, file->kind == FILE_MENU_VOB,
+                                        (uint32_t)(at / DVD_SECTOR), (const uint8_t *)buf + (at - file->pos)) < 0)
+                return -1;
+        }
+    }
     file->pos += len;
     return len;
 }
@@ -362,6 +375,36 @@ static void nav_close(dvd_reader_filesystem_h *fs)
     av_free(n);
 }
 
+int ff_dvd_vob_read(DVDDisc *d, DVDIfo *f, int menu, uint32_t sector, uint8_t *buf)
+{
+    int64_t pos = (int64_t)sector * DVD_SECTOR, blocks, start, end;
+    uint32_t mvobs, tvobs;
+    DiscIOExtent e;
+    DiscIOFile one = { 0 };
+
+    if (d->folder) {
+        if (menu)
+            return f->menu_vob ? ff_discio_file_read(d->fs, f->menu_vob, pos, buf, DVD_SECTOR) : AVERROR(EINVAL);
+        return read_joined(d, f, pos, buf, DVD_SECTOR);
+    }
+    /* the same sectors as the navigator's files (setup_set) */
+    blocks = (d->fs->src->size + DVD_SECTOR - 1) / DVD_SECTOR;
+    mvobs  = ff_dvd_header32(f, VMGM_VOBS);
+    tvobs  = f->index ? ff_dvd_header32(f, DVD_TT_SRPT) : 0;
+    if (menu ? !mvobs : !tvobs)
+        return AVERROR(EINVAL);
+    start = f->ifo_sector + (menu ? mvobs : tvobs);
+    end   = menu && tvobs > mvobs ? f->ifo_sector + tvobs : blocks;
+    if (start <= 0 || start + sector >= FFMIN(end, blocks))
+        return AVERROR(EINVAL);
+    e.sector        = start + sector;
+    e.count         = 1;
+    one.size        = DVD_SECTOR;
+    one.nb_extents  = 1;
+    one.extents     = &e;
+    return ff_discio_file_read(d->fs, &one, 0, buf, DVD_SECTOR);
+}
+
 /* ---- setting it up ---- */
 
 /* An image's sectors from sector on, count of them, as one file (clamped to
@@ -390,7 +433,6 @@ static int image_part(DVDDisc *d, int64_t sector, int64_t count, DiscIOFile **ou
 
 static int setup_set(DVDDisc *d, NavSet *s, DVDIfo *f)
 {
-    uint32_t bup   = ff_dvd_header32(f, DVD_LAST_SECTOR) - ff_dvd_header32(f, DVD_I_LAST_SECTOR);
     uint32_t menu  = ff_dvd_header32(f, VMGM_VOBS);
     uint32_t title = f->index ? ff_dvd_header32(f, DVD_TT_SRPT) : 0;   /* vtstt_vobs */
     int ret;
@@ -402,9 +444,12 @@ static int setup_set(DVDDisc *d, NavSet *s, DVDIfo *f)
         s->title_bytes = f->index ? f->title_vob_bytes : 0;
         return 0;
     }
-    if (menu && (ret = image_part(d, f->ifo_sector + menu, (title ? title : bup) - menu, &s->menu, &s->menu_bytes)) < 0)
+    /* the menu VOB up to the title VOBs (a title set's), else to the end of
+     * the image; the title VOBs to the end of the image */
+    if (menu && (ret = image_part(d, f->ifo_sector + menu, title > menu ? title - menu : INT64_MAX,
+                                  &s->menu, &s->menu_bytes)) < 0)
         return ret;
-    if (title && (ret = image_part(d, f->ifo_sector + title, bup - title, &s->title, &s->title_bytes)) < 0)
+    if (title && (ret = image_part(d, f->ifo_sector + title, INT64_MAX, &s->title, &s->title_bytes)) < 0)
         return ret;
     return 0;
 }
@@ -419,7 +464,7 @@ static void nav_log(void *priv, dvdnav_logger_level_t level, const char *fmt, va
     av_log(priv, levels[FFMIN((unsigned)level, 3)], "libdvdnav: %s\n", line);
 }
 
-int ff_dvd_nav_open(DVDDisc *d, dvdnav_t **out)
+int ff_dvd_nav_open(DVDDisc *d, const DVDNavHooks *hooks, dvdnav_t **out)
 {
     static const dvdnav_logger_cb logcb = { nav_log };
     NavFS *n;
@@ -429,6 +474,8 @@ int ff_dvd_nav_open(DVDDisc *d, dvdnav_t **out)
     if (!(n = av_mallocz(sizeof(*n))))
         return AVERROR(ENOMEM);
     n->d  = d;
+    if (hooks)
+        n->hooks = *hooks;
     n->fs = (dvd_reader_filesystem_h){ NULL, nav_close, nav_stat, nav_dir_open, nav_dir_read, nav_dir_close,
                                        nav_file_open, nav_file_read, nav_file_seek, nav_file_close };
     for (int i = 0; i < d->nb_ifos && i <= DVD_MAX_TITLE_SETS; i++) {

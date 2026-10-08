@@ -123,3 +123,34 @@ def stopped(res, events):
     return events and events[-1].code == lib.DVDNAV_STOP and res.failures == 0
 
 
+
+
+# ---- the navigation scan (libavformat/dvd_scan.c) ----
+
+from helpers import extern  # noqa: E402
+
+SCAN_LINES = []
+
+
+@extern
+def tb_py_scan_line(opaque, line):
+    SCAN_LINES.append(ffi.string(line).decode("latin-1"))
+
+
+@dataclasses.dataclass
+class ScanResult:
+    name: str
+    title: int
+    pgc: int
+    cells: list
+
+
+def scan(disc, with_trace=False):
+    """ff_dvd_scan() on a DVDDisc *: (return value, [ScanResult], trace lines)."""
+    SCAN_LINES.clear()
+    out = ffi.new("DVDScan *")
+    ret = lib.tb_dvd_scan(disc, lib.tb_py_scan_line if with_trace else ffi.NULL, out)
+    res = [ScanResult(ffi.string(r.name).decode(), r.title, r.pgc, list(ffi.unpack(r.cells, r.nb_cells)))
+           for r in out.results[0:out.nb_results]]
+    lib.ff_dvd_scan_free(out)
+    return ret, res, list(SCAN_LINES)

@@ -408,10 +408,17 @@ static int tb_dvd_nav_trace(DVDDisc *d, int title, unsigned opts, int max_steps,
                             dr_nav_event *ev, int max_events, dr_nav_result *res)
 {
     dvdnav_t *nav;
-    int ret = ff_dvd_nav_open(d, &nav);
+    int ret = ff_dvd_nav_open(d, NULL, &nav);
 
     memset(res, 0, sizeof(*res));
     if (ret < 0)
         return res->status = -1;
     return dr_nav_play(nav, title, opts, max_steps, ev, max_events, res);
+}
+
+/* libavformat/dvd_scan.c: the navigation scan (trace: NULL, or the Python
+ * callback receiving its trace lines). */
+static int tb_dvd_scan(DVDDisc *d, void (*trace)(void *, const char *), DVDScan *out)
+{
+    return ff_dvd_scan(d, trace, NULL, out);
 }
