@@ -186,6 +186,12 @@ dvdnav_status_t dvdnav_current_title_program(dvdnav_t *this, int32_t *title, int
   return DVDNAV_STATUS_ERR;
 }
 
+uint32_t dvdnav_get_vm_failures(dvdnav_t *this, const char **first) {
+  if (first)
+    *first = this->vm->first_failure;
+  return this->vm->failures;
+}
+
 dvdnav_status_t dvdnav_title_play(dvdnav_t *this, int32_t title) {
   return dvdnav_part_play(this, title, 1);
 }

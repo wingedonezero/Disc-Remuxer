@@ -66,7 +66,7 @@ typedef struct vm_position_s {
   int32_t  block;         /* block number within cell in use */
 } vm_position_t;
 
-typedef struct {
+typedef struct vm_s {
   void *priv;
   dvdnav_logger_cb logcb;
   dvdnav_stream_cb streamcb;
@@ -79,7 +79,24 @@ typedef struct {
   char          dvd_name[50];
   char          dvd_serial[15];
   int           stopped;
+  unsigned int  failures;      /* broken assumptions met, see vm_failed() */
+  const char   *first_failure; /* where and what the first one was */
 } vm_t;
+
+/* Broken assumptions about the disc's navigation data (conditions upstream
+ * checks with assert()). Instead of aborting the program, each one is
+ * recorded on the VM (failures, first_failure; dvdnav_get_vm_failures())
+ * and the VM is stopped; the caller then leaves on a safe path.
+ * vm_failed() returns 0; VM_CHECK() is 1 when the condition holds. */
+int vm_failed(vm_t *vm, const char *what);
+#define VM_STR_(x) #x
+#define VM_STR(x) VM_STR_(x)
+#ifdef __FILE_NAME__
+#define VM_WHERE(what) __FILE_NAME__ ":" VM_STR(__LINE__) ": " what
+#else
+#define VM_WHERE(what) __FILE__ ":" VM_STR(__LINE__) ": " what
+#endif
+#define VM_CHECK(vm, cond) ((cond) ? 1 : vm_failed((vm), VM_WHERE(#cond)))
 
 /* magic number for seeking hops */
 #define HOP_SEEK 0x1000

@@ -48,7 +48,7 @@ int set_TT(vm_t *vm, int tt) {
 }
 
 int set_PTT(vm_t *vm, int tt, int ptt) {
-  assert(tt <= vm->vmgi->tt_srpt->nr_of_srpts);
+  if(!VM_CHECK(vm, tt <= vm->vmgi->tt_srpt->nr_of_srpts)) return 0;
   return set_VTS_PTT(vm, vm->vmgi->tt_srpt->title[tt - 1].title_set_nr,
                      vm->vmgi->tt_srpt->title[tt - 1].vts_ttn, ptt);
 }
@@ -90,7 +90,7 @@ int set_VTS_PTT(vm_t *vm, int vtsN, int vts_ttn, int part) {
 }
 
 int set_PROG(vm_t *vm, int tt, int pgcn, int pgn) {
-  assert(tt <= vm->vmgi->tt_srpt->nr_of_srpts);
+  if(!VM_CHECK(vm, tt <= vm->vmgi->tt_srpt->nr_of_srpts)) return 0;
   return set_VTS_PROG(vm, vm->vmgi->tt_srpt->title[tt - 1].title_set_nr,
                      vm->vmgi->tt_srpt->title[tt - 1].vts_ttn, pgcn, pgn);
 }
@@ -113,7 +113,7 @@ int set_VTS_PROG(vm_t *vm, int vtsN, int vts_ttn, int pgcn, int pgn) {
 
   (vm->state).TT_PGCN_REG = pgcN;
   (vm->state).TTN_REG     = get_TT(vm, vtsN, vts_ttn);
-  assert( (vm->state.TTN_REG) != 0 );
+  if(!VM_CHECK(vm, (vm->state.TTN_REG) != 0)) return 0;
   (vm->state).VTS_TTN_REG = vts_ttn;
   (vm->state).vtsN        = vtsN;  /* Not sure about this one. We can get to it easily from TTN_REG */
   /* Any other registers? */
@@ -139,7 +139,7 @@ int set_FP_PGC(vm_t *vm) {
 
 
 int set_MENU(vm_t *vm, int menu) {
-  assert((vm->state).domain == DVD_DOMAIN_VMGM || (vm->state).domain == DVD_DOMAIN_VTSMenu);
+  if(!VM_CHECK(vm, (vm->state).domain == DVD_DOMAIN_VMGM || (vm->state).domain == DVD_DOMAIN_VTSMenu)) return 0;
   return set_PGCN(vm, get_ID(vm, menu));
 }
 
@@ -299,7 +299,7 @@ int get_PGCN(vm_t *vm) {
   if (pgcit) {
     while(pgcN <= pgcit->nr_of_pgci_srp) {
       if(pgcit->pgci_srp[pgcN - 1].pgc == (vm->state).pgc) {
-        assert((vm->state).pgcN == pgcN);
+        VM_CHECK(vm, (vm->state).pgcN == pgcN);
         return pgcN;
       }
       pgcN++;

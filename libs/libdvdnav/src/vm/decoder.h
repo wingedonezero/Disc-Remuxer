@@ -84,18 +84,21 @@ typedef struct {
   struct timeval GPRM_time[16]; /* For counter mode */
 } registers_t;
 
+struct vm_s;
+
 /* a VM command data set */
 typedef struct {
   uint64_t instruction;
   uint64_t examined;
   registers_t *registers;
+  struct vm_s *vm;        /* the VM running the command; registers are its registers */
 } command_t;
 
-/* the big VM function, executing the given commands and writing
- * the link where to continue, the return value indicates if a jump
- * has been performed */
+/* the big VM function, executing the given commands with the registers of
+ * the given VM and writing the link where to continue, the return value
+ * indicates if a jump has been performed */
 int32_t vmEval_CMD(const vm_cmd_t commands[], int32_t num_commands,
-               registers_t *registers, link_t *return_values);
+               struct vm_s *vm, link_t *return_values);
 
 /* extracts some bits from the command */
 uint32_t vm_getbits(command_t* command, int32_t start, int32_t count);

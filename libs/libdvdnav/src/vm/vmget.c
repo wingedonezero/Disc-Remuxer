@@ -319,8 +319,11 @@ video_attr_t vm_get_video_attr(vm_t *vm) {
   case DVD_DOMAIN_VMGM:
   case DVD_DOMAIN_FirstPlay:
     return vm->vmgi->vmgi_mat->vmgm_video_attr;
-  default:
-    assert(0);
+  default: {
+    video_attr_t none = {0};
+    vm_failed(vm, VM_WHERE("unknown domain"));
+    return none;
+  }
   }
 }
 
@@ -333,8 +336,11 @@ audio_attr_t vm_get_audio_attr(vm_t *vm, int streamN) {
   case DVD_DOMAIN_VMGM:
   case DVD_DOMAIN_FirstPlay:
     return vm->vmgi->vmgi_mat->vmgm_audio_attr;
-  default:
-    assert(0);
+  default: {
+    audio_attr_t none = {0};
+    vm_failed(vm, VM_WHERE("unknown domain"));
+    return none;
+  }
   }
 }
 
@@ -347,7 +353,10 @@ subp_attr_t vm_get_subp_attr(vm_t *vm, int streamN) {
   case DVD_DOMAIN_VMGM:
   case DVD_DOMAIN_FirstPlay:
     return vm->vmgi->vmgi_mat->vmgm_subp_attr;
-  default:
-    assert(0);
+  default: {
+    subp_attr_t none = {0};
+    vm_failed(vm, VM_WHERE("unknown domain"));
+    return none;
+  }
   }
 }
