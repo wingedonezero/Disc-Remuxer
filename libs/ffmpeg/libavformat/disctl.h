@@ -844,6 +844,7 @@ extern const DRAudioRules ff_disctl_audio_mlp;
 extern const DRVideoRules ff_disctl_video_mpv;
 extern const DRVideoRules ff_disctl_video_vc1;
 extern const DRVideoRules ff_disctl_video_h264;
+extern const DRVideoRules ff_disctl_video_hevc;
 
 /** An H.264 unit (n bytes of Annex B NAL units) into out (room for n): the
  *  NAL units that leave a frame taken out (end of sequence, end of stream,
@@ -854,6 +855,23 @@ extern const DRVideoRules ff_disctl_video_h264;
  *  NAL units as they are). Returns the bytes written. */
 int ff_disctl_h264_clean(const uint8_t *p, int n, uint8_t *out, int64_t dropped_units[32], int64_t *stuffing,
                          int *changed);
+/** What ff_disctl_hevc_clean took out of HEVC units. */
+typedef struct DRHevcDropped {
+    int64_t units[64];          /**< NAL units per nal_unit_type */
+    int64_t other_layer;        /**< NAL units with a nuh_layer_id other than 0 */
+    int64_t short_units;        /**< NAL units too short for their 2-byte header */
+    int64_t stuffing;           /**< zero bytes */
+} DRHevcDropped;
+/** An HEVC unit (n bytes of Annex B NAL units) into out (room for n): the
+ *  NAL units that leave a frame taken out (end of sequence, end of
+ *  bitstream, filler data, the reserved types, units of another layer,
+ *  units too short for their header) and zero stuffing in front of a start
+ *  code cut to one zero byte, all counted in d; bytes before the first start
+ *  code are not kept. *changed: 0 when nothing was taken out. Returns the
+ *  bytes written. */
+int ff_disctl_hevc_clean(const uint8_t *p, int n, uint8_t *out, DRHevcDropped *d, int *changed);
+/** Log what was taken out (what: the track's words, e.g. "HEVC"). */
+void ff_disctl_hevc_dropped_log(const DRHevcDropped *d, const char *what);
 int ff_disctl_mlp_check(const uint8_t *data, int size);
 int ff_disctl_spu_check(const uint8_t *data, int size);
 /* PGS display sets (disctl_pgs.c): 1 when data is one display set (from a

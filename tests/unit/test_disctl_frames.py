@@ -152,7 +152,7 @@ def test_mpeg2_times_go_to_the_picture_start_code_not_the_sequence_header():
 def test_a_codec_without_a_table_entry_is_refused():
     keep = Handles()
     c = ffi.new("DRFrames **")
-    ret = lib.ff_disctl_frames_open(c, ffi.NULL, codec_id("hevc"), lib.tb_py_unit, keep(lambda u: 0))
+    ret = lib.ff_disctl_frames_open(c, ffi.NULL, codec_id("av1"), lib.tb_py_unit, keep(lambda u: 0))
     lib.ff_disctl_frames_close(c)
     assert ret < 0
     assert c[0] == ffi.NULL

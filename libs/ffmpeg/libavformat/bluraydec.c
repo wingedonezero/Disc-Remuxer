@@ -240,6 +240,7 @@ static int readable(const BlurayTrack *tk)
 {
     switch (tk->codec) {
     case AV_CODEC_ID_H264:
+    case AV_CODEC_ID_HEVC:
     case AV_CODEC_ID_MPEG2VIDEO:
     case AV_CODEC_ID_VC1:  return tk->type == AVMEDIA_TYPE_VIDEO && (tk->from_track < 0 || second_view(tk));
     case AV_CODEC_ID_AC3:
@@ -339,6 +340,9 @@ static int open_title(AVFormatContext *s, const BlurayTitle *t, int part)
                    t->name, i, av_get_media_type_string(tk->type), avcodec_get_name(tk->codec), tk->pid);
             continue;
         }
+        if (tk->flags & BLURAY_TRACK_LAYER2)
+            av_log(s, AV_LOG_WARNING, "Blu-ray: title %s: track %d: its second layer (PID 0x%04x) is not read yet: "
+                   "the base layer alone\n", t->name, i, tk->sel1);
         f->pid     = second_view(tk) ? (int)tk->sel1 : tk->pid;
         f->nb_keys = ff_bluray_track_keys(tk, bdav, f->key);
         if (!(st = avformat_new_stream(s, NULL)))
