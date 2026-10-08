@@ -1,0 +1,31 @@
+/* libavformat/dvd_internal.h: the DVD-Video disc structure. */
+
+typedef struct DVDIfo {
+    int          index;
+    int          failed;
+    int          bup_only;
+    uint8_t     *cache;
+    int          cache_size;
+    int64_t      ifo_sector;
+    int64_t      bup_sector;
+    uint32_t     title_vob_blocks;
+    uint32_t     title_vob_start;
+    int          no_pgcit;
+    int          vobu_map_distrusted;
+    int         *pgc_same_as;
+    int          nb_pgcs;
+    int          nb_vobu_map;
+    ...;
+} DVDIfo;
+
+typedef struct DVDDisc {
+    DVDIfo     **ifos;
+    int          nb_ifos;
+    int          nr_of_title_sets;
+    char        *volume_name;
+    char        *text_name;
+    ...;
+} DVDDisc;
+
+int  ff_dvd_disc_open(void *log, DiscIOFS *fs, const char *dir, int folder, const char *label, DVDDisc *d);
+void ff_dvd_disc_free(DVDDisc *d);

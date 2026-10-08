@@ -113,6 +113,8 @@ typedef struct DiscContext {
     int64_t           progress;         /**< exported: how far the title is read (1/10000) */
 
     /* the disc */
+    int               dvd_flat;         /**< DVD: VIDEO_TS.IFO at the top of the folder (a VIDEO_TS or .dvdmedia
+                                             folder opened itself) */
     DiscIOSource     *image;
     DiscIOFS         *fs;
     const DiscFormat *fmt;
@@ -171,6 +173,7 @@ int  ff_disc_title_reader_open(AVFormatContext *s, const DiscTitleSource *src);
 int  ff_disc_title_reader_packet(AVFormatContext *s, AVPacket *pkt);
 void ff_disc_title_reader_close(DiscTitleReader **reader);
 
+extern const DiscFormat ff_disc_dvd;
 extern const DiscFormat ff_disc_hddvd;
 extern const DiscFormat ff_disc_bluray;
 

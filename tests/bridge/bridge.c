@@ -23,6 +23,7 @@
 #include "libavformat/disclang.h"
 #include "libavformat/discio.h"
 #include "libavformat/disctl.h"
+#include "libavformat/dvd_internal.h"
 #include "libavformat/hddvd_internal.h"
 
 #include <dvdread/dvd_udf.h>
