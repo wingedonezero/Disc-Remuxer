@@ -2,8 +2,8 @@
 
 `disc-remuxer` has no format-specific code. It opens every source with one
 demuxer of our FFmpeg, `disc` (the disc layer, `libavformat/discdec.c`): it
-tells the kind of disc and hands it to that kind's format part (HD DVD now;
-DVD-Video and Blu-ray, UHD and 3D to come), which describes the disc and the
+tells the kind of disc and hands it to that kind's format part (HD DVD and
+Blu-ray with UHD and 3D now; DVD-Video to come), which describes the disc and the
 opened title; the disc layer's title reader (`libavformat/disctitle.c`) runs
 that title through FFmpeg's line and the title timeline
 (`libavformat/disctl_*.c`). Every format part gives the program the same
