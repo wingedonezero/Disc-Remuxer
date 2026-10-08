@@ -286,10 +286,39 @@ def test_the_vps_timing_gives_the_rate_when_the_vui_has_none():
     assert (st.num, st.den) == (30000, 1001)
 
 
-def test_field_pictures_without_their_picture_timing_stop_the_track():
-    units = stream(gops=1, sps=H.sps(field_seq=True), timing_sei=False)
+def test_a_stream_of_field_pictures_is_no_blu_ray_stream_and_stops_the_track():
+    # Ultra HD Blu-ray video is progressive
+    units = stream(gops=1, sps=H.sps(field_seq=True), pic_struct=1)
     _, _, ret = run([(u, t) for u, t, _ in units])
     assert ret < 0
+
+
+def test_a_field_pic_struct_in_a_frame_stream_stops_the_track():
+    units = stream(gops=1, pic_struct=9)
+    _, _, ret = run([(u, t) for u, t, _ in units])
+    assert ret < 0
+
+
+def test_without_vui_pic_struct_is_read_when_the_profile_says_progressive_and_interlaced():
+    # H.265 E.3.1: frame_field_info_present_flag is then inferred as 1 (the
+    # timing comes from the VPS)
+    def units(interlaced, step):
+        return [(u.replace(H.vps(), H.vps(timing=(1001, 24000))), BASE + d * step * FIELD)
+                for u, _, d in stream(gops=2, pic_struct=7, sps=H.sps(vui=False, interlaced=interlaced))]
+    s, st, ret = run(units(True, 4))
+    assert ret == 0
+    assert (st.num, st.den) == (24000, 1001)
+    assert all(o[2] == 4 * FIELD for o in s.out)
+    s, _, ret = run(units(False, 2))
+    assert ret == 0
+    assert all(o[2] == 2 * FIELD for o in s.out), "otherwise inferred 0: frames"
+
+
+def test_a_missing_picture_timing_sei_is_taken_as_a_frame():
+    units = stream(gops=2, timing_sei=False)
+    s, _, ret = run([(u, t) for u, t, _ in units])
+    assert ret == 0
+    assert all(o[2] == 2 * FIELD for o in s.out)
 
 
 # ---- the title timeline: end of sequence units between segments ----

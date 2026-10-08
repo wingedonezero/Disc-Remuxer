@@ -337,11 +337,14 @@ static int hevc_find_frame_end(AVCodecParserContext *s, const uint8_t *buf,
  * Each frame then gives its picture type (its first slice segment),
  * key_frame (an IRAP picture, or a recovery point SEI in front of it),
  * output_picture_number (the display order: the picture order count of
- * H.265 8.3.1) and disc_fields from its pic_struct: 0 -> 2, 1 / 2 -> 1,
- * 3 / 4 -> 2, 5 / 6 -> 3, 7 -> 4, 8 -> 6, 9-12 -> 1 field periods.
- * pic_struct is 0 when the SPS has no frame_field_info_present_flag, else
- * the picture timing SEI's (in front of the picture); without one 0 for a
- * stream of frames (field_seq_flag 0), or the stream cannot be cut.
+ * H.265 8.3.1) and disc_fields from its pic_struct: 0 -> 2, 3 / 4 -> 2,
+ * 5 / 6 -> 3, 7 -> 4, 8 -> 6 field periods (H.265 Table E.7). pic_struct is
+ * the picture timing SEI's (in front of the picture) when
+ * frame_field_info_present_flag is set (without VUI: inferred from the
+ * profile's source flags, E.3.1), else 0; a missing SEI: 0 (logged). Ultra
+ * HD Blu-ray video is progressive: a stream of field pictures
+ * (field_seq_flag, pic_struct 1, 2, 9-12) is not a Blu-ray stream and
+ * cannot be cut.
  */
 
 enum { DISC_PREFIX, DISC_SLICES, DISC_SUFFIX };
@@ -664,11 +667,11 @@ end:
 /* The values of the frame just cut. */
 static int disc_picture(AVCodecParserContext *s, AVCodecContext *avctx, const uint8_t *buf, int size)
 {
-    static const uint8_t fields[13] = { 2, 1, 1, 2, 2, 3, 3, 4, 6, 1, 1, 1, 1 };
+    static const uint8_t fields[9] = { 2, 1, 1, 2, 2, 3, 3, 4, 6 };
     HEVCParserContext *p = s->priv_data;
     const HEVCPPS *pps = NULL;
     const HEVCSPS *sps;
-    int ps = -1, recovery = 0, num = 0, den = 0;
+    int ps = -1, recovery = 0, num = 0, den = 0, ffi;
 
     /* the SEI in front of the picture; its first slice segment's PPS */
     for (int i = 0; i + 4 < size; i++) {
@@ -699,28 +702,42 @@ static int disc_picture(AVCodecParserContext *s, AVCodecContext *avctx, const ui
         return AVERROR_INVALIDDATA;
     }
     s->key_frame = s->key_frame > 0 || recovery;
-    if (!sps->vui_present || !sps->vui.frame_field_info_present_flag) {
-        if (!sps->vui_present && !(p->disc_said & 1)) {
-            p->disc_said |= 1;
-            av_log(avctx, AV_LOG_WARNING, "Title timeline: HEVC: a sequence without VUI: its pictures taken as "
-                   "frames (H.265 E.3.1) [untested on real discs]\n");
-        }
-        ps = 0;
-    } else if (ps < 0) {
-        if (sps->vui.field_seq_flag) {
-            av_log(avctx, AV_LOG_ERROR, "Title timeline: HEVC: a field picture without its picture timing SEI\n");
-            return AVERROR_INVALIDDATA;
-        }
-        ps = 0;
-    }
-    if (ps > 12) {
-        av_log(avctx, AV_LOG_ERROR, "Title timeline: HEVC: pic_struct %d\n", ps);
+    /* Ultra HD Blu-ray video is progressive: a stream of field pictures is
+     * none of it (and is not read) */
+    if (sps->vui_present && sps->vui.field_seq_flag) {
+        av_log(avctx, AV_LOG_ERROR, "Title timeline: HEVC: a stream of field pictures (field_seq_flag): not a "
+               "Blu-ray HEVC stream (Ultra HD Blu-ray video is progressive)\n");
         return AVERROR_INVALIDDATA;
     }
-    if (ps >= 9 && !(p->disc_said & 2)) {
-        p->disc_said |= 2;
-        av_log(avctx, AV_LOG_WARNING, "Title timeline: HEVC: field pictures (pic_struct %d) [untested on real "
-               "discs]\n", ps);
+    if (!sps->vui_present && !(p->disc_said & 1)) {
+        p->disc_said |= 1;
+        av_log(avctx, AV_LOG_WARNING, "Title timeline: HEVC: a sequence without VUI (a Blu-ray stream states its "
+               "colours and timing there): its pictures taken as frames [untested on real discs]\n");
+    }
+    /* frame_field_info_present_flag; without VUI inferred from the profile's
+     * source flags (H.265 E.3.1) */
+    ffi = sps->vui_present ? sps->vui.frame_field_info_present_flag :
+          sps->ptl.general_ptl.progressive_source_flag && sps->ptl.general_ptl.interlaced_source_flag;
+    if (!ffi) {
+        ps = 0;
+    } else if (ps < 0) {
+        if (!(p->disc_said & 2)) {
+            p->disc_said |= 2;
+            av_log(avctx, AV_LOG_WARNING, "Title timeline: HEVC: a picture without the picture timing SEI its "
+                   "frame_field_info_present_flag asks for (a stream fault, H.265 E.3.1): taken as a frame "
+                   "[untested on real discs]\n");
+        }
+        ps = 0;
+    }
+    if (ps == 1 || ps == 2 || ps > 8) {
+        av_log(avctx, AV_LOG_ERROR, "Title timeline: HEVC: pic_struct %d (%s): not a Blu-ray HEVC stream (Ultra HD "
+               "Blu-ray video is progressive)\n", ps, ps <= 12 ? "a field picture" : "a reserved value");
+        return AVERROR_INVALIDDATA;
+    }
+    if (ps && !(p->disc_said & 4)) {
+        p->disc_said |= 4;
+        av_log(avctx, AV_LOG_WARNING, "Title timeline: HEVC: pictures with pic_struct %d (a frame shown as fields "
+               "or repeated) [untested on real discs]\n", ps);
     }
     s->disc_fields = fields[ps];
     /* the rate: the VUI's timing, else the VPS's */

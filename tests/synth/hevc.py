@@ -19,11 +19,12 @@ def nal(t, rbsp, layer=0, tid=0, sc=b"\0\0\0\1"):
     return sc + bytes([t << 1 | layer >> 5, (layer & 31) << 3 | (tid + 1)]) + escape(rbsp)
 
 
-def _ptl(b):
-    """profile_tier_level(1, 0): Main 10, level 5.1, progressive frames."""
+def _ptl(b, interlaced=False):
+    """profile_tier_level(1, 0): Main 10, level 5.1, progressive frames
+    (interlaced: the source flags say progressive and interlaced)."""
     b.u(0, 2).u(0, 1).u(2, 5)                    # profile space, tier, Main 10
     b.u(1 << 30 | 1 << 29, 32)                   # compatible with Main and Main 10
-    b.u(1, 1).u(0, 1).u(0, 1).u(1, 1)            # progressive, not interlaced, not packed, frame only
+    b.u(1, 1).u(int(interlaced), 1).u(0, 1).u(0 if interlaced else 1, 1)
     b.u(0, 32).u(0, 11).u(0, 1)                  # 43 reserved bits, inbld
     b.u(153, 8)                                  # general_level_idc 5.1
 
@@ -43,12 +44,12 @@ def vps(timing=None, sc=b"\0\0\0\1"):
 
 
 def sps(log2_poc_lsb=8, vui=True, frame_field_info=True, field_seq=False, timing=(1001, 24000),
-        sc=b"\0\0\0\1"):
+        interlaced=False, sc=b"\0\0\0\1"):
     """A Main 10 SPS, 3840 x 2160, CTB 64, with a VUI (timing info,
     frame_field_info_present_flag)."""
     b = Bits()
     b.u(0, 4).u(0, 3).u(1, 1)                    # VPS 0, one sub-layer, temporal id nesting
-    _ptl(b)
+    _ptl(b, interlaced)
     b.ue(0).ue(1).ue(WIDTH).ue(HEIGHT).u(0, 1)   # SPS 0, 4:2:0, size, no conformance window
     b.ue(2).ue(2).ue(log2_poc_lsb - 4)           # 10 bit, POC lsb bits
     b.u(1, 1).ue(4).ue(2).ue(0)                  # sub-layer ordering info

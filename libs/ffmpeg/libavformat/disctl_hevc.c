@@ -53,7 +53,6 @@
 
 typedef struct HEVCState {
     DRHevcDropped dropped;      /* what was taken out */
-    int     said_field;         /* the untested note on field pictures was logged */
 } HEVCState;
 
 /* Whether a NAL unit of type t leaves the frame. */
@@ -223,19 +222,10 @@ static int split_hevc(DRVideo *v, DRFrame *f)
  * is no picture. */
 static int picture_hevc(DRVideo *v, const DRFrame *f, DRPicture *pic)
 {
-    HEVCState *s = ff_disctl_video_priv(v);
-
     if (pic->rate_num > 0 && pic->rate_den > 0)
         ff_disctl_video_set_rate(v, pic->rate_num, pic->rate_den);
-    if (pic->fields <= 0 || pic->type < DR_PIC_I || pic->type > DR_PIC_B) {
+    if (pic->fields <= 0 || pic->type < DR_PIC_I || pic->type > DR_PIC_B)
         pic->type = DR_PIC_OTHER;
-        return 0;
-    }
-    if (pic->fields == 1 && !s->said_field) {
-        s->said_field = 1;
-        av_log(NULL, AV_LOG_INFO, "Title timeline: HEVC: field pictures: the two fields of a frame are joined "
-               "into one frame [untested on real discs]\n");
-    }
     return 0;
 }
 
