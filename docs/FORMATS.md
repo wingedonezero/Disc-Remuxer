@@ -14,6 +14,8 @@ things, listed here.
 | Option | Meaning |
 |---|---|
 | `title` | the title to open (index in the disc's title list, from 0); -1: only the disc info |
+| `second_view` | 3-D titles: both views are read (the stream files interleaved at their extent start points) and the second view is a stream of its own (H.264, disposition dependent): each picture with the base-view frame of the same time; streams carry `eye` (`left` / `right`, from the playlist's MVC_Base_view_R_flag). The program sets it for `--second-view` / setting `bluray.second_view` |
+| `part` | with `title`: only that part of it (from 0, as the title's parts list them), opened as a title of its own; -1 (default): the whole title. The program sets it for `--split` / setting `output.split_joined_titles` |
 | `read_attempts`, `udf_reader` | from the settings `read.attempts`, `read.udf_reader` |
 | `keydb` | key files (setting `aacs.key_files`), where the format has keys |
 | `cc_helper` | formats with caption tracks: the caption converter (CCExtractor); unset: the `ccextractor` next to the running program |
@@ -28,7 +30,8 @@ fills the disc, the format part its titles.
 | Level | Fields |
 |---|---|
 | disc (`DiscInfo`) | kind (`HD DVD`, ...), volume label, file system and UDF revision, encrypted, the titles |
-| title (`DiscTitleInfo`) | number in the title list, name, source (what it is made from, e.g. `00800.mpls(1)`; Blu-ray), angle (Blu-ray, 0 none), language, duration, size in bytes, selected (0: shorter than the minimum length, listed only), the disc's files it plays in order, chapters (start, name), streams |
+| title (`DiscTitleInfo`) | number in the title list, name, source (what it is made from, e.g. `00800.mpls(1)`; Blu-ray), angle (Blu-ray, 0 none), language, duration, size in bytes, selected (0: shorter than the minimum length, listed only), the disc's files it plays in order, chapters (start, name), streams, parts |
+| part (`DiscPartInfo`) | a title that plays whole stream files back to back (Blu-ray: items of connection condition 1 that each cover their whole STC sequence, e.g. the episodes of a series in one playlist) has one part per run of them: start in the title, duration, its files (a range of the title's), its own chapter count (the marks of its items, from its own start, without those in its last second, as a title of its own has them). A title of one piece has none |
 | stream (`DiscStreamInfo`) | kind, codec, language, the stream taken out of it / it is taken out of (a core, the forced-only copy of a subtitle, the second view of a 3-D video), forced (subtitles: only the forced ones), second view (video: of a 3-D video), second layer (video: an enhancement layer on its own PID read with it, e.g. Dolby Vision), offset sequence (subtitles of a 3-D title: the disc's depth data for it, -1 none), frame / canvas size; the stream details (aspect, frame rate, channels, sample rate, bits, bit rate) are 0 until the start of each title is read for them (to come) |
 
 ## The opened title

@@ -83,9 +83,10 @@ typedef struct DiscFormat {
     size_t                  priv_size;  /**< the part's own context, zeroed before open */
     /** Read the disc's structure from DiscContext.fs, and give the disc
      *  info's titles (DiscContext.info, ff_disc_add_title...); unless option
-     *  title is -1 (only the disc info, no packets), open that title: its
-     *  streams (docs/FORMATS.md) and DiscContext.src, which the disc layer's
-     *  title reader then reads. */
+     *  title is -1 (only the disc info, no packets), open that title (with
+     *  option part >= 0: that part of it alone, a part the disc info lists):
+     *  its streams (docs/FORMATS.md) and DiscContext.src, which the disc
+     *  layer's title reader then reads. */
     int  (*open)(AVFormatContext *s);
     /** Also after a failed open (the context as far as open came). */
     void (*close)(AVFormatContext *s);
@@ -101,6 +102,8 @@ typedef struct DiscContext {
     int               opt_read_attempts;
     int               opt_udf_reader;
     int               opt_title;        /**< -1: every title listed, none read */
+    int               opt_part;         /**< -1: the whole title, else that part of it (DiscTitleInfo.parts) */
+    int               opt_second_view;  /**< 3-D titles: the second view is read (a track of its own) */
     int               opt_min_length;
     char            **opt_keydb;
     unsigned          nb_opt_keydb;
@@ -132,6 +135,7 @@ DiscTitleInfo *ff_disc_add_title(AVFormatContext *s);
  *  title t; NULL / < 0: out of memory. */
 DiscStreamInfo *ff_disc_title_add_stream(DiscTitleInfo *t);
 DiscChapterInfo *ff_disc_title_add_chapter(DiscTitleInfo *t);
+DiscPartInfo *ff_disc_title_add_part(DiscTitleInfo *t);
 int ff_disc_title_add_file(DiscTitleInfo *t, const char *name);
 
 /* ---- disctitle.c ---- */

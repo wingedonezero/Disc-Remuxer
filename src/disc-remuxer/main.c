@@ -47,6 +47,11 @@ static void usage(FILE *f)
           "  --config <file>      settings file to use (default: disc-remuxer.toml next to the program)\n"
           "  --set group.key=val  change a setting for this run only (repeatable)\n"
           "  --json               JSON records on stdout, one per line, instead of text\n"
+          "  --second-view <titles>  demux: also write the second view of these 3-D titles (the .mvc\n"
+          "                       next to the base view); setting bluray.second_view does it for every title\n"
+          "  --split <titles>     demux: write these titles' parts one by one (a title that plays whole\n"
+          "                       stream files back to back, e.g. episodes; info lists the parts);\n"
+          "                       setting output.split_joined_titles does it for every title\n"
           "  -v, -vv              more detail on the terminal\n"
           "\n"
           "Only HD DVD images are wired so far; DVD and Blu-ray follow.\n", f);
@@ -111,8 +116,8 @@ static const char *json_num(char *buf, size_t size, int64_t v)
  * record. */
 static void title_overview(const DiscTitleInfo *t, int detail)
 {
-    char dur[32], size[32], files[2048] = "", js[512], jl[16], extra[160] = "";
-    AVBPrint streams;
+    char dur[32], size[32], files[2048] = "", js[512], jl[16], extra[160] = "", pt[24] = "";
+    AVBPrint streams, parts;
     int nv = 0, na = 0, ns = 0;
 
     hms(dur, sizeof(dur), t->duration);
@@ -144,10 +149,12 @@ static void title_overview(const DiscTitleInfo *t, int detail)
         snprintf(files + strlen(files), sizeof(files) - strlen(files), "%s%s", i ? "," : "",
                  json_str(jf, sizeof(jf), t->files[i]));
     }
-    log_text(LOG_INFO, "  #%-2d %-40s %9s  %-6s %d audio, %d subtitle%s, %d chapter%s", t->index,
+    if (t->nb_parts)
+        snprintf(pt, sizeof(pt), ", %d parts", t->nb_parts);
+    log_text(LOG_INFO, "  #%-2d %-40s %9s  %-6s %d audio, %d subtitle%s, %d chapter%s%s", t->index,
              t->name ? t->name : "", dur,
              nv ? codec_label(t->streams[0].codec, 0) : "-", na, ns, ns == 1 ? "" : "s",
-             t->nb_chapters, t->nb_chapters == 1 ? "" : "s");
+             t->nb_chapters, t->nb_chapters == 1 ? "" : "s", pt);
     if (detail) {
         char list[1024] = "";
         for (int i = 0; i < t->nb_files; i++)
@@ -180,6 +187,16 @@ static void title_overview(const DiscTitleInfo *t, int detail)
             log_text(LOG_INFO, "       %-2d %-8s %-8s %-3s%s%s", i, av_get_media_type_string(k->type),
                      codec_label(k->codec, AV_PROFILE_UNKNOWN), k->language, extra, link);
         }
+        for (int p = 0; p < t->nb_parts; p++) {
+            const DiscPartInfo *q = &t->parts[p];
+            char pd[32], ps[32], pl[512] = "";
+            hms(pd, sizeof(pd), q->duration);
+            hms(ps, sizeof(ps), q->start);
+            for (int f = 0; f < q->nb_files; f++)
+                snprintf(pl + strlen(pl), sizeof(pl) - strlen(pl), "%s%s", f ? ", " : "", t->files[q->first_file + f]);
+            log_text(LOG_INFO, "       part %-2d at %s  %9s  %s, %d chapter%s", p + 1, ps, pd, pl, q->nb_chapters,
+                     q->nb_chapters == 1 ? "" : "s");
+        }
     }
     if (t->source) {
         char jsrc[96];
@@ -187,31 +204,49 @@ static void title_overview(const DiscTitleInfo *t, int detail)
     }
     if (t->angle)
         snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), ",\"angle\":%d", t->angle);
+    /* parts: the part number (from 1) as --split names its files, where it starts in the title */
+    av_bprint_init(&parts, 0, AV_BPRINT_SIZE_UNLIMITED);
+    for (int p = 0; p < t->nb_parts; p++) {
+        const DiscPartInfo *q = &t->parts[p];
+        av_bprintf(&parts, "%s{\"part\":%d,\"start\":%.3f,\"duration\":%.3f,\"chapters\":%d,\"files\":[",
+                   p ? "," : ",\"parts\":[", p + 1, q->start / (double)AV_TIME_BASE,
+                   q->duration / (double)AV_TIME_BASE, q->nb_chapters);
+        for (int f = 0; f < q->nb_files; f++) {
+            char jf[300];
+            av_bprintf(&parts, "%s%s", f ? "," : "", json_str(jf, sizeof(jf), t->files[q->first_file + f]));
+        }
+        av_bprintf(&parts, "]}%s", p + 1 == t->nb_parts ? "]" : "");
+    }
     log_json("title", "\"index\":%d,\"name\":%s,\"duration\":%.3f,\"chapters\":%d,\"size\":%"PRId64",\"language\":%s,"
-             "\"selected\":%s,\"files\":[%s],\"tracks\":[%s]%s", t->index,
+             "\"selected\":%s,\"files\":[%s],\"tracks\":[%s]%s%s", t->index,
              json_str(js, sizeof(js), t->name ? t->name : ""), t->duration / (double)AV_TIME_BASE, t->nb_chapters,
-             t->size, json_str(jl, sizeof(jl), t->language), t->selected ? "true" : "false", files, streams.str, extra);
+             t->size, json_str(jl, sizeof(jl), t->language), t->selected ? "true" : "false", files, streams.str, extra,
+             parts.str);
     av_bprint_finalize(&streams, NULL);
+    av_bprint_finalize(&parts, NULL);
 }
 
 /* The disc line and the overview of its titles (with the JSON disc and title
  * records), from one open of source with the disc info only; detail: each
  * title's files and streams too. NULL when source cannot be read as a disc
  * (logged), else the demuxer to open its titles with. */
-static const char *disc_overview(const char *source, int detail, int *nb_titles)
+static const char *disc_overview(const char *source, int detail, int *nb_titles, int **nb_parts)
 {
     AVFormatContext *ctx = NULL;
     const DiscInfo *d;
     char revs[32] = "", js1[64], js2[256], js3[64], js4[1024], jname[1100];
     int ret;
 
-    if ((ret = open_title(DISC_FORMAT, source, ONLY_DISC_INFO, &ctx)) < 0 || !(d = disc_info(ctx))) {
+    if ((ret = open_title(DISC_FORMAT, source, ONLY_DISC_INFO, -1, 0, &ctx)) < 0 || !(d = disc_info(ctx))) {
         log_msg(MSG_SOURCE_UNSUPPORTED, LOG_ERROR, "%s cannot be read as a disc this program supports (%s); "
                 "HD DVD and Blu-ray are wired so far", source, av_err2str(ret < 0 ? ret : AVERROR_BUG));
         avformat_close_input(&ctx);
         return NULL;
     }
     *nb_titles = d->nb_titles;
+    if (nb_parts && (*nb_parts = calloc(d->nb_titles ? d->nb_titles : 1, sizeof(**nb_parts))))
+        for (int t = 0; t < d->nb_titles; t++)
+            (*nb_parts)[t] = d->titles[t].nb_parts;
     if (d->udf_revision)
         snprintf(revs, sizeof(revs), " %x.%02x", (unsigned)(d->udf_revision >> 8), (unsigned)(d->udf_revision & 0xff));
     log_msg(MSG_SOURCE, LOG_INFO, "Disc: %s '%s', %s%s, %s, %d title%s", d->kind, d->label ? d->label : "",
@@ -315,16 +350,17 @@ static int cmd_info(const char *source)
     int nb;
 
     log_msg(MSG_SOURCE, LOG_INFO, "Source: %s", source);
-    if (!(format = disc_overview(source, 1, &nb)))
+    if (!(format = disc_overview(source, 1, &nb, NULL)))
         return 1;
     return 0;
 }
 
-static int cmd_demux(const char *source, const char *titles, const char *out_dir)
+static int cmd_demux(const char *source, const char *titles, const char *out_dir, const char *split,
+                     const char *second)
 {
-    char name[512], logp[PATH_MAX + 600], dbgp[PATH_MAX + 600], *sel;
+    char name[512], logp[PATH_MAX + 600], dbgp[PATH_MAX + 600], *sel, *spl = NULL, *sv = NULL;
     const char *format;
-    int nb, count, ordinal = 0, failed = 0, done = 0, errors, warnings;
+    int nb, count, ordinal = 0, failed = 0, done = 0, errors, warnings, *nb_parts = NULL;
     int64_t track_warnings = 0;
 
     if (mkdirs(out_dir) < 0) {
@@ -343,30 +379,53 @@ static int cmd_demux(const char *source, const char *titles, const char *out_dir
     settings_log_changed();
     log_msg(MSG_OUTPUT_FOLDER, LOG_INFO, "Output folder: %s", out_dir);
 
-    if (!(format = disc_overview(source, 0, &nb))) {
+    if (!(format = disc_overview(source, 0, &nb, &nb_parts)) || !nb_parts) {
+        free(nb_parts);
         log_close_files();
         return 1;
     }
     sel = calloc(nb ? nb : 1, 1);
-    if ((count = parse_titles(titles, nb, sel)) <= 0) {
-        if (!count)
+    spl = calloc(nb ? nb : 1, 1);
+    sv  = calloc(nb ? nb : 1, 1);
+    if (!sel || !spl || !sv || (count = parse_titles(titles, nb, sel)) <= 0 ||
+        (split && parse_titles(split, nb, spl) < 0) || (second && parse_titles(second, nb, sv) < 0)) {
+        if (sel && spl && sv && !count)
             log_msg(MSG_TITLE_SELECTION, LOG_ERROR, "No title selected");
         free(sel);
+        free(spl);
+        free(sv);
+        free(nb_parts);
         log_close_files();
         return 2;
     }
+    /* which titles are written as parts: --split (these), the setting (every title) */
+    for (int t = 0; t < nb; t++)
+        if (spl[t] && sel[t] && !nb_parts[t])
+            log_msg(MSG_TITLE_SELECTION, LOG_INFO, "Title #%d has no parts (it plays no whole stream files back to "
+                    "back): written whole", t);
+    if (setting_bool("output.split_joined_titles"))
+        memset(spl, 1, nb);
+    if (setting_bool("bluray.second_view"))
+        memset(sv, 1, nb);
     for (int t = 0; t < nb; t++) {
-        TitleJob job = { format, source, t, 0, count, out_dir, count > 1 };
-        TitleOutcome res;
+        int parts = spl[t] ? nb_parts[t] : 0, part_failed = 0;
         if (!sel[t])
             continue;
-        job.ordinal = ++ordinal;
-        demux_title(&job, &res);
-        failed += res.failed;
-        done   += !res.failed;
-        track_warnings += res.warnings;
+        ++ordinal;
+        for (int p = parts ? 0 : -1; p < parts; p++) {
+            TitleJob job = { format, source, t, p, parts, sv[t], ordinal, count, out_dir, count > 1 };
+            TitleOutcome res;
+            demux_title(&job, &res);
+            part_failed    += res.failed;
+            track_warnings += res.warnings;
+        }
+        failed += !!part_failed;
+        done   += !part_failed;
     }
     free(sel);
+    free(spl);
+    free(sv);
+    free(nb_parts);
 
     log_counts(&errors, &warnings);
     log_step("=== Summary ===");
@@ -389,7 +448,7 @@ static void cmd_version(void)
 
 int main(int argc, char **argv)
 {
-    const char *config = NULL, **sets = calloc(argc, sizeof(char *));
+    const char *config = NULL, *split = NULL, *second = NULL, **sets = calloc(argc, sizeof(char *));
     int json = 0, verbose = 0, nb_sets = 0, i, ret;
 
     for (i = 1; i < argc && argv[i][0] == '-'; i++) {
@@ -403,6 +462,10 @@ int main(int argc, char **argv)
             config = argv[++i];
         else if (!strcmp(argv[i], "--set") && i + 1 < argc)
             sets[nb_sets++] = argv[++i];
+        else if (!strcmp(argv[i], "--split") && i + 1 < argc)
+            split = argv[++i];
+        else if (!strcmp(argv[i], "--second-view") && i + 1 < argc)
+            second = argv[++i];
         else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
             usage(stdout);
             return 0;
@@ -437,7 +500,7 @@ int main(int argc, char **argv)
     } else if (!strcmp(argv[i], "info") && i + 1 < argc) {
         ret = cmd_info(argv[i + 1]);
     } else if (!strcmp(argv[i], "demux") && i + 3 < argc) {
-        ret = cmd_demux(argv[i + 1], argv[i + 2], argv[i + 3]);
+        ret = cmd_demux(argv[i + 1], argv[i + 2], argv[i + 3], split, second);
     } else {
         fprintf(stderr, "disc-remuxer: unknown command or missing arguments: %s\n\n", argv[i]);
         usage(stderr);

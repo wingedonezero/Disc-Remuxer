@@ -161,7 +161,9 @@ static void audio_fields(Details *d, const AVCodecContext *c, const AVFrame *f)
         add(d, "Bit depth", "%d bits", c->bits_per_raw_sample);
     if (c->bit_rate > 0)
         add(d, "Bit rate", "%"PRId64, c->bit_rate);
-    add(d, "Samples per frame", "%d", f->nb_samples);
+    /* plain PCM has no frames of its own: a packet's samples are only how it is cut */
+    if (!av_get_exact_bits_per_sample(c->codec_id))
+        add(d, "Samples per frame", "%d", f->nb_samples);
     if ((sd = av_frame_get_side_data(f, AV_FRAME_DATA_MATRIXENCODING)) && sd->size >= sizeof(int)) {
         static const char *const me[] = { "none", "Dolby", "Dolby Pro Logic II", "Dolby Pro Logic IIx",
                                           "Dolby Pro Logic IIz", "Dolby EX", "Dolby Headphone" };

@@ -445,17 +445,21 @@ static const DRAudioRules audio_latm = {
     .inspect = inspect_latm,
 };
 
-/* ---- DVD-Video / HD DVD linear PCM (DVD-Video audio_attr / the audio
- * frame header of each packet; disctl_lpcm.c) ----
+/* ---- linear PCM (DVD-Video audio_attr / the audio frame header of each
+ * packet; Blu-ray: the header of each unit; disctl_lpcm.c) ----
  * A unit is one frame of the size the headers state (no sync word: the
  * frames follow each other); every unit is a key frame and never a sync
  * unit; it lasts its samples (rate / 600 on DVD-Video, rate / 1200 on HD
- * DVD) and leaves as little-endian PCM. */
+ * DVD, the payload's on Blu-ray) and leaves as little-endian PCM (Blu-ray:
+ * without its header, the channels in the channel mask's order without the
+ * padding channel). */
 
 static int header_lpcm(DRAudio *a, const DRFrame *f, DRAudioHeader *out)
 {
-    const DRLpcm *p = ff_disctl_audio_state(a);
+    DRLpcm *p = ff_disctl_audio_state(a);
 
+    if (p && p->bd && !p->init && ff_disctl_lpcm_bd_header(p, ff_disctl_audio_log(a), f->data, f->size) < 0)
+        return -1;
     if (!p || !p->init)
         return -1;
     out->rate    = p->rate;
@@ -465,15 +469,24 @@ static int header_lpcm(DRAudio *a, const DRFrame *f, DRAudioHeader *out)
 
 static int duration_lpcm(DRAudio *a, DRFrame *f)
 {
-    const DRLpcm *p = ff_disctl_audio_state(a);
+    DRLpcm *p = ff_disctl_audio_state(a);
+    const uint8_t *in;
     AVBufferRef *buf;
-    int n, bps;
+    int n, bps, size, ret;
 
     if (!p || !p->init)
         return AVERROR_INVALIDDATA;
-    if (!(buf = av_buffer_alloc(f->size * 6 / 5 + 16 + AV_INPUT_BUFFER_PADDING_SIZE)))
+    in   = f->data;
+    size = f->size;
+    if (p->bd) {
+        if ((ret = ff_disctl_lpcm_bd_header(p, ff_disctl_audio_log(a), f->data, f->size)) < 0)
+            return ret;
+        in   += 4;
+        size -= 4;
+    }
+    if (!(buf = av_buffer_alloc(size * 6 / 5 + 16 + AV_INPUT_BUFFER_PADDING_SIZE)))
         return AVERROR(ENOMEM);
-    n = ff_disctl_lpcm_convert(p, f->data, f->size, buf->data);
+    n = ff_disctl_lpcm_convert(p, in, size, buf->data);
     memset(buf->data + n, 0, AV_INPUT_BUFFER_PADDING_SIZE);
     av_buffer_unref(&f->buf);
     f->buf  = buf;
@@ -600,6 +613,8 @@ static const DRCodec codecs[] = {
     { .id = AV_CODEC_ID_DTS, .name = "dts", .check = check_dts, .audio = &audio_dts,
       .verify = verify_dts, .disc_parser = 1 },
     { .id = AV_CODEC_ID_PCM_DVD, .name = "pcm_dvd", .audio = &audio_lpcm,
+      .disc_parser = 1 },
+    { .id = AV_CODEC_ID_PCM_BLURAY, .name = "pcm_bluray", .audio = &audio_lpcm,
       .disc_parser = 1 },
     { .id = AV_CODEC_ID_MP1, .name = "mp1", .check = check_mpa, .audio = &audio_mpa,
       .verify = verify_mpa },

@@ -486,24 +486,41 @@ int ff_bluray_probe_stream(void *log, DiscIOFS *fs, BlurayAACS *aacs, const Blur
  */
 int ff_bluray_pid_scan(void *log, DiscIOFS *fs, BlurayAACS *aacs, const BluraySegment *s, uint16_t pid, int limit);
 
+/** One run of a 3-D item's two views read interleaved: bytes [pos, pos +
+ *  len) of the item are bytes [off, off + len) of the base (view 0) or the
+ *  dependent-view (view 1) clip's stream file. */
+typedef struct BlurayChunk {
+    int64_t pos, off, len;
+    int     view;
+} BlurayChunk;
+
 /** A segment's stream data as 6144-byte aligned units (32 source packets):
  *  its items' byte ranges one after another (a 3-D item: its base-view clip
- *  only), each unit made usable by ff_bluray_aacs_unit (bluray_probe.c). */
+ *  only, or with both its views interleaved at their extent start points),
+ *  each unit made usable by ff_bluray_aacs_unit (bluray_probe.c). */
 typedef struct BluraySegReader {
     void                *log;
     DiscIOFS            *fs;
     BlurayAACS          *aacs;
     const BluraySegment *s;
+    int                  both;         /**< 3-D items: both views */
     int                  item;         /**< the open item, -1 none */
-    DiscIOFile          *f;
+    DiscIOFile          *f;            /**< its (base-view) stream file */
+    DiscIOFile          *f2;           /**< both: its dependent view's stream file */
+    BlurayChunk         *chunks;       /**< both: the open 3-D item's runs */
+    int                  nb_chunks;
 } BluraySegReader;
 
 #define BLURAY_UNIT 6144
 
-/** Bytes of the segment's stream data. */
+/** Bytes of the segment's stream data (3-D items: the base view only). */
 int64_t ff_bluray_seg_size(const BluraySegment *s);
+/** The same with both views of its 3-D items (both 1). */
+int64_t ff_bluray_seg_size_views(const BluraySegment *s, int both);
 void    ff_bluray_seg_reader_init(BluraySegReader *u, void *log, DiscIOFS *fs, BlurayAACS *aacs,
                                   const BluraySegment *s);
+/** The reader reads both views of the segment's 3-D items (before the first read). */
+void    ff_bluray_seg_reader_both(BluraySegReader *u);
 /** The unit at pos (a multiple of 6144) into buf: 0, AVERROR_EOF past the
  *  end (also for a part unit at the end), < 0 error (logged). */
 int     ff_bluray_seg_read(BluraySegReader *u, int64_t pos, uint8_t *buf);
@@ -512,6 +529,25 @@ void    ff_bluray_seg_reader_close(BluraySegReader *u);
 int64_t ff_bluray_title_duration(const BlurayTitle *t);
 /** The title's size, bytes. */
 int64_t ff_bluray_title_size(const BlurayTitle *t);
+
+/**
+ * The parts of title t: the runs of its segments between the places where
+ * whole stream files are played back to back (a non-seamless connection,
+ * connection condition 1, that joined into the title because both items
+ * cover their whole STC sequences: episodes of a series one after another).
+ * first (nb_segs + 1 entries, or NULL): the first segment of each part, and
+ * nb_segs after the last. Returns the number of parts (1: the title is one
+ * piece).
+ */
+int     ff_bluray_title_parts(const BlurayTitle *t, int *first);
+/** 45 kHz ticks of segments [s0, s1) (their STC sequences, as the title's duration). */
+int64_t ff_bluray_segs_duration(const BlurayTitle *t, int s0, int s1);
+/**
+ * The chapter marks of segments [s0, s1) of title t on their own: from the
+ * first segment's start, without those in their last second (the rule a
+ * title has for its own end). out: room for t->nb_marks. Returns the count.
+ */
+int     ff_bluray_segs_marks(const BlurayTitle *t, int s0, int s1, uint64_t *out);
 
 /* ---- the disc (bluray_disc.c) ---- */
 

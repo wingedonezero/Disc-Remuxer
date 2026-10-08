@@ -557,6 +557,24 @@ void ff_bluray_disc_dump(const BlurayDisc *d, AVBPrint *bp)
                        t->second);
         for (int k = 0; k < t->nb_side; k++)
             av_bprintf(bp, " text %s", t->side[k].seg.desc);
+        if (ff_bluray_title_parts(t, NULL) > 1) {
+            /* each part: its first segment, duration and own marks */
+            int *first = av_calloc(t->nb_segs + 1, sizeof(*first)), n;
+            uint64_t *m = av_calloc(FFMAX(t->nb_marks, 1), sizeof(*m));
+            if (first && m) {
+                n = ff_bluray_title_parts(t, first);
+                av_bprintf(bp, " parts");
+                for (int p = 0; p < n; p++) {
+                    int nm = ff_bluray_segs_marks(t, first[p], first[p + 1], m);
+                    av_bprintf(bp, "%s%d:%"PRId64":", p ? "," : " ", first[p],
+                               ff_bluray_segs_duration(t, first[p], first[p + 1]));
+                    for (int k = 0; k < nm; k++)
+                        av_bprintf(bp, "%s%"PRIu64, k ? "+" : "", m[k]);
+                }
+            }
+            av_free(first);
+            av_free(m);
+        }
         av_bprintf(bp, "\n");
         for (int k = 0; k < t->nb_tracks; k++) {
             const BlurayTrack *tk = &t->tracks[k];

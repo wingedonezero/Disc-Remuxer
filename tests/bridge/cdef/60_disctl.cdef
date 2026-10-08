@@ -170,7 +170,8 @@ int  ff_disctl_junction_finish(DRJunction *j);
 void ff_disctl_junction_stats(const DRJunction *j, DRJunctionStats *st);
 void ff_disctl_junction_close(DRJunction **j);
 
-enum DRTrackKind { DR_KIND_VIDEO = 1, DR_KIND_AUDIO = 2, DR_KIND_SUBTITLE = 3, DR_KIND_CAPTION = 4 };
+enum DRTrackKind { DR_KIND_VIDEO = 1, DR_KIND_AUDIO = 2, DR_KIND_SUBTITLE = 3, DR_KIND_CAPTION = 4,
+                   DR_KIND_LAYER = 5 };
 
 typedef int (*DRJoinOutCb)(void *opaque, int track, DRFrame *frame);
 
@@ -327,9 +328,15 @@ typedef struct DRLpcm {
     uint64_t chmask;
     int      drc;
     int      hd;
+    int      bd;
+    uint8_t  h2, h3;
+    int      payload;
+    int      coded;
+    uint8_t  map[8];
 } DRLpcm;
 
 int ff_disctl_lpcm_header(DRLpcm *p, void *logctx, const uint8_t *hdr, int len, int hd);
+int ff_disctl_lpcm_bd_header(DRLpcm *p, void *logctx, const uint8_t *unit, int size);
 int ff_disctl_lpcm_convert(const DRLpcm *p, const uint8_t *in, int size, uint8_t *out);
 
 typedef struct DRTitleTrack {
@@ -358,6 +365,9 @@ int  ff_disctl_title_segment(DRTitle *t);
 int  ff_disctl_title_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time, int tail);
 int  ff_disctl_title_finish(DRTitle *t);
 int  ff_disctl_title_frame(DRTitle *t, int *track, DRFrame *frame);
+int  ff_disctl_title_track_result(const DRTitle *t, int track, int64_t *frames, int64_t *warnings, int64_t *delay);
+int  ff_disctl_h264_clean(const uint8_t *p, int n, uint8_t *out, int64_t dropped_units[32], int64_t *stuffing,
+                          int *changed);
 int  ff_disctl_title_chapters(const DRTitle *t, const DRChapterPlan *plan, DRChapter **out, int *nb_out);
 int64_t ff_disctl_title_review(const DRTitle *t);
 int ff_disctl_title_spu_result(const DRTitle *t, int track, int64_t *no_stop, int64_t *outside);

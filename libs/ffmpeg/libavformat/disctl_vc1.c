@@ -182,7 +182,7 @@ static int picture_vc1(DRVideo *v, const DRFrame *f, DRPicture *pic)
             /* an end of sequence without a second field before it */
             if (!s->ends_dropped++)
                 av_log(NULL, AV_LOG_INFO, "Title timeline: VC-1: an end-of-sequence code without a "
-                       "second field before it is left out [untested on real discs]\n");
+                       "second field before it is left out\n");
             av_log(NULL, AV_LOG_DEBUG, "Title timeline: VC-1: end of sequence at stream offset %"PRId64" left out\n",
                    f->pos);
         } else {

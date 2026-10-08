@@ -362,3 +362,121 @@ def test_a_failed_title_stays_failed():
     assert lib.ff_disctl_title_finish(t[0]) == err
     assert lib.ff_disctl_title_frame(t[0], k, f) == err
     lib.ff_disctl_title_close(t)
+
+
+# ---- a second layer (the dependent view of a 3-D video) ----
+
+LAYER = 2
+
+
+def mvc_picture(k, extra=b""):
+    """A synthetic dependent-view picture: MVC delimiter (24), a filler data
+    unit (12, taken out as from the master video), a slice extension (20)."""
+    return (b"\0\0\0\1\x18\x80" + b"\0\0\1\x0c" + b"\xff" * 8 + b"\x80" +
+            b"\0\0\1\x14" + bytes([0x80 | (k & 0x3f), k >> 6 & 0xff, 0x11]) + extra)
+
+
+def mvc_clean(k, extra=b""):
+    return b"\0\0\0\1\x18\x80" + b"\0\0\1\x14" + bytes([0x80 | (k & 0x3f), k >> 6 & 0xff, 0x11]) + extra
+
+
+def layer(base, skip=(), extra=(), split=False, stream=M2V):
+    """The layer's payloads: one picture per master picture with the same
+    PES time (as on a disc), in the same (decoding) order; skip: master
+    pictures without one; extra: (after picture k, time) pictures with no
+    master frame; split: each picture in two payloads, the second without a
+    time (as TS packets bring it)."""
+    out = []
+    for k, (a, b, disp, _) in enumerate(pictures(stream)):
+        order = base + (k - 1) * FRAME
+        if k not in skip:
+            pic = mvc_picture(k)
+            if split:
+                out += [Payload(LAYER, pic[:7], base + disp * FRAME, False, order),
+                        Payload(LAYER, pic[7:], AV_NOPTS, False, order)]
+            else:
+                out.append(Payload(LAYER, pic, base + disp * FRAME, False, order))
+        for after, t in extra:
+            if after == k:
+                out.append(Payload(LAYER, mvc_picture(900 + k), t, False, order))
+    return out
+
+
+AV_NOPTS = -(1 << 63)
+
+
+def layer_tracks():
+    return [[codec_id("mpeg2video"), lib.DR_KIND_VIDEO, 0], [codec_id("ac3"), lib.DR_KIND_AUDIO, 0],
+            [codec_id("h264"), lib.DR_KIND_LAYER, 0]]
+
+
+def by_track(outs, k):
+    return [o for o in outs if o.track == k]
+
+
+def test_a_second_layer_picture_leaves_with_its_video_frame():
+    v = video(BASE)
+    seg = interleave(v + ac3(BASE, AC3_DUR, 10), layer(BASE, split=True))
+    outs, _, _, _ = run(layer_tracks(), MS, False, [seg])
+    vid, lay = by_track(outs, 0), by_track(outs, LAYER)
+    assert len(lay) == len(vid) == len(v), "one picture per video frame"
+    assert [(o.time, o.dur, o.flags & lib.DR_F_KEY) for o in lay] == \
+           [(o.time, o.dur, o.flags & lib.DR_F_KEY) for o in vid], "the video frame's time, duration and key flag"
+    assert [o.data for o in lay] == [mvc_clean(k) for k in range(len(v))], \
+        "pictures cut at the MVC delimiters, in decoding order, the filler unit taken out"
+    for i, o in enumerate(outs):
+        if o.track == LAYER:
+            assert any(p.track == 0 and p.time == o.time for p in outs[:i]), "after its video frame"
+
+
+def test_a_second_layer_picture_without_a_video_frame_is_left_out():
+    v = video(BASE)
+    seg = interleave(v, layer(BASE, extra=[(3, BASE + 5000 * FRAME)]))
+    outs, _, _, _ = run(layer_tracks()[:1] + [layer_tracks()[2]], MS, False,
+                        [[p if p.track != LAYER else dataclasses.replace(p, track=1) for p in seg]])
+    assert [o.data for o in by_track(outs, 1)] == [mvc_clean(k) for k in range(len(v))], \
+        "every video frame's picture, the stray one left out"
+
+
+def test_a_video_frame_without_its_second_layer_picture_fails_the_title():
+    tracks = [[codec_id("mpeg2video"), lib.DR_KIND_VIDEO, 0], [codec_id("h264"), lib.DR_KIND_LAYER, 0]]
+    v = video(BASE)
+    seg = interleave(v, [dataclasses.replace(p, track=1) for p in layer(BASE, skip={5})])
+    keep = Handles()
+    tr = ffi.new("DRTitleTrack[]", tracks)
+    cfg = ffi.new("DRTitleConfig *", {"nb_tracks": 2, "tracks": tr, "tolerance": MS, "event": lib.tb_py_event,
+                                      "event_opaque": keep(events_into([]))})
+    t = ffi.new("DRTitle **")
+    assert lib.ff_disctl_title_open(t, ffi.NULL, cfg) == 0
+    assert lib.ff_disctl_title_segment(t[0]) == 0
+    for p in seg:
+        lib.ff_disctl_title_payload(t[0], p.track, p.data, len(p.data), p.time, 0)
+    assert lib.ff_disctl_title_finish(t[0]) < 0, "the layer's stream would miss a picture"
+    lib.ff_disctl_title_close(t)
+
+
+def test_a_second_layer_follows_the_video_into_the_next_segment():
+    v1, v2 = video(BASE), video(BASE)
+    s1 = interleave(v1, [dataclasses.replace(p, track=1) for p in layer(BASE)])
+    s2 = interleave(v2, [dataclasses.replace(p, track=1) for p in layer(BASE)])
+    tracks = [[codec_id("mpeg2video"), lib.DR_KIND_VIDEO, 0], [codec_id("h264"), lib.DR_KIND_LAYER, 0]]
+    outs, _, _, _ = run(tracks, MS, False, [s1, s2])
+    vid, lay = by_track(outs, 0), by_track(outs, 1)
+    assert len(lay) == len(vid) == 2 * len(v1)
+    assert [o.time for o in lay] == [o.time for o in vid], "the second segment's pictures on its place"
+
+
+def test_the_h264_clean_up_leaves_a_unit_with_nothing_to_take_as_it_is():
+    dropped = ffi.new("int64_t[32]")
+    stuffing = ffi.new("int64_t *")
+    changed = ffi.new("int *")
+    unit = mvc_clean(1)
+    out = ffi.new("uint8_t[]", len(unit) + 16)
+    n = lib.ff_disctl_h264_clean(unit, len(unit), out, dropped, stuffing, changed)
+    assert (n, changed[0]) == (len(unit), 0)
+    # zero stuffing in front of a kept unit is cut to one byte; in front of
+    # a unit taken out it goes with that unit
+    unit = b"\0\0\0\0" + mvc_picture(1) + b"\0\0\0" + b"\0\0\1\x0b"
+    n = lib.ff_disctl_h264_clean(unit, len(unit), out, dropped, stuffing, changed)
+    assert bytes(ffi.buffer(out, n)) == mvc_clean(1) and changed[0] == 1
+    assert (dropped[12], dropped[11], stuffing[0]) == (1, 1, 4)

@@ -97,6 +97,18 @@ const char *codec_label(enum AVCodecID id, int profile)
     }
 }
 
+/* A 3-D video's second view (its pictures are decoded with the base
+ * view's): MVC in names and logs, no read-back check of its own. */
+static int second_view(const AVStream *st)
+{
+    return st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && (st->disposition & AV_DISPOSITION_DEPENDENT);
+}
+
+static const char *stream_label(const AVStream *st, int profile)
+{
+    return second_view(st) ? "MVC" : codec_label(st->codecpar->codec_id, profile);
+}
+
 #define HOLD_MAX 64   /* audio packets kept while their channel layout is not known yet */
 
 typedef struct EsOut {
@@ -116,6 +128,8 @@ typedef struct EsOut {
     AVPacket    **hold;
     int           nb_hold;
     DetailsProbe *probe;            /* video / audio: the disc stream's details for the end check */
+    int           probe_late;       /* LPCM: the probe opens with the first packet (the stream's format is
+                                       the converted PCM's from then on) */
     int           checked;          /* the end check ran: 1 pass, -1 fail, 0 not run */
     char          problems[1024];   /* its findings */
 } EsOut;
@@ -301,7 +315,14 @@ static int es_open(const AVFormatContext *ctx, const AVStream *st, EsOut *o, con
     int audio = par->codec_type == AVMEDIA_TYPE_AUDIO;
     int profile = o->avctx ? o->avctx->profile : par->profile;
 
+    const AVDictionaryEntry *eye = av_dict_get(st->metadata, "eye", NULL, 0);
+    int second = second_view(st);
+
     o->opened = 1;
+    if (eye) {
+        snprintf(layout, sizeof(layout), "_%s eye", eye->value);
+        snprintf(o->layout, sizeof(o->layout), "%s eye", eye->value);
+    }
     if (audio) {
         const AVChannelLayout *cl = par->ch_layout.nb_channels ? &par->ch_layout :
                                     o->frame && o->frame->ch_layout.nb_channels ? &o->frame->ch_layout : NULL;
@@ -316,7 +337,8 @@ static int es_open(const AVFormatContext *ctx, const AVStream *st, EsOut *o, con
         snprintf(delay, sizeof(delay), " DELAY %"PRId64"ms", o->st.delay_ms);
     }
     if (!(o->name = av_asprintf("%s_%02d_%s_%s%s%s.%s", prefix, st->index, *o->st.lang ? o->st.lang : "und",
-                                codec_label(par->codec_id, profile), layout, delay, es_extension(par->codec_id))))
+                                stream_label(st, profile), layout, delay,
+                                second ? "mvc" : es_extension(par->codec_id))))
         return AVERROR(ENOMEM);
     o->st.file = o->name;
     if (!(o->f = fopen(o->name, "wb")))
@@ -418,7 +440,7 @@ static int es_flush_hold(const AVFormatContext *ctx, const AVStream *st, EsOut *
     return ret;
 }
 
-int open_title(const char *format, const char *source, int title, AVFormatContext **ctx)
+int open_title(const char *format, const char *source, int title, int part, int second_view, AVFormatContext **ctx)
 {
     const AVInputFormat *fmt = av_find_input_format(format);
     AVDictionary *opts = NULL;
@@ -429,6 +451,10 @@ int open_title(const char *format, const char *source, int title, AVFormatContex
     if (!fmt)
         return AVERROR_DEMUXER_NOT_FOUND;
     av_dict_set_int(&opts, "title", title, 0);
+    if (part >= 0)
+        av_dict_set_int(&opts, "part", part, 0);
+    if (second_view)
+        av_dict_set_int(&opts, "second_view", 1, 0);
     av_dict_set_int(&opts, "read_attempts", setting_int("read.attempts"), 0);
     av_dict_set(&opts, "udf_reader", setting_text("read.udf_reader"), 0);
     if (nb_keys) {
@@ -525,26 +551,36 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     const char *tname;
     EsOut *out = NULL;
     AVPacket *pkt = NULL;
-    char dir[4096], prefix[4200], dur[32], js[4300];
+    char dir[4096], prefix[4200], dur[32], js[4300], who[64], base[512], jpart[32] = "";
     int ret;
 
     memset(res, 0, sizeof(*res));
-    if ((ret = open_title(job->format, job->source, job->title, &ctx)) < 0) {
-        log_step("=== Title %d/%d: #%d ===", job->ordinal, job->count, job->title);
-        log_msg(MSG_TITLE_OPEN_FAILED, LOG_ERROR, "Title #%d cannot be opened: %s", job->title, av_err2str(ret));
+    /* "Title #8", or "Title #8 part 2/7" for a part of a title */
+    if (job->part >= 0) {
+        snprintf(who, sizeof(who), "Title #%d part %d/%d", job->title, job->part + 1, job->nb_parts);
+        snprintf(jpart, sizeof(jpart), ",\"part\":%d", job->part + 1);
+    } else
+        snprintf(who, sizeof(who), "Title #%d", job->title);
+    if ((ret = open_title(job->format, job->source, job->title, job->part, job->second_view, &ctx)) < 0) {
+        log_step("=== Title %d/%d: %s ===", job->ordinal, job->count, who + 6);
+        log_msg(MSG_TITLE_OPEN_FAILED, LOG_ERROR, "%s cannot be opened: %s", who, av_err2str(ret));
         res->failed = 1;
         return ret;
     }
     info = disc_info(ctx);
     tname = info && job->title < info->nb_titles ? info->titles[job->title].name : NULL;
-    title_name(setting_text("output.file_name_template"), tname, NULL, NULL, job->title,
-               res->name, sizeof(res->name));
+    title_name(setting_text("output.file_name_template"), tname, NULL, NULL, job->title, base, sizeof(base));
+    /* a part's files: the title's name + _p<n>, in the title's folder */
+    if (job->part >= 0)
+        snprintf(res->name, sizeof(res->name), "%.500s_p%d", base, job->part + 1);
+    else
+        snprintf(res->name, sizeof(res->name), "%s", base);
     hms(dur, sizeof(dur), ctx->duration > 0 ? ctx->duration / (double)AV_TIME_BASE : 0);
-    log_step("=== Title %d/%d: #%d %s (%s) ===", job->ordinal, job->count, job->title, tname ? tname : "", dur);
-    log_json("title_start", "\"title\":%d,\"name\":%s,\"ordinal\":%d,\"count\":%d", job->title,
+    log_step("=== Title %d/%d: %s %s (%s) ===", job->ordinal, job->count, who + 6, tname ? tname : "", dur);
+    log_json("title_start", "\"title\":%d%s,\"name\":%s,\"ordinal\":%d,\"count\":%d", job->title, jpart,
              json_str(js, sizeof(js), res->name), job->ordinal, job->count);
 
-    snprintf(dir, sizeof(dir), "%s%s%s", job->out_dir, job->sub_folder ? "/" : "", job->sub_folder ? res->name : "");
+    snprintf(dir, sizeof(dir), "%s%s%s", job->out_dir, job->sub_folder ? "/" : "", job->sub_folder ? base : "");
     if (mkdir(dir, 0777) < 0 && errno != EEXIST) {
         ret = AVERROR(errno);
         log_msg(MSG_FOLDER_FAILED, LOG_ERROR, "The folder %s cannot be created: %s", dir, strerror(errno));
@@ -570,7 +606,12 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         o->st.lang     = lang ? lang->value : "";
         o->st.file     = "";
         o->st.first_ms = AV_NOPTS_VALUE;
-        if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && !st->codecpar->ch_layout.nb_channels) {
+        /* LPCM leaves the demuxer as little-endian PCM: its format (with the
+         * channel layout) is set when its first packet comes */
+        o->probe_late  = st->codecpar->codec_id == AV_CODEC_ID_PCM_DVD ||
+                         st->codecpar->codec_id == AV_CODEC_ID_PCM_BLURAY;
+        if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && !st->codecpar->ch_layout.nb_channels &&
+            !o->probe_late) {
             const AVCodec *dec = avcodec_find_decoder(st->codecpar->codec_id);
             if (!(o->hold = av_calloc(HOLD_MAX, sizeof(*o->hold)))) {
                 ret = AVERROR(ENOMEM);
@@ -588,7 +629,12 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
 
     for (unsigned i = 0; i < ctx->nb_streams; i++) {
         enum AVMediaType t = ctx->streams[i]->codecpar->codec_type;
-        if ((t == AVMEDIA_TYPE_VIDEO || t == AVMEDIA_TYPE_AUDIO) &&
+        if (second_view(ctx->streams[i])) {
+            log_text(LOG_DETAIL, "Track %u: the second view of a 3-D video: its details are not checked (its "
+                     "pictures are decoded with the base view's)", i);
+            continue;
+        }
+        if ((t == AVMEDIA_TYPE_VIDEO || t == AVMEDIA_TYPE_AUDIO) && !out[i].probe_late &&
             details_probe_open(&out[i].probe, ctx->streams[i]->codecpar) < 0)
             log_text(LOG_DETAIL, "Track %u: no decoder for %s: its details are not checked", i,
                      avcodec_get_name(ctx->streams[i]->codecpar->codec_id));
@@ -598,6 +644,12 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         EsOut *o = &out[pkt->stream_index];
         int64_t progress;
 
+        if (o->probe_late) {
+            o->probe_late = 0;
+            if (details_probe_open(&o->probe, st->codecpar) < 0)
+                log_text(LOG_DETAIL, "Track %d: no decoder for %s: its details are not checked", pkt->stream_index,
+                         avcodec_get_name(st->codecpar->codec_id));
+        }
         if (o->probe)
             details_probe_packet(o->probe, pkt);
 
@@ -674,7 +726,7 @@ end:
         }
     }
     if (ret < 0) {
-        log_msg(MSG_TITLE_FAILED, LOG_ERROR, "Title #%d failed: %s", job->title, av_err2str(ret));
+        log_msg(MSG_TITLE_FAILED, LOG_ERROR, "%s failed: %s", who, av_err2str(ret));
         res->failed = 1;
     } else {
         int64_t untested = meta_int(ctx->metadata, "untested");
@@ -685,7 +737,8 @@ end:
             end_check(ctx->streams[i], &out[i]);
             checked      += out[i].checked != 0;
             check_failed += out[i].checked < 0;
-            unchecked    += out[i].opened && !out[i].probe && (t == AVMEDIA_TYPE_VIDEO || t == AVMEDIA_TYPE_AUDIO);
+            unchecked    += out[i].opened && !out[i].probe && (t == AVMEDIA_TYPE_VIDEO || t == AVMEDIA_TYPE_AUDIO) &&
+                            !second_view(ctx->streams[i]);
         }
         log_text(LOG_INFO, "Tracks:");
         for (unsigned i = 0; i < ctx->nb_streams; i++) {
@@ -697,7 +750,7 @@ end:
             int empty_cc = !o->opened && av_dict_get(st->metadata, "caption", NULL, 0);
 
             snprintf(what, sizeof(what), "%s %s%s%s", *o->st.lang ? o->st.lang : "   ",
-                     codec_label(st->codecpar->codec_id, st->codecpar->profile), *o->layout ? " " : "", o->layout);
+                     stream_label(st, st->codecpar->profile), *o->layout ? " " : "", o->layout);
             if (empty_cc)
                 snprintf(state, sizeof(state), "no caption text: no file");
             else if (o->no_forced)
@@ -729,9 +782,9 @@ end:
             if (o->opened)
                 log_text(LOG_DETAIL, "      %s", o->name);
             res->warnings += warn;
-            log_json("track", "\"title\":%d,\"index\":%u,\"codec\":%s,\"language\":%s,\"layout\":%s,"
+            log_json("track", "\"title\":%d%s,\"index\":%u,\"codec\":%s,\"language\":%s,\"layout\":%s,"
                      "\"frames\":%"PRId64",\"warnings\":%"PRId64",\"delay_ms\":%"PRId64",\"file\":%s%s", job->title,
-                     i, json_str(jc, sizeof(jc), codec_label(st->codecpar->codec_id, st->codecpar->profile)),
+                     jpart, i, json_str(jc, sizeof(jc), stream_label(st, st->codecpar->profile)),
                      json_str(jl, sizeof(jl), o->st.lang), json_str(jy, sizeof(jy), o->layout), frames, warn,
                      o->st.delay_ms, json_str(jf, sizeof(jf), o->opened ? o->name : ""), extra);
         }
@@ -745,21 +798,21 @@ end:
         res->warnings += unchecked;
         log_msg(MSG_CHAPTERS, LOG_INFO, "Chapters: %u", ctx->nb_chapters);
         if (check_failed) {
-            log_msg(MSG_DETAILS_DIFFER, LOG_ERROR, "Title #%d: its files are written, but %d of them do not keep "
-                    "the disc stream's details (see above)", job->title, check_failed);
+            log_msg(MSG_DETAILS_DIFFER, LOG_ERROR, "%s: its files are written, but %d of them do not keep "
+                    "the disc stream's details (see above)", who, check_failed);
             res->failed = 1;
         } else if (untested) {
-            log_msg(MSG_UNTESTED, LOG_ERROR, "Title #%d: %"PRId64" feature(s) met that no real disc has tested: "
-                    "its files are written, but check the log before using them", job->title, untested);
+            log_msg(MSG_UNTESTED, LOG_ERROR, "%s: %"PRId64" feature(s) met that no real disc has tested: "
+                    "its files are written, but check the log before using them", who, untested);
             res->failed = 1;
         } else if (res->warnings) {
-            log_msg(MSG_TITLE_DONE, LOG_INFO, "Title #%d: done with %"PRId64" warning%s", job->title, res->warnings,
+            log_msg(MSG_TITLE_DONE, LOG_INFO, "%s: done with %"PRId64" warning%s", who, res->warnings,
                     res->warnings == 1 ? "" : "s");
         } else {
-            log_msg(MSG_TITLE_DONE, LOG_OK, "Title #%d: done", job->title);
+            log_msg(MSG_TITLE_DONE, LOG_OK, "%s: done", who);
         }
     }
-    log_json("title_result", "\"title\":%d,\"status\":\"%s\",\"warnings\":%"PRId64",\"folder\":%s", job->title,
+    log_json("title_result", "\"title\":%d%s,\"status\":\"%s\",\"warnings\":%"PRId64",\"folder\":%s", job->title, jpart,
              res->failed ? "failed" : "ok", res->warnings, json_str(js, sizeof(js), dir));
     for (unsigned i = 0; ctx && out && i < ctx->nb_streams; i++) {
         EsOut *o = &out[i];
