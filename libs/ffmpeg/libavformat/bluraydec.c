@@ -58,6 +58,7 @@ typedef struct BlurayDemuxContext {
     DiscTsFeed        *feeds;
     int               *pids;
     int64_t           *chapter_times;
+    BlurayDetailsCache *details;     /* the title list's stream details, per clip */
 } BlurayDemuxContext;
 
 static const char *clip_name(AVFormatContext *s, int k)
@@ -101,6 +102,7 @@ static void bluray_close(AVFormatContext *s)
     av_freep(&c->feeds);
     av_freep(&c->pids);
     av_freep(&c->chapter_times);
+    ff_bluray_details_cache_free(&c->details);
     for (int i = 0; i < c->nb_files; i++)
         av_free(c->files[i]);
     av_freep(&c->files);
@@ -168,6 +170,7 @@ end:
  * chapter marks. */
 static int describe_titles(AVFormatContext *s)
 {
+    DiscContext *d = s->priv_data;
     BlurayDemuxContext *c = ff_disc_part(s);
     BlurayDisc *b = &c->disc;
 
@@ -214,6 +217,20 @@ static int describe_titles(AVFormatContext *s)
             ds->offset_sequence = tk->offset_seq;
             ds->second_layer    = !!(tk->flags & BLURAY_TRACK_LAYER2);
             memcpy(ds->language, tk->lang, sizeof(ds->language));
+        }
+        /* the title list only (no title opened): each track's details from
+         * the stream */
+        if (d->opt_title < 0 && t->nb_tracks && d->opt_details) {
+            DiscStreamInfo **dsp = av_calloc(t->nb_tracks, sizeof(*dsp));
+            if (!dsp)
+                return AVERROR(ENOMEM);
+            for (int k = 0; k < t->nb_tracks; k++)
+                dsp[k] = &dt->streams[k];
+            ret = ff_bluray_title_details(s, d->fs, c->aacs, t, dsp, &c->details);
+            av_free(dsp);
+            if (ret < 0)
+                av_log(s, AV_LOG_WARNING, "Blu-ray: title %s: its stream details cannot be read: %s\n", t->name,
+                       av_err2str(ret));
         }
         for (int k = 0; k < t->nb_marks; k++) {
             DiscChapterInfo *ch = ff_disc_title_add_chapter(dt);

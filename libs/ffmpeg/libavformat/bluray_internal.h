@@ -28,6 +28,7 @@
 #include "libavutil/error.h"
 #include "libavcodec/codec_id.h"
 
+#include "discinfo.h"
 #include "discio.h"
 
 /* ---- reading a disc file (bluray_files.c) ---- */
@@ -465,6 +466,15 @@ int ff_bluray_title_tracks(void *log, DiscIOFS *fs, BlurayAACS *aacs, BlurayTitl
  * bdav: the title's clips are BDAV (M2TS) clips.
  * @return the number of keys (1 or 2), 0 a kind with none (text subtitles)
  */
+/** Stream details of titles (bluray_details.c): kept per clip, PID and keys. */
+typedef struct BlurayDetailsCache BlurayDetailsCache;
+/** The stream details of title t's video and audio tracks into ds[track]
+ *  (each track's own DiscStreamInfo), read from the start of the segment
+ *  the tracks are described from; *cache holds what was read before. */
+int  ff_bluray_title_details(void *log, DiscIOFS *fs, BlurayAACS *aacs, const BlurayTitle *t,
+                             DiscStreamInfo *const *ds, BlurayDetailsCache **cache);
+void ff_bluray_details_cache_free(BlurayDetailsCache **cache);
+
 int ff_bluray_track_keys(const BlurayTrack *tk, int bdav, uint16_t key[2]);
 
 /**

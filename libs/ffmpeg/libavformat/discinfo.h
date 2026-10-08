@@ -53,13 +53,17 @@ typedef struct DiscStreamInfo {
     int              second_layer;   /**< video: a second (enhancement) layer on its own PID is read with it */
     int              offset_sequence;/**< subtitles of a 3-D title: the disc's offset sequence for its depth, -1 none */
     int              width, height;  /**< video: the frame; subtitles: the canvas the units are drawn on */
-    /* the stream details (not filled yet) */
+    /* the stream details (from the stream itself; 0 / unknown when not read) */
     AVRational       aspect;         /**< video: display aspect ratio */
     AVRational       frame_rate;     /**< video */
+    int              profile;        /**< FFmpeg's profile of the codec (AV_PROFILE_*), AV_PROFILE_UNKNOWN */
+    int              level;          /**< video: the codec's level (level_idc), AV_LEVEL_UNKNOWN */
+    char             dolby_vision[40];/**< video: the Dolby Vision type ("dvhe.07.06 BL+FEL+RPU"), "" none */
     int              channels;       /**< audio */
+    uint64_t         layout;         /**< audio: channel layout mask (FFmpeg's AV_CH_*), 0 unknown */
     int              sample_rate;    /**< audio, Hz */
-    int              bits;           /**< audio: bits per sample (PCM) */
-    int64_t          bit_rate;       /**< bit/s */
+    int              bits;           /**< audio: bits per sample the stream carries (0 unknown) */
+    int64_t          bit_rate;       /**< bit/s (0 unknown) */
 } DiscStreamInfo;
 
 /** A chapter of a title, as the disc records it. */
