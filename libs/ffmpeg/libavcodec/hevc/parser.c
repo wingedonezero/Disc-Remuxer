@@ -329,7 +329,10 @@ static int hevc_find_frame_end(AVCodecParserContext *s, const uint8_t *buf,
  * SEI (40) and types 62 / 63 (62 ends the run), looked for across at most
  * 100 units; prefix SEI, parameter sets and the other types that are neither
  * in the run nor end it are passed over, and go with the run when one
- * follows. SPS, slice segments and delimiters end the search.
+ * follows. SPS, slice segments and delimiters end the search; so does a
+ * type 62 unit, which is part of the run (end of sequence / end of
+ * bitstream units right after it stay with the access unit: they are its
+ * last units, 7.4.2.4.4).
  * A picture whose first slice segment does not start a picture, or that has
  * no parameter sets yet, is left out with the units in front of it (no
  * frame).
@@ -582,6 +585,12 @@ static int disc_unit_size(void *log, const uint8_t *buf, int avail, int final, v
             if (stop || st->nb_suffix == DISC_SUFFIX_MAX) {
                 if (st->suffix_k < st->nb_suffix)
                     return disc_end(st, st->nal[st->suffix[st->suffix_k]].zr, 0);
+                /* the run ended with this unit (type 62): end of sequence /
+                 * end of bitstream units right after it are the access
+                 * unit's last units (H.265 7.4.2.4.4) */
+                while (j + 1 < st->nb_nal && (st->nal[j + 1].type == HEVC_NAL_EOS_NUT ||
+                                              st->nal[j + 1].type == HEVC_NAL_EOB_NUT) && !st->nal[j + 1].layer)
+                    j++;
                 if (j + 1 < st->nb_nal)
                     return disc_end(st, st->nal[j + 1].zr, 0);
                 if (!final)

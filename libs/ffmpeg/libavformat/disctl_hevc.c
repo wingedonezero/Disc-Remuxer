@@ -191,6 +191,44 @@ int ff_disctl_hevc_seq_end(DRFrame *f, const DRFrame *next)
     return 0;
 }
 
+int ff_disctl_hevc_wrap_size(const uint8_t *p, int n)
+{
+    int units = 0;
+    for (int i = next_sc(p, n, 0); i >= 0; i = next_sc(p, n, i + 3))
+        units++;
+    return n + 2 * units;
+}
+
+int ff_disctl_hevc_wrap_layer(const uint8_t *p, int n, uint8_t *out)
+{
+    int i = next_sc(p, n, 0), o = 0;
+
+    if (i < 0)
+        return 0;
+    memcpy(out, p, i);                  /* the zero bytes in front of the first start code */
+    o = i;
+    while (i >= 0) {
+        int e = next_sc(p, n, i + 3), end = e < 0 ? n : e, t;
+        while (e >= 0 && end > i + 3 && !p[end - 1])
+            end--;                      /* zero bytes go with the next start code */
+        t = i + 3 < n ? (p[i + 3] >> 1) & 0x3f : -1;
+        memcpy(out + o, p + i, 3);      /* the start code */
+        o += 3;
+        if (t != 62 && t != 63) {
+            out[o++] = 0x7e;
+            out[o++] = 0x01;
+        }
+        memcpy(out + o, p + i + 3, end - i - 3);
+        o += end - i - 3;
+        if (e >= 0) {
+            memcpy(out + o, p + end, e - end);
+            o += e - end;
+        }
+        i = e;
+    }
+    return o;
+}
+
 /* Rebuild the unit without the NAL units that leave it and without zero
  * stuffing (ff_disctl_hevc_clean). */
 static int split_hevc(DRVideo *v, DRFrame *f)

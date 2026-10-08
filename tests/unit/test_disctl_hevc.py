@@ -400,3 +400,114 @@ def test_a_delimiter_muxed_into_the_packet_before_keeps_the_frame_at_its_picture
     assert ret == 0
     assert [o[1] for o in s.out] == [t for _, t, _ in units]
     assert [o[0] for o in s.out] == [without(u) for u, _, _ in units]
+
+
+# ---- Dolby Vision: the enhancement layer merged into the video's frames ----
+
+def rpu():
+    """A stand-in for a Dolby Vision RPU unit (nal_unit_type 62): its bytes
+    pass as they are."""
+    return H.nal(62, b"\x19\x08\x09\x55" * 6 + b"\x80", sc=b"\0\0\1")
+
+
+def el_units(units):
+    """The enhancement layer of a stream: its own access units (here the
+    same pictures) each closed by its RPU."""
+    return [(u + rpu(), t) for u, t, _ in units]
+
+
+def wrapped(el):
+    """The units of an enhancement picture as they follow the base picture:
+    7E 01 in front of each unit's header, the RPU as it is."""
+    out = bytearray()
+    starts, i = [], el.find(b"\0\0\1")
+    while i >= 0:
+        starts.append(i)
+        i = el.find(b"\0\0\1", i + 3)
+    pos = 0
+    for k, s in enumerate(starts):
+        e = starts[k + 1] if k + 1 < len(starts) else len(el)
+        out += el[pos:s + 3]
+        if (el[s + 3] >> 1) & 63 not in (62, 63):
+            out += b"\x7e\x01"
+        out += el[s + 3:e]
+        pos = e
+    return bytes(out)
+
+
+def test_wrapping_puts_7e01_in_front_of_every_unit_but_the_rpu():
+    el = H.aud() + H.vps() + H.slice_(H.IDR_N_LP, H.SLICE_I) + rpu()
+    out = ffi.new("uint8_t[]", lib.ff_disctl_hevc_wrap_size(el, len(el)))
+    n = lib.ff_disctl_hevc_wrap_layer(el, len(el), out)
+    got = bytes(ffi.buffer(out, n))
+    assert got == wrapped(el)
+    assert got.count(b"\0\0\1\x7e\x01") == 3, "delimiter, VPS, slice wrapped"
+    assert got.endswith(rpu()), "the RPU as it is"
+
+
+def run_dv(base, el, merged=True):
+    """A title of an HEVC video and its Dolby Vision enhancement layer (one
+    segment): the frames per track (bytes, time) and the video's warnings."""
+    tr = ffi.new("DRTitleTrack[]", [[codec_id("hevc"), lib.DR_KIND_VIDEO, 0, 0, 0, 0, 0],
+                                    [codec_id("hevc"), lib.DR_KIND_LAYER, 0, 0, 0, 0,
+                                     lib.DR_LAYER_MERGED if merged else 0]])
+    cfg = ffi.new("DRTitleConfig *", {"nb_tracks": 2, "tracks": tr, "tolerance": 1080000, "lpcm_hd": 0})
+    t = ffi.new("DRTitle **")
+    out = {0: [], 1: []}
+
+    def drain():
+        while True:
+            f = ffi.new("DRFrame *")
+            k = ffi.new("int *")
+            if lib.ff_disctl_title_frame(t[0], k, f):
+                return
+            out[k[0]].append((bytes(ffi.buffer(f.data, f.size)) if f.size else b"", f.time))
+            lib.ff_disctl_frame_unref(f)
+    assert lib.ff_disctl_title_open(t, ffi.NULL, cfg) == 0
+    assert lib.ff_disctl_title_segment(t[0]) == 0
+    for (b, tb), (e, te) in zip(base, el + [(None, None)] * (len(base) - len(el))):
+        assert lib.ff_disctl_title_payload(t[0], 0, b, len(b), tb, 0) == 0
+        if e is not None:
+            assert lib.ff_disctl_title_payload(t[0], 1, e, len(e), te, 0) == 0
+        drain()
+    for e, te in el[len(base):]:
+        assert lib.ff_disctl_title_payload(t[0], 1, e, len(e), te, 0) == 0
+    assert lib.ff_disctl_title_finish(t[0]) == 0
+    drain()
+    w = ffi.new("int64_t *")
+    assert lib.ff_disctl_title_track_result(t[0], 0, ffi.new("int64_t *"), w, ffi.new("int64_t *")) == 0
+    lib.ff_disctl_title_close(t)
+    return out, w[0]
+
+
+def test_each_video_frame_carries_its_enhancement_picture():
+    units = stream(gops=2)
+    base = [(u, t) for u, t, _ in units]
+    el = el_units(units)
+    out, warnings = run_dv(base, el)
+    assert out[1] == [], "no track of its own"
+    assert len(out[0]) == len(units)
+    for (b, t), (e, _), o in zip(base, el, out[0]):
+        assert o == (without(b) + wrapped(without(e)), t - BASE), "title times start at the first picture's"
+    assert warnings == 0
+
+
+def test_separate_the_enhancement_layer_is_a_track_with_the_video_times():
+    units = stream(gops=2)
+    base = [(u, t) for u, t, _ in units]
+    el = el_units(units)
+    out, warnings = run_dv(base, el, merged=False)
+    assert [o for o in out[0]] == [(without(b), t - BASE) for b, t in base]
+    assert [o for o in out[1]] == [(without(e), t - BASE) for e, t in el]
+    assert warnings == 0
+
+
+def test_a_video_frame_without_its_enhancement_picture_goes_on_alone_with_a_warning():
+    units = stream(gops=2)
+    base = [(u, t) for u, t, _ in units]
+    el = el_units(units)
+    del el[2 * N - 3]                                 # a damaged disc: one enhancement picture missing
+    out, warnings = run_dv(base, el)
+    assert len(out[0]) == len(units)
+    assert out[0][2 * N - 3] == (without(base[2 * N - 3][0]), base[2 * N - 3][1] - BASE), "the base picture alone"
+    assert warnings == 1

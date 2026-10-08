@@ -191,6 +191,9 @@ static int disc_read_packet(AVFormatContext *s, AVPacket *pkt)
 static const AVOption disc_options[] = {
     {"title",           "the title to open (0 = the first of the disc's title list; -1 = none: only the disc info)", OFFSET(opt_title), AV_OPT_TYPE_INT, { .i64=0 }, -1, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
     {"part",            "with title: only that part of it (a title playing whole stream files back to back), from 0; -1 = the whole title", OFFSET(opt_part), AV_OPT_TYPE_INT, { .i64=-1 }, -1, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
+    {"dolby_vision",    "Dolby Vision titles: the enhancement layer (with its metadata) merged into the video's frames, as one track, or a track of its own", OFFSET(opt_dolby_vision), AV_OPT_TYPE_INT, { .i64=0 }, 0, 1, AV_OPT_FLAG_DECODING_PARAM, .unit = "dolby_vision" },
+    {"merged",          "one track: each frame the base picture, then the enhancement picture's units", 0, AV_OPT_TYPE_CONST, { .i64=0 }, 0, 0, AV_OPT_FLAG_DECODING_PARAM, .unit = "dolby_vision" },
+    {"separate",        "the enhancement layer as a track of its own, as on the disc", 0, AV_OPT_TYPE_CONST, { .i64=1 }, 0, 0, AV_OPT_FLAG_DECODING_PARAM, .unit = "dolby_vision" },
     {"second_view",     "3-D titles: read the second view as a track of its own (a second layer of the video)", OFFSET(opt_second_view), AV_OPT_TYPE_BOOL, { .i64=0 }, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
     {"min_length",      "titles shorter than this (seconds) are listed, not selected", OFFSET(opt_min_length), AV_OPT_TYPE_INT, { .i64=0 }, 0, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
     {"keydb",           "AACS key files (KEYDB.cfg), read in this order",          OFFSET(opt_keydb),          AV_OPT_TYPE_STRING | AV_OPT_TYPE_FLAG_ARRAY, { .arr = NULL }, 0, 0, AV_OPT_FLAG_DECODING_PARAM },

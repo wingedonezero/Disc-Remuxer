@@ -316,12 +316,20 @@ static int es_open(const AVFormatContext *ctx, const AVStream *st, EsOut *o, con
     int profile = o->avctx ? o->avctx->profile : par->profile;
 
     const AVDictionaryEntry *eye = av_dict_get(st->metadata, "eye", NULL, 0);
+    const AVDictionaryEntry *dv = av_dict_get(st->metadata, "dolby_vision", NULL, 0);
     int second = second_view(st);
 
     o->opened = 1;
     if (eye) {
         snprintf(layout, sizeof(layout), "_%s eye", eye->value);
         snprintf(o->layout, sizeof(o->layout), "%s eye", eye->value);
+    }
+    /* Dolby Vision: DV (both layers and the metadata in one file), or the
+     * layer the file holds (BL, EL) */
+    if (dv) {
+        const char *what = !strcmp(dv->value, "BL+EL+RPU") ? "DV" : !strcmp(dv->value, "EL") ? "DV EL" : "DV BL";
+        snprintf(layout, sizeof(layout), "_%s", what);
+        snprintf(o->layout, sizeof(o->layout), "%s", what);
     }
     if (audio) {
         const AVChannelLayout *cl = par->ch_layout.nb_channels ? &par->ch_layout :
@@ -455,6 +463,7 @@ int open_title(const char *format, const char *source, int title, int part, int 
         av_dict_set_int(&opts, "part", part, 0);
     if (second_view)
         av_dict_set_int(&opts, "second_view", 1, 0);
+    av_dict_set(&opts, "dolby_vision", setting_text("bluray.dolby_vision"), 0);
     av_dict_set_int(&opts, "read_attempts", setting_int("read.attempts"), 0);
     av_dict_set(&opts, "udf_reader", setting_text("read.udf_reader"), 0);
     if (nb_keys) {

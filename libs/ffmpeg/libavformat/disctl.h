@@ -778,7 +778,13 @@ typedef struct DRTitleTrack {
     int            audio_flags;    /**< DR_AUDIO_EXTRACTED, DR_AUDIO_EXTENDED */
     int            width, height;  /**< sub-pictures: the canvas they are drawn on (0 x 0: not known) */
     int            sub_flags;      /**< DR_SUB_FORCED_ONLY */
+    int            layer_flags;    /**< DR_LAYER_MERGED */
 } DRTitleTrack;
+
+/** A second layer (DR_KIND_LAYER) of HEVC (a Dolby Vision enhancement layer
+ *  with its metadata) whose pictures go into the master video's frames
+ *  (ff_disctl_hevc_wrap_layer) instead of a track of their own. */
+#define DR_LAYER_MERGED 0x0001
 
 /** A subtitle track of what a player shows with subtitles switched off:
  *  only the objects marked forced (PGS: object_forced_on_flag). */
@@ -884,6 +890,15 @@ void ff_disctl_hevc_dropped_log(const DRHevcDropped *d, const char *what);
  *  out, 1 kept before a CRA picture, 2 kept before a picture that is no
  *  random access point (a stream fault), < 0 on failure. */
 int ff_disctl_hevc_seq_end(DRFrame *f, const DRFrame *next);
+/** A Dolby Vision enhancement-layer picture (n bytes of Annex B NAL units)
+ *  as the units that follow its base-layer picture in one track, into out
+ *  (room for n + 2 per unit): each unit keeps its start code; a unit of the
+ *  types 62 (the metadata, RPU) and 63 stays as it is, every other one goes
+ *  behind the 2-byte NAL unit header 7E 01 (nal_unit_type 63, nuh_layer_id
+ *  0, TemporalId 0). Returns the bytes written. */
+int ff_disctl_hevc_wrap_layer(const uint8_t *p, int n, uint8_t *out);
+/** The most bytes ff_disctl_hevc_wrap_layer writes for p. */
+int ff_disctl_hevc_wrap_size(const uint8_t *p, int n);
 int ff_disctl_mlp_check(const uint8_t *data, int size);
 int ff_disctl_spu_check(const uint8_t *data, int size);
 /* PGS display sets (disctl_pgs.c): 1 when data is one display set (from a

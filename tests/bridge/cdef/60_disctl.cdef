@@ -346,7 +346,9 @@ typedef struct DRTitleTrack {
     int audio_flags;
     int width, height;
     int sub_flags;
+    int layer_flags;
 } DRTitleTrack;
+#define DR_LAYER_MERGED ...
 
 typedef struct DRTitleConfig {
     int                 nb_tracks;
@@ -367,6 +369,8 @@ int  ff_disctl_title_payload(DRTitle *t, int track, const uint8_t *data, int siz
 int  ff_disctl_title_finish(DRTitle *t);
 int  ff_disctl_title_frame(DRTitle *t, int *track, DRFrame *frame);
 int  ff_disctl_title_track_result(const DRTitle *t, int track, int64_t *frames, int64_t *warnings, int64_t *delay);
+int  ff_disctl_hevc_wrap_layer(const uint8_t *p, int n, uint8_t *out);
+int  ff_disctl_hevc_wrap_size(const uint8_t *p, int n);
 int  ff_disctl_h264_clean(const uint8_t *p, int n, uint8_t *out, int64_t dropped_units[32], int64_t *stuffing,
                           int *changed);
 int  ff_disctl_title_chapters(const DRTitle *t, const DRChapterPlan *plan, DRChapter **out, int *nb_out);

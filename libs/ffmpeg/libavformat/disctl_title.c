@@ -86,6 +86,7 @@ typedef struct Track {
     int64_t       layer_dropped[32];  /* NAL units taken out, per type */
     int64_t       layer_stuffing;
     int64_t       layer_alone;   /* pictures without a master video frame (left out) */
+    DRHevcDropped el_dropped;    /* HEVC second layer: what its clean-up took out */
     /* HEVC: a frame with an end of sequence / end of bitstream unit, waiting
      * for the next picture (ff_disctl_hevc_seq_end) */
     DRFrame       seq_held;
@@ -99,6 +100,7 @@ typedef struct Track {
 typedef struct LayerKey {
     int64_t  src, time, dur;
     unsigned flags;
+    DRFrame  f;                  /* a merged second layer: the master frame itself, waiting for its picture */
 } LayerKey;
 
 #define EVENT_KINDS  64
@@ -130,6 +132,8 @@ struct DRTitle {
     LayerKey     *bq;            /* master video frames waiting for their layer picture */
     int           bq_head, bq_n, bq_cap;
     int64_t       layer_missing; /* master video frames without a layer picture */
+    int           layer_hevc;    /* the second layer is HEVC (a Dolby Vision enhancement layer) */
+    int           layer_merged;  /* its pictures go into the master frames (DR_LAYER_MERGED) */
 };
 
 static const char *const event_names[] = {
@@ -348,7 +352,7 @@ static int track_out(void *opaque, DRFrame *f)
     return emit(k->title, k, f);
 }
 
-static int layer_key(DRTitle *t, const DRFrame *f);
+static int layer_key(DRTitle *t, DRFrame *f);
 static int layer_match(DRTitle *t, int final);
 
 /* A video frame on its way out: its second-layer key taken, given out,
@@ -357,9 +361,13 @@ static int video_out(DRTitle *t, Track *k, DRFrame *f)
 {
     int ret;
 
-    if (t->layer >= 0 && (f->dur || f->size) && (ret = layer_key(t, f)) < 0) {
-        ff_disctl_frame_unref(f);
-        return ret;
+    if (t->layer >= 0 && (f->dur || f->size)) {
+        if ((ret = layer_key(t, f)) < 0) {
+            ff_disctl_frame_unref(f);
+            return ret;
+        }
+        if (t->layer_merged)            /* it leaves with its layer picture */
+            return layer_match(t, 0);
     }
     if ((ret = emit(t, k, f)) < 0)
         return ret;
@@ -681,7 +689,7 @@ static int seg_frame(void *opaque, DRFrame *f);
 #define LAYER_TOLERANCE (DR_TICKS_PER_SECOND / 1000)
 #define LAYER_WINDOW    64              /* pictures looked at for a master frame's partner */
 
-static int layer_key(DRTitle *t, const DRFrame *f)
+static int layer_key(DRTitle *t, DRFrame *f)
 {
     if (t->bq_head + t->bq_n == t->bq_cap) {
         if (t->bq_head) {
@@ -697,6 +705,10 @@ static int layer_key(DRTitle *t, const DRFrame *f)
         }
     }
     t->bq[t->bq_head + t->bq_n++] = (LayerKey){ f->src, f->time, f->dur, f->flags };
+    if (t->layer_merged) {
+        t->bq[t->bq_head + t->bq_n - 1].f = *f;
+        memset(f, 0, sizeof(*f));
+    }
     return 0;
 }
 
@@ -725,7 +737,7 @@ static int layer_add(Track *k, DRFrame *f)
 static void layer_drop_head(Track *k)
 {
     DRFrame *f = &k->lq[k->lq_head];
-    if (!k->layer_alone++)
+    if (k->layer_alone++ < (k->title->layer_hevc ? 10 : 1))
         av_log(k->title->log, AV_LOG_WARNING, "Title timeline: track %d: a second-layer picture at %"PRId64" ticks "
                "has no video frame of its time: left out\n", k->index, f->src);
     ff_disctl_frame_unref(f);
@@ -734,14 +746,57 @@ static void layer_drop_head(Track *k)
         k->lq_head = 0;
 }
 
-static void layer_miss_head(DRTitle *t)
+static int layer_miss_head(DRTitle *t)
 {
-    if (!t->layer_missing++)
+    LayerKey *b = &t->bq[t->bq_head];
+    int ret = 0;
+
+    if (t->layer_hevc) {
+        /* Dolby Vision: the base frame goes on without its enhancement
+         * picture, so without its metadata (the RPU travels in the
+         * enhancement layer) */
+        if (t->layer_missing++ < 10)
+            av_log(t->log, AV_LOG_WARNING, "Title timeline: the video frame at %s has no Dolby Vision enhancement "
+                   "picture: it goes on without (no Dolby Vision metadata for it)\n",
+                   hms((char[32]){ 0 }, 32, b->time));
+    } else if (!t->layer_missing++)
         av_log(t->log, AV_LOG_ERROR, "Title timeline: the video frame at %"PRId64" ticks has no second-layer "
-               "picture\n", t->bq[t->bq_head].src);
+               "picture\n", b->src);
+    if (t->layer_merged) {
+        DRFrame f = b->f;
+        memset(&b->f, 0, sizeof(b->f));
+        ret = emit(t, &t->t[0], &f);
+    }
     t->bq_head++;
     if (!--t->bq_n)
         t->bq_head = 0;
+    return ret;
+}
+
+/* A Dolby Vision enhancement picture (its end of sequence units decided as
+ * its base frame's were) into its base frame: one frame of the merged
+ * track. */
+static int layer_merge(DRTitle *t, LayerKey *b, DRFrame *el)
+{
+    DRFrame f = b->f;
+    AVBufferRef *buf;
+    int ret, o;
+
+    memset(&b->f, 0, sizeof(b->f));
+    if (!(buf = av_buffer_alloc(f.size + ff_disctl_hevc_wrap_size(el->data, el->size) +
+                                AV_INPUT_BUFFER_PADDING_SIZE))) {
+        ff_disctl_frame_unref(&f);
+        return AVERROR(ENOMEM);
+    }
+    memcpy(buf->data, f.data, f.size);
+    o = f.size + ff_disctl_hevc_wrap_layer(el->data, el->size, buf->data + f.size);
+    memset(buf->data + o, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+    av_buffer_unref(&f.buf);
+    f.buf  = buf;
+    f.data = buf->data;
+    f.size = o;
+    ret = emit(t, &t->t[0], &f);
+    return ret;
 }
 
 /* Pairs the waiting master frames with the waiting pictures; final: what
@@ -763,7 +818,8 @@ static int layer_match(DRTitle *t, int final)
         if (m < 0) {
             if (!final && k->lq_n < LAYER_WINDOW)
                 return 0;                   /* its picture may still come */
-            layer_miss_head(t);
+            if ((ret = layer_miss_head(t)) < 0)
+                return ret;
             continue;
         }
         while (m-- > 0)
@@ -773,13 +829,27 @@ static int layer_match(DRTitle *t, int final)
             k->lq_head++;
             if (!--k->lq_n)
                 k->lq_head = 0;
+            /* HEVC: the picture's end of sequence units go as its base
+             * frame's went (taken out there: taken out here too) */
+            if (t->layer_hevc && (f.flags & DR_F_SEQ_END) && !(b->flags & DR_F_SEQ_END) &&
+                (ret = ff_disctl_hevc_seq_end(&f, NULL)) < 0) {
+                ff_disctl_frame_unref(&f);
+                return ret;
+            }
             f.time  = b->time;
             f.dur   = b->dur;
             f.flags = (f.flags & ~DR_F_KEY) | (b->flags & DR_F_KEY);
+            if (t->layer_merged) {
+                ret = layer_merge(t, &t->bq[t->bq_head], &f);
+                ff_disctl_frame_unref(&f);
+            }
             t->bq_head++;
             if (!--t->bq_n)
                 t->bq_head = 0;
-            if ((ret = emit(t, k, &f)) < 0)
+            if (t->layer_merged) {
+                if (ret < 0)
+                    return ret;
+            } else if ((ret = emit(t, k, &f)) < 0)
                 return ret;
         }
     }
@@ -895,6 +965,35 @@ static int layer_payload(DRTitle *t, Track *k, const uint8_t *data, int size, in
     return 0;
 }
 
+/* An HEVC second layer (a Dolby Vision enhancement layer): its access
+ * units as FFmpeg's HEVC parser cuts them in disc mode (the base layer's
+ * rules), each with the time of the payload with its picture, cleaned as
+ * the base layer's are, into the joiner. */
+static int layer_unit(void *opaque, const DRUnit *u)
+{
+    Track *k = opaque;
+    DRFrame f = { .time = u->time, .pos = u->pos };
+    int changed, seq_end, out;
+
+    if (!(f.buf = av_buffer_alloc(u->size + AV_INPUT_BUFFER_PADDING_SIZE)))
+        return AVERROR(ENOMEM);
+    out = ff_disctl_hevc_clean(u->data, u->size, f.buf->data, &k->el_dropped, &changed, &seq_end);
+    if (!changed) {
+        memcpy(f.buf->data, u->data, u->size);
+        out = u->size;
+    }
+    memset(f.buf->data + out, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+    f.data = f.buf->data;
+    f.size = out;
+    if (seq_end)
+        f.flags |= DR_F_SEQ_END;
+    if (!out) {
+        ff_disctl_frame_unref(&f);
+        return 0;
+    }
+    return seg_frame(k, &f);
+}
+
 /* The segment's end: the last picture of the second layer. */
 static int layer_flush(Track *k)
 {
@@ -984,6 +1083,11 @@ static int seg_open(DRTitle *t)
         k->tail_from = -1;
         if (k->cfg.kind == DR_KIND_CAPTION)
             continue;                    /* fed by the video's side units */
+        if (k->cfg.kind == DR_KIND_LAYER && k->cfg.codec == AV_CODEC_ID_HEVC) {
+            if ((ret = ff_disctl_frames_open(&k->cut, t->log, AV_CODEC_ID_HEVC, layer_unit, k)) < 0)
+                return ret;
+            continue;
+        }
         if (k->cfg.kind == DR_KIND_LAYER) {
             k->acc_len     = 0;          /* its pictures go to the joiner as they are cut */
             k->acc_pos     = 0;
@@ -1049,7 +1153,8 @@ static int seg_end(DRTitle *t)
         return ret;
     for (int i = 1; i < t->cfg.nb_tracks; i++) {
         Track *k = &t->t[i];
-        if (k->cfg.kind == DR_KIND_LAYER && (ret = layer_flush(k)) < 0)
+        if (k->cfg.kind == DR_KIND_LAYER &&
+            (ret = k->cfg.codec == AV_CODEC_ID_HEVC ? ff_disctl_frames_flush(k->cut) : layer_flush(k)) < 0)
             return ret;
         if (k->cfg.kind == DR_KIND_CAPTION || k->cfg.kind == DR_KIND_LAYER)
             continue;
@@ -1122,11 +1227,14 @@ int ff_disctl_title_open(DRTitle **tp, void *logctx, const DRTitleConfig *cfg)
             t->cc_track = i;
         }
         if (k->cfg.kind == DR_KIND_LAYER) {
-            if (t->layer >= 0 || k->cfg.codec != AV_CODEC_ID_H264) {
-                ret = AVERROR(EINVAL);   /* one second layer per title, H.264 (MVC) so far */
+            if (t->layer >= 0 || (k->cfg.codec != AV_CODEC_ID_H264 && k->cfg.codec != AV_CODEC_ID_HEVC) ||
+                ((k->cfg.layer_flags & DR_LAYER_MERGED) && k->cfg.codec != AV_CODEC_ID_HEVC)) {
+                ret = AVERROR(EINVAL);   /* one second layer per title: H.264 (MVC) or HEVC (Dolby Vision) */
                 goto fail;
             }
-            t->layer = i;
+            t->layer        = i;
+            t->layer_hevc   = k->cfg.codec == AV_CODEC_ID_HEVC;
+            t->layer_merged = !!(k->cfg.layer_flags & DR_LAYER_MERGED);
             continue;
         }
         if ((ret = ff_disctl_verify_open(&k->verify, logctx, k->cfg.codec, i, k->cfg.kind, on_event, t)) < 0)
@@ -1173,6 +1281,10 @@ static int title_payload(DRTitle *t, int track, const uint8_t *data, int size, i
     k = &t->t[track];
     if (k->cfg.kind == DR_KIND_CAPTION)
         return AVERROR(EINVAL);          /* its data comes from the video */
+    if (k->cfg.kind == DR_KIND_LAYER && k->cfg.codec == AV_CODEC_ID_HEVC) {
+        k->bytes += size;
+        return ff_disctl_frames_write(k->cut, data, size, time);
+    }
     if (k->cfg.kind == DR_KIND_LAYER)
         return layer_payload(t, k, data, size, time);
     if (k->cfg.codec == AV_CODEC_ID_PCM_DVD) {
@@ -1202,6 +1314,23 @@ static int layer_report(DRTitle *t)
     static const char *const names[32] = { [10] = "ends of sequence", [11] = "ends of stream",
                                            [12] = "filler data units" };
     Track *k = &t->t[t->layer];
+
+    if (t->layer_hevc) {
+        /* Dolby Vision: a mismatch costs frames their metadata, the video
+         * itself is whole */
+        ff_disctl_hevc_dropped_log(&k->el_dropped, "Dolby Vision enhancement layer");
+        if (k->layer_alone) {
+            av_log(t->log, AV_LOG_WARNING, "Title timeline: %"PRId64" Dolby Vision enhancement pictures without a "
+                   "video frame of their time were left out\n", k->layer_alone);
+            k->warnings++;
+        }
+        if (t->layer_missing) {
+            av_log(t->log, AV_LOG_WARNING, "Title timeline: %"PRId64" video frames have no Dolby Vision enhancement "
+                   "picture: they play without Dolby Vision metadata\n", t->layer_missing);
+            t->t[0].warnings++;
+        }
+        return 0;
+    }
 
     for (int n = 0; n < 32; n++) {
         if (!k->layer_dropped[n])
@@ -1444,6 +1573,8 @@ void ff_disctl_title_close(DRTitle **tp)
     for (int i = 0; i < t->q_n; i++)
         ff_disctl_frame_unref(&t->q[t->q_head + i].f);
     av_free(t->q);
+    for (int i = 0; i < t->bq_n; i++)
+        ff_disctl_frame_unref(&t->bq[t->bq_head + i].f);
     av_free(t->bq);
     av_free(t->pend);
     av_free(t->ev_count);
