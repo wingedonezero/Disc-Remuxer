@@ -172,7 +172,7 @@ int set_PGCN(vm_t *vm, int pgcN) {
 int get_PGN(vm_t *vm) {
   int pgN = 0;
 
-  assert((vm->state).pgc != NULL);
+  if(!VM_CHECK(vm, (vm->state).pgc != NULL)) return 0;
   while(pgN < (vm->state).pgc->nr_of_programs
         && (vm->state).cellN >= (vm->state).pgc->program_map[pgN])
     pgN++;
