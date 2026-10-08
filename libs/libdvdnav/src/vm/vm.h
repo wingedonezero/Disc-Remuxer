@@ -80,6 +80,8 @@ typedef struct vm_s {
   char          dvd_name[50];
   char          dvd_serial[15];
   int           stopped;
+  int         (*rnd_fn)(void *priv); /* random numbers of the Rnd operation, NULL: rand() */
+  void         *rnd_priv;
   unsigned int  failures;      /* broken assumptions met, see vm_failed() */
   const char   *first_failure; /* where and what the first one was */
 } vm_t;

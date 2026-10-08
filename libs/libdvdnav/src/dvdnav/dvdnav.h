@@ -205,6 +205,16 @@ DVDNAV_API dvdnav_status_t dvdnav_get_region_mask(dvdnav_t *self, int32_t *regio
 DVDNAV_API dvdnav_status_t dvdnav_set_readahead_flag(dvdnav_t *self, int32_t read_ahead_flag);
 
 /*
+ * Sets where the VM's Rnd operation (a set command that picks a number from
+ * 1 to N) takes its random numbers from: fn(priv) must return a value from 0
+ * to RAND_MAX, like rand(). NULL restores the default, rand().
+ * Copies made with dvdnav_dup() afterwards use the same fn and priv, so all
+ * copies of one navigator can share one sequence.
+ */
+DVDNAV_API dvdnav_status_t dvdnav_set_random_source(dvdnav_t *self,
+                                         int (*fn)(void *priv), void *priv);
+
+/*
  * Query whether read-ahead caching/buffering will be used.
  */
 DVDNAV_API dvdnav_status_t dvdnav_get_readahead_flag(dvdnav_t *self, int32_t *read_ahead_flag);

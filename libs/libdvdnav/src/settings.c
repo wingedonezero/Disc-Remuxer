@@ -51,6 +51,15 @@ dvdnav_status_t dvdnav_set_readahead_flag(dvdnav_t *this, int32_t use_readahead)
   return DVDNAV_STATUS_OK;
 }
 
+dvdnav_status_t dvdnav_set_random_source(dvdnav_t *this,
+                                         int (*fn)(void *priv), void *priv) {
+  pthread_mutex_lock(&this->vm_lock);
+  this->vm->rnd_fn = fn;
+  this->vm->rnd_priv = fn ? priv : NULL;
+  pthread_mutex_unlock(&this->vm_lock);
+  return DVDNAV_STATUS_OK;
+}
+
 dvdnav_status_t dvdnav_get_readahead_flag(dvdnav_t *this, int32_t *flag) {
   (*flag) = this->use_read_ahead;
   return DVDNAV_STATUS_OK;

@@ -599,8 +599,12 @@ static void eval_set_op(command_t* command, int32_t op, int32_t reg, int32_t reg
       }
       break;
     case 8: /* SPECIAL CASE - RND! Return numbers between 1 and data. */
-      set_GPRM(command->registers, reg, 1 + ((uint16_t) ((float) data * rand()/(RAND_MAX+1.0))) );
+    {
+      vm_t *vm = command->vm;
+      int r = vm->rnd_fn ? vm->rnd_fn(vm->rnd_priv) : rand();
+      set_GPRM(command->registers, reg, 1 + ((uint16_t) ((float) data * r/(RAND_MAX+1.0))) );
       break;
+    }
     case 9:
       set_GPRM(command->registers, reg, (get_GPRM(command->registers, reg) & data) );
       break;
