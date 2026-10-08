@@ -264,12 +264,18 @@ int details_of_file(const char *path, enum AVMediaType type, Details *d)
     AVFormatContext *fc = NULL;
     DetailsProbe *p = NULL;
     AVPacket *pkt = av_packet_alloc();
+    AVDictionary *opts = NULL;
     int ret, idx;
 
     memset(d, 0, sizeof(*d));
     if (!pkt)
         return AVERROR(ENOMEM);
-    if ((ret = avformat_open_input(&fc, path, NULL, NULL)) < 0 || (ret = avformat_find_stream_info(fc, NULL)) < 0)
+    /* room for enough pictures of a 2160p stream to measure its rate (the
+     * default 5 MB holds a few dozen) */
+    av_dict_set(&opts, "probesize", "67108864", 0);
+    ret = avformat_open_input(&fc, path, NULL, &opts);
+    av_dict_free(&opts);
+    if (ret < 0 || (ret = avformat_find_stream_info(fc, NULL)) < 0)
         goto end;
     if ((ret = idx = av_find_best_stream(fc, type, -1, -1, NULL, 0)) < 0 ||
         (ret = details_probe_open(&p, fc->streams[idx]->codecpar)) < 0)

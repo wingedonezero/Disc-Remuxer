@@ -24,6 +24,7 @@
 #include "msg.h"
 #include "names.h"
 #include "settings.h"
+#include "codecs.h"
 #include "writer.h"
 
 #ifndef DISC_REMUXER_VERSION
@@ -126,15 +127,20 @@ static void title_overview(const DiscTitleInfo *t, int detail)
     for (int i = 0; i < t->nb_streams; i++) {
         const DiscStreamInfo *k = &t->streams[i];
         char jc[64], jsl[16], n1[24], n2[24], n3[24], n4[24], n5[24], n6[24], ji[24], jf[24], jo[24];
+        char d[96], jd[128], pl[48], jp[64], fr[48], jr[64], as[24], ja[32], lt[64], jl2[96], dv[48], jv[64], fq[32];
+        char lm[24];
+        (void)dv; (void)fr;
         nv += k->type == AVMEDIA_TYPE_VIDEO;
         na += k->type == AVMEDIA_TYPE_AUDIO;
         ns += k->type == AVMEDIA_TYPE_SUBTITLE;
         av_bprintf(&streams,
                  "%s{\"index\":%d,\"kind\":\"%s\",\"codec\":%s,\"language\":%s,\"inner_track\":%s,"
                  "\"from_track\":%s,\"forced\":%s,\"second_view\":%s,\"second_layer\":%s,\"offset_sequence\":%s,\"width\":%s,"
-                 "\"height\":%s,\"channels\":%s,\"sample_rate\":%s,\"bits\":%s,\"bit_rate\":%s}",
+                 "\"height\":%s,\"channels\":%s,\"sample_rate\":%s,\"bits\":%s,\"bit_rate\":%s,"
+                 "\"description\":%s,\"profile\":%s,\"dolby_vision\":%s,\"frame_rate\":%s,\"aspect\":%s,"
+                 "\"layout\":%s,\"layout_mask\":%s}",
                  i ? "," : "", i, av_get_media_type_string(k->type),
-                 json_str(jc, sizeof(jc), codec_label(k->codec, AV_PROFILE_UNKNOWN)),
+                 json_str(jc, sizeof(jc), codec_short(k)),
                  json_str(jsl, sizeof(jsl), k->language), json_index(ji, sizeof(ji), k->inner_track),
                  json_index(jf, sizeof(jf), k->from_track), k->forced ? "true" : "false",
                  k->second_view ? "true" : "false", k->second_layer ? "true" : "false",
@@ -142,7 +148,15 @@ static void title_overview(const DiscTitleInfo *t, int detail)
                  json_num(n1, sizeof(n1), k->width),
                  json_num(n2, sizeof(n2), k->height), json_num(n3, sizeof(n3), k->channels),
                  json_num(n4, sizeof(n4), k->sample_rate), json_num(n5, sizeof(n5), k->bits),
-                 json_num(n6, sizeof(n6), k->bit_rate));
+                 json_num(n6, sizeof(n6), k->bit_rate),
+                 json_str(jd, sizeof(jd), codec_description(k, k->second_view && k->from_track >= 0 ? &t->streams[k->from_track] : NULL, d, sizeof(d))),
+                 *codec_profile_level(k, pl, sizeof(pl)) ? json_str(jp, sizeof(jp), pl) : "null",
+                 k->dolby_vision[0] ? json_str(jv, sizeof(jv), k->dolby_vision) : "null",
+                 k->frame_rate.num > 0 ? (snprintf(fq, sizeof(fq), "%d/%d", k->frame_rate.num, k->frame_rate.den),
+                                          json_str(jr, sizeof(jr), fq)) : "null",
+                 *aspect_text(k, as, sizeof(as)) ? json_str(ja, sizeof(ja), as) : "null",
+                 *layout_text(k, lt, sizeof(lt)) && k->layout ? json_str(jl2, sizeof(jl2), lt) : "null",
+                 json_num(lm, sizeof(lm), (int64_t)k->layout));
     }
     for (int i = 0; i < t->nb_files; i++) {
         char jf[300];
@@ -184,8 +198,24 @@ static void title_overview(const DiscTitleInfo *t, int detail)
             if (k->offset_sequence >= 0)
                 snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "  3-D offset sequence %d",
                          k->offset_sequence);
-            log_text(LOG_INFO, "       %-2d %-8s %-8s %-3s%s%s", i, av_get_media_type_string(k->type),
-                     codec_label(k->codec, AV_PROFILE_UNKNOWN), k->language, extra, link);
+            {
+                /* what the stream is: its codec in full, then its details */
+                char d[96], det[160] = "", a[24], r[48], l[64], b[24];
+                if (k->type == AVMEDIA_TYPE_VIDEO && k->width && !k->forced)
+                    snprintf(det, sizeof(det), "  %dx%d %s %s", k->width, k->height, aspect_text(k, a, sizeof(a)),
+                             frame_rate_text(k, r, sizeof(r)));
+                if (k->type == AVMEDIA_TYPE_AUDIO && k->channels) {
+                    snprintf(det, sizeof(det), "  %s %d Hz", layout_text(k, l, sizeof(l)), k->sample_rate);
+                    if (k->bits && codec_lossless(k))
+                        snprintf(det + strlen(det), sizeof(det) - strlen(det), " %d-bit", k->bits);
+                    if (*bit_rate_text(k->bit_rate, b, sizeof(b)) && !codec_lossless(k))
+                        snprintf(det + strlen(det), sizeof(det) - strlen(det), " %s", b);
+                }
+                log_text(LOG_INFO, "       %-2d %-8s %-3s %s%s%s%s", i, av_get_media_type_string(k->type),
+                         k->language[0] ? k->language : "   ",
+                         codec_description(k, k->second_view && k->from_track >= 0 ? &t->streams[k->from_track] : NULL, d,
+                                           sizeof(d)), det, extra, link);
+            }
         }
         for (int p = 0; p < t->nb_parts; p++) {
             const DiscPartInfo *q = &t->parts[p];

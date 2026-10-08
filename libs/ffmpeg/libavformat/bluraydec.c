@@ -58,6 +58,7 @@ typedef struct BlurayDemuxContext {
     DiscTsFeed        *feeds;
     int               *pids;
     int64_t           *chapter_times;
+    BlurayDetailsCache *details;     /* the title list's stream details, per clip */
 } BlurayDemuxContext;
 
 static const char *clip_name(AVFormatContext *s, int k)
@@ -101,6 +102,7 @@ static void bluray_close(AVFormatContext *s)
     av_freep(&c->feeds);
     av_freep(&c->pids);
     av_freep(&c->chapter_times);
+    ff_bluray_details_cache_free(&c->details);
     for (int i = 0; i < c->nb_files; i++)
         av_free(c->files[i]);
     av_freep(&c->files);
@@ -168,6 +170,7 @@ end:
  * chapter marks. */
 static int describe_titles(AVFormatContext *s)
 {
+    DiscContext *d = s->priv_data;
     BlurayDemuxContext *c = ff_disc_part(s);
     BlurayDisc *b = &c->disc;
 
@@ -215,6 +218,20 @@ static int describe_titles(AVFormatContext *s)
             ds->second_layer    = !!(tk->flags & BLURAY_TRACK_LAYER2);
             memcpy(ds->language, tk->lang, sizeof(ds->language));
         }
+        /* the title list only (no title opened): each track's details from
+         * the stream */
+        if (d->opt_title < 0 && t->nb_tracks && d->opt_details) {
+            DiscStreamInfo **dsp = av_calloc(t->nb_tracks, sizeof(*dsp));
+            if (!dsp)
+                return AVERROR(ENOMEM);
+            for (int k = 0; k < t->nb_tracks; k++)
+                dsp[k] = &dt->streams[k];
+            ret = ff_bluray_title_details(s, d->fs, c->aacs, t, dsp, &c->details);
+            av_free(dsp);
+            if (ret < 0)
+                av_log(s, AV_LOG_WARNING, "Blu-ray: title %s: its stream details cannot be read: %s\n", t->name,
+                       av_err2str(ret));
+        }
         for (int k = 0; k < t->nb_marks; k++) {
             DiscChapterInfo *ch = ff_disc_title_add_chapter(dt);
             if (!ch)
@@ -240,6 +257,7 @@ static int readable(const BlurayTrack *tk)
 {
     switch (tk->codec) {
     case AV_CODEC_ID_H264:
+    case AV_CODEC_ID_HEVC:
     case AV_CODEC_ID_MPEG2VIDEO:
     case AV_CODEC_ID_VC1:  return tk->type == AVMEDIA_TYPE_VIDEO && (tk->from_track < 0 || second_view(tk));
     case AV_CODEC_ID_AC3:
@@ -267,7 +285,7 @@ static int open_title(AVFormatContext *s, const BlurayTitle *t, int part)
     DiscContext *d = s->priv_data;
     BlurayDemuxContext *c = ff_disc_part(s);
     const BlurayClip *c0 = t->segs[t->track_seg].items[0].clip;
-    int bdav = c0->hdr.type == MKBETAG('M', '2', 'T', 'S'), n = 0, nb_pids = 0, nb_marks;
+    int bdav = c0->hdr.type == MKBETAG('M', '2', 'T', 'S'), n = 0, nb_pids = 0, nb_marks, dv = -1;
     int s0 = 0, s1 = t->nb_segs;
     uint64_t *marks;
 
@@ -319,9 +337,10 @@ static int open_title(AVFormatContext *s, const BlurayTitle *t, int part)
                t->nb_tracks ? avcodec_get_name(t->tracks[0].codec) : "none");
         return AVERROR_PATCHWELCOME;
     }
-    if (!(c->tracks = av_calloc(t->nb_tracks, sizeof(*c->tracks))) ||
-        !(c->feeds  = av_calloc(t->nb_tracks, sizeof(*c->feeds))) ||
-        !(c->pids   = av_calloc(t->nb_tracks, sizeof(*c->pids))) ||
+    /* one more for a Dolby Vision enhancement layer (read from its own PID) */
+    if (!(c->tracks = av_calloc(t->nb_tracks + 1, sizeof(*c->tracks))) ||
+        !(c->feeds  = av_calloc(t->nb_tracks + 1, sizeof(*c->feeds))) ||
+        !(c->pids   = av_calloc(t->nb_tracks + 1, sizeof(*c->pids))) ||
         !(c->chapter_times = av_calloc(FFMAX(t->nb_marks, 1), sizeof(*c->chapter_times))))
         return AVERROR(ENOMEM);
     for (int i = 0; i < t->nb_tracks; i++) {
@@ -362,6 +381,13 @@ static int open_title(AVFormatContext *s, const BlurayTitle *t, int part)
             if (av_dict_set(&st->metadata, "eye", second_view(tk) == base_right ? "left" : "right", 0) < 0)
                 return AVERROR(ENOMEM);
         }
+        /* Dolby Vision: the base layer's stream says how its enhancement
+         * layer is written */
+        if (tk->flags & BLURAY_TRACK_LAYER2) {
+            dv = i;
+            if (av_dict_set(&st->metadata, "dolby_vision", d->opt_dolby_vision ? "BL" : "BL+EL+RPU", 0) < 0)
+                return AVERROR(ENOMEM);
+        }
         /* what the units are, for the caller's log */
         if (tk->codec == AV_CODEC_ID_HDMV_PGS_SUBTITLE &&
             av_dict_set(&st->metadata, "picture", (tk->flags & BLURAY_TRACK_FORCED) ?
@@ -382,6 +408,35 @@ static int open_title(AVFormatContext *s, const BlurayTitle *t, int part)
         else
             av_log(s, AV_LOG_VERBOSE, "Blu-ray: track %d -> stream %d: %s, PID 0x%04x, key 0x%04x%s\n", i, n,
                    avcodec_get_name(tk->codec), tk->pid, f->key[0], f->key[0] ? "" : " (any)");
+        n++;
+    }
+    /* the Dolby Vision enhancement layer (with its metadata, the RPU): its
+     * own PID; merged: a second layer whose pictures go into the video's
+     * frames (no stream of its own), separate: a stream of its own */
+    if (dv >= 0) {
+        const BlurayTrack *tk = &t->tracks[dv];
+        DiscTsFeed *f = &c->feeds[n];
+        f->pid     = tk->sel1;
+        f->nb_keys = ff_bluray_track_keys(tk, bdav, f->key);
+        c->tracks[n].codec       = AV_CODEC_ID_HEVC;
+        c->tracks[n].kind        = DR_KIND_LAYER;
+        c->tracks[n].layer_flags = d->opt_dolby_vision ? 0 : DR_LAYER_MERGED;
+        if (d->opt_dolby_vision) {
+            AVStream *st = avformat_new_stream(s, NULL);
+            if (!st)
+                return AVERROR(ENOMEM);
+            st->id                   = f->pid | f->key[0] << 16;
+            st->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
+            st->codecpar->codec_id   = AV_CODEC_ID_HEVC;
+            avpriv_set_pts_info(st, 64, 1, DR_TICKS_PER_SECOND);
+            if ((tk->lang[0] && av_dict_set(&st->metadata, "language", tk->lang, 0) < 0) ||
+                av_dict_set_int(&st->metadata, "disc_track", dv, 0) < 0 ||
+                av_dict_set(&st->metadata, "dolby_vision", "EL", 0) < 0)
+                return AVERROR(ENOMEM);
+        }
+        add_pid(c, &nb_pids, f->pid);
+        av_log(s, AV_LOG_VERBOSE, "Blu-ray: track %d: its Dolby Vision enhancement layer, PID 0x%04x, key 0x%04x: %s\n",
+               dv, f->pid, f->key[0], d->opt_dolby_vision ? "a stream of its own" : "merged into the video's frames");
         n++;
     }
     if (!(marks = av_calloc(FFMAX(t->nb_marks, 1), sizeof(*marks))))

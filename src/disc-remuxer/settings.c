@@ -27,6 +27,7 @@ typedef struct Setting {
 static const char *const udf_readers[]  = { "netbsd", "linux", NULL };
 static const char *const cell_modes[]   = { "auto", "walk", "trim", "walk_trim", NULL };
 static const char *const title_orders[] = { "auto", "scan_first", "table", NULL };
+static const char *const dv_layers[]    = { "merged", "separate", NULL };
 
 static const Setting registry[] = {
     { "read", "attempts", SET_INT, "5", 1, 99, NULL,
@@ -64,6 +65,11 @@ static const Setting registry[] = {
       "3-D titles: also write the second view (the MVC dependent view, a .mvc file next to the base view's "
       ".h264; each file names its eye, from the playlist). Off: a 3-D title is written in 2-D. The demux "
       "option --second-view <titles> turns it on for chosen titles of one run." },
+    { "bluray", "dolby_vision", SET_CHOICE, "merged", 0, 0, dv_layers,
+      "Dolby Vision titles (UHD Blu-ray): merged writes one video file, each frame the base layer's picture "
+      "followed by its enhancement layer's picture and metadata (the single-track form dovi_tool, mkvmerge and "
+      "players read); separate writes the base layer and the enhancement layer (with the metadata) as two files, "
+      "as they are on the disc." },
     { "log", "debug_file", SET_BOOL, "false", 0, 0, NULL,
       "Also write a debug log with every detail into the output folder, next to the log." },
 };

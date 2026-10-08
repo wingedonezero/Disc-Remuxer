@@ -48,6 +48,9 @@
                                     its stage it lasts one delay step; the title pipeline makes
                                     it last until the track's next unit starts (the last one:
                                     until the video's end) */
+#define DR_F_SEQ_END  0x0100   /**< video (HEVC): the frame carries an end of sequence / end of
+                                    bitstream unit; the title timeline decides on it when it
+                                    knows the next picture (ff_disctl_hevc_seq_end) */
 
 typedef struct DRFrame {
     AVBufferRef *buf;      /**< owns the bytes (NULL for a marker) */
@@ -775,7 +778,13 @@ typedef struct DRTitleTrack {
     int            audio_flags;    /**< DR_AUDIO_EXTRACTED, DR_AUDIO_EXTENDED */
     int            width, height;  /**< sub-pictures: the canvas they are drawn on (0 x 0: not known) */
     int            sub_flags;      /**< DR_SUB_FORCED_ONLY */
+    int            layer_flags;    /**< DR_LAYER_MERGED */
 } DRTitleTrack;
+
+/** A second layer (DR_KIND_LAYER) of HEVC (a Dolby Vision enhancement layer
+ *  with its metadata) whose pictures go into the master video's frames
+ *  (ff_disctl_hevc_wrap_layer) instead of a track of their own. */
+#define DR_LAYER_MERGED 0x0001
 
 /** A subtitle track of what a player shows with subtitles switched off:
  *  only the objects marked forced (PGS: object_forced_on_flag). */
@@ -844,6 +853,7 @@ extern const DRAudioRules ff_disctl_audio_mlp;
 extern const DRVideoRules ff_disctl_video_mpv;
 extern const DRVideoRules ff_disctl_video_vc1;
 extern const DRVideoRules ff_disctl_video_h264;
+extern const DRVideoRules ff_disctl_video_hevc;
 
 /** An H.264 unit (n bytes of Annex B NAL units) into out (room for n): the
  *  NAL units that leave a frame taken out (end of sequence, end of stream,
@@ -854,6 +864,41 @@ extern const DRVideoRules ff_disctl_video_h264;
  *  NAL units as they are). Returns the bytes written. */
 int ff_disctl_h264_clean(const uint8_t *p, int n, uint8_t *out, int64_t dropped_units[32], int64_t *stuffing,
                          int *changed);
+/** What ff_disctl_hevc_clean took out of HEVC units. */
+typedef struct DRHevcDropped {
+    int64_t units[64];          /**< NAL units per nal_unit_type */
+    int64_t other_layer;        /**< NAL units with a nuh_layer_id other than 0 */
+    int64_t short_units;        /**< NAL units too short for their 2-byte header */
+    int64_t stuffing;           /**< zero bytes */
+    int64_t unspecified;        /**< NAL units of the unspecified types 48-61 (kept) */
+} DRHevcDropped;
+/** An HEVC unit (n bytes of Annex B NAL units) into out (room for n): the
+ *  NAL units that leave a frame taken out (filler data, the reserved types,
+ *  units of another layer, units too short for their header) and zero
+ *  stuffing in front of a start code cut to one zero byte, all counted in d;
+ *  end of sequence / end of bitstream units stay (*seq_end set: the title
+ *  timeline decides on them); bytes before the first start code are not
+ *  kept. *changed: 0 when nothing was taken out. Returns the bytes written. */
+int ff_disctl_hevc_clean(const uint8_t *p, int n, uint8_t *out, DRHevcDropped *d, int *changed, int *seq_end);
+/** Log what was taken out (what: the track's words, e.g. "HEVC"). */
+void ff_disctl_hevc_dropped_log(const DRHevcDropped *d, const char *what);
+/** An HEVC frame f with DR_F_SEQ_END, now that the next picture is known
+ *  (next: the next frame, NULL at the title's end): the end of sequence /
+ *  end of bitstream units are taken out of f when nothing depends on them
+ *  (the title ends, or the next picture is an IDR or BLA picture, which
+ *  starts a coded video sequence anyway) and kept otherwise. Returns 0 taken
+ *  out, 1 kept before a CRA picture, 2 kept before a picture that is no
+ *  random access point (a stream fault), < 0 on failure. */
+int ff_disctl_hevc_seq_end(DRFrame *f, const DRFrame *next);
+/** A Dolby Vision enhancement-layer picture (n bytes of Annex B NAL units)
+ *  as the units that follow its base-layer picture in one track, into out
+ *  (room for n + 2 per unit): each unit keeps its start code; a unit of the
+ *  types 62 (the metadata, RPU) and 63 stays as it is, every other one goes
+ *  behind the 2-byte NAL unit header 7E 01 (nal_unit_type 63, nuh_layer_id
+ *  0, TemporalId 0). Returns the bytes written. */
+int ff_disctl_hevc_wrap_layer(const uint8_t *p, int n, uint8_t *out);
+/** The most bytes ff_disctl_hevc_wrap_layer writes for p. */
+int ff_disctl_hevc_wrap_size(const uint8_t *p, int n);
 int ff_disctl_mlp_check(const uint8_t *data, int size);
 int ff_disctl_spu_check(const uint8_t *data, int size);
 /* PGS display sets (disctl_pgs.c): 1 when data is one display set (from a

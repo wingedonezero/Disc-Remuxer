@@ -416,7 +416,9 @@ static int feed(AVFormatContext *s, const AVPacket *pkt)
 
     if (pkt->pts != AV_NOPTS_VALUE)
         time = (pkt->pts < r->pts_ref ? pkt->pts + (1LL << 33) : pkt->pts) * DR_TICKS_PER_PTS;
-    for (int i = 0; i < s->nb_streams; i++) {
+    /* TS: every track of the title (a merged second layer has no stream of
+     * its own); program streams: the streams */
+    for (int i = 0; i < (src->ts ? src->nb_tracks : s->nb_streams); i++) {
         if (src->ts) {
             int j = feed_key(&src->feeds[i], sub->id & 0xffff, (uint32_t)sub->id >> 16);
             if (j < 0)

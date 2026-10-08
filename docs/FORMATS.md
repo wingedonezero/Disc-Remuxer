@@ -15,6 +15,7 @@ things, listed here.
 |---|---|
 | `title` | the title to open (index in the disc's title list, from 0); -1: only the disc info |
 | `second_view` | 3-D titles: both views are read (the stream files interleaved at their extent start points) and the second view is a stream of its own (H.264, disposition dependent): each picture with the base-view frame of the same time; streams carry `eye` (`left` / `right`, from the playlist's MVC_Base_view_R_flag). The program sets it for `--second-view` / setting `bluray.second_view` |
+| `dolby_vision` | Dolby Vision titles (UHD Blu-ray): `merged` (default) the enhancement layer and its metadata go into the video's frames (each frame: the base picture, then the enhancement picture's units behind the NAL unit header 7E 01, the RPU as it is); `separate` the enhancement layer is a stream of its own (metadata `dolby_vision` = `EL`; the video's is `BL`, merged: `BL+EL+RPU`). The program sets it from setting `bluray.dolby_vision` |
 | `part` | with `title`: only that part of it (from 0, as the title's parts list them), opened as a title of its own; -1 (default): the whole title. The program sets it for `--split` / setting `output.split_joined_titles` |
 | `read_attempts`, `udf_reader` | from the settings `read.attempts`, `read.udf_reader` |
 | `keydb` | key files (setting `aacs.key_files`), where the format has keys |
