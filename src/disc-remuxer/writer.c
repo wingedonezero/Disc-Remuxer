@@ -31,6 +31,20 @@
 #include "settings.h"
 #include "writer.h"
 
+static int64_t meta_int(AVDictionary *m, const char *key)
+{
+    const AVDictionaryEntry *e = av_dict_get(m, key, NULL, 0);
+    return e ? strtoll(e->value, NULL, 10) : 0;
+}
+
+/* A stream's number as the disc info lists its track (files and logs keep
+ * the disc's numbers whichever tracks are left out). */
+static int track_no(const AVStream *st)
+{
+    const AVDictionaryEntry *e = av_dict_get(st->metadata, "disc_track", NULL, 0);
+    return e ? atoi(e->value) : st->index;
+}
+
 /* One stream's result (times in ms on the title timeline). */
 typedef struct StreamResult {
     int         index;
@@ -344,12 +358,12 @@ static int es_open(const AVFormatContext *ctx, const AVStream *st, EsOut *o, con
             av_channel_layout_describe(cl, layout + 1, sizeof(layout) - 1);
             snprintf(o->layout, sizeof(o->layout), "%s", layout + 1);
         } else {
-            log_text(LOG_WARNING, "Track %d: channel layout not known: not in the file name", st->index);
+            log_text(LOG_WARNING, "Track %d: channel layout not known: not in the file name", track_no(st));
         }
         o->st.delay_ms = av_rescale_q_rnd(first, st->time_base, (AVRational){ 1, 1000 }, AV_ROUND_NEAR_INF);
         snprintf(delay, sizeof(delay), " DELAY %"PRId64"ms", o->st.delay_ms);
     }
-    if (!(o->name = av_asprintf("%s_%02d_%s_%s%s%s.%s", prefix, st->index, *o->st.lang ? o->st.lang : "und",
+    if (!(o->name = av_asprintf("%s_%02d_%s_%s%s%s.%s", prefix, track_no(st), *o->st.lang ? o->st.lang : "und",
                                 stream_label(st, profile), layout, delay,
                                 second ? "mvc" : es_extension(par->codec_id))))
         return AVERROR(ENOMEM);
@@ -361,7 +375,7 @@ static int es_open(const AVFormatContext *ctx, const AVStream *st, EsOut *o, con
         wav_header(o->f, par, 0);
         if (par->bits_per_coded_sample > 16 && par->bits_per_coded_sample < 24)
             log_text(LOG_INFO, "Track %d: %d-bit samples in 24-bit words, as on the disc (the WAV header says %d "
-                     "valid bits) [untested on real discs]", st->index, par->bits_per_coded_sample,
+                     "valid bits) [untested on real discs]", track_no(st), par->bits_per_coded_sample,
                      par->bits_per_coded_sample);
     }
     if (par->codec_id == AV_CODEC_ID_DVD_SUBTITLE) {
@@ -488,11 +502,6 @@ int open_disc(const char *format, const char *source, AVFormatContext **ctx)
     return ret;
 }
 
-static int64_t meta_int(AVDictionary *m, const char *key)
-{
-    const AVDictionaryEntry *e = av_dict_get(m, key, NULL, 0);
-    return e ? strtoll(e->value, NULL, 10) : 0;
-}
 
 /* A video track's details from the demuxer: line-21 caption data taken
  * out of the video and not kept (a format without caption tracks), with
@@ -626,7 +635,7 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         const AVDictionaryEntry *lang = av_dict_get(st->metadata, "language", NULL, 0);
         EsOut *o = &out[i];
 
-        o->st.index    = i;
+        o->st.index    = track_no(st);
         o->st.kind     = av_get_media_type_string(st->codecpar->codec_type);
         o->st.codec    = avcodec_get_name(st->codecpar->codec_id);
         o->st.lang     = lang ? lang->value : "";
@@ -645,7 +654,7 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
             }
             if (!dec || !(o->avctx = avcodec_alloc_context3(dec)) || !(o->frame = av_frame_alloc()) ||
                 avcodec_open2(o->avctx, dec, NULL) < 0) {
-                log_text(LOG_DETAIL, "Track %u: no decoder for %s: its channel layout is not known", i,
+                log_text(LOG_DETAIL, "Track %d: no decoder for %s: its channel layout is not known", track_no(st),
                          avcodec_get_name(st->codecpar->codec_id));
                 avcodec_free_context(&o->avctx);
                 o->layout_done = 1;
@@ -656,13 +665,13 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     for (unsigned i = 0; i < ctx->nb_streams; i++) {
         enum AVMediaType t = ctx->streams[i]->codecpar->codec_type;
         if (second_view(ctx->streams[i])) {
-            log_text(LOG_DETAIL, "Track %u: the second view of a 3-D video: its details are not checked (its "
-                     "pictures are decoded with the base view's)", i);
+            log_text(LOG_DETAIL, "Track %d: the second view of a 3-D video: its details are not checked (its "
+                     "pictures are decoded with the base view's)", track_no(ctx->streams[i]));
             continue;
         }
         if ((t == AVMEDIA_TYPE_VIDEO || t == AVMEDIA_TYPE_AUDIO) && !out[i].probe_late &&
             details_probe_open(&out[i].probe, ctx->streams[i]->codecpar) < 0)
-            log_text(LOG_DETAIL, "Track %u: no decoder for %s: its details are not checked", i,
+            log_text(LOG_DETAIL, "Track %d: no decoder for %s: its details are not checked", track_no(ctx->streams[i]),
                      avcodec_get_name(ctx->streams[i]->codecpar->codec_id));
     }
     while ((ret = av_read_frame(ctx, pkt)) >= 0) {
@@ -673,7 +682,7 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         if (o->probe_late) {
             o->probe_late = 0;
             if (details_probe_open(&o->probe, st->codecpar) < 0)
-                log_text(LOG_DETAIL, "Track %d: no decoder for %s: its details are not checked", pkt->stream_index,
+                log_text(LOG_DETAIL, "Track %d: no decoder for %s: its details are not checked", track_no(st),
                          avcodec_get_name(st->codecpar->codec_id));
         }
         if (o->probe)
@@ -791,8 +800,8 @@ end:
                 snprintf(delay, sizeof(delay), ", delay %"PRId64" ms", o->st.delay_ms);
             log_text(!o->opened && !empty_cc && !o->no_forced ? LOG_WARNING : warn || empty_cc || o->no_forced ?
                      LOG_INFO : LOG_OK,
-                     "  %02u  %-30s %8"PRId64" %-9s  %s%s",
-                     i, what, frames, unit, state, delay);
+                     "  %02d  %-30s %8"PRId64" %-9s  %s%s",
+                     track_no(st), what, frames, unit, state, delay);
             if (st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE)
                 subtitle_detail(st, o->opened, extra, sizeof(extra));
             else if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
@@ -808,9 +817,9 @@ end:
             if (o->opened)
                 log_text(LOG_DETAIL, "      %s", o->name);
             res->warnings += warn;
-            log_json("track", "\"title\":%d%s,\"index\":%u,\"codec\":%s,\"language\":%s,\"layout\":%s,"
+            log_json("track", "\"title\":%d%s,\"index\":%d,\"codec\":%s,\"language\":%s,\"layout\":%s,"
                      "\"frames\":%"PRId64",\"warnings\":%"PRId64",\"delay_ms\":%"PRId64",\"file\":%s%s", job->title,
-                     jpart, i, json_str(jc, sizeof(jc), stream_label(st, o->opened ? o->profile : st->codecpar->profile)),
+                     jpart, track_no(st), json_str(jc, sizeof(jc), stream_label(st, o->opened ? o->profile : st->codecpar->profile)),
                      json_str(jl, sizeof(jl), o->st.lang), json_str(jy, sizeof(jy), o->layout), frames, warn,
                      o->st.delay_ms, json_str(jf, sizeof(jf), o->opened ? o->name : ""), extra);
         }

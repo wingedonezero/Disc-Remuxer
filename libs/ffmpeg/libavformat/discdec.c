@@ -233,7 +233,9 @@ int ff_disc_open_tracks(AVFormatContext *s, const char *title, const DiscTrack *
         enum AVCodecID codec = k->kind == DR_KIND_CAPTION ? AV_CODEC_ID_SUBRIP : k->info.codec;
         DRTitleTrack *t = &d->tracks[n];
 
-        if (i && keep && !keep[i]) {
+        /* the video and a video with its Dolby Vision layer always stay
+         * (the layer is ripped as option dolby_vision says, never left out) */
+        if (i && keep && !keep[i] && !(k->flags & DISC_TRACK_LAYER2)) {
             av_log(s, AV_LOG_INFO, "%s: title %s: track %d (%s %s%s%s) is not selected: left out\n", fmt, title, i,
                    av_get_media_type_string(k->info.type), avcodec_get_name(k->info.codec),
                    k->info.language[0] ? ", " : "", k->info.language);

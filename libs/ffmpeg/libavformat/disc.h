@@ -259,7 +259,7 @@ int  ff_disc_title_add_tracks(DiscTitleInfo *t, const DiscTrack *tracks, int nb_
  *  with option dolby_vision = separate). title: its name, for the log; ts:
  *  transport stream; second_view: the second view of a 3-D video is read;
  *  keep: NULL every track, else keep[i] 0: track i not selected (track 0,
- *  the video, is always read). */
+ *  the video, and a video with a Dolby Vision layer are always read). */
 int  ff_disc_open_tracks(AVFormatContext *s, const char *title, const DiscTrack *tracks, int nb_tracks, int ts,
                          int second_view, const uint8_t *keep);
 
