@@ -51,6 +51,8 @@ typedef struct Track {
     DRAudio      *audio;
     DRSpu        *spu;
     int64_t       bytes;         /* payload bytes given to the frame step */
+    int64_t      *posq;          /* video: chapter positions reached (bytes given by then), oldest first */
+    int           nb_posq, posq_cap;
     int64_t       tail_from;     /* stream offset where the payloads from the source's tail begin, -1 */
 
     /* the output side */
@@ -1060,6 +1062,10 @@ static int seg_frame(void *opaque, DRFrame *f)
 
     if (k->tail_from >= 0 && f->pos >= k->tail_from)
         f->flags |= DR_F_TAIL;
+    if (k->nb_posq && f->pos >= k->posq[0]) {
+        f->flags |= DR_F_POSITION;
+        memmove(k->posq, k->posq + 1, --k->nb_posq * sizeof(*k->posq));
+    }
     if (k->audio && !k->have_header) {
         const DRAudioHeader *h = ff_disctl_audio_header(k->audio);
         if (h && h->rate > 0) {
@@ -1081,6 +1087,11 @@ static int seg_open(DRTitle *t)
 
         k->bytes     = 0;
         k->tail_from = -1;
+        if (k->nb_posq)
+            av_log(t->log, AV_LOG_WARNING, "Title timeline: %d chapter position(s) at the end of the segment "
+                   "before: the next video frame starts them [untested on real discs]\n", k->nb_posq);
+        for (int q = 0; q < k->nb_posq; q++)
+            k->posq[q] = 0;
         if (k->cfg.kind == DR_KIND_CAPTION)
             continue;                    /* fed by the video's side units */
         if (k->cfg.kind == DR_KIND_LAYER && k->cfg.codec == AV_CODEC_ID_HEVC) {
@@ -1243,6 +1254,7 @@ int ff_disctl_title_open(DRTitle **tp, void *logctx, const DRTitleConfig *cfg)
     {
         DRJoinConfig jc = {
             .nb_tracks = cfg->nb_tracks, .kinds = kinds, .marks = cfg->marks, .nb_marks = cfg->nb_marks,
+            .open_marks = cfg->open_marks,
             .out = joined, .out_opaque = t, .event = on_event, .event_opaque = t,
         };
         if ((ret = ff_disctl_join_open(&t->join, logctx, &jc)) < 0)
@@ -1459,6 +1471,24 @@ int ff_disctl_title_payload(DRTitle *t, int track, const uint8_t *data, int size
     return t->error ? t->error : sticky(t, title_payload(t, track, data, size, time, tail));
 }
 
+int ff_disctl_title_chapter_position(DRTitle *t)
+{
+    Track *k = &t->t[0];
+
+    if (t->error)
+        return t->error;
+    if (k->nb_posq == k->posq_cap) {
+        int cap = k->posq_cap ? 2 * k->posq_cap : 8;
+        int64_t *q = av_realloc_array(k->posq, cap, sizeof(*q));
+        if (!q)
+            return AVERROR(ENOMEM);
+        k->posq     = q;
+        k->posq_cap = cap;
+    }
+    k->posq[k->nb_posq++] = k->bytes;
+    return 0;
+}
+
 int ff_disctl_title_finish(DRTitle *t)
 {
     return t->error ? t->error : sticky(t, title_finish(t));
@@ -1568,6 +1598,7 @@ void ff_disctl_title_close(DRTitle **tp)
             av_free(k->lq);
             av_free(k->acc);
             av_free(k->rec);
+            av_free(k->posq);
         }
     }
     for (int i = 0; i < t->q_n; i++)

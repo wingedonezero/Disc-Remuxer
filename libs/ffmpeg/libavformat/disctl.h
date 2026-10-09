@@ -51,6 +51,8 @@
 #define DR_F_SEQ_END  0x0100   /**< video (HEVC): the frame carries an end of sequence / end of
                                     bitstream unit; the title timeline decides on it when it
                                     knows the next picture (ff_disctl_hevc_seq_end) */
+#define DR_F_POSITION 0x0200   /**< video: the first frame at or after a chapter's position in the
+                                    source (DVD-Video): the next open chapter mark takes its time */
 
 typedef struct DRFrame {
     AVBufferRef *buf;      /**< owns the bytes (NULL for a marker) */
@@ -423,6 +425,8 @@ typedef struct DRJoinConfig {
     const int     *kinds;        /**< DRTrackKind per track; track 0 must be video */
     const int64_t *marks;        /**< chapter mark times, ascending (ticks; DRChapterPlan.marks), or NULL */
     int            nb_marks;
+    int64_t       *open_marks;   /**< the same marks when some get their time from a DR_F_POSITION frame
+                                      (those are INT64_MAX until then), or NULL */
     DRJoinOutCb    out;   void *out_opaque;
     DREventCb      event; void *event_opaque;
 } DRJoinConfig;
@@ -797,6 +801,7 @@ typedef struct DRTitleConfig {
     int                 lpcm_hd;   /**< LPCM payloads start with HD DVD's 5-byte header (else DVD-Video's 3) */
     const int64_t      *marks;     /**< chapter marks (DRChapterPlan.marks) or NULL */
     int                 nb_marks;
+    int64_t            *open_marks;/**< the marks again when some are positions (DRJoinConfig.open_marks) */
     DREventCb           event; void *event_opaque;   /**< every event (also logged at debug level) */
     const char         *cc_helper; /**< the caption converter program (for a DR_KIND_CAPTION track) */
 } DRTitleConfig;
@@ -818,6 +823,10 @@ int  ff_disctl_title_finish(DRTitle *t);
 /** The next output frame (taken over by the caller): 0, AVERROR(EAGAIN)
  *  when none is ready yet, AVERROR_EOF after the last one. */
 int  ff_disctl_title_frame(DRTitle *t, int *track, DRFrame *frame);
+/** A chapter's position is reached in the video's source (DVD-Video: a
+ *  byte offset in the segment): the first video unit from the bytes given
+ *  so far gets DR_F_POSITION, and the next open chapter mark its time. */
+int  ff_disctl_title_chapter_position(DRTitle *t);
 /** After finish: the chapters of the plan the marks came from (*out freed
  *  with av_free()). */
 int  ff_disctl_title_chapters(const DRTitle *t, const DRChapterPlan *plan, DRChapter **out, int *nb_out);

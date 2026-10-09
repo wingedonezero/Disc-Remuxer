@@ -55,7 +55,7 @@ static void usage(FILE *f)
           "                       setting output.split_joined_titles does it for every title\n"
           "  -v, -vv              more detail on the terminal\n"
           "\n"
-          "HD DVD and Blu-ray (UHD, 3-D) are wired; DVD follows.\n", f);
+          "DVD-Video, HD DVD and Blu-ray (UHD, 3-D) are wired.\n", f);
 }
 
 /* Library state (key caches, key files) stays next to the program. */
@@ -290,7 +290,7 @@ static const char *disc_overview(const char *source, int detail, int *nb_titles,
 
     if ((ret = open_title(DISC_FORMAT, source, ONLY_DISC_INFO, -1, 0, &ctx)) < 0 || !(d = disc_info(ctx))) {
         log_msg(MSG_SOURCE_UNSUPPORTED, LOG_ERROR, "%s cannot be read as a disc this program supports (%s); "
-                "HD DVD and Blu-ray are wired so far", source, av_err2str(ret < 0 ? ret : AVERROR_BUG));
+                "DVD-Video, HD DVD and Blu-ray are supported", source, av_err2str(ret < 0 ? ret : AVERROR_BUG));
         avformat_close_input(&ctx);
         return NULL;
     }

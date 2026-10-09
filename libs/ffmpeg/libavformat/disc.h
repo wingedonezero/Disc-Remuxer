@@ -74,6 +74,12 @@ typedef struct DiscTitleSource {
     const int64_t     *chapter_times;   /**< chapter records (ticks from the title start) */
     const char *const *chapter_names;   /**< their names (NULL or "": none), or NULL */
     int          nb_chapters;
+    /** Chapter records that are positions (DVD-Video), or NULL (times): each
+     *  record's clip (-1: none) and byte offset in it; a chapter starts at
+     *  the first video frame from that position (chapter_times stay the
+     *  records' times, for the tail check). */
+    const int         *chapter_clips;
+    const int64_t     *chapter_offsets;
 } DiscTitleSource;
 
 /** One disc format's part. */
@@ -110,6 +116,7 @@ typedef struct DiscContext {
     int               opt_min_length;
     int               opt_dvd_cell_mode;  /**< DVD: a title's cells (DVD_CELL_MODE_*) */
     int               opt_dvd_cell_check; /**< DVD: the VOBUs a full cell check reads (DVD_CELL_CHECK_*) */
+    char             *opt_cc_helper;    /**< the caption converter program (NULL: the one next to the program) */
     char            **opt_keydb;
     unsigned          nb_opt_keydb;
     int64_t           progress;         /**< exported: how far the title is read (1/10000) */

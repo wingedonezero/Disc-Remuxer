@@ -163,6 +163,9 @@ struct DiscTitleReader {
     /* the title timeline */
     DRTitle       *rip;
     DRChapterPlan  chapter_plan;
+    int           *pos_clip;        /**< position chapters: per open mark, its clip and byte offset */
+    int64_t       *pos_off;
+    int            nb_pos, next_pos;
     int64_t        blocks_total;    /**< blocks of all the title's clips */
     int64_t        blocks_done;     /**< blocks read so far */
     int            chapters_set;
@@ -325,10 +328,73 @@ void ff_disc_title_reader_close(DiscTitleReader **reader)
     av_freep(&r->held);
     av_freep(&r->pair);
     av_freep(&r->pair_pts);
+    av_freep(&r->pos_clip);
+    av_freep(&r->pos_off);
     av_packet_free(&r->in);
     ff_disctl_title_close(&r->rip);
     ff_disctl_chapter_plan_free(&r->chapter_plan);
     av_freep(reader);
+}
+
+/* Position chapters (DVD-Video): the records' marks. A broken tail (a last
+ * record at 0 after one that is not, or earlier than the one before it) is
+ * cut off; the records' clips must not go back (a record without a clip
+ * counts as after every clip), else the title fails; the records on the
+ * title's clips are kept, each an open mark that the first video frame
+ * from its position gives its time; when the first record is not kept and
+ * the first kept one is not at the title's very start, record 0 is a mark
+ * at 0. */
+static int position_plan(AVFormatContext *s, DiscTitleReader *r)
+{
+    const DiscTitleSource *src = r->src;
+    const int64_t *t = src->chapter_times;
+    DRChapterPlan *p = &r->chapter_plan;
+    int n = src->nb_chapters, first = -1, at_start = 0, m = 0;
+    int64_t prev = -1;
+
+    memset(p, 0, sizeof(*p));
+    while (n > 1 && ((!t[n - 1] && t[n - 2]) || (uint64_t)t[n - 2] > (uint64_t)t[n - 1])) {
+        av_log(s, AV_LOG_WARNING, "Chapters: record %d does not follow record %d: cut off with the records after "
+               "it\n", n - 1, n - 2);
+        n--;
+    }
+    for (int i = 0; i < n; i++) {
+        int64_t kind = src->chapter_clips[i] < 0 ? INT64_MAX : src->chapter_clips[i];
+        if (kind < prev) {
+            av_log(s, AV_LOG_ERROR, "Chapters: record %d lies on an earlier segment than the one before it: the "
+                   "title's chapter list is broken\n", i);
+            return AVERROR_INVALIDDATA;
+        }
+        prev = kind;
+    }
+    for (int i = 0; i < n; i++)
+        if (src->chapter_clips[i] >= 0 && src->chapter_clips[i] < src->nb_clips) {
+            first    = i;
+            at_start = !src->chapter_offsets[i] && !src->chapter_clips[i];
+            break;
+        }
+    if (first < 0)
+        return 0;
+    if (!(p->marks = av_calloc(n + 1, sizeof(*p->marks))) || !(p->atoms = av_calloc(n + 1, sizeof(*p->atoms))) ||
+        !(r->pos_clip = av_calloc(n + 1, sizeof(*r->pos_clip))) ||
+        !(r->pos_off = av_calloc(n + 1, sizeof(*r->pos_off))))
+        return AVERROR(ENOMEM);
+    if (first && !at_start) {
+        p->marks[m]   = 0;
+        p->atoms[m++] = 0;
+    }
+    for (int i = first; i < n; i++) {
+        if (src->chapter_clips[i] < 0 || src->chapter_clips[i] >= src->nb_clips) {
+            av_log(s, AV_LOG_VERBOSE, "Chapters: record %d lies on no segment of the title: left out\n", i);
+            continue;
+        }
+        r->pos_clip[r->nb_pos]  = src->chapter_clips[i];
+        r->pos_off[r->nb_pos++] = src->chapter_offsets[i];
+        p->marks[m]   = INT64_MAX;
+        p->atoms[m++] = i;
+    }
+    p->nb_marks = p->nb_atoms = m;
+    return 0;
 }
 
 int ff_disc_title_reader_open(AVFormatContext *s, const DiscTitleSource *src)
@@ -345,13 +411,18 @@ int ff_disc_title_reader_open(AVFormatContext *s, const DiscTitleSource *src)
                     !(r->pair_pts = av_calloc(src->nb_tracks, sizeof(*r->pair_pts)))))
         return AVERROR(ENOMEM);
     /* no leading clip is left out yet (skip 0); no "Chapter 00" */
-    if ((ret = ff_disctl_chapter_plan(s, src->chapter_times, src->nb_chapters, 0, 0, &r->chapter_plan)) < 0)
+    if ((ret = src->chapter_clips ? position_plan(s, r) :
+               ff_disctl_chapter_plan(s, src->chapter_times, src->nb_chapters, 0, 0, &r->chapter_plan)) < 0)
         return ret;
     {
+        char helper[4096];
         DRTitleConfig cfg = {
             .nb_tracks = src->nb_tracks, .tracks = src->tracks, .tolerance = src->tolerance,
             .lpcm_hd = src->lpcm_header == 5,
             .marks = r->chapter_plan.marks, .nb_marks = r->chapter_plan.nb_marks,
+            .cc_helper = d->opt_cc_helper && *d->opt_cc_helper ? d->opt_cc_helper :
+                         ff_disctl_ccx_default(helper, sizeof(helper)),
+            .open_marks = src->chapter_clips ? r->chapter_plan.marks : NULL,
         };
         if ((ret = ff_disctl_title_open(&r->rip, s, &cfg)) < 0)
             return ret;
@@ -427,6 +498,16 @@ static int feed(AVFormatContext *s, const AVPacket *pkt)
                 pair_check(s, i, j, pkt->pts, pkt);
         } else if (s->streams[i]->id != sub->id)
             continue;
+        /* the video from a chapter's position on (a position not reached in
+         * its clip: from the next clip's first video) */
+        while (!i && r->next_pos < r->nb_pos &&
+               (r->pos_clip[r->next_pos] < r->clip ||
+                (r->pos_clip[r->next_pos] == r->clip &&
+                 r->pos_off[r->next_pos] <= pkt->pos + (int64_t)r->skipped * r->bs))) {
+            if ((ret = ff_disctl_title_chapter_position(r->rip)) < 0)
+                return ret;
+            r->next_pos++;
+        }
         if ((ret = ff_disctl_title_payload(r->rip, i, pkt->data, pkt->size, time, tail)) < 0)
             return ret;
         n++;
@@ -599,6 +680,10 @@ static int title_end(AVFormatContext *s)
         if ((ret = av_dict_set_int(m, "frames", frames, 0)) < 0 ||
             (ret = av_dict_set_int(m, "warnings", warnings, 0)) < 0 ||
             (ret = av_dict_set_int(m, "delay_us", delay / (DR_TICKS_PER_SECOND / 1000000), 0)) < 0)
+            return ret;
+        if (ff_disctl_title_cc_result(r->rip, i, &frames, &warnings) >= 0 &&
+            ((ret = av_dict_set_int(m, "cc_blocks", frames, 0)) < 0 ||
+             (ret = av_dict_set_int(m, "cues", warnings, 0)) < 0))
             return ret;
         if (ff_disctl_title_spu_result(r->rip, i, &frames, &warnings) >= 0 &&
             ((ret = av_dict_set_int(m, "no_stop", frames, 0)) < 0 ||

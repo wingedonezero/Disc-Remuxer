@@ -480,3 +480,41 @@ def test_the_h264_clean_up_leaves_a_unit_with_nothing_to_take_as_it_is():
     n = lib.ff_disctl_h264_clean(unit, len(unit), out, dropped, stuffing, changed)
     assert bytes(ffi.buffer(out, n)) == mvc_clean(1) and changed[0] == 1
     assert (dropped[12], dropped[11], stuffing[0]) == (1, 1, 4)
+
+
+def test_a_chapter_position_starts_the_chapter_at_the_first_picture_from_there():
+    # DVD-Video chapters are positions: the mark of each open chapter is
+    # the time of the first video frame from the bytes given when its
+    # position was reached; the key-frame rule then places it
+    pics = pictures(M2V)
+    gops = [k for k, (a, b, _, _) in enumerate(pics) if b"\x00\x00\x01\xb8" in M2V[a:b]]
+    at = [gops[2], gops[5]]
+    marks = ffi.new("int64_t[]", [(1 << 63) - 1, (1 << 63) - 1])
+    tr = ffi.new("DRTitleTrack[]", [[codec_id("mpeg2video"), lib.DR_KIND_VIDEO, 0]])
+    cfg = ffi.new("DRTitleConfig *", {"nb_tracks": 1, "tracks": tr, "tolerance": MS, "marks": marks, "nb_marks": 2,
+                                      "open_marks": marks})
+    t = ffi.new("DRTitle **")
+    assert lib.ff_disctl_title_open(t, ffi.NULL, cfg) == 0
+    assert lib.ff_disctl_title_segment(t[0]) == 0
+    outs = []
+
+    def drain():
+        while True:
+            f, k = ffi.new("DRFrame *"), ffi.new("int *")
+            if lib.ff_disctl_title_frame(t[0], k, f):
+                return
+            outs.append((f.time, f.flags))
+            lib.ff_disctl_frame_unref(f)
+    for k, p in enumerate(video(BASE)):
+        if k in at:
+            assert lib.ff_disctl_title_chapter_position(t[0]) == 0
+        assert lib.ff_disctl_title_payload(t[0], 0, p.data, len(p.data), p.time, 0) == 0
+        drain()
+    assert lib.ff_disctl_title_finish(t[0]) == 0
+    drain()
+    lib.ff_disctl_title_close(t)
+    marked = [time for time, flags in outs if flags & lib.DR_F_CHAPTER]
+    # the I pictures of those GOPs, on the title timeline (the first video frame at 0)
+    first = min(BASE + disp * FRAME for _, _, disp, _ in pics)
+    assert marked == [BASE + pics[k][2] * FRAME - first for k in at]
+    assert list(marks) == marked
