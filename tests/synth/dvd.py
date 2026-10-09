@@ -396,3 +396,62 @@ def cell_navs(starts, end, t0):
         n.vobu_e_ptm = t + 45000
         out.append(n)
     return out
+
+
+# ---- title VOB sectors with real streams ----
+
+def _pts(v):
+    """A 5-byte PTS field (PTS_DTS_flags '10')."""
+    return bytes([0x21 | (v >> 29 & 0x0e), v >> 22 & 0xff, (v >> 14 & 0xfe) | 1, v >> 7 & 0xff, (v << 1 & 0xfe) | 1])
+
+
+def _sector(stream_id, head, payload):
+    """One 2048-byte pack: pack header, a PES packet (header data head, then
+    payload), a padding packet filling the rest."""
+    pes = bytes([0x81, 0x80 if head else 0x00, len(head)]) + head + payload
+    s = bytearray(bytes([0, 0, 1, 0xba, 0x44, 0, 4, 0, 4, 1, 1, 0x89, 0xc3, 0xf8]))
+    s += bytes([0, 0, 1, stream_id]) + len(pes).to_bytes(2, "big") + pes
+    room = S - len(s)
+    assert room == 0 or room >= 6
+    if room:
+        s += bytes([0, 0, 1, 0xbe]) + (room - 6).to_bytes(2, "big") + bytes([0xff]) * (room - 6)
+    return bytes(s)
+
+
+def mux_vobus(m2v, pics, lbn, audio=(), dts0=0):
+    """Title VOB sectors for the pictures pics (helpers.disctl.pictures
+    entries of m2v, from a GOP start, each with its PTS: (payload start, end,
+    display index, type, pts)) and audio [(AC-3 frame, pts)]: one VOBU per
+    GOP (a NAV pack, then its packs), each picture from a pack of its own
+    whose PES carries its PTS, the audio frames (private stream 1 sub-stream
+    0x80, one per pack) before the picture whose decode time (dts0 + 3003 per
+    picture) they do not pass. Returns (sectors, navs), lbn the first
+    sector's number in the title VOBs."""
+    sectors, navs, gop_pics, ai = [], [], [], 0
+    audio = list(audio)
+    for k, (a, b, disp, typ, pts) in enumerate(pics):
+        data = m2v[a:b]
+        if b"\x00\x00\x01\xb8" in data[:64] or not navs:
+            navs.append(Nav(lbn=lbn + len(sectors)))
+            gop_pics.append([])
+            sectors.append(None)
+        gop_pics[-1].append(pts)
+        while ai < len(audio) and audio[ai][1] <= dts0 + k * 3003:
+            frame, apts = audio[ai]
+            sectors.append(_sector(0xbd, _pts(apts), bytes([0x80, 1, 0, 1]) + frame))
+            ai += 1
+        first = True
+        while data:
+            cap = S - 14 - 6 - 3 - (5 if first else 0) - 6
+            chunk, data = data[:cap], data[cap:]
+            sectors.append(_sector(0xe0, _pts(pts) if first else b"", chunk))
+            first = False
+    end = lbn + len(sectors)
+    for g, nv in enumerate(navs):
+        nxt = navs[g + 1].lbn if g + 1 < len(navs) else None
+        nv.vobu_ea = (nxt if nxt is not None else end) - nv.lbn - 1
+        nv.next_vobu = END_OF_CELL if nxt is None else nxt - nv.lbn
+        nv.vobu_s_ptm = min(gop_pics[g])
+        nv.vobu_e_ptm = max(gop_pics[g]) + 3003
+        sectors[nv.lbn - lbn] = nv.block()
+    return sectors, navs
