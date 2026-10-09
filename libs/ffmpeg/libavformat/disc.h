@@ -44,6 +44,34 @@ typedef struct DiscTsFeed {
     int      nb_keys;
 } DiscTsFeed;
 
+/** A track of a title as its format part describes it: one shape for every
+ *  format. What the disc info shows of it, where its data is and how the
+ *  title reader takes it; the disc layer makes the disc info's stream and,
+ *  for the opened title, its AVStream and title-reader track from it. */
+typedef struct DiscTrack {
+    DiscStreamInfo  info;           /**< the disc info's stream (the stream details as far as known) */
+    int             kind;           /**< DR_KIND_VIDEO / _AUDIO / _SUBTITLE / _CAPTION (disctl.h) */
+    int             id;             /**< program stream: the id mpeg.c gives its payloads; -1 none (a caption
+                                         track: carried in the video) */
+    DiscTsFeed      feed;           /**< transport stream: its PID and PES stream keys */
+    unsigned        flags;          /**< DISC_TRACK_* */
+    DiscTsFeed      layer_feed;     /**< DISC_TRACK_LAYER2: the second layer's PID and keys */
+    const uint32_t *palette;        /**< DVD sub-pictures: 16 Y'CrCb entries for the VobSub header */
+    const char     *picture;        /**< for the caller's log: what the subtitle units are, or NULL */
+    const char     *caption;        /**< for the caller's log: what the caption track is made from, or NULL */
+    const char     *line21;         /**< video: the line-21 caption fields its attributes mark, or NULL */
+    const char     *eye;            /**< 3-D video with both views read: "left" / "right", or NULL */
+    const char     *not_read;       /**< the title reader does not read it yet (NULL: it does): left out */
+} DiscTrack;
+
+/** The second view of a 3-D video (read only with option second_view, as a
+ *  second layer of the video). */
+#define DISC_TRACK_SECOND_VIEW 0x0001
+/** A video read with a second layer on its own PID (layer_feed): a Dolby
+ *  Vision enhancement layer, merged or a stream of its own (option
+ *  dolby_vision). */
+#define DISC_TRACK_LAYER2      0x0002
+
 /** What the title reader needs of the opened title; the format part fills
  *  DiscContext.src in its open (the arrays and strings stay its own until
  *  its close). Track i is stream i; track 0 is the video. Program-stream
@@ -131,7 +159,11 @@ typedef struct DiscContext {
     DiscInfo          info;             /**< the disc info (disc_info()) */
 
     /* the opened title */
-    DiscTitleSource   src;              /**< filled by the format part (nb_clips 0: no title) */
+    DiscTitleSource   src;              /**< filled by the format part (nb_clips 0: no title); its tracks, feeds
+                                             and PIDs by ff_disc_open_tracks() */
+    struct DRTitleTrack *tracks;        /**< src.tracks, the disc layer's own */
+    DiscTsFeed       *feeds;            /**< src.feeds */
+    int              *pids;             /**< src.pids */
     DiscTitleReader  *reader;
 } DiscContext;
 
@@ -151,6 +183,20 @@ DiscStreamInfo *ff_disc_title_add_stream(DiscTitleInfo *t);
 DiscChapterInfo *ff_disc_title_add_chapter(DiscTitleInfo *t);
 DiscPartInfo *ff_disc_title_add_part(DiscTitleInfo *t);
 int ff_disc_title_add_file(DiscTitleInfo *t, const char *name);
+/** A stream as ff_disc_title_add_stream() starts it: zeroed, no linked
+ *  streams, no offset sequence, profile and level unknown. */
+void ff_disc_stream_init(DiscStreamInfo *k);
+/** The disc info's streams of title t: each track's info, in order. */
+int  ff_disc_title_add_tracks(DiscTitleInfo *t, const DiscTrack *tracks, int nb_tracks);
+/** The opened title's streams and the title reader's tracks
+ *  (DiscContext.src: tracks, nb_tracks; transport stream: ts, feeds, pids)
+ *  from its tracks. Stream i is track i of what is read: a track left out
+ *  (not read yet; a second view not read) has none and is logged; a Dolby
+ *  Vision enhancement layer comes last (its own stream only with option
+ *  dolby_vision = separate). title: its name, for the log; ts: transport
+ *  stream; second_view: the second view of a 3-D video is read. */
+int  ff_disc_open_tracks(AVFormatContext *s, const char *title, const DiscTrack *tracks, int nb_tracks, int ts,
+                         int second_view);
 
 /* ---- disctitle.c ---- */
 

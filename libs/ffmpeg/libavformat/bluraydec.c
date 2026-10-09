@@ -54,9 +54,6 @@ typedef struct BlurayDemuxContext {
     int                seg0;         /* its first segment read (a part of the title: not 0) */
     int                both;         /* 3-D: both views read (the second view is a track) */
     BluraySegReader    seg;          /* the segment being read (seg.s NULL: none) */
-    DRTitleTrack      *tracks;
-    DiscTsFeed        *feeds;
-    int               *pids;
     int64_t           *chapter_times;
     BlurayDetailsCache *details;     /* the title list's stream details, per clip */
 } BlurayDemuxContext;
@@ -98,9 +95,6 @@ static void bluray_close(AVFormatContext *s)
 {
     BlurayDemuxContext *c = ff_disc_part(s);
     ff_bluray_seg_reader_close(&c->seg);
-    av_freep(&c->tracks);
-    av_freep(&c->feeds);
-    av_freep(&c->pids);
     av_freep(&c->chapter_times);
     ff_bluray_details_cache_free(&c->details);
     for (int i = 0; i < c->nb_files; i++)
@@ -164,6 +158,81 @@ end:
     return ret;
 }
 
+/* The 3-D second view of the video (MVC, on its own PID: sel1). */
+static int second_view(const BlurayTrack *tk)
+{
+    return tk->type == AVMEDIA_TYPE_VIDEO && tk->from_track >= 0 && tk->codec == AV_CODEC_ID_H264;
+}
+
+/* Whether the title timeline reads a track's codec in this step: AVC,
+ * MPEG-2, VC-1 video (the 3-D second view: as a second layer); AC-3, DTS,
+ * DTS-HD, TrueHD, LPCM audio; PGS subtitles. */
+static int readable(const BlurayTrack *tk)
+{
+    switch (tk->codec) {
+    case AV_CODEC_ID_H264:
+    case AV_CODEC_ID_HEVC:
+    case AV_CODEC_ID_MPEG2VIDEO:
+    case AV_CODEC_ID_VC1:  return tk->type == AVMEDIA_TYPE_VIDEO && (tk->from_track < 0 || second_view(tk));
+    case AV_CODEC_ID_AC3:
+    case AV_CODEC_ID_DTS:
+    case AV_CODEC_ID_TRUEHD:
+    case AV_CODEC_ID_PCM_BLURAY:
+    case AV_CODEC_ID_HDMV_PGS_SUBTITLE: return !(tk->flags & BLURAY_TRACK_SIDE);
+    default:               return 0;
+    }
+}
+
+/* A title's tracks as the disc layer takes them (out: t->nb_tracks); both:
+ * both views of a 3-D title are read (each video track says its eye). */
+static void title_tracks(const BlurayTitle *t, int both, DiscTrack *out)
+{
+    const BlurayClip *c0 = t->segs[t->track_seg].items[0].clip;
+    int bdav = c0->hdr.type == MKBETAG('M', '2', 'T', 'S');
+    int base_right = t->pl && (t->pl->app_flags & 0x1000);
+
+    for (int i = 0; i < t->nb_tracks; i++) {
+        const BlurayTrack *tk = &t->tracks[i];
+        DiscTrack *o = &out[i];
+
+        memset(o, 0, sizeof(*o));
+        ff_disc_stream_init(&o->info);
+        o->info.type            = tk->type;
+        o->info.codec           = tk->codec;
+        o->info.inner_track     = tk->inner_track;
+        o->info.from_track      = tk->from_track;
+        o->info.forced          = !!(tk->flags & BLURAY_TRACK_FORCED);
+        o->info.second_view     = tk->type == AVMEDIA_TYPE_VIDEO && tk->from_track >= 0;
+        o->info.offset_sequence = tk->offset_seq;
+        o->info.second_layer    = !!(tk->flags & BLURAY_TRACK_LAYER2);
+        memcpy(o->info.language, tk->lang, sizeof(o->info.language));
+        o->id   = -1;
+        o->kind = tk->type == AVMEDIA_TYPE_VIDEO ? DR_KIND_VIDEO :
+                  tk->type == AVMEDIA_TYPE_AUDIO ? DR_KIND_AUDIO : DR_KIND_SUBTITLE;
+        o->feed.pid     = second_view(tk) ? (int)tk->sel1 : tk->pid;
+        o->feed.nb_keys = ff_bluray_track_keys(tk, bdav, o->feed.key);
+        if (second_view(tk))
+            o->flags |= DISC_TRACK_SECOND_VIEW;
+        /* Dolby Vision: the enhancement layer (with its metadata) on its
+         * own PID, sel1 */
+        if (tk->flags & BLURAY_TRACK_LAYER2) {
+            o->flags |= DISC_TRACK_LAYER2;
+            o->layer_feed.pid     = tk->sel1;
+            o->layer_feed.nb_keys = ff_bluray_track_keys(tk, bdav, o->layer_feed.key);
+        }
+        /* both views read: which eye each one shows (the playlist's
+         * MVC_Base_view_R_flag: the base view is the right eye) */
+        if (both && tk->type == AVMEDIA_TYPE_VIDEO)
+            o->eye = second_view(tk) == base_right ? "left" : "right";
+        if (tk->codec == AV_CODEC_ID_HDMV_PGS_SUBTITLE)
+            o->picture = (tk->flags & BLURAY_TRACK_FORCED) ?
+                         "Blu-ray PGS display sets, forced subtitles only (each set shows only its forced objects, "
+                         "as a player does with subtitles off)" : "Blu-ray PGS display sets";
+        if (!readable(tk))
+            o->not_read = "its codec is not read yet";
+    }
+}
+
 /* The disc info's titles: name (the title's own, else the disc's), what it
  * is made from, its angle, duration and size (its STC sequences' and their
  * bytes), the clip files it plays (one per segment item), its tracks,
@@ -203,20 +272,15 @@ static int describe_titles(AVFormatContext *s)
                         return AVERROR(ENOMEM);
                 }
             }
-        for (int k = 0; k < t->nb_tracks; k++) {
-            const BlurayTrack *tk = &t->tracks[k];
-            DiscStreamInfo *ds = ff_disc_title_add_stream(dt);
-            if (!ds)
+        if (t->nb_tracks) {
+            DiscTrack *tr = av_calloc(t->nb_tracks, sizeof(*tr));
+            if (!tr)
                 return AVERROR(ENOMEM);
-            ds->type        = tk->type;
-            ds->codec       = tk->codec;
-            ds->inner_track = tk->inner_track;
-            ds->from_track  = tk->from_track;
-            ds->forced      = !!(tk->flags & BLURAY_TRACK_FORCED);
-            ds->second_view = tk->type == AVMEDIA_TYPE_VIDEO && tk->from_track >= 0;
-            ds->offset_sequence = tk->offset_seq;
-            ds->second_layer    = !!(tk->flags & BLURAY_TRACK_LAYER2);
-            memcpy(ds->language, tk->lang, sizeof(ds->language));
+            title_tracks(t, 0, tr);
+            ret = ff_disc_title_add_tracks(dt, tr, t->nb_tracks);
+            av_free(tr);
+            if (ret < 0)
+                return ret;
         }
         /* the title list only (no title opened): each track's details from
          * the stream */
@@ -244,50 +308,15 @@ static int describe_titles(AVFormatContext *s)
     return 0;
 }
 
-/* The 3-D second view of the video (MVC, on its own PID: sel1). */
-static int second_view(const BlurayTrack *tk)
-{
-    return tk->type == AVMEDIA_TYPE_VIDEO && tk->from_track >= 0 && tk->codec == AV_CODEC_ID_H264;
-}
-
-/* Whether the title timeline reads a track's codec in this step: AVC,
- * MPEG-2, VC-1 video (the 3-D second view: as a second layer); AC-3, DTS,
- * DTS-HD, TrueHD, LPCM audio; PGS subtitles. */
-static int readable(const BlurayTrack *tk)
-{
-    switch (tk->codec) {
-    case AV_CODEC_ID_H264:
-    case AV_CODEC_ID_HEVC:
-    case AV_CODEC_ID_MPEG2VIDEO:
-    case AV_CODEC_ID_VC1:  return tk->type == AVMEDIA_TYPE_VIDEO && (tk->from_track < 0 || second_view(tk));
-    case AV_CODEC_ID_AC3:
-    case AV_CODEC_ID_DTS:
-    case AV_CODEC_ID_TRUEHD:
-    case AV_CODEC_ID_PCM_BLURAY:
-    case AV_CODEC_ID_HDMV_PGS_SUBTITLE: return !(tk->flags & BLURAY_TRACK_SIDE);
-    default:               return 0;
-    }
-}
-
-static int add_pid(BlurayDemuxContext *c, int *nb, int pid)
-{
-    for (int i = 0; i < *nb; i++)
-        if (c->pids[i] == pid)
-            return 0;
-    c->pids[(*nb)++] = pid;
-    return 1;
-}
-
 /* The opened title: its streams (the tracks the timeline reads, in the
  * title's track order) and what the title reader needs. */
 static int open_title(AVFormatContext *s, const BlurayTitle *t, int part)
 {
     DiscContext *d = s->priv_data;
     BlurayDemuxContext *c = ff_disc_part(s);
-    const BlurayClip *c0 = t->segs[t->track_seg].items[0].clip;
-    int bdav = c0->hdr.type == MKBETAG('M', '2', 'T', 'S'), n = 0, nb_pids = 0, nb_marks, dv = -1;
-    int s0 = 0, s1 = t->nb_segs;
+    int s0 = 0, s1 = t->nb_segs, nb_marks, ret;
     uint64_t *marks;
+    DiscTrack *tr;
 
     c->title = t;
     if (part >= 0) {
@@ -337,108 +366,8 @@ static int open_title(AVFormatContext *s, const BlurayTitle *t, int part)
                t->nb_tracks ? avcodec_get_name(t->tracks[0].codec) : "none");
         return AVERROR_PATCHWELCOME;
     }
-    /* one more for a Dolby Vision enhancement layer (read from its own PID) */
-    if (!(c->tracks = av_calloc(t->nb_tracks + 1, sizeof(*c->tracks))) ||
-        !(c->feeds  = av_calloc(t->nb_tracks + 1, sizeof(*c->feeds))) ||
-        !(c->pids   = av_calloc(t->nb_tracks + 1, sizeof(*c->pids))) ||
-        !(c->chapter_times = av_calloc(FFMAX(t->nb_marks, 1), sizeof(*c->chapter_times))))
+    if (!(c->chapter_times = av_calloc(FFMAX(t->nb_marks, 1), sizeof(*c->chapter_times))))
         return AVERROR(ENOMEM);
-    for (int i = 0; i < t->nb_tracks; i++) {
-        const BlurayTrack *tk = &t->tracks[i];
-        DiscTsFeed *f = &c->feeds[n];
-        AVStream *st;
-
-        if (second_view(tk) && !c->both) {
-            av_log(s, AV_LOG_INFO, "Blu-ray: title %s: track %d, the 3-D second view (PID 0x%04x), is left out (not "
-                   "asked for)\n", t->name, i, tk->sel1);
-            continue;
-        }
-        if (!readable(tk)) {
-            av_log(s, AV_LOG_WARNING, "Blu-ray: title %s: track %d (%s %s, PID 0x%04x) is not read yet: left out\n",
-                   t->name, i, av_get_media_type_string(tk->type), avcodec_get_name(tk->codec), tk->pid);
-            continue;
-        }
-        f->pid     = second_view(tk) ? (int)tk->sel1 : tk->pid;
-        f->nb_keys = ff_bluray_track_keys(tk, bdav, f->key);
-        if (!(st = avformat_new_stream(s, NULL)))
-            return AVERROR(ENOMEM);
-        st->id                   = f->pid | f->key[0] << 16;
-        st->codecpar->codec_type = tk->type;
-        st->codecpar->codec_id   = tk->codec;
-        avpriv_set_pts_info(st, 64, 1, DR_TICKS_PER_SECOND);
-        if (tk->from_track >= 0)
-            st->disposition |= AV_DISPOSITION_DEPENDENT;
-        if (tk->flags & BLURAY_TRACK_FORCED)
-            st->disposition |= AV_DISPOSITION_FORCED;
-        if (tk->lang[0] && av_dict_set(&st->metadata, "language", tk->lang, 0) < 0)
-            return AVERROR(ENOMEM);
-        if (av_dict_set_int(&st->metadata, "disc_track", i, 0) < 0)
-            return AVERROR(ENOMEM);
-        /* both views read: which eye each one shows (the playlist's
-         * MVC_Base_view_R_flag: the base view is the right eye) */
-        if (c->both && tk->type == AVMEDIA_TYPE_VIDEO) {
-            int base_right = t->pl && (t->pl->app_flags & 0x1000);
-            if (av_dict_set(&st->metadata, "eye", second_view(tk) == base_right ? "left" : "right", 0) < 0)
-                return AVERROR(ENOMEM);
-        }
-        /* Dolby Vision: the base layer's stream says how its enhancement
-         * layer is written */
-        if (tk->flags & BLURAY_TRACK_LAYER2) {
-            dv = i;
-            if (av_dict_set(&st->metadata, "dolby_vision", d->opt_dolby_vision ? "BL" : "BL+EL+RPU", 0) < 0)
-                return AVERROR(ENOMEM);
-        }
-        /* what the units are, for the caller's log */
-        if (tk->codec == AV_CODEC_ID_HDMV_PGS_SUBTITLE &&
-            av_dict_set(&st->metadata, "picture", (tk->flags & BLURAY_TRACK_FORCED) ?
-                        "Blu-ray PGS display sets, forced subtitles only (each set shows only its forced objects, "
-                        "as a player does with subtitles off)" : "Blu-ray PGS display sets", 0) < 0)
-            return AVERROR(ENOMEM);
-        c->tracks[n].codec       = tk->codec;
-        c->tracks[n].kind        = second_view(tk) ? DR_KIND_LAYER :
-                                   tk->type == AVMEDIA_TYPE_VIDEO ? DR_KIND_VIDEO :
-                                   tk->type == AVMEDIA_TYPE_AUDIO ? DR_KIND_AUDIO : DR_KIND_SUBTITLE;
-        c->tracks[n].sub_flags   = (tk->flags & BLURAY_TRACK_FORCED) ? DR_SUB_FORCED_ONLY : 0;
-        c->tracks[n].audio_flags = (tk->from_track >= 0 ? DR_AUDIO_EXTRACTED : 0) |
-                                   (tk->from_track >= 0 || tk->inner_track >= 0 ? DR_AUDIO_EXTENDED : 0);
-        add_pid(c, &nb_pids, f->pid);
-        if (f->nb_keys > 1)
-            av_log(s, AV_LOG_VERBOSE, "Blu-ray: track %d -> stream %d: %s, PID 0x%04x, keys 0x%04x + 0x%04x\n", i, n,
-                   avcodec_get_name(tk->codec), tk->pid, f->key[0], f->key[1]);
-        else
-            av_log(s, AV_LOG_VERBOSE, "Blu-ray: track %d -> stream %d: %s, PID 0x%04x, key 0x%04x%s\n", i, n,
-                   avcodec_get_name(tk->codec), tk->pid, f->key[0], f->key[0] ? "" : " (any)");
-        n++;
-    }
-    /* the Dolby Vision enhancement layer (with its metadata, the RPU): its
-     * own PID; merged: a second layer whose pictures go into the video's
-     * frames (no stream of its own), separate: a stream of its own */
-    if (dv >= 0) {
-        const BlurayTrack *tk = &t->tracks[dv];
-        DiscTsFeed *f = &c->feeds[n];
-        f->pid     = tk->sel1;
-        f->nb_keys = ff_bluray_track_keys(tk, bdav, f->key);
-        c->tracks[n].codec       = AV_CODEC_ID_HEVC;
-        c->tracks[n].kind        = DR_KIND_LAYER;
-        c->tracks[n].layer_flags = d->opt_dolby_vision ? 0 : DR_LAYER_MERGED;
-        if (d->opt_dolby_vision) {
-            AVStream *st = avformat_new_stream(s, NULL);
-            if (!st)
-                return AVERROR(ENOMEM);
-            st->id                   = f->pid | f->key[0] << 16;
-            st->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
-            st->codecpar->codec_id   = AV_CODEC_ID_HEVC;
-            avpriv_set_pts_info(st, 64, 1, DR_TICKS_PER_SECOND);
-            if ((tk->lang[0] && av_dict_set(&st->metadata, "language", tk->lang, 0) < 0) ||
-                av_dict_set_int(&st->metadata, "disc_track", dv, 0) < 0 ||
-                av_dict_set(&st->metadata, "dolby_vision", "EL", 0) < 0)
-                return AVERROR(ENOMEM);
-        }
-        add_pid(c, &nb_pids, f->pid);
-        av_log(s, AV_LOG_VERBOSE, "Blu-ray: track %d: its Dolby Vision enhancement layer, PID 0x%04x, key 0x%04x: %s\n",
-               dv, f->pid, f->key[0], d->opt_dolby_vision ? "a stream of its own" : "merged into the video's frames");
-        n++;
-    }
     if (!(marks = av_calloc(FFMAX(t->nb_marks, 1), sizeof(*marks))))
         return AVERROR(ENOMEM);
     /* the whole title: its marks as they are; a part: its own, from its start */
@@ -458,17 +387,16 @@ static int open_title(AVFormatContext *s, const BlurayTitle *t, int part)
         .clip_name     = clip_name,
         .clip_blocks   = clip_blocks,
         .read_block    = read_block,
-        .ts            = 1,
-        .pids          = c->pids,
-        .nb_pids       = nb_pids,
-        .feeds         = c->feeds,
         .tolerance     = LEAD_IN_TOLERANCE,
-        .tracks        = c->tracks,
-        .nb_tracks     = n,
         .chapter_times = c->chapter_times,
         .nb_chapters   = nb_marks,
     };
-    return 0;
+    if (!(tr = av_calloc(t->nb_tracks, sizeof(*tr))))
+        return AVERROR(ENOMEM);
+    title_tracks(t, c->both, tr);
+    ret = ff_disc_open_tracks(s, t->name, tr, t->nb_tracks, 1, c->both);
+    av_free(tr);
+    return ret;
 }
 
 static int bluray_open(AVFormatContext *s)

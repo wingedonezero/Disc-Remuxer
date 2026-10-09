@@ -50,7 +50,6 @@ typedef struct DVDDemuxContext {
 
     /* the opened title, as the title reader gets it (DiscContext.src) */
     const DVDTitle *title;
-    DRTitleTrack   *tracks;
     int64_t        *chapter_times;
     int            *chapter_clips;
     int64_t        *chapter_offsets;
@@ -77,7 +76,6 @@ static int read_block(AVFormatContext *s, int k, uint32_t block, uint8_t *buf)
 static void dvd_close(AVFormatContext *s)
 {
     DVDDemuxContext *c = ff_disc_part(s);
-    av_freep(&c->tracks);
     av_freep(&c->chapter_times);
     av_freep(&c->chapter_clips);
     av_freep(&c->chapter_offsets);
@@ -153,15 +151,6 @@ static void audio_details(DiscStreamInfo *k, const DiscStreamInfo *a)
 
 #define MAX_TRACKS (1 + 8 + 33 + 1)
 
-/* A track of a title: what the disc info shows, the id the disc sector
- * reader (mpeg.c) gives its packets (-1: none of its own) and its kind on
- * the title timeline. */
-typedef struct DVDTrack {
-    DiscStreamInfo info;
-    int            id;
-    int            kind;
-} DVDTrack;
-
 /* The title's tracks: the video, the audio streams and the sub-pictures
  * as its title set's attributes describe them, without the audio streams
  * found without data and without a stream listed again (the same coding
@@ -170,7 +159,7 @@ typedef struct DVDTrack {
  * Packet ids: video 0x1E0, MPEG audio 0x1C0 + n, private stream 1 sub-
  * streams AC-3 0x80 + n, DTS 0x88 + n, LPCM 0xA0 + n, sub-pictures 0x20 + n.
  * log: the streams left out are logged (once per title). */
-static int title_tracks(AVFormatContext *s, const DVDTitle *t, DVDTrack *out, int log)
+static int title_tracks(AVFormatContext *s, const DVDTitle *t, DiscTrack *out, int log)
 {
     static const enum AVCodecID codecs[8] = { AV_CODEC_ID_AC3, AV_CODEC_ID_NONE, AV_CODEC_ID_MP2, AV_CODEC_ID_MP2,
                                               AV_CODEC_ID_PCM_DVD, AV_CODEC_ID_NONE, AV_CODEC_ID_DTS,
@@ -236,8 +225,10 @@ static int title_tracks(AVFormatContext *s, const DVDTitle *t, DVDTrack *out, in
         if ((p[0] & 3) == 1)
             attr_language(s, k->language, p + 2);
         k->roles = subp_roles(p[5]);
-        out[n].id   = 0x20 + t->subp[i].stream;
-        out[n].kind = DR_KIND_SUBTITLE;
+        out[n].id      = 0x20 + t->subp[i].stream;
+        out[n].kind    = DR_KIND_SUBTITLE;
+        out[n].palette = t->pgc->palette;
+        out[n].picture = "DVD sub-pictures: 4 colours of the program chain's 16-entry palette";
         n++;
     }
     if (t->captions) {
@@ -246,8 +237,9 @@ static int title_tracks(AVFormatContext *s, const DVDTitle *t, DVDTrack *out, in
         k->codec = AV_CODEC_ID_EIA_608;
         av_strlcpy(k->language, "eng", sizeof(k->language));
         k->bit_rate = t->details[0].bit_rate;       /* carried in the video: its rate */
-        out[n].id   = -1;
-        out[n].kind = DR_KIND_CAPTION;
+        out[n].id      = -1;
+        out[n].kind    = DR_KIND_CAPTION;
+        out[n].caption = "line-21 closed captions (CEA-608) in the video, made into text";
         n++;
     }
     for (int i = 0; i < n; i++) {
@@ -264,16 +256,8 @@ static int title_tracks(AVFormatContext *s, const DVDTitle *t, DVDTrack *out, in
 
 static int describe_tracks(AVFormatContext *s, const DVDTitle *t, DiscTitleInfo *dt)
 {
-    DVDTrack tr[MAX_TRACKS];
-    int n = title_tracks(s, t, tr, 1);
-
-    for (int i = 0; i < n; i++) {
-        DiscStreamInfo *k = ff_disc_title_add_stream(dt);
-        if (!k)
-            return AVERROR(ENOMEM);
-        *k = tr[i].info;
-    }
-    return 0;
+    DiscTrack tr[MAX_TRACKS];
+    return ff_disc_title_add_tracks(dt, tr, title_tracks(s, t, tr, 1));
 }
 
 /* The disc info's titles: length (the cells' playback times), size (the
@@ -351,53 +335,14 @@ static int open_title(AVFormatContext *s, const DVDTitle *t)
 {
     DiscContext *d = s->priv_data;
     DVDDemuxContext *c = ff_disc_part(s);
-    DVDTrack tr[MAX_TRACKS];
-    int n = title_tracks(s, t, tr, 0), nb_ch = 0, ret;
+    DiscTrack tr[MAX_TRACKS];
+    int n = title_tracks(s, t, tr, 0), nb_ch = 0;
 
     c->title = t;
-    if (!(c->tracks = av_calloc(n, sizeof(*c->tracks))) ||
-        !(c->chapter_times = av_calloc(FFMAX(t->nb_chapters, 1), sizeof(*c->chapter_times))) ||
+    if (!(c->chapter_times = av_calloc(FFMAX(t->nb_chapters, 1), sizeof(*c->chapter_times))) ||
         !(c->chapter_clips = av_calloc(FFMAX(t->nb_chapters, 1), sizeof(*c->chapter_clips))) ||
         !(c->chapter_offsets = av_calloc(FFMAX(t->nb_chapters, 1), sizeof(*c->chapter_offsets))))
         return AVERROR(ENOMEM);
-    for (int i = 0; i < n; i++) {
-        const DiscStreamInfo *k = &tr[i].info;
-        AVStream *st = avformat_new_stream(s, NULL);
-
-        if (!st)
-            return AVERROR(ENOMEM);
-        st->id                   = tr[i].id;
-        st->codecpar->codec_type = k->type;
-        st->codecpar->codec_id   = tr[i].kind == DR_KIND_CAPTION ? AV_CODEC_ID_SUBRIP : k->codec;
-        avpriv_set_pts_info(st, 64, 1, DR_TICKS_PER_SECOND);
-        if (k->language[0] && (ret = av_dict_set(&st->metadata, "language", k->language, 0)) < 0)
-            return ret;
-        if (tr[i].kind == DR_KIND_SUBTITLE) {
-            char idx[1024];
-            int len = ff_disctl_vobsub_header(idx, sizeof(idx), k->width, k->height, t->pgc->palette);
-
-            st->codecpar->width  = k->width;
-            st->codecpar->height = k->height;
-            if ((ret = av_dict_set(&st->metadata, "picture", "DVD sub-pictures: 4 colours of the program chain's "
-                                   "16-entry palette", 0)) < 0)
-                return ret;
-            /* the VobSub index header (FFmpeg's DVD subtitle decoder reads
-             * size and palette from it) */
-            if (len < 0 || len >= sizeof(idx))
-                return AVERROR_BUG;
-            if ((ret = ff_alloc_extradata(st->codecpar, len)) < 0)
-                return ret;
-            memcpy(st->codecpar->extradata, idx, len);
-        } else if (tr[i].kind == DR_KIND_CAPTION &&
-                   (ret = av_dict_set(&st->metadata, "caption", "line-21 closed captions (CEA-608) in the video, "
-                                      "made into text", 0)) < 0) {
-            return ret;
-        }
-        c->tracks[i].codec  = tr[i].kind == DR_KIND_CAPTION ? AV_CODEC_ID_SUBRIP : k->codec;  /* text cues */
-        c->tracks[i].kind   = tr[i].kind;
-        c->tracks[i].width  = k->width;
-        c->tracks[i].height = k->height;
-    }
     /* chapter records: positions (a segment and a byte offset in it; a
      * chapter starts at the first video frame from there), with their times
      * from the title's start */
@@ -415,14 +360,12 @@ static int open_title(AVFormatContext *s, const DVDTitle *t)
         .read_block    = read_block,
         .lpcm_header   = 3,
         .tolerance     = LEAD_IN_TOLERANCE,
-        .tracks        = c->tracks,
-        .nb_tracks     = n,
         .chapter_times = c->chapter_times,
         .nb_chapters   = nb_ch,
         .chapter_clips   = c->chapter_clips,
         .chapter_offsets = c->chapter_offsets,
     };
-    return 0;
+    return ff_disc_open_tracks(s, t->name, tr, n, 0, 0);
 }
 
 static int dvd_open(AVFormatContext *s)
