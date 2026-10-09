@@ -328,7 +328,7 @@ def run_title(segments):
     """Video-only title: each segment's units (bytes, PES time) through the
     title timeline; the video frames' bytes in output order."""
     tr = ffi.new("DRTitleTrack[]", [[codec_id("hevc"), lib.DR_KIND_VIDEO, 0]])
-    cfg = ffi.new("DRTitleConfig *", {"nb_tracks": 1, "tracks": tr, "tolerance": 1080000, "lpcm_hd": 0})
+    cfg = ffi.new("DRTitleConfig *", {"nb_tracks": 1, "tracks": tr, "lpcm_hd": 0})
     t = ffi.new("DRTitle **")
     out = []
 
@@ -452,7 +452,7 @@ def run_dv(base, el, merged=True):
     tr = ffi.new("DRTitleTrack[]", [[codec_id("hevc"), lib.DR_KIND_VIDEO, 0, 0, 0, 0, 0],
                                     [codec_id("hevc"), lib.DR_KIND_LAYER, 0, 0, 0, 0,
                                      lib.DR_LAYER_MERGED if merged else 0]])
-    cfg = ffi.new("DRTitleConfig *", {"nb_tracks": 2, "tracks": tr, "tolerance": 1080000, "lpcm_hd": 0})
+    cfg = ffi.new("DRTitleConfig *", {"nb_tracks": 2, "tracks": tr, "lpcm_hd": 0})
     t = ffi.new("DRTitle **")
     out = {0: [], 1: []}
 

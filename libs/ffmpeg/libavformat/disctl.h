@@ -346,15 +346,16 @@ void *ff_disctl_audio_priv(DRAudio *a);
 void *ff_disctl_audio_log(const DRAudio *a);
 
 /* ---- Stage 4, audio: the junction of one output track (disctl_junction.c) ----
- * Title start (lead-in shift / drop), then per frame: overlaps grow the
- * audio skew, short gaps are absorbed into it, real gaps reset it (nothing is
- * inserted), whole frames are dropped (only up to a sync unit) once the skew
- * reaches the start shift + one frame. Every frame leaves at time + skew. */
+ * Title start: every frame keeps its own time, also when the track starts
+ * before the video (a stream file's negative delay; nothing is dropped or
+ * moved). Then per frame: overlaps grow the audio skew, short gaps are
+ * absorbed into it, real gaps reset it (nothing is inserted), whole frames
+ * are dropped (only up to a sync unit) once the skew reaches one frame.
+ * Every frame leaves at time + skew. */
 
 enum DREventKind {
     DR_EV_START_GAP = 1,   /**< first frame 0.5..3 ms after the video start: kept */
-    DR_EV_START_DROP,      /**< frames before the lead-in tolerance dropped (count may be 0) */
-    DR_EV_START_SHIFT,     /**< lead-in kept, the whole track delayed by it */
+    DR_EV_START_EARLY,     /**< the track starts dur before the video: kept as it is (a negative delay) */
     DR_EV_OVERLAP,         /**< a frame starts before the previous one ended: skew grows */
     DR_EV_GAP_ABSORBED,    /**< a short gap taken from the skew */
     DR_EV_GAP,             /**< a real gap: missing frames, skew reset, nothing inserted */
@@ -418,7 +419,7 @@ typedef struct DREvent {
     int64_t pos;           /**< ticks: where (title timeline) */
     int64_t dur;           /**< ticks: how much (overlap, gap, dropped duration, lead-in) */
     int64_t skew;          /**< ticks: the audio skew after the event */
-    int64_t count;         /**< frames (DROP / START_DROP); x1000 missing frames (GAP) */
+    int64_t count;         /**< frames (DROP); x1000 missing frames (GAP) */
 } DREvent;
 
 typedef void (*DREventCb)(void *opaque, const DREvent *ev);
@@ -436,7 +437,6 @@ typedef struct DRVideoRef {
 typedef struct DRJunctionConfig {
     int        track;          /**< output track number (events) */
     int64_t    frame_dur;      /**< the stream's nominal frame duration (ticks) */
-    int64_t    tolerance;      /**< format's audio lead-in tolerance (ticks); at least 1 ms is used */
     DRVideoRef video;
     DRFrameCb  out;  void *out_opaque;
     DREventCb  event; void *event_opaque;
@@ -739,9 +739,9 @@ void ff_disctl_verify_close(DRVerify **v);
  * Instead of the junction: the samples of a track's frames (on the title
  * timeline) leave in fixed frames (1/30 s at 48 / 44.1 kHz, else about
  * 32 ms rounded up to a divisor of the rate) timed by a sample counter from
- * 0. Frames more than 1 ms before the title start are dropped, a lead-in
- * within it is taken as the origin; a later start below 5 s is filled with
- * silence, from 5 s on skipped on the output clock. A frame more than 10800
+ * the track's start: a track that starts before the video keeps every frame
+ * and starts at its own (negative) time; a later start below 5 s is filled
+ * with silence, from 5 s on skipped on the output clock. A frame more than 10800
  * ticks and 2 samples off the sample count: if the frames after it go on
  * from where it would end without the gap (within 32 frames), it carried a
  * broken time and is appended; else silence fills the gap (at most two
@@ -763,7 +763,6 @@ typedef struct DRPcmConfig {
 
 typedef struct DRPcmStats {
     int64_t in, out;          /**< frames in, frames out */
-    int64_t dropped;          /**< frames dropped at the start */
     int64_t silence;          /**< silence samples written */
     int64_t broken;           /**< frames appended over a broken time */
     int64_t overlap;          /**< frames cut, held or dropped for overlapping */
@@ -874,7 +873,6 @@ typedef struct DRTitleTrack {
 typedef struct DRTitleConfig {
     int                 nb_tracks;
     const DRTitleTrack *tracks;    /**< track 0: the master video */
-    int64_t             tolerance; /**< audio lead-in tolerance (ticks; the format profile) */
     int                 lpcm_hd;   /**< LPCM payloads start with HD DVD's 5-byte header (else DVD-Video's 3) */
     const int64_t      *marks;     /**< chapter marks (DRChapterPlan.marks) or NULL */
     int                 nb_marks;

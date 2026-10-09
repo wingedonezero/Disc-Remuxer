@@ -46,7 +46,7 @@ enum { HAVE = 1, NONE = 0, WAIT = 2 };
 typedef struct State {
     int64_t exp;       /* end of the previous input frame */
     int64_t skew;      /* added to every frame that leaves */
-    int64_t base;      /* the start shift (lead-in kept) */
+    int64_t base;      /* the skew a seamless join's match left (0 at the start) */
     int64_t adv;       /* gap marker advance */
     int64_t drop_n, drop_d;
 } State;
@@ -54,7 +54,6 @@ typedef struct State {
 struct DRJunction {
     void            *log;
     DRJunctionConfig cfg;
-    int64_t          c;            /* lead-in tolerance, at least 1 ms */
 
     DRFrame         *q;            /* input frames q[head .. head + n) */
     int              head, n, cap;
@@ -62,7 +61,8 @@ struct DRJunction {
     int64_t          tail_done;    /* input index of the frame the tail check last ran for */
 
     State            s;
-    int64_t          last_out;     /* time of the last frame handed on, -1 = none */
+    int64_t          last_out;     /* time of the last frame handed on */
+    int              have_out;     /* a frame was handed on */
 
     DRFrame         *hist;         /* frames handed on since the last sync unit (decoder preroll) */
     int              nb_hist, cap_hist;
@@ -153,11 +153,12 @@ static int out(DRJunction *j, DRFrame *f)
         ff_disctl_frame_unref(f);
         return ret;
     }
-    if (j->last_out >= 0 && f->time <= j->last_out) {
+    if (j->have_out && f->time <= j->last_out) {
         event(j, DR_EV_TIME_ORDER, f->time, 0, j->s.skew, 0);
         events_flush(j);
     }
     j->last_out = f->time;
+    j->have_out = 1;
     j->st.out++;
     return j->cfg.out(j->cfg.out_opaque, f);
 }
@@ -216,58 +217,26 @@ static int drop_count(DRJunction *j, int first, int64_t target, int *n, int64_t 
     return HAVE;
 }
 
-/* ---- title start ---- */
+/* ---- title start ----
+ * Every frame keeps its own time: a track that starts after the video keeps
+ * its delay; one that starts before it keeps the frames before the video,
+ * at their times (a stream file's negative delay: the frames before the
+ * video are sound from before its first picture; moving them later instead
+ * would put the whole track out of sync by the moved amount). */
 
 static int start(DRJunction *j)
 {
-    int64_t t, a, dropped = 0;
-    int ndrop = 0, r;
+    int64_t t;
+    int r;
 
     if ((r = need(j, 0)) != HAVE)
         return r == WAIT ? WAIT : HAVE;
     t = q_get(j, 0)->time;
-    if (t >= 0) {
-        /* the track starts after the video: its delay is kept */
-        if (t <= START_KEEP && t > START_REPORT)
-            event(j, DR_EV_START_GAP, 0, t, j->s.skew, 0);
-        j->s.exp = t;
-        return HAVE;
-    }
-    a = -t;
-    if ((uint64_t)a > (uint64_t)j->c) {
-        /* frames earlier than the tolerance + one frame are dropped */
-        int64_t limit = -(j->c + j->cfg.frame_dur);
-        int k = 0;
-
-        for (;;) {
-            r = need(j, k);
-            if (r == WAIT)
-                return WAIT;
-            if (r == NONE || q_get(j, k)->time >= limit)
-                break;
-            dropped += q_get(j, k)->dur;
-            k++;
-        }
-        for (int i = 0; i < k; i++)
-            q_drop_head(j);
-        ndrop = k;
-        j->st.dropped     += k;
-        j->st.dropped_dur += dropped;
-        if (!j->n)
-            return HAVE;    /* nothing left: no event (the reference reports only with a frame left) */
-        t = q_get(j, 0)->time;
-        if (FFABS(t) > START_KEEP)
-            event(j, DR_EV_START_DROP, 0, dropped, -t, ndrop);
-        if (t >= 0) {
-            events_flush(j);
-            return start(j);
-        }
-        a = -t;
-    }
-    j->s.skew = j->s.base = a;
-    j->s.exp  = t;
-    if (dropped + a > START_REPORT)
-        event(j, DR_EV_START_SHIFT, 0, dropped + a, a, 0);
+    if (t >= 0 && t <= START_KEEP && t > START_REPORT)
+        event(j, DR_EV_START_GAP, 0, t, j->s.skew, 0);
+    else if (t < -START_REPORT)
+        event(j, DR_EV_START_EARLY, 0, -t, 0, 0);
+    j->s.exp = t;
     return HAVE;
 }
 
@@ -586,8 +555,6 @@ int ff_disctl_junction_open(DRJunction **jp, void *logctx, const DRJunctionConfi
         return AVERROR(ENOMEM);
     j->log      = logctx;
     j->cfg      = *cfg;
-    j->c        = FFMAX(MS, cfg->tolerance);
-    j->last_out = -1;
     j->tail_done = -1;
     *jp = j;
     return 0;

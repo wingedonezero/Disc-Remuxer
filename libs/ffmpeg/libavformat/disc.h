@@ -121,7 +121,6 @@ typedef struct DiscTitleSource {
     const DiscTsFeed *feeds;        /**< ts: what each track takes */
 
     int          lpcm_header;       /**< bytes of a PES packet's LPCM audio frame header (HD DVD 5) */
-    int64_t      tolerance;         /**< audio lead-in tolerance (ticks; the format's own) */
     const struct DRTitleTrack *tracks;
     int          nb_tracks;
     const int64_t     *chapter_times;   /**< chapter records (ticks from the title start) */
@@ -174,8 +173,8 @@ typedef struct DiscFormat {
      *  chapters, parts. */
     int  (*title_info)(AVFormatContext *s, int i, DiscTitleInfo *dt);
     /** Open title i (with part >= 0: that part of it alone): DiscContext.src
-     *  but its tracks (clips, block reader, chapters, LPCM header, lead-in
-     *  tolerance, ts), s->duration; *second_view: the second view of a 3-D
+     *  but its tracks (clips, block reader, chapters, LPCM header, ts),
+     *  s->duration; *second_view: the second view of a 3-D
      *  title is read. */
     int  (*open_title)(AVFormatContext *s, int i, int part, int *second_view);
     /** The opened title's own state given back (another title can be

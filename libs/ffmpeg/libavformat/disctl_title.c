@@ -186,8 +186,7 @@ struct DRTitle {
 
 static const char *const event_names[] = {
     [DR_EV_START_GAP]            = "start_gap",
-    [DR_EV_START_DROP]           = "start_drop",
-    [DR_EV_START_SHIFT]          = "start_shift",
+    [DR_EV_START_EARLY]          = "start_early",
     [DR_EV_OVERLAP]              = "overlap",
     [DR_EV_GAP_ABSORBED]         = "gap_absorbed",
     [DR_EV_GAP]                  = "gap",
@@ -260,11 +259,11 @@ static void event_text(DRTitle *t, const DREvent *e)
     int k = e->track;
 
     switch (e->kind) {
-    case DR_EV_START_SHIFT:
-        av_log(t->log, AV_LOG_WARNING, "Track %d: the audio starts %s ms before the video: kept, the track "
-               "delayed by it\n", k, msec(a, 32, e->dur, 0));
-        break;
-    case DR_EV_START_DROP:
+    case DR_EV_START_EARLY:
+        /* no fault: the track keeps its frames before the video (a negative delay) */
+        av_log(t->log, AV_LOG_INFO, "Track %d: the audio starts %s ms before the video on the disc: every frame "
+               "kept at its time (a negative delay)\n", k, msec(a, 32, e->dur, 0));
+        return;
     case DR_EV_DROP:
         av_log(t->log, AV_LOG_WARNING, "Track %d at %s: %"PRId64" frame(s) (%s ms) dropped to bring the audio skew "
                "to %s ms\n", k, hms(a, 32, e->pos), e->count, msec(b, 32, e->dur, 0), msec(c, 32, e->skew, 1));
@@ -534,7 +533,7 @@ static int audio_out_open(DRTitle *t, Track *k)
         return ff_disctl_pcm_open(&k->pcm, t->log, &pc);
     } else {
         DRJunctionConfig jc = {
-            .track = k->index, .tolerance = t->cfg.tolerance, .video = vref,
+            .track = k->index, .video = vref,
             .out = track_out, .out_opaque = k, .event = on_event, .event_opaque = t,
             .codec = k->cfg.codec, .rate = k->have_header ? k->header.rate : 0,
         };
@@ -1352,9 +1351,10 @@ static void title_summary(DRTitle *t)
                issues ? "" : ": PASS");
         if (k->cfg.kind == DR_KIND_AUDIO && st.frames > st.markers)
             av_log(t->log, st.sync_segments ? AV_LOG_WARNING : AV_LOG_INFO, "Title check: track %d: as a stream "
-                   "file (start delay %s ms) the audio is within %s ms of its time on the disc%s%s\n", i,
-                   msec(a, 32, st.delay, 1), msec(b, 32, FFABS(st.es_err_max), 0), st.sync_segments ?
-                   strf((char[96]){ 0 }, 96, "; %d of %d segment(s) more than 1 ms off, the largest in "
+                   "file (start delay %s ms) the audio is %s %s ms of its time on the disc%s%s\n", i,
+                   msec(a, 32, st.delay, 1), st.sync_segments ? "off by up to" : "within",
+                   msec(b, 32, FFABS(st.es_err_max), 0), st.sync_segments ?
+                   strf((char[96]){ 0 }, 96, ": %d of %d segment(s) more than 1 ms off, the most in "
                                    "segment %d", st.sync_segments, st.segments, st.sync_seg + 1) :
                    strf((char[64]){ 0 }, 64, " in every segment (%d)", st.segments),
                    st.sync_segments ? "" : ": PASS");

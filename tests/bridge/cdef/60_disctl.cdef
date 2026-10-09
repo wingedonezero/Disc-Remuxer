@@ -112,8 +112,7 @@ void ff_disctl_audio_set_state(DRAudio *a, void *state);
 
 enum DREventKind {
     DR_EV_START_GAP = 1,
-    DR_EV_START_DROP,
-    DR_EV_START_SHIFT,
+    DR_EV_START_EARLY,
     DR_EV_OVERLAP,
     DR_EV_GAP_ABSORBED,
     DR_EV_GAP,
@@ -168,7 +167,6 @@ typedef struct DRVideoRef {
 typedef struct DRJunctionConfig {
     int        track;
     int64_t    frame_dur;
-    int64_t    tolerance;
     DRVideoRef video;
     DRFrameCb  out;
     void      *out_opaque;
@@ -333,7 +331,6 @@ typedef struct DRPcmConfig {
 
 typedef struct DRPcmStats {
     int64_t in, out;
-    int64_t dropped;
     int64_t silence;
     int64_t broken;
     int64_t overlap;
@@ -385,7 +382,6 @@ typedef struct DRTitleTrack {
 typedef struct DRTitleConfig {
     int                 nb_tracks;
     const DRTitleTrack *tracks;
-    int64_t             tolerance;
     int                 lpcm_hd;
     const int64_t      *marks;
     int                 nb_marks;

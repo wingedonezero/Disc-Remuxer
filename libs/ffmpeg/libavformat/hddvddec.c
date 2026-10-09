@@ -4,8 +4,8 @@
  * (VTI), the playlists, the AACS keys, the title plan and the titles'
  * tracks; one title's tracks become the streams. The disc layer's title
  * reader reads its EVOB clips (DiscTitleSource: the blocks of a clip, AACS
- * decrypted here; LPCM's 5-byte audio frame header; the 102 ms audio
- * lead-in tolerance; the title's chapter marks).
+ * decrypted here; LPCM's 5-byte audio frame header; the title's chapter
+ * marks).
  *
  * This file is part of FFmpeg.
  *
@@ -42,7 +42,6 @@
 #include "internal.h"
 
 #define HDDVD_BLOCK 2048
-#define LEAD_IN_TOLERANCE 110160000LL     /* HD DVD audio lead-in tolerance: 102 ms (ticks) */
 
 /* The stream pass's reading: an EVOB's blocks as the title reader reads them. */
 typedef struct PassRead {
@@ -263,7 +262,7 @@ static int title_info(AVFormatContext *s, int i, DiscTitleInfo *dt)
 }
 
 /* The opened title's source (its streams and tracks: the disc layer's):
- * its clips and chapter marks, HD DVD's LPCM header and lead-in tolerance. */
+ * its clips and chapter marks, HD DVD's LPCM header. */
 static int open_title(AVFormatContext *s, int i, int part, int *second_view)
 {
     DiscContext *d = s->priv_data;
@@ -285,7 +284,6 @@ static int open_title(AVFormatContext *s, int i, int part, int *second_view)
         .clip_blocks   = clip_blocks,
         .read_block    = read_block,
         .lpcm_header   = 5,
-        .tolerance     = LEAD_IN_TOLERANCE,
         .chapter_times = c->chapter_times,
         .chapter_names = (const char *const *)c->chapter_names,
         .nb_chapters   = t->nb_marks,

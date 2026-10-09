@@ -719,7 +719,7 @@ int ff_disc_title_reader_open(AVFormatContext *s, const DiscTitleSource *src)
     {
         char helper[4096];
         DRTitleConfig cfg = {
-            .nb_tracks = src->nb_tracks, .tracks = src->tracks, .tolerance = src->tolerance,
+            .nb_tracks = src->nb_tracks, .tracks = src->tracks,
             .lpcm_hd = src->lpcm_header == 5,
             .marks = r->chapter_plan.marks, .nb_marks = r->chapter_plan.nb_marks,
             .cc_helper = d->opt_cc_helper && *d->opt_cc_helper ? d->opt_cc_helper :

@@ -5,8 +5,8 @@
  * (bluray_tracks.c) and describes the disc. One title's tracks become the
  * streams; the disc layer's title reader reads its segments
  * (DiscTitleSource: a segment's stream data in 6144-byte units, AACS
- * decrypted here; each track's PID and PES stream keys; the 1 ms audio
- * lead-in tolerance; the title's chapter marks). Tracks whose codec the
+ * decrypted here; each track's PID and PES stream keys; the title's
+ * chapter marks). Tracks whose codec the
  * title timeline does not read yet are left out (logged).
  *
  * This file is part of FFmpeg.
@@ -41,7 +41,6 @@
 #include "disctl.h"
 #include "internal.h"
 
-#define LEAD_IN_TOLERANCE 1080000LL       /* Blu-ray audio lead-in tolerance: 1 ms (ticks) */
 
 typedef struct BlurayDemuxContext {
     BlurayDisc disc;
@@ -438,7 +437,6 @@ static int open_title(AVFormatContext *s, int i, int part, int *second_view_read
         .clip_blocks   = clip_blocks,
         .read_block    = read_block,
         .ts            = 1,
-        .tolerance     = LEAD_IN_TOLERANCE,
         .chapter_times = c->chapter_times,
         .nb_chapters   = nb_marks,
     };

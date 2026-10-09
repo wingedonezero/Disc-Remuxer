@@ -94,29 +94,23 @@ def test_back_to_back_frames_leave_in_frames_of_1600_samples():
     assert (getattr(st, "in"), st.out) == (50, 3)
 
 
-def test_a_lead_in_within_1_ms_is_kept_and_its_track_starts_at_0():
-    # 0.8 ms before the video: all samples, from 0
+def test_a_lead_in_keeps_every_sample_and_the_track_starts_at_its_time():
+    # 0.8 ms before the video: all samples, the first output frame at -0.8 ms
     s, _ = run(run_of(-864000, 0, 30), I64_MAX)
     assert s.samples == [val(k) for k in range(30 * N)]
-    assert s.frames[0][0] == 0
-    assert kinds(s) == [lib.DR_EV_START_SHIFT]
+    assert s.frames[0][0] == -864000
+    assert kinds(s) == [lib.DR_EV_START_EARLY]
 
 
-def test_frames_more_than_1_ms_early_are_dropped():
-    # frames at -9.4, -7.73, -6.07, -4.4, -2.73, -1.07 ms ... (1.667 ms each):
-    # those before -1 ms dropped; the first left is 1.07 ms early, inside 1 ms?
-    # no: 1.067 ms > 1 ms is dropped too; the one at +0.6 ms starts the track
-    # after 0.6 ms of silence
+def test_a_longer_lead_in_keeps_every_sample_too():
+    # frames from -9.4 ms (1.667 ms each): nothing dropped, no silence; the
+    # output frames go on from -9.4 ms (a negative delay)
     start = -9 * MS - 400 * 1080
     s, st = run(run_of(start, 0, 40), I64_MAX)
-    first_kept = next(k for k in range(40) if start + k * N * T >= -MS)
-    assert st.dropped == first_kept
-    t0 = start + first_kept * N * T
-    lead = t0 * RATE // 1080000000
-    assert t0 >= 0 and lead > 0
-    assert s.samples[:lead] == [0] * lead
-    assert s.samples[lead] == val(first_kept * N)
-    assert (lib.DR_EV_START_DROP in kinds(s)) == (abs(t0) > 3 * MS)
+    assert s.samples == [val(k) for k in range(40 * N)]
+    assert s.frames[0][0] == start
+    assert all(b[0] == a[0] + a[1] for a, b in zip(s.frames, s.frames[1:])), "back to back"
+    assert kinds(s) == [lib.DR_EV_START_EARLY]
 
 
 def test_a_late_start_below_5_s_is_filled_with_silence_from_5_s_on_skipped():

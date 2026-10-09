@@ -49,7 +49,7 @@ def of_kind(events, kind):
 def title(*streams):
     """A video-only title: one segment per stream, each timed from its own
     clock. The outputs and the events."""
-    outs, events, _, _ = run(VIDEO_ONLY, 1080000, False, [video(BASE, s) for s in streams])
+    outs, events, _, _ = run(VIDEO_ONLY, False, [video(BASE, s) for s in streams])
     return outs, events
 
 
@@ -144,5 +144,5 @@ def test_the_scan_of_every_picture_is_read():
 def test_audio_in_sync_with_its_disc_times_is_no_sync_finding():
     n = 1200 * 36036 // 34560
     seg = interleave(video(BASE), ac3(BASE, AC3_DUR, n))
-    _, events, _, _ = run(tracks("ac3"), 110160000, True, [seg])
+    _, events, _, _ = run(tracks("ac3"), True, [seg])
     assert not of_kind(events, lib.DR_EV_SYNC)
