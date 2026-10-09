@@ -117,6 +117,24 @@ enum MpegPsDiscStatus {
 int ff_mpegps_disc_sector(const uint8_t *sec, int lpcm5, MpegPsDiscPacketCb cb, void *opaque, const char **why,
                            int *at);
 
+/** What the MPEG-PS demuxer read in disc mode (option disc): the sectors,
+ *  and the packets it gave no stream. */
+typedef struct MpegPsDiscStats {
+    int64_t sectors;                 /**< sectors read */
+    int64_t empty;                   /**< of them empty (all 0x00 or all 0xff) */
+    int64_t bad;                     /**< left out: the first packet runs past the sector (a short header) */
+    int64_t rest_dropped, rest_bytes;/**< sectors whose rest was left out, and those bytes */
+    int64_t nav, nav_bytes;          /**< private stream 2 packets (DVD navigation), to the sector's end */
+    int64_t padding, padding_bytes;  /**< padding packets, to the sector's end */
+    int64_t system, system_bytes;    /**< system headers */
+    int64_t other, other_bytes;      /**< other packets of no stream (unused stream ids) */
+    int64_t discarded, discarded_bytes; /**< packets of streams the caller discards */
+} MpegPsDiscStats;
+
+struct AVFormatContext;
+/** The statistics of an MPEG-PS demuxer opened with option disc. */
+void ff_mpegps_disc_stats(const struct AVFormatContext *s, MpegPsDiscStats *st);
+
 
 /**
  * Parse MPEG-PES five-byte timestamp

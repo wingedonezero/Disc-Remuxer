@@ -18,6 +18,7 @@ class Sink:
     def __init__(self):
         self.out = []  # track, time, flags
         self.events = []
+        self.starts = []  # each segment's start the joiner keeps (None: not placed)
 
 
 def fr(time, dur, flags):
@@ -59,6 +60,9 @@ def join(kinds, marks, segments):
     if ret >= 0:
         ret = lib.ff_disctl_join_finish(j[0])
     lib.ff_disctl_join_stats(j[0], st)
+    start = ffi.new("int64_t *")
+    for k in range(len(segments)):
+        sink.starts.append(start[0] if lib.ff_disctl_join_segment_start(j[0], k, start) == 0 else None)
     lib.ff_disctl_join_close(j)
     return ret if ret < 0 else (sink, st)
 
@@ -97,6 +101,7 @@ def test_segments_follow_where_the_previous_video_really_ended():
     assert a[0] == 0
     assert a[10] == end0, "segment 1's audio follows its own video"
     assert st.segments == 2
+    assert s.starts == [b0, b1], "each segment's first video time on its own clock (the start check's value)"
 
 
 def test_audio_without_a_time_takes_where_the_track_is():

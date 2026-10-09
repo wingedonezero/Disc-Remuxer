@@ -61,11 +61,12 @@ def run(units, chunk=0):
 N = 10  # pictures of a GOP: I0 P3 B1 B2 P6 B4 B5 P9 B7 B8
 
 
-def gop(g, n=N, head_type=H.IDR_N_LP, pic_struct=0, recovery=False, sps=None, timing_sei=True):
+def gop(g, n=N, head_type=H.IDR_N_LP, pic_struct=0, recovery=False, sps=None, timing_sei=True, slice_size=300):
     """One GOP in decode order (I P B B P B B ...) as access units with
     their PES times and display positions: [(bytes, time, display)].
     head_type: the I picture's nal_unit_type; an IDR picture counts its
-    GOP's display order from 0, others go on from the GOPs before."""
+    GOP's display order from 0, others go on from the GOPs before.
+    slice_size: the bytes of picture data (other bytes: other pictures)."""
     out = []
     order = [(H.SLICE_I, 0)]
     k = 1
@@ -87,7 +88,7 @@ def gop(g, n=N, head_type=H.IDR_N_LP, pic_struct=0, recovery=False, sps=None, ti
         else:
             t = H.TRAIL_R if kind != H.SLICE_B else H.TRAIL_N
         poc = disp if idr else g * n + disp
-        au += H.slice_(t, kind, poc % 256)
+        au += H.slice_(t, kind, poc % 256, size=slice_size)
         out.append((au, BASE + (g * n + disp) * 2 * FIELD, g * n + disp))
     return out
 
@@ -327,7 +328,7 @@ def run_title(segments):
     """Video-only title: each segment's units (bytes, PES time) through the
     title timeline; the video frames' bytes in output order."""
     tr = ffi.new("DRTitleTrack[]", [[codec_id("hevc"), lib.DR_KIND_VIDEO, 0]])
-    cfg = ffi.new("DRTitleConfig *", {"nb_tracks": 1, "tracks": tr, "tolerance": 1080000, "lpcm_hd": 0})
+    cfg = ffi.new("DRTitleConfig *", {"nb_tracks": 1, "tracks": tr, "lpcm_hd": 0})
     t = ffi.new("DRTitle **")
     out = []
 
@@ -361,7 +362,7 @@ def ending(units):
 
 def test_an_end_of_sequence_unit_before_an_idr_picture_and_at_the_end_is_taken_out():
     s1 = ending([(u, t) for u, t, _ in stream(gops=2)])
-    s2 = ending([(u, t) for u, t, _ in stream(gops=2)])
+    s2 = ending([(u, t) for u, t, _ in stream(gops=2, slice_size=301)])   # other pictures than s1's
     out, warnings = run_title([s1, s2])
     assert len(out) == 4 * N
     assert all(H.EOS not in H.nal_types(o) for o in out), "nothing depends on them"
@@ -371,7 +372,7 @@ def test_an_end_of_sequence_unit_before_an_idr_picture_and_at_the_end_is_taken_o
 
 def test_an_end_of_sequence_unit_before_a_cra_picture_is_kept():
     s1 = ending([(u, t) for u, t, _ in stream(gops=2)])
-    s2 = [(u, t) for u, t, _ in gop(0, head_type=H.CRA) + gop(1)]
+    s2 = [(u, t) for u, t, _ in gop(0, head_type=H.CRA, slice_size=301) + gop(1, slice_size=301)]
     out, warnings = run_title([s1, s2])
     assert len(out) == 4 * N
     assert out[2 * N - 1] == s1[-1][0], "the CRA picture's leading pictures depend on it"
@@ -451,7 +452,7 @@ def run_dv(base, el, merged=True):
     tr = ffi.new("DRTitleTrack[]", [[codec_id("hevc"), lib.DR_KIND_VIDEO, 0, 0, 0, 0, 0],
                                     [codec_id("hevc"), lib.DR_KIND_LAYER, 0, 0, 0, 0,
                                      lib.DR_LAYER_MERGED if merged else 0]])
-    cfg = ffi.new("DRTitleConfig *", {"nb_tracks": 2, "tracks": tr, "tolerance": 1080000, "lpcm_hd": 0})
+    cfg = ffi.new("DRTitleConfig *", {"nb_tracks": 2, "tracks": tr, "lpcm_hd": 0})
     t = ffi.new("DRTitle **")
     out = {0: [], 1: []}
 

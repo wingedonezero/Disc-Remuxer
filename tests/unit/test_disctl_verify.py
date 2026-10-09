@@ -88,7 +88,8 @@ def test_audio_out_of_order_or_without_duration():
          fi(fr[2], 2 * AC3_DUR, 0, 2 * AC3_DUR, F_KEY)]
     st, ev = check("ac3", AUDIO, f)
     assert st.order_errors == 2
-    assert kinds(ev) == [lib.DR_EV_VERIFY_ORDER, lib.DR_EV_VERIFY_ORDER]
+    assert kinds(ev) == [lib.DR_EV_VERIFY_ORDER, lib.DR_EV_VERIFY_ORDER, lib.DR_EV_SYNC]
+    assert st.sync_segments == 1, "a stream file plays them back to back: off their own times"
 
 
 def thd_units():

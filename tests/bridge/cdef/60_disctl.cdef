@@ -11,6 +11,14 @@
 #define DR_F_BATCH ...
 #define DR_F_NO_STOP ...
 #define DR_F_SEQ_END ...
+#define DR_F_START_CLEAN ...
+#define DR_F_START_BROKEN ...
+#define DR_F_START_OPEN ...
+#define DR_SCAN_KNOWN ...
+#define DR_SCAN_PROGRESSIVE ...
+#define DR_SCAN_TFF ...
+#define DR_SCAN_RFF ...
+#define DR_SYNC_LIMIT ...
 #define DR_AUDIO_EXTRACTED ...
 #define DR_AUDIO_EXTENDED ...
 #define DR_CHAPTER_00 ...
@@ -26,6 +34,7 @@ typedef struct DRFrame {
     int          samples;
     int          rate;
     int64_t      src;
+    int          seg;
 } DRFrame;
 
 typedef int (*DRFrameCb)(void *opaque, DRFrame *frame);
@@ -39,12 +48,17 @@ typedef struct DRAudioHeader {
     int samples;
 } DRAudioHeader;
 
+enum DRStart { DR_START_UNKNOWN = 0, DR_START_CLEAN, DR_START_BROKEN, DR_START_OPEN };
+
 typedef struct DRPicture {
     int type;
     int order;
     int fields;
     int key;
     int rate_num, rate_den;
+    int start;
+    int scan;
+    int seq_end;
 } DRPicture;
 
 typedef struct DRUnit {
@@ -98,8 +112,7 @@ void ff_disctl_audio_set_state(DRAudio *a, void *state);
 
 enum DREventKind {
     DR_EV_START_GAP = 1,
-    DR_EV_START_DROP,
-    DR_EV_START_SHIFT,
+    DR_EV_START_EARLY,
     DR_EV_OVERLAP,
     DR_EV_GAP_ABSORBED,
     DR_EV_GAP,
@@ -126,6 +139,12 @@ enum DREventKind {
     DR_EV_PCM_SILENCE,
     DR_EV_PCM_SKIP,
     DR_EV_PCM_TIMECODE,
+    DR_EV_JOIN_START,
+    DR_EV_JOIN_NOT_KEY,
+    DR_EV_JOIN_REPEAT,
+    DR_EV_SEQ_END_INSIDE,
+    DR_EV_PICTURES,
+    DR_EV_SYNC,
 };
 
 typedef struct DREvent {
@@ -148,7 +167,6 @@ typedef struct DRVideoRef {
 typedef struct DRJunctionConfig {
     int        track;
     int64_t    frame_dur;
-    int64_t    tolerance;
     DRVideoRef video;
     DRFrameCb  out;
     void      *out_opaque;
@@ -201,6 +219,7 @@ int  ff_disctl_join_segment(DRJoin *j);
 int  ff_disctl_join_push(DRJoin *j, int track, DRFrame *frame);
 int  ff_disctl_join_finish(DRJoin *j);
 void ff_disctl_join_stats(const DRJoin *j, DRJoinStats *st);
+int  ff_disctl_join_segment_start(const DRJoin *j, int seg, int64_t *start);
 int  ff_disctl_join_chapters(const DRJoin *j, const int64_t **starts);
 void ff_disctl_join_close(DRJoin **j);
 
@@ -228,6 +247,13 @@ typedef struct DRVideoStats {
     int     num, den;
     int64_t base;
     int64_t side;
+    int64_t side_bytes;
+    int64_t other, other_bytes;
+    int64_t stuffing;
+    int64_t seq_end;
+    int64_t seq_end_inside;
+    int64_t scan_known;
+    int64_t progressive, tff, rff;
 } DRVideoStats;
 
 int  ff_disctl_video_open(DRVideo **v, void *logctx, int codec, int track,
@@ -235,6 +261,7 @@ int  ff_disctl_video_open(DRVideo **v, void *logctx, int codec, int track,
 int  ff_disctl_video_unit(void *video, const DRUnit *unit);
 int  ff_disctl_video_flush(DRVideo *v);
 void ff_disctl_video_set_side(DRVideo *v, DRFrameCb cb, void *opaque);
+void ff_disctl_video_stuffing(DRVideo *v, int64_t bytes);
 int  ff_disctl_video_snap(const DRVideo *v, int64_t t, int64_t *out);
 void ff_disctl_video_stats(const DRVideo *v, DRVideoStats *st);
 void ff_disctl_video_close(DRVideo **v);
@@ -278,6 +305,9 @@ typedef struct DRVerifyStats {
     int64_t es_err_max, es_err_at;
     int64_t es_err_end;
     int64_t mkv_err_max, mkv_err_at;
+    int     segments;
+    int     sync_segments;
+    int     sync_seg;
 } DRVerifyStats;
 
 typedef struct DRVerify DRVerify;
@@ -302,7 +332,6 @@ typedef struct DRPcmConfig {
 
 typedef struct DRPcmStats {
     int64_t in, out;
-    int64_t dropped;
     int64_t silence;
     int64_t broken;
     int64_t overlap;
@@ -354,7 +383,6 @@ typedef struct DRTitleTrack {
 typedef struct DRTitleConfig {
     int                 nb_tracks;
     const DRTitleTrack *tracks;
-    int64_t             tolerance;
     int                 lpcm_hd;
     const int64_t      *marks;
     int                 nb_marks;

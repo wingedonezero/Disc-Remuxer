@@ -107,7 +107,6 @@ logged with the reason; nothing is guessed.
 |---|---|---|---|
 | packet source | MPEG-PS (`hddvd_ps.c`) | MPEG-PS | MPEG-TS |
 | LPCM extra header | 5 bytes | 3 bytes | own format |
-| audio lead-in tolerance | 102 ms | 1 ms | 1 ms |
 | chapters | time marks | byte positions -> first picture | time marks |
 | leading / trailing segment probe | yes (large clips kept) | yes | yes |
 | DVD LPCM dynamic-range check | - | yes | - |
@@ -194,11 +193,18 @@ logged with the reason; nothing is guessed.
 
 ## 8. Stage 4: junction per output track
 
-- **Title start (audio):** a first unit before 0 by more than the format's
-  tolerance has its earlier units dropped (whole units, keep at most
-  tolerance + one unit of lead); the remaining lead becomes a permanent
-  shift of the whole track. A first unit after 0 keeps its delay.
-- **Audio skew** (one value per track, starts at the shift):
+- **Title start (audio):** every unit keeps its own time. A track whose
+  first unit is after 0 keeps that delay; one whose first unit is before 0
+  keeps its units before the video at their times (a stream file's negative
+  delay, `DR_EV_START_EARLY`). Earlier versions followed the reference
+  program: units before the format's tolerance (1 ms DVD / Blu-ray, 102 ms
+  HD DVD) plus one unit dropped and the rest of the lead made a shift of the
+  whole track, which put the track out of sync by that rest (SAINTBEAST #3:
+  24.133 ms late for the whole episode). A container that cannot hold
+  negative times (Matroska) decides at its writer how to keep sync (start
+  the video later, or drop whole units before 0 and keep the rest at their
+  times).
+- **Audio skew** (one value per track, starts at 0):
   - overlap (unit earlier than expected): skew grows;
   - short gap: absorbed while skew - gap > -max(12 ms, unit duration);
   - real gap: reported with the missing frame count, skew back to 0,
@@ -227,10 +233,11 @@ logged with the reason; nothing is guessed.
   ways of joining, Blu-ray).
 - **PCM tracks** (`disctl_pcm.c`, in place of the junction): the samples
   leave in fixed frames (1/30 s at 48 / 44.1 kHz, else about 32 ms rounded up
-  to a divisor of the rate) timed by a sample counter from 0. Start: frames
-  more than 1 ms early are dropped, a lead-in within 1 ms is the origin; a
-  later start below 5 s is filled with silence, from 5 s on skipped on the
-  output clock. A frame more than 10800 ticks and 2 samples off the sample
+  to a divisor of the rate) timed by a sample counter from the track's
+  start. Start: a track before the video keeps every frame, its clock (and
+  its output times) starting at its first frame (a negative delay); a later
+  start below 5 s is filled with silence, from 5 s on skipped on the output
+  clock. A frame more than 10800 ticks and 2 samples off the sample
   count: when the frames after it (up to 32) go on from where it would end
   without the gap, its time was broken and it is appended; else silence
   fills the gap (two output frames per step, the rest pending). A frame
@@ -249,7 +256,7 @@ The rules above are the default policy. Around them:
 
 - **Measure** (every frame, every track): source time (PES-derived, on the
   joined timeline), output time, and the stream-file position (sum of the
-  output durations before it, plus the start shift). Per join: the master's
+  output durations before it, from the first frame's time). Per join: the master's
   end, each track's overlap / gap, and for decodable codecs whether the
   overlapping units are duplicates.
 - **Decide**: every action (drop, shift, absorb, repair, placeholder) is an
@@ -275,8 +282,47 @@ The rules above are the default policy. Around them:
     as a stream file plays it (start delay + the durations before it) and by
     the output times; the largest of each and where, the stream file's at
     the end;
+    per segment (`DRFrame.seg`, set by the joiner): a segment where the
+    stream-file error goes beyond 1 ms (`DR_SYNC_LIMIT`) is a warning
+    (`DR_EV_SYNC`);
   - not yet: joins where a different action would have given a smaller
     error.
+- **Title checks** (`disctl_title.c`, the master video's segments and
+  joins; nothing is changed, every finding is an event, a warning where it
+  may be a fault, and a summary ends the title):
+  - how decoding starts at each segment's first key frame, by the codec's
+    own marks (`DRPicture.start`): MPEG-2 closed_gop / broken_link of its GOP
+    header, VC-1 CLOSED_ENTRY / BROKEN_LINK of its entry point, H.264 IDR or
+    a recovery point (its broken_link_flag), HEVC IDR / BLA / CRA; and the
+    pictures after it in decoding order shown before it. An open start or a
+    broken link with such pictures is a warning (`DR_EV_JOIN_START`): they
+    may need the end of the segment before (or nothing exists before the
+    title's start), or cannot be decoded;
+  - a segment whose first picture is no key frame (`DR_EV_JOIN_NOT_KEY`);
+  - a segment that starts with the pictures the segment before ends with:
+    the same bytes in the same order, a key frame among them, up to 32
+    (`DR_EV_JOIN_REPEAT`; equal single pictures are no finding, a still
+    scene codes to equal skipped pictures);
+  - an end of sequence code with pictures after it in its segment
+    (`DR_EV_SEQ_END_INSIDE`);
+  - per segment the pictures the video stage read and gave out
+    (`DR_EV_PICTURES` when they differ);
+  - what was taken out of the video (zero stuffing after GOP headers, GOP
+    user data: captions to their track, units that are no picture) and the
+    scan the pictures state (progressive / interlaced, top field first,
+    repeat first field), all kept as they are;
+  - per track the output checks above as one line (PASS when nothing was
+    found);
+  - each segment's first picture against where the disc's own structure
+    starts it (`DiscTitleSource.clip_start`: DVD-Video its first VOBU's
+    VOBU_S_PTM from the navigation pack, HD DVD its EVOB's start time from
+    the VTI, Blu-ray its first PlayItem's IN time): a warning when they
+    differ (the title would leave out, or add, what the disc plays there),
+    a summary line per title;
+  - the title reader: the blocks read, those not usable, packets of streams
+    without a track; for program streams (`ff_mpegps_disc_stats`) the
+    sectors read and empty, navigation packets, system headers, padding and
+    other packets of no stream left out, sectors left out or cut.
 
 Events go to the log (messages 5xxx) and, at debug level, as one structured
 line each, so a run can be compared event by event with an expected list.
@@ -284,12 +330,13 @@ line each, so a run can be compared event by event with an expected list.
 ## 10. Outputs
 
 - **Stream files:** each track's output frames written back to back (the
-  same frame set as the Matroska path), plus the chapters. Gaps and the
-  start shift are logged per track; a stream file cannot hold them. Names:
+  same frame set as the Matroska path), plus the chapters. Gaps are logged
+  per track; a stream file cannot hold them. Names:
   the title's name from the file-name template (`<title name>_t<NN>`), then
   `_<track>_<language>_<codec>[_<channel layout>]`, audio with ` DELAY <ms>ms`
   (its first frame's time against the title start, which is the video's,
-  rounded to ms; MKVToolNix reads it). Codec words and layout names are the
+  rounded to ms, negative when the audio starts first; MKVToolNix reads
+  it). Codec words and layout names are the
   ones the reference's info output uses (`DD`, `DDplus`, `TrueHD`,
   `5.1(side)`, ...; the layout from FFmpeg's decoder on the first frames).
   LPCM leaves as little-endian PCM in a RIFF WAVE file (EXTENSIBLE with the

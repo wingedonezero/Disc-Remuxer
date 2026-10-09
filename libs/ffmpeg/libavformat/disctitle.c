@@ -44,6 +44,7 @@
 #include "disc.h"
 #include "disctl.h"
 #include "internal.h"
+#include "mpeg.h"
 #include "mpegts.h"
 
 #define DISC_BLOCK      2048
@@ -172,7 +173,44 @@ struct DiscTitleReader {
     int64_t        blocks_done;     /**< blocks read so far */
     int            chapters_set;
     AVPacket      *in;
+
+    /* what was read: blocks left out as not usable, and the packets of
+     * streams that feed no track (per stream id: their count and bytes) */
+    int64_t        unusable;
+    struct { int id; int64_t packets, bytes; } unused[32];
+    int            nb_unused;
+    int64_t        unused_other;    /**< packets of further streams (the table is full) */
+    MpegPsDiscStats ps_read;        /**< program streams: what the clips' demuxers read, summed */
+    int64_t       *clip_at;         /**< per clip read: where the disc's structure starts it (ticks, its clock),
+                                         AV_NOPTS_VALUE: not given */
 };
+
+
+/* A program-stream clip's reading added to the title's (before its demuxer
+ * closes). */
+static void ps_read_add(DiscTitleReader *r)
+{
+    MpegPsDiscStats st;
+
+    if (r->src->ts || !r->ps.ctx)
+        return;
+    ff_mpegps_disc_stats(r->ps.ctx, &st);
+    r->ps_read.sectors         += st.sectors;
+    r->ps_read.empty           += st.empty;
+    r->ps_read.bad             += st.bad;
+    r->ps_read.rest_dropped    += st.rest_dropped;
+    r->ps_read.rest_bytes      += st.rest_bytes;
+    r->ps_read.nav             += st.nav;
+    r->ps_read.nav_bytes       += st.nav_bytes;
+    r->ps_read.padding         += st.padding;
+    r->ps_read.padding_bytes   += st.padding_bytes;
+    r->ps_read.system          += st.system;
+    r->ps_read.system_bytes    += st.system_bytes;
+    r->ps_read.other           += st.other;
+    r->ps_read.other_bytes     += st.other_bytes;
+    r->ps_read.discarded       += st.discarded;
+    r->ps_read.discarded_bytes += st.discarded_bytes;
+}
 
 static DiscTitleReader *reader_of(AVFormatContext *s)
 {
@@ -207,6 +245,7 @@ static int ps_read(void *opaque, uint8_t *buf, int buf_size)
             av_log(s, AV_LOG_WARNING, "%s %s: block %"PRIu32" is not usable: left out\n", src->clip_kind,
                    src->clip_name(s, r->clip), b);
             r->skipped++;
+            r->unusable++;
             continue;
         }
         return r->bs;
@@ -309,6 +348,7 @@ static int clip_start(AVFormatContext *s, int k)
     av_log(s, AV_LOG_VERBOSE, "Reading %s %s (%d of %d): %"PRIu32" %s, the last 64 MiB from byte %"PRIu64"\n",
            src->clip_kind, src->clip_name(s, k), k + 1, src->nb_clips, r->nb_blocks, src->ts ? "units" : "blocks",
            r->tail_start);
+    ps_read_add(r);
     ff_disc_demux_close(&r->ps);
     if (src->ts) {
         if ((ret = ts_reference(s)) < 0 ||
@@ -332,6 +372,7 @@ void ff_disc_title_reader_close(DiscTitleReader **reader)
     av_freep(&r->pair_pts);
     av_freep(&r->pos_clip);
     av_freep(&r->pos_off);
+    av_freep(&r->clip_at);
     av_packet_free(&r->in);
     ff_disctl_title_close(&r->rip);
     ff_disctl_chapter_plan_free(&r->chapter_plan);
@@ -534,7 +575,7 @@ static int filler_unit(void *opaque, const DRUnit *u)
 static int filler_clip(AVFormatContext *s, int k, int at_end, int *filler, int64_t *len)
 {
     const DiscTitleSource *src = &((DiscContext *)s->priv_data)->src;
-    int bs = src->ts ? TS_UNIT : DISC_BLOCK, others = 0, ret = 0;
+    int bs = src->ts ? TS_UNIT : DISC_BLOCK, others = 0, ret = 0, whole;
     FillerProbe p = { s, k, 0, src->clip_blocks(s, k), 0, 0, 0, 0, AV_NOPTS_VALUE, 0,
                       AV_NOPTS_VALUE, AV_NOPTS_VALUE };
     FillerTrack *t;
@@ -593,10 +634,15 @@ static int filler_clip(AVFormatContext *s, int k, int at_end, int *filler, int64
         if (ret < 0)
             break;
     }
+    /* the units still in the parsers: the video's always; the other
+     * tracks' only when the clip was read to its end (a read stopped early
+     * cuts their last unit, and their frames decide nothing more then: the
+     * loop stopped with one found, or with the video's span long enough) */
+    whole = ret == AVERROR_EOF;
     if (ret == AVERROR_EOF)
         ret = 0;
     for (int i = 0; ret >= 0 && i < src->nb_tracks; i++)
-        if (t[i].fr)
+        if (t[i].fr && (!i || whole))
             ret = ff_disctl_frames_flush(t[i].fr);
     if (ret < 0)
         goto end;
@@ -677,7 +723,7 @@ int ff_disc_title_reader_open(AVFormatContext *s, const DiscTitleSource *src)
     {
         char helper[4096];
         DRTitleConfig cfg = {
-            .nb_tracks = src->nb_tracks, .tracks = src->tracks, .tolerance = src->tolerance,
+            .nb_tracks = src->nb_tracks, .tracks = src->tracks,
             .lpcm_hd = src->lpcm_header == 5,
             .marks = r->chapter_plan.marks, .nb_marks = r->chapter_plan.nb_marks,
             .cc_helper = d->opt_cc_helper && *d->opt_cc_helper ? d->opt_cc_helper :
@@ -772,9 +818,20 @@ static int feed(AVFormatContext *s, const AVPacket *pkt)
             return ret;
         n++;
     }
-    if (!n)
+    if (!n) {
+        int u = 0;
         av_log(s, AV_LOG_TRACE, "%s %s: packet of stream 0x%x (no track): left out\n",
                src->clip_kind, src->clip_name(s, r->clip), sub->id);
+        while (u < r->nb_unused && r->unused[u].id != sub->id)
+            u++;
+        if (u == r->nb_unused && u < FF_ARRAY_ELEMS(r->unused))
+            r->unused[r->nb_unused++].id = sub->id;
+        if (u < r->nb_unused) {
+            r->unused[u].packets++;
+            r->unused[u].bytes += pkt->size;
+        } else
+            r->unused_other++;
+    }
     return 0;
 }
 
@@ -792,6 +849,59 @@ static int hold(DiscTitleReader *r, AVPacket *pkt)
         return AVERROR(ENOMEM);
     av_packet_move_ref(r->held[r->nb_held++], pkt);
     return 0;
+}
+
+/* The clip just read: where the disc's structure starts it, on the
+ * title timeline's clock for it (its wrap reference), kept for the check
+ * at the title's end. */
+static int start_keep(AVFormatContext *s)
+{
+    DiscTitleReader *r = reader_of(s);
+    const DiscTitleSource *src = r->src;
+    int64_t at, *p;
+
+    if (!src->clip_start)
+        return 0;
+    if (!(p = av_realloc_array(r->clip_at, r->clip - r->first_clip + 1, sizeof(*p))))
+        return AVERROR(ENOMEM);
+    r->clip_at = p;
+    at = r->pts_ref < 0 ? AV_NOPTS_VALUE : src->clip_start(s, r->clip);
+    p[r->clip - r->first_clip] = at == AV_NOPTS_VALUE ? at :
+                                 (at < r->pts_ref ? at + (1LL << 33) : at) * DR_TICKS_PER_PTS;
+    return 0;
+}
+
+/* Each clip's first picture against where the disc's structure starts it. */
+static void start_check(AVFormatContext *s)
+{
+    DiscTitleReader *r = reader_of(s);
+    const DiscTitleSource *src = r->src;
+    int checked = 0, off = 0;
+
+    if (!src->clip_start || !r->clip_at)
+        return;
+    for (int k = r->first_clip; k <= r->last_clip; k++) {
+        int64_t first, at = r->clip_at[k - r->first_clip], d;
+        if (at == AV_NOPTS_VALUE || ff_disctl_title_segment_start(r->rip, k - r->first_clip, &first) < 0) {
+            av_log(s, AV_LOG_VERBOSE, "Title check: %s %s: %s or its first picture not known: its start is not "
+                   "checked\n", src->clip_kind, src->clip_name(s, k), src->clip_start_name);
+            continue;
+        }
+        d = first - at;
+        checked++;
+        if (FFABS(d) < DR_TICKS_PER_PTS) {
+            av_log(s, AV_LOG_VERBOSE, "Title check: %s %s: its first picture is at %s: checked\n", src->clip_kind,
+                   src->clip_name(s, k), src->clip_start_name);
+            continue;
+        }
+        off++;
+        av_log(s, AV_LOG_WARNING, "Title check: %s %s (%d of %d): its first picture is %.3f ms %s %s (the title "
+               "%s there)\n", src->clip_kind, src->clip_name(s, k), k + 1, src->nb_clips,
+               FFABS(d) / (DR_TICKS_PER_SECOND / 1000.0), d > 0 ? "after" : "before", src->clip_start_name,
+               d > 0 ? "leaves out what the disc plays before it" : "has pictures the disc starts later");
+    }
+    av_log(s, off ? AV_LOG_WARNING : AV_LOG_INFO, "Title check: %d of %d %s(s) start their first picture at %s%s\n",
+           checked - off, checked, src->clip_kind, src->clip_start_name, off ? " (see the warnings above)" : "");
 }
 
 /* One PES packet of the title into the title timeline. The clip's PTS wrap
@@ -814,6 +924,8 @@ static int read_input(AVFormatContext *s)
                    src->clip_kind, src->clip_name(s, r->clip), PTS_REF_SECTORS);
             return AVERROR_INVALIDDATA;
         }
+        if ((ret = start_keep(s)) < 0)
+            return ret;
         if (r->clip + 1 <= r->last_clip)
             return clip_start(s, r->clip + 1);
         return ff_disctl_title_finish(r->rip);
@@ -916,6 +1028,36 @@ static int title_end(AVFormatContext *s)
 
     if ((ret = set_chapters(s)) < 0)
         return ret;
+    /* what was read and not ripped */
+    {
+        AVBPrint bp;
+        av_bprint_init(&bp, 0, AV_BPRINT_SIZE_AUTOMATIC);
+        for (int u = 0; u < r->nb_unused; u++)
+            av_bprintf(&bp, "%s0x%x %"PRId64" (%"PRId64" bytes)", u ? ", " : "", r->unused[u].id,
+                       r->unused[u].packets, r->unused[u].bytes);
+        if (r->unused_other)
+            av_bprintf(&bp, ", %"PRId64" of further streams", r->unused_other);
+        av_log(s, AV_LOG_INFO, "Title check: read %"PRId64" blocks of %s(s) %d-%d (%d of %d; %"PRId64
+               " not usable, left out); packets of streams without a track, left out: %s\n", r->blocks_done,
+               r->src->clip_kind, r->first_clip + 1, r->last_clip + 1, r->last_clip - r->first_clip + 1,
+               r->src->nb_clips, r->unusable, r->nb_unused || r->unused_other ? bp.str : "none");
+        av_bprint_finalize(&bp, NULL);
+        start_check(s);
+        if (!r->src->ts) {
+            const MpegPsDiscStats *p = &r->ps_read;
+            ps_read_add(r);
+            av_log(s, AV_LOG_INFO, "Title check: sectors: %"PRId64" read, %"PRId64" empty; left out: %"PRId64
+                   " navigation packets (%"PRId64" bytes), %"PRId64" system headers (%"PRId64" bytes), %"PRId64
+                   " padding packets (%"PRId64" bytes), %"PRId64" other packets of no stream (%"PRId64" bytes)\n",
+                   p->sectors, p->empty, p->nav, p->nav_bytes, p->system, p->system_bytes, p->padding,
+                   p->padding_bytes, p->other, p->other_bytes);
+            if (p->bad || p->rest_dropped || p->discarded)
+                av_log(s, AV_LOG_WARNING, "Title check: sectors: %"PRId64" left out (a short header), %"PRId64
+                       " with their rest left out (%"PRId64" bytes), %"PRId64" packets of discarded streams (%"
+                       PRId64" bytes)\n", p->bad, p->rest_dropped, p->rest_bytes, p->discarded,
+                       p->discarded_bytes);
+        }
+    }
     /* features met that no real disc has tested: said, and given to the
      * caller (the log's "[untested on real discs]" lines tell which) */
     if (review) {

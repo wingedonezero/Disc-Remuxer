@@ -34,7 +34,6 @@
 #include "disctl.h"
 
 #define MS          1080000LL
-#define TOL         MS                  /* lead-in tolerance */
 #define DRIFT       10800               /* ticks: a frame this far off the sample count is off it */
 #define LOOK        32                  /* frames looked at for a broken time */
 
@@ -50,15 +49,15 @@ struct DRPcm {
     int          fill;                  /* samples in it */
     int64_t      emitted;               /* samples of the frames handed on (and skipped at the start) */
     int64_t      carry;                 /* silence samples still to write */
-    int64_t      origin;                /* added to every input time (the lead-in kept) */
+    int64_t      origin;                /* the sample clock = title time + origin: a track that starts before
+                                           the video starts its clock (and its output times) at its first frame */
 
     DRFrame     *q;                     /* input frames q[head .. head + nq) */
     int          head, nq, cap;
     DRFrame      held;                  /* the rest of a frame that overlapped the one before it */
     int          have_held;
     int          started, finished, ended;
-    int64_t      start_drop_dur;        /* frames dropped at the start so far (they may come over several calls) */
-    int          start_drop_n;
+    int          seg;                   /* the segment of the frame whose samples were taken last */
     DRPcmStats   st;
 };
 
@@ -110,9 +109,10 @@ static int emit(DRPcm *p)
     memset(f.buf->data + bytes, 0, AV_INPUT_BUFFER_PADDING_SIZE);
     f.data = f.buf->data;
     f.size = bytes;
-    f.time = (int64_t)((uint64_t)p->emitted * p->out / p->in);
+    f.time = (int64_t)((uint64_t)p->emitted * p->out / p->in) - p->origin;
     f.dur  = (int64_t)((uint64_t)p->fill * p->out / p->in);
     f.src  = f.time;
+    f.seg  = p->seg;
     p->emitted += p->fill;
     p->fill     = 0;
     p->st.out++;
@@ -155,44 +155,22 @@ static int silence(DRPcm *p, int64_t n, int *emitted)
 
 /* ---- the start ---- */
 
-/* Frames more than 1 ms before the title start are dropped; a lead-in
- * within it becomes the origin; then a start after 0 is filled with silence
- * (below 5 s) or skipped on the output clock. */
+/* The track's start: one before the video keeps every frame (the sample
+ * clock starts at its first frame, a negative delay); then a start after 0
+ * is filled with silence (below 5 s) or skipped on the output clock. */
 static int start(DRPcm *p)
 {
     DRFrame *f;
-    int64_t t, k, rem, total;
+    int64_t t, k;
     int r;
 
     if ((r = need(p, 0)) != HAVE)
         return r == WAIT ? WAIT : HAVE;
     t = q_get(p, 0)->time;
-    if (t < 0 || p->start_drop_n) {
-        rem = total = -t;
-        if (-t > TOL || p->start_drop_n) {
-            for (;;) {
-                if ((r = need(p, 0)) == WAIT)
-                    return WAIT;
-                if (r == NONE || q_get(p, 0)->time >= -TOL)
-                    break;
-                p->start_drop_dur += q_get(p, 0)->dur;
-                p->start_drop_n++;
-                p->st.dropped++;
-                q_pop(p);
-            }
-            if (!p->nq)
-                return HAVE;
-            if (FFABS(q_get(p, 0)->time) > 3 * MS)
-                event(p, DR_EV_START_DROP, 0, p->start_drop_dur, p->start_drop_n);
-            t     = q_get(p, 0)->time;
-            rem   = -t;
-            total = p->start_drop_dur - t;
-        }
-        if (t < 0) {
-            p->origin = rem;
-            if (total > 540000)
-                event(p, DR_EV_START_SHIFT, 0, total, 0);
-        }
+    if (t < 0) {
+        p->origin = -t;
+        if (-t > 540000)
+            event(p, DR_EV_START_EARLY, 0, -t, 0);
     }
     f = q_get(p, 0);
     t = p->origin + f->time;
@@ -304,6 +282,7 @@ static int timeline(DRPcm *p, DRFrame *f, int idx)
     int64_t n = samples_of(p, f), copy = n;
     int e = 0, r, ret;
 
+    p->seg = f->seg;
     if (p->carry)
         return AVERROR_BUG;
     if (FFABS(exp - pts) > DRIFT && FFABS(spos - opos) > 2) {

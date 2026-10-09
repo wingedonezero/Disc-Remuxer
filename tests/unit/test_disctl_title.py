@@ -63,7 +63,7 @@ def interleave(a, b):
     return sorted(a + b, key=lambda p: p.order)
 
 
-def run(tracks, tolerance, lpcm_hd, segments, spu=None, cc_helper=None):
+def run(tracks, lpcm_hd, segments, spu=None, cc_helper=None):
     """(outputs, events, duration, review); spu: a list that gets track 1's
     sub-picture result (no stop time, outside the canvas)."""
     events = []
@@ -72,7 +72,7 @@ def run(tracks, tolerance, lpcm_hd, segments, spu=None, cc_helper=None):
     keep = Handles()
     tr = ffi.new("DRTitleTrack[]", tracks)
     helper = ffi.new("char[]", cc_helper.encode()) if cc_helper else ffi.NULL
-    cfg = ffi.new("DRTitleConfig *", {"nb_tracks": len(tracks), "tracks": tr, "tolerance": tolerance,
+    cfg = ffi.new("DRTitleConfig *", {"nb_tracks": len(tracks), "tracks": tr,
                                       "lpcm_hd": int(lpcm_hd), "event": lib.tb_py_event,
                                       "event_opaque": keep(events_into(events)), "cc_helper": helper})
     t = ffi.new("DRTitle **")
@@ -120,11 +120,11 @@ def kinds(events):
 
 
 def test_one_segment_starts_at_its_video_and_audio_waits_for_the_video():
-    # audio starts 5 ms before the video: within HD DVD's 102 ms it is kept
-    # and the whole track shifted by it
+    # audio starts 5 ms before the video: every frame keeps its time (a
+    # stream file with a -5 ms delay), in sync with its time on the disc
     n = 1200 * 36036 // 34560
     seg = interleave(video(BASE), ac3(BASE - 5 * MS, AC3_DUR, n))
-    outs, events, duration, review = run(tracks("ac3"), 110160000, True, [seg])
+    outs, events, duration, review = run(tracks("ac3"), True, [seg])
     v = [o for o in outs if o.track == 0]
     a = [o for o in outs if o.track == 1]
     assert len(v) == 1200
@@ -132,19 +132,18 @@ def test_one_segment_starts_at_its_video_and_audio_waits_for_the_video():
     assert duration == 1200 * FRAME
     assert review == 0, "nothing untested"
     assert len(a) == n
-    assert a[0].time == 0, "the lead-in became a shift"
-    assert kinds(events) == [lib.DR_EV_START_SHIFT]
+    assert a[0].time == -5 * MS, "the lead-in stays: a negative delay"
+    assert kinds(events) == [lib.DR_EV_START_EARLY], "and no sync finding"
     assert events[0]["dur"] == 5 * MS
     for k, o in enumerate(a):
-        assert o.time == k * AC3_DUR
+        assert o.time == -5 * MS + k * AC3_DUR
         assert o.dur == AC3_DUR
     # every audio frame left after the video reached its time on the title
-    # timeline (its output time less the 5 ms shift), except those after the
-    # last video frame (they leave when the video has ended)
+    # timeline, except those after the last video frame (they leave when the
+    # video has ended)
     last_video = max(o.time for o in v)
     for o in a:
-        t = o.time - 5 * MS
-        assert o.vmax_before >= t or t > last_video, f"audio at {t} left at video {o.vmax_before}"
+        assert o.vmax_before >= o.time or o.time > last_video, f"audio at {o.time} left at video {o.vmax_before}"
 
 
 def test_the_second_segment_follows_the_video_of_the_first():
@@ -154,7 +153,7 @@ def test_the_second_segment_follows_the_video_of_the_first():
     s1 = interleave(video(BASE), ac3(BASE, AC3_DUR, n1))
     base2 = 500 * 1080000000
     s2 = interleave(video(base2), ac3(base2 - 20 * MS, AC3_DUR, 100))
-    outs, events, duration, review = run(tracks("ac3"), 110160000, True, [s1, s2])
+    outs, events, duration, review = run(tracks("ac3"), True, [s1, s2])
     assert len([o for o in outs if o.track == 0]) == 2400
     assert duration == 2400 * FRAME, "segment 2 is placed where segment 1's video ended"
     assert review == 0
@@ -170,7 +169,7 @@ def test_payloads_from_the_source_tail_mark_their_frames():
     a = ac3(BASE, AC3_DUR, n)
     for p in a[n - 10:]:
         p.tail = True
-    outs, _, _, _ = run(tracks("ac3"), 110160000, True, [interleave(video(BASE), a)])
+    outs, _, _, _ = run(tracks("ac3"), True, [interleave(video(BASE), a)])
     a = [o for o in outs if o.track == 1]
     assert sum(1 for o in a if o.flags & lib.DR_F_TAIL) == 10
     assert all(o.flags & lib.DR_F_TAIL for o in a[n - 10:])
@@ -181,7 +180,7 @@ def test_lpcm_payloads_carry_their_header_and_go_through_the_pcm_strategy():
     # 6 frames of 320 bytes (1/100 s); output frames of 1/30 s (1600 samples)
     pay = [Payload(1, bytes([k % 32, 0x01, 0x80]) + bytes(6 * 320), BASE + k * 10 * MS, False, BASE + k * 10 * MS)
            for k in range(4000)]
-    outs, events, _, _ = run(tracks("pcm_dvd"), 1080000, False, [interleave(video(BASE), pay)])
+    outs, events, _, _ = run(tracks("pcm_dvd"), False, [interleave(video(BASE), pay)])
     a = [o for o in outs if o.track == 1]
     assert a
     assert a[0].time == 0
@@ -208,7 +207,7 @@ def test_untested_features_are_counted_for_the_caller():
     n = 1200 * 36036 // 34560
     pay = [Payload(1, eac3(0, k % 200) + eac3(1, 0x55), BASE + k * AC3_DUR, False, BASE + k * AC3_DUR)
            for k in range(n)]
-    outs, _, _, review = run(tracks("eac3"), 110160000, True, [interleave(video(BASE), pay)])
+    outs, _, _, review = run(tracks("eac3"), True, [interleave(video(BASE), pay)])
     assert sum(1 for o in outs if o.track == 1) == n
     assert review > 0
 
@@ -231,7 +230,7 @@ def test_a_sub_picture_without_a_stop_time_lasts_until_the_next_one():
     base2 = 500 * 1080000000
     s2 = [Payload(1, spu(None, True, [], 6), base2 + 5 * FRAME, False, base2 + 5 * FRAME)]
     res = []
-    outs, events, duration, review = run(sub_tracks(), 110160000, True,
+    outs, events, duration, review = run(sub_tracks(), True,
                                          [interleave(video(BASE), s1), interleave(video(base2), s2)], res)
     s = [(o.time, o.dur) for o in outs if o.track == 1]
     assert s == [
@@ -248,7 +247,7 @@ def test_a_sub_picture_without_a_stop_time_lasts_until_the_next_one():
 
 
 def test_a_sub_picture_followed_by_one_at_the_same_time_keeps_its_step():
-    outs, _, _, review = run(sub_tracks(), 110160000, True,
+    outs, _, _, review = run(sub_tracks(), True,
                              [interleave(video(BASE), subs([(spu(None, True, [], 1), 10), (spu(20, True, [], 2), 10)]))])
     assert [(o.time, o.dur) for o in outs if o.track == 1] == [(10 * FRAME, STEP), (10 * FRAME, 20 * STEP)]
     assert review == 0
@@ -291,7 +290,7 @@ def test_captions_in_the_gop_user_data_become_a_text_track():
     per_gop = {2: load(b"HELLO"), 3: EOC, 10: EDM, 90: load(b"LAST"), 91: EOC}
     stream, first = with_captions(M2V, per_gop)
     tracks = [[codec_id("mpeg2video"), lib.DR_KIND_VIDEO, 0], [codec_id("subrip"), lib.DR_KIND_CAPTION, 0]]
-    outs, events, duration, review = run(tracks, 110160000, True, [video(BASE, stream)],
+    outs, events, duration, review = run(tracks, True, [video(BASE, stream)],
                                          cc_helper=str(DIST / "ccextractor"))
     ms = lambda d: d * FRAME // MS                      # noqa: E731  (a display index in ms, truncated)
     cues = [(o.time // MS, (o.time + o.dur) // MS, o.data.decode()) for o in outs if o.track == 1]
@@ -313,7 +312,7 @@ def test_each_segment_converts_its_own_captions():
     s2, f2 = with_captions(M2V, {0: [], 2: load(b"SECOND"), 4: EOC, 9: EDM})
     base2 = 500 * 1080000000
     tracks = [[codec_id("mpeg2video"), lib.DR_KIND_VIDEO, 0], [codec_id("subrip"), lib.DR_KIND_CAPTION, 0]]
-    outs, events, duration, review = run(tracks, 110160000, True, [video(BASE, s1), video(base2, s2)],
+    outs, events, duration, review = run(tracks, True, [video(BASE, s1), video(base2, s2)],
                                          cc_helper=str(DIST / "ccextractor"))
     assert duration == 2400 * FRAME
     o1, o2 = f1[0] * FRAME, 1200 * FRAME + f2[1] * FRAME     # the converters' origins on the title timeline
@@ -336,7 +335,7 @@ def dropped(stream):
     """(video frames out, caption blocks left out, their entries with caption
     bytes) of a title with only a video track."""
     tr = ffi.new("DRTitleTrack[]", [[codec_id("mpeg2video"), lib.DR_KIND_VIDEO, 0]])
-    cfg = ffi.new("DRTitleConfig *", {"nb_tracks": 1, "tracks": tr, "tolerance": 110160000, "lpcm_hd": 1})
+    cfg = ffi.new("DRTitleConfig *", {"nb_tracks": 1, "tracks": tr, "lpcm_hd": 1})
     t, f, k = ffi.new("DRTitle **"), ffi.new("DRFrame *"), ffi.new("int *")
     b, x = ffi.new("int64_t *"), ffi.new("int64_t *")
     n = 0
@@ -370,7 +369,7 @@ def test_a_failed_title_stays_failed():
     tr = ffi.new("DRTitleTrack[]", [[codec_id("mpeg2video"), lib.DR_KIND_VIDEO, 0],
                                     [codec_id("subrip"), lib.DR_KIND_CAPTION, 0]])
     helper = ffi.new("char[]", b"/nonexistent/ccextractor")
-    cfg = ffi.new("DRTitleConfig *", {"nb_tracks": 2, "tracks": tr, "tolerance": 110160000, "lpcm_hd": 1,
+    cfg = ffi.new("DRTitleConfig *", {"nb_tracks": 2, "tracks": tr, "lpcm_hd": 1,
                                       "cc_helper": helper})
     t = ffi.new("DRTitle **")
     f, k = ffi.new("DRFrame *"), ffi.new("int *")
@@ -445,7 +444,7 @@ def by_track(outs, k):
 def test_a_second_layer_picture_leaves_with_its_video_frame():
     v = video(BASE)
     seg = interleave(v + ac3(BASE, AC3_DUR, 10), layer(BASE, split=True))
-    outs, _, _, _ = run(layer_tracks(), MS, False, [seg])
+    outs, _, _, _ = run(layer_tracks(), False, [seg])
     vid, lay = by_track(outs, 0), by_track(outs, LAYER)
     assert len(lay) == len(vid) == len(v), "one picture per video frame"
     assert [(o.time, o.dur, o.flags & lib.DR_F_KEY) for o in lay] == \
@@ -460,7 +459,7 @@ def test_a_second_layer_picture_leaves_with_its_video_frame():
 def test_a_second_layer_picture_without_a_video_frame_is_left_out():
     v = video(BASE)
     seg = interleave(v, layer(BASE, extra=[(3, BASE + 5000 * FRAME)]))
-    outs, _, _, _ = run(layer_tracks()[:1] + [layer_tracks()[2]], MS, False,
+    outs, _, _, _ = run(layer_tracks()[:1] + [layer_tracks()[2]], False,
                         [[p if p.track != LAYER else dataclasses.replace(p, track=1) for p in seg]])
     assert [o.data for o in by_track(outs, 1)] == [mvc_clean(k) for k in range(len(v))], \
         "every video frame's picture, the stray one left out"
@@ -472,7 +471,7 @@ def test_a_video_frame_without_its_second_layer_picture_fails_the_title():
     seg = interleave(v, [dataclasses.replace(p, track=1) for p in layer(BASE, skip={5})])
     keep = Handles()
     tr = ffi.new("DRTitleTrack[]", tracks)
-    cfg = ffi.new("DRTitleConfig *", {"nb_tracks": 2, "tracks": tr, "tolerance": MS, "event": lib.tb_py_event,
+    cfg = ffi.new("DRTitleConfig *", {"nb_tracks": 2, "tracks": tr, "event": lib.tb_py_event,
                                       "event_opaque": keep(events_into([]))})
     t = ffi.new("DRTitle **")
     assert lib.ff_disctl_title_open(t, ffi.NULL, cfg) == 0
@@ -488,7 +487,7 @@ def test_a_second_layer_follows_the_video_into_the_next_segment():
     s1 = interleave(v1, [dataclasses.replace(p, track=1) for p in layer(BASE)])
     s2 = interleave(v2, [dataclasses.replace(p, track=1) for p in layer(BASE)])
     tracks = [[codec_id("mpeg2video"), lib.DR_KIND_VIDEO, 0], [codec_id("h264"), lib.DR_KIND_LAYER, 0]]
-    outs, _, _, _ = run(tracks, MS, False, [s1, s2])
+    outs, _, _, _ = run(tracks, False, [s1, s2])
     vid, lay = by_track(outs, 0), by_track(outs, 1)
     assert len(lay) == len(vid) == 2 * len(v1)
     assert [o.time for o in lay] == [o.time for o in vid], "the second segment's pictures on its place"
@@ -519,7 +518,7 @@ def test_a_chapter_position_starts_the_chapter_at_the_first_picture_from_there()
     at = [gops[2], gops[5]]
     marks = ffi.new("int64_t[]", [(1 << 63) - 1, (1 << 63) - 1])
     tr = ffi.new("DRTitleTrack[]", [[codec_id("mpeg2video"), lib.DR_KIND_VIDEO, 0]])
-    cfg = ffi.new("DRTitleConfig *", {"nb_tracks": 1, "tracks": tr, "tolerance": MS, "marks": marks, "nb_marks": 2,
+    cfg = ffi.new("DRTitleConfig *", {"nb_tracks": 1, "tracks": tr, "marks": marks, "nb_marks": 2,
                                       "open_marks": marks})
     t = ffi.new("DRTitle **")
     assert lib.ff_disctl_title_open(t, ffi.NULL, cfg) == 0

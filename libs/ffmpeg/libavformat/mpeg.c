@@ -143,6 +143,7 @@ typedef struct MpegDemuxContext {
     AVPacket  *q[DISC_QUEUE];    /**< the current sector's packets, not given out yet */
     int        q_head, q_n;
     int        sticky;           /**< a failed sector: every later read returns this */
+    MpegPsDiscStats dstats;      /**< what was read */
 } MpegDemuxContext;
 
 static int mpegps_read_header(AVFormatContext *s)
@@ -1089,10 +1090,26 @@ static int disc_on_packet(void *opaque, const uint8_t *sec, const MpegPsDiscPack
     AVStream *st = NULL;
     int id, start, end, ret;
 
-    if (!disc_stream_of(p, &id, &type, &codec))
-        return 0;
-    start = p->at + p->payload - p->extra;          /* LPCM: its audio frame header stays */
     end   = p->len ? FFMIN(p->at + p->len, MPEGPS_DISC_SECTOR) : MPEGPS_DISC_SECTOR;
+    if (!disc_stream_of(p, &id, &type, &codec)) {
+        /* private stream 2 and padding end the sector: their bytes are the rest of it */
+        int bytes = (p->key == 0xbf || p->key == 0xbe) ? MPEGPS_DISC_SECTOR - p->at : end - p->at;
+        if (p->key == 0xbf) {
+            c->dstats.nav++;
+            c->dstats.nav_bytes += bytes;
+        } else if (p->key == 0xbe) {
+            c->dstats.padding++;
+            c->dstats.padding_bytes += bytes;
+        } else if (p->key == 0xbb) {
+            c->dstats.system++;
+            c->dstats.system_bytes += bytes;
+        } else {
+            c->dstats.other++;
+            c->dstats.other_bytes += bytes;
+        }
+        return 0;
+    }
+    start = p->at + p->payload - p->extra;          /* LPCM: its audio frame header stays */
     if (end <= start)
         return 0;
     for (int i = 0; i < s->nb_streams; i++)
@@ -1106,8 +1123,11 @@ static int disc_on_packet(void *opaque, const uint8_t *sec, const MpegPsDiscPack
         st->codecpar->codec_id   = codec;
         avpriv_set_pts_info(st, 33, 1, 90000);
     }
-    if (st->discard >= AVDISCARD_ALL)
+    if (st->discard >= AVDISCARD_ALL) {
+        c->dstats.discarded++;
+        c->dstats.discarded_bytes += end - p->at;
         return 0;
+    }
     if (p->pts_present && !p->pts_valid)
         av_log(s, AV_LOG_WARNING, "Disc pack reader: sector %"PRId64", stream 0x%x: the PTS's marker bits are "
                "wrong: the packet has no time\n", r->pos / MPEGPS_DISC_SECTOR, id);
@@ -1158,14 +1178,20 @@ static int disc_read_packet(AVFormatContext *s, AVPacket *pkt)
         }
         ret = ff_mpegps_disc_sector(sec, c->lpcm_header == 5, disc_on_packet, &r, &why, &at);
         c->sector++;
+        c->dstats.sectors++;
         switch (ret) {
         case MPEGPS_DISC_OK:
+            break;
         case MPEGPS_DISC_EMPTY:
+            c->dstats.empty++;
             break;
         case MPEGPS_DISC_BAD:
+            c->dstats.bad++;
             av_log(s, AV_LOG_WARNING, "Disc pack reader: sector %"PRId64": %s: left out\n", c->sector - 1, why);
             break;
         case MPEGPS_DISC_REST_DROPPED:
+            c->dstats.rest_dropped++;
+            c->dstats.rest_bytes += MPEGPS_DISC_SECTOR - at;
             av_log(s, AV_LOG_WARNING, "Disc pack reader: sector %"PRId64": %s (byte %d): the rest of the sector "
                    "is left out\n", c->sector - 1, why, at);
             break;
@@ -1177,6 +1203,12 @@ static int disc_read_packet(AVFormatContext *s, AVPacket *pkt)
                 return c->sticky = ret;
         }
     }
+}
+
+void ff_mpegps_disc_stats(const AVFormatContext *s, MpegPsDiscStats *st)
+{
+    const MpegDemuxContext *c = s->priv_data;
+    *st = c->dstats;
 }
 
 static int mpegps_read_close(AVFormatContext *s)

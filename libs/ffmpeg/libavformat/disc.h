@@ -114,6 +114,12 @@ typedef struct DiscTitleSource {
     /** Block of the clip into buf (decrypted): 1 read, 0 not usable (left
      *  out), < 0 cannot be read (the rest of the clip is not read). */
     int         (*read_block)(AVFormatContext *s, int clip, uint32_t block, uint8_t *buf);
+    /** Where the disc's own structure starts the clip: its first presentation
+     *  time (90 kHz, on the clip's clock), checked against the first picture
+     *  read from it; AV_NOPTS_VALUE when the structure gives none. NULL: no
+     *  check. */
+    int64_t     (*clip_start)(AVFormatContext *s, int clip);
+    const char  *clip_start_name;   /**< for the log: "the playlist's IN time" */
 
     int          ts;                /**< Blu-ray stream data (6144-byte units, MPEG-TS) */
     const int   *pids;              /**< ts: the PIDs read */
@@ -121,7 +127,6 @@ typedef struct DiscTitleSource {
     const DiscTsFeed *feeds;        /**< ts: what each track takes */
 
     int          lpcm_header;       /**< bytes of a PES packet's LPCM audio frame header (HD DVD 5) */
-    int64_t      tolerance;         /**< audio lead-in tolerance (ticks; the format's own) */
     const struct DRTitleTrack *tracks;
     int          nb_tracks;
     const int64_t     *chapter_times;   /**< chapter records (ticks from the title start) */
@@ -174,8 +179,8 @@ typedef struct DiscFormat {
      *  chapters, parts. */
     int  (*title_info)(AVFormatContext *s, int i, DiscTitleInfo *dt);
     /** Open title i (with part >= 0: that part of it alone): DiscContext.src
-     *  but its tracks (clips, block reader, chapters, LPCM header, lead-in
-     *  tolerance, ts), s->duration; *second_view: the second view of a 3-D
+     *  but its tracks (clips, block reader, chapters, LPCM header, ts),
+     *  s->duration; *second_view: the second view of a 3-D
      *  title is read. */
     int  (*open_title)(AVFormatContext *s, int i, int part, int *second_view);
     /** The opened title's own state given back (another title can be

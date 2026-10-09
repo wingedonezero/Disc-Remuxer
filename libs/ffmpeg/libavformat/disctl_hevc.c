@@ -257,13 +257,23 @@ static int split_hevc(DRVideo *v, DRFrame *f)
 }
 
 /* The picture values come from the parser; a unit without a slice segment
- * is no picture. */
+ * is no picture. How decoding can start at a key frame (H.265 8.1.3,
+ * 7.4.2.2): an IDR picture needs nothing before it (its leading pictures
+ * are RADL pictures); a BLA picture's RASL pictures are not decoded (a
+ * broken link); a CRA picture's RASL pictures use pictures before it, as may
+ * the pictures before a recovery point. */
 static int picture_hevc(DRVideo *v, const DRFrame *f, DRPicture *pic)
 {
     if (pic->rate_num > 0 && pic->rate_den > 0)
         ff_disctl_video_set_rate(v, pic->rate_num, pic->rate_den);
-    if (pic->fields <= 0 || pic->type < DR_PIC_I || pic->type > DR_PIC_B)
+    if (pic->fields <= 0 || pic->type < DR_PIC_I || pic->type > DR_PIC_B) {
         pic->type = DR_PIC_OTHER;
+        return 0;
+    }
+    if (pic->key) {
+        int t = first_vcl(f->data, f->size);
+        pic->start = t == 19 || t == 20 ? DR_START_CLEAN : t >= 16 && t <= 18 ? DR_START_BROKEN : DR_START_OPEN;
+    }
     return 0;
 }
 

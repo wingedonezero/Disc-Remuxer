@@ -52,6 +52,8 @@ struct DRJoin {
     int          mark;      /* next chapter mark */
     int64_t     *chap;      /* times of the frames that start chapters */
     int          nb_chap, chap_cap;
+    int64_t     *starts;    /* each placed segment's start (its first video time), AV_NOPTS_VALUE: not placed */
+    int          nb_starts;
     DRJoinStats  st;
 };
 
@@ -74,6 +76,7 @@ static int give(DRJoin *j, int track, DRFrame *f, int64_t ts, int64_t src)
 {
     f->time = ts + j->offset - j->start;
     f->src  = src + j->offset - j->start;
+    f->seg  = j->seg;
     /* the first frame after a chapter's position: the next open mark is its time */
     if (!track && (f->flags & DR_F_POSITION) && j->cfg.open_marks)
         for (int i = j->mark; i < j->cfg.nb_marks; i++)
@@ -229,6 +232,16 @@ static int place_segment(DRJoin *j)
     }
     j->start  = j->batch_min;
     j->offset = j->seg ? j->prev_e0 - j->prev_start + j->prev_offset : 0;
+    if (j->seg >= j->nb_starts) {
+        int64_t *p = av_realloc_array(j->starts, j->seg + 1, sizeof(*p));
+        if (!p)
+            return AVERROR(ENOMEM);
+        for (int k = j->nb_starts; k <= j->seg; k++)
+            p[k] = AV_NOPTS_VALUE;
+        j->starts    = p;
+        j->nb_starts = j->seg + 1;
+    }
+    j->starts[j->seg] = j->start;
     j->placed = 1;
     j->st.placed = 1;
     j->st.start  = j->start;
@@ -333,6 +346,14 @@ void ff_disctl_join_stats(const DRJoin *j, DRJoinStats *st)
     *st = j->st;
 }
 
+int ff_disctl_join_segment_start(const DRJoin *j, int seg, int64_t *start)
+{
+    if (seg < 0 || seg >= j->nb_starts || j->starts[seg] == AV_NOPTS_VALUE)
+        return AVERROR(EAGAIN);
+    *start = j->starts[seg];
+    return 0;
+}
+
 int ff_disctl_join_chapters(const DRJoin *j, const int64_t **starts)
 {
     *starts = j->chap;
@@ -352,5 +373,6 @@ void ff_disctl_join_close(DRJoin **jp)
     }
     av_freep(&j->t);
     av_freep(&j->chap);
+    av_freep(&j->starts);
     av_freep(jp);
 }

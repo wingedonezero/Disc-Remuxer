@@ -136,7 +136,7 @@ def join(codec):
         return 0
     keep = Handles()
     cfg = ffi.new("DRJunctionConfig *", {
-        "track": 1, "frame_dur": AU, "tolerance": 0, "video": video_ref(NoEnd(), keep),
+        "track": 1, "frame_dur": AU, "video": video_ref(NoEnd(), keep),
         "out": lib.tb_py_frame, "out_opaque": keep(on_out),
         "event": lib.tb_py_event, "event_opaque": keep(events_into(events)), "codec": codec, "rate": 48000})
     j = ffi.new("DRJunction **")

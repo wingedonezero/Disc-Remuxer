@@ -4,8 +4,8 @@
  * (VTI), the playlists, the AACS keys, the title plan and the titles'
  * tracks; one title's tracks become the streams. The disc layer's title
  * reader reads its EVOB clips (DiscTitleSource: the blocks of a clip, AACS
- * decrypted here; LPCM's 5-byte audio frame header; the 102 ms audio
- * lead-in tolerance; the title's chapter marks).
+ * decrypted here; LPCM's 5-byte audio frame header; the title's chapter
+ * marks).
  *
  * This file is part of FFmpeg.
  *
@@ -42,7 +42,6 @@
 #include "internal.h"
 
 #define HDDVD_BLOCK 2048
-#define LEAD_IN_TOLERANCE 110160000LL     /* HD DVD audio lead-in tolerance: 102 ms (ticks) */
 
 /* The stream pass's reading: an EVOB's blocks as the title reader reads them. */
 typedef struct PassRead {
@@ -84,6 +83,13 @@ static int read_block(AVFormatContext *s, int k, uint32_t block, uint8_t *buf)
 {
     HDDVDDemuxContext *c = ff_disc_part(s);
     return ff_hddvd_clip_block(s, c->aacs, c->fs, c->title->clips[k], block, buf);
+}
+
+/* Where the disc starts clip k: its EVOB's presentation start (VTI), 90 kHz. */
+static int64_t clip_start(AVFormatContext *s, int k)
+{
+    HDDVDDemuxContext *c = ff_disc_part(s);
+    return c->title->clips[k]->evob->start_ptm;
 }
 
 /* The opened title's chapter marks given back. */
@@ -263,7 +269,7 @@ static int title_info(AVFormatContext *s, int i, DiscTitleInfo *dt)
 }
 
 /* The opened title's source (its streams and tracks: the disc layer's):
- * its clips and chapter marks, HD DVD's LPCM header and lead-in tolerance. */
+ * its clips and chapter marks, HD DVD's LPCM header. */
 static int open_title(AVFormatContext *s, int i, int part, int *second_view)
 {
     DiscContext *d = s->priv_data;
@@ -284,8 +290,9 @@ static int open_title(AVFormatContext *s, int i, int part, int *second_view)
         .clip_name     = clip_name,
         .clip_blocks   = clip_blocks,
         .read_block    = read_block,
+        .clip_start    = clip_start,
+        .clip_start_name = "its EVOB's start time (VTI)",
         .lpcm_header   = 5,
-        .tolerance     = LEAD_IN_TOLERANCE,
         .chapter_times = c->chapter_times,
         .chapter_names = (const char *const *)c->chapter_names,
         .nb_chapters   = t->nb_marks,

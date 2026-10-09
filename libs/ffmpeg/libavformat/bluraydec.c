@@ -5,8 +5,8 @@
  * (bluray_tracks.c) and describes the disc. One title's tracks become the
  * streams; the disc layer's title reader reads its segments
  * (DiscTitleSource: a segment's stream data in 6144-byte units, AACS
- * decrypted here; each track's PID and PES stream keys; the 1 ms audio
- * lead-in tolerance; the title's chapter marks). Tracks whose codec the
+ * decrypted here; each track's PID and PES stream keys; the title's
+ * chapter marks). Tracks whose codec the
  * title timeline does not read yet are left out (logged).
  *
  * This file is part of FFmpeg.
@@ -41,7 +41,6 @@
 #include "disctl.h"
 #include "internal.h"
 
-#define LEAD_IN_TOLERANCE 1080000LL       /* Blu-ray audio lead-in tolerance: 1 ms (ticks) */
 
 typedef struct BlurayDemuxContext {
     BlurayDisc disc;
@@ -68,6 +67,16 @@ static uint32_t clip_blocks(AVFormatContext *s, int k)
 {
     BlurayDemuxContext *c = ff_disc_part(s);
     return ff_bluray_seg_size_views(&c->title->segs[c->seg0 + k], c->both) / BLURAY_UNIT;
+}
+
+/* Where the playlist starts segment k: its first PlayItem's IN time (a
+ * clip title: its STC sequence's presentation start), 45 kHz -> 90 kHz. */
+static int64_t clip_start(AVFormatContext *s, int k)
+{
+    BlurayDemuxContext *c = ff_disc_part(s);
+    const BluraySegItem *it = &c->title->segs[c->seg0 + k].items[0];
+
+    return 2 * (int64_t)(it->item ? it->item->in_time : it->stc->start);
 }
 
 static int read_block(AVFormatContext *s, int k, uint32_t block, uint8_t *buf)
@@ -437,8 +446,9 @@ static int open_title(AVFormatContext *s, int i, int part, int *second_view_read
         .clip_name     = clip_name,
         .clip_blocks   = clip_blocks,
         .read_block    = read_block,
+        .clip_start    = clip_start,
+        .clip_start_name = "the start time the playlist gives it (IN time)",
         .ts            = 1,
-        .tolerance     = LEAD_IN_TOLERANCE,
         .chapter_times = c->chapter_times,
         .nb_chapters   = nb_marks,
     };

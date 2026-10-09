@@ -32,6 +32,7 @@
 #include "libavutil/bprint.h"
 #include "libavutil/error.h"
 #include "libavutil/log.h"
+#include "libavutil/intreadwrite.h"
 #include "libavutil/avstring.h"
 #include "libavutil/mem.h"
 
@@ -42,7 +43,6 @@
 #include "dvd_internal.h"
 #include "internal.h"
 
-#define LEAD_IN_TOLERANCE 1080000LL       /* DVD-Video audio lead-in tolerance: 1 ms (ticks) */
 
 /* The stream pass's reading: a segment's sectors as the title reader reads them. */
 typedef struct PassRead {
@@ -81,6 +81,20 @@ static int read_block(AVFormatContext *s, int k, uint32_t block, uint8_t *buf)
 {
     DVDDemuxContext *c = ff_disc_part(s);
     return ff_dvd_segment_read(&c->disc, c->title, k, block, buf);
+}
+
+/* Where the disc starts segment k: the presentation start of its first
+ * VOBU (VOBU_S_PTM of the PCI in the navigation pack its first sector is:
+ * the pack header, the system header, then private stream 2 with sub-stream
+ * 0x00, DVD-Video Book), 90 kHz; none when that sector is no navigation
+ * pack or cannot be read. */
+static int64_t clip_start(AVFormatContext *s, int k)
+{
+    uint8_t b[DVD_SECTOR];
+
+    if (read_block(s, k, 0, b) <= 0 || AV_RB32(b) != 0x1ba || AV_RB32(b + 0x26) != 0x1bf || b[0x2c])
+        return AV_NOPTS_VALUE;
+    return AV_RB32(b + 0x2d + 0x0c);
 }
 
 /* The opened title's chapter records given back. */
@@ -355,7 +369,7 @@ static int title_info(AVFormatContext *s, int i, DiscTitleInfo *dt)
 
 /* The opened title's source (its streams and tracks: the disc layer's):
  * its segments
- * one after another, DVD-Video's 3-byte LPCM header and lead-in tolerance,
+ * one after another, DVD-Video's 3-byte LPCM header,
  * the chapter records placed on its segments. */
 static int open_title(AVFormatContext *s, int i, int part, int *second_view)
 {
@@ -384,8 +398,9 @@ static int open_title(AVFormatContext *s, int i, int part, int *second_view)
         .clip_name     = clip_name,
         .clip_blocks   = clip_blocks,
         .read_block    = read_block,
+        .clip_start    = clip_start,
+        .clip_start_name = "its first VOBU's start time (navigation pack)",
         .lpcm_header   = 3,
-        .tolerance     = LEAD_IN_TOLERANCE,
         .chapter_times = c->chapter_times,
         .nb_chapters   = nb_ch,
         .chapter_clips   = c->chapter_clips,
