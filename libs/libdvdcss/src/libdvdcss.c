@@ -876,6 +876,46 @@ LIBDVDCSS_EXPORT int dvdcss_close ( dvdcss_t dvdcss )
 }
 
 /**
+ * \brief Get the title key of the Video Title Set whose VOB data holds a block.
+ *
+ * \param dvdcss a \e libdvdcss instance.
+ * \param i_block the block to start from (a scrambled one, for a stream).
+ * \param p_key receives the 5-byte title key.
+ * \return 1 if a key was found, 0 if no scrambled data was found (the key
+ *         is all zero), -1 on error.
+ *
+ * With ioctls the key is read from the drive; otherwise (a stream, an image
+ * file) it is cracked from the scrambled sectors from \e i_block on, as
+ * dvdcss_seek() with \e DVDCSS_SEEK_KEY does. The key stays in the
+ * instance for dvdcss_read() too.
+ */
+LIBDVDCSS_EXPORT int dvdcss_title_key ( dvdcss_t dvdcss, int i_block,
+                                        unsigned char *p_key )
+{
+    if( dvdcss_title( dvdcss, i_block ) < 0 )
+    {
+        return -1;
+    }
+    memcpy( p_key, dvdcss->css.p_title_key, DVD_KEY_SIZE );
+    return ( p_key[0] | p_key[1] | p_key[2] | p_key[3] | p_key[4] ) != 0;
+}
+
+/**
+ * \brief Descramble one block with a title key.
+ *
+ * \param p_key a 5-byte title key (dvdcss_title_key()).
+ * \param p_block a 2048-byte block, descrambled in place.
+ *
+ * The block is descrambled whatever its PES_scrambling_control says: the
+ * caller decides which blocks are scrambled (and clears the bits).
+ */
+LIBDVDCSS_EXPORT void dvdcss_descramble ( const unsigned char *p_key,
+                                          void *p_block )
+{
+    dvdcss_descramble_block( p_key, p_block );
+}
+
+/**
  * \brief Detect whether or not a DVD is scrambled
  *
  * \param dvdcss a \e libdvdcss instance.
