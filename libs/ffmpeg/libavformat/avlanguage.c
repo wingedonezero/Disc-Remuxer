@@ -747,12 +747,18 @@ const char *ff_convert_lang_to(const char *lang, enum AVLangCodespace target_cod
     if (target_codespace >= NB_CODESPACES)
         return NULL;
 
-    for (i=0; !entry && i<NB_CODESPACES; i++)
+    for (i=0; !entry && i<NB_CODESPACES; i++) {
         entry = bsearch(lang,
                         lang_table + lang_table_offsets[i],
                         lang_table_counts[i],
                         sizeof(LangEntry),
                         lang_table_compare);
+        /* the ISO 639-1 part ends with its deprecated codes, out of
+         * order: a code the binary search misses is looked for in turn */
+        for (int k = 0; !entry && k < lang_table_counts[i]; k++)
+            if (!strcmp(lang, lang_table[lang_table_offsets[i] + k].str))
+                entry = &lang_table[lang_table_offsets[i] + k];
+    }
     if (!entry)
         return NULL;
 
