@@ -76,7 +76,11 @@ PrefsDialog::PrefsDialog(QWidget *parent) : QDialog(parent)
         QVBoxLayout *v = pages[group];
         auto *name = new QLabel("<b>" + labelOf(s).toHtmlEscaped() + "</b>  <span style=\"color:gray\">" +
                                 nameOf(s) + "</span>");
-        auto *help = new QLabel(QString::fromUtf8(s->help));
+        static const char *const when[] = {
+            "Read as a disc is opened: discs already in the queue keep what they were scanned with (Scan Again).",
+            "Read as a rip runs.", "Read by the GUI." };
+        auto *help = new QLabel(QString::fromUtf8(s->help).toHtmlEscaped() + "<br><i>" + when[s->use] + "</i>");
+        help->setTextFormat(Qt::RichText);
         auto *row = new QHBoxLayout;
         help->setWordWrap(true);
         help->setStyleSheet("color:gray;");
@@ -182,8 +186,9 @@ void PrefsDialog::restoreDefaults()
         setValue(f, QString::fromUtf8(settings_get(f.index)->def));
 }
 
-bool PrefsDialog::apply(QStringList *changed)
+bool PrefsDialog::apply(QStringList *changed, bool *atOpen)
 {
+    *atOpen = false;
     for (const Field &f : fields) {
         const Setting *s = settings_get(f.index);
         QString v = valueOf(f);
@@ -195,6 +200,7 @@ bool PrefsDialog::apply(QStringList *changed)
             return false;
         }
         changed->append(QString("%1 = %2").arg(nameOf(s), v.isEmpty() ? "(empty)" : v));
+        *atOpen |= s->use == SET_AT_OPEN;
     }
     if (!changed->isEmpty() && settings_save() < 0) {
         QMessageBox::warning(this, "Preferences", "The settings file cannot be written (see the log)");

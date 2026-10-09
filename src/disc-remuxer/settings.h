@@ -18,6 +18,11 @@ extern "C" {
 
 enum SettingKind { SET_BOOL, SET_INT, SET_CHOICE, SET_TEXT, SET_LIST };
 
+/* When a setting is read: as a disc is opened (its title list, tracks,
+ * keys: a disc already open keeps what it was opened with), as a run
+ * writes files, or by the GUI. */
+enum SettingUse { SET_AT_OPEN, SET_AT_RIP, SET_IN_GUI };
+
 /* A setting as the settings menu shows it. */
 typedef struct Setting {
     const char        *group, *key;
@@ -28,6 +33,7 @@ typedef struct Setting {
     const char        *help;
     int                kept;         /* a value the GUI keeps for itself (window sizes): not in the settings
                                         menu, not in the run's log */
+    enum SettingUse    use;          /* when it is read */
 } Setting;
 
 /* Reads the settings file (path NULL: disc-remuxer.toml next to the

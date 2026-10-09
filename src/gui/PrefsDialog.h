@@ -13,9 +13,10 @@ class PrefsDialog : public QDialog {
 public:
     explicit PrefsDialog(QWidget *parent = nullptr);
 
-    // The changed settings stored and the file written; the names changed
-    // into changed. false: a value was refused (said in a message box).
-    bool apply(QStringList *changed);
+    // The changed settings stored and the file written; "name = value" of
+    // each into changed, *atOpen: one is read as a disc is opened. false: a
+    // value was refused (said in a message box).
+    bool apply(QStringList *changed, bool *atOpen);
 
 private:
     struct Field {

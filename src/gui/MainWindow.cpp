@@ -670,16 +670,12 @@ void MainWindow::openPrefs()
 {
     PrefsDialog dlg(this);
     QStringList changed;
+    bool reading;
 
     while (dlg.exec() == QDialog::Accepted) {
-        if (dlg.apply(&changed)) {
-            bool reading = false;
-            for (const QString &c : changed) {
+        if (dlg.apply(&changed, &reading)) {
+            for (const QString &c : changed)
                 console->addLine(LOG_INFO, 0, QString(), "Setting kept: " + c, false);
-                // settings a disc is read with (its title list, tracks, keys)
-                reading |= c.startsWith("read.") || c.startsWith("aacs.") || c.startsWith("titles.") ||
-                           c.startsWith("dvd.") || c.startsWith("bluray.");
-            }
             if (reading && !running && !jobs.isEmpty() &&
                 QMessageBox::question(this, "Preferences", "These settings change how a disc is read. Scan the "
                                                            "discs in the queue again so they use them?") ==

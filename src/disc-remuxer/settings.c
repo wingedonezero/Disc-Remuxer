@@ -24,61 +24,65 @@ static const char *const cell_checks[]  = { "all", "spread", "random", NULL };
 static const Setting registry[] = {
     { "read", "attempts", SET_INT, "5", 1, 99, NULL,
       "How many times a read from a disc is tried before it counts as failed; after the first retry "
-      "the rest of the read goes one sector at a time.", 0 },
+      "the rest of the read goes one sector at a time.", 0, SET_AT_OPEN },
     { "read", "udf_reader", SET_CHOICE, "netbsd", 0, 0, udf_readers,
-      "Which UDF reader opens disc images: netbsd (based on NetBSD's UDF code) or linux (based on Linux's).", 0 },
+      "Which UDF reader opens disc images: netbsd (based on NetBSD's UDF code) or linux (based on Linux's).",
+      0, SET_AT_OPEN },
     { "read", "prefer_iso_for_old_udf102", SET_BOOL, "true", 0, 0, NULL,
       "Read a DVD image whose UDF 1.02 file system was recorded before 2006 through its ISO 9660 file "
-      "system, when that holds a valid DVD-Video structure.", 0 },
+      "system, when that holds a valid DVD-Video structure.", 0, SET_AT_OPEN },
     { "aacs", "key_files", SET_LIST, "", 0, 0, NULL,
       "AACS key files (KEYDB.cfg format), read in this order; the first one holding a key for the disc "
       "is used. Empty: every .cfg file in the folder keydb next to the program (made on the first start), "
-      "in name order.", 0 },
+      "in name order.", 0, SET_AT_OPEN },
     { "titles", "min_length", SET_INT, "0", 0, 86400, NULL,
       "Titles shorter than this (seconds) are not ripped with demux all: a DVD or HD DVD lists them as not "
-      "selected (a title number still rips them), a Blu-ray leaves them out of its title list. 0: every title.", 0 },
+      "selected (a title number still rips them), a Blu-ray leaves them out of its title list. 0: every title.",
+      0, SET_AT_OPEN },
     { "output", "folder", SET_TEXT, "", 0, 0, NULL,
       "The main output folder: a disc's files go into a folder of the disc's name in it (its image's or "
       "folder's name; _001, _002, ... when that exists), when demux is given no output folder and in the GUI. "
-      "Empty: the folder output next to the program.", 0 },
+      "Empty: the folder output next to the program.", 0, SET_AT_RIP },
     { "output", "file_name_template", SET_TEXT, "", 0, 0, NULL,
       "How a title's output files are named. {NAME1} the title's name, {CMNT1} its comment, {DT} its "
       "date, {N2} its number with two digits; {prefix:VAR} writes the prefix only after other text. "
-      "Empty: {NAME1}{-:CMNT1}{-:DT}{title:+DFLT}{_t:N2}.", 0 },
+      "Empty: {NAME1}{-:CMNT1}{-:DT}{title:+DFLT}{_t:N2}.", 0, SET_AT_RIP },
     { "output", "split_joined_titles", SET_BOOL, "false", 0, 0, NULL,
       "A title that plays whole stream files back to back (the episodes of a series one after another in one "
       "Blu-ray title) is written as parts, one per file: <name>_p1, _p2, ..., each from its own start with its "
       "own chapters and its audio as the file holds it. Off: such a title is one timeline (the audio's overlaps "
       "at the joins are evened out by dropping whole frames). The demux option --split <titles> turns it on "
-      "for chosen titles of one run.", 0 },
+      "for chosen titles of one run.", 0, SET_AT_RIP },
     { "bluray", "second_view", SET_BOOL, "false", 0, 0, NULL,
       "3-D titles: also write the second view (the MVC dependent view, a .mvc file next to the base view's "
       ".h264; each file names its eye, from the playlist). Off: a 3-D title is written in 2-D. The demux "
-      "option --second-view <titles> turns it on for chosen titles of one run.", 0 },
+      "option --second-view <titles> turns it on for chosen titles of one run.", 0, SET_AT_OPEN },
     { "bluray", "dolby_vision", SET_CHOICE, "merged", 0, 0, dv_layers,
       "Dolby Vision titles (UHD Blu-ray): merged writes one video file, each frame the base layer's picture "
       "followed by its enhancement layer's picture and metadata (the single-track form dovi_tool, mkvmerge and "
       "players read); separate writes the base layer and the enhancement layer (with the metadata) as two files, "
-      "as they are on the disc.", 0 },
+      "as they are on the disc.", 0, SET_AT_OPEN },
     { "dvd", "cell_mode", SET_CHOICE, "auto", 0, 0, cell_modes,
       "Which cells of a DVD title's program chain are played: walk (the cells the disc's navigation plays, found "
       "by playing the disc), trim (the program chain's cells without the decoy cells at its start and end), "
       "walk_trim (walk; trim for the titles the navigation does not reach, which are then listed too), auto "
-      "(walk, or trim when playing the disc fails).", 0 },
+      "(walk, or trim when playing the disc fails).", 0, SET_AT_OPEN },
     { "dvd", "cell_check", SET_CHOICE, "all", 0, 0, cell_checks,
       "How many VOBUs of a DVD cell are read when a cell is checked in full (in the decoy checks, mostly when the "
       "cells are trimmed): all (every VOBU; one broken VOBU rejects the cell), spread (50 evenly spread over the "
-      "cell) or random (50 at random, a different choice on each run).", 0 },
+      "cell) or random (50 at random, a different choice on each run).", 0, SET_AT_OPEN },
     { "log", "debug_file", SET_BOOL, "false", 0, 0, NULL,
-      "Also write a debug log with every detail into the output folder, next to the log.", 0 },
+      "Also write a debug log with every detail into the output folder, next to the log.", 0, SET_AT_RIP },
     { "gui", "keep_folder_structure", SET_BOOL, "true", 0, 0, NULL,
       "GUI: a disc found in an added folder keeps the folders from that folder down to it under the main output "
-      "folder (<main output folder>/<added folder>/<folders>/<disc name>); off: <main output folder>/<disc name>.", 0 },
-    { "gui", "window", SET_TEXT, "", 0, 0, NULL, "Kept by the GUI: its window's place and size.", 1 },
-    { "gui", "columns", SET_LIST, "", 0, 0, NULL, "Kept by the GUI: the widths of the queue's columns.", 1 },
-    { "gui", "panes", SET_LIST, "", 0, 0, NULL, "Kept by the GUI: the sizes of the window's panes.", 1 },
+      "folder (<main output folder>/<added folder>/<folders>/<disc name>); off: <main output folder>/<disc name>.",
+      0, SET_IN_GUI },
+    { "gui", "window", SET_TEXT, "", 0, 0, NULL, "Kept by the GUI: its window's place and size.", 1, SET_IN_GUI },
+    { "gui", "columns", SET_LIST, "", 0, 0, NULL, "Kept by the GUI: the widths of the queue's columns.",
+      1, SET_IN_GUI },
+    { "gui", "panes", SET_LIST, "", 0, 0, NULL, "Kept by the GUI: the sizes of the window's panes.", 1, SET_IN_GUI },
     { "gui", "last_folder", SET_TEXT, "", 0, 0, NULL,
-      "Kept by the GUI: the folder discs were last added from.", 1 },
+      "Kept by the GUI: the folder discs were last added from.", 1, SET_IN_GUI },
 };
 #define NB_SETTINGS (int)(sizeof(registry) / sizeof(registry[0]))
 
@@ -301,6 +305,8 @@ static char *render(size_t *len)
         }
         fputc('\n', f);
         put_help(f, s->help);
+        fprintf(f, "# read: %s\n", s->use == SET_AT_OPEN ? "as a disc is opened" : s->use == SET_AT_RIP ?
+                "as a rip runs" : "by the GUI");
         fprintf(f, "# default: ");
         put_value(f, s, s->def);
         fprintf(f, "\n%s = ", s->key);
