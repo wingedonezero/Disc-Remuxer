@@ -13,7 +13,9 @@ import re
 
 import pytest
 
-from helpers import ffi, lib
+import re
+
+from helpers import ROOT, ffi, lib
 from helpers.disc import env_or_skip
 from helpers.hddvd import plan, take_text
 from synth.hddvd import clip, evob, image, playlist, tmap, vti
@@ -35,6 +37,17 @@ def test_language_codes_follow_iso_639_with_three_extras():
         ("", None), ("e", None), ("engl", None), ("xx", None), ("ené", None),
     ]:
         assert lang(code) == want, code
+
+
+def test_every_iso_639_1_code_is_known():
+    # FFmpeg's ISO 639-1 table ends with its deprecated codes, after "zu":
+    # a binary search alone missed "yo", "za", "zh" and "zu"
+    src = (ROOT / "libs" / "ffmpeg" / "libavformat" / "avlanguage.c").read_text()
+    codes = re.findall(r'\{ "([a-z]{2})" ?,', src)
+    withdrawn = {"in", "ji", "jw", "mo", "sh"}
+    assert len(codes) == 190
+    assert [c for c in codes if c not in withdrawn and lang(c) is None] == []
+    assert (lang("zh"), lang("zu"), lang("yo"), lang("za")) == ("chi", "zul", "yor", "zha")
 
 
 def plan_lines(img):

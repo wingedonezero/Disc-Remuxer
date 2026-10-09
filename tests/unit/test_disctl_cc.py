@@ -154,3 +154,19 @@ def test_a_last_single_entry():
     assert triplets(cc_block(0x01, [[0xFF, 1, 2]])) == [[5, 1, 2]]
     b = cc_block(0x83, [[0xFF, 1, 2], [0xFE, 3, 4], [0xFF, 5, 6]])
     assert triplets(b) == [[4, 1, 2], [5, 3, 4], [4, 5, 6]]
+
+
+def test_zero_stuffing_after_a_gop_header_leaves_with_the_user_data():
+    # zero stuffing bytes between the GOP header and its caption block (and
+    # after the block) are no part of a unit the reader keeps: the video
+    # is the stream without them
+    video, sides, st = run(with_user_data(lambda g: bytes(124) + cc_block(0x80, []) + bytes(5)), True)
+    assert b"".join(o[0] for o in video) == M2V
+    assert st.side == 101
+    assert all(o[0].startswith(b"\x00\x00\x01\xb2CC") for o in sides)
+
+
+def test_zero_stuffing_after_a_gop_header_leaves_without_user_data_too():
+    video, sides, st = run(with_user_data(lambda g: bytes(40)), True)
+    assert b"".join(o[0] for o in video) == M2V
+    assert st.side == 0

@@ -232,77 +232,7 @@ static int grow(void **p, int *alloc, int n, size_t elem)
     return av_reallocp_array(p, *alloc = FFMAX(16, *alloc * 2), elem);
 }
 
-/* ---- VOBU records ---- */
-
-void ff_dvd_vobu_recs_free(DVDVobuRecs *v)
-{
-    av_freep(&v->recs);
-    v->nb = v->alloc = 0;
-}
-
-static DVDVobuRecs *vobu_recs(DVDDisc *d, DVDIfo *f)
-{
-    return f->title_vob_base ? &d->vobus : &f->vobus;
-}
-
-static int vobu_lower(const DVDVobuRecs *v, uint32_t key)
-{
-    int lo = 0, hi = v->nb;
-    while (lo < hi) {
-        int mid = (lo + hi) / 2;
-        if (v->recs[mid].key < key)
-            lo = mid + 1;
-        else
-            hi = mid;
-    }
-    return lo;
-}
-
-/* insert, the first record of a key kept */
-static int vobu_insert(DVDVobuRecs *v, const DVDVobuRec *r)
-{
-    int at = vobu_lower(v, r->key), ret;
-
-    if (at < v->nb && v->recs[at].key == r->key)
-        return 0;
-    if ((ret = grow((void **)&v->recs, &v->alloc, v->nb, sizeof(*v->recs))) < 0)
-        return ret;
-    memmove(v->recs + at + 1, v->recs + at, (v->nb - at) * sizeof(*v->recs));
-    v->recs[at] = *r;
-    v->nb++;
-    return 0;
-}
-
-const DVDVobuRec *ff_dvd_vobu_find(const DVDDisc *d, const DVDIfo *f, uint32_t sector, int64_t *next_key)
-{
-    const DVDVobuRecs *v = f->title_vob_base ? &d->vobus : &f->vobus;
-    uint32_t key = sector + f->title_vob_base;
-    int at = vobu_lower(v, key);
-
-    if (at == v->nb) {
-        if (next_key)
-            *next_key = -1;
-        return NULL;
-    }
-    if (v->recs[at].key == key) {
-        if (next_key)
-            *next_key = at + 1 < v->nb ? (int64_t)v->recs[at + 1].key - f->title_vob_base : -1;
-        return &v->recs[at];
-    }
-    if (next_key)
-        *next_key = (int64_t)v->recs[at].key - f->title_vob_base;
-    return NULL;
-}
-
-/* A NAV pack exactly as DVD-Video lays it out: pack header, system header,
- * PCI and DSI packets. */
-static int is_nav_pack(const uint8_t *b)
-{
-    return AV_RB32(b) == 0x000001ba && (b[4] & 0xc0) == 0x40 &&
-           AV_RB32(b + 0x0e) == 0x000001bb && AV_RB16(b + 0x12) == 0x0012 &&
-           AV_RB32(b + 0x26) == 0x000001bf && b[0x2a] == 0x03 && b[0x2b] == 0xd4 && b[0x2c] == 0x00 &&
-           AV_RB32(b + 0x400) == 0x000001bf && b[0x404] == 0x03 && b[0x405] == 0xfa && b[0x406] == 0x01;
-}
+/* ---- what a NAV pack says ---- */
 
 /* The PCI fields the walk uses (pci_t: pci_gi, hli.hl_gi, hli.btnit). */
 static void parse_pci(Pci *p, const uint8_t *b)
@@ -322,96 +252,6 @@ static void parse_pci(Pci *p, const uint8_t *b)
         for (int k = 0; k < 4; k++)
             p->links[i][k] = btn[6 + k] & 0x3f;
     }
-}
-
-/* The NAV pack fields of a VOBU (dsi_gi, sml_pbi, vobu_sri). */
-typedef struct Nav {
-    uint32_t vobu_s_ptm, vobu_e_ptm, vobu_ea, ilvu_ea, next_vobu;
-    uint16_t category;
-} Nav;
-
-static void parse_nav(Nav *n, const uint8_t *b)
-{
-    n->vobu_s_ptm = AV_RB32(b + 0x39);
-    n->vobu_e_ptm = AV_RB32(b + 0x3d);
-    n->vobu_ea    = AV_RB32(b + 0x40f);
-    n->category   = AV_RB16(b + 0x427);
-    n->ilvu_ea    = AV_RB32(b + 0x429);
-    n->next_vobu  = AV_RB32(b + 0x541);
-}
-
-/* A NAV pack read outside the navigation (the VOBU after one that ends inside
- * an interleaved unit): 1 with *n, 0 when the sector is no (usable) NAV pack
- * (recorded as such). */
-static int read_nav(Scan *s, DVDIfo *f, uint32_t sector, Nav *n)
-{
-    uint8_t b[DVD_SECTOR];
-    DVDVobuRec none = { sector + f->title_vob_base, 0, 0, 0xffffffff, 0, 0 };
-    int ret = ff_dvd_vob_read(s->d, f, 0, sector, b);
-
-    if (ret >= 0 && is_nav_pack(b)) {
-        parse_nav(n, b);
-        return 1;
-    }
-    if (ret >= 0) {
-        int blank = 1;
-        for (int i = 0; i < 32; i++)
-            blank &= b[i] == 0xff;
-        if (blank && AV_RB32(b + 0x2d) == sector && AV_RB32(b + 0x40b) == sector && AV_RB32(b + 0x40f) <= 0xfffff) {
-            /* a NAV pack whose headers were blanked: accepted, 0.5 s */
-            memset(n, 0, sizeof(*n));
-            n->vobu_e_ptm = 45000;
-            n->vobu_ea    = AV_RB32(b + 0x40f);
-            n->next_vobu  = n->vobu_ea + 1;
-            av_log(s->d->log, AV_LOG_DEBUG, "DVD: VTS_%02d: sector %"PRIu32" is a NAV pack with blanked "
-                   "headers\n", f->index, sector);
-            return 1;
-        }
-    }
-    vobu_insert(vobu_recs(s->d, f), &none);
-    return 0;
-}
-
-/* Record the VOBU whose NAV pack is at sector; 0 when it cannot be (a VOBU
- * pointing at itself where that is not allowed, a following VOBU that
- * cannot be read). */
-static int register_vobu(Scan *s, DVDIfo *f, const Nav *n, uint32_t sector, int allow_self)
-{
-    uint32_t nx = n->next_vobu & 0x7fffffff, ea = n->vobu_ea;
-    int64_t next = nx == 0x3fffffff ? -2 : (int64_t)sector + nx;
-
-    if (next == sector) {
-        if (!allow_self)
-            av_log(s->d->log, AV_LOG_DEBUG, "DVD: VTS_%02d: the VOBU at %"PRIu32" names itself as the next "
-                   "one\n", f->index, sector);
-        return allow_self;              /* nothing recorded */
-    }
-    if (next == -2 && (n->category & 0x4000) && ea != n->ilvu_ea) {
-        /* the cell ends inside an interleaved unit */
-        if (n->ilvu_ea < ea) {
-            av_log(s->d->log, AV_LOG_WARNING, "DVD: VTS_%02d: the title VOBs are corrupt at sector %"PRIu32" "
-                   "(the interleaved unit ends before its VOBU): worked around\n", f->index, sector);
-        } else {
-            Nav n2;
-            next = (int64_t)sector + ea + 1;
-            if (!ff_dvd_vobu_find(s->d, f, (uint32_t)next, NULL) &&
-                (!read_nav(s, f, (uint32_t)next, &n2) || !register_vobu(s, f, &n2, (uint32_t)next, 0))) {
-                av_log(s->d->log, AV_LOG_DEBUG, "DVD: VTS_%02d: the VOBU after %"PRIu32" in its interleaved unit "
-                       "cannot be read\n", f->index, sector);
-                return 0;
-            }
-        }
-    }
-    if (ea < 0x10000 && n->ilvu_ea < 0x10000 && (next == -2 || next - sector < 0x10000000)) {
-        DVDVobuRec r = { sector + f->title_vob_base, ea, n->ilvu_ea,
-                         (uint32_t)(n->category & 0x6000) << 16 | (next == -2 ? 0x10000000 : (uint32_t)(next - sector)),
-                         n->vobu_s_ptm, n->vobu_e_ptm };
-        vobu_insert(vobu_recs(s->d, f), &r);
-    } else {
-        av_log(s->d->log, AV_LOG_DEBUG, "DVD: VTS_%02d: the VOBU at %"PRIu32" does not fit a record\n",
-               f->index, sector);
-    }
-    return 1;
 }
 
 static int pci_cmp(int id, uint32_t lbn, const Pci *p)
@@ -468,7 +308,7 @@ static int vob_read(void *opaque, int set, int menu, uint32_t sector, const uint
     }
     tracef(s, "read %d %"PRIu32, id, sector);
 
-    if (is_nav_pack(b)) {
+    if (ff_dvd_is_nav_pack(b)) {
         Pci p;
         parse_pci(&p, b);
         if (p.lbn != sector) {
@@ -491,14 +331,13 @@ static int vob_read(void *opaque, int set, int menu, uint32_t sector, const uint
                menu ? "menu VOB" : "title VOBs", set, sector);
     }
     if (!menu && set) {
-        if (is_nav_pack(b)) {
-            Nav n;
-            parse_nav(&n, b);
-            register_vobu(s, f, &n, sector, 1);
-        } else {
-            DVDVobuRec none = { sector + f->title_vob_base, 0, 0, 0xffffffff, 0, 0 };
-            if ((ret = vobu_insert(vobu_recs(s->d, f), &none)) < 0)
-                return ret;
+        if (ff_dvd_is_nav_pack(b)) {
+            DVDNav n;
+            uint32_t next, len;
+            ff_dvd_nav_parse(&n, b);
+            ff_dvd_vobu_register(s->d, f, &n, sector, 1, &next, &len);
+        } else if ((ret = ff_dvd_vobu_mark_bad(s->d, f, sector)) < 0) {
+            return ret;
         }
     }
     return 0;
@@ -675,36 +514,6 @@ static const DVDPgc *pgc_of(const DVDDisc *d, unsigned vtsn, unsigned pgcn)
     if (!f || !pgcn || pgcn > (unsigned)f->nb_pgcs)
         return NULL;
     return f->pgcs[pgcn - 1];
-}
-
-/* the title VOB sectors of title set vts on the disc ([start, end)) */
-static int title_vob_range(const DVDDisc *d, int vts, uint32_t *start, uint32_t *end)
-{
-    const DVDIfo *f = vts < d->nb_ifos ? d->ifos[vts] : NULL;
-    uint32_t tv, last, ifol, b;
-
-    if (!f || f->failed)
-        return 0;
-    tv   = ff_dvd_header32(f, DVD_TT_SRPT);
-    last = ff_dvd_header32(f, DVD_LAST_SECTOR);
-    ifol = ff_dvd_header32(f, DVD_I_LAST_SECTOR) & 0x1ffff;
-    if (last <= ifol || (b = last - ifol) <= tv)
-        return 0;
-    *start = d->title_set_start[vts - 1] + tv;
-    *end   = d->title_set_start[vts - 1] + b;
-    return 1;
-}
-
-static int title_vobs_overlap(const DVDDisc *d, int vts)
-{
-    uint32_t s, e, s2, e2;
-
-    if (!title_vob_range(d, vts, &s, &e) || d->nb_ifos < 2)
-        return 0;
-    for (int k = 1; k < d->nb_ifos; k++)
-        if (k != vts && title_vob_range(d, k, &s2, &e2) && ((s <= s2 && s2 < e) || (s2 <= s && s < e2)))
-            return 1;
-    return 0;
 }
 
 /* ---- the walk's bookkeeping ---- */
@@ -1362,7 +1171,7 @@ int ff_dvd_scan(DVDDisc *d, void (*trace)(void *opaque, const char *line), void 
     rand_init(&s.rnd);
     /* no title snapshot on discs with many titles (or title sets sharing title VOBs and 16 or more titles) */
     for (int v = 1; v < d->nr_of_title_sets && !overlap; v++)
-        overlap = title_vobs_overlap(d, v);
+        overlap = ff_dvd_title_vobs_overlap(d, v);
     s.no_snapshot = overlap ? titles >= 16 : titles > 96;
 
     if ((ret = nav_clone(&s, &s.root, 0)) < 0)

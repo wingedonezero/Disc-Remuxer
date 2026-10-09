@@ -48,21 +48,30 @@ static int next_sc(const uint8_t *p, int n, int i)
 /* User data right after a GOP header (ISO/IEC 13818-2 6.2.2.6: user_data
  * at the GOP level; DVD-Video line-21 captions are carried there) leaves
  * the video: each user_data from its start code up to the next start code
- * becomes a side unit. User data after a sequence header or a picture
- * header stays in the video. */
+ * (its trailing zero bytes with it) becomes a side unit. The GOP header is
+ * 8 bytes; zero stuffing bytes after it, before the next start code, leave
+ * the video too (they are no part of a unit: the reader keeps a GOP header
+ * as its 8 bytes and drops a run of zero bytes as an empty unit). User data
+ * after a sequence header or a picture header stays in the video. */
 static int split_mpv(DRVideo *v, DRFrame *f)
 {
     uint8_t *p = f->data;
     int n = f->size, i = 0, ret;
 
     while ((i = next_sc(p, n, i)) >= 0) {
-        int e;
+        int e, z;
 
         if (p[i + 3] != 0xB8) {
             i += 4;
             continue;
         }
         i += 8;                                  /* group_of_pictures_header: 8 bytes */
+        for (z = i; z < n && !p[z]; z++)
+            ;
+        if (z - i > 2 && z < n && p[z] == 1) {   /* zeros, then 00 00 01: the zeros before those two go */
+            memmove(p + i, p + z - 2, n - (z - 2));
+            n -= z - 2 - i;
+        }
         while ((i = next_sc(p, n, i)) >= 0 && p[i + 3] == 0xB2) {
             e = next_sc(p, n, i + 4);
             if (e < 0)

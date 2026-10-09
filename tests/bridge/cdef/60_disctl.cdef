@@ -181,6 +181,7 @@ typedef struct DRJoinConfig {
     const int     *kinds;
     const int64_t *marks;
     int            nb_marks;
+    int64_t       *open_marks;
     DRJoinOutCb    out;
     void          *out_opaque;
     DREventCb      event;
@@ -357,6 +358,7 @@ typedef struct DRTitleConfig {
     int                 lpcm_hd;
     const int64_t      *marks;
     int                 nb_marks;
+    int64_t            *open_marks;
     DREventCb           event;
     void               *event_opaque;
     const char         *cc_helper;
@@ -374,6 +376,7 @@ int  ff_disctl_hevc_wrap_size(const uint8_t *p, int n);
 int  ff_disctl_h264_clean(const uint8_t *p, int n, uint8_t *out, int64_t dropped_units[32], int64_t *stuffing,
                           int *changed);
 int  ff_disctl_title_chapters(const DRTitle *t, const DRChapterPlan *plan, DRChapter **out, int *nb_out);
+int  ff_disctl_title_chapter_position(DRTitle *t);
 int64_t ff_disctl_title_review(const DRTitle *t);
 int ff_disctl_title_spu_result(const DRTitle *t, int track, int64_t *no_stop, int64_t *outside);
 int ff_disctl_title_cc_result(const DRTitle *t, int track, int64_t *blocks, int64_t *cues);

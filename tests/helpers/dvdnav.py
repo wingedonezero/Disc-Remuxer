@@ -58,19 +58,22 @@ def cell(first, last, secs=1, last_vobu=None, **kw):
     return dataclasses.replace(c, **kw)
 
 
-def build(tmp_path, pgcs, ptts, navs, vob_sectors, first_play=True):
+def build(tmp_path, pgcs, ptts, navs, vob_sectors, first_play=True, angles=None, **vts):
     """A disc folder with one title set: its program chains, its titles
     (ptts: per title the (pgcn, pgn) of each part) and title VOBs of
     vob_sectors sectors holding navs. A last title is added for the
     first-play program chain to jump to (JumpTT), so the navigator starts
     without stopping and without touching the tested chains; first_play
-    False leaves the first-play chain out."""
+    False leaves the first-play chain out; angles: per title its number of
+    angles (default 1); vts: more Vts fields (video_attr, audio_attrs,
+    subp_attrs)."""
     home = len(pgcs) + 1
     pgcs = list(pgcs) + [Pgc(cells=[Cell.new(vob_sectors, vob_sectors, vob_sectors, 0)])]
     ptts = list(ptts) + [[(home, 1)]]
     navs = list(navs) + [dvd.nav(vob_sectors, 1, None)]
-    v = Vts(pgcs=pgcs, ptts=ptts, vobus=sorted(n.lbn for n in navs), vob_sectors=vob_sectors + 1)
-    titles = [Title(1, k + 1, len(t)) for k, t in enumerate(ptts)]
+    v = Vts(pgcs=pgcs, ptts=ptts, vobus=sorted(n.lbn for n in navs), vob_sectors=vob_sectors + 1, **vts)
+    angles = list(angles or []) + [1] * (len(ptts) - len(angles or []))
+    titles = [Title(1, k + 1, len(t), angles[k]) for k, t in enumerate(ptts)]
     fp = Pgc(cells=[], pre=[jump_tt(len(titles))]) if first_play else None
     vmg = dvd.vmg_ifo(titles, 1, first_play=fp)
     folder = tmp_path / "disc"
@@ -154,3 +157,58 @@ def scan(disc, with_trace=False):
            for r in out.results[0:out.nb_results]]
     lib.ff_dvd_scan_free(out)
     return ret, res, list(SCAN_LINES)
+
+
+def titles_text(disc, cell_mode=0, cell_check=0, min_length=0):
+    """The navigation scan, then ff_dvd_titles_build() on a DVDDisc *:
+    (return value, ff_dvd_titles_dump() text)."""
+    dump = ffi.new("char **")
+    scan_ret = ffi.new("int *")
+    ret = lib.tb_dvd_titles(disc, cell_mode, cell_check, min_length, scan_ret, dump)
+    text = ""
+    if dump[0] != ffi.NULL:
+        text = ffi.string(dump[0]).decode()
+        lib.av_free(dump[0])
+    return ret, text
+
+
+def titles(disc, cell_mode=0, cell_check=0, min_length=0):
+    """The navigation scan, then ff_dvd_titles_build() on a DVDDisc *:
+    (return value, the scan's return value, [dict per title of
+    ff_dvd_titles_dump(): name, ttn, vts, pgc, angle, cells, chapters,
+    length, real, segments, size, map, scan, short])."""
+    dump = ffi.new("char **")
+    scan_ret = ffi.new("int *")
+    ret = lib.tb_dvd_titles(disc, cell_mode, cell_check, min_length, scan_ret, dump)
+    return ret, scan_ret[0], _dump(dump)
+
+
+def _dump(dump):
+    out = []
+    if dump[0] != ffi.NULL:
+        for line in ffi.string(dump[0]).decode().splitlines():
+            w = line.split(" ")
+            t = dict(zip(w[2::2], w[3::2]))
+            t["short"] = line.endswith(" short")
+            out.append(t)
+        lib.av_free(dump[0])
+    return out
+
+
+def titles_from(disc, results, cell_mode=0, cell_check=0, min_length=0):
+    """ff_dvd_titles_build() on a DVDDisc * with given scan results
+    [(name, title, pgc, [cells])] instead of a scan: (return value, [dict per
+    title as titles() gives])."""
+    res = ffi.new("DVDScanResult[]", max(len(results), 1))
+    keep = []
+    for k, (name, title, pgc, cells) in enumerate(results):
+        res[k].name = name.encode()
+        res[k].title = title
+        res[k].pgc = pgc
+        c = ffi.new("uint8_t[]", list(cells) or [0])
+        keep.append(c)
+        res[k].cells = c
+        res[k].nb_cells = len(cells)
+    dump = ffi.new("char **")
+    ret = lib.tb_dvd_titles_from(disc, res, len(results), cell_mode, cell_check, min_length, dump)
+    return ret, _dump(dump)

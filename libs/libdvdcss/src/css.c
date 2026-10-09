@@ -549,14 +549,24 @@ static int dvdcss_titlekey( dvdcss_t dvdcss, int i_pos, dvd_key p_title_key )
  *****************************************************************************/
 int dvdcss_unscramble( dvd_key p_key, uint8_t *p_sec )
 {
-    unsigned int    i_t1, i_t2, i_t3, i_t4, i_t5, i_t6;
-    uint8_t        *p_end = p_sec + DVDCSS_BLOCK_SIZE;
-
     /* PES_scrambling_control */
     if( !(p_sec[0x14] & 0x30) )
     {
         return 0;
     }
+
+    dvdcss_descramble_block( p_key, p_sec );
+    return 0;
+}
+
+/*****************************************************************************
+ * dvdcss_descramble_block: descrambles a block with a title key, whatever
+ * its PES_scrambling_control says (the caller has decided it is scrambled).
+ *****************************************************************************/
+void dvdcss_descramble_block( const uint8_t *p_key, uint8_t *p_sec )
+{
+    unsigned int    i_t1, i_t2, i_t3, i_t4, i_t5, i_t6;
+    uint8_t        *p_end = p_sec + DVDCSS_BLOCK_SIZE;
 
     i_t1 = (p_key[0] ^ p_sec[0x54]) | 0x100;
     i_t2 = p_key[1] ^ p_sec[0x55];
@@ -583,8 +593,6 @@ int dvdcss_unscramble( dvd_key p_key, uint8_t *p_sec )
         p_sec++;
         i_t5 >>= 8;
     }
-
-    return 0;
 }
 
 /* Following functions are local */

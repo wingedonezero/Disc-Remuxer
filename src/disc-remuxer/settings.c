@@ -26,6 +26,8 @@ typedef struct Setting {
 
 static const char *const udf_readers[]  = { "netbsd", "linux", NULL };
 static const char *const dv_layers[]    = { "merged", "separate", NULL };
+static const char *const cell_modes[]   = { "auto", "walk", "trim", "walk_trim", NULL };
+static const char *const cell_checks[]  = { "all", "spread", "random", NULL };
 
 static const Setting registry[] = {
     { "read", "attempts", SET_INT, "5", 1, 99, NULL,
@@ -58,6 +60,15 @@ static const Setting registry[] = {
       "followed by its enhancement layer's picture and metadata (the single-track form dovi_tool, mkvmerge and "
       "players read); separate writes the base layer and the enhancement layer (with the metadata) as two files, "
       "as they are on the disc." },
+    { "dvd", "cell_mode", SET_CHOICE, "auto", 0, 0, cell_modes,
+      "Which cells of a DVD title's program chain are played: walk (the cells the disc's navigation plays, found "
+      "by playing the disc), trim (the program chain's cells without the decoy cells at its start and end), "
+      "walk_trim (walk; trim for the titles the navigation does not reach, which are then listed too), auto "
+      "(walk, or trim when playing the disc fails)." },
+    { "dvd", "cell_check", SET_CHOICE, "all", 0, 0, cell_checks,
+      "How many VOBUs of a DVD cell are read when a cell is checked in full (in the decoy checks, mostly when the "
+      "cells are trimmed): all (every VOBU; one broken VOBU rejects the cell), spread (50 evenly spread over the "
+      "cell) or random (50 at random, a different choice on each run)." },
     { "log", "debug_file", SET_BOOL, "false", 0, 0, NULL,
       "Also write a debug log with every detail into the output folder, next to the log." },
 };

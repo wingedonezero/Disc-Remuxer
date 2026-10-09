@@ -55,7 +55,7 @@ static void usage(FILE *f)
           "                       setting output.split_joined_titles does it for every title\n"
           "  -v, -vv              more detail on the terminal\n"
           "\n"
-          "HD DVD and Blu-ray (UHD, 3-D) are wired; DVD follows.\n", f);
+          "DVD-Video, HD DVD and Blu-ray (UHD, 3-D) are wired.\n", f);
 }
 
 /* Library state (key caches, key files) stays next to the program. */
@@ -113,6 +113,22 @@ static const char *json_num(char *buf, size_t size, int64_t v)
     return buf;
 }
 
+/* A stream's roles as words (sep between them), "" none. */
+static const char *roles_text(int roles, const char *sep, int quoted, char *buf, size_t size)
+{
+    static const struct { int bit; const char *word; } r[] = {
+        { DISC_ROLE_COMMENTARY, "commentary" }, { DISC_ROLE_ALT_COMMENTARY, "alternate commentary" },
+        { DISC_ROLE_VISUALLY_IMPAIRED, "visually impaired" }, { DISC_ROLE_LARGE, "large" },
+        { DISC_ROLE_CHILDREN, "children" }, { DISC_ROLE_FORCED, "forced" },
+    };
+    *buf = 0;
+    for (size_t i = 0; i < sizeof(r) / sizeof(*r); i++)
+        if (roles & r[i].bit)
+            snprintf(buf + strlen(buf), size - strlen(buf), "%s%s%s%s", *buf ? sep : "", quoted ? "\"" : "",
+                     r[i].word, quoted ? "\"" : "");
+    return buf;
+}
+
 /* One title's line (and, with detail, its files and streams) plus its JSON
  * record. */
 static void title_overview(const DiscTitleInfo *t, int detail)
@@ -128,7 +144,7 @@ static void title_overview(const DiscTitleInfo *t, int detail)
         const DiscStreamInfo *k = &t->streams[i];
         char jc[64], jsl[16], n1[24], n2[24], n3[24], n4[24], n5[24], n6[24], ji[24], jf[24], jo[24];
         char d[96], jd[128], pl[48], jp[64], fr[48], jr[64], as[24], ja[32], lt[64], jl2[96], dv[48], jv[64], fq[32];
-        char lm[24];
+        char lm[24], rl[128];
         (void)dv; (void)fr;
         nv += k->type == AVMEDIA_TYPE_VIDEO;
         na += k->type == AVMEDIA_TYPE_AUDIO;
@@ -138,7 +154,7 @@ static void title_overview(const DiscTitleInfo *t, int detail)
                  "\"from_track\":%s,\"forced\":%s,\"second_view\":%s,\"second_layer\":%s,\"offset_sequence\":%s,\"width\":%s,"
                  "\"height\":%s,\"channels\":%s,\"sample_rate\":%s,\"bits\":%s,\"bit_rate\":%s,"
                  "\"description\":%s,\"profile\":%s,\"dolby_vision\":%s,\"frame_rate\":%s,\"aspect\":%s,"
-                 "\"layout\":%s,\"layout_mask\":%s}",
+                 "\"layout\":%s,\"layout_mask\":%s,\"roles\":[%s]}",
                  i ? "," : "", i, av_get_media_type_string(k->type),
                  json_str(jc, sizeof(jc), codec_short(k)),
                  json_str(jsl, sizeof(jsl), k->language), json_index(ji, sizeof(ji), k->inner_track),
@@ -156,7 +172,7 @@ static void title_overview(const DiscTitleInfo *t, int detail)
                                           json_str(jr, sizeof(jr), fq)) : "null",
                  *aspect_text(k, as, sizeof(as)) ? json_str(ja, sizeof(ja), as) : "null",
                  *layout_text(k, lt, sizeof(lt)) && k->layout ? json_str(jl2, sizeof(jl2), lt) : "null",
-                 json_num(lm, sizeof(lm), (int64_t)k->layout));
+                 json_num(lm, sizeof(lm), (int64_t)k->layout), roles_text(k->roles, ",", 1, rl, sizeof(rl)));
     }
     for (int i = 0; i < t->nb_files; i++) {
         char jf[300];
@@ -182,7 +198,7 @@ static void title_overview(const DiscTitleInfo *t, int detail)
                  t->language, t->selected ? "" : ", not selected (shorter than the minimum length)");
         for (int i = 0; i < t->nb_streams; i++) {
             const DiscStreamInfo *k = &t->streams[i];
-            char extra[64] = "", link[96] = "";
+            char extra[160] = "", link[96] = "";
             if (k->type == AVMEDIA_TYPE_SUBTITLE && k->width)
                 snprintf(extra, sizeof(extra), "  %dx%d", k->width, k->height);
             if (k->forced)
@@ -195,6 +211,11 @@ static void title_overview(const DiscTitleInfo *t, int detail)
                 snprintf(link, sizeof(link), "  (track %d is taken out of it)", k->inner_track);
             if (k->second_layer)
                 snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "  with its second layer");
+            if (k->roles) {
+                char rt[96];
+                snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "  (%s)",
+                         roles_text(k->roles, ", ", 0, rt, sizeof(rt)));
+            }
             if (k->offset_sequence >= 0)
                 snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "  3-D offset sequence %d",
                          k->offset_sequence);
@@ -269,7 +290,7 @@ static const char *disc_overview(const char *source, int detail, int *nb_titles,
 
     if ((ret = open_title(DISC_FORMAT, source, ONLY_DISC_INFO, -1, 0, &ctx)) < 0 || !(d = disc_info(ctx))) {
         log_msg(MSG_SOURCE_UNSUPPORTED, LOG_ERROR, "%s cannot be read as a disc this program supports (%s); "
-                "HD DVD and Blu-ray are wired so far", source, av_err2str(ret < 0 ? ret : AVERROR_BUG));
+                "DVD-Video, HD DVD and Blu-ray are supported", source, av_err2str(ret < 0 ? ret : AVERROR_BUG));
         avformat_close_input(&ctx);
         return NULL;
     }

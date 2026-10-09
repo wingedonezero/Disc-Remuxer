@@ -42,6 +42,14 @@
 #include "avformat.h"
 
 /** A stream of a title. */
+/* DiscStreamInfo.roles: what the disc says a stream is for */
+#define DISC_ROLE_COMMENTARY        0x0001
+#define DISC_ROLE_ALT_COMMENTARY    0x0002
+#define DISC_ROLE_VISUALLY_IMPAIRED 0x0004
+#define DISC_ROLE_LARGE             0x0008
+#define DISC_ROLE_CHILDREN          0x0010
+#define DISC_ROLE_FORCED            0x1000  /**< a stream of forced subtitles (not DiscStreamInfo.forced) */
+
 typedef struct DiscStreamInfo {
     enum AVMediaType type;
     enum AVCodecID   codec;          /**< AV_CODEC_ID_NONE: no codec for the disc's stream */
@@ -52,6 +60,7 @@ typedef struct DiscStreamInfo {
     int              second_view;    /**< video: the second view of a 3-D video (from_track is the first) */
     int              second_layer;   /**< video: a second (enhancement) layer on its own PID is read with it */
     int              offset_sequence;/**< subtitles of a 3-D title: the disc's offset sequence for its depth, -1 none */
+    int              roles;          /**< DISC_ROLE_*, 0 none */
     int              width, height;  /**< video: the frame; subtitles: the canvas the units are drawn on */
     /* the stream details (from the stream itself; 0 / unknown when not read) */
     AVRational       aspect;         /**< video: display aspect ratio */

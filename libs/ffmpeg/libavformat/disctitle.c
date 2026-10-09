@@ -27,6 +27,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
+#define _GNU_SOURCE                     /* memmem */
 #include <string.h>
 
 #include "libavutil/bprint.h"
@@ -163,6 +164,10 @@ struct DiscTitleReader {
     /* the title timeline */
     DRTitle       *rip;
     DRChapterPlan  chapter_plan;
+    int            first_clip, last_clip; /**< the clips read: the title's, filler clips at its ends left out */
+    int           *pos_clip;        /**< position chapters: per open mark, its clip and byte offset */
+    int64_t       *pos_off;
+    int            nb_pos, next_pos;
     int64_t        blocks_total;    /**< blocks of all the title's clips */
     int64_t        blocks_done;     /**< blocks read so far */
     int            chapters_set;
@@ -325,16 +330,336 @@ void ff_disc_title_reader_close(DiscTitleReader **reader)
     av_freep(&r->held);
     av_freep(&r->pair);
     av_freep(&r->pair_pts);
+    av_freep(&r->pos_clip);
+    av_freep(&r->pos_off);
     av_packet_free(&r->in);
     ff_disctl_title_close(&r->rip);
     ff_disctl_chapter_plan_free(&r->chapter_plan);
     av_freep(reader);
 }
 
+/* Position chapters (DVD-Video): the records' marks. A broken tail (a last
+ * record at 0 after one that is not, or earlier than the one before it) is
+ * cut off; the records' clips must not go back (a record without a clip
+ * counts as after every clip), else the title fails; the records on the
+ * clips read are kept, each an open mark that the first video frame
+ * from its position gives its time; when the first record is not kept and
+ * the first kept one is not at the title's very start, record 0 is a mark
+ * at 0. */
+static int position_plan(AVFormatContext *s, DiscTitleReader *r)
+{
+    const DiscTitleSource *src = r->src;
+    const int64_t *t = src->chapter_times;
+    DRChapterPlan *p = &r->chapter_plan;
+    int n = src->nb_chapters, first = -1, at_start = 0, m = 0;
+    int64_t prev = -1;
+
+    memset(p, 0, sizeof(*p));
+    while (n > 1 && ((!t[n - 1] && t[n - 2]) || (uint64_t)t[n - 2] > (uint64_t)t[n - 1])) {
+        av_log(s, AV_LOG_WARNING, "Chapters: record %d does not follow record %d: cut off with the records after "
+               "it\n", n - 1, n - 2);
+        n--;
+    }
+    for (int i = 0; i < n; i++) {
+        int64_t kind = src->chapter_clips[i] < 0 ? INT64_MAX : src->chapter_clips[i];
+        if (kind < prev) {
+            av_log(s, AV_LOG_ERROR, "Chapters: record %d lies on an earlier segment than the one before it: the "
+                   "title's chapter list is broken\n", i);
+            return AVERROR_INVALIDDATA;
+        }
+        prev = kind;
+    }
+    for (int i = 0; i < n; i++)
+        if (src->chapter_clips[i] >= r->first_clip && src->chapter_clips[i] <= r->last_clip) {
+            first    = i;
+            at_start = !src->chapter_offsets[i] && src->chapter_clips[i] == r->first_clip;
+            break;
+        }
+    if (first < 0)
+        return 0;
+    if (!(p->marks = av_calloc(n + 1, sizeof(*p->marks))) || !(p->atoms = av_calloc(n + 1, sizeof(*p->atoms))) ||
+        !(r->pos_clip = av_calloc(n + 1, sizeof(*r->pos_clip))) ||
+        !(r->pos_off = av_calloc(n + 1, sizeof(*r->pos_off))))
+        return AVERROR(ENOMEM);
+    if (first && !at_start) {
+        p->marks[m]   = 0;
+        p->atoms[m++] = 0;
+    }
+    for (int i = first; i < n; i++) {
+        if (src->chapter_clips[i] < r->first_clip || src->chapter_clips[i] > r->last_clip) {
+            av_log(s, AV_LOG_VERBOSE, "Chapters: record %d lies on no segment that is read: left out\n", i);
+            continue;
+        }
+        r->pos_clip[r->nb_pos]  = src->chapter_clips[i];
+        r->pos_off[r->nb_pos++] = src->chapter_offsets[i];
+        p->marks[m]   = INT64_MAX;
+        p->atoms[m++] = i;
+    }
+    p->nb_marks = p->nb_atoms = m;
+    return 0;
+}
+
+/* ---- filler clips at a title's ends ----
+ * Before a title is read, clips at its start and at its end that are mere
+ * filler are left out (the reference's rip does the same): from the first
+ * clip on while a clip is filler (never the last), then from the last clip
+ * back while one is filler (never down to the first kept one). A clip is
+ * never filler when the title has no track but its video or the clip is
+ * larger than 120 MiB. Else it is read: without a video frame it is filler;
+ * at the end, its first (frame rate + 4) video frames spanning less than
+ * 1.001 s with every I picture below 5120 bytes, P below 1024 and B below
+ * 512 make it filler; otherwise (both ends) it is filler when none of its
+ * other tracks has a frame and its video ends less than 15 s after its
+ * first time. A leading clip left out shortens the title's chapter times by
+ * its video's length. LOOK INTO AGAIN LATER: whether these clips are filler
+ * in every case. */
+
+#define FILLER_MAX_BYTES  0x7800000LL       /* 120 MiB */
+#define FILLER_SPAN       16200000001LL     /* 15 s (ticks) */
+#define FILLER_TAIL_SPAN  1081080001LL      /* 1.001 s */
+
+typedef struct FillerTrack {
+    struct FillerProbe *p;
+    int                 index;
+    DRFrames           *fr;
+} FillerTrack;
+
+typedef struct FillerProbe {
+    AVFormatContext *s;
+    int              clip;
+    uint32_t         block, nb_blocks;
+    int              other_frame;           /* a track but the video has a frame */
+    int              captions;              /* the title has a caption track (its data is in the video) */
+    int              video_frames, tail_n;  /* video units seen; units the end test takes (0: no test) */
+    int64_t          first, end;            /* video: first time, last time + one frame (ticks) */
+    int64_t          tail_min, tail_max;    /* the end test's units' times */
+    uint32_t         tail_size[3];          /* their largest I, P, B unit */
+    int64_t          frame;                 /* one video frame (ticks), 0 not known */
+} FillerProbe;
+
+static int feed_key(const DiscTsFeed *f, int pid, uint16_t key);
+
+static int filler_read(void *opaque, uint8_t *buf, int size)
+{
+    FillerProbe *p = opaque;
+    const DiscTitleSource *src = &((DiscContext *)p->s->priv_data)->src;
+    int bs = src->ts ? TS_UNIT : DISC_BLOCK, ret;
+
+    if (size < bs)
+        return AVERROR(EINVAL);
+    while (p->block < p->nb_blocks) {
+        if ((ret = src->read_block(p->s, p->clip, p->block++, buf)) < 0)
+            return ret;
+        if (ret)
+            return bs;
+    }
+    return AVERROR_EOF;
+}
+
+/* MPEG-1/2: the picture_coding_type of the unit's picture (1 I, 2 P, 3 B), 0 none. */
+static int mpv_coding_type(const uint8_t *d, int n)
+{
+    for (int i = 0; i + 5 < n; i++)
+        if (!d[i] && !d[i + 1] && d[i + 2] == 1 && !d[i + 3])
+            return d[i + 5] >> 3 & 7;
+    return 0;
+}
+
+/* MPEG-1/2: the frame rate of a sequence header in the unit (ticks per frame), 0 none. */
+static int64_t mpv_frame(const uint8_t *d, int n, int *num, int *den)
+{
+    static const int rates[9][2] = { { 0, 1 }, { 24000, 1001 }, { 24, 1 }, { 25, 1 }, { 30000, 1001 }, { 30, 1 },
+                                     { 50, 1 }, { 60000, 1001 }, { 60, 1 } };
+    for (int i = 0; i + 8 < n; i++)
+        if (!d[i] && !d[i + 1] && d[i + 2] == 1 && d[i + 3] == 0xb3) {
+            int c = d[i + 7] & 15;
+            if (c < 1 || c > 8)
+                return 0;
+            *num = rates[c][0];
+            *den = rates[c][1];
+            return (int64_t)DR_TICKS_PER_SECOND * rates[c][1] / rates[c][0];
+        }
+    return 0;
+}
+
+static int filler_unit(void *opaque, const DRUnit *u)
+{
+    FillerTrack *t = opaque;
+    FillerProbe *p = t->p;
+    const DRTitleTrack *k = &((DiscContext *)p->s->priv_data)->src.tracks[t->index];
+
+    static const uint8_t cc[8] = { 0x00, 0x00, 0x01, 0xb2, 'C', 'C', 0x01, 0xf8 };
+
+    if (t->index) {
+        p->other_frame = 1;
+        return 0;
+    }
+    /* the caption track has a frame when the video carries caption data */
+    if (p->captions && memmem(u->data, u->size, cc, sizeof(cc)))
+        p->other_frame = 1;
+    if (!p->frame) {
+        int num = 0, den = 0;
+        if (k->codec == AV_CODEC_ID_MPEG1VIDEO || k->codec == AV_CODEC_ID_MPEG2VIDEO)
+            p->frame = mpv_frame(u->data, u->size, &num, &den);
+        else if (u->pic && u->pic->rate_num > 0 && u->pic->rate_den > 0) {
+            num = u->pic->rate_num;
+            den = u->pic->rate_den;
+            p->frame = (int64_t)DR_TICKS_PER_SECOND * den / num;
+        }
+        if (p->frame && !p->video_frames)
+            p->tail_n = (int)((int64_t)num * 1000 / ((int64_t)den * 1000)) + 4;
+    }
+    if (u->time != AV_NOPTS_VALUE) {
+        if (p->first == AV_NOPTS_VALUE || u->time < p->first)
+            p->first = u->time;
+        p->end = FFMAX(p->end, u->time + p->frame);
+    }
+    if (p->video_frames < p->tail_n) {
+        int c = k->codec == AV_CODEC_ID_MPEG1VIDEO || k->codec == AV_CODEC_ID_MPEG2VIDEO ?
+                mpv_coding_type(u->data, u->size) :
+                u->pic ? (u->pic->type == DR_PIC_I ? 1 : u->pic->type == DR_PIC_P ? 2 :
+                          u->pic->type == DR_PIC_B ? 3 : 0) : 0;
+        if (c >= 1 && c <= 3)
+            p->tail_size[c - 1] = FFMAX(p->tail_size[c - 1], (uint32_t)u->size);
+        if (u->time != AV_NOPTS_VALUE) {
+            p->tail_min = p->tail_min == AV_NOPTS_VALUE ? u->time : FFMIN(p->tail_min, u->time);
+            p->tail_max = p->tail_max == AV_NOPTS_VALUE ? u->time : FFMAX(p->tail_max, u->time);
+        }
+    }
+    p->video_frames++;
+    return 0;
+}
+
+/* Whether clip k is filler (*len: its video's length, ticks). */
+static int filler_clip(AVFormatContext *s, int k, int at_end, int *filler, int64_t *len)
+{
+    const DiscTitleSource *src = &((DiscContext *)s->priv_data)->src;
+    int bs = src->ts ? TS_UNIT : DISC_BLOCK, others = 0, ret = 0;
+    FillerProbe p = { s, k, 0, src->clip_blocks(s, k), 0, 0, 0, 0, AV_NOPTS_VALUE, 0,
+                      AV_NOPTS_VALUE, AV_NOPTS_VALUE };
+    FillerTrack *t;
+    DiscDemux dm = { 0 };
+    AVPacket *pkt;
+
+    *filler = 0;
+    *len    = 0;
+    for (int i = 1; i < src->nb_tracks; i++)
+        others += src->tracks[i].kind != DR_KIND_VIDEO && src->tracks[i].kind != DR_KIND_LAYER;
+    if (!others || (int64_t)p.nb_blocks * bs > FILLER_MAX_BYTES)
+        return 0;
+    if (!(t = av_calloc(src->nb_tracks, sizeof(*t))) || !(pkt = av_packet_alloc())) {
+        av_free(t);
+        return AVERROR(ENOMEM);
+    }
+    for (int i = 0; i < src->nb_tracks; i++) {
+        t[i] = (FillerTrack){ &p, i };
+        p.captions |= src->tracks[i].kind == DR_KIND_CAPTION;
+        if (src->tracks[i].kind == DR_KIND_CAPTION || src->tracks[i].kind == DR_KIND_LAYER ||
+            src->tracks[i].codec == AV_CODEC_ID_PCM_DVD || src->tracks[i].codec == AV_CODEC_ID_PCM_BLURAY)
+            continue;                    /* captions: in the video; LPCM: any payload is a frame */
+        if (ff_disctl_frames_open(&t[i].fr, s, src->tracks[i].codec, filler_unit, &t[i]) < 0)
+            t[i].fr = NULL;              /* no parser: any payload is a frame */
+    }
+    if (!t[0].fr) {
+        av_log(s, AV_LOG_WARNING, "%s %s: its video cannot be cut into frames: not checked for filler\n",
+               src->clip_kind, src->clip_name(s, k));
+        goto end;
+    }
+    if ((ret = src->ts ? ff_disc_ts_open(&dm, s, src->pids, src->nb_pids, filler_read, &p) :
+                         ff_disc_ps_open(&dm, s, src->lpcm_header, filler_read, &p)) < 0)
+        goto end;
+    /* read until the video has a frame, (at the end) the end test has its
+     * frames, and a track but the video has a frame or the video has run
+     * 15 s; or until the clip ends */
+    while (!(p.video_frames && (!at_end || p.video_frames >= p.tail_n) &&
+             (p.other_frame || (p.first != AV_NOPTS_VALUE && p.end - p.first >= FILLER_SPAN)))) {
+        const AVStream *sub;
+        if ((ret = av_read_frame(dm.ctx, pkt)) < 0)
+            break;
+        sub = dm.ctx->streams[pkt->stream_index];
+        for (int i = 0; i < src->nb_tracks; i++) {
+            int64_t time = pkt->pts == AV_NOPTS_VALUE ? AV_NOPTS_VALUE : pkt->pts * DR_TICKS_PER_PTS;
+            if (src->ts ? feed_key(&src->feeds[i], sub->id & 0xffff, (uint32_t)sub->id >> 16) < 0
+                        : s->streams[i]->id != sub->id)
+                continue;
+            if (t[i].fr) {
+                if ((ret = ff_disctl_frames_write(t[i].fr, pkt->data, pkt->size, time)) < 0)
+                    break;
+            } else if (i && pkt->size > (src->tracks[i].codec == AV_CODEC_ID_PCM_DVD ? src->lpcm_header : 0)) {
+                p.other_frame = 1;
+            }
+        }
+        av_packet_unref(pkt);
+        if (ret < 0)
+            break;
+    }
+    if (ret == AVERROR_EOF)
+        ret = 0;
+    for (int i = 0; ret >= 0 && i < src->nb_tracks; i++)
+        if (t[i].fr)
+            ret = ff_disctl_frames_flush(t[i].fr);
+    if (ret < 0)
+        goto end;
+    av_log(s, AV_LOG_DEBUG, "%s %s: filler check: %d video frame(s) from %"PRId64" to %"PRId64" ticks, another "
+           "track's frame %s; end test over %d frame(s): span %"PRId64", largest I %u P %u B %u bytes\n",
+           src->clip_kind, src->clip_name(s, k), p.video_frames, p.first, p.end, p.other_frame ? "yes" : "no",
+           at_end ? p.tail_n : 0, p.tail_max - p.tail_min, p.tail_size[0], p.tail_size[1], p.tail_size[2]);
+    if (p.first == AV_NOPTS_VALUE) {
+        *filler = 1;                     /* no video frame */
+    } else if (at_end && p.tail_n && p.tail_min != AV_NOPTS_VALUE && p.tail_max - p.tail_min < FILLER_TAIL_SPAN &&
+               p.tail_size[0] < 0x1400 && p.tail_size[1] < 0x400 && p.tail_size[2] < 0x200) {
+        *filler = 1;
+        *len    = p.tail_max - p.tail_min;
+    } else if (!p.other_frame && p.end - p.first < FILLER_SPAN) {     /* (the video has times: first is set) */
+        *filler = 1;
+        *len    = p.end - p.first;
+    }
+end:
+    for (int i = 0; i < src->nb_tracks; i++)
+        ff_disctl_frames_close(&t[i].fr);
+    ff_disc_demux_close(&dm);
+    av_packet_free(&pkt);
+    av_free(t);
+    return ret;
+}
+
+/* The clips to read (first_clip .. last_clip) and the length of the filler
+ * left out before them (*skip, ticks). */
+static int filler_trim(AVFormatContext *s, DiscTitleReader *r, int64_t *skip)
+{
+    const DiscTitleSource *src = r->src;
+    int first = 0, last = src->nb_clips - 1, filler, ret;
+    int64_t len;
+
+    *skip = 0;
+    for (; first < last; first++) {
+        if ((ret = filler_clip(s, first, 0, &filler, &len)) < 0)
+            return ret;
+        if (!filler)
+            break;
+        av_log(s, AV_LOG_INFO, "%s %s (%d of %d): filler at the title's start (%s): left out\n", src->clip_kind,
+               src->clip_name(s, first), first + 1, src->nb_clips, len ? "short, without other tracks' data" :
+               "no video frame");
+        *skip += len;
+    }
+    for (; last > first; last--) {
+        if ((ret = filler_clip(s, last, 1, &filler, &len)) < 0)
+            return ret;
+        if (!filler)
+            break;
+        av_log(s, AV_LOG_INFO, "%s %s (%d of %d): filler at the title's end: left out\n", src->clip_kind,
+               src->clip_name(s, last), last + 1, src->nb_clips);
+    }
+    r->first_clip = first;
+    r->last_clip  = last;
+    return 0;
+}
+
 int ff_disc_title_reader_open(AVFormatContext *s, const DiscTitleSource *src)
 {
     DiscContext *d = s->priv_data;
     DiscTitleReader *r;
+    int64_t skip;
     int ret;
 
     if (!(r = d->reader = av_mallocz(sizeof(*r))))
@@ -344,23 +669,29 @@ int ff_disc_title_reader_open(AVFormatContext *s, const DiscTitleSource *src)
     if (src->ts && (!(r->pair = av_calloc(src->nb_tracks, sizeof(*r->pair))) ||
                     !(r->pair_pts = av_calloc(src->nb_tracks, sizeof(*r->pair_pts)))))
         return AVERROR(ENOMEM);
-    /* no leading clip is left out yet (skip 0); no "Chapter 00" */
-    if ((ret = ff_disctl_chapter_plan(s, src->chapter_times, src->nb_chapters, 0, 0, &r->chapter_plan)) < 0)
+    /* filler clips at the ends left out; no "Chapter 00" */
+    if ((ret = filler_trim(s, r, &skip)) < 0 ||
+        (ret = src->chapter_clips ? position_plan(s, r) :
+               ff_disctl_chapter_plan(s, src->chapter_times, src->nb_chapters, skip, 0, &r->chapter_plan)) < 0)
         return ret;
     {
+        char helper[4096];
         DRTitleConfig cfg = {
             .nb_tracks = src->nb_tracks, .tracks = src->tracks, .tolerance = src->tolerance,
             .lpcm_hd = src->lpcm_header == 5,
             .marks = r->chapter_plan.marks, .nb_marks = r->chapter_plan.nb_marks,
+            .cc_helper = d->opt_cc_helper && *d->opt_cc_helper ? d->opt_cc_helper :
+                         ff_disctl_ccx_default(helper, sizeof(helper)),
+            .open_marks = src->chapter_clips ? r->chapter_plan.marks : NULL,
         };
         if ((ret = ff_disctl_title_open(&r->rip, s, &cfg)) < 0)
             return ret;
     }
     if (!(r->in = av_packet_alloc()))
         return AVERROR(ENOMEM);
-    for (int i = 0; i < src->nb_clips; i++)
+    for (int i = r->first_clip; i <= r->last_clip; i++)
         r->blocks_total += src->clip_blocks(s, i);
-    return clip_start(s, 0);
+    return clip_start(s, r->first_clip);
 }
 
 /* Blu-ray: the track's key the payload has (0 / 1), -1 when the track
@@ -427,6 +758,16 @@ static int feed(AVFormatContext *s, const AVPacket *pkt)
                 pair_check(s, i, j, pkt->pts, pkt);
         } else if (s->streams[i]->id != sub->id)
             continue;
+        /* the video from a chapter's position on (a position not reached in
+         * its clip: from the next clip's first video) */
+        while (!i && r->next_pos < r->nb_pos &&
+               (r->pos_clip[r->next_pos] < r->clip ||
+                (r->pos_clip[r->next_pos] == r->clip &&
+                 r->pos_off[r->next_pos] <= pkt->pos + (int64_t)r->skipped * r->bs))) {
+            if ((ret = ff_disctl_title_chapter_position(r->rip)) < 0)
+                return ret;
+            r->next_pos++;
+        }
         if ((ret = ff_disctl_title_payload(r->rip, i, pkt->data, pkt->size, time, tail)) < 0)
             return ret;
         n++;
@@ -473,7 +814,7 @@ static int read_input(AVFormatContext *s)
                    src->clip_kind, src->clip_name(s, r->clip), PTS_REF_SECTORS);
             return AVERROR_INVALIDDATA;
         }
-        if (r->clip + 1 < src->nb_clips)
+        if (r->clip + 1 <= r->last_clip)
             return clip_start(s, r->clip + 1);
         return ff_disctl_title_finish(r->rip);
     }
@@ -599,6 +940,10 @@ static int title_end(AVFormatContext *s)
         if ((ret = av_dict_set_int(m, "frames", frames, 0)) < 0 ||
             (ret = av_dict_set_int(m, "warnings", warnings, 0)) < 0 ||
             (ret = av_dict_set_int(m, "delay_us", delay / (DR_TICKS_PER_SECOND / 1000000), 0)) < 0)
+            return ret;
+        if (ff_disctl_title_cc_result(r->rip, i, &frames, &warnings) >= 0 &&
+            ((ret = av_dict_set_int(m, "cc_blocks", frames, 0)) < 0 ||
+             (ret = av_dict_set_int(m, "cues", warnings, 0)) < 0))
             return ret;
         if (ff_disctl_title_spu_result(r->rip, i, &frames, &warnings) >= 0 &&
             ((ret = av_dict_set_int(m, "no_stop", frames, 0)) < 0 ||

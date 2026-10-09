@@ -26,6 +26,7 @@
 #include "libavformat/dvd_internal.h"
 #include "libavformat/hddvd_internal.h"
 
+#include <dvdcss/dvdcss.h>
 #include <dvdread/dvd_udf.h>
 #include <dvdnav/dvdnav.h>
 
@@ -421,4 +422,89 @@ static int tb_dvd_nav_trace(DVDDisc *d, int title, unsigned opts, int max_steps,
 static int tb_dvd_scan(DVDDisc *d, void (*trace)(void *, const char *), DVDScan *out)
 {
     return ff_dvd_scan(d, trace, NULL, out);
+}
+
+/* libavformat/dvd_titles.c: the navigation scan, then the title list built
+ * from it, as ff_dvd_titles_dump() text (*dump, av_free() it); scan_ret:
+ * the scan's return value. */
+static int tb_dvd_titles(DVDDisc *d, int cell_mode, int cell_check, int min_length, int *scan_ret, char **dump)
+{
+    DVDScan scan = { 0 };
+    DVDTitleList list = { 0 };
+    DVDTitleOptions o = { cell_mode, cell_check, min_length };
+    int ret;
+
+    *dump = NULL;
+    *scan_ret = cell_mode == DVD_CELL_MODE_TRIM ? 0 : ff_dvd_scan(d, NULL, NULL, &scan);
+    ret = ff_dvd_titles_build(d, &scan, &o, &list);
+    if (ret >= 0 && !(*dump = ff_dvd_titles_dump(&list)))
+        ret = AVERROR(ENOMEM);
+    ff_dvd_titles_free(&list);
+    ff_dvd_scan_free(&scan);
+    return ret;
+}
+
+/* libavformat/dvd_read.c: the title list (scan as tb_dvd_titles), then
+ * segment seg of title t (both from 0) read sector by sector through the
+ * checks into path (NULL: not written; sectors left out are not written);
+ * *read / *left: sectors read and left out; the first read error ends it. */
+static int tb_dvd_segment_dump(DVDDisc *d, int cell_mode, int t, int seg, const char *path, int64_t *nread,
+                               int64_t *left)
+{
+    DVDScan scan = { 0 };
+    DVDTitleList list = { 0 };
+    DVDTitleOptions o = { cell_mode, DVD_CELL_CHECK_ALL, 0 };
+    FILE *out = NULL;
+    uint8_t buf[DVD_SECTOR];
+    int ret;
+
+    *nread = *left = 0;
+    if (cell_mode != DVD_CELL_MODE_TRIM)
+        ff_dvd_scan(d, NULL, NULL, &scan);
+    if ((ret = ff_dvd_titles_build(d, &scan, &o, &list)) < 0)
+        goto end;
+    if (t < 0 || t >= list.nb_titles || seg < 0 || seg >= list.titles[t]->nb_segments) {
+        ret = AVERROR(EINVAL);
+        goto end;
+    }
+    if (path && !(out = fopen(path, "wb"))) {
+        ret = AVERROR(errno);
+        goto end;
+    }
+    for (uint32_t b = 0, n = ff_dvd_segment_blocks(&list.titles[t]->segments[seg]); b < n; b++) {
+        if ((ret = ff_dvd_segment_read(d, list.titles[t], seg, b, buf)) < 0)
+            goto end;
+        if (!ret) {
+            (*left)++;
+            continue;
+        }
+        (*nread)++;
+        if (out && fwrite(buf, DVD_SECTOR, 1, out) != 1) {
+            ret = AVERROR(EIO);
+            goto end;
+        }
+    }
+    ret = 0;
+end:
+    if (out)
+        fclose(out);
+    ff_dvd_titles_free(&list);
+    ff_dvd_scan_free(&scan);
+    return ret;
+}
+
+/* The title list from given scan results (no scan run). */
+static int tb_dvd_titles_from(DVDDisc *d, DVDScanResult *res, int nb, int cell_mode, int cell_check,
+                              int min_length, char **dump)
+{
+    DVDScan scan = { res, nb };
+    DVDTitleList list = { 0 };
+    DVDTitleOptions o = { cell_mode, cell_check, min_length };
+    int ret = ff_dvd_titles_build(d, &scan, &o, &list);
+
+    *dump = NULL;
+    if (ret >= 0 && !(*dump = ff_dvd_titles_dump(&list)))
+        ret = AVERROR(ENOMEM);
+    ff_dvd_titles_free(&list);
+    return ret;
 }
