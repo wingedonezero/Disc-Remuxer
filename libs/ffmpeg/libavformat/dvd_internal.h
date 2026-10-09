@@ -29,6 +29,7 @@
 #include "libavutil/bprint.h"
 
 #include "discio.h"
+#include "discinfo.h"
 
 #define DVD_SECTOR          2048
 #define DVD_MAX_TITLE_SETS  99
@@ -366,6 +367,7 @@ typedef struct DVDTitle {
     uint8_t        audio_listed;        /**< the stream numbers audio_control lists (bit per stream) */
     uint8_t        audio_dropped;       /**< audio[] entries the stream pass left out (bit per entry) */
     int            captions;            /**< the stream pass found closed captions in the video */
+    DiscStreamInfo details[9];          /**< the stream details: [0] the video, [1 + i] audio[i] */
     DVDStreamRef   subp[33];            /**< in the program chain's subp_control order */
     int            nb_subp;
     uint16_t       subp_width, subp_height; /**< the sub-pictures' canvas */
@@ -413,6 +415,13 @@ int      ff_dvd_segment_read(DVDDisc *d, const DVDTitle *t, int seg, uint32_t bl
  *  (t->audio_dropped). < 0: a sector cannot be read, the title cannot be
  *  used. */
 int ff_dvd_title_streams(DVDDisc *d, DVDTitle *t);
+
+/* ---- dvd_details.c ---- */
+/** The details of title t's video and audio streams (details: option
+ *  details; t->details) and which streams have data in its largest
+ *  segment: audio without data joins t->audio_dropped. < 0: a sector cannot be read or the video has no data,
+ *  the title cannot be used. */
+int ff_dvd_title_details(DVDDisc *d, DVDTitle *t, int details);
 
 /* ---- dvd_disc.c ---- */
 /** Read the disc's structure: the VMG, its title table and text data, and

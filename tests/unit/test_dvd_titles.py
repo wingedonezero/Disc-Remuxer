@@ -219,8 +219,9 @@ def test_info_lists_a_dvd_title_s_tracks(tmp_path):
             subp_control=bytes([0x80, 0, 0, 0]) + bytes(124))
     folder = build(tmp_path, [p], [[(1, 1)]], vobus(0, 9, 5), 10, video_attr=bytes([0x40, 0]),
                    audio_attrs=[ac3(b"zh", 3)], subp_attrs=[subp(b"en", 9)])
-    from test_dvd_streams import audio_pack, put
+    from test_dvd_streams import audio_pack, put, video
     put(folder, 1, audio_pack(0))       # the audio stream has data (the stream pass keeps it)
+    put(folder, 2, video())             # and the video (a title without video data is left out)
     ts, _ = info(folder)
     got = [(k["kind"], k["codec"], k["language"], k["width"], k["height"], k["roles"]) for k in ts[0]["tracks"]]
     assert got == [("video", "Mpeg2", "", None, None, []), ("audio", "DD", "chi", None, None, ["commentary"]),
@@ -321,6 +322,8 @@ def info(path, *sets):
 def test_info_lists_a_dvd_s_titles(tmp_path):
     p = Pgc(cells=[c(0, 9, 5, 1), c(10, 19, 5, 1, flags=flags.STC_DISCONTINUITY)], programs=[1, 2])
     folder = build(tmp_path, [p], [[(1, 1), (1, 2)]], vobus(0, 9, 5) + vobus(10, 19, 5), 20)
+    from test_dvd_streams import put, video
+    put(folder, 1, video())
     ts, _ = info(folder)
     assert [(t["duration"], t["size"], t["chapters"], t["files"], t["selected"]) for t in ts] == \
         [(2.0, 20 * S, 2, ["1", "2"], True)]
@@ -330,6 +333,8 @@ def test_info_lists_a_dvd_s_titles(tmp_path):
 def test_the_cell_mode_setting_reaches_the_title_list(tmp_path):
     p = Pgc(cells=[c(0, 9, 5, 1)])
     folder = build(tmp_path, [p], [[(1, 1)]], vobus(0, 9, 5), 10)
+    from test_dvd_streams import put, video
+    put(folder, 1, video())
     auto, _ = info(folder)
     trim, _ = info(folder, "dvd.cell_mode=trim", "dvd.cell_check=spread")
     assert "navigation" in auto[0]["source"]

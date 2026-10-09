@@ -8,7 +8,7 @@ out; closed captions in the video give a caption track (English, last)."""
 
 from helpers.dvdnav import Pgc, build, cell, vobus
 from synth.dvd import S
-from test_dvd_read import ac3_pack, pack
+from test_dvd_read import ac3_pack, pack, video_pack
 from test_dvd_titles import ac3, info, subp
 
 
@@ -28,14 +28,21 @@ def audio_pack(stream):
     return bytes(p)
 
 
+def video():
+    """An unscrambled MPEG-2 video pack (a sequence header)."""
+    p = bytearray(video_pack())
+    p[20] &= 0xcf
+    return bytes(p)
+
+
 def disc(tmp_path, audio_control, audio_attrs, data=(), subp_control=bytes(128), subp_attrs=()):
-    """One title of one cell (sectors 0-9, NAV packs at 0 and 5); data:
-    (sector, bytes) put into its title VOBs."""
+    """One title of one cell (sectors 0-9, NAV packs at 0 and 5, a video
+    pack at 4); data: (sector, bytes) put into its title VOBs."""
     p = Pgc(cells=[cell(0, 9, 1, last_vobu=5)], audio_control=audio_control + bytes(16 - len(audio_control)),
             subp_control=subp_control)
     folder = build(tmp_path, [p], [[(1, 1)]], vobus(0, 9, 5), 10, video_attr=bytes([0x40, 0]),
                    audio_attrs=list(audio_attrs), subp_attrs=list(subp_attrs))
-    for sector, d in data:
+    for sector, d in [(4, video())] + list(data):
         put(folder, sector, d)
     return folder
 
@@ -118,3 +125,40 @@ def test_caption_user_data_with_bit_6_set_gives_no_caption_track(tmp_path):
     folder = disc(tmp_path, b"", [], [(1, caption_pack(0x40))])
     ts, _ = info(folder)
     assert kinds(ts[0]) == [("video", "Mpeg2", "")]
+
+
+# ---- the details (step D3, part c) ----
+
+def lpcm_pack(stream=0):
+    """A DVD LPCM pack: sub-stream 0xA0 + stream, one frame, the first
+    access unit at the payload's start, the audio frame header (16 bits,
+    48 kHz, 2 channels, no dynamic range control) and 2000 bytes of samples."""
+    return pack(0xbd, bytes([0xa0 + stream, 1, 0, 4, 0, 0x01, 0x80]) + bytes(range(256)) * 7 + bytes(208), False)
+
+
+def lpcm(lang=b"en"):
+    """vts_audio_attr: LPCM (coding mode 4), language present."""
+    return bytes([0x84, 0x00]) + lang + bytes(4)
+
+
+def test_an_audio_stream_s_details_come_from_its_decoded_frame(tmp_path):
+    folder = disc(tmp_path, bytes([0x80, 0]), [lpcm()], [(1, lpcm_pack()), (2, lpcm_pack())])
+    ts, _ = info(folder)
+    a = ts[0]["tracks"][1]
+    assert (a["codec"], a["channels"], a["sample_rate"], a["bits"], a["bit_rate"]) == ("LPCM", 2, 48000, 16, 1536000)
+
+
+def test_a_sub_picture_stream_without_packets_keeps_its_track(tmp_path):
+    folder = disc(tmp_path, b"", [], subp_control=bytes([0x80, 0, 0, 0]) + bytes(124), subp_attrs=[subp()])
+    ts, lines = info(folder)
+    assert kinds(ts[0]) == [("video", "Mpeg2", ""), ("subtitle", "VobSub", "eng")]
+    assert said(lines, "title 1: sub-picture stream 0 has no packet in segment 1: its track is empty")
+
+
+def test_a_title_without_a_video_packet_is_left_out(tmp_path):
+    folder = disc(tmp_path, b"", [])
+    put(folder, 4, bytes(S))
+    ts, lines = info(folder)
+    assert ts == []
+    assert said(lines, "title 1: its segment 1 has no video packet: the title cannot be used")
+    assert said(lines, "title 1 left out: its streams cannot be read")

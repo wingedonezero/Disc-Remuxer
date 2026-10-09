@@ -95,12 +95,34 @@ static void attr_language(AVFormatContext *s, char lang[4], const uint8_t *b)
         av_log(s, AV_LOG_DEBUG, "DVD: language code bytes %02x %02x are no known language\n", b[0], b[1]);
 }
 
+/* The stream details read for a track. */
+static void video_details(DiscStreamInfo *k, const DiscStreamInfo *v)
+{
+    k->width      = v->width;
+    k->height     = v->height;
+    k->aspect     = v->aspect;
+    k->frame_rate = v->frame_rate;
+    k->profile    = v->profile;
+    k->level      = v->level;
+    k->bit_rate   = v->bit_rate;
+}
+
+static void audio_details(DiscStreamInfo *k, const DiscStreamInfo *a)
+{
+    k->channels    = a->channels;
+    k->layout      = a->layout;
+    k->sample_rate = a->sample_rate;
+    k->bits        = a->bits;
+    k->bit_rate    = a->bit_rate;
+    k->profile     = a->profile;
+}
+
 /* The title's tracks: the video, the audio streams and the sub-pictures
  * as its title set's attributes describe them, without the audio streams
- * the stream pass left out and without a stream listed again (the same
- * coding and stream number: the first one is kept), then the caption track
- * when the stream pass found captions (details come from the streams
- * themselves). */
+ * found without data and without a stream
+ * listed again (the same coding and stream number: the first one is kept),
+ * then the caption track when the stream pass found captions; each with
+ * the details read from it. */
 static int describe_tracks(AVFormatContext *s, const DVDTitle *t, DiscTitleInfo *dt)
 {
     static const enum AVCodecID codecs[8] = { AV_CODEC_ID_AC3, AV_CODEC_ID_NONE, AV_CODEC_ID_MP2, AV_CODEC_ID_MP2,
@@ -112,6 +134,7 @@ static int describe_tracks(AVFormatContext *s, const DVDTitle *t, DiscTitleInfo 
 
     if (!(k = ff_disc_title_add_stream(dt)))
         return AVERROR(ENOMEM);
+    video_details(k, &t->details[0]);
     k->type  = AVMEDIA_TYPE_VIDEO;
     k->codec = (h[DVD_VTS_VIDEO_ATTR] >> 6) == 0 ? AV_CODEC_ID_MPEG1VIDEO :
                (h[DVD_VTS_VIDEO_ATTR] >> 6) == 1 ? AV_CODEC_ID_MPEG2VIDEO : AV_CODEC_ID_NONE;
@@ -135,6 +158,7 @@ static int describe_tracks(AVFormatContext *s, const DVDTitle *t, DiscTitleInfo 
         kept[nb_kept++] = i;
         if (!(k = ff_disc_title_add_stream(dt)))
             return AVERROR(ENOMEM);
+        audio_details(k, &t->details[1 + i]);
         k->type  = AVMEDIA_TYPE_AUDIO;
         k->codec = codec;
         if ((a[0] & 0x0c) == 4)
@@ -165,6 +189,7 @@ static int describe_tracks(AVFormatContext *s, const DVDTitle *t, DiscTitleInfo 
         k->type  = AVMEDIA_TYPE_SUBTITLE;
         k->codec = AV_CODEC_ID_EIA_608;
         av_strlcpy(k->language, "eng", sizeof(k->language));
+        k->bit_rate = t->details[0].bit_rate;       /* carried in the video: its rate */
     }
     return 0;
 }
@@ -210,8 +235,9 @@ static int describe_titles(AVFormatContext *s)
     return 0;
 }
 
-/* The stream pass of every title; a title whose pass fails (a sector
- * cannot be read) is left out of the list. */
+/* The stream pass and the stream details of every title; a title whose
+ * pass fails (a sector cannot be read, no video data) is left out of the
+ * list. */
 static int stream_pass(AVFormatContext *s)
 {
     DVDDemuxContext *c = ff_disc_part(s);
@@ -219,6 +245,8 @@ static int stream_pass(AVFormatContext *s)
 
     for (int i = 0; i < l->nb_titles; i++) {
         int ret = ff_dvd_title_streams(&c->disc, l->titles[i]);
+        if (ret >= 0)
+            ret = ff_dvd_title_details(&c->disc, l->titles[i], ((DiscContext *)s->priv_data)->opt_details);
         if (ret == AVERROR(ENOMEM))
             return ret;
         if (ret < 0) {
