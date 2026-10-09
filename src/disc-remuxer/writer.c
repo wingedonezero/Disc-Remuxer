@@ -534,6 +534,7 @@ int open_disc(const char *format, const char *source, AVFormatContext **ctx)
     av_dict_set_int(&opts, "read_attempts", setting_int("read.attempts"), 0);
     av_dict_set_int(&opts, "min_length", setting_int("titles.min_length"), 0);
     av_dict_set(&opts, "udf_reader", setting_text("read.udf_reader"), 0);
+    av_dict_set_int(&opts, "prefer_iso_for_old_udf102", setting_bool("read.prefer_iso_for_old_udf102"), 0);
     av_dict_set(&opts, "dvd_cell_mode", setting_text("dvd.cell_mode"), 0);
     av_dict_set(&opts, "dvd_cell_check", setting_text("dvd.cell_check"), 0);
     av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);

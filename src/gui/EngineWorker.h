@@ -6,6 +6,7 @@
 
 #include <QByteArray>
 #include <QList>
+#include <QVector>
 #include <QObject>
 #include <QString>
 
@@ -22,6 +23,18 @@ class LogRelay : public QObject {
 public:
     explicit LogRelay(QObject *parent = nullptr);
     ~LogRelay() override;
+
+    // The lines logged before the window listened (the settings file read
+    // at the start) given out now; every later line as it comes.
+    void goLive();
+
+    struct Early {
+        int     level, code;
+        QString source, text;
+        bool    heading;
+    };
+    QVector<Early> early;
+    bool           live = false;
 
 signals:
     void line(int level, int code, QString source, QString text, bool heading);

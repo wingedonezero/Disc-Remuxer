@@ -7,9 +7,14 @@ static LogRelay *relay;
 extern "C" {
 static void sink_line(void *, int level, int code, const char *source, const char *text, int heading)
 {
-    if (relay)
-        emit relay->line(level, code, source ? QString::fromUtf8(source) : QString(), QString::fromUtf8(text),
-                         heading != 0);
+    QString src = source ? QString::fromUtf8(source) : QString(), t = QString::fromUtf8(text);
+
+    if (!relay)
+        return;
+    if (!relay->live)       /* before the window listens: only the GUI's own thread logs */
+        relay->early.append({ level, code, src, t, heading != 0 });
+    else
+        emit relay->line(level, code, src, t, heading != 0);
 }
 
 static void sink_progress(void *, int title, double done)
@@ -30,6 +35,14 @@ LogRelay::LogRelay(QObject *parent) : QObject(parent)
     EngineSink sink = { sink_line, sink_progress, sink_record, nullptr };
     relay = this;
     engine_set_sink(&sink);
+}
+
+void LogRelay::goLive()
+{
+    live = true;
+    for (const Early &e : early)
+        emit line(e.level, e.code, e.source, e.text, e.heading);
+    early.clear();
 }
 
 LogRelay::~LogRelay()

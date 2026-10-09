@@ -18,12 +18,14 @@ int main(int argc, char **argv)
 
     QApplication::setApplicationName("disc-remuxer-gui");
     QApplication::setApplicationVersion(DISC_REMUXER_VERSION);
+    // the engine's log to the window, from the settings file's reading on
+    LogRelay relay;
     if ((ret = engine_init(nullptr, nullptr, 0, 0, 0))) {
         QMessageBox::critical(nullptr, "Disc Remuxer", "The settings file next to the program cannot be read "
                                                        "(run disc-remuxer settings in a terminal to see why).");
         return ret;
     }
-    MainWindow w;
+    MainWindow w(&relay);
     QStringList discs = QApplication::arguments().mid(1);
     QString snapshot = qEnvironmentVariable("DISC_REMUXER_GUI_SNAPSHOT");
     QString test = qEnvironmentVariable("DISC_REMUXER_GUI_TEST");

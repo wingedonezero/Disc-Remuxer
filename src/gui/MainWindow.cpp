@@ -40,7 +40,7 @@ enum Role { R_JOB = Qt::UserRole, R_TITLE, R_TRACK };
 
 static const int defaultWidths[C_COUNT] = { 280, 170, 70, 230, 50, 45, 65, 70, 70, 260, 140 };
 
-MainWindow::MainWindow()
+MainWindow::MainWindow(LogRelay *r) : relay(r)
 {
     auto *central = new QWidget;
     auto *layout = new QVBoxLayout(central);
@@ -142,7 +142,6 @@ MainWindow::MainWindow()
     connect(tree, &QueueTree::moveRequested, this, &MainWindow::moveDisc);
 
     // the engine's log into the console; scans and rips on the engine's thread
-    relay = new LogRelay(this);
     connect(relay, &LogRelay::line, console, &Console::addLine);
     connect(relay, &LogRelay::record, this, &MainWindow::onRecord);
     connect(relay, &LogRelay::progress, this, &MainWindow::onProgress);
@@ -160,6 +159,7 @@ MainWindow::MainWindow()
     loadState();
     updateControls();
     updateQueueLabel();
+    relay->goLive();
 }
 
 MainWindow::~MainWindow()
@@ -673,8 +673,22 @@ void MainWindow::openPrefs()
 
     while (dlg.exec() == QDialog::Accepted) {
         if (dlg.apply(&changed)) {
-            for (const QString &c : changed)
+            bool reading = false;
+            for (const QString &c : changed) {
                 console->addLine(LOG_INFO, 0, QString(), "Setting kept: " + c, false);
+                // settings a disc is read with (its title list, tracks, keys)
+                reading |= c.startsWith("read.") || c.startsWith("aacs.") || c.startsWith("titles.") ||
+                           c.startsWith("dvd.") || c.startsWith("bluray.");
+            }
+            if (reading && !running && !jobs.isEmpty() &&
+                QMessageBox::question(this, "Preferences", "These settings change how a disc is read. Scan the "
+                                                           "discs in the queue again so they use them?") ==
+                    QMessageBox::Yes) {
+                for (int r = 0; r < tree->topLevelItemCount(); r++) {
+                    tree->setCurrentItem(tree->topLevelItem(r));
+                    rescanSelected();
+                }
+            }
             break;
         }
         changed.clear();

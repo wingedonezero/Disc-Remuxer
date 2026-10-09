@@ -534,7 +534,8 @@ static int disc_read_header(AVFormatContext *s)
     enum DiscIODiscFormat kind;
     int ret;
 
-    opts.udf_reader = d->opt_udf_reader;
+    opts.udf_reader                = d->opt_udf_reader;
+    opts.prefer_iso_for_old_udf102 = d->opt_prefer_iso;
     if (ff_discio_folder_is_dir(s->url)) {
         /* a disc folder: its files are read as host files */
         if ((ret = ff_discio_mount_folder(s, s->url, d->opt_read_attempts, &d->fs)) < 0)
@@ -688,6 +689,7 @@ static const AVOption disc_options[] = {
     {"cc_helper",       "the caption converter program (CCExtractor) for DVD caption tracks; default: the one next to the running program", OFFSET(opt_cc_helper), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, AV_OPT_FLAG_DECODING_PARAM },
     {"keydb",           "AACS key files (KEYDB.cfg), read in this order",          OFFSET(opt_keydb),          AV_OPT_TYPE_STRING | AV_OPT_TYPE_FLAG_ARRAY, { .arr = NULL }, 0, 0, AV_OPT_FLAG_DECODING_PARAM },
     {"read_attempts",   "read attempts per request on the disc",                    OFFSET(opt_read_attempts),  AV_OPT_TYPE_INT,    { .i64=DISCIO_DEFAULT_ATTEMPTS }, 1, 100, AV_OPT_FLAG_DECODING_PARAM },
+    {"prefer_iso_for_old_udf102", "disc images: a UDF 1.02 file system recorded before 2006 is read through ISO 9660 when that holds a valid DVD-Video structure", OFFSET(opt_prefer_iso), AV_OPT_TYPE_BOOL, { .i64=1 }, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
     {"udf_reader",      "UDF reader for disc images",                               OFFSET(opt_udf_reader),     AV_OPT_TYPE_INT,    { .i64=DISCIO_UDF_NETBSD }, DISCIO_UDF_NETBSD, DISCIO_UDF_LINUX, AV_OPT_FLAG_DECODING_PARAM, .unit = "udf_reader" },
         {"netbsd",      "based on NetBSD (default)",                                0,                          AV_OPT_TYPE_CONST,  { .i64=DISCIO_UDF_NETBSD }, 0, 0, AV_OPT_FLAG_DECODING_PARAM, .unit = "udf_reader" },
         {"linux",       "based on Linux",                                           0,                          AV_OPT_TYPE_CONST,  { .i64=DISCIO_UDF_LINUX },  0, 0, AV_OPT_FLAG_DECODING_PARAM, .unit = "udf_reader" },

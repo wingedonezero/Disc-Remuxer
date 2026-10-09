@@ -56,8 +56,9 @@ const char    *settings_value(int i);
  * in effect at once, written with settings_save(). 0, or -1 with why in
  * err. */
 int  settings_store(const char *name, const char *value, char *err, int size);
-/* Writes the settings file with the stored values (the old one kept as
- * .bak). 0, or -1 (logged). */
+/* Writes the settings file with the values stored in this run; every other
+ * value as the file holds it then (a change made by hand meanwhile is kept).
+ * The old file kept as .bak. 0, or -1 (logged). */
 int  settings_save(void);
 
 /* Logs the settings that differ from their default (one line, or none). */

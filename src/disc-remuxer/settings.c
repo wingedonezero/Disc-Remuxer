@@ -90,6 +90,7 @@ typedef struct Value {
     char        *run;                /* value of this run (--set), NULL = none */
     const char **items;              /* SET_LIST: items of the effective value */
     int          nb_items;
+    int          stored;             /* changed by settings_store() in this run (written by settings_save()) */
 } Value;
 
 static Value values[NB_SETTINGS];
@@ -537,6 +538,7 @@ int settings_store(const char *name, const char *value, char *err, int size)
         return -1;
     free(values[i].file);
     values[i].file = strdup(value);
+    values[i].stored = 1;
     free(values[i].run);
     values[i].run = NULL;
     if (registry[i].kind == SET_LIST)
@@ -561,6 +563,32 @@ int settings_save(void)
             old = NULL;
         }
         fclose(f);
+    }
+    /* the file as it is now (changed by hand, or by another run, since it was
+     * read): its values are kept but for those this run stored */
+    if (old) {
+        toml_result_t r;
+        old[old_len] = 0;
+        r = toml_parse(old, (int)old_len);
+        if (r.ok) {
+            for (int i = 0; i < NB_SETTINGS; i++) {
+                const Setting *s = &registry[i];
+                toml_datum_t g = toml_get(r.toptab, s->group), d;
+                char err[256], *v;
+                if (values[i].stored || g.type != TOML_TABLE || (d = toml_get(g, s->key)).type == TOML_UNKNOWN ||
+                    !(v = from_toml(s, d)))
+                    continue;
+                if (check(s, v, err, sizeof(err))) {
+                    free(v);
+                    continue;
+                }
+                free(values[i].file);
+                values[i].file = v;
+                if (s->kind == SET_LIST)
+                    split_items(i);
+            }
+        }
+        toml_free(r);
     }
     now = render(&now_len);
     ret = old && now_len == old_len && !memcmp(now, old, now_len) ? 0 : write_file(now, now_len, old, old_len);

@@ -24,7 +24,8 @@ class QueueTree;
 class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
-    MainWindow();
+    // relay: the engine's log, set up before the settings were read
+    explicit MainWindow(LogRelay *relay);
     ~MainWindow() override;
 
     // Discs found in paths (images, disc folders, folders holding discs)

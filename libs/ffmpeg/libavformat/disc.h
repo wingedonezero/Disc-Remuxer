@@ -194,6 +194,7 @@ typedef struct DiscContext {
     /* options, for every format part */
     int               opt_read_attempts;
     int               opt_udf_reader;
+    int               opt_prefer_iso;   /**< DVD images: an old UDF 1.02 read through ISO 9660 (discio.h) */
     int               opt_title;        /**< -1: every title listed, none read; then the opened title
                                              (disc_title_open()) */
     int               opt_part;         /**< -1: the whole title, else that part of it (DiscTitleInfo.parts) */
