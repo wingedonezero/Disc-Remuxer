@@ -15,6 +15,9 @@ typedef struct DVDIfo {
     int         *pgc_same_as;
     int          nb_pgcs;
     int          nb_vobu_map;
+    uint32_t     title_vob_base;
+    int          css_state;
+    uint8_t      css_key[5];
     ...;
 } DVDIfo;
 
@@ -57,3 +60,11 @@ int tb_dvd_titles(DVDDisc *d, int cell_mode, int cell_check, int min_length, int
 int tb_dvd_titles_from(DVDDisc *d, DVDScanResult *res, int nb, int cell_mode, int cell_check,
                        int min_length, char **dump);
 int ff_dvd_cell_check(DVDDisc *d, int vts, int pgcn, int cell, int mode);
+
+/* libavformat/dvd_read.c: a title VOB sector through the checks; through
+ * the bridge: a title's segment read through the checks */
+int ff_dvd_title_vob_sector(DVDDisc *d, DVDIfo *f, uint32_t sector, uint8_t *buf);
+int tb_dvd_segment_dump(DVDDisc *d, int cell_mode, int t, int seg, const char *path, int64_t *nread, int64_t *left);
+
+/* libdvdcss (our addition): one block descrambled with a title key */
+void dvdcss_descramble(const unsigned char *p_key, void *p_block);

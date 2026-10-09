@@ -150,6 +150,10 @@ typedef struct DVDIfo {
 
     /* the title list (dvd_titles.c) */
     int          suspicious;            /**< 0 not decided, 1 its titles are left out, 2 they are not */
+
+    /* reading (dvd_read.c) */
+    int          css_state;             /**< CSS title key: 0 not looked for yet, 1 found, -1 none */
+    uint8_t      css_key[5];
 } DVDIfo;
 
 /** A node of the disc's text data (TXTDT_MG): an item kind below 0x30
@@ -389,6 +393,16 @@ void  ff_dvd_title_free(DVDTitle **t);
 int   ff_dvd_cell_check(DVDDisc *d, int vts, int pgcn, int cell, int mode);
 /** One line per title (tests, debug log); av_free() it. */
 char *ff_dvd_titles_dump(const DVDTitleList *l);
+
+/* ---- dvd_read.c ---- */
+/** Sector of title set f's title VOBs, checked (CSS descrambled, see
+ *  dvd_read.c): 1 read, 0 left out (no MPEG-2 pack with a packet), < 0
+ *  cannot be read (a read error, or scrambled without a title key). */
+int      ff_dvd_title_vob_sector(DVDDisc *d, DVDIfo *f, uint32_t sector, uint8_t *buf);
+/** The sectors of a segment. */
+uint32_t ff_dvd_segment_blocks(const DVDSegment *g);
+/** Sector block of segment seg of title t, as ff_dvd_title_vob_sector(). */
+int      ff_dvd_segment_read(DVDDisc *d, const DVDTitle *t, int seg, uint32_t block, uint8_t *buf);
 
 /* ---- dvd_disc.c ---- */
 /** Read the disc's structure: the VMG, its title table and text data, and

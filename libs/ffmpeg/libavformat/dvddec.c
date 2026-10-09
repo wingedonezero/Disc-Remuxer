@@ -3,8 +3,9 @@
  * disc's structure (dvd_disc.c: the VMG, the title table, the text data
  * and every title set's IFO with its checks) and describes the disc: its
  * label is the volume label (a folder: the VMG's provider identifier), its
- * name the text data's when it has one. The title list, CSS, the tracks and
- * the reading of a title come in later steps.
+ * name the text data's when it has one; its title list (dvd_titles.c) with
+ * each title's tracks. A title's sectors are read through dvd_read.c (the
+ * sector check, CSS); the stream pass and the title reader come next.
  *
  * This file is part of FFmpeg.
  *
