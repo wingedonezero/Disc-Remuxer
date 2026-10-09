@@ -363,6 +363,9 @@ typedef struct DVDTitle {
     DVDStreamRef   audio[8];            /**< in the program chain's audio_control order, then the title set's
                                              other audio streams */
     int            nb_audio;
+    uint8_t        audio_listed;        /**< the stream numbers audio_control lists (bit per stream) */
+    uint8_t        audio_dropped;       /**< audio[] entries the stream pass left out (bit per entry) */
+    int            captions;            /**< the stream pass found closed captions in the video */
     DVDStreamRef   subp[33];            /**< in the program chain's subp_control order */
     int            nb_subp;
     uint16_t       subp_width, subp_height; /**< the sub-pictures' canvas */
@@ -403,6 +406,13 @@ int      ff_dvd_title_vob_sector(DVDDisc *d, DVDIfo *f, uint32_t sector, uint8_t
 uint32_t ff_dvd_segment_blocks(const DVDSegment *g);
 /** Sector block of segment seg of title t, as ff_dvd_title_vob_sector(). */
 int      ff_dvd_segment_read(DVDDisc *d, const DVDTitle *t, int seg, uint32_t block, uint8_t *buf);
+
+/* ---- dvd_streams.c ---- */
+/** The stream pass of title t (its largest segment read from the start):
+ *  closed captions (t->captions) and the audio streams without data
+ *  (t->audio_dropped). < 0: a sector cannot be read, the title cannot be
+ *  used. */
+int ff_dvd_title_streams(DVDDisc *d, DVDTitle *t);
 
 /* ---- dvd_disc.c ---- */
 /** Read the disc's structure: the VMG, its title table and text data, and

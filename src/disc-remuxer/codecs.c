@@ -80,6 +80,7 @@ const char *codec_description(const DiscStreamInfo *k, const DiscStreamInfo *bas
     case AV_CODEC_ID_HDMV_PGS_SUBTITLE:  name = "HDMV PGS Subtitles"; break;
     case AV_CODEC_ID_HDMV_TEXT_SUBTITLE: name = "HDMV Text Subtitles"; break;
     case AV_CODEC_ID_DVD_SUBTITLE:       name = "Dvd Subtitles"; break;
+    case AV_CODEC_ID_EIA_608:            name = "Closed Captions"; break;
     default:                 name = codec_short(k);
     }
     snprintf(buf, size, "%s", name);

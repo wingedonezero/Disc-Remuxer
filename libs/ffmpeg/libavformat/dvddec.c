@@ -4,8 +4,9 @@
  * and every title set's IFO with its checks) and describes the disc: its
  * label is the volume label (a folder: the VMG's provider identifier), its
  * name the text data's when it has one; its title list (dvd_titles.c) with
- * each title's tracks. A title's sectors are read through dvd_read.c (the
- * sector check, CSS); the stream pass and the title reader come next.
+ * each title's tracks after its stream pass (dvd_streams.c: captions, audio
+ * streams without data). A title's sectors are read through dvd_read.c
+ * (the sector check, CSS); the title reader comes next.
  *
  * This file is part of FFmpeg.
  *
@@ -94,13 +95,20 @@ static void attr_language(AVFormatContext *s, char lang[4], const uint8_t *b)
         av_log(s, AV_LOG_DEBUG, "DVD: language code bytes %02x %02x are no known language\n", b[0], b[1]);
 }
 
-/* The title's tracks as its title set's attributes describe them: the
- * video, the audio streams, the sub-pictures (details come from the
- * streams themselves). */
+/* The title's tracks: the video, the audio streams and the sub-pictures
+ * as its title set's attributes describe them, without the audio streams
+ * the stream pass left out and without a stream listed again (the same
+ * coding and stream number: the first one is kept), then the caption track
+ * when the stream pass found captions (details come from the streams
+ * themselves). */
 static int describe_tracks(AVFormatContext *s, const DVDTitle *t, DiscTitleInfo *dt)
 {
+    static const enum AVCodecID codecs[8] = { AV_CODEC_ID_AC3, AV_CODEC_ID_NONE, AV_CODEC_ID_MP2, AV_CODEC_ID_MP2,
+                                              AV_CODEC_ID_PCM_DVD, AV_CODEC_ID_NONE, AV_CODEC_ID_DTS,
+                                              AV_CODEC_ID_NONE };
     const uint8_t *h = t->vts->header;
     DiscStreamInfo *k;
+    int kept[8], nb_kept = 0, sids = 0;
 
     if (!(k = ff_disc_title_add_stream(dt)))
         return AVERROR(ENOMEM);
@@ -109,22 +117,38 @@ static int describe_tracks(AVFormatContext *s, const DVDTitle *t, DiscTitleInfo 
                (h[DVD_VTS_VIDEO_ATTR] >> 6) == 1 ? AV_CODEC_ID_MPEG2VIDEO : AV_CODEC_ID_NONE;
     for (int i = 0; i < t->nb_audio; i++) {
         const uint8_t *a = h + DVD_VTS_AUDIO_ATTR + 8 * t->audio[i].attr;
-        static const enum AVCodecID codecs[8] = { AV_CODEC_ID_AC3, AV_CODEC_ID_NONE, AV_CODEC_ID_MP2, AV_CODEC_ID_MP2,
-                                                  AV_CODEC_ID_PCM_DVD, AV_CODEC_ID_NONE, AV_CODEC_ID_DTS,
-                                                  AV_CODEC_ID_NONE };
+        enum AVCodecID codec = codecs[a[0] >> 5];
+        int dup = -1;
+
+        if (t->audio_dropped >> i & 1)
+            continue;
+        for (int j = 0; j < nb_kept && dup < 0; j++) {
+            const uint8_t *b = h + DVD_VTS_AUDIO_ATTR + 8 * t->audio[kept[j]].attr;
+            if (t->audio[kept[j]].stream == t->audio[i].stream && codecs[b[0] >> 5] == codec)
+                dup = kept[j];
+        }
+        if (dup >= 0) {
+            av_log(s, AV_LOG_INFO, "DVD: title %s: audio track %d is stream %d again (as track %d): left out\n",
+                   t->name, i, t->audio[i].stream, dup);
+            continue;
+        }
+        kept[nb_kept++] = i;
         if (!(k = ff_disc_title_add_stream(dt)))
             return AVERROR(ENOMEM);
         k->type  = AVMEDIA_TYPE_AUDIO;
-        k->codec = codecs[a[0] >> 5];
-        if (k->codec == AV_CODEC_ID_NONE)
-            av_log(s, AV_LOG_WARNING, "DVD: VTS_%02d: audio stream %d has coding mode %d, which is not known\n",
-                   t->vtsn, t->audio[i].stream, a[0] >> 5);
+        k->codec = codec;
         if ((a[0] & 0x0c) == 4)
             attr_language(s, k->language, a + 2);
         k->roles = audio_roles(a[5]);
     }
     for (int i = 0; i < t->nb_subp; i++) {
         const uint8_t *p = h + DVD_VTS_SUBP_ATTR + 6 * t->subp[i].attr;
+        if (sids >> t->subp[i].stream & 1) {
+            av_log(s, AV_LOG_INFO, "DVD: title %s: sub-picture track %d is stream %d again: left out\n",
+                   t->name, i, t->subp[i].stream);
+            continue;
+        }
+        sids |= 1 << t->subp[i].stream;
         if (!(k = ff_disc_title_add_stream(dt)))
             return AVERROR(ENOMEM);
         k->type   = AVMEDIA_TYPE_SUBTITLE;
@@ -134,6 +158,13 @@ static int describe_tracks(AVFormatContext *s, const DVDTitle *t, DiscTitleInfo 
         if ((p[0] & 3) == 1)
             attr_language(s, k->language, p + 2);
         k->roles = subp_roles(p[5]);
+    }
+    if (t->captions) {
+        if (!(k = ff_disc_title_add_stream(dt)))
+            return AVERROR(ENOMEM);
+        k->type  = AVMEDIA_TYPE_SUBTITLE;
+        k->codec = AV_CODEC_ID_EIA_608;
+        av_strlcpy(k->language, "eng", sizeof(k->language));
     }
     return 0;
 }
@@ -179,6 +210,29 @@ static int describe_titles(AVFormatContext *s)
     return 0;
 }
 
+/* The stream pass of every title; a title whose pass fails (a sector
+ * cannot be read) is left out of the list. */
+static int stream_pass(AVFormatContext *s)
+{
+    DVDDemuxContext *c = ff_disc_part(s);
+    DVDTitleList *l = &c->titles;
+
+    for (int i = 0; i < l->nb_titles; i++) {
+        int ret = ff_dvd_title_streams(&c->disc, l->titles[i]);
+        if (ret == AVERROR(ENOMEM))
+            return ret;
+        if (ret < 0) {
+            av_log(s, AV_LOG_ERROR, "DVD: title %s left out: its streams cannot be read (%s)\n",
+                   l->titles[i]->name, av_err2str(ret));
+            ff_dvd_title_free(&l->titles[i]);
+            memmove(l->titles + i, l->titles + i + 1, (l->nb_titles - i - 1) * sizeof(*l->titles));
+            l->nb_titles--;
+            i--;
+        }
+    }
+    return 0;
+}
+
 static int dvd_open(AVFormatContext *s)
 {
     DiscContext *d = s->priv_data;
@@ -205,6 +259,7 @@ static int dvd_open(AVFormatContext *s)
      * title list from it (a failed scan leaves no results) */
     if ((o.cell_mode != DVD_CELL_MODE_TRIM && ff_dvd_scan(&c->disc, NULL, NULL, &c->scan) == AVERROR(ENOMEM)) ||
         (ret = ff_dvd_titles_build(&c->disc, &c->scan, &o, &c->titles)) < 0 ||
+        (ret = stream_pass(s)) < 0 ||
         (ret = describe_titles(s)) < 0)
         return ret < 0 ? ret : AVERROR(ENOMEM);
     if (av_log_get_level() >= AV_LOG_DEBUG && (dump = ff_dvd_titles_dump(&c->titles))) {

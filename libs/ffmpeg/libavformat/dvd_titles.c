@@ -1657,6 +1657,7 @@ static void title_audio(Titles *T, DVDTitle *t)
     for (unsigned k = 0; k < n; k++)
         if (!(mask >> k & 1))
             t->audio[t->nb_audio++] = (DVDStreamRef){ k, k };
+    t->audio_listed = mask;
 }
 
 /* The title's sub-picture streams: those the program chain's subp_control

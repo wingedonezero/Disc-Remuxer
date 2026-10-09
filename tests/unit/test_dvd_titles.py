@@ -219,6 +219,8 @@ def test_info_lists_a_dvd_title_s_tracks(tmp_path):
             subp_control=bytes([0x80, 0, 0, 0]) + bytes(124))
     folder = build(tmp_path, [p], [[(1, 1)]], vobus(0, 9, 5), 10, video_attr=bytes([0x40, 0]),
                    audio_attrs=[ac3(b"zh", 3)], subp_attrs=[subp(b"en", 9)])
+    from test_dvd_streams import audio_pack, put
+    put(folder, 1, audio_pack(0))       # the audio stream has data (the stream pass keeps it)
     ts, _ = info(folder)
     got = [(k["kind"], k["codec"], k["language"], k["width"], k["height"], k["roles"]) for k in ts[0]["tracks"]]
     assert got == [("video", "Mpeg2", "", None, None, []), ("audio", "DD", "chi", None, None, ["commentary"]),
