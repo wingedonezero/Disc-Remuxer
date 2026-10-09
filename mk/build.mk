@@ -50,7 +50,7 @@ endef
 src_files = $(shell find $(1) -type f ! -path '*/.git/*')
 
 .PHONY: dist libs
-dist: $(DIST)/disc-remuxer $(DIST)/ffmpeg $(DIST)/ffprobe $(DIST)/ccextractor
+dist: $(DIST)/disc-remuxer $(DIST)/disc-remuxer-gui $(DIST)/ffmpeg $(DIST)/ffprobe $(DIST)/ccextractor
 libs: $(BUILD)/ffmpeg/.installed
 
 include mk/dvd.mk
@@ -59,6 +59,7 @@ include mk/aacs.mk
 include mk/ffmpeg.mk
 include mk/ccextractor.mk
 include mk/tool.mk
+include mk/gui.mk
 include mk/test.mk
 
 $(DIST)/%: $(BUILD)/bin/%

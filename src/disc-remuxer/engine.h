@@ -10,9 +10,14 @@
 #ifndef DISC_REMUXER_ENGINE_H
 #define DISC_REMUXER_ENGINE_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include <libavformat/discinfo.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #ifndef DISC_REMUXER_VERSION
 #define DISC_REMUXER_VERSION "0.2.0"
@@ -64,6 +69,12 @@ int  engine_demux(const char *source, const char *titles, const char *out_dir, c
  * with _001, _002, ... when it exists already. */
 void engine_output_folder(const char *source, char *out, size_t size);
 
+/* Track i of title t in words, as info lists it (its codec in full, its
+ * details, its links to other tracks; "not selected" when !kept). */
+const char *engine_track_text(const DiscTitleInfo *t, int i, int kept, char *buf, size_t size);
+/* The short codec name the file names use (Mpeg2, DD, DTS-HD MA, ...). */
+const char *engine_codec_label(enum AVCodecID id, int profile);
+
 /* An open disc: read once, its titles ripped from it. */
 typedef struct EngineDisc EngineDisc;
 
@@ -82,5 +93,9 @@ void engine_disc_overview(const EngineDisc *d, int detail);
  * there. 0, 1 (a title failed). */
 int  engine_disc_rip(EngineDisc *d, const char *sel, const char *split, const char *out_dir);
 void engine_disc_close(EngineDisc **d);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

@@ -178,6 +178,17 @@ every library under it are linked into both as before.
 | `log.c` | the log: terminal (colours), `--json` records, a log file per disc in the output folder |
 | `msg.h` | the numbers of the program's own messages |
 
+## The GUI (`src/gui/`, C++, Qt 6 Widgets)
+
+`disc-remuxer-gui` links the engine like the command line and uses the same
+settings file. `MainWindow` (the queue: each disc's titles and tracks with
+check boxes, the estimated size), `DiscFinder` (images and disc folders in
+what is added, searched a few levels deep), `EngineWorker` (the engine on a
+thread of its own: discs are scanned there; `LogRelay` brings the engine's
+log back), `DetailsPanel` (what the selected disc, title or track is),
+`Console` (the log by level). Built by `mk/gui.mk` with CMake against the
+host's Qt. Ripping, the settings menu and the output layout come next.
+
 The demuxer contract the program relies on: `docs/FORMATS.md`. Finding
 discs (searching folders, drag and drop), the queue and batches are the
 GUI's job; the engine handles one disc per run.

@@ -96,6 +96,50 @@ static const char *roles_text(int roles, const char *sep, int quoted, char *buf,
     return buf;
 }
 
+const char *engine_track_text(const DiscTitleInfo *t, int i, int kept, char *buf, size_t size)
+{
+    const DiscStreamInfo *k = &t->streams[i];
+    char extra[160] = "", link[96] = "", d[96], det[160] = "", a[24], r[48], l[64], b[24];
+
+    if (k->type == AVMEDIA_TYPE_SUBTITLE && k->width)
+        snprintf(extra, sizeof(extra), "  %dx%d", k->width, k->height);
+    if (k->forced)
+        snprintf(link, sizeof(link), "  (forced subtitles of track %d)", k->from_track);
+    else if (k->second_view)
+        snprintf(link, sizeof(link), "  (3-D second view of track %d)", k->from_track);
+    else if (k->from_track >= 0)
+        snprintf(link, sizeof(link), "  (taken out of track %d)", k->from_track);
+    else if (k->inner_track >= 0)
+        snprintf(link, sizeof(link), "  (track %d is taken out of it)", k->inner_track);
+    if (k->second_layer)
+        snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "  with its second layer");
+    if (k->roles) {
+        char rt[96];
+        snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "  (%s)",
+                 roles_text(k->roles, ", ", 0, rt, sizeof(rt)));
+    }
+    if (k->offset_sequence >= 0)
+        snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "  3-D offset sequence %d",
+                 k->offset_sequence);
+    if (!kept)
+        snprintf(link + strlen(link), sizeof(link) - strlen(link), "  not selected");
+    /* what the stream is: its codec in full, then its details */
+    if (k->type == AVMEDIA_TYPE_VIDEO && k->width && !k->forced)
+        snprintf(det, sizeof(det), "  %dx%d %s %s", k->width, k->height, aspect_text(k, a, sizeof(a)),
+                 frame_rate_text(k, r, sizeof(r)));
+    if (k->type == AVMEDIA_TYPE_AUDIO && k->channels) {
+        snprintf(det, sizeof(det), "  %s %d Hz", layout_text(k, l, sizeof(l)), k->sample_rate);
+        if (k->bits && codec_lossless(k))
+            snprintf(det + strlen(det), sizeof(det) - strlen(det), " %d-bit", k->bits);
+        if (*bit_rate_text(k->bit_rate, b, sizeof(b)) && !codec_lossless(k))
+            snprintf(det + strlen(det), sizeof(det) - strlen(det), " %s", b);
+    }
+    snprintf(buf, size, "%s%s%s%s",
+             codec_description(k, k->second_view && k->from_track >= 0 ? &t->streams[k->from_track] : NULL, d,
+                               sizeof(d)), det, extra, link);
+    return buf;
+}
+
 /* One title's line (and, with detail, its files and streams) plus its JSON
  * record. */
 static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *keep)
@@ -166,47 +210,9 @@ static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *ke
                  t->language, t->selected ? "" : ", not selected (shorter than the minimum length)");
         for (int i = 0; i < t->nb_streams; i++) {
             const DiscStreamInfo *k = &t->streams[i];
-            char extra[160] = "", link[96] = "";
-            if (k->type == AVMEDIA_TYPE_SUBTITLE && k->width)
-                snprintf(extra, sizeof(extra), "  %dx%d", k->width, k->height);
-            if (k->forced)
-                snprintf(link, sizeof(link), "  (forced subtitles of track %d)", k->from_track);
-            else if (k->second_view)
-                snprintf(link, sizeof(link), "  (3-D second view of track %d)", k->from_track);
-            else if (k->from_track >= 0)
-                snprintf(link, sizeof(link), "  (taken out of track %d)", k->from_track);
-            else if (k->inner_track >= 0)
-                snprintf(link, sizeof(link), "  (track %d is taken out of it)", k->inner_track);
-            if (k->second_layer)
-                snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "  with its second layer");
-            if (k->roles) {
-                char rt[96];
-                snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "  (%s)",
-                         roles_text(k->roles, ", ", 0, rt, sizeof(rt)));
-            }
-            if (k->offset_sequence >= 0)
-                snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "  3-D offset sequence %d",
-                         k->offset_sequence);
-            if (!keep[i])
-                snprintf(link + strlen(link), sizeof(link) - strlen(link), "  not selected");
-            {
-                /* what the stream is: its codec in full, then its details */
-                char d[96], det[160] = "", a[24], r[48], l[64], b[24];
-                if (k->type == AVMEDIA_TYPE_VIDEO && k->width && !k->forced)
-                    snprintf(det, sizeof(det), "  %dx%d %s %s", k->width, k->height, aspect_text(k, a, sizeof(a)),
-                             frame_rate_text(k, r, sizeof(r)));
-                if (k->type == AVMEDIA_TYPE_AUDIO && k->channels) {
-                    snprintf(det, sizeof(det), "  %s %d Hz", layout_text(k, l, sizeof(l)), k->sample_rate);
-                    if (k->bits && codec_lossless(k))
-                        snprintf(det + strlen(det), sizeof(det) - strlen(det), " %d-bit", k->bits);
-                    if (*bit_rate_text(k->bit_rate, b, sizeof(b)) && !codec_lossless(k))
-                        snprintf(det + strlen(det), sizeof(det) - strlen(det), " %s", b);
-                }
-                log_text(LOG_INFO, "       %-2d %-8s %-3s %s%s%s%s", i, av_get_media_type_string(k->type),
-                         k->language[0] ? k->language : "   ",
-                         codec_description(k, k->second_view && k->from_track >= 0 ? &t->streams[k->from_track] : NULL, d,
-                                           sizeof(d)), det, extra, link);
-            }
+            char line[512];
+            log_text(LOG_INFO, "       %-2d %-8s %-3s %s", i, av_get_media_type_string(k->type),
+                     k->language[0] ? k->language : "   ", engine_track_text(t, i, keep[i], line, sizeof(line)));
         }
         for (int p = 0; p < t->nb_parts; p++) {
             const DiscPartInfo *q = &t->parts[p];
@@ -610,6 +616,11 @@ int engine_demux(const char *source, const char *titles, const char *out_dir, co
     free(spl);
     engine_disc_close(&e);
     return ret;
+}
+
+const char *engine_codec_label(enum AVCodecID id, int profile)
+{
+    return codec_label(id, profile);
 }
 
 int engine_check_choice(const EngineChoice *c)
