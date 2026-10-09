@@ -595,7 +595,7 @@ static int run_titles(EngineDisc *e, const char *sel, const char *split, const c
             log_msg(MSG_TITLE_SELECTION, LOG_INFO, "Title #%d has no parts (it plays no whole stream files back to "
                     "back): written whole", t);
     if (setting_bool("output.split_joined_titles"))
-        memset(spl, 1, nb);
+        memset(spl, 1, (size_t)FFMAX(nb, 0));
     for (int t = 0; t < nb; t++) {
         int parts = spl[t] ? di->titles[t].nb_parts : 0, part_failed = 0, part_stopped = 0;
         if (!sel[t])

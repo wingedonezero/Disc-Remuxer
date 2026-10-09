@@ -23,9 +23,10 @@ text. All live in `libs/` and are edited directly (see `libs/README.md`).
 
 `./build.sh` (the top `Makefile` and `mk/*.mk`) compiles the DVD libraries
 and expat directly, FFmpeg, libaacs, libgcrypt and libgpg-error with their own
-configure + make, CCExtractor with its own CMake (needs a C compiler, make,
-nasm, pkg-config, cmake, rsync), all into `build/<mode>/`, and copies only the
-finished programs into `dist/<mode>/`. The tests (`tests/`, Python) call our
+configure + make, CCExtractor with its own CMake, and the GUI with CMake against the host's Qt 6
+(needs a C and C++ compiler, make, nasm, pkg-config, cmake, rsync, the Qt 6 Widgets
+development files), all into `build/<mode>/`, and copies only the finished
+programs (`disc-remuxer`, `disc-remuxer-gui`, ...) into `dist/<mode>/`. The tests (`tests/`, Python) call our
 C code through a cffi bridge built against the same libraries.
 
 ## Layout
