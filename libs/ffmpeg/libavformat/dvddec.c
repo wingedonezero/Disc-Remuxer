@@ -44,10 +44,19 @@
 
 #define LEAD_IN_TOLERANCE 1080000LL       /* DVD-Video audio lead-in tolerance: 1 ms (ticks) */
 
+/* The stream pass's reading: a segment's sectors as the title reader reads them. */
+typedef struct PassRead {
+    DVDDisc        *disc;
+    const DVDTitle *t;
+    int             seg;
+    uint32_t        nb_blocks;
+} PassRead;
+
 typedef struct DVDDemuxContext {
     DVDDisc      disc;
     DVDScan      scan;
     DVDTitleList titles;
+    PassRead     pass;          /* the stream pass's segment */
 
     /* the opened title, as the title reader gets it (DiscContext.src) */
     const DVDTitle *title;
@@ -204,54 +213,34 @@ static int title_tracks(AVFormatContext *s, const DVDTitle *t, DiscTrack *out)
     return n;
 }
 
-/* The disc info's titles: length (the cells' playback times), size (the
- * title VOB sectors it plays), angle, whether selected, the program chain
- * and the navigation's recording it comes from, its segments' cells (as its
- * "files"), its chapters. */
-static int describe_titles(AVFormatContext *s)
+/* ---- the title entries (disc.h) ---- */
+
+static int nb_titles(AVFormatContext *s)
 {
-    DVDDemuxContext *c = ff_disc_part(s);
-    int ret;
-
-    for (int i = 0; i < c->titles.nb_titles; i++) {
-        DVDTitle *t = c->titles.titles[i];
-        DiscTitleInfo *dt = ff_disc_add_title(s);
-
-        if (!dt)
-            return AVERROR(ENOMEM);
-        dt->duration = (int64_t)t->declared * AV_TIME_BASE;
-        dt->angle    = t->nr_of_angles > 1 ? t->angle + 1 : 0;
-        dt->selected = !t->short_title;
-        if (t->scan)
-            snprintf(t->source, sizeof(t->source), "VTS_%02d program chain %d (navigation %s), cells", t->vtsn,
-                     t->pgc->number + 1, t->scan->name);
-        else
-            snprintf(t->source, sizeof(t->source), "VTS_%02d program chain %d, cells", t->vtsn, t->pgc->number + 1);
-        dt->source = t->source;
-        for (int k = 0; k < t->nb_segments; k++) {
-            dt->size += t->segments[k].size;
-            if (ff_disc_title_add_file(dt, t->segments[k].cell_map) < 0)
-                return AVERROR(ENOMEM);
-        }
-        for (int k = 0; k < t->nb_chapters; k++) {
-            DiscChapterInfo *ch = ff_disc_title_add_chapter(dt);
-            if (!ch)
-                return AVERROR(ENOMEM);
-            ch->start = av_rescale(t->chapters[k].time, AV_TIME_BASE, 90000);
-        }
-        if ((ret = ff_disc_title_add_tracks(dt, t->tracks, t->nb_tracks)) < 0)
-            return ret;
-    }
-    return 0;
+    return ((DVDDemuxContext *)ff_disc_part(s))->titles.nb_titles;
 }
 
-/* The pass's reading: the segment's sectors as the title reader reads them. */
-typedef struct PassRead {
-    DVDDisc        *disc;
-    const DVDTitle *t;
-    int             seg;
-    uint32_t        nb_blocks;
-} PassRead;
+static const char *title_name(AVFormatContext *s, int i)
+{
+    return ((DVDDemuxContext *)ff_disc_part(s))->titles.titles[i]->name;
+}
+
+/* The probe of the title's streams (dvd_streams.c: captions, audio streams
+ * without data). */
+static int title_probe(AVFormatContext *s, int i)
+{
+    DVDDemuxContext *c = ff_disc_part(s);
+    return ff_dvd_title_streams(&c->disc, c->titles.titles[i]);
+}
+
+static int title_tracks_of(AVFormatContext *s, int i, DiscTrack *out, int out_size)
+{
+    DVDDemuxContext *c = ff_disc_part(s);
+    if (out_size < MAX_TRACKS)
+        return AVERROR_BUG;
+    return title_tracks(s, c->titles.titles[i], out);
+}
+
 
 static int pass_read(void *opaque, uint32_t block, uint8_t *buf)
 {
@@ -284,65 +273,77 @@ static uint64_t segment_key(const DVDTitle *t, const DVDSegment *g)
     return h ? h : 1;
 }
 
-/* Every title's probe (dvd_streams.c) and the disc layer's stream pass over
- * its largest segment (the first of equal ones): its tracks; a title whose
- * streams cannot be read (a sector cannot be read, no video data) is left
- * out of the list. Details for the title list only. */
-static int stream_pass(AVFormatContext *s)
+/* The title's largest segment (the first of equal ones), read as the
+ * title reader reads it; DVD-Video's 3-byte LPCM header; empty sub-picture
+ * tracks reported (read on to the segment's end). */
+static int title_segment(AVFormatContext *s, int i, DiscPassSource *src)
 {
-    DiscContext *d = s->priv_data;
     DVDDemuxContext *c = ff_disc_part(s);
-    DVDTitleList *l = &c->titles;
+    const DVDTitle *t = c->titles.titles[i];
+    int64_t best = -1;
+    int seg = 0;
 
-    for (int i = 0; i < l->nb_titles; i++) {
-        DVDTitle *t = l->titles[i];
-        DiscTrack tr[MAX_TRACKS];
-        int ret = ff_dvd_title_streams(&c->disc, t), n = 0, seg = 0;
-        int64_t best = -1;
-
-        if (ret >= 0 && t->nb_segments) {
-            PassRead r = { &c->disc, t, 0, 0 };
-            DiscPassSource src = { .lpcm_header = 3, .read_all = 1, .read = pass_read, .opaque = &r };
-
-            for (int k = 0; k < t->nb_segments; k++)
-                if (t->segments[k].size > best) {
-                    best = t->segments[k].size;
-                    seg = k;
-                }
-            r.seg       = seg;
-            r.nb_blocks = ff_dvd_segment_blocks(&t->segments[seg]);
-            src.index   = seg;
-            src.key     = segment_key(t, &t->segments[seg]);
-            n   = title_tracks(s, t, tr);
-            ret = ff_disc_stream_pass(s, t->name, &src, tr, &n, d->opt_details && d->opt_title < 0);
-        } else if (ret >= 0) {
-            n = title_tracks(s, t, tr);
+    if (!t->nb_segments)
+        return 0;
+    for (int k = 0; k < t->nb_segments; k++)
+        if (t->segments[k].size > best) {
+            best = t->segments[k].size;
+            seg = k;
         }
-        if (ret >= 0 && !(t->tracks = av_memdup(tr, n * sizeof(*tr))) && n)
-            ret = AVERROR(ENOMEM);
-        t->nb_tracks = n;
-        if (ret == AVERROR(ENOMEM))
-            return ret;
-        if (ret < 0) {
-            av_log(s, AV_LOG_ERROR, "DVD: title %s left out: its streams cannot be read (%s)\n",
-                   t->name, av_err2str(ret));
-            ff_dvd_title_free(&l->titles[i]);
-            memmove(l->titles + i, l->titles + i + 1, (l->nb_titles - i - 1) * sizeof(*l->titles));
-            l->nb_titles--;
-            i--;
-        }
+    c->pass = (PassRead){ &c->disc, t, seg, ff_dvd_segment_blocks(&t->segments[seg]) };
+    *src = (DiscPassSource){ .index = seg, .lpcm_header = 3, .read_all = 1, .key = segment_key(t, &t->segments[seg]),
+                             .read = pass_read, .opaque = &c->pass };
+    return 1;
+}
+
+static void remove_title(AVFormatContext *s, int i)
+{
+    DVDTitleList *l = &((DVDDemuxContext *)ff_disc_part(s))->titles;
+    ff_dvd_title_free(&l->titles[i]);
+    memmove(l->titles + i, l->titles + i + 1, (l->nb_titles - i - 1) * sizeof(*l->titles));
+    l->nb_titles--;
+}
+
+/* The disc info's title: length (the cells' playback times), size (the
+ * title VOB sectors it plays), angle, whether selected, the program chain
+ * and the navigation's recording it comes from, its segments' cells (as its
+ * "files"), its chapters. */
+static int title_info(AVFormatContext *s, int i, DiscTitleInfo *dt)
+{
+    DVDTitle *t = ((DVDDemuxContext *)ff_disc_part(s))->titles.titles[i];
+
+    dt->duration = (int64_t)t->declared * AV_TIME_BASE;
+    dt->angle    = t->nr_of_angles > 1 ? t->angle + 1 : 0;
+    dt->selected = !t->short_title;
+    if (t->scan)
+        snprintf(t->source, sizeof(t->source), "VTS_%02d program chain %d (navigation %s), cells", t->vtsn,
+                 t->pgc->number + 1, t->scan->name);
+    else
+        snprintf(t->source, sizeof(t->source), "VTS_%02d program chain %d, cells", t->vtsn, t->pgc->number + 1);
+    dt->source = t->source;
+    for (int k = 0; k < t->nb_segments; k++) {
+        dt->size += t->segments[k].size;
+        if (ff_disc_title_add_file(dt, t->segments[k].cell_map) < 0)
+            return AVERROR(ENOMEM);
+    }
+    for (int k = 0; k < t->nb_chapters; k++) {
+        DiscChapterInfo *ch = ff_disc_title_add_chapter(dt);
+        if (!ch)
+            return AVERROR(ENOMEM);
+        ch->start = av_rescale(t->chapters[k].time, AV_TIME_BASE, 90000);
     }
     return 0;
 }
 
-/* The opened title's streams (stream i = track i, as the disc info lists
- * them), the title timeline's tracks and the title source: its segments
+/* The opened title's source (its streams and tracks: the disc layer's):
+ * its segments
  * one after another, DVD-Video's 3-byte LPCM header and lead-in tolerance,
  * the chapter records placed on its segments. */
-static int open_title(AVFormatContext *s, const DVDTitle *t)
+static int open_title(AVFormatContext *s, int i, int part, int *second_view)
 {
     DiscContext *d = s->priv_data;
     DVDDemuxContext *c = ff_disc_part(s);
+    const DVDTitle *t = c->titles.titles[i];
     int nb_ch = 0;
 
     c->title = t;
@@ -372,10 +373,10 @@ static int open_title(AVFormatContext *s, const DVDTitle *t)
         .chapter_clips   = c->chapter_clips,
         .chapter_offsets = c->chapter_offsets,
     };
-    return ff_disc_open_tracks(s, t->name, t->tracks, t->nb_tracks, 0, 0);
+    return 0;
 }
 
-static int dvd_open(AVFormatContext *s)
+static int dvd_load(AVFormatContext *s)
 {
     DiscContext *d = s->priv_data;
     DVDDemuxContext *c = ff_disc_part(s);
@@ -400,28 +401,28 @@ static int dvd_open(AVFormatContext *s)
     /* the titles: the navigation played (not for trimmed cells), then the
      * title list from it (a failed scan leaves no results) */
     if ((o.cell_mode != DVD_CELL_MODE_TRIM && ff_dvd_scan(&c->disc, NULL, NULL, &c->scan) == AVERROR(ENOMEM)) ||
-        (ret = ff_dvd_titles_build(&c->disc, &c->scan, &o, &c->titles)) < 0 ||
-        (ret = stream_pass(s)) < 0 ||
-        (ret = describe_titles(s)) < 0)
+        (ret = ff_dvd_titles_build(&c->disc, &c->scan, &o, &c->titles)) < 0)
         return ret < 0 ? ret : AVERROR(ENOMEM);
     if (av_log_get_level() >= AV_LOG_DEBUG && (dump = ff_dvd_titles_dump(&c->titles))) {
         debug_lines(s, "DVD titles:", dump);
         av_free(dump);
     }
-    if (d->opt_title < 0)               /* only the disc info */
-        return 0;
-    if (d->opt_title >= c->titles.nb_titles) {
-        av_log(s, AV_LOG_ERROR, "DVD: title %d does not exist (the disc has %d)\n", d->opt_title, c->titles.nb_titles);
-        return AVERROR(EINVAL);
-    }
-    return open_title(s, c->titles.titles[d->opt_title]);
+    return 0;
 }
 
 const DiscFormat ff_disc_dvd = {
-    .name        = "DVD-Video",
-    .log_name    = "DVD",
-    .kind        = DISCIO_DISC_DVD,
-    .priv_size   = sizeof(DVDDemuxContext),
-    .open        = dvd_open,
-    .close       = dvd_close,
+    .name          = "DVD-Video",
+    .log_name      = "DVD",
+    .kind          = DISCIO_DISC_DVD,
+    .priv_size     = sizeof(DVDDemuxContext),
+    .load          = dvd_load,
+    .nb_titles     = nb_titles,
+    .title_name    = title_name,
+    .title_probe   = title_probe,
+    .title_tracks  = title_tracks_of,
+    .title_segment = title_segment,
+    .remove_title  = remove_title,
+    .title_info    = title_info,
+    .open_title    = open_title,
+    .close         = dvd_close,
 };

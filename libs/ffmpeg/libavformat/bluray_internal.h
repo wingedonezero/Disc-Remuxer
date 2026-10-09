@@ -433,8 +433,6 @@ typedef struct BlurayTitle {
     BlurayTrack          *tracks;
     int                   nb_tracks;
     int                   track_seg;    /**< the segment the tracks are described from (the largest) */
-    struct DiscTrack     *dtracks;      /**< the tracks after the disc layer's stream pass (disc.h) */
-    int                   nb_dtracks;
 } BlurayTitle;
 
 /**

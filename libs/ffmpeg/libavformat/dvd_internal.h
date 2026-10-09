@@ -367,8 +367,6 @@ typedef struct DVDTitle {
     uint8_t        audio_listed;        /**< the stream numbers audio_control lists (bit per stream) */
     uint8_t        audio_dropped;       /**< audio[] entries the stream pass left out (bit per entry) */
     int            captions;            /**< the stream pass found closed captions in the video */
-    struct DiscTrack *tracks;           /**< its tracks after the stream pass (disc.h; av_free()) */
-    int            nb_tracks;
     DVDStreamRef   subp[33];            /**< in the program chain's subp_control order */
     int            nb_subp;
     uint16_t       subp_width, subp_height; /**< the sub-pictures' canvas */

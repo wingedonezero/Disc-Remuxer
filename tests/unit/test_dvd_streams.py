@@ -165,4 +165,4 @@ def test_a_title_without_a_video_packet_is_left_out(tmp_path):
     ts, lines = info(folder)
     assert ts == []
     assert said(lines, "title 1: its segment 1 has no video packet: the title cannot be used")
-    assert said(lines, "title 1 left out: its streams cannot be read")
+    assert said(lines, "title 1: no audio / video data can be decoded from it: title skipped")

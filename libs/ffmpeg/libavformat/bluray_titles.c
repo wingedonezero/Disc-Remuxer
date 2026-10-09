@@ -793,7 +793,6 @@ static void title_free(BlurayTitle *t)
     av_freep(&t->marks);
     av_freep(&t->pids);
     av_freep(&t->tracks);
-    av_freep(&t->dtracks);
     av_freep(&t->title_name);
     av_freep(&t->alt_name);
     memset(t, 0, sizeof(*t));

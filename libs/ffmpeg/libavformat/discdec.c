@@ -327,6 +327,10 @@ static int disc_close(AVFormatContext *s)
     av_freep(&d->tracks);
     av_freep(&d->feeds);
     av_freep(&d->pids);
+    for (int i = 0; d->title_tracks && i < d->nb_title_slots; i++)
+        av_freep(&d->title_tracks[i]);
+    av_freep(&d->title_tracks);
+    av_freep(&d->nb_title_tracks);
     ff_disc_pass_cache_free(&d->pass_cache);
     for (int i = 0; i < d->info.nb_titles; i++) {
         av_freep(&d->info.titles[i].streams);
@@ -339,6 +343,112 @@ static int disc_close(AVFormatContext *s)
     ff_discio_fs_close(&d->fs);
     ff_discio_source_free(&d->image);
     return 0;
+}
+
+/* ---- the flow, the same for every format ---- */
+
+#define MAX_TITLE_TRACKS 256
+
+/* Every title's probe (the format's own), its tracks and the stream pass
+ * over its largest segment (discpass.c: duplicates, details for the title
+ * list, data). A title whose pass fails is left out, said in the log (the
+ * title list and a title's open alike: the titles' numbers must agree). */
+static int titles_pass(AVFormatContext *s)
+{
+    DiscContext *d = s->priv_data;
+    const DiscFormat *f = d->fmt;
+    const char *fmt = f->log_name;
+    int n = f->nb_titles(s), details = d->opt_details && d->opt_title < 0;
+    DiscTrack *tr;
+
+    if (!(d->title_tracks = av_calloc(FFMAX(n, 1), sizeof(*d->title_tracks))) ||
+        !(d->nb_title_tracks = av_calloc(FFMAX(n, 1), sizeof(*d->nb_title_tracks))) ||
+        !(tr = av_calloc(MAX_TITLE_TRACKS, sizeof(*tr))))
+        return AVERROR(ENOMEM);
+    d->nb_title_slots = n;
+    for (int i = 0; i < n; i++) {
+        const char *name = f->title_name(s, i);
+        DiscPassSource src = { 0 };
+        int ret = f->title_probe ? f->title_probe(s, i) : 0, nb = 0, seg = 0;
+
+        if (ret >= 0)
+            ret = nb = f->title_tracks(s, i, tr, MAX_TITLE_TRACKS);
+        if (ret >= 0 && nb && (ret = seg = f->title_segment(s, i, &src)) > 0) {
+            ret = ff_disc_stream_pass(s, name, &src, tr, &nb, details);
+            if (f->segment_close)
+                f->segment_close(s, &src);
+        }
+        if (ret == AVERROR(ENOMEM)) {
+            av_free(tr);
+            return ret;
+        }
+        if (ret < 0) {
+            if (ret == AVERROR_INVALIDDATA)
+                av_log(s, AV_LOG_ERROR, "%s: title %s: no audio / video data can be decoded from it: title "
+                       "skipped\n", fmt, name ? name : "?");
+            else
+                av_log(s, AV_LOG_ERROR, "%s: title %s: its streams cannot be read (%s): title skipped\n", fmt,
+                       name ? name : "?", av_err2str(ret));
+            f->remove_title(s, i);
+            n--;
+            i--;
+            continue;
+        }
+        if (nb && !(d->title_tracks[i] = av_memdup(tr, nb * sizeof(*tr)))) {
+            av_free(tr);
+            return AVERROR(ENOMEM);
+        }
+        d->nb_title_tracks[i] = nb;
+    }
+    av_free(tr);
+    return 0;
+}
+
+/* The disc info's titles: each title's own (the format part's) and its
+ * tracks. */
+static int titles_info(AVFormatContext *s)
+{
+    DiscContext *d = s->priv_data;
+    int n = d->fmt->nb_titles(s), ret;
+
+    for (int i = 0; i < n; i++) {
+        DiscTitleInfo *dt = ff_disc_add_title(s);
+        if (!dt)
+            return AVERROR(ENOMEM);
+        if ((ret = d->fmt->title_info(s, i, dt)) < 0 ||
+            (ret = ff_disc_title_add_tracks(dt, d->title_tracks[i], d->nb_title_tracks[i])) < 0)
+            return ret;
+    }
+    return 0;
+}
+
+/* The title option's title (its part): the format part's source of it and
+ * its streams and title-reader tracks from its tracks. */
+static int open_title(AVFormatContext *s)
+{
+    DiscContext *d = s->priv_data;
+    const DiscFormat *f = d->fmt;
+    int i = d->opt_title, both = 0, ret;
+    const char *name;
+
+    if (i >= d->info.nb_titles) {
+        av_log(s, AV_LOG_ERROR, "%s: title %d does not exist (the disc has %d)\n", f->log_name, i,
+               d->info.nb_titles);
+        return AVERROR(EINVAL);
+    }
+    if (d->opt_part >= 0 && d->opt_part >= d->info.titles[i].nb_parts) {
+        av_log(s, AV_LOG_ERROR, "Title %d has no part %d (it has %d)\n", i, d->opt_part, d->info.titles[i].nb_parts);
+        return AVERROR(EINVAL);
+    }
+    name = f->title_name(s, i);
+    if (!d->nb_title_tracks[i] || d->title_tracks[i][0].not_read) {
+        av_log(s, AV_LOG_ERROR, "%s: title %s: its video (%s) is not read yet\n", f->log_name, name ? name : "?",
+               d->nb_title_tracks[i] ? avcodec_get_name(d->title_tracks[i][0].info.codec) : "none");
+        return AVERROR_PATCHWELCOME;
+    }
+    if ((ret = f->open_title(s, i, d->opt_part, &both)) < 0)
+        return ret;
+    return ff_disc_open_tracks(s, name ? name : "?", d->title_tracks[i], d->nb_title_tracks[i], d->src.ts, both);
 }
 
 static int disc_read_header(AVFormatContext *s)
@@ -385,16 +495,12 @@ static int disc_read_header(AVFormatContext *s)
     d->info.udf_revision = d->fs->udf_revision;
     if (!(d->part = av_mallocz(d->fmt->priv_size)))
         return AVERROR(ENOMEM);
-    if ((ret = d->fmt->open(s)) < 0)
+    if ((ret = d->fmt->load(s)) < 0 || (ret = titles_pass(s)) < 0 || (ret = titles_info(s)) < 0)
         return ret;
     if (d->opt_title < 0)               /* only the disc info, no title opened */
         return 0;
-    if (d->opt_part >= 0 && (d->opt_title >= d->info.nb_titles ||
-                             d->opt_part >= d->info.titles[d->opt_title].nb_parts)) {
-        av_log(s, AV_LOG_ERROR, "Title %d has no part %d (it has %d)\n", d->opt_title, d->opt_part,
-               d->opt_title < d->info.nb_titles ? d->info.titles[d->opt_title].nb_parts : 0);
-        return AVERROR(EINVAL);
-    }
+    if ((ret = open_title(s)) < 0)
+        return ret;
     return ff_disc_title_reader_open(s, &d->src);
 }
 

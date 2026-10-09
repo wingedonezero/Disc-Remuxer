@@ -738,7 +738,6 @@ void ff_hddvd_titles_free(HDDVDTitlePlan **pplan)
         av_free(plan->titles[i].clips);
         av_free(plan->titles[i].marks);
         av_free(plan->titles[i].tracks);
-        av_free(plan->titles[i].dtracks);
     }
     av_free(plan->titles);
     for (int i = 0; i < HDDVD_VTI_MAX_EVOBS; i++) {

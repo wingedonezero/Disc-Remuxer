@@ -140,15 +140,42 @@ typedef struct DiscFormat {
     const char             *name;       /**< the disc's kind for the caller ("HD DVD") */
     const char             *log_name;   /**< the prefix of its log lines ("DVD") */
     enum DiscIODiscFormat   kind;
-    size_t                  priv_size;  /**< the part's own context, zeroed before open */
-    /** Read the disc's structure from DiscContext.fs, and give the disc
-     *  info's titles (DiscContext.info, ff_disc_add_title...); unless option
-     *  title is -1 (only the disc info, no packets), open that title (with
-     *  option part >= 0: that part of it alone, a part the disc info lists):
-     *  its streams (docs/FORMATS.md) and DiscContext.src, which the disc
-     *  layer's title reader then reads. */
-    int  (*open)(AVFormatContext *s);
-    /** Also after a failed open (the context as far as open came). */
+    size_t                  priv_size;  /**< the part's own context, zeroed before load */
+
+    /* The title entries, the same for every format; the disc layer runs
+     * the flow (discdec.c): load, each title's probe, tracks and stream
+     * pass (discpass.c), the titles left out, the disc info, the opened
+     * title. Titles are numbered from 0 in the part's current list. */
+
+    /** Read the disc's structure from DiscContext.fs (its keys, the title
+     *  list with each title's tracks by the format's own rules); the disc
+     *  info's disc-wide fields (name, label, encrypted). */
+    int  (*load)(AVFormatContext *s);
+    int  (*nb_titles)(AVFormatContext *s);
+    /** Title i's name for the log. */
+    const char *(*title_name)(AVFormatContext *s, int i);
+    /** Title i's own probe before its stream pass, or NULL: < 0 the title
+     *  cannot be used. */
+    int  (*title_probe)(AVFormatContext *s, int i);
+    /** Title i's tracks into out (room for out_size): their count, < 0
+     *  error. */
+    int  (*title_tracks)(AVFormatContext *s, int i, DiscTrack *out, int out_size);
+    /** The segment title i's stream pass reads (its largest) into src: 1,
+     *  0 none (no pass), < 0 error. Released with segment_close (may be
+     *  NULL). */
+    int  (*title_segment)(AVFormatContext *s, int i, DiscPassSource *src);
+    void (*segment_close)(AVFormatContext *s, DiscPassSource *src);
+    /** Title i left out of the part's list (the titles after it move up). */
+    void (*remove_title)(AVFormatContext *s, int i);
+    /** Title i's disc info but its streams: name, length, size, files,
+     *  chapters, parts. */
+    int  (*title_info)(AVFormatContext *s, int i, DiscTitleInfo *dt);
+    /** Open title i (with part >= 0: that part of it alone): DiscContext.src
+     *  but its tracks (clips, block reader, chapters, LPCM header, lead-in
+     *  tolerance, ts), s->duration; *second_view: the second view of a 3-D
+     *  title is read. */
+    int  (*open_title)(AVFormatContext *s, int i, int part, int *second_view);
+    /** Also after a failed load (the context as far as it came). */
     void (*close)(AVFormatContext *s);
 } DiscFormat;
 
@@ -192,6 +219,9 @@ typedef struct DiscContext {
     int              *pids;             /**< src.pids */
     DiscPassCache    *pass_cache;       /**< the stream pass's results per segment */
     int               untested;         /**< the opened title's tracks not met on a real disc yet */
+    DiscTrack       **title_tracks;     /**< each title's tracks after its stream pass */
+    int              *nb_title_tracks;
+    int               nb_title_slots;   /**< the arrays' size */
     DiscTitleReader  *reader;
 } DiscContext;
 
