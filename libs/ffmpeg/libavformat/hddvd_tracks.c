@@ -548,13 +548,11 @@ static int build_title(Builder *b, HDDVDTitle *t)
                t->name, clip->evob->name);
         return 0;
     }
-    /* audio, then sub-pictures; a stream of the same codec and number as an
-     * earlier one is left out */
+    /* audio, then sub-pictures (a stream like an earlier one is left out by
+     * the disc layer's stream pass) */
     for (int pass = 0; pass < 2; pass++) {
         enum AVMediaType type = pass ? AVMEDIA_TYPE_SUBTITLE : AVMEDIA_TYPE_AUDIO;
         for (int i = 0; i < n; i++) {
-            int dup = 0;
-
             describe(b, clip, a, i, &k);
             if (k.type == AVMEDIA_TYPE_AUDIO && type == k.type && k.coding == CODING_UNKNOWN) {
                 untested(b, 1, "audio stream with coding mode 3: a title with one cannot be used");
@@ -564,15 +562,6 @@ static int build_title(Builder *b, HDDVDTitle *t)
             }
             if (k.type != type || k.codec == AV_CODEC_ID_NONE)
                 continue;
-            for (int m = 1; m < t->nb_tracks && !dup; m++)
-                dup = t->tracks[m].codec == k.codec && t->tracks[m].number == k.number &&
-                      t->tracks[m].from_track < 0 &&
-                      (t->tracks[m].inner_track >= 0) == (k.type == AVMEDIA_TYPE_AUDIO && clip->probe_dtshd[k.number]);
-            if (dup) {
-                av_log(b->log, AV_LOG_WARNING, "Title %s: %s stream %d is the same as an earlier one "
-                       "and is left out\n", t->name, pass ? "sub-picture" : "audio", i);
-                continue;
-            }
             if (k.type == AVMEDIA_TYPE_AUDIO && clip->probe_dtshd[k.number]) {
                 /* DTS-HD, then the DTS stream inside it as a track of its own */
                 k.inner_track = t->nb_tracks + 1;

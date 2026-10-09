@@ -3,7 +3,10 @@
  * through the disc readers (an image file or a folder), tells which kind of
  * disc it is from its file system and hands it to that kind's format part
  * (disc.h). The disc's own details (kind, label, file system) go into the
- * disc info (discinfo.h) here; its titles come from the format part.
+ * disc info (discinfo.h) here; its titles come from the format part. A
+ * title's tracks come from the format part in one shape for every format
+ * (DiscTrack): the disc info's streams and, for the opened title, its
+ * AVStreams and the title reader's tracks are made from them here.
  *
  * This file is part of FFmpeg.
  *
@@ -25,6 +28,7 @@
 #include <limits.h>
 #include <string.h>
 
+#include "libavcodec/avcodec.h"
 #include "libavcodec/defs.h"
 #include "libavutil/avstring.h"
 #include "libavutil/dict.h"
@@ -39,6 +43,8 @@
 #include "disc.h"
 #include "discinfo.h"
 #include "discio.h"
+#include "disctl.h"
+#include "internal.h"
 
 /* The format parts, by the disc kind the readers tell. */
 static const DiscFormat *const parts[] = {
@@ -92,12 +98,8 @@ DiscTitleInfo *ff_disc_add_title(AVFormatContext *s)
 DiscStreamInfo *ff_disc_title_add_stream(DiscTitleInfo *t)
 {
     DiscStreamInfo *k = av_dynarray2_add((void **)&t->streams, &t->nb_streams, sizeof(*k), NULL);
-    if (k) {
-        memset(k, 0, sizeof(*k));
-        k->inner_track = k->from_track = k->offset_sequence = -1;
-        k->profile = AV_PROFILE_UNKNOWN;
-        k->level   = AV_LEVEL_UNKNOWN;
-    }
+    if (k)
+        ff_disc_stream_init(k);
     return k;
 }
 
@@ -122,6 +124,191 @@ int ff_disc_title_add_file(DiscTitleInfo *t, const char *name)
     return av_dynarray_add_nofree(&t->files, &t->nb_files, (void *)name);
 }
 
+void ff_disc_stream_init(DiscStreamInfo *k)
+{
+    memset(k, 0, sizeof(*k));
+    k->inner_track = k->from_track = k->offset_sequence = -1;
+    k->profile = AV_PROFILE_UNKNOWN;
+    k->level   = AV_LEVEL_UNKNOWN;
+}
+
+int ff_disc_title_add_tracks(DiscTitleInfo *t, const DiscTrack *tracks, int nb_tracks)
+{
+    for (int i = 0; i < nb_tracks; i++) {
+        DiscStreamInfo *k = ff_disc_title_add_stream(t);
+        if (!k)
+            return AVERROR(ENOMEM);
+        *k = tracks[i].info;
+    }
+    return 0;
+}
+
+/* ---- the opened title's tracks ---- */
+
+static int add_pid(DiscContext *d, int pid)
+{
+    for (int i = 0; i < d->src.nb_pids; i++)
+        if (d->pids[i] == pid)
+            return 0;
+    d->pids[d->src.nb_pids++] = pid;
+    return 1;
+}
+
+/* Where a track's data is, for the log. */
+static void track_place(char *buf, size_t size, const DiscTrack *k, const DiscTsFeed *f, int ts)
+{
+    if (!ts)
+        snprintf(buf, size, k->id < 0 ? "carried in the video" : "id 0x%x", k->id);
+    else if (f->nb_keys > 1)
+        snprintf(buf, size, "PID 0x%04x, keys 0x%04x + 0x%04x", f->pid, f->key[0], f->key[1]);
+    else
+        snprintf(buf, size, "PID 0x%04x, key 0x%04x%s", f->pid, f->key[0], f->key[0] ? "" : " (any)");
+}
+
+/* The stream of a track read: its id, codec, time base, dispositions, what
+ * the caller shows of it (metadata), a sub-picture canvas and VobSub
+ * header. */
+static int track_stream(AVFormatContext *s, const DiscTrack *k, int index, const DiscTsFeed *f, int ts,
+                        enum AVCodecID codec, int second_view)
+{
+    DiscContext *d = s->priv_data;
+    AVStream *st = avformat_new_stream(s, NULL);
+    int ret;
+
+    if (!st)
+        return AVERROR(ENOMEM);
+    st->id                   = ts ? f->pid | f->key[0] << 16 : k->id;
+    st->codecpar->codec_type = k->info.type;
+    st->codecpar->codec_id   = codec;
+    avpriv_set_pts_info(st, 64, 1, DR_TICKS_PER_SECOND);
+    if (k->info.from_track >= 0)
+        st->disposition |= AV_DISPOSITION_DEPENDENT;
+    if (k->info.forced)
+        st->disposition |= AV_DISPOSITION_FORCED;
+    if ((k->line21 && (ret = av_dict_set(&st->metadata, "line21", k->line21, 0)) < 0) ||
+        (k->info.language[0] && (ret = av_dict_set(&st->metadata, "language", k->info.language, 0)) < 0) ||
+        (ret = av_dict_set_int(&st->metadata, "disc_track", index, 0)) < 0 ||
+        (second_view && k->eye && (ret = av_dict_set(&st->metadata, "eye", k->eye, 0)) < 0) ||
+        ((k->flags & DISC_TRACK_LAYER2) &&
+         (ret = av_dict_set(&st->metadata, "dolby_vision", d->opt_dolby_vision ? "BL" : "BL+EL+RPU", 0)) < 0) ||
+        (k->picture && (ret = av_dict_set(&st->metadata, "picture", k->picture, 0)) < 0) ||
+        (k->caption && (ret = av_dict_set(&st->metadata, "caption", k->caption, 0)) < 0))
+        return ret;
+    if (k->kind == DR_KIND_SUBTITLE && k->info.width > 0 && k->info.height > 0) {
+        st->codecpar->width  = k->info.width;
+        st->codecpar->height = k->info.height;
+    }
+    if (codec == AV_CODEC_ID_DVD_SUBTITLE) {
+        /* the VobSub index header (FFmpeg's DVD subtitle decoder reads size
+         * and palette from it) */
+        char idx[1024];
+        int len = ff_disctl_vobsub_header(idx, sizeof(idx), k->info.width, k->info.height, k->palette);
+        if (len < 0 || len >= sizeof(idx))
+            return AVERROR_BUG;
+        if ((ret = ff_alloc_extradata(st->codecpar, len)) < 0)
+            return ret;
+        memcpy(st->codecpar->extradata, idx, len);
+    }
+    return 0;
+}
+
+int ff_disc_open_tracks(AVFormatContext *s, const char *title, const DiscTrack *tracks, int nb_tracks, int ts,
+                        int second_view)
+{
+    DiscContext *d = s->priv_data;
+    const char *fmt = d->fmt->log_name;
+    int n = 0, layer = -1, ret;
+    char place[64];
+
+    /* one more for a Dolby Vision enhancement layer (read from its own PID) */
+    if (!(d->tracks = av_calloc(nb_tracks + 1, sizeof(*d->tracks))) ||
+        (ts && (!(d->feeds = av_calloc(nb_tracks + 1, sizeof(*d->feeds))) ||
+                !(d->pids  = av_calloc(nb_tracks + 1, sizeof(*d->pids))))))
+        return AVERROR(ENOMEM);
+    for (int i = 0; i < nb_tracks; i++) {
+        const DiscTrack *k = &tracks[i];
+        int view = !!(k->flags & DISC_TRACK_SECOND_VIEW);
+        /* a caption track: its cues are text */
+        enum AVCodecID codec = k->kind == DR_KIND_CAPTION ? AV_CODEC_ID_SUBRIP : k->info.codec;
+        DRTitleTrack *t = &d->tracks[n];
+
+        if (view && !second_view) {
+            av_log(s, AV_LOG_INFO, "%s: title %s: track %d, the 3-D second view (PID 0x%04x), is left out (not "
+                   "asked for)\n", fmt, title, i, k->feed.pid);
+            continue;
+        }
+        if (k->not_read) {
+            track_place(place, sizeof(place), k, &k->feed, ts);
+            av_log(s, AV_LOG_WARNING, "%s: title %s: track %d (%s %s, %s) is not read yet: left out\n", fmt, title,
+                   i, av_get_media_type_string(k->info.type), avcodec_get_name(k->info.codec), place);
+            continue;
+        }
+        if (ts) {
+            d->feeds[n] = k->feed;
+            add_pid(d, k->feed.pid);
+        }
+        if ((ret = track_stream(s, k, i, &k->feed, ts, codec, second_view)) < 0)
+            return ret;
+        if (k->untested) {
+            av_log(s, AV_LOG_WARNING, "%s: title %s: track %d (%s): %s [untested on real discs]\n", fmt, title, i,
+                   avcodec_get_name(k->info.codec), k->untested);
+            d->untested++;
+        }
+        if (k->flags & DISC_TRACK_LAYER2)
+            layer = i;
+        t->codec       = codec;
+        t->kind        = view ? DR_KIND_LAYER : k->kind;
+        t->sub_flags   = k->info.forced ? DR_SUB_FORCED_ONLY : 0;
+        t->audio_flags = (k->info.from_track >= 0 ? DR_AUDIO_EXTRACTED : 0) |
+                         (k->info.from_track >= 0 || k->info.inner_track >= 0 ? DR_AUDIO_EXTENDED : 0);
+        if (k->kind == DR_KIND_SUBTITLE) {
+            t->width  = k->info.width;
+            t->height = k->info.height;
+        }
+        track_place(place, sizeof(place), k, &k->feed, ts);
+        av_log(s, AV_LOG_VERBOSE, "%s: track %d -> stream %d: %s, %s\n", fmt, i, n, avcodec_get_name(codec), place);
+        n++;
+    }
+    /* the Dolby Vision enhancement layer (with its metadata, the RPU): its
+     * own PID; merged: a second layer whose pictures go into the video's
+     * frames (no stream of its own), separate: a stream of its own */
+    if (layer >= 0) {
+        const DiscTrack *k = &tracks[layer];
+        DRTitleTrack *t = &d->tracks[n];
+
+        if (ts) {
+            d->feeds[n] = k->layer_feed;
+            add_pid(d, k->layer_feed.pid);
+        }
+        t->codec       = AV_CODEC_ID_HEVC;
+        t->kind        = DR_KIND_LAYER;
+        t->layer_flags = d->opt_dolby_vision ? 0 : DR_LAYER_MERGED;
+        if (d->opt_dolby_vision) {
+            AVStream *st = avformat_new_stream(s, NULL);
+            if (!st)
+                return AVERROR(ENOMEM);
+            st->id                   = ts ? k->layer_feed.pid | k->layer_feed.key[0] << 16 : k->id;
+            st->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
+            st->codecpar->codec_id   = AV_CODEC_ID_HEVC;
+            avpriv_set_pts_info(st, 64, 1, DR_TICKS_PER_SECOND);
+            if ((k->info.language[0] && (ret = av_dict_set(&st->metadata, "language", k->info.language, 0)) < 0) ||
+                (ret = av_dict_set_int(&st->metadata, "disc_track", layer, 0)) < 0 ||
+                (ret = av_dict_set(&st->metadata, "dolby_vision", "EL", 0)) < 0)
+                return ret;
+        }
+        av_log(s, AV_LOG_VERBOSE, "%s: track %d: its Dolby Vision enhancement layer, PID 0x%04x, key 0x%04x: %s\n",
+               fmt, layer, k->layer_feed.pid, k->layer_feed.key[0],
+               d->opt_dolby_vision ? "a stream of its own" : "merged into the video's frames");
+        n++;
+    }
+    d->src.ts        = ts;
+    d->src.tracks    = d->tracks;
+    d->src.nb_tracks = n;
+    d->src.feeds     = d->feeds;
+    d->src.pids      = d->pids;
+    return 0;
+}
+
 extern const FFInputFormat ff_disc_demuxer;
 
 const DiscInfo *disc_info(const AVFormatContext *s)
@@ -137,6 +324,14 @@ static int disc_close(AVFormatContext *s)
     if (d->fmt && d->part)
         d->fmt->close(s);
     av_freep(&d->part);
+    av_freep(&d->tracks);
+    av_freep(&d->feeds);
+    av_freep(&d->pids);
+    for (int i = 0; d->title_tracks && i < d->nb_title_slots; i++)
+        av_freep(&d->title_tracks[i]);
+    av_freep(&d->title_tracks);
+    av_freep(&d->nb_title_tracks);
+    ff_disc_pass_cache_free(&d->pass_cache);
     for (int i = 0; i < d->info.nb_titles; i++) {
         av_freep(&d->info.titles[i].streams);
         av_freep(&d->info.titles[i].chapters);
@@ -148,6 +343,112 @@ static int disc_close(AVFormatContext *s)
     ff_discio_fs_close(&d->fs);
     ff_discio_source_free(&d->image);
     return 0;
+}
+
+/* ---- the flow, the same for every format ---- */
+
+#define MAX_TITLE_TRACKS 256
+
+/* Every title's probe (the format's own), its tracks and the stream pass
+ * over its largest segment (discpass.c: duplicates, details for the title
+ * list, data). A title whose pass fails is left out, said in the log (the
+ * title list and a title's open alike: the titles' numbers must agree). */
+static int titles_pass(AVFormatContext *s)
+{
+    DiscContext *d = s->priv_data;
+    const DiscFormat *f = d->fmt;
+    const char *fmt = f->log_name;
+    int n = f->nb_titles(s), details = d->opt_details && d->opt_title < 0;
+    DiscTrack *tr;
+
+    if (!(d->title_tracks = av_calloc(FFMAX(n, 1), sizeof(*d->title_tracks))) ||
+        !(d->nb_title_tracks = av_calloc(FFMAX(n, 1), sizeof(*d->nb_title_tracks))) ||
+        !(tr = av_calloc(MAX_TITLE_TRACKS, sizeof(*tr))))
+        return AVERROR(ENOMEM);
+    d->nb_title_slots = n;
+    for (int i = 0; i < n; i++) {
+        const char *name = f->title_name(s, i);
+        DiscPassSource src = { 0 };
+        int ret = f->title_probe ? f->title_probe(s, i) : 0, nb = 0, seg = 0;
+
+        if (ret >= 0)
+            ret = nb = f->title_tracks(s, i, tr, MAX_TITLE_TRACKS);
+        if (ret >= 0 && nb && (ret = seg = f->title_segment(s, i, &src)) > 0) {
+            ret = ff_disc_stream_pass(s, name, &src, tr, &nb, details);
+            if (f->segment_close)
+                f->segment_close(s, &src);
+        }
+        if (ret == AVERROR(ENOMEM)) {
+            av_free(tr);
+            return ret;
+        }
+        if (ret < 0) {
+            if (ret == AVERROR_INVALIDDATA)
+                av_log(s, AV_LOG_ERROR, "%s: title %s: no audio / video data can be decoded from it: title "
+                       "skipped\n", fmt, name ? name : "?");
+            else
+                av_log(s, AV_LOG_ERROR, "%s: title %s: its streams cannot be read (%s): title skipped\n", fmt,
+                       name ? name : "?", av_err2str(ret));
+            f->remove_title(s, i);
+            n--;
+            i--;
+            continue;
+        }
+        if (nb && !(d->title_tracks[i] = av_memdup(tr, nb * sizeof(*tr)))) {
+            av_free(tr);
+            return AVERROR(ENOMEM);
+        }
+        d->nb_title_tracks[i] = nb;
+    }
+    av_free(tr);
+    return 0;
+}
+
+/* The disc info's titles: each title's own (the format part's) and its
+ * tracks. */
+static int titles_info(AVFormatContext *s)
+{
+    DiscContext *d = s->priv_data;
+    int n = d->fmt->nb_titles(s), ret;
+
+    for (int i = 0; i < n; i++) {
+        DiscTitleInfo *dt = ff_disc_add_title(s);
+        if (!dt)
+            return AVERROR(ENOMEM);
+        if ((ret = d->fmt->title_info(s, i, dt)) < 0 ||
+            (ret = ff_disc_title_add_tracks(dt, d->title_tracks[i], d->nb_title_tracks[i])) < 0)
+            return ret;
+    }
+    return 0;
+}
+
+/* The title option's title (its part): the format part's source of it and
+ * its streams and title-reader tracks from its tracks. */
+static int open_title(AVFormatContext *s)
+{
+    DiscContext *d = s->priv_data;
+    const DiscFormat *f = d->fmt;
+    int i = d->opt_title, both = 0, ret;
+    const char *name;
+
+    if (i >= d->info.nb_titles) {
+        av_log(s, AV_LOG_ERROR, "%s: title %d does not exist (the disc has %d)\n", f->log_name, i,
+               d->info.nb_titles);
+        return AVERROR(EINVAL);
+    }
+    if (d->opt_part >= 0 && d->opt_part >= d->info.titles[i].nb_parts) {
+        av_log(s, AV_LOG_ERROR, "Title %d has no part %d (it has %d)\n", i, d->opt_part, d->info.titles[i].nb_parts);
+        return AVERROR(EINVAL);
+    }
+    name = f->title_name(s, i);
+    if (!d->nb_title_tracks[i] || d->title_tracks[i][0].not_read) {
+        av_log(s, AV_LOG_ERROR, "%s: title %s: its video (%s) is not read yet\n", f->log_name, name ? name : "?",
+               d->nb_title_tracks[i] ? avcodec_get_name(d->title_tracks[i][0].info.codec) : "none");
+        return AVERROR_PATCHWELCOME;
+    }
+    if ((ret = f->open_title(s, i, d->opt_part, &both)) < 0)
+        return ret;
+    return ff_disc_open_tracks(s, name ? name : "?", d->title_tracks[i], d->nb_title_tracks[i], d->src.ts, both);
 }
 
 static int disc_read_header(AVFormatContext *s)
@@ -194,16 +495,12 @@ static int disc_read_header(AVFormatContext *s)
     d->info.udf_revision = d->fs->udf_revision;
     if (!(d->part = av_mallocz(d->fmt->priv_size)))
         return AVERROR(ENOMEM);
-    if ((ret = d->fmt->open(s)) < 0)
+    if ((ret = d->fmt->load(s)) < 0 || (ret = titles_pass(s)) < 0 || (ret = titles_info(s)) < 0)
         return ret;
     if (d->opt_title < 0)               /* only the disc info, no title opened */
         return 0;
-    if (d->opt_part >= 0 && (d->opt_title >= d->info.nb_titles ||
-                             d->opt_part >= d->info.titles[d->opt_title].nb_parts)) {
-        av_log(s, AV_LOG_ERROR, "Title %d has no part %d (it has %d)\n", d->opt_title, d->opt_part,
-               d->opt_title < d->info.nb_titles ? d->info.titles[d->opt_title].nb_parts : 0);
-        return AVERROR(EINVAL);
-    }
+    if ((ret = open_title(s)) < 0)
+        return ret;
     return ff_disc_title_reader_open(s, &d->src);
 }
 

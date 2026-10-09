@@ -113,7 +113,7 @@ def test_a_frame_with_another_length_is_timed_by_its_own_header_and_reviewed():
     assert durs[:4] == [dur(1536, 48000)] * 4
     assert durs[4:] == [dur(768, 48000)] * 4
     assert r.audio.header.samples == 1536, "the stream's values stay those of its first frame"
-    assert r.audio.review == 4
+    assert r.audio.review == 1, "an untested path is counted once per kind (4 frames, one kind)"
 
 
 def test_a_marker_is_an_empty_frame_that_keeps_its_time():

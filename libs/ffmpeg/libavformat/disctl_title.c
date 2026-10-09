@@ -68,7 +68,9 @@ typedef struct Track {
     int64_t       forced_objects;/* PGS: forced objects shown */
     DRCcx        *ccx;           /* captions: the converter, from the first block on */
     int64_t       cc_blocks;     /* captions: caption blocks given to the converter */
-    int64_t       cc_last_ms;    /* captions: the last block's time (ms) */
+    int64_t       cc_origin;     /* captions: the segment converter's origin (its first block's time) */
+    int           cc_segments;   /* captions: segments converted */
+    int           cc_lost;       /* captions: captions shown at a segment's end left out */
     int64_t       cc_cues;       /* captions: cues given out */
     DRFrame      *wait;          /* audio frames waiting for the video */
     int           wait_head, nb_wait, wait_cap;
@@ -568,14 +570,27 @@ static int spu_finish(DRTitle *t, Track *k)
 /* ---- closed captions ----
  * The MPEG-2 rules take GOP-level user data out of the video as side units,
  * timed on the picture they belong to. A DVD caption block among them goes
- * to the caption track as its CEA-608 entries; on the title timeline each
- * block goes to the converter at its time in milliseconds (truncated). */
+ * to the caption track's converter as its CEA-608 entries; each segment has
+ * a converter of its own (the reference's way), started at the segment's
+ * first caption block, whose time is the converter's origin: a block goes
+ * in at its whole milliseconds since then (truncated). At the segment's end
+ * the screen is cleared half a second past 71 hours after the origin (erase
+ * displayed memory, sent twice as control codes are): a caption still shown
+ * then ends after 71 h and is left out (the reference loses it the same way;
+ * the converter writes a cue's end 1 ms before the clearing, so the clearing
+ * must come later than 71 h + 1 ms); the converter's other cues go into the
+ * joiner at the origin plus their times, like a subtitle track's units.
+ * LOOK INTO AGAIN LATER: a caption shown across a segment's end is lost. */
+
+#define CC_END_MS   255600000LL         /* 71 h */
+#define CC_CLEAR_MS (CC_END_MS + 500)
 
 static int cc_side(void *opaque, DRFrame *f)
 {
     DRTitle *t = opaque;
     uint8_t tri[63 * 3];
-    int n = ff_disctl_cc_check(f->data, f->size), m;
+    int n = ff_disctl_cc_check(f->data, f->size), m, ret = 0;
+    int64_t ms;
     Track *k;
 
     if (!n) {
@@ -595,26 +610,10 @@ static int cc_side(void *opaque, DRFrame *f)
         return 0;
     }
     k = &t->t[t->cc_track];
-    if (!m) {
+    if (!m || f->time == AV_NOPTS_VALUE) {
         ff_disctl_frame_unref(f);
         return 0;
     }
-    /* the frame keeps its time; its bytes become the entries */
-    av_buffer_unref(&f->buf);
-    if (!(f->buf = av_buffer_alloc(3 * m + AV_INPUT_BUFFER_PADDING_SIZE)))
-        return AVERROR(ENOMEM);
-    memcpy(f->buf->data, tri, 3 * m);
-    memset(f->buf->data + 3 * m, 0, AV_INPUT_BUFFER_PADDING_SIZE);
-    f->data = f->buf->data;
-    f->size = 3 * m;
-    return ff_disctl_join_push(t->join, k->index, f);
-}
-
-static int cc_joined(DRTitle *t, Track *k, DRFrame *f)
-{
-    int64_t ms = f->time / (DR_TICKS_PER_SECOND / 1000);
-    int ret = 0;
-
     if (!k->ccx) {
         if (!t->cfg.cc_helper || !*t->cfg.cc_helper) {
             av_log(t->log, AV_LOG_ERROR, "Captions: track %d: the converter program (%s) is not known: the "
@@ -622,45 +621,52 @@ static int cc_joined(DRTitle *t, Track *k, DRFrame *f)
             ret = AVERROR(ENOENT);
         } else {
             ret = ff_disctl_ccx_start(&k->ccx, t->log, t->cfg.cc_helper);
+            k->cc_origin = f->time;
         }
     }
-    if (ret >= 0)
-        ret = ff_disctl_ccx_block(k->ccx, ms, f->data, f->size / 3);
-    if (ret >= 0) {
+    ms = (f->time - k->cc_origin) / (DR_TICKS_PER_SECOND / 1000);
+    if (ret >= 0 && ms < 0) {
+        /* the converter's times only go forward from its origin */
+        av_log(t->log, AV_LOG_WARNING, "Captions: track %d: a caption block %"PRId64" ms before the segment's "
+               "first one is left out\n", k->index, -ms);
+        k->warnings++;
+    } else if (ret >= 0 && (ret = ff_disctl_ccx_block(k->ccx, ms, tri, m)) >= 0) {
         k->cc_blocks++;
-        k->cc_last_ms = ms;
     }
     ff_disctl_frame_unref(f);
     return ret;
 }
 
-/* The end of the title: the screen is cleared at the end of the video
- * (erase displayed memory, CEA-608, sent twice as control codes are), so a
- * caption still shown lasts until then; the converter's cues go out. */
-static int cc_finish(DRTitle *t, Track *k)
+/* The end of a segment: its converter's cues into the joiner. */
+static int cc_segment_end(DRTitle *t)
 {
     static const uint8_t edm[6] = { 0x04, 0x94, 0x2C, 0x04, 0x94, 0x2C };
-    int64_t end_ms = t->vend / (DR_TICKS_PER_SECOND / 1000), tick = DR_TICKS_PER_SECOND / 1000;
+    int64_t tick = DR_TICKS_PER_SECOND / 1000;
     DRCue *cues = NULL;
-    int n = 0, ret;
+    Track *k;
+    int n = 0, lost = 0, ret;
 
-    if (!k->ccx) {
-        av_log(t->log, AV_LOG_WARNING, "Captions: track %d: the video carries no caption block: no cues\n",
-               k->index);
-        k->warnings++;
+    if (t->cc_track < 0 || !(k = &t->t[t->cc_track])->ccx)
         return 0;
-    }
-    if (end_ms >= k->cc_last_ms && (ret = ff_disctl_ccx_block(k->ccx, end_ms, edm, 2)) < 0)
-        return ret;
-    ret = ff_disctl_ccx_finish(k->ccx, &cues, &n);
+    if ((ret = ff_disctl_ccx_block(k->ccx, CC_CLEAR_MS, edm, 2)) >= 0)
+        ret = ff_disctl_ccx_finish(k->ccx, &cues, &n);
     ff_disctl_ccx_close(&k->ccx);
-    if (ret < 0)
-        return ret;
+    k->cc_segments++;
     for (int i = 0; i < n && ret >= 0; i++) {
-        DRFrame f = { .time = cues[i].start_ms * tick, .src = cues[i].start_ms * tick, .flags = DR_F_KEY,
-                      .dur = FFMAX(cues[i].end_ms - cues[i].start_ms, 0) * tick, .pos = -1 };
+        DRFrame f = { .time = k->cc_origin + cues[i].start_ms * tick, .flags = DR_F_KEY, .pos = -1 };
         size_t len = strlen(cues[i].text);
 
+        if (cues[i].start_ms > CC_END_MS)
+            continue;
+        if (cues[i].end_ms > CC_END_MS) {
+            av_log(t->log, AV_LOG_VERBOSE, "Captions: track %d: a caption still shown at the end of segment %d "
+                   "(from %"PRId64" ms after its first caption block) is left out\n", k->index, t->segments,
+                   cues[i].start_ms);
+            lost++;
+            continue;
+        }
+        f.src = f.time;
+        f.dur = FFMAX(cues[i].end_ms - cues[i].start_ms, 0) * tick;
         if (!(f.buf = av_buffer_alloc(len + AV_INPUT_BUFFER_PADDING_SIZE))) {
             ret = AVERROR(ENOMEM);
             break;
@@ -669,14 +675,33 @@ static int cc_finish(DRTitle *t, Track *k)
         memset(f.buf->data + len, 0, AV_INPUT_BUFFER_PADDING_SIZE);
         f.data = f.buf->data;
         f.size = len;
-        ret = emit(t, k, &f);
+        ret = ff_disctl_join_push(t->join, k->index, &f);
     }
-    k->cc_cues = n;
+    k->cc_lost += lost;
     ff_disctl_cues_free(&cues, n);
-    if (ret >= 0)
-        av_log(t->log, AV_LOG_VERBOSE, "Captions: track %d: %"PRId64" caption blocks -> %d cues (CCExtractor %s)\n",
-               k->index, k->cc_blocks, n, DR_CCX_VERSION);
     return ret;
+}
+
+/* A cue on the title timeline: out. */
+static int cc_joined(DRTitle *t, Track *k, DRFrame *f)
+{
+    k->cc_cues++;
+    return emit(t, k, f);
+}
+
+/* The end of the title: what the converters made. */
+static int cc_finish(DRTitle *t, Track *k)
+{
+    if (!k->cc_blocks) {
+        av_log(t->log, AV_LOG_WARNING, "Captions: track %d: the video carries no caption block: no cues\n",
+               k->index);
+        k->warnings++;
+        return 0;
+    }
+    av_log(t->log, AV_LOG_VERBOSE, "Captions: track %d: %"PRId64" caption blocks in %d segment(s) -> %"PRId64" cues "
+           "(CCExtractor %s), %d caption(s) shown at a segment's end left out\n", k->index, k->cc_blocks,
+           k->cc_segments, k->cc_cues, DR_CCX_VERSION, k->cc_lost);
+    return 0;
 }
 
 static int seg_frame(void *opaque, DRFrame *f);
@@ -1160,7 +1185,8 @@ static int seg_end(DRTitle *t)
     Track *v = &t->t[0];
     int ret;
 
-    if ((ret = ff_disctl_frames_flush(v->cut)) < 0 || (ret = ff_disctl_video_flush(v->video)) < 0)
+    if ((ret = ff_disctl_frames_flush(v->cut)) < 0 || (ret = ff_disctl_video_flush(v->video)) < 0 ||
+        (ret = cc_segment_end(t)) < 0)
         return ret;
     for (int i = 1; i < t->cfg.nb_tracks; i++) {
         Track *k = &t->t[i];
@@ -1526,12 +1552,13 @@ int ff_disctl_title_track_result(const DRTitle *t, int track, int64_t *frames, i
     return 0;
 }
 
-int ff_disctl_title_cc_result(const DRTitle *t, int track, int64_t *blocks, int64_t *cues)
+int ff_disctl_title_cc_result(const DRTitle *t, int track, int64_t *blocks, int64_t *cues, int64_t *lost)
 {
     if (track < 0 || track >= t->cfg.nb_tracks || t->t[track].cfg.kind != DR_KIND_CAPTION)
         return AVERROR(EINVAL);
     *blocks = t->t[track].cc_blocks;
     *cues   = t->t[track].cc_cues;
+    *lost   = t->t[track].cc_lost;
     return 0;
 }
 

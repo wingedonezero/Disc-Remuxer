@@ -104,9 +104,9 @@ def run(tracks, tolerance, lpcm_hd, segments, spu=None, cc_helper=None):
         assert lib.ff_disctl_title_spu_result(t[0], 0, n, o) < 0, "not a sub-picture track"
         spu += [n[0], o[0]]
     if cc_helper:
-        b, c = ffi.new("int64_t *"), ffi.new("int64_t *")
-        assert lib.ff_disctl_title_cc_result(t[0], len(tracks) - 1, b, c) == 0
-        events.append({"kind": "cc_result", "blocks": b[0], "cues": c[0]})
+        b, c, x = ffi.new("int64_t *"), ffi.new("int64_t *"), ffi.new("int64_t *")
+        assert lib.ff_disctl_title_cc_result(t[0], len(tracks) - 1, b, c, x) == 0
+        events.append({"kind": "cc_result", "blocks": b[0], "cues": c[0], "lost": x[0]})
     lib.ff_disctl_title_close(t)
     return outs, events, duration, review
 
@@ -285,8 +285,9 @@ def with_captions(stream, per_gop):
 
 def test_captions_in_the_gop_user_data_become_a_text_track():
     # GOP 2 loads a caption, GOP 3 shows it, GOP 10 erases it; GOP 90 loads
-    # one more, GOP 91 shows it and nothing erases it: it lasts until the
-    # end of the video. Each block is timed on its GOP's first picture.
+    # one more, GOP 91 shows it and nothing erases it: it is still shown at
+    # the segment's end and left out (the reference's way). Each block is
+    # timed on its GOP's first picture.
     per_gop = {2: load(b"HELLO"), 3: EOC, 10: EDM, 90: load(b"LAST"), 91: EOC}
     stream, first = with_captions(M2V, per_gop)
     tracks = [[codec_id("mpeg2video"), lib.DR_KIND_VIDEO, 0], [codec_id("subrip"), lib.DR_KIND_CAPTION, 0]]
@@ -294,13 +295,40 @@ def test_captions_in_the_gop_user_data_become_a_text_track():
                                          cc_helper=str(DIST / "ccextractor"))
     ms = lambda d: d * FRAME // MS                      # noqa: E731  (a display index in ms, truncated)
     cues = [(o.time // MS, (o.time + o.dur) // MS, o.data.decode()) for o in outs if o.track == 1]
-    assert cues == [
-        (ms(first[3]) + 1, ms(first[10]) - 1, "HELLO" + " " * 27),
-        (ms(first[91]) + 1, duration // MS - 1, "LAST" + " " * 28),
-    ]
+    assert cues == [(ms(first[3]) + 1, ms(first[10]) - 1, "HELLO" + " " * 27)]
     assert len([o for o in outs if o.track == 0]) == 1200, "the video keeps every picture"
     res = [e for e in events if e.get("kind") == "cc_result"][0]
-    assert (res["blocks"], res["cues"]) == (len(first), 2)
+    assert (res["blocks"], res["cues"], res["lost"]) == (len(first), 1, 1)
+    assert review == 0
+
+
+def test_each_segment_converts_its_own_captions():
+    # Segment 1: a caption from GOP 3 to GOP 10, one shown from GOP 31 on
+    # and still shown at the segment's end: left out, it does not run on
+    # into segment 2. Segment 2's GOP 0 has no caption entry, so its
+    # converter starts at GOP 1, whose first picture is not on a whole
+    # millisecond: a block's time is its whole milliseconds since that
+    # picture, and the cue lies that many milliseconds after it.
+    s1, f1 = with_captions(M2V, {2: load(b"FIRST"), 3: EOC, 10: EDM, 30: load(b"ACROSS"), 31: EOC})
+    s2, f2 = with_captions(M2V, {0: [], 2: load(b"SECOND"), 4: EOC, 9: EDM})
+    base2 = 500 * 1080000000
+    tracks = [[codec_id("mpeg2video"), lib.DR_KIND_VIDEO, 0], [codec_id("subrip"), lib.DR_KIND_CAPTION, 0]]
+    outs, events, duration, review = run(tracks, 110160000, True, [video(BASE, s1), video(base2, s2)],
+                                         cc_helper=str(DIST / "ccextractor"))
+    assert duration == 2400 * FRAME
+    o1, o2 = f1[0] * FRAME, 1200 * FRAME + f2[1] * FRAME     # the converters' origins on the title timeline
+    assert o2 % MS, "segment 2's origin is not on a whole millisecond"
+    rel = lambda f, a, b: (f[b] - f[a]) * FRAME // MS     # noqa: E731  (whole ms between two GOPs' pictures)
+    cues = [(o.time, o.time + o.dur, o.data.decode()) for o in outs if o.track == 1]
+    assert cues == [
+        (o1 + (rel(f1, 0, 3) + 1) * MS, o1 + (rel(f1, 0, 10) - 1) * MS, "FIRST" + " " * 27),
+        (o2 + (rel(f2, 1, 4) + 1) * MS, o2 + (rel(f2, 1, 9) - 1) * MS, "SECOND" + " " * 26),
+    ]
+    # whole milliseconds after the segment's origin, not on the title's
+    # whole milliseconds
+    assert (cues[1][0] - o2) % MS == 0 and cues[1][0] % MS
+    res = [e for e in events if e.get("kind") == "cc_result"][0]
+    assert (res["blocks"], res["cues"], res["lost"]) == (len(f1) + len(f2) - 1, 2, 1)
     assert review == 0
 
 

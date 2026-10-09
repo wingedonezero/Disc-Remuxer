@@ -446,6 +446,8 @@ typedef struct BlurayTitle {
 struct BlurayDisc;
 int  ff_bluray_titles_build(void *log, struct BlurayDisc *d, int min_length);   /* with the tracks (d->fs, d->keys) */
 void ff_bluray_titles_free(struct BlurayDisc *d);
+/** Title i left out of the list (freed; the titles after it move up). */
+void ff_bluray_title_remove(struct BlurayDisc *d, int i);
 /** The title's duration, 45 kHz ticks (its segments' STC sequences). */
 /**
  * The tracks of title t (t->tracks): its streams described from the
@@ -466,15 +468,6 @@ int ff_bluray_title_tracks(void *log, DiscIOFS *fs, BlurayAACS *aacs, BlurayTitl
  * bdav: the title's clips are BDAV (M2TS) clips.
  * @return the number of keys (1 or 2), 0 a kind with none (text subtitles)
  */
-/** Stream details of titles (bluray_details.c): kept per clip, PID and keys. */
-typedef struct BlurayDetailsCache BlurayDetailsCache;
-/** The stream details of title t's video and audio tracks into ds[track]
- *  (each track's own DiscStreamInfo), read from the start of the segment
- *  the tracks are described from; *cache holds what was read before. */
-int  ff_bluray_title_details(void *log, DiscIOFS *fs, BlurayAACS *aacs, const BlurayTitle *t,
-                             DiscStreamInfo *const *ds, BlurayDetailsCache **cache);
-void ff_bluray_details_cache_free(BlurayDetailsCache **cache);
-
 int ff_bluray_track_keys(const BlurayTrack *tk, int bdav, uint16_t key[2]);
 
 /**

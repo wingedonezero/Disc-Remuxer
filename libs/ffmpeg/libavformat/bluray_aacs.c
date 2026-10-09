@@ -611,12 +611,16 @@ int ff_bluray_aacs_open(void *log, BlurayDisc *d, const char *const *key_files, 
     a->keys = aacs_bd_open(d->disc_id, (const uint8_t (*)[16])u.enc, u.nb, mkb.data, mkb.size, mkb.path,
                            key_files, nb_key_files, aacs_log, log, &err);
     if (!a->keys) {
-        av_log(log, AV_LOG_ERROR, "Blu-ray: AACS: the volume key is unknown for this disc: it cannot be "
-               "decrypted (%s)\n",
+        char id[41] = "unknown";
+        for (int i = 0; d->has_disc_id && i < 20; i++)
+            snprintf(id + 2 * i, 3, "%02X", d->disc_id[i]);
+        av_log(log, AV_LOG_ERROR, "Blu-ray: AACS: the volume key is unknown for this disc (disc ID %s): it "
+               "cannot be decrypted (%s)\n", id,
                err == AACS_ERROR_NO_CONFIG ? "no key for it in the key files" :
                err == AACS_ERROR_NO_PK     ? "no key of the key files gives its media key" :
                err == AACS_ERROR_CORRUPTED_DISC ? "its AACS files are not usable" : aacs_error_str(err));
-        ret = err == AACS_ERROR_CORRUPTED_DISC ? AVERROR_INVALIDDATA : AVERROR(EACCES);
+        /* a key is missing (not a file access problem) */
+        ret = err == AACS_ERROR_CORRUPTED_DISC ? AVERROR_INVALIDDATA : AVERROR(ENOKEY);
         goto end;
     }
     a->nb_units = u.nb;
@@ -658,7 +662,7 @@ int ff_bluray_aacs_unit(void *log, BlurayAACS *a, BlurayClip *c, uint8_t *unit)
         if (!a) {
             av_log(log, AV_LOG_ERROR, "Blu-ray: clip %05u: an encrypted unit, but the disc has no AACS keys\n",
                    c->number);
-            return AVERROR(EACCES);
+            return AVERROR(ENOKEY);
         }
         if (unit[0] < 0xc0) {
             av_log(log, AV_LOG_ERROR, "Blu-ray: AACS: clip %05u: its first marked unit (copy permission %d) "
@@ -669,7 +673,7 @@ int ff_bluray_aacs_unit(void *log, BlurayAACS *a, BlurayClip *c, uint8_t *unit)
             c->key_unit = BLURAY_KEY_UNKNOWN;
             av_log(log, AV_LOG_ERROR, "Blu-ray: AACS: clip %05u: no unit key decrypts its first encrypted unit\n",
                    c->number);
-            return AVERROR(EACCES);
+            return AVERROR(ENOKEY);
         }
         av_log(log, AV_LOG_VERBOSE, "Blu-ray: AACS: clip %05u uses CPS unit %d\n", c->number, c->key_unit);
     }
@@ -682,7 +686,7 @@ int ff_bluray_aacs_unit(void *log, BlurayAACS *a, BlurayClip *c, uint8_t *unit)
     }
     if (!a || !aacs_bd_unit_key(a->keys, c->key_unit, key) || aacs_bd_decrypt_unit(key, unit) < 0) {
         av_log(log, AV_LOG_ERROR, "Blu-ray: AACS: clip %05u: CPS unit %d cannot decrypt\n", c->number, c->key_unit);
-        return AVERROR(EACCES);
+        return AVERROR(ENOKEY);
     }
     clear_marks(unit);
     return 0;

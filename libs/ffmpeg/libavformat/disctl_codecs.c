@@ -630,13 +630,32 @@ static int verify_latm(const uint8_t *d, int size)
     return (((d[1] & 0x1F) << 8) | d[2]) + 3 == size ? DR_UNIT_OK : DR_UNIT_BAD;
 }
 
+/* VC-1 (SMPTE 421M Annex G): the sequence header (start code 0x0F) and
+ * what follows it up to the first frame (0x0D), the entry point among it. */
+static int vc1_headers(const uint8_t *h, int size, int *start, int *end)
+{
+    int seq = -1;
+
+    for (int i = 0; i + 3 < size; i++)
+        if (!h[i] && !h[i + 1] && h[i + 2] == 1) {
+            if (h[i + 3] == 0x0f && seq < 0)
+                seq = i;
+            else if (h[i + 3] == 0x0d && seq >= 0) {
+                *start = seq;
+                *end   = i;
+                return 1;
+            }
+        }
+    return 0;
+}
+
 static const DRCodec codecs[] = {
     { .id = AV_CODEC_ID_MPEG1VIDEO, .name = "mpeg1video", .anchor = anchor_mpegvideo, .video = &ff_disctl_video_mpv,
-      .verify = verify_mpegvideo },
+      .verify = verify_mpegvideo, .video_bit_rate = DR_RATE_STATED, .no_display_aspect = 1 },
     { .id = AV_CODEC_ID_MPEG2VIDEO, .name = "mpeg2video", .anchor = anchor_mpegvideo, .video = &ff_disctl_video_mpv,
-      .verify = verify_mpegvideo },
+      .verify = verify_mpegvideo, .video_bit_rate = DR_RATE_MAX },
     { .id = AV_CODEC_ID_VC1, .name = "vc1", .anchor = anchor_vc1, .video = &ff_disctl_video_vc1, .verify = verify_vc1,
-      .disc_parser = 1 },
+      .disc_parser = 1, .decoder_headers = vc1_headers },
     { .id = AV_CODEC_ID_H264, .name = "h264", .anchor = anchor_h264, .video = &ff_disctl_video_h264,
       .verify = verify_h264, .disc_parser = 1, .parser_picture = 1 },
     { .id = AV_CODEC_ID_HEVC, .name = "hevc", .anchor = anchor_hevc, .video = &ff_disctl_video_hevc,
@@ -654,9 +673,9 @@ static const DRCodec codecs[] = {
     { .id = AV_CODEC_ID_DTS, .name = "dts", .check = check_dts, .audio = &audio_dts,
       .verify = verify_dts, .disc_parser = 1 },
     { .id = AV_CODEC_ID_PCM_DVD, .name = "pcm_dvd", .audio = &audio_lpcm,
-      .disc_parser = 1 },
+      .disc_parser = 1, .bits_coded = 1 },
     { .id = AV_CODEC_ID_PCM_BLURAY, .name = "pcm_bluray", .audio = &audio_lpcm,
-      .disc_parser = 1 },
+      .disc_parser = 1, .bits_coded = 1 },
     { .id = AV_CODEC_ID_MP1, .name = "mp1", .check = check_mpa, .audio = &audio_mpa,
       .verify = verify_mpa },
     { .id = AV_CODEC_ID_MP2, .name = "mp2", .check = check_mpa, .audio = &audio_mpa,
@@ -669,11 +688,11 @@ static const DRCodec codecs[] = {
       .verify = verify_latm },
     { .id = AV_CODEC_ID_DVD_SUBTITLE, .name = "dvd_subtitle",
       .check = ff_disctl_spu_check, .disc_parser = 1,
-      .verify = ff_disctl_spu_verify },
+      .verify = ff_disctl_spu_verify, .info_without_data = 1 },
     { .id = AV_CODEC_ID_HDMV_PGS_SUBTITLE, .name = "hdmv_pgs_subtitle",
-      .check = ff_disctl_pgs_check, .disc_parser = 1, .verify = ff_disctl_pgs_verify },
+      .check = ff_disctl_pgs_check, .disc_parser = 1, .verify = ff_disctl_pgs_verify, .info_without_data = 1 },
     /* closed captions as text cues (made by the caption converter) */
-    { .id = AV_CODEC_ID_SUBRIP, .name = "subrip" },
+    { .id = AV_CODEC_ID_SUBRIP, .name = "subrip", .info_without_data = 1 },
 };
 
 const DRCodec *ff_disctl_codec(enum AVCodecID id)

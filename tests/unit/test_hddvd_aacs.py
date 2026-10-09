@@ -6,18 +6,21 @@ comma-separated): the encrypted 300 images are opened, the feature's first
 same blocks decrypted again with a volume unique key computed from a device
 key and the volume ID only."""
 
+import errno
 import hashlib
 import pathlib
 
 import pytest
 
+from helpers import install_log, logged
 from helpers.disc import env_or_skip
 from helpers.hddvd import open_file, open_image
 from synth.hddvd import (aes_g, data_pack, encrypt_pack, evob, hexs, image, nav_pack, playlist, tkf, title_keys,
                          tmap, vti)
 
 INVALIDDATA = -0x41444E49
-EACCES = -13
+# a key is missing: ENOKEY (not NO_KEY, which says a file cannot be accessed)
+NO_KEY = -errno.ENOKEY
 
 VUK = bytes([7, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 0x42])
 SEED = bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc])
@@ -125,11 +128,14 @@ def test_without_a_vuk_or_a_volume_id_the_disc_cannot_be_opened(key_file):
     b, aacs, ident = standard()
     none = key_file("none.cfg",
                     "0123456789012345678901234567890123456789 = Other | V | 00112233445566778899AABBCCDDEEFF\n")
-    assert open_image(disc_with(b.disc, aacs, 1), [none]).error == EACCES
+    install_log()
+    assert open_image(disc_with(b.disc, aacs, 1), [none]).error == NO_KEY
+    # the error names the disc by the ID the key files use (SHA-1 of VTKF000.AACS)
+    assert logged(f"the disc (disc ID {ident.upper()}) cannot be decrypted")
     # a volume ID but no media key and no key that gives one (no MKBROM.AACS either)
     vid_only = key_file("vid_only.cfg", f"{ident} = Test | I | {hexs(bytes([1] * 16))}\n")
-    assert open_image(disc_with(b.disc, aacs, 1), [vid_only]).error == EACCES
-    assert open_image(disc_with(b.disc, aacs, 1), []).error == EACCES
+    assert open_image(disc_with(b.disc, aacs, 1), [vid_only]).error == NO_KEY
+    assert open_image(disc_with(b.disc, aacs, 1), []).error == NO_KEY
 
 
 def test_the_aacs_files_are_read_from_aacs_bak_when_aacs_lacks_them(key_file):
@@ -249,4 +255,4 @@ def test_corpus_the_encrypted_discs_decrypt_with_the_key_files(key_file):
     d.close()
 
     # the Standalone disc: no key for it in the key files
-    assert open_file(pathlib.Path(folder) / "300 (Standalone HD-DVD).iso", kf).error == EACCES
+    assert open_file(pathlib.Path(folder) / "300 (Standalone HD-DVD).iso", kf).error == NO_KEY

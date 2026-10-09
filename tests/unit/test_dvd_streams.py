@@ -96,12 +96,16 @@ def test_whether_audio_control_lists_a_stream_is_taken_from_its_place(tmp_path):
 
 
 def test_a_stream_listed_twice_keeps_its_first_track(tmp_path):
+    # the disc layer's duplicate rule (discpass.c), numbered by the places in
+    # the title's stream list: the video 0, the audio entries 1-3 (stream 0
+    # twice, then the title set's stream 1, which the probe leaves out), the
+    # sub-picture entries 4 and 5
     folder = disc(tmp_path, bytes([0x80, 0, 0x80, 0]), [ac3(b"en"), ac3(b"en")], [(1, audio_pack(0))],
                   subp_control=bytes([0x80, 0, 0, 0, 0x80, 0, 0, 0]) + bytes(120), subp_attrs=[subp(), subp()])
     ts, lines = info(folder)
     assert kinds(ts[0]) == [("video", "Mpeg2", ""), ("audio", "DD", "eng"), ("subtitle", "VobSub", "eng")]
-    assert said(lines, "title 1: audio track 1 is stream 0 again (as track 0): left out")
-    assert said(lines, "title 1: sub-picture track 1 is stream 0 again: left out")
+    assert said(lines, "DVD: Audio stream #2 is identical to stream #1 and was skipped")
+    assert said(lines, "DVD: Subtitle stream #5 is identical to stream #4 and was skipped")
 
 
 def test_an_audio_stream_of_an_unknown_coding_mode_is_left_out(tmp_path):
@@ -161,4 +165,4 @@ def test_a_title_without_a_video_packet_is_left_out(tmp_path):
     ts, lines = info(folder)
     assert ts == []
     assert said(lines, "title 1: its segment 1 has no video packet: the title cannot be used")
-    assert said(lines, "title 1 left out: its streams cannot be read")
+    assert said(lines, "title 1: no audio / video data can be decoded from it: title skipped")

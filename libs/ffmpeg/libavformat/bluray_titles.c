@@ -1886,6 +1886,13 @@ void ff_bluray_titles_free(BlurayDisc *d)
     d->nb_titles = 0;
 }
 
+void ff_bluray_title_remove(BlurayDisc *d, int i)
+{
+    title_free(&d->titles[i]);
+    memmove(d->titles + i, d->titles + i + 1, (d->nb_titles - i - 1) * sizeof(*d->titles));
+    d->nb_titles--;
+}
+
 int ff_bluray_titles_build(void *log, BlurayDisc *d, int min_length)
 {
     Ctx c = { .log = log, .d = d, .min_length = min_length };

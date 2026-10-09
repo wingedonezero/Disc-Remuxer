@@ -44,6 +44,14 @@
 #define HDDVD_BLOCK 2048
 #define LEAD_IN_TOLERANCE 110160000LL     /* HD DVD audio lead-in tolerance: 102 ms (ticks) */
 
+/* The stream pass's reading: an EVOB's blocks as the title reader reads them. */
+typedef struct PassRead {
+    void      *log;
+    HDDVDAACS *aacs;
+    DiscIOFS  *fs;
+    HDDVDClip *clip;
+} PassRead;
+
 typedef struct HDDVDDemuxContext {
     DiscIOFS      *fs;              /**< the disc layer's */
     HDDVDVTI      *vti;
@@ -51,13 +59,14 @@ typedef struct HDDVDDemuxContext {
     int            nb_xpls;
     HDDVDAACS     *aacs;
     HDDVDTitlePlan *plan;
+    PassRead       pass;            /**< the stream pass's EVOB */
 
     /* the opened title, as the title reader gets it (DiscContext.src) */
     const HDDVDTitle *title;
-    DRTitleTrack  *tracks;
     int64_t       *chapter_times;
     const char   **chapter_names;
 } HDDVDDemuxContext;
+
 
 static const char *clip_name(AVFormatContext *s, int k)
 {
@@ -81,7 +90,6 @@ static void hddvd_close(AVFormatContext *s)
 {
     HDDVDDemuxContext *c = ff_disc_part(s);
 
-    av_freep(&c->tracks);
     av_freep(&c->chapter_times);
     av_freep(&c->chapter_names);
     ff_hddvd_titles_free(&c->plan);
@@ -111,137 +119,151 @@ static int pes_id(const HDDVDTrack *k)
     }
 }
 
-static int add_streams(AVFormatContext *s, const HDDVDTitle *t)
-{
-    HDDVDDemuxContext *c = ff_disc_part(s);
+/* What a sub-picture track's units are, for the caller's log (coding mode
+ * p[0] >> 5 of its attribute record: 0..7). */
+static const char *const subpic_kind[8] = {
+    "HD DVD sub-pictures of coding 0 (not met on a real disc)",
+    "HD DVD sub-pictures of coding 1 (not met on a real disc)",
+    "HD DVD sub-pictures of coding 2 (not met on a real disc)",
+    "HD DVD sub-pictures of coding 3 (not met on a real disc)",
+    "HD DVD sub-pictures: 256 colours, each with its own palette",      /* HDDVD_SUBPIC_CODING_HD */
+    "HD DVD sub-pictures of coding 5 (not met on a real disc)",
+    "HD DVD sub-pictures of coding 6 (not met on a real disc)",
+    "HD DVD sub-pictures of coding 7 (not met on a real disc)",
+};
 
+/* A title's tracks as the disc layer takes them (out: t->nb_tracks). */
+static void title_tracks(const HDDVDDemuxContext *c, const HDDVDTitle *t, DiscTrack *out)
+{
     for (int i = 0; i < t->nb_tracks; i++) {
         const HDDVDTrack *k = &t->tracks[i];
-        AVStream *st = avformat_new_stream(s, NULL);
+        DiscTrack *o = &out[i];
 
-        if (!st)
-            return AVERROR(ENOMEM);
+        memset(o, 0, sizeof(*o));
+        ff_disc_stream_init(&o->info);
+        o->info.type        = k->type;
+        o->info.codec       = k->codec;
+        o->info.inner_track = k->inner_track;
+        o->info.from_track  = k->from_track;
+        memcpy(o->info.language, k->lang, sizeof(o->info.language));
+        o->id     = pes_id(k);
+        o->kind   = k->type == AVMEDIA_TYPE_VIDEO ? DR_KIND_VIDEO :
+                    k->type == AVMEDIA_TYPE_AUDIO ? DR_KIND_AUDIO : DR_KIND_SUBTITLE;
+        o->stream = k->number;
+        o->number = k->index;
         if (k->type == AVMEDIA_TYPE_VIDEO) {
             /* the video attribute's line-21 caption marks (byte 0x03 bit 7:
              * field 1, bit 6: field 2, laid out as in DVD-Video's video
              * attributes; on the corpus they go with caption blocks in the
              * video, which HD DVD titles do not keep) */
             uint8_t v = c->vti->attrs[t->clips[t->segment]->evob->attr - 1].raw[3];
-            const char *l21 = (v & 0xC0) == 0xC0 ? "fields 1 and 2" : v & 0x80 ? "field 1" : v & 0x40 ? "field 2" : NULL;
-            if (l21 && av_dict_set(&st->metadata, "line21", l21, 0) < 0)
-                return AVERROR(ENOMEM);
+            o->line21 = (v & 0xC0) == 0xC0 ? "fields 1 and 2" : v & 0x80 ? "field 1" : v & 0x40 ? "field 2" : NULL;
+        } else if (k->type == AVMEDIA_TYPE_SUBTITLE) {
+            o->info.width  = k->width;
+            o->info.height = k->height;
+            o->palette     = k->palette;
+            o->picture     = subpic_kind[k->coding & 7];
         }
-        st->id                    = pes_id(k);
-        st->codecpar->codec_type  = k->type;
-        st->codecpar->codec_id    = k->codec;
-        avpriv_set_pts_info(st, 64, 1, DR_TICKS_PER_SECOND);
-        if (k->from_track >= 0)
-            st->disposition |= AV_DISPOSITION_DEPENDENT;
-        if (k->type == AVMEDIA_TYPE_SUBTITLE) {
-            char idx[1024];
-            int n = ff_disctl_vobsub_header(idx, sizeof(idx), k->width, k->height, k->palette);
-            int ret;
-
-            st->codecpar->width   = k->width;
-            st->codecpar->height  = k->height;
-            char kind[96];
-            /* what the units are, for the caller's log */
-            if (k->coding == HDDVD_SUBPIC_CODING_HD)
-                snprintf(kind, sizeof(kind), "HD DVD sub-pictures: 256 colours, each with its own palette");
-            else
-                snprintf(kind, sizeof(kind), "HD DVD sub-pictures of coding %d (not met on a real disc)", k->coding);
-            if ((ret = av_dict_set(&st->metadata, "picture", kind, 0)) < 0)
-                return ret;
-            /* the VobSub index header (FFmpeg's DVD subtitle decoder reads
-             * size and palette from it) */
-            if (n < 0 || n >= sizeof(idx))
-                return AVERROR_BUG;
-            if ((ret = ff_alloc_extradata(st->codecpar, n)) < 0)
-                return ret;
-            memcpy(st->codecpar->extradata, idx, n);
-        }
-        if (k->lang[0] && av_dict_set(&st->metadata, "language", k->lang, 0) < 0)
-            return AVERROR(ENOMEM);
     }
-    return 0;
 }
 
-/* The disc info's titles: name, language, duration, size, whether
- * selected, the EVOB files, chapter records, streams (their details are not
- * known before the title is read). */
-static int describe_titles(AVFormatContext *s)
+/* The pass's reading: the clip's blocks as the title reader reads them. */
+static int pass_read(void *opaque, uint32_t block, uint8_t *buf)
+{
+    PassRead *r = opaque;
+    if (block >= r->clip->size / HDDVD_BLOCK)
+        return AVERROR_EOF;
+    return ff_hddvd_clip_block(r->log, r->aacs, r->fs, r->clip, block, buf);
+}
+
+/* ---- the title entries (disc.h) ---- */
+
+static int nb_titles(AVFormatContext *s)
+{
+    return ((HDDVDDemuxContext *)ff_disc_part(s))->plan->nb_titles;
+}
+
+static const char *title_name(AVFormatContext *s, int i)
+{
+    return ((HDDVDDemuxContext *)ff_disc_part(s))->plan->titles[i].name;
+}
+
+static int title_tracks_of(AVFormatContext *s, int i, DiscTrack *out, int out_size)
 {
     HDDVDDemuxContext *c = ff_disc_part(s);
+    const HDDVDTitle *t = &c->plan->titles[i];
+    if (t->nb_tracks > out_size)
+        return AVERROR_BUG;
+    title_tracks(c, t, out);
+    return t->nb_tracks;
+}
 
-    ((DiscContext *)s->priv_data)->info.encrypted = c->aacs != NULL;
-    for (int i = 0; i < c->plan->nb_titles; i++) {
-        const HDDVDTitle *t = &c->plan->titles[i];
-        DiscTitleInfo *dt = ff_disc_add_title(s);
+/* The EVOB the tracks come from (the largest), read as the title reader
+ * reads it; HD DVD's 5-byte LPCM header. */
+static int title_segment(AVFormatContext *s, int i, DiscPassSource *src)
+{
+    HDDVDDemuxContext *c = ff_disc_part(s);
+    const HDDVDTitle *t = &c->plan->titles[i];
 
-        if (!dt)
+    c->pass = (PassRead){ s, c->aacs, c->fs, t->clips[t->segment] };
+    *src = (DiscPassSource){ .index = t->segment, .lpcm_header = 5, .key = (uintptr_t)c->pass.clip,
+                             .read = pass_read, .opaque = &c->pass };
+    return 1;
+}
+
+static void remove_title(AVFormatContext *s, int i)
+{
+    HDDVDTitlePlan *plan = ((HDDVDDemuxContext *)ff_disc_part(s))->plan;
+    HDDVDTitle *t = &plan->titles[i];
+
+    av_free(t->clips);
+    av_free(t->marks);
+    av_free(t->tracks);
+    memmove(t, t + 1, (plan->nb_titles - i - 1) * sizeof(*t));
+    plan->nb_titles--;
+}
+
+/* The disc info's title: name, language, duration, size, whether selected,
+ * the EVOB files, chapter records. */
+static int title_info(AVFormatContext *s, int i, DiscTitleInfo *dt)
+{
+    const HDDVDTitle *t = &((HDDVDDemuxContext *)ff_disc_part(s))->plan->titles[i];
+
+    dt->name     = t->name && *t->name ? t->name : NULL;
+    dt->duration = av_rescale(t->duration, AV_TIME_BASE, 90000);
+    dt->size     = t->size;
+    dt->selected = !t->not_selected;
+    if (t->lang)
+        av_strlcpy(dt->language, t->lang, sizeof(dt->language));
+    for (int k = 0; k < t->nb_clips; k++)
+        if (ff_disc_title_add_file(dt, t->clips[k]->evob->name) < 0)
             return AVERROR(ENOMEM);
-        dt->name     = t->name && *t->name ? t->name : NULL;
-        dt->duration = av_rescale(t->duration, AV_TIME_BASE, 90000);
-        dt->size     = t->size;
-        dt->selected = !t->not_selected;
-        if (t->lang)
-            av_strlcpy(dt->language, t->lang, sizeof(dt->language));
-        for (int k = 0; k < t->nb_clips; k++)
-            if (ff_disc_title_add_file(dt, t->clips[k]->evob->name) < 0)
-                return AVERROR(ENOMEM);
-        for (int k = 0; k < t->nb_marks; k++) {
-            DiscChapterInfo *ch = ff_disc_title_add_chapter(dt);
-            if (!ch)
-                return AVERROR(ENOMEM);
-            ch->start = (int64_t)t->marks[k].ms * (AV_TIME_BASE / 1000);
-            ch->name  = t->marks[k].name && *t->marks[k].name ? t->marks[k].name : NULL;
-        }
-        for (int k = 0; k < t->nb_tracks; k++) {
-            const HDDVDTrack *tk = &t->tracks[k];
-            DiscStreamInfo *ds = ff_disc_title_add_stream(dt);
-            if (!ds)
-                return AVERROR(ENOMEM);
-            ds->type   = tk->type;
-            ds->codec  = tk->codec;
-            ds->inner_track = tk->inner_track;
-            ds->from_track  = tk->from_track;
-            if (tk->type == AVMEDIA_TYPE_SUBTITLE) {
-                ds->width  = tk->width;
-                ds->height = tk->height;
-            }
-            memcpy(ds->language, tk->lang, sizeof(ds->language));
-        }
+    for (int k = 0; k < t->nb_marks; k++) {
+        DiscChapterInfo *ch = ff_disc_title_add_chapter(dt);
+        if (!ch)
+            return AVERROR(ENOMEM);
+        ch->start = (int64_t)t->marks[k].ms * (AV_TIME_BASE / 1000);
+        ch->name  = t->marks[k].name && *t->marks[k].name ? t->marks[k].name : NULL;
     }
     return 0;
 }
 
-/* The opened title for the title reader: its clips, tracks (track 0 is
- * the title's video) and chapter marks, HD DVD's LPCM header and lead-in
- * tolerance. */
-static int title_source(AVFormatContext *s)
+/* The opened title's source (its streams and tracks: the disc layer's):
+ * its clips and chapter marks, HD DVD's LPCM header and lead-in tolerance. */
+static int open_title(AVFormatContext *s, int i, int part, int *second_view)
 {
     DiscContext *d = s->priv_data;
     HDDVDDemuxContext *c = ff_disc_part(s);
-    const HDDVDTitle *t = c->title;
+    const HDDVDTitle *t = c->title = &c->plan->titles[i];
 
     if (!(c->chapter_times = av_calloc(FFMAX(t->nb_marks, 1), sizeof(*c->chapter_times))) ||
-        !(c->chapter_names = av_calloc(FFMAX(t->nb_marks, 1), sizeof(*c->chapter_names))) ||
-        !(c->tracks = av_calloc(t->nb_tracks, sizeof(*c->tracks))))
+        !(c->chapter_names = av_calloc(FFMAX(t->nb_marks, 1), sizeof(*c->chapter_names))))
         return AVERROR(ENOMEM);
-    for (int i = 0; i < t->nb_marks; i++) {
-        c->chapter_times[i] = (int64_t)t->marks[i].ms * (DR_TICKS_PER_SECOND / 1000);
-        c->chapter_names[i] = t->marks[i].name;
+    for (int k = 0; k < t->nb_marks; k++) {
+        c->chapter_times[k] = (int64_t)t->marks[k].ms * (DR_TICKS_PER_SECOND / 1000);
+        c->chapter_names[k] = t->marks[k].name;
     }
-    for (int i = 0; i < t->nb_tracks; i++) {
-        const HDDVDTrack *k = &t->tracks[i];
-        c->tracks[i].codec       = k->codec;
-        c->tracks[i].kind        = k->type == AVMEDIA_TYPE_VIDEO ? DR_KIND_VIDEO :
-                                   k->type == AVMEDIA_TYPE_AUDIO ? DR_KIND_AUDIO : DR_KIND_SUBTITLE;
-        c->tracks[i].audio_flags = (k->from_track >= 0 ? DR_AUDIO_EXTRACTED : 0) |
-                                   (k->from_track >= 0 || k->inner_track >= 0 ? DR_AUDIO_EXTENDED : 0);
-        c->tracks[i].width       = k->width;
-        c->tracks[i].height      = k->height;
-    }
+    s->duration = av_rescale(t->duration, AV_TIME_BASE, 90000);
     d->src = (DiscTitleSource){
         .nb_clips      = t->nb_clips,
         .clip_kind     = "EVOB",
@@ -250,8 +272,6 @@ static int title_source(AVFormatContext *s)
         .read_block    = read_block,
         .lpcm_header   = 5,
         .tolerance     = LEAD_IN_TOLERANCE,
-        .tracks        = c->tracks,
-        .nb_tracks     = t->nb_tracks,
         .chapter_times = c->chapter_times,
         .chapter_names = (const char *const *)c->chapter_names,
         .nb_chapters   = t->nb_marks,
@@ -259,7 +279,7 @@ static int title_source(AVFormatContext *s)
     return 0;
 }
 
-static int hddvd_open(AVFormatContext *s)
+static int hddvd_load(AVFormatContext *s)
 {
     DiscContext *d = s->priv_data;
     HDDVDDemuxContext *c = ff_disc_part(s);
@@ -274,30 +294,24 @@ static int hddvd_open(AVFormatContext *s)
     if ((ret = ff_hddvd_aacs_open(s, c->fs, (const char *const *)d->opt_keydb, d->nb_opt_keydb,
                                   c->nb_xpls, &c->aacs)) < 0)
         return ret;
+    d->info.encrypted = c->aacs != NULL;
     if ((ret = ff_hddvd_titles_plan(s, c->fs, c->vti, c->xpls, c->nb_xpls, d->opt_min_length, &c->plan)) < 0)
         return ret;
-    if ((ret = ff_hddvd_tracks_build(s, c->fs, c->aacs, c->vti, c->xpls, c->nb_xpls, c->plan)) < 0)
-        return ret;
-    if ((ret = describe_titles(s)) < 0)
-        return ret;
-    if (d->opt_title < 0)               /* only the disc info, no title opened */
-        return 0;
-    if (d->opt_title >= c->plan->nb_titles) {
-        av_log(s, AV_LOG_ERROR, "HD DVD: title %d does not exist (the disc has %d)\n", d->opt_title,
-               c->plan->nb_titles);
-        return AVERROR(EINVAL);
-    }
-    c->title = &c->plan->titles[d->opt_title];
-    if ((ret = add_streams(s, c->title)) < 0)
-        return ret;
-    s->duration = av_rescale(c->title->duration, AV_TIME_BASE, 90000);
-    return title_source(s);
+    return ff_hddvd_tracks_build(s, c->fs, c->aacs, c->vti, c->xpls, c->nb_xpls, c->plan);
 }
 
 const DiscFormat ff_disc_hddvd = {
     .name        = "HD DVD",
+    .log_name    = "HD DVD",
     .kind        = DISCIO_DISC_HDDVD,
-    .priv_size   = sizeof(HDDVDDemuxContext),
-    .open        = hddvd_open,
-    .close       = hddvd_close,
+    .priv_size     = sizeof(HDDVDDemuxContext),
+    .load          = hddvd_load,
+    .nb_titles     = nb_titles,
+    .title_name    = title_name,
+    .title_tracks  = title_tracks_of,
+    .title_segment = title_segment,
+    .remove_title  = remove_title,
+    .title_info    = title_info,
+    .open_title    = open_title,
+    .close         = hddvd_close,
 };

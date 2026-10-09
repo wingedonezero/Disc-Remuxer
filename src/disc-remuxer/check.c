@@ -265,6 +265,7 @@ int details_of_file(const char *path, enum AVMediaType type, Details *d)
     DetailsProbe *p = NULL;
     AVPacket *pkt = av_packet_alloc();
     AVDictionary *opts = NULL;
+    AVCodecParameters *par;
     int ret, idx;
 
     memset(d, 0, sizeof(*d));
@@ -277,8 +278,16 @@ int details_of_file(const char *path, enum AVMediaType type, Details *d)
     av_dict_free(&opts);
     if (ret < 0 || (ret = avformat_find_stream_info(fc, NULL)) < 0)
         goto end;
-    if ((ret = idx = av_find_best_stream(fc, type, -1, -1, NULL, 0)) < 0 ||
-        (ret = details_probe_open(&p, fc->streams[idx]->codecpar)) < 0)
+    if ((ret = idx = av_find_best_stream(fc, type, -1, -1, NULL, 0)) < 0)
+        goto end;
+    /* a RIFF WAVE with WAVE_FORMAT_PCM (tag 1) has no channel mask: its one
+     * or two channels are mono, or left and right, by the format's
+     * definition (FFmpeg reads them as channels of no layout) */
+    par = fc->streams[idx]->codecpar;
+    if (!strcmp(fc->iformat->name, "wav") && par->codec_tag == 1 && par->ch_layout.order == AV_CHANNEL_ORDER_UNSPEC &&
+        par->ch_layout.nb_channels >= 1 && par->ch_layout.nb_channels <= 2)
+        av_channel_layout_default(&par->ch_layout, par->ch_layout.nb_channels);
+    if ((ret = details_probe_open(&p, par)) < 0)
         goto end;
     while ((ret = av_read_frame(fc, pkt)) >= 0) {
         int done = pkt->stream_index == idx && details_probe_packet(p, pkt);

@@ -6,12 +6,15 @@ track type:Matroska codec id:language) and HDDVD_KEYDB (key files,
 comma-separated, for the encrypted images) every image that opens must give
 the reference's titles and tracks."""
 
+import json
 import os
 import pathlib
 import re
+import subprocess
 
 import pytest
 
+from helpers import DIST
 from helpers.disc import env_or_skip
 from helpers.hddvd import open_file, open_image
 from synth.hddvd import (ac3_frame, attr_record, clip, eac3_frame, evob, image, pack, playlist, ps1_packet,
@@ -189,7 +192,10 @@ def test_coding_4_sub_pictures_are_drawn_on_1920x1080_on_any_video():
     ]
 
 
-def test_a_stream_with_the_codec_and_number_of_an_earlier_one_is_left_out():
+def test_a_stream_with_the_codec_and_number_of_an_earlier_one_is_left_out(tmp_path):
+    # the format part describes every stream; the disc layer's stream pass
+    # (discpass.c) leaves out the later one of the same codec and data (here
+    # sub-picture stream 1 again, place 3 in the stream list)
     attr = attr_record([0x60, 0, 0x50], [0x00], [[0, 0x21, 0, 0, 0], [0x20, 0x21, 0, 0, 0], [0, 0x22, 0, 0, 0]],
                        PALETTE)
     im = disc([evob("A.EVO", 1, 10)], [1], [attr], one_title("A.MAP", ""), [b""])
@@ -198,8 +204,26 @@ def test_a_stream_with_the_codec_and_number_of_an_earlier_one_is_left_out():
         "  0|video|vc1|0|0|",
         "  1|audio|ac3|1|0|",
         "  2|subtitle|dvd_subtitle|2|1||720x480|00108090",
-        "  3|subtitle|dvd_subtitle|4|2||720x480|00108090",
+        "  3|subtitle|dvd_subtitle|3|1||720x480|00108090",
+        "  4|subtitle|dvd_subtitle|4|2||720x480|00108090",
     ]
+    attr = attr_record([0x20, 0, 0x50], [0x00], [[0, 0x21, 0, 0, 0], [0x20, 0x21, 0, 0, 0], [0, 0x22, 0, 0, 0]],
+                       PALETTE)
+    data = pack([video_packet(200), ps1_packet(0x80, 900, ac3_frame())])
+    e = evob("A.EVO", 1, 10)
+    # the program's disc detection: an HD DVD image has /ADV_OBJ/DISCID.DAT
+    im = image([("ADV_OBJ", "VPLST000.XPL", one_title("A.MAP", "")), ("ADV_OBJ", "DISCID.DAT", bytes(64)),
+                ("HVDVD_TS", "HVA00001.VTI", vti_with([e], [1], [attr])), ("HVDVD_TS", "A.MAP", tmap_blocks(1)),
+                ("HVDVD_TS", "A.EVO", data)])
+    path = tmp_path / "hddvd.iso"
+    path.write_bytes(bytes(im.d))
+    out = subprocess.run([str(DIST / "disc-remuxer"), "--json", "info", str(path)], capture_output=True, text=True)
+    recs = [json.loads(l) for l in out.stdout.splitlines() if l.startswith("{")]
+    t = [r for r in recs if r.get("type") == "title"][0]
+    assert [(k["kind"], k["codec"]) for k in t["tracks"]] == [
+        ("video", "Mpeg2"), ("audio", "DD"), ("subtitle", "VobSub"), ("subtitle", "VobSub")]
+    assert "HD DVD: Subtitle stream #3 is identical to stream #2 and was skipped" in \
+        [r.get("text", "") for r in recs if r.get("type") == "message"]
 
 
 def test_languages_come_from_the_playlists_track_navigation_list():

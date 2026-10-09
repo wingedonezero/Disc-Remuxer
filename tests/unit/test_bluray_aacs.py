@@ -7,6 +7,7 @@ SKB, discs not encrypted after all), which clip uses which CPS unit (at the
 open for the largest clips, else on the clip's first encrypted unit), the
 aligned units, and the checks on discs without AACS directories."""
 
+import errno
 import hashlib
 
 import pytest
@@ -15,7 +16,8 @@ from helpers import LOG, ffi, install_log, lib, logged
 from synth import bluray as bd
 from synth.hddvd import aes_e, aes_g, hexs
 
-EACCES = -13
+# a key is missing: ENOKEY (not NO_KEY, which says a file cannot be accessed)
+NO_KEY = -errno.ENOKEY
 INVALIDDATA = -0x41444E49
 PATCHWELCOME = -0x45574150
 
@@ -153,7 +155,7 @@ def test_the_unit_keys_of_the_key_file_are_used_without_a_vuk(tmp_path, key_file
     assert d.unit(1, bd.encrypt_unit(plain, UK[1])) == (0, plain)
     # a list without every unit is not enough
     kf = key_file("uk1.cfg", f"0x{ident} = Test | U | 1-0x{hexs(UK[0])}\n")
-    assert opened(path, [kf]).error == EACCES
+    assert opened(path, [kf]).error == NO_KEY
     assert logged("lack unit 2 of 2")
 
 
@@ -169,9 +171,9 @@ def test_the_first_key_file_with_a_vuk_wins(tmp_path, key_file, opened):
 def test_without_a_key_the_disc_cannot_be_opened(tmp_path, key_file, opened):
     path, _, _ = one_unit_disc(tmp_path, key_file, [bd.ts_unit(1)])
     other = key_file("other.cfg", "0x0123456789012345678901234567890123456789 = Other | V | 0x" + "11" * 16 + "\n")
-    assert opened(path, [other]).error == EACCES
+    assert opened(path, [other]).error == NO_KEY
     assert logged("the volume key is unknown for this disc")
-    assert opened(path, []).error == EACCES
+    assert opened(path, []).error == NO_KEY
     assert logged("no key file is set")
 
 
@@ -268,7 +270,7 @@ def test_the_three_largest_clips_get_their_unit_at_the_open_the_others_on_their_
     assert r == INVALIDDATA and d.key_unit(5) == KEY_UNKNOWN
     # no key fits
     r, _ = d.unit(5, bd.encrypt_unit(plain, UK[3]))
-    assert r == EACCES
+    assert r == NO_KEY
     assert logged("no unit key decrypts its first encrypted unit")
 
 

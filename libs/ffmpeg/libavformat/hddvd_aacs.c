@@ -38,6 +38,7 @@
 #include <libaacs/aacs.h>
 
 #include "libavutil/error.h"
+#include "libavutil/sha.h"
 #include "libavutil/intreadwrite.h"
 #include "libavutil/log.h"
 #include "libavutil/mem.h"
@@ -97,6 +98,28 @@ static int read_aacs_file(void *opaque, const char *name, uint8_t **data, size_t
     return found ? AVERROR(EIO) : 1;
 }
 
+/* The disc ID the key files name a disc by (SHA-1 of VTKF000.AACS) as
+ * text; "unknown" when the file cannot be read. */
+static void disc_id_text(Reader *r, char hex[41])
+{
+    uint8_t *data = NULL, sum[20];
+    size_t size = 0;
+    struct AVSHA *sha;
+
+    snprintf(hex, 41, "unknown");
+    if (read_aacs_file(r, "VTKF000.AACS", &data, &size) || !(sha = av_sha_alloc())) {
+        free(data);
+        return;
+    }
+    av_sha_init(sha, 160);
+    av_sha_update(sha, data, size);
+    av_sha_final(sha, sum);
+    av_free(sha);
+    free(data);
+    for (int i = 0; i < 20; i++)
+        snprintf(hex + 2 * i, 3, "%02X", sum[i]);
+}
+
 static void aacs_log(void *opaque, int level, const char *message)
 {
     static const int levels[] = { AV_LOG_ERROR, AV_LOG_WARNING, AV_LOG_VERBOSE };
@@ -128,12 +151,15 @@ int ff_hddvd_aacs_open(void *logctx, DiscIOFS *fs, const char *const *key_files,
     a->h = aacs_hddvd_open(read_aacs_file, &r, key_files, nb_key_files, nb_playlists,
                            aacs_log, logctx, &err);
     if (!a->h) {
-        av_log(logctx, AV_LOG_ERROR, "AACS: the disc cannot be decrypted (%s)\n",
+        char id[41];
+        disc_id_text(&r, id);
+        av_log(logctx, AV_LOG_ERROR, "AACS: the disc (disc ID %s) cannot be decrypted (%s)\n", id,
                err == AACS_ERROR_NO_CONFIG ? "no key for it in the key files" :
                err == AACS_ERROR_NO_PK     ? "no key of the key files gives its media key" :
                err == AACS_ERROR_CORRUPTED_DISC ? "its AACS files are not usable" : aacs_error_str(err));
         av_free(a);
-        return err == AACS_ERROR_CORRUPTED_DISC ? AVERROR_INVALIDDATA : AVERROR(EACCES);
+        /* a key is missing (not a file access problem) */
+        return err == AACS_ERROR_CORRUPTED_DISC ? AVERROR_INVALIDDATA : AVERROR(ENOKEY);
     }
     *out = a;
     return 0;

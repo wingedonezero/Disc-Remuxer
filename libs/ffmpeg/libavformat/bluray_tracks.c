@@ -29,9 +29,9 @@
  *
  * Tracks: the first stream with a video track gives the video (and the 3-D
  * second view), then every audio track of every stream, then every subtitle
- * track, then the text subtitles from their own clips; an audio or subtitle
- * track equal to an earlier one (kind, PID and what of the PID it takes) is
- * left out.
+ * track, then the text subtitles from their own clips (an audio or subtitle
+ * track equal to an earlier one is left out by the disc layer's stream
+ * pass).
  *
  * This file is part of FFmpeg.
  *
@@ -378,26 +378,15 @@ static int add_track(BlurayTitle *t, const Part *k, int stream, uint32_t side_cl
  * (side < 0: any, else side flag must equal it), added unless equal to an
  * earlier track of the same pass. */
 static int add_parts(void *log, BlurayTitle *t, const Desc *d, int stream, int lo, int hi, int want_side,
-                     uint32_t side_clip, int side_stc, int first_of_pass, const char *what)
+                     uint32_t side_clip, int side_stc)
 {
     int ret, main_track = -1;
 
     for (int i = 0; i < d->n; i++) {
         const Part *k = &d->k[i];
-        int side = !!(k->flags & BLURAY_TRACK_SIDE), dup = -1;
+        int side = !!(k->flags & BLURAY_TRACK_SIDE);
         if (k->code < lo || k->code >= hi || side != want_side)
             continue;
-        if (what)
-            for (int j = first_of_pass; j < t->nb_tracks && dup < 0; j++) {
-                const BlurayTrack *o = &t->tracks[j];
-                if (o->code == k->code && o->pid == k->pid && o->sel1 == k->sel1 && o->sel2 == k->sel2)
-                    dup = o->stream;
-            }
-        if (dup >= 0) {
-            av_log(log, AV_LOG_WARNING, "Blu-ray: %s stream #%d is identical to stream #%d and was skipped\n",
-                   what, stream, dup);
-            continue;
-        }
         if ((ret = add_track(t, k, stream, side_clip, side_stc,
                              (k->flags & BLURAY_TRACK_DERIVED) ? main_track : -1)) < 0)
             return ret;
@@ -444,7 +433,7 @@ int ff_bluray_title_tracks(void *log, DiscIOFS *fs, BlurayAACS *aacs, BlurayTitl
 {
     const BluraySegment *s;
     int64_t best = -1;
-    int three_d, n, video = -1, first, ret;
+    int three_d, n, video = -1, ret;
     Desc d;
     uint32_t side_clip;
     int side_stc;
@@ -478,19 +467,18 @@ int ff_bluray_title_tracks(void *log, DiscIOFS *fs, BlurayAACS *aacs, BlurayTitl
     if (fs && (ret = probe_streams(log, fs, aacs, t, s, n)) < 0)
         return ret == AVERROR(ENOMEM) ? ret : AVERROR_INVALIDDATA;
     stream_desc(log, t, s, video, three_d, &d, &side_clip, &side_stc);
-    if ((ret = add_parts(log, t, &d, video, 0x01, 0x40, 0, 0, -1, 0, NULL)) < 0)
+    if ((ret = add_parts(log, t, &d, video, 0x01, 0x40, 0, 0, -1)) < 0)
         return ret;
 
-    /* audio, then subtitles, an identical one left out */
-    first = t->nb_tracks;
+    /* audio, then subtitles (an identical one is left out by the disc
+     * layer's stream pass) */
     for (int i = 0; i < n; i++)
         if (stream_desc(log, t, s, i, three_d, &d, &side_clip, &side_stc) &&
-            (ret = add_parts(log, t, &d, i, 0x40, 0xc0, 0, 0, -1, first, "Audio")) < 0)
+            (ret = add_parts(log, t, &d, i, 0x40, 0xc0, 0, 0, -1)) < 0)
             return ret;
-    first = t->nb_tracks;
     for (int i = 0; i < n; i++)
         if (stream_desc(log, t, s, i, three_d, &d, &side_clip, &side_stc) &&
-            (ret = add_parts(log, t, &d, i, 0xc0, 0xca, 0, 0, -1, first, "Subtitle")) < 0)
+            (ret = add_parts(log, t, &d, i, 0xc0, 0xca, 0, 0, -1)) < 0)
             return ret;
 
     /* text subtitles from their own clips */
@@ -504,7 +492,7 @@ int ff_bluray_title_tracks(void *log, DiscIOFS *fs, BlurayAACS *aacs, BlurayTitl
                        "left out\n", t->name, i);
                 d.k[k].code = 0;
             }
-        if ((ret = add_parts(log, t, &d, i, 0xc0, 0xca, 1, side_clip, side_stc, 0, NULL)) < 0)
+        if ((ret = add_parts(log, t, &d, i, 0xc0, 0xca, 1, side_clip, side_stc)) < 0)
             return ret;
     }
     av_log(log, AV_LOG_DEBUG, "Blu-ray: title %s: %d tracks from segment %d (%d streams%s)\n", t->name,

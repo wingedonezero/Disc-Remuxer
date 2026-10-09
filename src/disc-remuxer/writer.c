@@ -526,11 +526,16 @@ static void subtitle_detail(const AVStream *st, int opened, char *json, size_t s
     const AVDictionaryEntry *pic = av_dict_get(st->metadata, "picture", NULL, 0);
     if (cap) {
         int64_t blocks = meta_int(st->metadata, "cc_blocks"), cues = meta_int(st->metadata, "cues");
-        char jp[256];
+        int64_t lost = meta_int(st->metadata, "cc_lost");
+        char jp[256], jl[96] = "";
         log_text(LOG_INFO, "      %s; %"PRId64" caption blocks -> %"PRId64" cues%s", cap->value, blocks, cues,
                  blocks && !cues ? " (the caption data carries no caption text)" : "");
-        snprintf(json, size, ",\"caption\":%s,\"cc_blocks\":%"PRId64",\"cues\":%"PRId64,
-                 json_str(jp, sizeof(jp), cap->value), blocks, cues);
+        if (lost) {
+            log_text(LOG_INFO, "      %"PRId64" caption(s) still shown at the end of a segment left out", lost);
+            snprintf(jl, sizeof(jl), ",\"cc_lost\":%"PRId64, lost);
+        }
+        snprintf(json, size, ",\"caption\":%s,\"cc_blocks\":%"PRId64",\"cues\":%"PRId64"%s",
+                 json_str(jp, sizeof(jp), cap->value), blocks, cues, jl);
         return;
     }
     int64_t no_stop = meta_int(st->metadata, "no_stop"), outside = meta_int(st->metadata, "outside");
@@ -822,9 +827,12 @@ end:
                     "the disc stream's details (see above)", who, check_failed);
             res->failed = 1;
         } else if (untested) {
-            log_msg(MSG_UNTESTED, LOG_ERROR, "%s: %"PRId64" feature(s) met that no real disc has tested: "
-                    "its files are written, but check the log before using them", who, untested);
-            res->failed = 1;
+            /* written: the untested paths are said in the log ("[untested on
+             * real discs]"), a warning each */
+            res->warnings += untested;
+            log_msg(MSG_UNTESTED, LOG_WARNING, "%s: done with %"PRId64" warning%s, %"PRId64" of them feature(s) no "
+                    "real disc has tested yet (see the log's \"[untested on real discs]\" lines)", who,
+                    res->warnings, res->warnings == 1 ? "" : "s", untested);
         } else if (res->warnings) {
             log_msg(MSG_TITLE_DONE, LOG_INFO, "%s: done with %"PRId64" warning%s", who, res->warnings,
                     res->warnings == 1 ? "" : "s");

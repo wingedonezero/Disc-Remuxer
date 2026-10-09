@@ -1,5 +1,5 @@
-"""The title list's stream details on Blu-ray (libavformat/bluray_details.c,
-src/disc-remuxer/codecs.c): a disc folder built here (tests/synth/bluray.py)
+"""The title list's stream details on Blu-ray (the disc layer's stream pass,
+libavformat/discpass.c; src/disc-remuxer/codecs.c): a disc folder built here (tests/synth/bluray.py)
 whose clip carries MPEG-2 video, AC-3, DTS and TrueHD with its AC-3 core,
 each on its own PID and PES key (stream id 0xFD with its extension, as on a
 disc), read by the program's info: every track's details come from its own

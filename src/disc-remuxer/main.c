@@ -289,8 +289,13 @@ static const char *disc_overview(const char *source, int detail, int *nb_titles,
     int ret;
 
     if ((ret = open_title(DISC_FORMAT, source, ONLY_DISC_INFO, -1, 0, &ctx)) < 0 || !(d = disc_info(ctx))) {
-        log_msg(MSG_SOURCE_UNSUPPORTED, LOG_ERROR, "%s cannot be read as a disc this program supports (%s); "
-                "DVD-Video, HD DVD and Blu-ray are supported", source, av_err2str(ret < 0 ? ret : AVERROR_BUG));
+        if (ret == AVERROR(ENOKEY))
+            log_msg(MSG_SOURCE_UNSUPPORTED, LOG_ERROR, "%s is encrypted (AACS) and the key files have no key for "
+                    "it (its disc ID is in the AACS line above): add its key to a KEYDB.cfg (setting "
+                    "aacs.key_files)", source);
+        else
+            log_msg(MSG_SOURCE_UNSUPPORTED, LOG_ERROR, "%s cannot be read as a disc this program supports (%s); "
+                    "DVD-Video, HD DVD and Blu-ray are supported", source, av_err2str(ret < 0 ? ret : AVERROR_BUG));
         avformat_close_input(&ctx);
         return NULL;
     }
