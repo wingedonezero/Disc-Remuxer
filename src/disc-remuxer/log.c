@@ -57,8 +57,22 @@ const char *json_str(char *buf, int size, const char *s)
             buf[n++] = '\\'; buf[n++] = 't';
         } else if (c < 0x20) {
             n += snprintf(buf + n, size - n, "\\u%04x", c);
-        } else {
+        } else if (c < 0x80) {
             buf[n++] = c;
+        } else {
+            /* UTF-8 as it is; bytes that are no UTF-8 (a library's raw
+             * bytes) as U+FFFD, so the record stays valid JSON */
+            int len = (c & 0xe0) == 0xc0 ? 2 : (c & 0xf0) == 0xe0 ? 3 : (c & 0xf8) == 0xf0 ? 4 : 0, ok = len > 0;
+            for (int k = 1; ok && k < len; k++)
+                ok = ((unsigned char)s[k] & 0xc0) == 0x80;
+            if (ok && n + len < size - 8) {
+                memcpy(buf + n, s, len);
+                n += len;
+                s += len - 1;
+            } else {
+                memcpy(buf + n, "\xef\xbf\xbd", 3);
+                n += 3;
+            }
         }
     }
     buf[n++] = '"';
