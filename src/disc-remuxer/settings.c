@@ -44,6 +44,10 @@ static const Setting registry[] = {
     { "titles", "min_length", SET_INT, "0", 0, 86400, NULL,
       "Titles shorter than this (seconds) are not ripped with demux all: a DVD or HD DVD lists them as not "
       "selected (a title number still rips them), a Blu-ray leaves them out of its title list. 0: every title." },
+    { "output", "folder", SET_TEXT, "", 0, 0, NULL,
+      "The main output folder: a disc's files go into a folder of the disc's name in it (its image's or "
+      "folder's name; _001, _002, ... when that exists), when demux is given no output folder and in the GUI. "
+      "Empty: the folder output next to the program." },
     { "output", "file_name_template", SET_TEXT, "", 0, 0, NULL,
       "How a title's output files are named. {NAME1} the title's name, {CMNT1} its comment, {DT} its "
       "date, {N2} its number with two digits; {prefix:VAR} writes the prefix only after other text. "

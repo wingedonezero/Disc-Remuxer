@@ -13,6 +13,7 @@
 
 #include <libavutil/log.h>
 
+#include "engine.h"
 #include "log.h"
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
@@ -20,6 +21,7 @@ static int  json_mode, verbose, color;
 static FILE *log_file, *debug_file;
 static int  progress_shown;
 static int  n_errors, n_warnings;
+static EngineSink sink;            /* the caller's (a GUI's); members NULL: the terminal */
 
 /* FFmpeg's lines arrive in pieces; one is kept until its newline */
 static char pending[4096];
@@ -99,7 +101,9 @@ static void emit(enum LogLevel level, int code, const char *source, const char *
     else if (level == LOG_WARNING)
         n_warnings++;
 
-    if (json_mode) {
+    if (sink.line) {
+        sink.line(sink.opaque, level, code, source, text, heading);
+    } else if (json_mode) {
         if (level != LOG_DETAIL || verbose) {
             char t[8192];
             static const char *const lw[] = { "error", "warning", "ok", "info", "detail" };
@@ -302,7 +306,9 @@ void log_progress(int title, double done)
     last_title = title;
     last_pct   = pct;
     pthread_mutex_lock(&lock);
-    if (json_mode) {
+    if (sink.progress) {
+        sink.progress(sink.opaque, title, done);
+    } else if (json_mode) {
         printf("{\"type\":\"progress\",\"title\":%d,\"done\":%.3f}\n", title, done);
         fflush(stdout);
     } else if (isatty(STDOUT_FILENO)) {
@@ -319,7 +325,7 @@ void log_json(const char *type, const char *fields, ...)
     va_list vl;
     int n;
 
-    if (!json_mode)
+    if (!json_mode && !sink.record)
         return;
     va_start(vl, fields);
     n = vasprintf(&body, fields, vl);   /* a record of any length (a title with many tracks) */
@@ -327,8 +333,15 @@ void log_json(const char *type, const char *fields, ...)
     if (n < 0)
         return;
     pthread_mutex_lock(&lock);
-    printf("{\"type\":\"%s\"%s%s}\n", type, *body ? "," : "", body);
-    fflush(stdout);
+    if (sink.record) {
+        char *rec = NULL;
+        if (asprintf(&rec, "{\"type\":\"%s\"%s%s}", type, *body ? "," : "", body) >= 0)
+            sink.record(sink.opaque, rec);
+        free(rec);
+    } else {
+        printf("{\"type\":\"%s\"%s%s}\n", type, *body ? "," : "", body);
+        fflush(stdout);
+    }
     pthread_mutex_unlock(&lock);
     free(body);
 }
@@ -342,4 +355,14 @@ void log_counts(int *errors, int *warnings)
 void log_reset_counts(void)
 {
     n_errors = n_warnings = 0;
+}
+
+void engine_set_sink(const EngineSink *s)
+{
+    pthread_mutex_lock(&lock);
+    if (s)
+        sink = *s;
+    else
+        memset(&sink, 0, sizeof(sink));
+    pthread_mutex_unlock(&lock);
 }

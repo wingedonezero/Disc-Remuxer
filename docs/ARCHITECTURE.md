@@ -28,7 +28,7 @@ One name per job, used everywhere (code comments, logs, docs):
 ## The shape
 
 ```
-disc-remuxer (src/disc-remuxer)   commands, settings, log, writing files
+disc-remuxer (src/disc-remuxer)   command line + engine (settings, log, choice, writing files)
   ▼
 disc layer                         one FFmpeg demuxer, "disc": open the source once,
   │                                which kind of disc, title list (info), open a title
@@ -162,9 +162,15 @@ unchanged and not opened by the program; DVD gets a format part of its own.
 
 ## The program (`src/disc-remuxer/`, C)
 
+Every file but `main.c` is the engine, built as `libdisc-remuxer.a`: the
+command line (`main.c`) and the GUI link it and call `engine.h`. FFmpeg and
+every library under it are linked into both as before.
+
 | File | Part |
 |---|---|
-| `main.c` | commands (`info`, `demux`, `settings`, `version`), options (`--config`, `--set`, `--json`, `--split`, `-v`), the run |
+| `main.c` | the command line: commands (`info`, `demux`, `settings`, `version`), options (`--config`, `--set`, `--json`, `--split`, `--second-view`, `--tracks`, `-v`), the engine called |
+| `engine.c`, `engine.h` | the engine's calls: settings and log set up, a disc opened once (`engine_disc_open()`), its overview, the choice of titles and tracks, a run (its folder: given, or `<output.folder>/<disc name>`, `output` next to the program by default; its log files; its titles; the summary); `engine_set_sink()` gives log lines, progress and records to a GUI |
+| `select.c` | the tracks of a title to rip (`--tracks`) |
 | `settings.c` | the settings registry and `disc-remuxer.toml` next to the program (written with every setting and its help; new settings added, unknown ones removed, values kept) |
 | `writer.c` | opening a title and writing its stream files, chapters and VobSub pairs |
 | `check.c` | the end check: each written video / audio file is read back with FFmpeg's decoders and its stream details (format, profile, size, aspect, frame rate, scan, colour, HDR; audio format, channels, layout, rate, depth, ...) must equal those read from the disc's stream while ripping; a missing or different field fails the title |
@@ -173,8 +179,8 @@ unchanged and not opened by the program; DVD gets a format part of its own.
 | `msg.h` | the numbers of the program's own messages |
 
 The demuxer contract the program relies on: `docs/FORMATS.md`. Finding
-discs, job folders and batches are the GUI's job; the program handles one
-disc per run.
+discs (searching folders, drag and drop), the queue and batches are the
+GUI's job; the engine handles one disc per run.
 
 ## Tests (`tests/`, Python)
 

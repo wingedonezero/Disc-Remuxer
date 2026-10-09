@@ -32,7 +32,7 @@ C code through a cffi bridge built against the same libraries.
 
 See `docs/ARCHITECTURE.md` and `libs/README.md`.
 
-- `src/disc-remuxer/` — the program
+- `src/disc-remuxer/` — the program: the engine (`libdisc-remuxer.a`, `engine.h`) and the command line (`main.c`)
 - `libs/` — FFmpeg and every library, edited directly
 - `mk/` — the build rules (`Makefile`, `build.sh`)
 - `tests/` — unit tests (`unit/`), test data builders (`synth/`), helpers, the cffi bridge (`bridge/`)
