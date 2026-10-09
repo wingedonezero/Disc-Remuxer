@@ -14,6 +14,14 @@ QString hms(int64_t us)
     return QString("%1:%2:%3").arg(t / 3600).arg(t / 60 % 60, 2, 10, QChar('0')).arg(t % 60, 2, 10, QChar('0'));
 }
 
+// h:mm:ss.mmm (a chapter's start: the disc's time, to the millisecond)
+static QString hmsMs(int64_t us)
+{
+    int64_t ms = (us + 500) / 1000;
+    return QString("%1:%2:%3.%4").arg(ms / 3600000).arg(ms / 60000 % 60, 2, 10, QChar('0'))
+        .arg(ms / 1000 % 60, 2, 10, QChar('0')).arg(ms % 1000, 3, 10, QChar('0'));
+}
+
 // GB / MB of 1024^3 / 1024^2 bytes, one decimal, as info writes it
 QString sizeText(int64_t bytes)
 {
@@ -232,14 +240,16 @@ void DetailsPanel::showTitle(const DiscTitleInfo *t, const uint8_t *keep)
             QString files;
             for (int f = 0; f < q->nb_files; f++)
                 files += (f ? ", " : "") + QString::fromUtf8(t->files[q->first_file + f]);
-            row(parts, QString::number(p + 1), QString("at %1, %2, %3, %4 chapter(s)").arg(hms(q->start))
+            row(parts, QString::number(p + 1), QString("at %1, %2, %3, %4 chapter(s)").arg(hmsMs(q->start))
                                                    .arg(hms(q->duration)).arg(files).arg(q->nb_chapters));
         }
     }
-    auto *chapters = row(top, "Chapter list", QString::number(t->nb_chapters));
+    // the disc's chapter marks; a rip starts each chapter at the first video frame from its mark (the
+    // chapters file written then has those times)
+    auto *chapters = row(top, "Chapter list", QString("%1 (as the disc marks them)").arg(t->nb_chapters));
     for (int i = 0; i < t->nb_chapters; i++)
         row(chapters, QString::number(i + 1),
-            hms(t->chapters[i].start) + (t->chapters[i].name ? "  " + QString::fromUtf8(t->chapters[i].name) : ""));
+            hmsMs(t->chapters[i].start) + (t->chapters[i].name ? "  " + QString::fromUtf8(t->chapters[i].name) : ""));
     top->setExpanded(true);
 
     // the tracks by kind, as makemkvcon groups them
