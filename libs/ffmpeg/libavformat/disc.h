@@ -175,6 +175,9 @@ typedef struct DiscFormat {
      *  tolerance, ts), s->duration; *second_view: the second view of a 3-D
      *  title is read. */
     int  (*open_title)(AVFormatContext *s, int i, int part, int *second_view);
+    /** The opened title's own state given back (another title can be
+     *  opened after it); also after a failed open_title. */
+    void (*close_title)(AVFormatContext *s);
     /** Also after a failed load (the context as far as it came). */
     void (*close)(AVFormatContext *s);
 } DiscFormat;
@@ -188,7 +191,8 @@ typedef struct DiscContext {
     /* options, for every format part */
     int               opt_read_attempts;
     int               opt_udf_reader;
-    int               opt_title;        /**< -1: every title listed, none read */
+    int               opt_title;        /**< -1: every title listed, none read; then the opened title
+                                             (disc_title_open()) */
     int               opt_part;         /**< -1: the whole title, else that part of it (DiscTitleInfo.parts) */
     int               opt_second_view;  /**< 3-D titles: the second view is read (a track of its own) */
     int               opt_details;      /**< the title list (info) reads each track's details from the stream */

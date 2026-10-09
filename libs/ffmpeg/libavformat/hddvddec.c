@@ -86,12 +86,21 @@ static int read_block(AVFormatContext *s, int k, uint32_t block, uint8_t *buf)
     return ff_hddvd_clip_block(s, c->aacs, c->fs, c->title->clips[k], block, buf);
 }
 
-static void hddvd_close(AVFormatContext *s)
+/* The opened title's chapter marks given back. */
+static void close_title(AVFormatContext *s)
 {
     HDDVDDemuxContext *c = ff_disc_part(s);
 
     av_freep(&c->chapter_times);
     av_freep(&c->chapter_names);
+    c->title = NULL;
+}
+
+static void hddvd_close(AVFormatContext *s)
+{
+    HDDVDDemuxContext *c = ff_disc_part(s);
+
+    close_title(s);
     ff_hddvd_titles_free(&c->plan);
     ff_hddvd_aacs_close(&c->aacs);
     ff_hddvd_xpl_free_all(&c->xpls, c->nb_xpls);
@@ -313,5 +322,6 @@ const DiscFormat ff_disc_hddvd = {
     .remove_title  = remove_title,
     .title_info    = title_info,
     .open_title    = open_title,
+    .close_title   = close_title,
     .close         = hddvd_close,
 };

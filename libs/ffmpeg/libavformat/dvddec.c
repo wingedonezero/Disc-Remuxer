@@ -83,12 +83,20 @@ static int read_block(AVFormatContext *s, int k, uint32_t block, uint8_t *buf)
     return ff_dvd_segment_read(&c->disc, c->title, k, block, buf);
 }
 
-static void dvd_close(AVFormatContext *s)
+/* The opened title's chapter records given back. */
+static void close_title(AVFormatContext *s)
 {
     DVDDemuxContext *c = ff_disc_part(s);
     av_freep(&c->chapter_times);
     av_freep(&c->chapter_clips);
     av_freep(&c->chapter_offsets);
+    c->title = NULL;
+}
+
+static void dvd_close(AVFormatContext *s)
+{
+    DVDDemuxContext *c = ff_disc_part(s);
+    close_title(s);
     ff_dvd_titles_free(&c->titles);
     ff_dvd_scan_free(&c->scan);
     ff_dvd_disc_free(&c->disc);
@@ -424,5 +432,6 @@ const DiscFormat ff_disc_dvd = {
     .remove_title  = remove_title,
     .title_info    = title_info,
     .open_title    = open_title,
+    .close_title   = close_title,
     .close         = dvd_close,
 };

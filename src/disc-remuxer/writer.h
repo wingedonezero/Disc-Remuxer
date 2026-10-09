@@ -11,16 +11,14 @@
  * Mpeg2, VobSub, ...). */
 const char *codec_label(enum AVCodecID id, int profile);
 
-/* Opens title `title` of source with demuxer `format` and the settings
- * (read attempts, UDF reader, AACS key files); part >= 0: only that part of
- * the title (one of the stream files a title plays back to back), -1 the
- * whole title; second_view: a 3-D title's second view is read too. Returns 0
- * or an AVERROR. */
-int open_title(const char *format, const char *source, int title, int part, int second_view, AVFormatContext **ctx);
+/* Opens the disc source with demuxer `format` and the settings (read
+ * attempts, UDF reader, AACS key files, ...): the disc is read once (its
+ * disc info: the title list with each title's streams), no title opened.
+ * Returns 0 or an AVERROR. */
+int open_disc(const char *format, const char *source, AVFormatContext **ctx);
 
 typedef struct TitleJob {
-    const char *format;        /* demuxer */
-    const char *source;
+    AVFormatContext *disc;     /* the open disc (open_disc()); the title is opened on it and closed again */
     int         title;         /* index in the disc's title list */
     int         part, nb_parts;/* part >= 0: only that part of the title's nb_parts (files _p1, _p2, ...) */
     int         second_view;   /* a 3-D title's second view as a track of its own */
@@ -36,7 +34,10 @@ typedef struct TitleOutcome {
 } TitleOutcome;
 
 /* Writes one title's stream files and chapters (logged as a step of its
- * own). Returns 0, or an AVERROR when it failed (logged). */
+ * own); part >= 0: only that part of the title (one of the stream files a
+ * title plays back to back), -1 the whole title; second_view: a 3-D title's
+ * second view is read too. Returns 0, or an AVERROR when it failed
+ * (logged). */
 int demux_title(const TitleJob *job, TitleOutcome *out);
 
 #endif

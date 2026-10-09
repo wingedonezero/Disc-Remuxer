@@ -84,7 +84,6 @@ static void hms(char *buf, size_t size, int64_t us)
  * docs/FORMATS.md (the disc info, each track's result at the end, read
  * progress as an option). */
 #define DISC_FORMAT "disc"
-#define ONLY_DISC_INFO (-1)
 
 /* A size in GB / MB of 1024^3 / 1024^2 bytes, one decimal, cut off (not rounded). */
 static void size_text(char *buf, size_t size, int64_t bytes)
@@ -278,17 +277,19 @@ static void title_overview(const DiscTitleInfo *t, int detail)
 }
 
 /* The disc line and the overview of its titles (with the JSON disc and title
- * records), from one open of source with the disc info only; detail: each
- * title's files and streams too. NULL when source cannot be read as a disc
- * (logged), else the demuxer to open its titles with. */
-static const char *disc_overview(const char *source, int detail, int *nb_titles, int **nb_parts)
+ * records), from the one open of source (the disc info; no title opened);
+ * detail: each title's files and streams too. The open disc into *disc (its
+ * titles are opened on it), or NULL when source cannot be read as a disc
+ * (logged). */
+static const DiscInfo *disc_overview(const char *source, int detail, AVFormatContext **disc)
 {
     AVFormatContext *ctx = NULL;
     const DiscInfo *d;
     char revs[32] = "", js1[64], js2[256], js3[64], js4[1024], jname[1100];
     int ret;
 
-    if ((ret = open_title(DISC_FORMAT, source, ONLY_DISC_INFO, -1, 0, &ctx)) < 0 || !(d = disc_info(ctx))) {
+    *disc = NULL;
+    if ((ret = open_disc(DISC_FORMAT, source, &ctx)) < 0 || !(d = disc_info(ctx))) {
         if (ret == AVERROR(ENOKEY))
             log_msg(MSG_SOURCE_UNSUPPORTED, LOG_ERROR, "%s is encrypted (AACS) and the key files have no key for "
                     "it (its disc ID is in the AACS line above): add its key to a KEYDB.cfg (setting "
@@ -299,10 +300,6 @@ static const char *disc_overview(const char *source, int detail, int *nb_titles,
         avformat_close_input(&ctx);
         return NULL;
     }
-    *nb_titles = d->nb_titles;
-    if (nb_parts && (*nb_parts = calloc(d->nb_titles ? d->nb_titles : 1, sizeof(**nb_parts))))
-        for (int t = 0; t < d->nb_titles; t++)
-            (*nb_parts)[t] = d->titles[t].nb_parts;
     if (d->udf_revision)
         snprintf(revs, sizeof(revs), " %x.%02x", (unsigned)(d->udf_revision >> 8), (unsigned)(d->udf_revision & 0xff));
     log_msg(MSG_SOURCE, LOG_INFO, "Disc: %s '%s', %s%s, %s, %d title%s", d->kind, d->label ? d->label : "",
@@ -319,8 +316,8 @@ static const char *disc_overview(const char *source, int detail, int *nb_titles,
              d->nb_titles, jname);
     for (int t = 0; t < d->nb_titles; t++)
         title_overview(&d->titles[t], detail);
-    avformat_close_input(&ctx);
-    return DISC_FORMAT;
+    *disc = ctx;
+    return d;
 }
 
 /* "all" | "3" | "1,3-5" into a 0/1 list of nb_titles; returns the count
@@ -402,12 +399,12 @@ static int mkdirs(const char *path)
 
 static int cmd_info(const char *source)
 {
-    const char *format;
-    int nb;
+    AVFormatContext *disc;
 
     log_msg(MSG_SOURCE, LOG_INFO, "Source: %s", source);
-    if (!(format = disc_overview(source, 1, &nb, NULL)))
+    if (!disc_overview(source, 1, &disc))
         return 1;
+    avformat_close_input(&disc);
     return 0;
 }
 
@@ -415,8 +412,9 @@ static int cmd_demux(const char *source, const char *titles, const char *out_dir
                      const char *second)
 {
     char name[512], logp[PATH_MAX + 600], dbgp[PATH_MAX + 600], *sel, *spl = NULL, *sv = NULL;
-    const char *format;
-    int nb, count, ordinal = 0, failed = 0, done = 0, errors, warnings, *nb_parts = NULL;
+    AVFormatContext *disc;
+    const DiscInfo *di;
+    int nb, count, ordinal = 0, failed = 0, done = 0, errors, warnings;
     int64_t track_warnings = 0;
 
     if (mkdirs(out_dir) < 0) {
@@ -435,11 +433,12 @@ static int cmd_demux(const char *source, const char *titles, const char *out_dir
     settings_log_changed();
     log_msg(MSG_OUTPUT_FOLDER, LOG_INFO, "Output folder: %s", out_dir);
 
-    if (!(format = disc_overview(source, 0, &nb, &nb_parts)) || !nb_parts) {
-        free(nb_parts);
+    /* the disc is read once: every title is opened on it */
+    if (!(di = disc_overview(source, 0, &disc))) {
         log_close_files();
         return 1;
     }
+    nb = di->nb_titles;
     sel = calloc(nb ? nb : 1, 1);
     spl = calloc(nb ? nb : 1, 1);
     sv  = calloc(nb ? nb : 1, 1);
@@ -450,13 +449,13 @@ static int cmd_demux(const char *source, const char *titles, const char *out_dir
         free(sel);
         free(spl);
         free(sv);
-        free(nb_parts);
+        avformat_close_input(&disc);
         log_close_files();
         return 2;
     }
     /* which titles are written as parts: --split (these), the setting (every title) */
     for (int t = 0; t < nb; t++)
-        if (spl[t] && sel[t] && !nb_parts[t])
+        if (spl[t] && sel[t] && !di->titles[t].nb_parts)
             log_msg(MSG_TITLE_SELECTION, LOG_INFO, "Title #%d has no parts (it plays no whole stream files back to "
                     "back): written whole", t);
     if (setting_bool("output.split_joined_titles"))
@@ -464,12 +463,12 @@ static int cmd_demux(const char *source, const char *titles, const char *out_dir
     if (setting_bool("bluray.second_view"))
         memset(sv, 1, nb);
     for (int t = 0; t < nb; t++) {
-        int parts = spl[t] ? nb_parts[t] : 0, part_failed = 0;
+        int parts = spl[t] ? di->titles[t].nb_parts : 0, part_failed = 0;
         if (!sel[t])
             continue;
         ++ordinal;
         for (int p = parts ? 0 : -1; p < parts; p++) {
-            TitleJob job = { format, source, t, p, parts, sv[t], ordinal, count, out_dir, count > 1 };
+            TitleJob job = { disc, t, p, parts, sv[t], ordinal, count, out_dir, count > 1 };
             TitleOutcome res;
             demux_title(&job, &res);
             part_failed    += res.failed;
@@ -481,7 +480,7 @@ static int cmd_demux(const char *source, const char *titles, const char *out_dir
     free(sel);
     free(spl);
     free(sv);
-    free(nb_parts);
+    avformat_close_input(&disc);
 
     log_counts(&errors, &warnings);
     log_step("=== Summary ===");

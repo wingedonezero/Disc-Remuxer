@@ -5,13 +5,12 @@
  * plays, chapters) and each title's streams (kind, codec, language and the
  * stream details). It is filled on open whichever title is opened; with the
  * option title = -1 the disc is only described: no title is opened and
- * nothing is read.
+ * nothing is read until disc_title_open() opens one (the disc is read once,
+ * any number of titles are read from it, one after another).
  *
  * Separate from the streams a title is ripped from (AVStream): this only
  * describes the disc. A value of 0 (a number) or NULL (a string) is not
- * known; the stream details (bit rate, channels, sample rate, frame size,
- * aspect, frame rate) are not filled yet (they come from reading the start
- * of each title, still to be built).
+ * known.
  *
  * This file is part of FFmpeg.
  *
@@ -129,5 +128,23 @@ typedef struct DiscInfo {
  * context. Valid until s is closed.
  */
 const DiscInfo *disc_info(const AVFormatContext *s);
+
+/**
+ * Open title `title` of the disc s (opened with the disc demuxer, option
+ * title -1: the disc info only) for reading: the title before it is closed
+ * first. The disc stays loaded: its title list and each title's stream
+ * pass are not done again. part >= 0: only that part of the title
+ * (DiscTitleInfo.parts); second_view: a 3-D title's second view is read
+ * too. Its streams, chapters (at the end) and s->duration are the title's;
+ * av_read_frame() gives its packets. Returns 0 or an AVERROR (the title
+ * is then closed).
+ */
+int disc_title_open(AVFormatContext *s, int title, int part, int second_view);
+
+/**
+ * Close the title opened on s: its streams, chapters and results are
+ * removed; the disc stays loaded. Nothing to do when none is open.
+ */
+void disc_title_close(AVFormatContext *s);
 
 #endif /* AVFORMAT_DISCINFO_H */

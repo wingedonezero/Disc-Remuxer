@@ -91,11 +91,22 @@ static int has_dir(DiscIOFS *fs, const char *path)
     return !fs->ops->find_dir(fs, path);
 }
 
-static void bluray_close(AVFormatContext *s)
+/* The opened title's segment reader and chapter marks given back; the
+ * next title starts without both views. */
+static void close_title(AVFormatContext *s)
 {
     BlurayDemuxContext *c = ff_disc_part(s);
     ff_bluray_seg_reader_close(&c->seg);
     av_freep(&c->chapter_times);
+    c->title = NULL;
+    c->seg0  = 0;
+    c->both  = 0;
+}
+
+static void bluray_close(AVFormatContext *s)
+{
+    BlurayDemuxContext *c = ff_disc_part(s);
+    close_title(s);
     for (int i = 0; i < c->nb_files; i++)
         av_free(c->files[i]);
     av_freep(&c->files);
@@ -480,5 +491,6 @@ const DiscFormat ff_disc_bluray = {
     .remove_title  = remove_title,
     .title_info    = title_info,
     .open_title    = open_title,
+    .close_title   = close_title,
     .close         = bluray_close,
 };

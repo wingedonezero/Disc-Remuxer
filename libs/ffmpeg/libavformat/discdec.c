@@ -316,17 +316,31 @@ const DiscInfo *disc_info(const AVFormatContext *s)
     return s && s->iformat == &ff_disc_demuxer.p ? &((const DiscContext *)s->priv_data)->info : NULL;
 }
 
-static int disc_close(AVFormatContext *s)
+/* The opened title's reader, tracks and the format part's state of it
+ * given back (the disc stays loaded). */
+static void title_close(AVFormatContext *s)
 {
     DiscContext *d = s->priv_data;
 
     ff_disc_title_reader_close(&d->reader);
-    if (d->fmt && d->part)
-        d->fmt->close(s);
-    av_freep(&d->part);
+    if (d->fmt && d->part && d->fmt->close_title)
+        d->fmt->close_title(s);
     av_freep(&d->tracks);
     av_freep(&d->feeds);
     av_freep(&d->pids);
+    memset(&d->src, 0, sizeof(d->src));
+    d->untested = 0;
+    d->progress = 0;
+}
+
+static int disc_close(AVFormatContext *s)
+{
+    DiscContext *d = s->priv_data;
+
+    title_close(s);
+    if (d->fmt && d->part)
+        d->fmt->close(s);
+    av_freep(&d->part);
     for (int i = 0; d->title_tracks && i < d->nb_title_slots; i++)
         av_freep(&d->title_tracks[i]);
     av_freep(&d->title_tracks);
@@ -502,6 +516,45 @@ static int disc_read_header(AVFormatContext *s)
     if ((ret = open_title(s)) < 0)
         return ret;
     return ff_disc_title_reader_open(s, &d->src);
+}
+
+void disc_title_close(AVFormatContext *s)
+{
+    if (!disc_info(s))
+        return;
+    /* FFmpeg's read state of the title's streams, then the streams, the
+     * chapters and the title's results themselves */
+    ff_read_frame_flush(s);
+    title_close(s);
+    while (s->nb_streams)
+        ff_remove_stream(s, s->streams[s->nb_streams - 1]);
+    while (s->nb_chapters) {
+        s->nb_chapters--;
+        av_dict_free(&s->chapters[s->nb_chapters]->metadata);
+        av_freep(&s->chapters[s->nb_chapters]);
+    }
+    av_freep(&s->chapters);
+    av_dict_set(&s->metadata, "untested", NULL, 0);
+    s->duration = AV_NOPTS_VALUE;
+}
+
+int disc_title_open(AVFormatContext *s, int title, int part, int second_view)
+{
+    DiscContext *d;
+    int ret;
+
+    if (!disc_info(s))
+        return AVERROR(EINVAL);
+    d = s->priv_data;
+    disc_title_close(s);
+    if (title < 0)
+        return AVERROR(EINVAL);
+    d->opt_title       = title;
+    d->opt_part        = part;
+    d->opt_second_view = second_view;
+    if ((ret = open_title(s)) < 0 || (ret = ff_disc_title_reader_open(s, &d->src)) < 0)
+        disc_title_close(s);
+    return ret;
 }
 
 static int disc_read_packet(AVFormatContext *s, AVPacket *pkt)

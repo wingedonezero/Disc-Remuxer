@@ -457,7 +457,7 @@ static int es_flush_hold(const AVFormatContext *ctx, const AVStream *st, EsOut *
     return ret;
 }
 
-int open_title(const char *format, const char *source, int title, int part, int second_view, AVFormatContext **ctx)
+int open_disc(const char *format, const char *source, AVFormatContext **ctx)
 {
     const AVInputFormat *fmt = av_find_input_format(format);
     AVDictionary *opts = NULL;
@@ -467,11 +467,8 @@ int open_title(const char *format, const char *source, int title, int part, int 
     *ctx = NULL;
     if (!fmt)
         return AVERROR_DEMUXER_NOT_FOUND;
-    av_dict_set_int(&opts, "title", title, 0);
-    if (part >= 0)
-        av_dict_set_int(&opts, "part", part, 0);
-    if (second_view)
-        av_dict_set_int(&opts, "second_view", 1, 0);
+    /* the disc info only: the titles are opened on it one by one */
+    av_dict_set_int(&opts, "title", -1, 0);
     av_dict_set(&opts, "dolby_vision", setting_text("bluray.dolby_vision"), 0);
     av_dict_set_int(&opts, "read_attempts", setting_int("read.attempts"), 0);
     av_dict_set(&opts, "udf_reader", setting_text("read.udf_reader"), 0);
@@ -571,7 +568,7 @@ static void hms(char *buf, size_t size, double s)
 
 int demux_title(const TitleJob *job, TitleOutcome *res)
 {
-    AVFormatContext *ctx = NULL;
+    AVFormatContext *ctx = job->disc;
     const DiscInfo *info;
     const char *tname;
     EsOut *out = NULL;
@@ -586,7 +583,7 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         snprintf(jpart, sizeof(jpart), ",\"part\":%d", job->part + 1);
     } else
         snprintf(who, sizeof(who), "Title #%d", job->title);
-    if ((ret = open_title(job->format, job->source, job->title, job->part, job->second_view, &ctx)) < 0) {
+    if ((ret = disc_title_open(ctx, job->title, job->part, job->second_view)) < 0) {
         log_step("=== Title %d/%d: %s ===", job->ordinal, job->count, who + 6);
         log_msg(MSG_TITLE_OPEN_FAILED, LOG_ERROR, "%s cannot be opened: %s", who, av_err2str(ret));
         res->failed = 1;
@@ -854,6 +851,6 @@ end:
     }
     av_free(out);
     av_packet_free(&pkt);
-    avformat_close_input(&ctx);
+    disc_title_close(ctx);
     return ret;
 }
