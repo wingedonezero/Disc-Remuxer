@@ -58,6 +58,13 @@ typedef struct HDDVDDemuxContext {
     const char   **chapter_names;
 } HDDVDDemuxContext;
 
+typedef struct PassRead {
+    void      *log;
+    HDDVDAACS *aacs;
+    DiscIOFS  *fs;
+    HDDVDClip *clip;
+} PassRead;
+
 static const char *clip_name(AVFormatContext *s, int k)
 {
     HDDVDDemuxContext *c = ff_disc_part(s);
@@ -136,9 +143,11 @@ static void title_tracks(const HDDVDDemuxContext *c, const HDDVDTitle *t, DiscTr
         o->info.inner_track = k->inner_track;
         o->info.from_track  = k->from_track;
         memcpy(o->info.language, k->lang, sizeof(o->info.language));
-        o->id   = pes_id(k);
-        o->kind = k->type == AVMEDIA_TYPE_VIDEO ? DR_KIND_VIDEO :
-                  k->type == AVMEDIA_TYPE_AUDIO ? DR_KIND_AUDIO : DR_KIND_SUBTITLE;
+        o->id     = pes_id(k);
+        o->kind   = k->type == AVMEDIA_TYPE_VIDEO ? DR_KIND_VIDEO :
+                    k->type == AVMEDIA_TYPE_AUDIO ? DR_KIND_AUDIO : DR_KIND_SUBTITLE;
+        o->stream = k->number;
+        o->number = k->index;
         if (k->type == AVMEDIA_TYPE_VIDEO) {
             /* the video attribute's line-21 caption marks (byte 0x03 bit 7:
              * field 1, bit 6: field 2, laid out as in DVD-Video's video
@@ -155,9 +164,66 @@ static void title_tracks(const HDDVDDemuxContext *c, const HDDVDTitle *t, DiscTr
     }
 }
 
+/* The pass's reading: the clip's blocks as the title reader reads them. */
+static int pass_read(void *opaque, uint32_t block, uint8_t *buf)
+{
+    PassRead *r = opaque;
+    if (block >= r->clip->size / HDDVD_BLOCK)
+        return AVERROR_EOF;
+    return ff_hddvd_clip_block(r->log, r->aacs, r->fs, r->clip, block, buf);
+}
+
+/* Every title's tracks through the disc layer's stream pass over the EVOB
+ * they come from (the largest): duplicates, details (for the title list),
+ * data. A title whose video has no data is left out; one whose EVOB cannot
+ * be read keeps its tracks as described. */
+static int stream_pass(AVFormatContext *s)
+{
+    DiscContext *d = s->priv_data;
+    HDDVDDemuxContext *c = ff_disc_part(s);
+    HDDVDTitlePlan *plan = c->plan;
+
+    for (int i = 0; i < plan->nb_titles; i++) {
+        HDDVDTitle *t = &plan->titles[i];
+        PassRead r = { s, c->aacs, c->fs, t->clips[t->segment] };
+        DiscPassSource src = { .index = t->segment, .lpcm_header = 5, .key = (uintptr_t)r.clip,
+                               .read = pass_read, .opaque = &r };
+        int n = t->nb_tracks, ret;
+
+        if (!n)
+            continue;
+        if (!(t->dtracks = av_calloc(n, sizeof(*t->dtracks))))
+            return AVERROR(ENOMEM);
+        title_tracks(c, t, t->dtracks);
+        ret = ff_disc_stream_pass(s, t->name ? t->name : "?", &src, t->dtracks, &n,
+                                  d->opt_details && d->opt_title < 0);
+        if (ret == AVERROR(ENOMEM))
+            return ret;
+        if (ret == AVERROR_INVALIDDATA) {
+            av_log(s, AV_LOG_ERROR, "HD DVD: title %s left out: its video has no data\n", t->name);
+            av_free(t->clips);
+            av_free(t->marks);
+            av_free(t->tracks);
+            av_free(t->dtracks);
+            memmove(t, t + 1, (plan->nb_titles - i - 1) * sizeof(*t));
+            plan->nb_titles--;
+            i--;
+            continue;
+        }
+        if (ret < 0) {
+            av_log(s, AV_LOG_WARNING, "HD DVD: title %s: its stream details cannot be read: %s\n", t->name,
+                   av_err2str(ret));
+            title_tracks(c, t, t->dtracks);
+            n = t->nb_tracks;
+        }
+        t->nb_dtracks = n;
+    }
+    return 0;
+}
+
 /* The disc info's titles: name, language, duration, size, whether
- * selected, the EVOB files, chapter records, streams (their details are not
- * known before the title is read). */
+ * selected, the EVOB files, chapter records, streams (with their details
+ * from the stream pass). */
 static int describe_titles(AVFormatContext *s)
 {
     HDDVDDemuxContext *c = ff_disc_part(s);
@@ -185,17 +251,8 @@ static int describe_titles(AVFormatContext *s)
             ch->start = (int64_t)t->marks[k].ms * (AV_TIME_BASE / 1000);
             ch->name  = t->marks[k].name && *t->marks[k].name ? t->marks[k].name : NULL;
         }
-        if (t->nb_tracks) {
-            DiscTrack *tr = av_calloc(t->nb_tracks, sizeof(*tr));
-            int ret;
-            if (!tr)
-                return AVERROR(ENOMEM);
-            title_tracks(c, t, tr);
-            ret = ff_disc_title_add_tracks(dt, tr, t->nb_tracks);
-            av_free(tr);
-            if (ret < 0)
-                return ret;
-        }
+        if (ff_disc_title_add_tracks(dt, t->dtracks, t->nb_dtracks) < 0)
+            return AVERROR(ENOMEM);
     }
     return 0;
 }
@@ -208,9 +265,6 @@ static int title_source(AVFormatContext *s)
     DiscContext *d = s->priv_data;
     HDDVDDemuxContext *c = ff_disc_part(s);
     const HDDVDTitle *t = c->title;
-    DiscTrack *tr;
-    int ret;
-
     if (!(c->chapter_times = av_calloc(FFMAX(t->nb_marks, 1), sizeof(*c->chapter_times))) ||
         !(c->chapter_names = av_calloc(FFMAX(t->nb_marks, 1), sizeof(*c->chapter_names))))
         return AVERROR(ENOMEM);
@@ -230,12 +284,7 @@ static int title_source(AVFormatContext *s)
         .chapter_names = (const char *const *)c->chapter_names,
         .nb_chapters   = t->nb_marks,
     };
-    if (!(tr = av_calloc(FFMAX(t->nb_tracks, 1), sizeof(*tr))))
-        return AVERROR(ENOMEM);
-    title_tracks(c, t, tr);
-    ret = ff_disc_open_tracks(s, t->name ? t->name : "?", tr, t->nb_tracks, 0, 0);
-    av_free(tr);
-    return ret;
+    return ff_disc_open_tracks(s, t->name ? t->name : "?", t->dtracks, t->nb_dtracks, 0, 0);
 }
 
 static int hddvd_open(AVFormatContext *s)
@@ -255,7 +304,8 @@ static int hddvd_open(AVFormatContext *s)
         return ret;
     if ((ret = ff_hddvd_titles_plan(s, c->fs, c->vti, c->xpls, c->nb_xpls, d->opt_min_length, &c->plan)) < 0)
         return ret;
-    if ((ret = ff_hddvd_tracks_build(s, c->fs, c->aacs, c->vti, c->xpls, c->nb_xpls, c->plan)) < 0)
+    if ((ret = ff_hddvd_tracks_build(s, c->fs, c->aacs, c->vti, c->xpls, c->nb_xpls, c->plan)) < 0 ||
+        (ret = stream_pass(s)) < 0)
         return ret;
     if ((ret = describe_titles(s)) < 0)
         return ret;

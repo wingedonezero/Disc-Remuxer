@@ -290,6 +290,8 @@ typedef struct HDDVDTitle {
     HDDVDTrack       *tracks;       /**< video, audio, sub-pictures (ff_hddvd_tracks_build) */
     int               nb_tracks;
     int               segment;      /**< the clip the tracks come from */
+    struct DiscTrack *dtracks;      /**< the tracks after the disc layer's stream pass (disc.h) */
+    int               nb_dtracks;
 } HDDVDTitle;
 
 typedef struct HDDVDTitlePlan {

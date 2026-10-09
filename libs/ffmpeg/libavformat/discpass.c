@@ -543,6 +543,13 @@ int ff_disc_stream_pass(AVFormatContext *s, const char *title, const DiscPassSou
             p[i].done = p[i].cached = 1;
             continue;
         }
+        /* LPCM with another header than DVD-Video's 3 bytes (HD DVD's 5):
+         * FFmpeg's decoder reads DVD-Video's */
+        if (want && p[i].codec == AV_CODEC_ID_PCM_DVD && src->lpcm_header != 3) {
+            av_log(s, AV_LOG_VERBOSE, "%s: title %s: LPCM with a %d-byte header: its details are not read "
+                   "[untested on real discs]\n", fmt, title, src->lpcm_header);
+            want = 0;
+        }
         p[i].done = !want;
         if (want && (ret = probe_open(&p[i])) < 0) {
             if (ret == AVERROR(ENOMEM))
