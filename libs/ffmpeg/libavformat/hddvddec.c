@@ -273,6 +273,7 @@ static int hddvd_open(AVFormatContext *s)
 
 const DiscFormat ff_disc_hddvd = {
     .name        = "HD DVD",
+    .log_name    = "HD DVD",
     .kind        = DISCIO_DISC_HDDVD,
     .priv_size   = sizeof(HDDVDDemuxContext),
     .open        = hddvd_open,

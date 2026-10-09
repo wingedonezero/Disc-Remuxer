@@ -367,7 +367,8 @@ typedef struct DVDTitle {
     uint8_t        audio_listed;        /**< the stream numbers audio_control lists (bit per stream) */
     uint8_t        audio_dropped;       /**< audio[] entries the stream pass left out (bit per entry) */
     int            captions;            /**< the stream pass found closed captions in the video */
-    DiscStreamInfo details[9];          /**< the stream details: [0] the video, [1 + i] audio[i] */
+    struct DiscTrack *tracks;           /**< its tracks after the stream pass (disc.h; av_free()) */
+    int            nb_tracks;
     DVDStreamRef   subp[33];            /**< in the program chain's subp_control order */
     int            nb_subp;
     uint16_t       subp_width, subp_height; /**< the sub-pictures' canvas */
@@ -410,18 +411,11 @@ uint32_t ff_dvd_segment_blocks(const DVDSegment *g);
 int      ff_dvd_segment_read(DVDDisc *d, const DVDTitle *t, int seg, uint32_t block, uint8_t *buf);
 
 /* ---- dvd_streams.c ---- */
-/** The stream pass of title t (its largest segment read from the start):
- *  closed captions (t->captions) and the audio streams without data
- *  (t->audio_dropped). < 0: a sector cannot be read, the title cannot be
- *  used. */
+/** The probe of title t's streams (its largest segment read from the
+ *  start): closed captions (t->captions) and the audio streams without
+ *  data (t->audio_dropped). < 0: a sector cannot be read, the title cannot
+ *  be used. The disc layer's stream pass follows (discpass.c). */
 int ff_dvd_title_streams(DVDDisc *d, DVDTitle *t);
-
-/* ---- dvd_details.c ---- */
-/** The details of title t's video and audio streams (details: option
- *  details; t->details) and which streams have data in its largest
- *  segment: audio without data joins t->audio_dropped. < 0: a sector cannot be read or the video has no data,
- *  the title cannot be used. */
-int ff_dvd_title_details(DVDDisc *d, DVDTitle *t, int details);
 
 /* ---- dvd_disc.c ---- */
 /** Read the disc's structure: the VMG, its title table and text data, and

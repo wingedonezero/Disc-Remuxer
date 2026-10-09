@@ -169,7 +169,7 @@ static void track_place(char *buf, size_t size, const DiscTrack *k, const DiscTs
  * the caller shows of it (metadata), a sub-picture canvas and VobSub
  * header. */
 static int track_stream(AVFormatContext *s, const DiscTrack *k, int index, const DiscTsFeed *f, int ts,
-                        enum AVCodecID codec)
+                        enum AVCodecID codec, int second_view)
 {
     DiscContext *d = s->priv_data;
     AVStream *st = avformat_new_stream(s, NULL);
@@ -188,7 +188,7 @@ static int track_stream(AVFormatContext *s, const DiscTrack *k, int index, const
     if ((k->line21 && (ret = av_dict_set(&st->metadata, "line21", k->line21, 0)) < 0) ||
         (k->info.language[0] && (ret = av_dict_set(&st->metadata, "language", k->info.language, 0)) < 0) ||
         (ret = av_dict_set_int(&st->metadata, "disc_track", index, 0)) < 0 ||
-        (k->eye && (ret = av_dict_set(&st->metadata, "eye", k->eye, 0)) < 0) ||
+        (second_view && k->eye && (ret = av_dict_set(&st->metadata, "eye", k->eye, 0)) < 0) ||
         ((k->flags & DISC_TRACK_LAYER2) &&
          (ret = av_dict_set(&st->metadata, "dolby_vision", d->opt_dolby_vision ? "BL" : "BL+EL+RPU", 0)) < 0) ||
         (k->picture && (ret = av_dict_set(&st->metadata, "picture", k->picture, 0)) < 0) ||
@@ -216,7 +216,7 @@ int ff_disc_open_tracks(AVFormatContext *s, const char *title, const DiscTrack *
                         int second_view)
 {
     DiscContext *d = s->priv_data;
-    const char *fmt = d->fmt->name;
+    const char *fmt = d->fmt->log_name;
     int n = 0, layer = -1, ret;
     char place[64];
 
@@ -247,7 +247,7 @@ int ff_disc_open_tracks(AVFormatContext *s, const char *title, const DiscTrack *
             d->feeds[n] = k->feed;
             add_pid(d, k->feed.pid);
         }
-        if ((ret = track_stream(s, k, i, &k->feed, ts, codec)) < 0)
+        if ((ret = track_stream(s, k, i, &k->feed, ts, codec, second_view)) < 0)
             return ret;
         if (k->flags & DISC_TRACK_LAYER2)
             layer = i;
@@ -322,6 +322,7 @@ static int disc_close(AVFormatContext *s)
     av_freep(&d->tracks);
     av_freep(&d->feeds);
     av_freep(&d->pids);
+    ff_disc_pass_cache_free(&d->pass_cache);
     for (int i = 0; i < d->info.nb_titles; i++) {
         av_freep(&d->info.titles[i].streams);
         av_freep(&d->info.titles[i].chapters);

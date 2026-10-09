@@ -2,10 +2,14 @@
 (tests/synth/bluray.py) and the tracks of their titles read through the
 structure dump: each stream's tracks by its coding type (cores, forced-only
 subtitle copies), languages, the title's PIDs only, video first, then audio,
-then subtitles, identical streams left out. With the 7 corpus discs the
+then subtitles (identical streams: the disc layer's stream pass, tested
+here through the program's info). With the 7 corpus discs the
 tracks equal the reference program's info (implementation notes)."""
 
-from helpers import ffi, install_log, lib, logged
+import json
+import subprocess
+
+from helpers import DIST, ffi, install_log, lib, logged
 from synth import bluray as bd
 from synth.bluray import Item, Stream
 
@@ -110,15 +114,32 @@ def test_a_title_without_a_video_stream_has_no_tracks(tmp_path):
 
 
 def test_an_identical_audio_or_subtitle_stream_is_left_out(tmp_path):
-    install_log()
+    # both streams of a PID are described; the disc layer's stream pass
+    # (discpass.c) leaves out the later one of the same codec, PID and keys
     clip = [VIDEO, (0x1100, 0x81, b"\x61eng"), (0x1100, 0x81, b"\x61fra"),
             (0x1200, 0x90, b"eng"), (0x1200, 0x90, b"fra")]
     item = Item(audio=[Stream(0x1100, 0x81, b"\x61eng")], pg=[Stream(0x1200, 0x90, b"eng")])
     got = [short(l)[:2] + (short(l)[4],) for l in tracks(tmp_path, clip, item)]
-    assert got == [("0x03", "0x1011", "''"), ("0x41", "0x1100", "'eng'"), ("0xc1", "0x1200", "'eng'"),
-                   ("0xc2", "0x1200", "'eng'")]
-    assert logged("Audio stream #2 is identical to stream #1 and was skipped")
-    assert logged("Subtitle stream #4 is identical to stream #3 and was skipped")
+    assert got == [("0x03", "0x1011", "''"), ("0x41", "0x1100", "'eng'"), ("0x41", "0x1100", "'fra'"),
+                   ("0xc1", "0x1200", "'eng'"), ("0xc2", "0x1200", "'eng'"), ("0xc1", "0x1200", "'fra'"),
+                   ("0xc2", "0x1200", "'fra'")], "the format part describes both"
+    packets = [bd.ts_packet(0x1011, bd.pes(0xe0, bytes(16), pts=900), pusi=True),
+               bd.ts_packet(0x1100, bd.pes(0xfd, bytes(16), ext=0x71, pts=900), pusi=True),
+               bd.ts_packet(0x1200, bd.pes(0xbd, bytes(16), pts=900), pusi=True)]
+    data = bd.source_units(packets)
+    clips = {1: bd.clpi(packets=len(data) // 192, streams=clip)}
+    files = bd.bdmv(clips, {1: bd.mpls([Item("00001", S, E, videos=item.videos, audio=item.audio, pg=item.pg)])})
+    files["BDMV/STREAM/00001.m2ts"] = data
+    out = subprocess.run([str(DIST / "disc-remuxer"), "--json", "info", str(bd.write(tmp_path / "pass", files))],
+                         capture_output=True, text=True)
+    recs = [json.loads(l) for l in out.stdout.splitlines() if l.startswith("{")]
+    t = [r for r in recs if r.get("type") == "title"][0]
+    assert [(k["kind"], k["codec"], k["language"], k["forced"]) for k in t["tracks"]] == [
+        ("video", "Mpeg4", "", False), ("audio", "DD", "eng", False), ("subtitle", "PGS", "eng", False),
+        ("subtitle", "PGS", "eng", True)]
+    texts = [r.get("text", "") for r in recs if r.get("type") == "message"]
+    assert "Blu-ray: Audio stream #2 is identical to stream #1 and was skipped" in texts
+    assert "Blu-ray: Subtitle stream #4 is identical to stream #3 and was skipped" in texts
 
 
 def test_streams_without_a_track_kind(tmp_path):

@@ -4,8 +4,9 @@
  * and every title set's IFO with its checks) and describes the disc: its
  * label is the volume label (a folder: the VMG's provider identifier), its
  * name the text data's when it has one; its title list (dvd_titles.c) with
- * each title's tracks after its stream pass (dvd_streams.c: captions, audio
- * streams without data) and its stream details (dvd_details.c). An opened
+ * each title's tracks after its probe (dvd_streams.c: captions, audio
+ * streams without data) and the disc layer's stream pass (discpass.c:
+ * duplicates, details, data). An opened
  * title is read by the disc layer's title reader: its segments one after
  * another, each sector through dvd_read.c (the sector check, CSS).
  *
@@ -127,51 +128,28 @@ static void attr_language(AVFormatContext *s, char lang[4], const uint8_t *b)
         av_log(s, AV_LOG_DEBUG, "DVD: language code bytes %02x %02x are no known language\n", b[0], b[1]);
 }
 
-/* The stream details read for a track. */
-static void video_details(DiscStreamInfo *k, const DiscStreamInfo *v)
-{
-    k->width      = v->width;
-    k->height     = v->height;
-    k->aspect     = v->aspect;
-    k->frame_rate = v->frame_rate;
-    k->profile    = v->profile;
-    k->level      = v->level;
-    k->bit_rate   = v->bit_rate;
-}
-
-static void audio_details(DiscStreamInfo *k, const DiscStreamInfo *a)
-{
-    k->channels    = a->channels;
-    k->layout      = a->layout;
-    k->sample_rate = a->sample_rate;
-    k->bits        = a->bits;
-    k->bit_rate    = a->bit_rate;
-    k->profile     = a->profile;
-}
-
 #define MAX_TRACKS (1 + 8 + 33 + 1)
 
-/* The title's tracks: the video, the audio streams and the sub-pictures
- * as its title set's attributes describe them, without the audio streams
- * found without data and without a stream listed again (the same coding
- * and stream number: the first one is kept), then the caption track when
- * the stream pass found captions; each with the details read from it.
- * Packet ids: video 0x1E0, MPEG audio 0x1C0 + n, private stream 1 sub-
- * streams AC-3 0x80 + n, DTS 0x88 + n, LPCM 0xA0 + n, sub-pictures 0x20 + n.
- * log: the streams left out are logged (once per title). */
-static int title_tracks(AVFormatContext *s, const DVDTitle *t, DiscTrack *out, int log)
+/* The title's tracks as its title set's attributes describe them: the
+ * video, the audio streams (without those the probe found without data),
+ * the sub-pictures, then the caption track when the probe found captions
+ * (the stream pass then gives their details and data). Packet ids: video
+ * 0x1E0, MPEG audio 0x1C0 + n, private stream 1 sub-streams AC-3 0x80 + n,
+ * DTS 0x88 + n, LPCM 0xA0 + n, sub-pictures 0x20 + n. */
+static int title_tracks(AVFormatContext *s, const DVDTitle *t, DiscTrack *out)
 {
     static const enum AVCodecID codecs[8] = { AV_CODEC_ID_AC3, AV_CODEC_ID_NONE, AV_CODEC_ID_MP2, AV_CODEC_ID_MP2,
                                               AV_CODEC_ID_PCM_DVD, AV_CODEC_ID_NONE, AV_CODEC_ID_DTS,
                                               AV_CODEC_ID_NONE };
     static const int id_base[8] = { 0x80, 0, 0x1c0, 0x1c0, 0xa0, 0, 0x88, 0 };
     const uint8_t *h = t->vts->header;
-    int kept[8], nb_kept = 0, sids = 0, n = 0;
+    int n = 0;
     DiscStreamInfo *k;
 
     memset(out, 0, MAX_TRACKS * sizeof(*out));
+    for (int i = 0; i < MAX_TRACKS; i++)
+        ff_disc_stream_init(&out[i].info);
     k = &out[n].info;
-    video_details(k, &t->details[0]);
     k->type  = AVMEDIA_TYPE_VIDEO;
     k->codec = (h[DVD_VTS_VIDEO_ATTR] >> 6) == 0 ? AV_CODEC_ID_MPEG1VIDEO :
                (h[DVD_VTS_VIDEO_ATTR] >> 6) == 1 ? AV_CODEC_ID_MPEG2VIDEO : AV_CODEC_ID_NONE;
@@ -180,43 +158,23 @@ static int title_tracks(AVFormatContext *s, const DVDTitle *t, DiscTrack *out, i
     n++;
     for (int i = 0; i < t->nb_audio; i++) {
         const uint8_t *a = h + DVD_VTS_AUDIO_ATTR + 8 * t->audio[i].attr;
-        enum AVCodecID codec = codecs[a[0] >> 5];
-        int dup = -1;
 
         if (t->audio_dropped >> i & 1)
             continue;
-        for (int j = 0; j < nb_kept && dup < 0; j++) {
-            const uint8_t *b = h + DVD_VTS_AUDIO_ATTR + 8 * t->audio[kept[j]].attr;
-            if (t->audio[kept[j]].stream == t->audio[i].stream && codecs[b[0] >> 5] == codec)
-                dup = kept[j];
-        }
-        if (dup >= 0) {
-            if (log)
-                av_log(s, AV_LOG_INFO, "DVD: title %s: audio track %d is stream %d again (as track %d): left out\n",
-                       t->name, i, t->audio[i].stream, dup);
-            continue;
-        }
-        kept[nb_kept++] = i;
         k = &out[n].info;
-        audio_details(k, &t->details[1 + i]);
         k->type  = AVMEDIA_TYPE_AUDIO;
-        k->codec = codec;
+        k->codec = codecs[a[0] >> 5];
         if ((a[0] & 0x0c) == 4)
             attr_language(s, k->language, a + 2);
         k->roles = audio_roles(a[5]);
-        out[n].id   = id_base[a[0] >> 5] + t->audio[i].stream;
-        out[n].kind = DR_KIND_AUDIO;
+        out[n].id     = id_base[a[0] >> 5] + t->audio[i].stream;
+        out[n].kind   = DR_KIND_AUDIO;
+        out[n].stream = t->audio[i].stream;
+        out[n].number = 1 + i;
         n++;
     }
     for (int i = 0; i < t->nb_subp; i++) {
         const uint8_t *p = h + DVD_VTS_SUBP_ATTR + 6 * t->subp[i].attr;
-        if (sids >> t->subp[i].stream & 1) {
-            if (log)
-                av_log(s, AV_LOG_INFO, "DVD: title %s: sub-picture track %d is stream %d again: left out\n",
-                       t->name, i, t->subp[i].stream);
-            continue;
-        }
-        sids |= 1 << t->subp[i].stream;
         k = &out[n].info;
         k->type   = AVMEDIA_TYPE_SUBTITLE;
         k->codec  = AV_CODEC_ID_DVD_SUBTITLE;
@@ -227,6 +185,8 @@ static int title_tracks(AVFormatContext *s, const DVDTitle *t, DiscTrack *out, i
         k->roles = subp_roles(p[5]);
         out[n].id      = 0x20 + t->subp[i].stream;
         out[n].kind    = DR_KIND_SUBTITLE;
+        out[n].stream  = t->subp[i].stream;
+        out[n].number  = 1 + t->nb_audio + i;
         out[n].palette = t->pgc->palette;
         out[n].picture = "DVD sub-pictures: 4 colours of the program chain's 16-entry palette";
         n++;
@@ -236,28 +196,12 @@ static int title_tracks(AVFormatContext *s, const DVDTitle *t, DiscTrack *out, i
         k->type  = AVMEDIA_TYPE_SUBTITLE;
         k->codec = AV_CODEC_ID_EIA_608;
         av_strlcpy(k->language, "eng", sizeof(k->language));
-        k->bit_rate = t->details[0].bit_rate;       /* carried in the video: its rate */
         out[n].id      = -1;
         out[n].kind    = DR_KIND_CAPTION;
         out[n].caption = "line-21 closed captions (CEA-608) in the video, made into text";
         n++;
     }
-    for (int i = 0; i < n; i++) {
-        out[i].info.inner_track     = -1;
-        out[i].info.from_track      = -1;
-        out[i].info.offset_sequence = -1;
-        if (out[i].info.type == AVMEDIA_TYPE_SUBTITLE) {
-            out[i].info.profile = AV_PROFILE_UNKNOWN;
-            out[i].info.level   = AV_LEVEL_UNKNOWN;
-        }
-    }
     return n;
-}
-
-static int describe_tracks(AVFormatContext *s, const DVDTitle *t, DiscTitleInfo *dt)
-{
-    DiscTrack tr[MAX_TRACKS];
-    return ff_disc_title_add_tracks(dt, tr, title_tracks(s, t, tr, 1));
 }
 
 /* The disc info's titles: length (the cells' playback times), size (the
@@ -295,29 +239,93 @@ static int describe_titles(AVFormatContext *s)
                 return AVERROR(ENOMEM);
             ch->start = av_rescale(t->chapters[k].time, AV_TIME_BASE, 90000);
         }
-        if ((ret = describe_tracks(s, t, dt)) < 0)
+        if ((ret = ff_disc_title_add_tracks(dt, t->tracks, t->nb_tracks)) < 0)
             return ret;
     }
     return 0;
 }
 
-/* The stream pass and the stream details of every title; a title whose
- * pass fails (a sector cannot be read, no video data) is left out of the
- * list. */
+/* The pass's reading: the segment's sectors as the title reader reads them. */
+typedef struct PassRead {
+    DVDDisc        *disc;
+    const DVDTitle *t;
+    int             seg;
+    uint32_t        nb_blocks;
+} PassRead;
+
+static int pass_read(void *opaque, uint32_t block, uint8_t *buf)
+{
+    PassRead *r = opaque;
+    if (block >= r->nb_blocks)
+        return AVERROR_EOF;
+    return ff_dvd_segment_read(r->disc, r->t, r->seg, block, buf);
+}
+
+/* A segment's identity: its title set and every extent it plays (FNV-1a). */
+static uint64_t segment_key(const DVDTitle *t, const DVDSegment *g)
+{
+    uint64_t h = 0xcbf29ce484222325ULL;
+    uint32_t v[3];
+
+    for (int i = -1; i < g->nb_extents; i++) {
+        if (i < 0) {
+            v[0] = t->vtsn;
+            v[1] = v[2] = 0;
+        } else {
+            v[0] = g->extents[i].logical;
+            v[1] = g->extents[i].sector;
+            v[2] = g->extents[i].count;
+        }
+        for (int j = 0; j < sizeof(v); j++) {
+            h ^= ((const uint8_t *)v)[j];
+            h *= 0x100000001b3ULL;
+        }
+    }
+    return h ? h : 1;
+}
+
+/* Every title's probe (dvd_streams.c) and the disc layer's stream pass over
+ * its largest segment (the first of equal ones): its tracks; a title whose
+ * streams cannot be read (a sector cannot be read, no video data) is left
+ * out of the list. Details for the title list only. */
 static int stream_pass(AVFormatContext *s)
 {
+    DiscContext *d = s->priv_data;
     DVDDemuxContext *c = ff_disc_part(s);
     DVDTitleList *l = &c->titles;
 
     for (int i = 0; i < l->nb_titles; i++) {
-        int ret = ff_dvd_title_streams(&c->disc, l->titles[i]);
-        if (ret >= 0)
-            ret = ff_dvd_title_details(&c->disc, l->titles[i], ((DiscContext *)s->priv_data)->opt_details);
+        DVDTitle *t = l->titles[i];
+        DiscTrack tr[MAX_TRACKS];
+        int ret = ff_dvd_title_streams(&c->disc, t), n = 0, seg = 0;
+        int64_t best = -1;
+
+        if (ret >= 0 && t->nb_segments) {
+            PassRead r = { &c->disc, t, 0, 0 };
+            DiscPassSource src = { .lpcm_header = 3, .read_all = 1, .read = pass_read, .opaque = &r };
+
+            for (int k = 0; k < t->nb_segments; k++)
+                if (t->segments[k].size > best) {
+                    best = t->segments[k].size;
+                    seg = k;
+                }
+            r.seg       = seg;
+            r.nb_blocks = ff_dvd_segment_blocks(&t->segments[seg]);
+            src.index   = seg;
+            src.key     = segment_key(t, &t->segments[seg]);
+            n   = title_tracks(s, t, tr);
+            ret = ff_disc_stream_pass(s, t->name, &src, tr, &n, d->opt_details && d->opt_title < 0);
+        } else if (ret >= 0) {
+            n = title_tracks(s, t, tr);
+        }
+        if (ret >= 0 && !(t->tracks = av_memdup(tr, n * sizeof(*tr))) && n)
+            ret = AVERROR(ENOMEM);
+        t->nb_tracks = n;
         if (ret == AVERROR(ENOMEM))
             return ret;
         if (ret < 0) {
             av_log(s, AV_LOG_ERROR, "DVD: title %s left out: its streams cannot be read (%s)\n",
-                   l->titles[i]->name, av_err2str(ret));
+                   t->name, av_err2str(ret));
             ff_dvd_title_free(&l->titles[i]);
             memmove(l->titles + i, l->titles + i + 1, (l->nb_titles - i - 1) * sizeof(*l->titles));
             l->nb_titles--;
@@ -335,8 +343,7 @@ static int open_title(AVFormatContext *s, const DVDTitle *t)
 {
     DiscContext *d = s->priv_data;
     DVDDemuxContext *c = ff_disc_part(s);
-    DiscTrack tr[MAX_TRACKS];
-    int n = title_tracks(s, t, tr, 0), nb_ch = 0;
+    int nb_ch = 0;
 
     c->title = t;
     if (!(c->chapter_times = av_calloc(FFMAX(t->nb_chapters, 1), sizeof(*c->chapter_times))) ||
@@ -365,7 +372,7 @@ static int open_title(AVFormatContext *s, const DVDTitle *t)
         .chapter_clips   = c->chapter_clips,
         .chapter_offsets = c->chapter_offsets,
     };
-    return ff_disc_open_tracks(s, t->name, tr, n, 0, 0);
+    return ff_disc_open_tracks(s, t->name, t->tracks, t->nb_tracks, 0, 0);
 }
 
 static int dvd_open(AVFormatContext *s)
@@ -412,6 +419,7 @@ static int dvd_open(AVFormatContext *s)
 
 const DiscFormat ff_disc_dvd = {
     .name        = "DVD-Video",
+    .log_name    = "DVD",
     .kind        = DISCIO_DISC_DVD,
     .priv_size   = sizeof(DVDDemuxContext),
     .open        = dvd_open,

@@ -1600,6 +1600,7 @@ void ff_dvd_title_free(DVDTitle **pt)
     av_free(t->segments);
     av_free(t->chapters);
     av_free(t->cells);
+    av_free(t->tracks);
     av_freep(pt);
 }
 
