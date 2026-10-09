@@ -91,6 +91,13 @@ typedef struct DiscPartInfo {
     int              nb_chapters;    /**< its own chapters (from its own start) */
 } DiscPartInfo;
 
+/** Something more the format part tells of a title (for the caller's
+ *  details): its name and value in words. */
+typedef struct DiscPropertyInfo {
+    const char      *name;           /**< e.g. "Title set" */
+    char            *value;          /**< e.g. "VTS_03, its title 2" */
+} DiscPropertyInfo;
+
 /** A title of the disc's title list. */
 typedef struct DiscTitleInfo {
     int              index;          /**< its number in the title list (the option title), from 0 */
@@ -109,6 +116,8 @@ typedef struct DiscTitleInfo {
     DiscStreamInfo  *streams;
     int              nb_parts;       /**< 0: the title is one piece */
     DiscPartInfo    *parts;
+    int              nb_props;
+    DiscPropertyInfo *props;         /**< what the format part tells more of it, in its order */
 } DiscTitleInfo;
 
 /** The disc. */
@@ -121,6 +130,8 @@ typedef struct DiscInfo {
     int              encrypted;
     int              nb_titles;
     DiscTitleInfo   *titles;
+    int              nb_props;
+    DiscPropertyInfo *props;         /**< what the format part tells more of the disc, in its order */
 } DiscInfo;
 
 /**
@@ -155,5 +166,19 @@ void disc_title_close(AVFormatContext *s);
  * (2 or 3 letters, either ISO 639-2 form), NULL when not known.
  */
 const char *disc_language(const char *code);
+
+/**
+ * The English name of a language code ("eng": "English"), NULL when not
+ * known.
+ */
+const char *disc_language_name(const char *code);
+
+/**
+ * The Matroska codec ID a stream is stored with in a Matroska file
+ * ("V_MPEG2", "A_AC3", "S_HDMV/PGS", ...): LPCM as PCM ("A_PCM/INT/LIT"),
+ * closed captions as text ("S_TEXT/UTF8"), a 3-D second view as
+ * "V_MPEG4/ISO/MVC"; NULL when Matroska has none.
+ */
+const char *disc_mkv_codec_id(const DiscStreamInfo *k);
 
 #endif /* AVFORMAT_DISCINFO_H */

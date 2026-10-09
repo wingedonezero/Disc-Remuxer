@@ -6,10 +6,14 @@
 #define DISC_REMUXER_WRITER_H
 
 #include <libavformat/avformat.h>
+#include <libavformat/discinfo.h>
 
 /* The codec's short name in file names and logs (DD, DDplus, TrueHD, VC-1,
  * Mpeg2, VobSub, ...). */
 const char *codec_label(enum AVCodecID id, int profile);
+
+/* The extension of the stream file a disc track becomes. */
+const char *track_extension(const DiscStreamInfo *k);
 
 /* Opens the disc source with demuxer `format` and the settings (read
  * attempts, UDF reader, AACS key files, ...): the disc is read once (its

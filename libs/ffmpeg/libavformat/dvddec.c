@@ -329,6 +329,16 @@ static int title_info(AVFormatContext *s, int i, DiscTitleInfo *dt)
     else
         snprintf(t->source, sizeof(t->source), "VTS_%02d program chain %d, cells", t->vtsn, t->pgc->number + 1);
     dt->source = t->source;
+    if (ff_disc_title_add_prop(dt, "Title on the disc", "%s", t->name) < 0 ||
+        ff_disc_title_add_prop(dt, "Title set", "VTS_%02d, its title %d", t->vtsn, t->vts_ttn) < 0 ||
+        ff_disc_title_add_prop(dt, "Program chain", "%d", t->pgc->number + 1) < 0 ||
+        ff_disc_title_add_prop(dt, "Navigation", "%s", t->scan ? t->scan->name : "not reached (cells trimmed)") < 0 ||
+        (t->nr_of_angles > 1 && ff_disc_title_add_prop(dt, "Angles", "%d", t->nr_of_angles) < 0) ||
+        ff_disc_title_add_prop(dt, "Cells", "%d", t->nb_cells) < 0 ||
+        ff_disc_title_add_prop(dt, "Length measured", "%u:%02u:%02u (the program chain says %u:%02u:%02u)",
+                               t->measured / 3600, t->measured / 60 % 60, t->measured % 60, t->declared / 3600,
+                               t->declared / 60 % 60, t->declared % 60) < 0)
+        return AVERROR(ENOMEM);
     for (int k = 0; k < t->nb_segments; k++) {
         dt->size += t->segments[k].size;
         if (ff_disc_title_add_file(dt, t->segments[k].cell_map) < 0)

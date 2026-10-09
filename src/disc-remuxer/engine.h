@@ -85,6 +85,15 @@ int  engine_cancelled(void);
 /* Track i of title t in words, as info lists it (its codec in full, its
  * details, its links to other tracks; "not selected" when !kept). */
 const char *engine_track_text(const DiscTitleInfo *t, int i, int kept, char *buf, size_t size);
+/* Track i of title t as info lists it, in two pieces: its codec in full
+ * (codec), then its details, links and roles (rest, may be ""). */
+void engine_track_parts(const DiscTitleInfo *t, int i, char *codec, size_t csize, char *rest, size_t rsize);
+/* The extension of the stream file a track becomes (m2v, ac3, sub, wav, ...). */
+const char *engine_track_extension(const DiscStreamInfo *k);
+/* The name title t's files take (setting output.file_name_template): its
+ * files are <name>_<track>_..., in a folder <name> when a run writes more
+ * than one title. */
+void engine_title_file_name(const DiscTitleInfo *t, char *out, size_t size);
 /* The short codec name the file names use (Mpeg2, DD, DTS-HD MA, ...). */
 const char *engine_codec_label(enum AVCodecID id, int profile);
 

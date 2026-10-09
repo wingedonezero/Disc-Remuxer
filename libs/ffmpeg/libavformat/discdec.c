@@ -26,11 +26,13 @@
  */
 
 #include <limits.h>
+#include <stdarg.h>
 #include <string.h>
 
 #include "libavcodec/avcodec.h"
 #include "libavcodec/defs.h"
 #include "libavutil/avstring.h"
+#include "libavutil/bprint.h"
 #include "libavutil/dict.h"
 #include "libavutil/error.h"
 #include "libavutil/log.h"
@@ -46,6 +48,7 @@
 #include "disclang.h"
 #include "disctl.h"
 #include "internal.h"
+#include "matroska.h"
 
 /* The format parts, by the disc kind the readers tell. */
 static const DiscFormat *const parts[] = {
@@ -123,6 +126,43 @@ DiscPartInfo *ff_disc_title_add_part(DiscTitleInfo *t)
 int ff_disc_title_add_file(DiscTitleInfo *t, const char *name)
 {
     return av_dynarray_add_nofree(&t->files, &t->nb_files, (void *)name);
+}
+
+static int add_prop(DiscPropertyInfo **props, int *nb, const char *name, const char *fmt, va_list vl)
+{
+    DiscPropertyInfo *p = av_dynarray2_add((void **)props, nb, sizeof(*p), NULL);
+    AVBPrint bp;
+
+    if (!p)
+        return AVERROR(ENOMEM);
+
+    p->name = name;
+    av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
+    av_vbprintf(&bp, fmt, vl);
+    return av_bprint_finalize(&bp, &p->value) < 0 ? AVERROR(ENOMEM) : 0;
+}
+
+int ff_disc_title_add_prop(DiscTitleInfo *t, const char *name, const char *fmt, ...)
+{
+    va_list vl;
+    int ret;
+
+    va_start(vl, fmt);
+    ret = add_prop(&t->props, &t->nb_props, name, fmt, vl);
+    va_end(vl);
+    return ret;
+}
+
+int ff_disc_add_prop(AVFormatContext *s, const char *name, const char *fmt, ...)
+{
+    DiscContext *d = s->priv_data;
+    va_list vl;
+    int ret;
+
+    va_start(vl, fmt);
+    ret = add_prop(&d->info.props, &d->info.nb_props, name, fmt, vl);
+    va_end(vl);
+    return ret;
 }
 
 void ff_disc_stream_init(DiscStreamInfo *k)
@@ -365,9 +405,16 @@ static int disc_close(AVFormatContext *s)
         av_freep(&d->info.titles[i].chapters);
         av_freep(&d->info.titles[i].files);
         av_freep(&d->info.titles[i].parts);
+        for (int k = 0; k < d->info.titles[i].nb_props; k++)
+            av_freep(&d->info.titles[i].props[k].value);
+        av_freep(&d->info.titles[i].props);
     }
     av_freep(&d->info.titles);
     d->info.nb_titles = 0;
+    for (int k = 0; k < d->info.nb_props; k++)
+        av_freep(&d->info.props[k].value);
+    av_freep(&d->info.props);
+    d->info.nb_props = 0;
     ff_discio_fs_close(&d->fs);
     ff_discio_source_free(&d->image);
     return 0;
@@ -586,6 +633,27 @@ int disc_title_open(AVFormatContext *s, int title, int part, int second_view, co
 const char *disc_language(const char *code)
 {
     return ff_disc_lang_code(code);
+}
+
+const char *disc_language_name(const char *code)
+{
+    return ff_disc_lang_name(code);
+}
+
+const char *disc_mkv_codec_id(const DiscStreamInfo *k)
+{
+    if (k->second_view)
+        return "V_MPEG4/ISO/MVC";
+    switch (k->codec) {
+    case AV_CODEC_ID_PCM_DVD:
+    case AV_CODEC_ID_PCM_BLURAY: return "A_PCM/INT/LIT";    /* written as PCM */
+    case AV_CODEC_ID_EIA_608:    return "S_TEXT/UTF8";      /* made into text */
+    default:
+        for (int i = 0; ff_mkv_codec_tags[i].id != AV_CODEC_ID_NONE; i++)
+            if (ff_mkv_codec_tags[i].id == k->codec)
+                return ff_mkv_codec_tags[i].str;
+        return NULL;
+    }
 }
 
 static int disc_read_packet(AVFormatContext *s, AVPacket *pkt)

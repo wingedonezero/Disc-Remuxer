@@ -246,6 +246,12 @@ DiscStreamInfo *ff_disc_title_add_stream(DiscTitleInfo *t);
 DiscChapterInfo *ff_disc_title_add_chapter(DiscTitleInfo *t);
 DiscPartInfo *ff_disc_title_add_part(DiscTitleInfo *t);
 int ff_disc_title_add_file(DiscTitleInfo *t, const char *name);
+/** A property of title t (DiscTitleInfo.props): name kept as given (a
+ *  string that lives until close), the value formatted; < 0: out of
+ *  memory. */
+int ff_disc_title_add_prop(DiscTitleInfo *t, const char *name, const char *fmt, ...) av_printf_format(3, 4);
+/** A property of the disc (DiscInfo.props), as ff_disc_title_add_prop(). */
+int ff_disc_add_prop(AVFormatContext *s, const char *name, const char *fmt, ...) av_printf_format(3, 4);
 /** A stream as ff_disc_title_add_stream() starts it: zeroed, no linked
  *  streams, no offset sequence, profile and level unknown. */
 void ff_disc_stream_init(DiscStreamInfo *k);

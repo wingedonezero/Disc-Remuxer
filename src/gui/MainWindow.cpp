@@ -33,10 +33,11 @@ extern "C" {
 #include "settings.h"
 }
 
-enum Column { C_NAME, C_VIDEO, C_AUDIO, C_SUBS, C_CHAPTERS, C_DURATION, C_STATUS, C_PROGRESS, C_COUNT };
+enum Column { C_NAME, C_CODEC, C_LANG, C_DETAILS, C_AUDIO, C_SUBS, C_CHAPTERS, C_DURATION, C_SIZE, C_STATUS,
+              C_PROGRESS, C_COUNT };
 enum Role { R_JOB = Qt::UserRole, R_TITLE, R_TRACK };
 
-static const int defaultWidths[C_COUNT] = { 460, 70, 50, 45, 65, 70, 300, 150 };
+static const int defaultWidths[C_COUNT] = { 280, 170, 70, 230, 50, 45, 65, 70, 70, 260, 140 };
 
 MainWindow::MainWindow()
 {
@@ -62,8 +63,8 @@ MainWindow::MainWindow()
 
     tree = new QueueTree;
     tree->setColumnCount(C_COUNT);
-    tree->setHeaderLabels({ "Source / Title / Track", "Video", "Audio", "Subs", "Chapters", "Duration", "Status",
-                            "Progress" });
+    tree->setHeaderLabels({ "Source / Title / Track", "Codec", "Language", "Details", "Audio", "Subs", "Chapters",
+                            "Duration", "Size", "Status", "Progress" });
     // columns keep their width (the user's) whatever rows are opened
     tree->header()->setSectionResizeMode(QHeaderView::Interactive);
     tree->header()->setStretchLastSection(false);
@@ -295,7 +296,7 @@ void MainWindow::addPaths(const QStringList &paths)
             Job job;
             job.id = nextId++;
             job.found = f;
-            job.item = new QTreeWidgetItem({ f.name, "", "", "", "", "", "", "" });
+            job.item = new QTreeWidgetItem(QStringList{ f.name });
             job.item->setData(C_NAME, R_JOB, job.id);
             job.item->setData(C_NAME, R_TITLE, -1);
             job.item->setData(C_NAME, R_TRACK, -1);
@@ -418,8 +419,9 @@ void MainWindow::fillDisc(Job &job)
 
     updating = true;
     job.item->setFlags(job.item->flags() | Qt::ItemIsUserCheckable);
-    job.item->setText(C_STATUS, QString("%1, %2 title%3").arg(QString::fromUtf8(d->kind)).arg(d->nb_titles)
-                                    .arg(d->nb_titles == 1 ? "" : "s"));
+    job.item->setText(C_CODEC, QString::fromUtf8(d->kind));
+    job.item->setText(C_DETAILS, d->name ? QString::fromUtf8(d->name) : d->label ? QString::fromUtf8(d->label) : "");
+    job.item->setText(C_STATUS, QString("%1 title%2").arg(d->nb_titles).arg(d->nb_titles == 1 ? "" : "s"));
     job.sel.fill(0, d->nb_titles);
     job.split.fill(0, d->nb_titles);
     for (int t = 0; t < d->nb_titles; t++) {
@@ -432,10 +434,27 @@ void MainWindow::fillDisc(Job &job)
         QString name = QString("#%1").arg(t);
         if (ti->name && *ti->name)
             name += "  " + QString::fromUtf8(ti->name);
-        auto *title = new QTreeWidgetItem(job.item, {
-            name, ti->nb_streams && ti->streams[0].type == AVMEDIA_TYPE_VIDEO ?
-                      QString::fromUtf8(engine_codec_label(ti->streams[0].codec, 0)) : "-",
-            QString::number(na), QString::number(ns), QString::number(ti->nb_chapters), hms(ti->duration), "", "" });
+        // what it is made of: its segments, angle, parts
+        QStringList made;
+        if (ti->nb_files)
+            made << QString("%1 segment%2").arg(ti->nb_files).arg(ti->nb_files == 1 ? "" : "s");
+        if (ti->angle)
+            made << QString("angle %1").arg(ti->angle);
+        if (ti->nb_parts)
+            made << QString("%1 parts").arg(ti->nb_parts);
+        if (ti->source)
+            made << QString::fromUtf8(ti->source);
+        auto *title = new QTreeWidgetItem(job.item, QStringList{ name });
+        title->setText(C_CODEC, ti->nb_streams && ti->streams[0].type == AVMEDIA_TYPE_VIDEO ?
+                                    QString::fromUtf8(engine_codec_label(ti->streams[0].codec, 0)) : "-");
+        title->setText(C_LANG, QString::fromUtf8(ti->language));
+        title->setText(C_DETAILS, made.join(", "));
+        title->setToolTip(C_DETAILS, made.join(", "));
+        title->setText(C_AUDIO, QString::number(na));
+        title->setText(C_SUBS, QString::number(ns));
+        title->setText(C_CHAPTERS, QString::number(ti->nb_chapters));
+        title->setText(C_DURATION, hms(ti->duration));
+        title->setText(C_SIZE, sizeText(ti->size));
         title->setData(C_NAME, R_JOB, job.id);
         title->setData(C_NAME, R_TITLE, t);
         title->setData(C_NAME, R_TRACK, -1);
@@ -443,15 +462,21 @@ void MainWindow::fillDisc(Job &job)
         job.sel[t] = ti->selected;
         for (int i = 0; i < ti->nb_streams; i++) {
             const DiscStreamInfo *k = &ti->streams[i];
-            char text[512];
-            QString line = QString("%1  %2  %3  %4").arg(i).arg(av_get_media_type_string(k->type))
-                               .arg(k->language[0] ? QString::fromUtf8(k->language) : "---")
-                               .arg(QString::fromUtf8(engine_track_text(ti, i, 1, text, sizeof(text))));
-            auto *track = new QTreeWidgetItem(title, { line });
+            char codec[96], rest[512];
+            engine_track_parts(ti, i, codec, sizeof(codec), rest, sizeof(rest));
+            QString line = QString("%1  %2").arg(i).arg(kindText(k));
+            QString more = QString::fromUtf8(rest).trimmed();
+            auto *track = new QTreeWidgetItem(title, QStringList{ line });
+            track->setText(C_CODEC, QString::fromUtf8(codec));
+            track->setToolTip(C_CODEC, QString::fromUtf8(codec));
+            track->setText(C_LANG, QString::fromUtf8(k->language));
+            track->setToolTip(C_LANG, languageText(k->language));
+            track->setText(C_DETAILS, more);
+            track->setToolTip(C_DETAILS, more);
             track->setData(C_NAME, R_JOB, job.id);
             track->setData(C_NAME, R_TITLE, t);
             track->setData(C_NAME, R_TRACK, i);
-            track->setToolTip(C_NAME, i == 0 ? line + "\nThe video is always ripped" : line);
+            track->setToolTip(C_NAME, i == 0 ? "The video is always ripped" : line);
             track->setFlags(track->flags() & ~(Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled));
         }
     }

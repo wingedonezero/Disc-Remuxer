@@ -99,10 +99,10 @@ static const char *roles_text(int roles, const char *sep, int quoted, char *buf,
     return buf;
 }
 
-const char *engine_track_text(const DiscTitleInfo *t, int i, int kept, char *buf, size_t size)
+void engine_track_parts(const DiscTitleInfo *t, int i, char *codec, size_t csize, char *rest, size_t rsize)
 {
     const DiscStreamInfo *k = &t->streams[i];
-    char extra[160] = "", link[96] = "", d[96], det[160] = "", a[24], r[48], l[64], b[24];
+    char extra[160] = "", link[96] = "", det[160] = "", a[24], r[48], l[64], b[24];
 
     if (k->type == AVMEDIA_TYPE_SUBTITLE && k->width)
         snprintf(extra, sizeof(extra), "  %dx%d", k->width, k->height);
@@ -124,8 +124,6 @@ const char *engine_track_text(const DiscTitleInfo *t, int i, int kept, char *buf
     if (k->offset_sequence >= 0)
         snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "  3-D offset sequence %d",
                  k->offset_sequence);
-    if (!kept)
-        snprintf(link + strlen(link), sizeof(link) - strlen(link), "  not selected");
     /* what the stream is: its codec in full, then its details */
     if (k->type == AVMEDIA_TYPE_VIDEO && k->width && !k->forced)
         snprintf(det, sizeof(det), "  %dx%d %s %s", k->width, k->height, aspect_text(k, a, sizeof(a)),
@@ -137,10 +135,27 @@ const char *engine_track_text(const DiscTitleInfo *t, int i, int kept, char *buf
         if (*bit_rate_text(k->bit_rate, b, sizeof(b)) && !codec_lossless(k))
             snprintf(det + strlen(det), sizeof(det) - strlen(det), " %s", b);
     }
-    snprintf(buf, size, "%s%s%s%s",
-             codec_description(k, k->second_view && k->from_track >= 0 ? &t->streams[k->from_track] : NULL, d,
-                               sizeof(d)), det, extra, link);
+    codec_description(k, k->second_view && k->from_track >= 0 ? &t->streams[k->from_track] : NULL, codec, csize);
+    snprintf(rest, rsize, "%s%s%s", det, extra, link);
+}
+
+const char *engine_track_text(const DiscTitleInfo *t, int i, int kept, char *buf, size_t size)
+{
+    char codec[96], rest[512];
+
+    engine_track_parts(t, i, codec, sizeof(codec), rest, sizeof(rest));
+    snprintf(buf, size, "%s%s%s", codec, rest, kept ? "" : "  not selected");
     return buf;
+}
+
+void engine_title_file_name(const DiscTitleInfo *t, char *out, size_t size)
+{
+    title_name(setting_text("output.file_name_template"), t->name, NULL, NULL, t->index, out, size);
+}
+
+const char *engine_track_extension(const DiscStreamInfo *k)
+{
+    return track_extension(k);
 }
 
 /* One title's line (and, with detail, its files and streams) plus its JSON
@@ -158,7 +173,8 @@ static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *ke
         const DiscStreamInfo *k = &t->streams[i];
         char jc[64], jsl[16], n1[24], n2[24], n3[24], n4[24], n5[24], n6[24], ji[24], jf[24], jo[24];
         char d[96], jd[128], pl[48], jp[64], fr[48], jr[64], as[24], ja[32], lt[64], jl2[96], dv[48], jv[64], fq[32];
-        char lm[24], rl[128];
+        char lm[24], rl[128], jn[96], jm[48], je[16];
+        const char *lname = k->language[0] ? disc_language_name(k->language) : NULL, *mkv = disc_mkv_codec_id(k);
         (void)dv; (void)fr;
         nv += k->type == AVMEDIA_TYPE_VIDEO;
         na += k->type == AVMEDIA_TYPE_AUDIO;
@@ -168,7 +184,8 @@ static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *ke
                  "\"from_track\":%s,\"forced\":%s,\"second_view\":%s,\"second_layer\":%s,\"offset_sequence\":%s,\"width\":%s,"
                  "\"height\":%s,\"channels\":%s,\"sample_rate\":%s,\"bits\":%s,\"bit_rate\":%s,"
                  "\"description\":%s,\"profile\":%s,\"dolby_vision\":%s,\"frame_rate\":%s,\"aspect\":%s,"
-                 "\"layout\":%s,\"layout_mask\":%s,\"roles\":[%s],\"selected\":%s}",
+                 "\"layout\":%s,\"layout_mask\":%s,\"roles\":[%s],\"selected\":%s,\"language_name\":%s,"
+                 "\"codec_id\":%s,\"file_type\":%s}",
                  i ? "," : "", i, av_get_media_type_string(k->type),
                  json_str(jc, sizeof(jc), codec_short(k)),
                  json_str(jsl, sizeof(jsl), k->language), json_index(ji, sizeof(ji), k->inner_track),
@@ -187,7 +204,8 @@ static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *ke
                  *aspect_text(k, as, sizeof(as)) ? json_str(ja, sizeof(ja), as) : "null",
                  *layout_text(k, lt, sizeof(lt)) && k->layout ? json_str(jl2, sizeof(jl2), lt) : "null",
                  json_num(lm, sizeof(lm), (int64_t)k->layout), roles_text(k->roles, ",", 1, rl, sizeof(rl)),
-                 keep[i] ? "true" : "false");
+                 keep[i] ? "true" : "false", lname ? json_str(jn, sizeof(jn), lname) : "null",
+                 mkv ? json_str(jm, sizeof(jm), mkv) : "null", json_str(je, sizeof(je), track_extension(k)));
     }
     for (int i = 0; i < t->nb_files; i++) {
         char jf[300];
@@ -246,6 +264,12 @@ static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *ke
             av_bprintf(&parts, "%s%s", f ? "," : "", json_str(jf, sizeof(jf), t->files[q->first_file + f]));
         }
         av_bprintf(&parts, "]}%s", p + 1 == t->nb_parts ? "]" : "");
+    }
+    /* what the format part tells more of the title */
+    for (int p = 0; p < t->nb_props; p++) {
+        char jn[128], jv[512];
+        av_bprintf(&parts, "%s%s:%s%s", p ? "," : ",\"properties\":{", json_str(jn, sizeof(jn), t->props[p].name),
+                   json_str(jv, sizeof(jv), t->props[p].value), p + 1 == t->nb_props ? "}" : "");
     }
     log_json("title", "\"index\":%d,\"name\":%s,\"duration\":%.3f,\"chapters\":%d,\"size\":%"PRId64",\"language\":%s,"
              "\"selected\":%s,\"files\":[%s],\"tracks\":[%s]%s%s", t->index,
@@ -368,7 +392,7 @@ void engine_disc_close(EngineDisc **pd)
 void engine_disc_overview(const EngineDisc *e, int detail)
 {
     const DiscInfo *d = e->info;
-    char revs[32] = "", js1[64], js2[256], js3[64], js4[1024], jname[1100];
+    char revs[32] = "", js1[64], js2[256], js3[64], js4[1024], jname[1100 + 16 * 300];
 
     if (d->udf_revision)
         snprintf(revs, sizeof(revs), " %x.%02x", (unsigned)(d->udf_revision >> 8), (unsigned)(d->udf_revision & 0xff));
@@ -380,6 +404,14 @@ void engine_disc_overview(const EngineDisc *e, int detail)
     jname[0] = 0;
     if (d->name)
         snprintf(jname, sizeof(jname), ",\"name\":%s", json_str(js4, sizeof(js4), d->name));
+    /* what the format part tells more of the disc */
+    for (int p = 0; p < d->nb_props; p++) {
+        char jn[96], jv[192];
+        snprintf(jname + strlen(jname), sizeof(jname) - strlen(jname), "%s%s:%s", p ? "," : ",\"properties\":{",
+                 json_str(jn, sizeof(jn), d->props[p].name), json_str(jv, sizeof(jv), d->props[p].value));
+    }
+    if (d->nb_props)
+        snprintf(jname + strlen(jname), sizeof(jname) - strlen(jname), "}");
     log_json("disc", "\"kind\":%s,\"label\":%s,\"filesystem\":%s,\"encrypted\":%s,\"titles\":%d%s",
              json_str(js1, sizeof(js1), d->kind), json_str(js2, sizeof(js2), d->label ? d->label : ""),
              json_str(js3, sizeof(js3), d->filesystem ? d->filesystem : ""), d->encrypted ? "true" : "false",

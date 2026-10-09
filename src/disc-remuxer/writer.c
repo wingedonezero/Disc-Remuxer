@@ -84,6 +84,18 @@ static const char *es_extension(enum AVCodecID id)
     }
 }
 
+const char *track_extension(const DiscStreamInfo *k)
+{
+    if (k->second_view)
+        return "mvc";
+    switch (k->codec) {
+    case AV_CODEC_ID_PCM_DVD:
+    case AV_CODEC_ID_PCM_BLURAY:   return "wav";   /* LPCM is written as PCM in a WAVE file */
+    case AV_CODEC_ID_EIA_608:      return "srt";   /* closed captions made into text */
+    default:                       return es_extension(k->codec);
+    }
+}
+
 const char *codec_label(enum AVCodecID id, int profile)
 {
     switch (id) {

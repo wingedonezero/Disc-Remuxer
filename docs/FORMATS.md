@@ -32,8 +32,15 @@ fills the disc, the format part its titles.
 |---|---|
 | disc (`DiscInfo`) | kind (`HD DVD`, ...), volume label, file system and UDF revision, encrypted, the titles |
 | title (`DiscTitleInfo`) | number in the title list, name, source (what it is made from, e.g. `00800.mpls(1)`; Blu-ray), angle (Blu-ray, 0 none), language, duration, size in bytes, selected (0: shorter than the minimum length, listed only), the disc's files it plays in order, chapters (start, name), streams, parts |
+| more (`DiscPropertyInfo`, `props` of the disc and of each title) | what the format part tells more, as name and value in words: DVD titles their entry in the disc's title table, title set and its title number, program chain, the navigation's name, angles, cells, the measured length; Blu-ray discs their kind (BDMV, BDAV, AVCHD), the name's language and English name, AACS (with the disc ID), BD+, playlists, clips, BD-J archives, titles another name and recording time; HD DVD discs AACS, titles whether a playlist title, the EVOB their tracks are described from |
 | part (`DiscPartInfo`) | a title that plays whole stream files back to back (Blu-ray: items of connection condition 1 that each cover their whole STC sequence, e.g. the episodes of a series in one playlist) has one part per run of them: start in the title, duration, its files (a range of the title's), its own chapter count (the marks of its items, from its own start, without those in its last second, as a title of its own has them). A title of one piece has none |
 | stream (`DiscStreamInfo`) | kind, codec, language, the stream taken out of it / it is taken out of (a core, the forced-only copy of a subtitle, the second view of a 3-D video), forced (subtitles: only the forced ones), second view (video: of a 3-D video), second layer (video: an enhancement layer on its own PID read with it, e.g. Dolby Vision), offset sequence (subtitles of a 3-D title: the disc's depth data for it, -1 none), frame / canvas size; the stream details (aspect, frame rate, channels, sample rate, bits, bit rate) are 0 until the start of each title is read for them (to come) |
+
+`disc_language_name()` gives a language code's English name (ISO 639-2
+list), `disc_mkv_codec_id()` the Matroska codec ID a stream is stored
+with (LPCM as PCM, closed captions as text). The program's `--json info`
+carries both per track (`language_name`, `codec_id`, with the stream
+file's type `file_type`) and the `properties` of the disc and each title.
 
 ## Opening titles on the open disc
 
