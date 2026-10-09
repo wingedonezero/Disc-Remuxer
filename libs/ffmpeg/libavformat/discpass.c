@@ -73,11 +73,12 @@ typedef struct Probe {
     int                   ps_id;        /* program stream: the id */
     DiscTsFeed            feed;         /* transport stream: PID and keys */
     enum AVCodecID        codec;
+    const DRCodec        *tc;           /* its codec table entry, or NULL */
     int                   seen;         /* a packet of it was read */
     int                   done;         /* its details are known (or cannot be) */
-    int                   opened;       /* the decoder is open (VC-1: once its headers were found) */
+    int                   opened;       /* the decoder is open (once its headers were found, when it needs them) */
     int                   cached;       /* taken from the cache */
-    uint8_t              *hold;         /* VC-1: the bytes before the decoder could open */
+    uint8_t              *hold;         /* the bytes before the decoder could open */
     int                   nb_hold;
     AVCodecParserContext *pc;
     AVCodecContext       *dec;
@@ -165,8 +166,8 @@ static void cache_take(const Cached *k, Probe *p, int details)
 /* ---- details: FFmpeg's parser and decoder ---- */
 
 /* The decoder: allocated, and opened unless it needs the stream's headers
- * first (VC-1 opens with its sequence header and entry point as
- * extradata). */
+ * first (the codec table: VC-1 opens with its sequence header and entry
+ * point as extradata). */
 static int probe_open(Probe *p)
 {
     const AVCodec *codec = avcodec_find_decoder(p->codec);
@@ -180,7 +181,7 @@ static int probe_open(Probe *p)
         return AVERROR(ENOMEM);
     p->pc = av_parser_init(p->codec);   /* NULL (LPCM): each payload is a packet */
     p->dec->thread_count = 1;           /* one frame: no threads (and none of their warnings) */
-    if (p->codec == AV_CODEC_ID_VC1)
+    if (p->tc && p->tc->decoder_headers)
         return 0;
     p->opened = 1;
     return avcodec_open2(p->dec, codec, NULL);
@@ -242,21 +243,19 @@ static void take(Probe *p, const AVFrame *f)
         ds->height = f->height;
         if (!sar.num || !sar.den)
             sar = (AVRational){ 1, 1 };
-        if (d->codec_id != AV_CODEC_ID_MPEG1VIDEO)  /* MPEG-1: a pel aspect ratio (a pixel shape), no display
-                                                       aspect */
+        if (!p->tc || !p->tc->no_display_aspect)
             av_reduce(&ds->aspect.num, &ds->aspect.den, (int64_t)f->width * sar.num, (int64_t)f->height * sar.den,
                       1 << 30);
         ds->frame_rate = d->framerate;
-        /* MPEG-1 / MPEG-2: the sequence header's (MPEG-2: its maximum) */
-        ds->bit_rate   = d->codec_id == AV_CODEC_ID_MPEG2VIDEO ? d->rc_max_rate :
-                         d->codec_id == AV_CODEC_ID_MPEG1VIDEO ? d->bit_rate : 0;
+        /* the sequence header's (MPEG-2: its maximum), else none */
+        ds->bit_rate   = !p->tc ? 0 : p->tc->video_bit_rate == DR_RATE_MAX ? d->rc_max_rate :
+                         p->tc->video_bit_rate == DR_RATE_STATED ? d->bit_rate : 0;
     } else {
         ds->channels    = f->ch_layout.nb_channels;
         ds->layout      = f->ch_layout.order == AV_CHANNEL_ORDER_NATIVE ? f->ch_layout.u.mask : 0;
         ds->sample_rate = f->sample_rate;
         ds->bits        = d->bits_per_raw_sample ? d->bits_per_raw_sample :
-                          d->codec_id == AV_CODEC_ID_PCM_DVD || d->codec_id == AV_CODEC_ID_PCM_BLURAY ?
-                          d->bits_per_coded_sample : 0;
+                          p->tc && p->tc->bits_coded ? d->bits_per_coded_sample : 0;
         ds->bit_rate    = d->bit_rate;
     }
 }
@@ -297,16 +296,16 @@ static void mvc_bytes(Probe *p, const uint8_t *data, int size)
         }
 }
 
-/* VC-1: the decoder opens with the sequence header and entry point (start
- * codes 0x0F, 0x0E up to the first frame 0x0D) as extradata; the bytes held
- * until then follow. */
-static int vc1_open(Probe *p, const uint8_t *data, int size)
+/* A decoder that opens with the stream's headers as extradata (the codec
+ * table's decoder_headers): the bytes held until they are found, which
+ * then follow. */
+static int headers_open(Probe *p, const uint8_t *data, int size)
 {
     uint8_t *h;
-    int seq = -1, frame = -1, ret;
+    int start, end, ret;
 
     if (p->nb_hold + size > (4 << 20)) {
-        p->done = 1;                    /* no sequence header in 4 MiB */
+        p->done = 1;                    /* no headers in 4 MiB */
         return 0;
     }
     if (!(h = av_realloc(p->hold, p->nb_hold + size)))
@@ -314,21 +313,12 @@ static int vc1_open(Probe *p, const uint8_t *data, int size)
     p->hold = h;
     memcpy(p->hold + p->nb_hold, data, size);
     p->nb_hold += size;
-    for (int i = 0; i + 3 < p->nb_hold; i++)
-        if (!h[i] && !h[i + 1] && h[i + 2] == 1) {
-            if (h[i + 3] == 0x0f && seq < 0)
-                seq = i;
-            else if (h[i + 3] == 0x0d && seq >= 0) {
-                frame = i;
-                break;
-            }
-        }
-    if (frame < 0)
+    if (!p->tc->decoder_headers(h, p->nb_hold, &start, &end))
         return 0;
-    if (!(p->dec->extradata = av_mallocz(frame - seq + AV_INPUT_BUFFER_PADDING_SIZE)))
+    if (!(p->dec->extradata = av_mallocz(end - start + AV_INPUT_BUFFER_PADDING_SIZE)))
         return AVERROR(ENOMEM);
-    memcpy(p->dec->extradata, h + seq, frame - seq);
-    p->dec->extradata_size = frame - seq;
+    memcpy(p->dec->extradata, h + start, end - start);
+    p->dec->extradata_size = end - start;
     if ((ret = avcodec_open2(p->dec, p->dec->codec, NULL)) < 0) {
         p->done = 1;
         return 0;
@@ -365,7 +355,7 @@ static int feed(Probe *p, const uint8_t *data, int size)
         return 0;
     }
     if (!p->opened) {
-        int ret = vc1_open(p, data, size);
+        int ret = headers_open(p, data, size);
         if (ret < 0 || !p->opened)
             return ret;
         data = p->hold;
@@ -404,6 +394,14 @@ static int dovi_level(const DiscStreamInfo *ds)
         if (rate <= max_rate[i])
             return i + 1;
     return 0;
+}
+
+/* Whether a track's stream must have data to be described (the codec
+ * table; a codec without an entry: video and audio do, subtitles not). The
+ * title's video is required apart (its title cannot be used without). */
+static int needs_data(const Probe *p)
+{
+    return p->tc ? !p->tc->info_without_data : p->k->kind != DR_KIND_SUBTITLE;
 }
 
 /* ---- the tracks ---- */
@@ -528,10 +526,10 @@ int ff_disc_stream_pass(AVFormatContext *s, const char *title, const DiscPassSou
         if (k->kind == DR_KIND_CAPTION || (k->flags & DISC_TRACK_SIDE))
             continue;
         p[np++] = (Probe){ .k = k, .kind = (k->flags & DISC_TRACK_SECOND_VIEW) ? P_MVC : P_TRACK, .ps_id = k->id,
-                           .feed = k->feed, .codec = k->info.codec };
+                           .feed = k->feed, .codec = k->info.codec, .tc = ff_disctl_codec(k->info.codec) };
         if (k->flags & DISC_TRACK_LAYER2)
             p[np++] = (Probe){ .k = k, .kind = P_LAYER, .ps_id = -1, .feed = k->layer_feed,
-                               .codec = AV_CODEC_ID_HEVC };
+                               .codec = AV_CODEC_ID_HEVC, .tc = ff_disctl_codec(AV_CODEC_ID_HEVC) };
     }
     /* what titles before found already; a codec FFmpeg cannot open stays
      * without details */
@@ -585,12 +583,11 @@ int ff_disc_stream_pass(AVFormatContext *s, const char *title, const DiscPassSou
             int more = 0;
             const AVStream *sub;
 
-            /* read on: details still open (within the limit); a video or
-             * audio track (or, when asked, a subtitle track) without a
-             * packet yet */
+            /* read on: details still open (within the limit); a track
+             * that needs data to be described (or, when asked, any
+             * track) without a packet yet */
             for (int i = 0; i < np && !more; i++)
-                more = p[i].kind == P_TRACK && !p[i].seen && !p[i].cached &&
-                       (p[i].k->kind != DR_KIND_SUBTITLE || src->read_all);
+                more = p[i].kind == P_TRACK && !p[i].seen && !p[i].cached && (needs_data(&p[i]) || src->read_all);
             if (details_on && (int64_t)r.block * r.bs >= DETAILS_LIMIT) {
                 for (int i = 0; i < np; i++)
                     if ((ret = flush(&p[i])) < 0)
@@ -669,11 +666,11 @@ int ff_disc_stream_pass(AVFormatContext *s, const char *title, const DiscPassSou
         const DiscTrack *k = p[i].k;
         if (p[i].kind != P_TRACK || p[i].seen)
             continue;
-        if (k->kind == DR_KIND_AUDIO) {
-            av_log(s, AV_LOG_WARNING, "%s: title %s: audio stream %d has no packet in segment %d: left out\n", fmt,
-                   title, k->stream, src->index + 1);
+        if (needs_data(&p[i])) {
+            av_log(s, AV_LOG_WARNING, "%s: title %s: %s stream %d has no packet in segment %d: left out\n", fmt,
+                   title, av_get_media_type_string(k->info.type), k->stream, src->index + 1);
             drop[nb_drop++] = k - tracks;
-        } else if (k->kind == DR_KIND_SUBTITLE && src->read_all) {
+        } else if (src->read_all) {
             av_log(s, AV_LOG_WARNING, "%s: title %s: %s stream %d has no packet in segment %d: its track is "
                    "empty\n", fmt, title, k->info.codec == AV_CODEC_ID_DVD_SUBTITLE ? "sub-picture" : "subtitle",
                    k->stream, src->index + 1);

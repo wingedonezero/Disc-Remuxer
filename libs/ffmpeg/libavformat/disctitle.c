@@ -909,16 +909,18 @@ static int title_end(AVFormatContext *s)
 {
     DiscContext *d = s->priv_data;
     DiscTitleReader *r = d->reader;
-    int64_t review = ff_disctl_title_review(r->rip);
+    /* untested paths of the title timeline, and tracks the format part has
+     * not met on a real disc yet */
+    int64_t review = ff_disctl_title_review(r->rip) + d->untested;
     int ret;
 
     if ((ret = set_chapters(s)) < 0)
         return ret;
-    /* features met that no real disc has tested: the caller reports the job
-     * as failed so that its log is looked at */
+    /* features met that no real disc has tested: said, and given to the
+     * caller (the log's "[untested on real discs]" lines tell which) */
     if (review) {
-        av_log(s, AV_LOG_ERROR, "%s: %"PRId64" untested feature(s) met in this title: "
-               "check the log before using the output\n", d->fmt->name, review);
+        av_log(s, AV_LOG_WARNING, "%s: %"PRId64" untested feature(s) met in this title: see the log's "
+               "\"[untested on real discs]\" lines\n", d->fmt->name, review);
         if ((ret = av_dict_set_int(&s->metadata, "untested", review, 0)) < 0)
             return ret;
     }

@@ -827,9 +827,12 @@ end:
                     "the disc stream's details (see above)", who, check_failed);
             res->failed = 1;
         } else if (untested) {
-            log_msg(MSG_UNTESTED, LOG_ERROR, "%s: %"PRId64" feature(s) met that no real disc has tested: "
-                    "its files are written, but check the log before using them", who, untested);
-            res->failed = 1;
+            /* written: the untested paths are said in the log ("[untested on
+             * real discs]"), a warning each */
+            res->warnings += untested;
+            log_msg(MSG_UNTESTED, LOG_WARNING, "%s: done with %"PRId64" warning%s, %"PRId64" of them feature(s) no "
+                    "real disc has tested yet (see the log's \"[untested on real discs]\" lines)", who,
+                    res->warnings, res->warnings == 1 ? "" : "s", untested);
         } else if (res->warnings) {
             log_msg(MSG_TITLE_DONE, LOG_INFO, "%s: done with %"PRId64" warning%s", who, res->warnings,
                     res->warnings == 1 ? "" : "s");

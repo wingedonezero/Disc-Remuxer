@@ -164,13 +164,13 @@ void *ff_disctl_audio_log(const DRAudio *a)
 
 void ff_disctl_audio_review(DRAudio *a, unsigned kind, const char *what)
 {
-    a->st.review++;
+    /* each kind once per track: said and counted */
     if (kind < 32 && (a->reviewed & (1u << kind)))
         return;
     if (kind < 32)
         a->reviewed |= 1u << kind;
-    av_log(a->log, AV_LOG_ERROR, "Title timeline: %s track: %s [untested on real discs]: "
-           "the job is marked failed, look at this track\n", a->codec->name, what);
+    a->st.review++;
+    av_log(a->log, AV_LOG_WARNING, "Title timeline: %s track: %s [untested on real discs]\n", a->codec->name, what);
 }
 
 /* A unit through the track's bitstream filter: one unit in, its final

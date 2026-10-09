@@ -249,6 +249,11 @@ int ff_disc_open_tracks(AVFormatContext *s, const char *title, const DiscTrack *
         }
         if ((ret = track_stream(s, k, i, &k->feed, ts, codec, second_view)) < 0)
             return ret;
+        if (k->untested) {
+            av_log(s, AV_LOG_WARNING, "%s: title %s: track %d (%s): %s [untested on real discs]\n", fmt, title, i,
+                   avcodec_get_name(k->info.codec), k->untested);
+            d->untested++;
+        }
         if (k->flags & DISC_TRACK_LAYER2)
             layer = i;
         t->codec       = codec;

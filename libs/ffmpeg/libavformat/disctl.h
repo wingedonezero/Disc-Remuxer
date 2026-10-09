@@ -179,7 +179,26 @@ typedef struct DRCodec {
      *  word or size wrong), DR_UNIT_CRC (a checksum fails). NULL: not
      *  checked. */
     int (*verify)(const uint8_t *data, int size);
+
+    /* What the disc layer's stream pass (discpass.c) needs to know. */
+    /** 1: a stream of the codec is described without data (sub-pictures,
+     *  PGS, caption text): its track stays when the stream has no packet. */
+    int info_without_data;
+    /** The bytes the decoder opens with as extradata (VC-1: the sequence
+     *  header and entry point, up to the first frame): 1 found (*start,
+     *  *end in buf), 0 not yet. NULL: the decoder opens at once. */
+    int (*decoder_headers)(const uint8_t *buf, int size, int *start, int *end);
+    /** Video: the bit rate shown: 0 none, DR_RATE_STATED the sequence
+     *  header's (MPEG-1), DR_RATE_MAX its maximum (MPEG-2). Audio: the
+     *  decoder's always. */
+    int video_bit_rate;
+    /** 1: no display aspect (MPEG-1: its aspect code is a pixel shape). */
+    int no_display_aspect;
+    /** 1: the bits per sample are the coded ones (LPCM). */
+    int bits_coded;
 } DRCodec;
+
+enum { DR_RATE_STATED = 1, DR_RATE_MAX = 2 };
 
 enum { DR_UNIT_OK = 0, DR_UNIT_BAD = 1, DR_UNIT_CRC = 2 };
 
@@ -261,7 +280,7 @@ typedef struct DRAudioStats {
     int64_t frames;        /**< frames handed on (units and markers) */
     int64_t markers;
     int64_t cut_bytes;     /**< bytes removed by core cuts */
-    int64_t review;        /**< untested features met: the job must be looked at */
+    int64_t review;        /**< untested features met (each kind once): said in the log */
     int64_t continuity;    /**< unit times that differ from the previous unit's end */
     DRAudioHeader header;
 } DRAudioStats;
@@ -835,8 +854,8 @@ int  ff_disctl_title_chapters(const DRTitle *t, const DRChapterPlan *plan, DRCha
 int ff_disctl_title_forced_objects(const DRTitle *t, int track, int64_t *forced);
 /** A linear PCM track's format once its first header was read (else NULL). */
 const DRLpcm *ff_disctl_title_lpcm(const DRTitle *t, int track);
-/** Untested features met so far (audio reviews): the job must be checked,
- *  so it is to be reported as failed. */
+/** Untested features met so far (each kind once per track): said in the log
+ *  ("[untested on real discs]"), for the caller's report. */
 int64_t ff_disctl_title_review(const DRTitle *t);
 /** After finish: a track's frames given out, the warnings logged about it
  *  (junction events, grid findings, checks) and (audio) its start delay. */

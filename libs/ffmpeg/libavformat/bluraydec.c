@@ -162,22 +162,32 @@ static int second_view(const BlurayTrack *tk)
     return tk->type == AVMEDIA_TYPE_VIDEO && tk->from_track >= 0 && tk->codec == AV_CODEC_ID_H264;
 }
 
-/* Whether the title timeline reads a track's codec in this step: AVC,
- * MPEG-2, VC-1 video (the 3-D second view: as a second layer); AC-3, DTS,
- * DTS-HD, TrueHD, LPCM audio; PGS subtitles. */
-static int readable(const BlurayTrack *tk)
+/* Why the title reader does not read a track (NULL: it reads it): a codec
+ * the codec table does not have, a text subtitle from a clip of its own, a
+ * video taken out of another one but the 3-D second view. */
+static const char *not_read(const BlurayTrack *tk)
+{
+    if (tk->flags & BLURAY_TRACK_SIDE)
+        return "a subtitle from a clip of its own";
+    if (!ff_disctl_codec(tk->codec))
+        return "its codec";
+    if (tk->type == AVMEDIA_TYPE_VIDEO && tk->from_track >= 0 && !second_view(tk))
+        return "a video taken out of another one";
+    return NULL;
+}
+
+/* Codecs the title reader reads that no real Blu-ray has had yet: read,
+ * and said in the log. */
+static const char *untested(const BlurayTrack *tk)
 {
     switch (tk->codec) {
-    case AV_CODEC_ID_H264:
-    case AV_CODEC_ID_HEVC:
-    case AV_CODEC_ID_MPEG2VIDEO:
-    case AV_CODEC_ID_VC1:  return tk->type == AVMEDIA_TYPE_VIDEO && (tk->from_track < 0 || second_view(tk));
-    case AV_CODEC_ID_AC3:
-    case AV_CODEC_ID_DTS:
-    case AV_CODEC_ID_TRUEHD:
-    case AV_CODEC_ID_PCM_BLURAY:
-    case AV_CODEC_ID_HDMV_PGS_SUBTITLE: return !(tk->flags & BLURAY_TRACK_SIDE);
-    default:               return 0;
+    case AV_CODEC_ID_EAC3:     return "E-AC-3 on a Blu-ray";
+    case AV_CODEC_ID_AAC:
+    case AV_CODEC_ID_AAC_LATM: return "AAC on a Blu-ray";
+    case AV_CODEC_ID_MP1:
+    case AV_CODEC_ID_MP2:
+    case AV_CODEC_ID_MP3:      return "MPEG audio on a Blu-ray";
+    default:                   return NULL;
     }
 }
 
@@ -229,8 +239,8 @@ static void title_tracks(const BlurayTitle *t, DiscTrack *out)
             o->picture = (tk->flags & BLURAY_TRACK_FORCED) ?
                          "Blu-ray PGS display sets, forced subtitles only (each set shows only its forced objects, "
                          "as a player does with subtitles off)" : "Blu-ray PGS display sets";
-        if (!readable(tk))
-            o->not_read = "its codec is not read yet";
+        o->not_read = not_read(tk);
+        o->untested = untested(tk);
     }
 }
 
@@ -396,9 +406,9 @@ static int open_title(AVFormatContext *s, const BlurayTitle *t, int part)
             av_log(s, AV_LOG_WARNING, "Blu-ray: segment %s: its last %"PRId64" bytes are no whole unit and are not "
                    "read [untested on real discs]\n", t->segs[k].path, size % BLURAY_UNIT);
     }
-    if (!t->nb_tracks || !readable(&t->tracks[0])) {
+    if (!t->nb_dtracks || t->dtracks[0].not_read) {
         av_log(s, AV_LOG_ERROR, "Blu-ray: title %s: its video (%s) is not read yet\n", t->name,
-               t->nb_tracks ? avcodec_get_name(t->tracks[0].codec) : "none");
+               t->nb_dtracks ? avcodec_get_name(t->dtracks[0].info.codec) : "none");
         return AVERROR_PATCHWELCOME;
     }
     if (!(c->chapter_times = av_calloc(FFMAX(t->nb_marks, 1), sizeof(*c->chapter_times))))

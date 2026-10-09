@@ -65,6 +65,7 @@ typedef struct DiscTrack {
     const char     *line21;         /**< video: the line-21 caption fields its attributes mark, or NULL */
     const char     *eye;            /**< 3-D video: the eye it shows when both views are read, or NULL */
     const char     *not_read;       /**< the title reader does not read it yet (NULL: it does): left out */
+    const char     *untested;       /**< read, but not met on a real disc of the format yet: what, for the log */
 } DiscTrack;
 
 /** The second view of a 3-D video (read only with option second_view, as a
@@ -190,6 +191,7 @@ typedef struct DiscContext {
     DiscTsFeed       *feeds;            /**< src.feeds */
     int              *pids;             /**< src.pids */
     DiscPassCache    *pass_cache;       /**< the stream pass's results per segment */
+    int               untested;         /**< the opened title's tracks not met on a real disc yet */
     DiscTitleReader  *reader;
 } DiscContext;
 
