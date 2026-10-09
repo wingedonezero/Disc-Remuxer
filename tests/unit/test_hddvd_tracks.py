@@ -14,7 +14,7 @@ import subprocess
 
 import pytest
 
-from helpers import DIST
+from helpers import PROGRAM
 from helpers.disc import env_or_skip
 from helpers.hddvd import open_file, open_image
 from synth.hddvd import (ac3_frame, attr_record, clip, eac3_frame, evob, image, pack, playlist, ps1_packet,
@@ -217,7 +217,7 @@ def test_a_stream_with_the_codec_and_number_of_an_earlier_one_is_left_out(tmp_pa
                 ("HVDVD_TS", "A.EVO", data)])
     path = tmp_path / "hddvd.iso"
     path.write_bytes(bytes(im.d))
-    out = subprocess.run([str(DIST / "disc-remuxer"), "--json", "info", str(path)], capture_output=True, text=True)
+    out = subprocess.run([*PROGRAM, "--json", "info", str(path)], capture_output=True, text=True)
     recs = [json.loads(l) for l in out.stdout.splitlines() if l.startswith("{")]
     t = [r for r in recs if r.get("type") == "title"][0]
     assert [(k["kind"], k["codec"]) for k in t["tracks"]] == [

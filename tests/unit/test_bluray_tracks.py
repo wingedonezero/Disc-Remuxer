@@ -9,7 +9,7 @@ tracks equal the reference program's info (implementation notes)."""
 import json
 import subprocess
 
-from helpers import DIST, ffi, install_log, lib, logged
+from helpers import PROGRAM, ffi, install_log, lib, logged
 from synth import bluray as bd
 from synth.bluray import Item, Stream
 
@@ -130,7 +130,7 @@ def test_an_identical_audio_or_subtitle_stream_is_left_out(tmp_path):
     clips = {1: bd.clpi(packets=len(data) // 192, streams=clip)}
     files = bd.bdmv(clips, {1: bd.mpls([Item("00001", S, E, videos=item.videos, audio=item.audio, pg=item.pg)])})
     files["BDMV/STREAM/00001.m2ts"] = data
-    out = subprocess.run([str(DIST / "disc-remuxer"), "--json", "info", str(bd.write(tmp_path / "pass", files))],
+    out = subprocess.run([*PROGRAM, "--json", "info", str(bd.write(tmp_path / "pass", files))],
                          capture_output=True, text=True)
     recs = [json.loads(l) for l in out.stdout.splitlines() if l.startswith("{")]
     t = [r for r in recs if r.get("type") == "title"][0]

@@ -67,6 +67,12 @@ typedef struct DiscStreamInfo {
     int              profile;        /**< FFmpeg's profile of the codec (AV_PROFILE_*), AV_PROFILE_UNKNOWN */
     int              level;          /**< video: the codec's level (level_idc), AV_LEVEL_UNKNOWN */
     char             dolby_vision[40];/**< video: the Dolby Vision type ("dvhe.07.06 BL+FEL+RPU"), "" none */
+    char             hdr[16];        /**< video: "HDR10", "HDR10+", "HLG" or "SDR" from its first picture's colour
+                                          description and metadata, "" not known */
+    char             colour[96];     /**< video: its colour description (primaries, transfer, matrix, range) in
+                                          FFmpeg's names, "" not stated */
+    char             mastering[192]; /**< video: the mastering display's luminance (and primaries), "" none */
+    int              max_cll, max_fall;/**< video: content light level (cd/m²), 0 none */
     int              channels;       /**< audio */
     uint64_t         layout;         /**< audio: channel layout mask (FFmpeg's AV_CH_*), 0 unknown */
     int              sample_rate;    /**< audio, Hz */

@@ -8,7 +8,7 @@ import json
 import struct
 import subprocess
 
-from helpers import DATA, DIST
+from helpers import DATA, PROGRAM
 from synth import bluray as bd
 from synth.bluray import Item, Stream
 
@@ -40,7 +40,7 @@ def test_16_bit_stereo_lpcm_written_as_wave_keeps_its_layout(tmp_path):
     files = bd.bdmv(clips, {1: bd.mpls([item])})
     files["BDMV/STREAM/00001.m2ts"] = data
     disc = bd.write(tmp_path / "disc", files)
-    p = subprocess.run([str(DIST / "disc-remuxer"), "--json", "demux", str(disc), "0", str(tmp_path / "out")],
+    p = subprocess.run([*PROGRAM, "--json", "demux", str(disc), "0", str(tmp_path / "out")],
                        capture_output=True, text=True)
     recs = [json.loads(l) for l in p.stdout.splitlines() if l.startswith("{")]
     texts = [r.get("text", "") for r in recs if r.get("type") == "message"]

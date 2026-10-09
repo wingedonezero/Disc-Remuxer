@@ -8,12 +8,12 @@ AC-3 track (test_disc_filler.py's)."""
 import json
 import subprocess
 
-from helpers import DIST
+from helpers import PROGRAM
 from test_disc_filler import two_segments
 
 
 def run(*args):
-    p = subprocess.run([str(DIST / "disc-remuxer"), *map(str, args)], capture_output=True, text=True)
+    p = subprocess.run([*PROGRAM, *map(str, args)], capture_output=True, text=True)
     return p.returncode, p.stdout + p.stderr
 
 

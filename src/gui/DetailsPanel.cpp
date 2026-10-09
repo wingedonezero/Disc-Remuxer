@@ -78,11 +78,19 @@ void DetailsPanel::showDisc(const QString &source, const DiscInfo *d)
     row(top, "File system", fs);
     row(top, "Encrypted", d->encrypted ? "yes" : "no");
     row(top, "Titles found", QString::number(d->nb_titles));
+    // the format part's own details; "Protection: X" ones in a group of their own
+    QTreeWidgetItem *protection = nullptr;
     for (int p = 0; p < d->nb_props; p++) {
-        QString v = QString::fromUtf8(d->props[p].value);
-        if (QString::fromUtf8(d->props[p].name).contains("language"))
+        QString name = QString::fromUtf8(d->props[p].name), v = QString::fromUtf8(d->props[p].value);
+        if (name.contains("language"))
             v = languageText(d->props[p].value);
-        row(top, QString::fromUtf8(d->props[p].name), v);
+        if (name.startsWith("Protection: ")) {
+            if (!protection)
+                protection = row(top, "Protection", "");
+            row(protection, name.mid(12), v);
+        } else {
+            row(top, name, v);
+        }
     }
     expandAll();
 }
@@ -119,8 +127,15 @@ void DetailsPanel::addTrack(QTreeWidgetItem *parent, const DiscTitleInfo *t, int
     if (*codec_profile_level(k, buf, sizeof(buf)))
         row(tr, "Profile", QString::fromUtf8(buf));
     row(tr, "Language", languageText(k->language));
-    if (k->bit_rate && *bit_rate_text(k->bit_rate, buf, sizeof(buf)))
-        row(tr, "Bit rate", QString::fromUtf8(buf));
+    if (*audio_name(k, buf, sizeof(buf)))
+        row(tr, "Name", QString::fromUtf8(buf));
+    // TrueHD / MLP: variable; the peak rate their header states reads far too low on real discs (LOOK INTO
+    // AGAIN LATER), so none is shown. DTS-HD: the rate is its DTS core's.
+    if (k->codec == AV_CODEC_ID_TRUEHD || k->codec == AV_CODEC_ID_MLP)
+        row(tr, "Bit rate", "variable (lossless)");
+    else if (k->bit_rate && *bit_rate_text(k->bit_rate, buf, sizeof(buf)))
+        row(tr, "Bit rate", QString::fromUtf8(buf) + (k->codec == AV_CODEC_ID_DTS && k->inner_track >= 0 ?
+                                                      " (its DTS core's)" : ""));
     if (k->type == AVMEDIA_TYPE_VIDEO) {
         if (k->width)
             row(tr, "Video size", QString("%1x%2").arg(k->width).arg(k->height));
@@ -128,8 +143,16 @@ void DetailsPanel::addTrack(QTreeWidgetItem *parent, const DiscTitleInfo *t, int
             row(tr, "Aspect ratio", QString::fromUtf8(buf));
         if (k->frame_rate.num > 0 && *frame_rate_text(k, buf, sizeof(buf)))
             row(tr, "Frame rate", QString::fromUtf8(buf));
+        if (k->hdr[0])
+            row(tr, "HDR", QString::fromUtf8(k->hdr) + (k->dolby_vision[0] ? " (the base layer), with Dolby Vision" : ""));
         if (k->dolby_vision[0])
             row(tr, "Dolby Vision", QString::fromUtf8(k->dolby_vision));
+        if (k->colour[0])
+            row(tr, "Colour", QString::fromUtf8(k->colour));
+        if (k->mastering[0])
+            row(tr, "Mastering display", QString::fromUtf8(k->mastering));
+        if (k->max_cll || k->max_fall)
+            row(tr, "Content light level", QString("MaxCLL %1, MaxFALL %2 cd/m2").arg(k->max_cll).arg(k->max_fall));
     }
     if (k->type == AVMEDIA_TYPE_AUDIO) {
         if (k->channels)

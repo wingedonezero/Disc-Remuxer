@@ -309,7 +309,7 @@ static int hddvd_load(AVFormatContext *s)
                                   c->nb_xpls, &c->aacs)) < 0)
         return ret;
     d->info.encrypted = c->aacs != NULL;
-    if (ff_disc_add_prop(s, "AACS", "%s", c->aacs ? "yes" : "no") < 0)
+    if (ff_disc_add_prop(s, "Protection: AACS", "%s", c->aacs ? "yes" : "no") < 0)
         return AVERROR(ENOMEM);
     if ((ret = ff_hddvd_titles_plan(s, c->fs, c->vti, c->xpls, c->nb_xpls, d->opt_min_length, &c->plan)) < 0)
         return ret;

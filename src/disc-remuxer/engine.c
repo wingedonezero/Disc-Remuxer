@@ -173,7 +173,7 @@ static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *ke
         const DiscStreamInfo *k = &t->streams[i];
         char jc[64], jsl[16], n1[24], n2[24], n3[24], n4[24], n5[24], n6[24], ji[24], jf[24], jo[24];
         char d[96], jd[128], pl[48], jp[64], fr[48], jr[64], as[24], ja[32], lt[64], jl2[96], dv[48], jv[64], fq[32];
-        char lm[24], rl[128], jn[96], jm[48], je[16];
+        char lm[24], rl[128], jn[96], jm[48], je[16], an[32], jan[48], jh[32], jco[128], jma[320], nc1[24], nc2[24];
         const char *lname = k->language[0] ? disc_language_name(k->language) : NULL, *mkv = disc_mkv_codec_id(k);
         (void)dv; (void)fr;
         nv += k->type == AVMEDIA_TYPE_VIDEO;
@@ -185,7 +185,8 @@ static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *ke
                  "\"height\":%s,\"channels\":%s,\"sample_rate\":%s,\"bits\":%s,\"bit_rate\":%s,"
                  "\"description\":%s,\"profile\":%s,\"dolby_vision\":%s,\"frame_rate\":%s,\"aspect\":%s,"
                  "\"layout\":%s,\"layout_mask\":%s,\"roles\":[%s],\"selected\":%s,\"language_name\":%s,"
-                 "\"codec_id\":%s,\"file_type\":%s}",
+                 "\"codec_id\":%s,\"file_type\":%s,\"name\":%s,\"hdr\":%s,\"colour\":%s,\"mastering\":%s,"
+                 "\"max_cll\":%s,\"max_fall\":%s}",
                  i ? "," : "", i, av_get_media_type_string(k->type),
                  json_str(jc, sizeof(jc), codec_short(k)),
                  json_str(jsl, sizeof(jsl), k->language), json_index(ji, sizeof(ji), k->inner_track),
@@ -205,7 +206,12 @@ static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *ke
                  *layout_text(k, lt, sizeof(lt)) && k->layout ? json_str(jl2, sizeof(jl2), lt) : "null",
                  json_num(lm, sizeof(lm), (int64_t)k->layout), roles_text(k->roles, ",", 1, rl, sizeof(rl)),
                  keep[i] ? "true" : "false", lname ? json_str(jn, sizeof(jn), lname) : "null",
-                 mkv ? json_str(jm, sizeof(jm), mkv) : "null", json_str(je, sizeof(je), track_extension(k)));
+                 mkv ? json_str(jm, sizeof(jm), mkv) : "null", json_str(je, sizeof(je), track_extension(k)),
+                 *audio_name(k, an, sizeof(an)) ? json_str(jan, sizeof(jan), an) : "null",
+                 k->hdr[0] ? json_str(jh, sizeof(jh), k->hdr) : "null",
+                 k->colour[0] ? json_str(jco, sizeof(jco), k->colour) : "null",
+                 k->mastering[0] ? json_str(jma, sizeof(jma), k->mastering) : "null",
+                 json_num(nc1, sizeof(nc1), k->max_cll), json_num(nc2, sizeof(nc2), k->max_fall));
     }
     for (int i = 0; i < t->nb_files; i++) {
         char jf[300];

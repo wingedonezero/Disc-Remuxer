@@ -481,8 +481,10 @@ static int bluray_load(AVFormatContext *s)
         (b->name && b->name_lang[0] && ff_disc_add_prop(s, "Name's language", "%s", b->name_lang) < 0) ||
         (b->name_eng && (!b->name || strcmp(b->name_eng, b->name)) &&
          ff_disc_add_prop(s, "English name", "%s", b->name_eng) < 0) ||
-        ff_disc_add_prop(s, "AACS", "%s", b->aacs ? "yes" : "no") < 0 ||
-        ff_disc_add_prop(s, "BD+", "%s", b->bdplus ? "yes (not supported yet)" : "no") < 0 ||
+        ff_disc_add_prop(s, "Protection: AACS", "%s", b->aacs ? "yes" : "no") < 0 ||
+        ff_disc_add_prop(s, "Protection: AACS 2.0", "not checked yet") < 0 ||
+        ff_disc_add_prop(s, "Protection: BD+", "%s", b->bdplus ? "yes (not supported yet)" : "no") < 0 ||
+        ff_disc_add_prop(s, "Protection: bus encryption", "not checked yet") < 0 ||
         ff_disc_add_prop(s, "Playlists", "%d", b->nb_playlists) < 0 ||
         ff_disc_add_prop(s, "Clips", "%d", b->nb_clips) < 0 ||
         (b->nb_jars && ff_disc_add_prop(s, "BD-J archives", "%d", b->nb_jars) < 0))
@@ -491,7 +493,7 @@ static int bluray_load(AVFormatContext *s)
         char id[41];
         for (int i = 0; i < 20; i++)
             snprintf(id + 2 * i, 3, "%02X", b->disc_id[i]);
-        if (ff_disc_add_prop(s, "AACS disc ID", "%s", id) < 0)
+        if (ff_disc_add_prop(s, "Protection: AACS disc ID", "%s", id) < 0)
             return AVERROR(ENOMEM);
     }
     d->info.encrypted = has_dir(d->fs, "/AACS") || has_dir(d->fs, "/AACS_bd") ||

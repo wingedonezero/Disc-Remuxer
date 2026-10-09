@@ -167,6 +167,9 @@ typedef struct DiscFormat {
     void (*segment_close)(AVFormatContext *s, DiscPassSource *src);
     /** Title i left out of the part's list (the titles after it move up). */
     void (*remove_title)(AVFormatContext *s, int i);
+    /** The disc info's disc-wide fields known once every title's stream
+     *  pass has read (what protection the reading met), or NULL. */
+    int  (*disc_done)(AVFormatContext *s);
     /** Title i's disc info but its streams: name, length, size, files,
      *  chapters, parts. */
     int  (*title_info)(AVFormatContext *s, int i, DiscTitleInfo *dt);

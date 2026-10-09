@@ -428,6 +428,21 @@ static int dvd_load(AVFormatContext *s)
     return 0;
 }
 
+/* Protection: CSS when a title set's scrambled sectors were met while the
+ * stream passes read (its title key looked for). */
+static int disc_done(AVFormatContext *s)
+{
+    DiscContext *d = s->priv_data;
+    DVDDemuxContext *c = ff_disc_part(s);
+    int css = 0;
+
+    for (int i = 1; i < c->disc.nb_ifos; i++)
+        css |= c->disc.ifos[i] && c->disc.ifos[i]->css_state != 0;
+    d->info.encrypted = css;
+    return ff_disc_add_prop(s, "Protection: CSS", "%s", css ? "yes" :
+                            "no (no scrambled sector in what was read)");
+}
+
 const DiscFormat ff_disc_dvd = {
     .name          = "DVD-Video",
     .log_name      = "DVD",
@@ -440,6 +455,7 @@ const DiscFormat ff_disc_dvd = {
     .title_tracks  = title_tracks_of,
     .title_segment = title_segment,
     .remove_title  = remove_title,
+    .disc_done     = disc_done,
     .title_info    = title_info,
     .open_title    = open_title,
     .close_title   = close_title,

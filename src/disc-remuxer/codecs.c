@@ -169,3 +169,24 @@ int codec_lossless(const DiscStreamInfo *k)
     default:                    return 0;
     }
 }
+
+const char *audio_name(const DiscStreamInfo *k, char *buf, size_t size)
+{
+    uint64_t lay = k->layout;
+    int lfe;
+
+    *buf = 0;
+    if (k->type != AVMEDIA_TYPE_AUDIO || !k->channels)
+        return buf;
+    if (!lay)
+        snprintf(buf, size, "%s", k->channels == 1 ? "Mono" : k->channels == 2 ? "Stereo" : "Surround");
+    else if (lay == AV_CH_LAYOUT_STEREO)
+        snprintf(buf, size, "Stereo");
+    else if (lay == AV_CH_LAYOUT_MONO)
+        snprintf(buf, size, "Mono");
+    else {
+        lfe = !!(lay & AV_CH_LOW_FREQUENCY) + !!(lay & AV_CH_LOW_FREQUENCY_2);
+        snprintf(buf, size, "Surround %d.%d", av_popcount64(lay) - lfe, lfe);
+    }
+    return buf;
+}

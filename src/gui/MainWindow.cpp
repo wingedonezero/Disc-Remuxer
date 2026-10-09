@@ -29,6 +29,7 @@
 
 extern "C" {
 #include <libavutil/avutil.h>
+#include "codecs.h"
 #include "log.h"
 #include "settings.h"
 }
@@ -466,6 +467,12 @@ void MainWindow::fillDisc(Job &job)
             engine_track_parts(ti, i, codec, sizeof(codec), rest, sizeof(rest));
             QString line = QString("%1  %2").arg(i).arg(kindText(k));
             QString more = QString::fromUtf8(rest).trimmed();
+            char an[32];
+            // the audio's name ("Surround 5.1"), the video's HDR first
+            if (*audio_name(k, an, sizeof(an)))
+                more = QString::fromUtf8(an) + "  " + more;
+            if (k->hdr[0] && k->hdr[0] != 'S')
+                more = QString::fromUtf8(k->hdr) + (k->dolby_vision[0] ? " + Dolby Vision" : "") + "  " + more;
             auto *track = new QTreeWidgetItem(title, QStringList{ line });
             track->setText(C_CODEC, QString::fromUtf8(codec));
             track->setToolTip(C_CODEC, QString::fromUtf8(codec));

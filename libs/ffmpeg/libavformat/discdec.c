@@ -571,7 +571,8 @@ static int disc_read_header(AVFormatContext *s)
     d->info.udf_revision = d->fs->udf_revision;
     if (!(d->part = av_mallocz(d->fmt->priv_size)))
         return AVERROR(ENOMEM);
-    if ((ret = d->fmt->load(s)) < 0 || (ret = titles_pass(s)) < 0 || (ret = titles_info(s)) < 0)
+    if ((ret = d->fmt->load(s)) < 0 || (ret = titles_pass(s)) < 0 ||
+        (d->fmt->disc_done && (ret = d->fmt->disc_done(s)) < 0) || (ret = titles_info(s)) < 0)
         return ret;
     if (d->opt_title < 0)               /* only the disc info, no title opened */
         return 0;

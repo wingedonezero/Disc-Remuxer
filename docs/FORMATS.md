@@ -36,6 +36,16 @@ fills the disc, the format part its titles.
 | part (`DiscPartInfo`) | a title that plays whole stream files back to back (Blu-ray: items of connection condition 1 that each cover their whole STC sequence, e.g. the episodes of a series in one playlist) has one part per run of them: start in the title, duration, its files (a range of the title's), its own chapter count (the marks of its items, from its own start, without those in its last second, as a title of its own has them). A title of one piece has none |
 | stream (`DiscStreamInfo`) | kind, codec, language, the stream taken out of it / it is taken out of (a core, the forced-only copy of a subtitle, the second view of a 3-D video), forced (subtitles: only the forced ones), second view (video: of a 3-D video), second layer (video: an enhancement layer on its own PID read with it, e.g. Dolby Vision), offset sequence (subtitles of a 3-D title: the disc's depth data for it, -1 none), frame / canvas size; the stream details (aspect, frame rate, channels, sample rate, bits, bit rate) are 0 until the start of each title is read for them (to come) |
 
+A video stream's HDR comes from its first picture: `hdr` (`HDR10`,
+`HDR10+`, `HLG`, `SDR`), `colour` (primaries / transfer / matrix, range),
+`mastering` (the mastering display's luminance and primaries), `max_cll`,
+`max_fall`. The disc's protection is in its `props` as `Protection: <name>`
+(DVD: CSS, met while the stream passes read; Blu-ray: AACS and its disc
+ID, BD+, and AACS 2.0 and bus encryption as not checked yet; HD DVD:
+AACS); a DVD whose reading met CSS is `encrypted`. An audio stream's name
+by its channels (`Stereo`, `Surround 5.1`, ...) is the program's
+`audio_name()`.
+
 `disc_language_name()` gives a language code's English name (ISO 639-2
 list), `disc_mkv_codec_id()` the Matroska codec ID a stream is stored
 with (LPCM as PCM, closed captions as text). The program's `--json info`

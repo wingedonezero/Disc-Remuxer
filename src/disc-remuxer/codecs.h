@@ -27,5 +27,9 @@ const char *bit_rate_text(int64_t b, char *buf, size_t size);
 const char *layout_text(const DiscStreamInfo *k, char *buf, size_t size);
 /** Whether the codec keeps every sample (its bit depth is worth showing). */
 int codec_lossless(const DiscStreamInfo *k);
+/* An audio track's name by its channels, as the reference names them:
+ * "Mono", "Stereo", "Surround 5.1" (the speakers but the LFE ones, then
+ * the LFE ones); "" for other tracks. */
+const char *audio_name(const DiscStreamInfo *k, char *buf, size_t size);
 
 #endif
