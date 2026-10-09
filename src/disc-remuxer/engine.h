@@ -68,6 +68,19 @@ int  engine_demux(const char *source, const char *titles, const char *out_dir, c
  * output.folder; empty: "output" next to the program)>/<the disc's name>,
  * with _001, _002, ... when it exists already. */
 void engine_output_folder(const char *source, char *out, size_t size);
+/* The main output folder (engine_output_folder()'s first part). */
+void engine_output_root(char *out, size_t size);
+/* A name as a file or folder name (characters a file system refuses
+ * replaced). */
+void engine_clean_name(const char *name, char *out, size_t size);
+/* base, or base_001, base_002, ... : the first that does not exist. */
+void engine_unique_folder(const char *base, char *out, size_t size);
+
+/* Stops a run (any thread; Ctrl+C on the command line): the title being
+ * written ends at once (its files are not complete, said in the log), the
+ * titles after it are not written. A run clears it when it starts. */
+void engine_cancel(void);
+int  engine_cancelled(void);
 
 /* Track i of title t in words, as info lists it (its codec in full, its
  * details, its links to other tracks; "not selected" when !kept). */

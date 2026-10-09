@@ -5,6 +5,7 @@
  */
 
 #include <errno.h>
+#include <stdatomic.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,6 +32,8 @@ static void config_dirs(void)
 {
     char dir[PATH_MAX], sub[PATH_MAX + 32];
 
+    snprintf(dir, sizeof(dir), "%s/keydb", program_dir());
+    mkdir(dir, 0777);   /* the AACS key files (setting aacs.key_files) */
     snprintf(dir, sizeof(dir), "%s/.config", program_dir());
     mkdir(dir, 0777);
     snprintf(sub, sizeof(sub), "%s/dvdcss", dir);
@@ -294,6 +297,18 @@ fail:
     return -1;
 }
 
+static atomic_int cancelled;
+
+void engine_cancel(void)
+{
+    atomic_store(&cancelled, 1);
+}
+
+int engine_cancelled(void)
+{
+    return atomic_load(&cancelled);
+}
+
 static void free_keeps(uint8_t **keeps, int nb)
 {
     for (int t = 0; keeps && t < nb; t++)
@@ -462,20 +477,38 @@ static int mkdirs(const char *path)
     return mkdir(tmp, 0777) < 0 && errno != EEXIST ? -1 : 0;
 }
 
-void engine_output_folder(const char *source, char *out, size_t size)
+void engine_output_root(char *out, size_t size)
 {
     const char *root = setting_text("output.folder");
-    char name[512], base[PATH_MAX];
+
+    if (root && *root)
+        snprintf(out, size, "%s", root);
+    else
+        snprintf(out, size, "%s/output", program_dir());
+}
+
+void engine_clean_name(const char *name, char *out, size_t size)
+{
+    clean_name(name, 0, out, size);
+}
+
+void engine_unique_folder(const char *base, char *out, size_t size)
+{
     struct stat st;
 
-    disc_name(source, name, sizeof(name));
-    if (root && *root)
-        snprintf(base, sizeof(base), "%s/%s", root, name);
-    else
-        snprintf(base, sizeof(base), "%s/output/%s", program_dir(), name);
     snprintf(out, size, "%s", base);
     for (int n = 1; !stat(out, &st) && n < 1000; n++)
         snprintf(out, size, "%s_%03d", base, n);
+}
+
+void engine_output_folder(const char *source, char *out, size_t size)
+{
+    char name[512], root[PATH_MAX], base[PATH_MAX + 520];
+
+    disc_name(source, name, sizeof(name));
+    engine_output_root(root, sizeof(root));
+    snprintf(base, sizeof(base), "%s/%s", root, name);
+    engine_unique_folder(base, out, size);
 }
 
 /* A run: its folder and log files (named after the disc), the log's first
@@ -526,37 +559,49 @@ static int run_titles(EngineDisc *e, const char *sel, const char *split, const c
     if (setting_bool("output.split_joined_titles"))
         memset(spl, 1, nb);
     for (int t = 0; t < nb; t++) {
-        int parts = spl[t] ? di->titles[t].nb_parts : 0, part_failed = 0;
+        int parts = spl[t] ? di->titles[t].nb_parts : 0, part_failed = 0, part_stopped = 0;
         if (!sel[t])
             continue;
+        if (engine_cancelled())
+            break;
         ++ordinal;
-        for (int p = parts ? 0 : -1; p < parts; p++) {
+        for (int p = parts ? 0 : -1; p < parts && !engine_cancelled(); p++) {
             /* the second view: read when one of its tracks is selected */
             TitleJob job = { e->ctx, t, p, parts, 1, e->keeps[t], ordinal, count, out_dir, count > 1 };
             TitleOutcome res;
             demux_title(&job, &res);
-            part_failed += res.failed;
+            /* a title stopped as asked is not written, not failed */
+            part_stopped += res.stopped;
+            part_failed  += res.failed && !res.stopped;
         }
         failed += !!part_failed;
-        done   += !part_failed;
+        done   += !part_failed && !part_stopped;
     }
     free(spl);
 
     log_counts(&errors, &warnings);
     log_step("=== Summary ===");
+    if (engine_cancelled())
+        log_msg(MSG_SUMMARY, LOG_WARNING, "Stopped as asked: %d of %d title%s not written", count - done,
+                count, count == 1 ? "" : "s");
     log_msg(MSG_SUMMARY, failed ? LOG_ERROR : warnings ? LOG_INFO : LOG_OK,
             "%d title%s written, %d failed; %d warning%s, %d error%s", done, done == 1 ? "" : "s", failed, warnings,
             warnings == 1 ? "" : "s", errors, errors == 1 ? "" : "s");
     log_msg(MSG_LOG_FILE, LOG_INFO, "Log: %s", logp);
-    log_json("result", "\"written\":%d,\"failed\":%d,\"warnings\":%d,\"errors\":%d", done, failed, warnings, errors);
+    {
+        char jl[PATH_MAX + 700];
+        log_json("result", "\"written\":%d,\"failed\":%d,\"warnings\":%d,\"errors\":%d,\"stopped\":%s,\"log\":%s",
+                 done, failed, warnings, errors, engine_cancelled() ? "true" : "false", json_str(jl, sizeof(jl), logp));
+    }
     log_close_files();
-    return failed ? 1 : 0;
+    return failed || engine_cancelled() ? 1 : 0;
 }
 
 int engine_disc_rip(EngineDisc *e, const char *sel, const char *split, const char *out_dir)
 {
     char folder[PATH_MAX], logp[PATH_MAX + 600];
 
+    atomic_store(&cancelled, 0);
     if (!out_dir) {
         engine_output_folder(e->source, folder, sizeof(folder));
         out_dir = folder;
@@ -586,6 +631,7 @@ int engine_demux(const char *source, const char *titles, const char *out_dir, co
     EngineDisc *e;
     int nb, count = 0, ret;
 
+    atomic_store(&cancelled, 0);
     if (!out_dir) {
         engine_output_folder(source, folder, sizeof(folder));
         out_dir = folder;

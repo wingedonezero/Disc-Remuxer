@@ -169,9 +169,9 @@ every library under it are linked into both as before.
 | File | Part |
 |---|---|
 | `main.c` | the command line: commands (`info`, `demux`, `settings`, `version`), options (`--config`, `--set`, `--json`, `--split`, `--second-view`, `--tracks`, `-v`), the engine called |
-| `engine.c`, `engine.h` | the engine's calls: settings and log set up, a disc opened once (`engine_disc_open()`), its overview, the choice of titles and tracks, a run (its folder: given, or `<output.folder>/<disc name>`, `output` next to the program by default; its log files; its titles; the summary); `engine_set_sink()` gives log lines, progress and records to a GUI |
+| `engine.c`, `engine.h` | the engine's calls: settings and log set up (the folders `keydb` and `.config` next to the program made), a disc opened once (`engine_disc_open()`), its overview, the choice of titles and tracks, a run (its folder: given, or `<output.folder>/<disc name>`, `output` next to the program by default; its log files; its titles; the summary), a stop (`engine_cancel()`, Ctrl+C on the command line); `engine_set_sink()` gives log lines, progress and records to a GUI |
 | `select.c` | the tracks of a title to rip (`--tracks`) |
-| `settings.c` | the settings registry and `disc-remuxer.toml` next to the program (written with every setting and its help; new settings added, unknown ones removed, values kept) |
+| `settings.c` | the settings registry and `disc-remuxer.toml` next to the program (written with every setting and its help; new settings added, unknown ones removed, values kept); the registry for the GUI's settings menu (`settings_get()`, `settings_store()`, `settings_save()`) |
 | `writer.c` | opening a title and writing its stream files, chapters and VobSub pairs |
 | `check.c` | the end check: each written video / audio file is read back with FFmpeg's decoders and its stream details (format, profile, size, aspect, frame rate, scan, colour, HDR; audio format, channels, layout, rate, depth, ...) must equal those read from the disc's stream while ripping; a missing or different field fails the title |
 | `names.c` | file names from `output.file_name_template` |
@@ -181,13 +181,20 @@ every library under it are linked into both as before.
 ## The GUI (`src/gui/`, C++, Qt 6 Widgets)
 
 `disc-remuxer-gui` links the engine like the command line and uses the same
-settings file. `MainWindow` (the queue: each disc's titles and tracks with
-check boxes, the estimated size), `DiscFinder` (images and disc folders in
-what is added, searched a few levels deep), `EngineWorker` (the engine on a
-thread of its own: discs are scanned there; `LogRelay` brings the engine's
-log back), `DetailsPanel` (what the selected disc, title or track is),
-`Console` (the log by level). Built by `mk/gui.mk` with CMake against the
-host's Qt. Ripping, the settings menu and the output layout come next.
+settings file; its own values are the settings group `gui` (the window's
+sizes are kept there, not shown in the settings menu). `MainWindow` (menus;
+the queue: each disc's titles and tracks with check boxes, an unchecked
+title's tracks greyed with their choice kept, the video always ripped;
+the run: discs one after another, progress, Stop; the output folder
+`<output.folder>/<added folder>/<folders>/<disc name>` with
+`gui.keep_folder_structure`; a menu per row: parts, output folder, log,
+scan again, remove), `QueueTree` (drops, discs put in another order by
+dragging), `DiscFinder` (images and disc folders in what is added, searched
+a few levels deep), `EngineWorker` (the engine on a thread of its own: scans
+and rips; `LogRelay` brings the engine's log, progress and JSON records
+back), `PrefsDialog` (every setting from the registry, one tab per group,
+with its help), `DetailsPanel`, `Console`. Built by `mk/gui.mk` with CMake
+against the host's Qt.
 
 The demuxer contract the program relies on: `docs/FORMATS.md`. Finding
 discs (searching folders, drag and drop), the queue and batches are the

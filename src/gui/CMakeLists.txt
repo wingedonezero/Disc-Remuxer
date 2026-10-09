@@ -21,7 +21,9 @@ add_executable(disc-remuxer-gui
     DiscFinder.cpp DiscFinder.h
     EngineWorker.cpp EngineWorker.h
     DetailsPanel.cpp DetailsPanel.h
-    Console.cpp Console.h)
+    Console.cpp Console.h
+    QueueTree.cpp QueueTree.h
+    PrefsDialog.cpp PrefsDialog.h)
 
 target_include_directories(disc-remuxer-gui PRIVATE ${ENGINE_INCLUDE} ${FFMPEG_PREFIX}/include)
 target_compile_definitions(disc-remuxer-gui PRIVATE DISC_REMUXER_VERSION="${DISC_REMUXER_VERSION}")

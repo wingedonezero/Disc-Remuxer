@@ -12,7 +12,23 @@
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 enum SettingKind { SET_BOOL, SET_INT, SET_CHOICE, SET_TEXT, SET_LIST };
+
+/* A setting as the settings menu shows it. */
+typedef struct Setting {
+    const char        *group, *key;
+    enum SettingKind   kind;
+    const char        *def;          /* default, as text (a list: items separated by commas) */
+    int64_t            min, max;     /* SET_INT */
+    const char *const *choices;      /* SET_CHOICE, NULL-terminated */
+    const char        *help;
+    int                kept;         /* a value the GUI keeps for itself (window sizes): not in the settings
+                                        menu, not in the run's log */
+} Setting;
 
 /* Reads the settings file (path NULL: disc-remuxer.toml next to the
  * program) and brings it up to date. Returns 0 or -1 (logged). */
@@ -31,9 +47,26 @@ const char *settings_path(void);
 /* The folder of the program (where the settings file and .config live). */
 const char *program_dir(void);
 
+/* Every setting, in the file's order: the count, setting i. */
+int            settings_count(void);
+const Setting *settings_get(int i);
+/* Setting i's value in effect, as text (a list: items joined by commas). */
+const char    *settings_value(int i);
+/* Keeps a value in the settings file ("group.key", value as text): checked,
+ * in effect at once, written with settings_save(). 0, or -1 with why in
+ * err. */
+int  settings_store(const char *name, const char *value, char *err, int size);
+/* Writes the settings file with the stored values (the old one kept as
+ * .bak). 0, or -1 (logged). */
+int  settings_save(void);
+
 /* Logs the settings that differ from their default (one line, or none). */
 void settings_log_changed(void);
 /* Prints every setting, its value and where it came from. */
 void settings_show(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

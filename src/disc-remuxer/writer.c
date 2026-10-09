@@ -5,7 +5,9 @@
  * as a VobSub pair (.sub packs + .idx); the chapters as Matroska XML.
  */
 
+#include <dirent.h>
 #include <errno.h>
+#include <limits.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,6 +30,7 @@
 #include "msg.h"
 #include "names.h"
 #include "check.h"
+#include "engine.h"
 #include "settings.h"
 #include "writer.h"
 
@@ -471,12 +474,44 @@ static int es_flush_hold(const AVFormatContext *ctx, const AVStream *st, EsOut *
     return ret;
 }
 
+/* A key file of the keydb folder: a regular file named *.cfg. */
+static int keydb_file(const struct dirent *e)
+{
+    size_t n = strlen(e->d_name);
+    return e->d_name[0] != '.' && n > 4 && !strcasecmp(e->d_name + n - 4, ".cfg");
+}
+
+/* The AACS key files: setting aacs.key_files, or (empty) every .cfg file of
+ * the keydb folder next to the program in name order; joined by commas into
+ * bp. */
+static void key_files(AVBPrint *bp)
+{
+    const char *const *keys;
+    int nb = setting_list("aacs.key_files", &keys);
+
+    if (nb) {
+        for (int i = 0; i < nb; i++)
+            av_bprintf(bp, "%s%s", i ? "," : "", keys[i]);
+    } else {
+        char dir[PATH_MAX];
+        struct dirent **list;
+        snprintf(dir, sizeof(dir), "%s/keydb", program_dir());
+        if ((nb = scandir(dir, &list, keydb_file, alphasort)) < 0)
+            return;
+        for (int i = 0; i < nb; i++) {
+            av_bprintf(bp, "%s%s/%s", bp->len ? "," : "", dir, list[i]->d_name);
+            free(list[i]);
+        }
+        free(list);
+    }
+}
+
 int open_disc(const char *format, const char *source, AVFormatContext **ctx)
 {
     const AVInputFormat *fmt = av_find_input_format(format);
     AVDictionary *opts = NULL;
-    const char *const *keys;
-    int nb_keys = setting_list("aacs.key_files", &keys), ret;
+    AVBPrint bp;
+    int ret;
 
     *ctx = NULL;
     if (!fmt)
@@ -489,14 +524,11 @@ int open_disc(const char *format, const char *source, AVFormatContext **ctx)
     av_dict_set(&opts, "udf_reader", setting_text("read.udf_reader"), 0);
     av_dict_set(&opts, "dvd_cell_mode", setting_text("dvd.cell_mode"), 0);
     av_dict_set(&opts, "dvd_cell_check", setting_text("dvd.cell_check"), 0);
-    if (nb_keys) {
-        AVBPrint bp;
-        av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
-        for (int i = 0; i < nb_keys; i++)
-            av_bprintf(&bp, "%s%s", i ? "," : "", keys[i]);
+    av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
+    key_files(&bp);
+    if (bp.len)
         av_dict_set(&opts, "keydb", bp.str, 0);
-        av_bprint_finalize(&bp, NULL);
-    }
+    av_bprint_finalize(&bp, NULL);
     ret = avformat_open_input(ctx, source, fmt, &opts);
     av_dict_free(&opts);
     return ret;
@@ -675,6 +707,13 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
                      avcodec_get_name(ctx->streams[i]->codecpar->codec_id));
     }
     while ((ret = av_read_frame(ctx, pkt)) >= 0) {
+        /* a stop asked for (engine_cancel()): the title ends here */
+        if (engine_cancelled()) {
+            av_packet_unref(pkt);
+            ret = AVERROR_EXIT;
+            res->stopped = 1;
+            goto end;
+        }
         const AVStream *st = ctx->streams[pkt->stream_index];
         EsOut *o = &out[pkt->stream_index];
         int64_t progress;
@@ -760,7 +799,10 @@ end:
             o->no_forced = 1;
         }
     }
-    if (ret < 0) {
+    if (res->stopped) {
+        log_msg(MSG_TITLE_FAILED, LOG_WARNING, "%s stopped as asked: its files are not complete", who);
+        res->failed = 1;
+    } else if (ret < 0) {
         log_msg(MSG_TITLE_FAILED, LOG_ERROR, "%s failed: %s", who, av_err2str(ret));
         res->failed = 1;
     } else {
@@ -851,7 +893,7 @@ end:
         }
     }
     log_json("title_result", "\"title\":%d%s,\"status\":\"%s\",\"warnings\":%"PRId64",\"folder\":%s", job->title, jpart,
-             res->failed ? "failed" : "ok", res->warnings, json_str(js, sizeof(js), dir));
+             res->stopped ? "stopped" : res->failed ? "failed" : "ok", res->warnings, json_str(js, sizeof(js), dir));
     for (unsigned i = 0; ctx && out && i < ctx->nb_streams; i++) {
         EsOut *o = &out[i];
         for (int k = 0; k < o->nb_hold; k++)

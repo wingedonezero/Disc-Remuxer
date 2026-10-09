@@ -2,7 +2,10 @@
 // (engine.h), the same engine and settings file (disc-remuxer.toml next to
 // the program) as the command line. Discs named on the command line are
 // put into the queue. DISC_REMUXER_GUI_SNAPSHOT=<file.png> (tests): the
-// window saved as a picture once they are scanned, then the program quits.
+// window saved as a picture once they are scanned (DISC_REMUXER_GUI_TEST=rip:
+// once they are ripped too; =stop: the rip stopped after a second;
+// =uncheck: the disc unchecked; =prefs: the settings menu), then the
+// program quits.
 #include <QApplication>
 #include <QMessageBox>
 
@@ -23,9 +26,10 @@ int main(int argc, char **argv)
     MainWindow w;
     QStringList discs = QApplication::arguments().mid(1);
     QString snapshot = qEnvironmentVariable("DISC_REMUXER_GUI_SNAPSHOT");
+    QString test = qEnvironmentVariable("DISC_REMUXER_GUI_TEST");
     w.show();
     if (!snapshot.isEmpty() && !discs.isEmpty())
-        w.snapshotWhenScanned(snapshot);
+        w.snapshotWhenScanned(snapshot, test);
     w.addPaths(discs);
     return app.exec();
 }

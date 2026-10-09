@@ -17,11 +17,17 @@ static void sink_progress(void *, int title, double done)
     if (relay)
         emit relay->progress(title, done);
 }
+
+static void sink_record(void *, const char *json)
+{
+    if (relay)
+        emit relay->record(QString::fromUtf8(json));
+}
 }
 
 LogRelay::LogRelay(QObject *parent) : QObject(parent)
 {
-    EngineSink sink = { sink_line, sink_progress, nullptr, nullptr };
+    EngineSink sink = { sink_line, sink_progress, sink_record, nullptr };
     relay = this;
     engine_set_sink(&sink);
 }
@@ -42,4 +48,26 @@ void EngineWorker::scan(quint64 id, QString path)
     if (engine_disc_open(p.constData(), &choice, &disc) < 0)
         disc = nullptr;
     emit scanned(id, reinterpret_cast<quintptr>(disc));
+}
+
+void EngineWorker::stop()
+{
+    stopping = true;
+    engine_cancel();
+}
+
+void EngineWorker::rip(QList<RipJob> jobs)
+{
+    stopping = false;
+    for (const RipJob &j : jobs) {
+        char folder[4096];
+        int ret;
+        if (stopping)
+            break;
+        engine_unique_folder(j.folder.toUtf8().constData(), folder, sizeof(folder));
+        emit ripStarted(j.id, QString::fromUtf8(folder));
+        ret = engine_disc_rip(j.disc, j.sel.constData(), j.split.constData(), folder);
+        emit ripDone(j.id, ret, stopping);
+    }
+    emit runDone(stopping);
 }

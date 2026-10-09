@@ -30,6 +30,7 @@ typedef struct TitleJob {
 
 typedef struct TitleOutcome {
     int     failed;            /* no usable output (or untested features met) */
+    int     stopped;           /* stopped on request (engine_cancel()): its files are not complete */
     int64_t warnings;          /* warnings about its tracks */
     char    name[512];         /* the name its files take */
 } TitleOutcome;

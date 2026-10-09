@@ -9,9 +9,11 @@
  * which the GUI calls too; this file reads the command line.
  */
 
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
@@ -51,6 +53,17 @@ static void usage(FILE *f)
           "  -v, -vv              more detail on the terminal\n"
           "\n"
           "DVD-Video, HD DVD and Blu-ray (UHD, 3-D) are wired.\n", f);
+}
+
+/* Ctrl+C: the run stops cleanly (the title being written ends, said in the
+ * log); a second Ctrl+C ends the program at once. */
+static void on_interrupt(int sig)
+{
+    static const char msg[] = "\nStopping (Ctrl+C again ends at once)...\n";
+    engine_cancel();
+    signal(sig, SIG_DFL);
+    if (write(STDERR_FILENO, msg, sizeof(msg) - 1) < 0)
+        return;
 }
 
 static void cmd_version(void)
@@ -100,6 +113,7 @@ int main(int argc, char **argv)
 
     if ((ret = engine_init(config, sets, nb_sets, json, verbose)))
         return ret;
+    signal(SIGINT, on_interrupt);
     c = (EngineChoice){ tracks, nb_tracks, second };
     if (engine_check_choice(&c) < 0)
         return 2;
