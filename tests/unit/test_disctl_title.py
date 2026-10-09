@@ -133,8 +133,10 @@ def test_one_segment_starts_at_its_video_and_audio_waits_for_the_video():
     assert review == 0, "nothing untested"
     assert len(a) == n
     assert a[0].time == 0, "the lead-in became a shift"
-    assert kinds(events) == [lib.DR_EV_START_SHIFT]
+    assert kinds(events) == [lib.DR_EV_START_SHIFT, lib.DR_EV_SYNC]
     assert events[0]["dur"] == 5 * MS
+    sync = [e for e in events if e["kind"] == lib.DR_EV_SYNC]
+    assert sync[0]["dur"] == 5 * MS, "the shift is the audio's offset from its time on the disc"
     for k, o in enumerate(a):
         assert o.time == k * AC3_DUR
         assert o.dur == AC3_DUR

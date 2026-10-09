@@ -22,6 +22,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -110,6 +111,48 @@ typedef struct LayerKey {
 #define EVENT_KINDS  64
 #define EVENT_LOGGED 50          /* structured event lines per kind and track; the rest are counted */
 
+/* ---- the title checks of the master video's segments and joins ----
+ * Nothing is changed; every finding is an event (a warning where it may be
+ * a fault), and the title's end gives a summary. Per segment: how decoding
+ * starts at its first key frame (the codec's marks, DRStart) and how many
+ * pictures after it in decoding order are shown before it (they may need,
+ * or cannot have, the pictures before it: the end of the segment before, or
+ * nothing at the title's start); whether its first picture is a key frame;
+ * whether it starts with pictures the segment before ends with, the same
+ * bytes in the same order, a key frame among them (a piece of video
+ * repeated at the join; single equal pictures are no finding: a still
+ * scene codes to equal skipped pictures); the pictures the video stage read
+ * and gave out. */
+
+#define JOIN_PICTURES 32         /* pictures compared on each side of a join */
+
+typedef struct JoinCheck {
+    /* the current segment */
+    int64_t  frames;             /* pictures handed on */
+    int      have_key;           /* its first key frame was seen */
+    int64_t  key_time;           /* (segment clock) */
+    int      start;              /* its DRStart */
+    int64_t  leading;            /* pictures after it shown before it */
+    int      counting;           /* still counting them */
+    uint64_t first[JOIN_PICTURES];   /* the hashes of its first pictures */
+    int      first_key[JOIN_PICTURES];
+    int64_t  first_time;
+    int      nb_first;
+    int      rep_done;           /* compared with the end of the segment before */
+    uint64_t last[JOIN_PICTURES];    /* and of its last ones (a ring) */
+    int      nb_last, last_head;
+    /* the segment before: its last pictures' hashes, oldest first */
+    uint64_t prev[JOIN_PICTURES];
+    int      nb_prev;
+    /* the title */
+    int64_t  starts[4];          /* segments per DRStart of their first key frame */
+    int64_t  start_issues;       /* segments whose start may need, or cannot have, pictures before it */
+    int64_t  not_key;            /* segments whose first picture is no key frame */
+    int64_t  repeats;            /* joins with repeated pictures */
+    int64_t  pictures_off;       /* segments whose pictures read and given out differ */
+    DRVideoStats total;          /* the video stages' statistics, summed */
+} JoinCheck;
+
 struct DRTitle {
     void         *log;
     DRTitleConfig cfg;
@@ -130,6 +173,7 @@ struct DRTitle {
     int64_t       cc_dropped;    /* caption blocks in the video of a title without a caption track */
     int64_t       cc_text;       /* and their entries that carry caption bytes (not the null code) */
     int64_t       user_data;     /* other GOP user data taken out of the video */
+    JoinCheck     jc;            /* the checks of the master video's segments and joins */
     Out          *q;             /* output frames ready */
     int           q_head, q_n, q_cap;
     int           layer;         /* the second layer's track, -1 none */
@@ -184,6 +228,17 @@ static const char *hms(char *buf, int size, int64_t t)
 
     snprintf(buf, size, "%d:%02d:%02d.%03d", (int)(ms / 3600000), (int)(ms / 60000 % 60), (int)(ms / 1000 % 60),
              (int)(ms % 1000));
+    return buf;
+}
+
+/* A formatted piece of a log line into buf. */
+static const char *strf(char *buf, int size, const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    vsnprintf(buf, size, fmt, ap);
+    va_end(ap);
     return buf;
 }
 
@@ -249,6 +304,40 @@ static void event_text(DRTitle *t, const DREvent *e)
     case DR_EV_PCM_SKIP:
         av_log(t->log, AV_LOG_WARNING, "Track %d: the audio starts %s ms after the video: skipped on the output "
                "clock\n", k, msec(b, 32, e->dur, 0));
+        break;
+    case DR_EV_JOIN_START:
+        if (e->skew == DR_START_CLEAN || !e->count)
+            return;
+        if (e->skew == DR_START_BROKEN)
+            av_log(t->log, AV_LOG_WARNING, "Track %d at %s: segment %"PRId64" starts at a broken link: %"PRId64
+                   " picture(s) shown before its first key frame cannot be decoded\n", k, hms(a, 32, e->pos),
+                   e->dur, e->count);
+        else
+            av_log(t->log, AV_LOG_WARNING, "Track %d at %s: segment %"PRId64" starts with %s key frame: %"PRId64
+                   " picture(s) shown before it may need pictures from %s\n", k, hms(a, 32, e->pos), e->dur,
+                   e->skew == DR_START_OPEN ? "an open" : "a", e->count,
+                   e->dur > 1 ? "the end of the segment before (the join)" : "before the title's start");
+        break;
+    case DR_EV_JOIN_NOT_KEY:
+        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: segment %"PRId64" starts with a picture that is no key "
+               "frame\n", k, hms(a, 32, e->pos), e->dur);
+        break;
+    case DR_EV_JOIN_REPEAT:
+        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: segment %"PRId64" starts with the %"PRId64" picture(s) the "
+               "segment before ends with (the same bytes, in the same order): repeated at the join\n", k,
+               hms(a, 32, e->pos), e->skew, e->count);
+        break;
+    case DR_EV_SEQ_END_INSIDE:
+        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: an end of sequence code with pictures after it in the same "
+               "segment\n", k, hms(a, 32, e->pos));
+        break;
+    case DR_EV_PICTURES:
+        av_log(t->log, AV_LOG_WARNING, "Track %d: segment %"PRId64": %"PRId64" picture(s) read but not given out\n",
+               k, e->dur, e->count);
+        break;
+    case DR_EV_SYNC:
+        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: segment %"PRId64": the audio is %s ms off its time on the "
+               "disc as a stream file plays it\n", k, hms(a, 32, e->pos), e->count + 1, msec(b, 32, e->dur, 1));
         break;
     default:
         return;
@@ -1077,6 +1166,201 @@ static int joined(void *opaque, int track, DRFrame *f)
     }
 }
 
+/* ---- the title checks of the master video (JoinCheck) ---- */
+
+static uint64_t picture_hash(const uint8_t *p, int n)
+{
+    uint64_t h = 0xcbf29ce484222325ULL;         /* FNV-1a */
+    for (int i = 0; i < n; i++) {
+        h ^= p[i];
+        h *= 0x100000001b3ULL;
+    }
+    return h;
+}
+
+/* The segment's first key frame and the pictures shown before it: one event. */
+static void join_start_done(DRTitle *t)
+{
+    JoinCheck *c = &t->jc;
+
+    c->counting = 0;
+    c->starts[c->start]++;
+    if (c->start != DR_START_CLEAN && c->leading)
+        c->start_issues++;
+    on_seg_event(t, &(DREvent){ DR_EV_JOIN_START, 0, c->key_time, t->segments, c->start, c->leading });
+}
+
+/* The segment's first pictures against the last ones of the segment
+ * before: the longest run that ends the one and starts the other, with a key
+ * frame in it, is one event. */
+static void join_repeat_done(DRTitle *t)
+{
+    JoinCheck *c = &t->jc;
+    int run = 0;
+
+    if (c->rep_done)
+        return;
+    c->rep_done = 1;
+    for (int m = FFMIN(c->nb_prev, c->nb_first); m > 0 && !run; m--) {
+        int same = 1, key = 0;
+        for (int i = 0; i < m && same; i++) {
+            same = c->prev[c->nb_prev - m + i] == c->first[i];
+            key |= c->first_key[i];
+        }
+        if (same && key)
+            run = m;
+    }
+    if (!run)
+        return;
+    c->repeats++;
+    on_seg_event(t, &(DREvent){ DR_EV_JOIN_REPEAT, 0, c->first_time, 0, t->segments, run });
+}
+
+/* A picture of the master video in its segment (decoding order, the
+ * segment's clock). */
+static void join_frame(DRTitle *t, const DRFrame *f)
+{
+    JoinCheck *c = &t->jc;
+    uint64_t h = picture_hash(f->data, f->size);
+
+    if (!c->frames++ && !(f->flags & DR_F_KEY)) {
+        c->not_key++;
+        on_seg_event(t, &(DREvent){ DR_EV_JOIN_NOT_KEY, 0, f->time, t->segments, 0, 0 });
+    }
+    if (c->counting) {
+        if (f->time < c->key_time)
+            c->leading++;
+        else
+            join_start_done(t);
+    }
+    if (!c->have_key && (f->flags & DR_F_KEY)) {
+        c->have_key = 1;
+        c->key_time = f->time;
+        c->start    = f->flags & DR_F_START_CLEAN  ? DR_START_CLEAN  :
+                      f->flags & DR_F_START_BROKEN ? DR_START_BROKEN :
+                      f->flags & DR_F_START_OPEN   ? DR_START_OPEN   : DR_START_UNKNOWN;
+        c->leading  = 0;
+        c->counting = 1;
+    }
+    if (c->nb_first < JOIN_PICTURES) {
+        if (!c->nb_first)
+            c->first_time = f->time;
+        c->first_key[c->nb_first] = !!(f->flags & DR_F_KEY);
+        c->first[c->nb_first++]   = h;
+        if (c->nb_first == JOIN_PICTURES)
+            join_repeat_done(t);
+    }
+    c->last[c->last_head] = h;
+    c->last_head = (c->last_head + 1) % JOIN_PICTURES;
+    c->nb_last   = FFMIN(c->nb_last + 1, JOIN_PICTURES);
+}
+
+/* The end of a segment (its video flushed): the start check if still open,
+ * the video stage's pictures read and given out, the statistics summed, the
+ * segment's last pictures kept for the next join. */
+static void join_segment_end(DRTitle *t, const DRVideo *video)
+{
+    JoinCheck *c = &t->jc;
+    DRVideoStats vs;
+
+    if (c->counting)
+        join_start_done(t);
+    join_repeat_done(t);
+    ff_disctl_video_stats(video, &vs);
+    if (vs.pictures != vs.out) {
+        c->pictures_off++;
+        on_seg_event(t, &(DREvent){ DR_EV_PICTURES, 0, 0, t->segments, 0, vs.pictures - vs.out });
+    }
+    av_log(t->log, AV_LOG_VERBOSE, "Title check: segment %d: %"PRId64" pictures read, %"PRId64" given out, %"PRId64
+           " placeholders; its first key frame: %s, %"PRId64" picture(s) after it shown before it\n",
+           t->segments, vs.pictures, vs.out, vs.placeholders, !c->have_key ? "none" :
+           c->start == DR_START_CLEAN ? "a clean start" : c->start == DR_START_BROKEN ? "a broken link" :
+           c->start == DR_START_OPEN ? "an open start" : "its start is not known for this codec", c->leading);
+    c->total.units          += vs.units;
+    c->total.pictures       += vs.pictures;
+    c->total.out            += vs.out;
+    c->total.placeholders   += vs.placeholders;
+    c->total.invalid        += vs.invalid;
+    c->total.side           += vs.side;
+    c->total.side_bytes     += vs.side_bytes;
+    c->total.other          += vs.other;
+    c->total.other_bytes    += vs.other_bytes;
+    c->total.stuffing       += vs.stuffing;
+    c->total.seq_end        += vs.seq_end;
+    c->total.seq_end_inside += vs.seq_end_inside;
+    c->total.scan_known     += vs.scan_known;
+    c->total.progressive    += vs.progressive;
+    c->total.tff            += vs.tff;
+    c->total.rff            += vs.rff;
+    /* the segment's last pictures, oldest first */
+    c->nb_prev = c->nb_last;
+    for (int i = 0; i < c->nb_last; i++)
+        c->prev[i] = c->last[(c->last_head - c->nb_last + i + JOIN_PICTURES) % JOIN_PICTURES];
+    c->frames   = 0;
+    c->have_key = 0;
+    c->key_time = 0;
+    c->start    = DR_START_UNKNOWN;
+    c->leading  = 0;
+    c->nb_first = 0;
+    c->rep_done = 0;
+    c->nb_last  = 0;
+    c->last_head = 0;
+}
+
+/* The end of the title: what the checks found, in a few lines. */
+static void title_summary(DRTitle *t)
+{
+    JoinCheck *c = &t->jc;
+    const DRVideoStats *v = &c->total;
+    char a[32], b[32];
+
+    av_log(t->log, AV_LOG_INFO, "Title check: %d segment(s); their first key frames: %"PRId64" clean, %"PRId64
+           " open, %"PRId64" broken link%s; %s\n", t->segments, c->starts[DR_START_CLEAN], c->starts[DR_START_OPEN],
+           c->starts[DR_START_BROKEN], c->starts[DR_START_UNKNOWN] ?
+           strf(a, sizeof(a), ", %"PRId64" not known", c->starts[DR_START_UNKNOWN]) : "",
+           c->start_issues || c->not_key || c->repeats ? "see the warnings above" :
+           "no picture at a segment's start needs one before it, none repeated at a join");
+    av_log(t->log, c->pictures_off ? AV_LOG_WARNING : AV_LOG_INFO, "Title check: video: %"PRId64" pictures read, %"
+           PRId64" given out%s\n", v->pictures, v->out, c->pictures_off ? " (see the warnings above)" : "");
+    av_log(t->log, AV_LOG_INFO, "Title check: taken out of the video: %"PRId64" zero stuffing bytes, %"PRId64
+           " user data units (%"PRId64" bytes: captions go to the caption track), %"PRId64" units that are no "
+           "picture (%"PRId64" bytes)\n", v->stuffing, v->side, v->side_bytes, v->other, v->other_bytes);
+    if (v->scan_known)
+        av_log(t->log, AV_LOG_INFO, "Title check: video scan as the pictures state it (kept as it is): %"PRId64
+               " progressive, %"PRId64" interlaced; top field first %"PRId64", repeat first field %"PRId64"%s\n",
+               v->progressive, v->scan_known - v->progressive, v->tff, v->rff, v->scan_known < v->out ?
+               strf(b, sizeof(b), "; %"PRId64" not read", v->out - v->scan_known) : "");
+    else
+        av_log(t->log, AV_LOG_INFO, "Title check: video scan: not read for this codec (kept as it is)\n");
+    if (v->seq_end)
+        av_log(t->log, AV_LOG_INFO, "Title check: video: %"PRId64" end of sequence code(s), %"PRId64" with pictures "
+               "after them in their segment (kept as they are)\n", v->seq_end, v->seq_end_inside);
+    for (int i = 0; i < t->cfg.nb_tracks; i++) {
+        Track *k = &t->t[i];
+        DRVerifyStats st;
+        int64_t issues;
+
+        if (!k->verify)
+            continue;
+        ff_disctl_verify_stats(k->verify, &st);
+        issues = st.bad_units + st.crc_errors + st.order_errors + st.holes + (k->cfg.kind == DR_KIND_VIDEO) *
+                 st.overlaps;
+        av_log(t->log, issues ? AV_LOG_WARNING : AV_LOG_INFO, "Title check: track %d (%s): %"PRId64" frames; %"
+               PRId64" units that do not parse, %"PRId64" checksum failures, %"PRId64" order errors, %"PRId64
+               " holes%s%s\n", i, avcodec_get_name(k->cfg.codec), st.frames - st.markers, st.bad_units,
+               st.crc_errors, st.order_errors, st.holes, st.unchecked ? " (units of this codec are not checked)" : "",
+               issues ? "" : ": PASS");
+        if (k->cfg.kind == DR_KIND_AUDIO && st.frames > st.markers)
+            av_log(t->log, st.sync_segments ? AV_LOG_WARNING : AV_LOG_INFO, "Title check: track %d: as a stream "
+                   "file (start delay %s ms) the audio is within %s ms of its time on the disc%s%s\n", i,
+                   msec(a, 32, st.delay, 1), msec(b, 32, FFABS(st.es_err_max), 0), st.sync_segments ?
+                   strf((char[96]){ 0 }, 96, "; %d of %d segment(s) more than 1 ms off, the largest in "
+                                   "segment %d", st.sync_segments, st.segments, st.sync_seg + 1) :
+                   strf((char[64]){ 0 }, 64, " in every segment (%d)", st.segments),
+                   st.sync_segments ? "" : ": PASS");
+    }
+}
+
 /* ---- the current segment ---- */
 
 /* A frame from a track's timing stage: marked when it was read from the
@@ -1091,6 +1375,8 @@ static int seg_frame(void *opaque, DRFrame *f)
         f->flags |= DR_F_POSITION;
         memmove(k->posq, k->posq + 1, --k->nb_posq * sizeof(*k->posq));
     }
+    if (!k->index && f->size)
+        join_frame(k->title, f);
     if (k->audio && !k->have_header) {
         const DRAudioHeader *h = ff_disctl_audio_header(k->audio);
         if (h && h->rate > 0) {
@@ -1188,6 +1474,7 @@ static int seg_end(DRTitle *t)
     if ((ret = ff_disctl_frames_flush(v->cut)) < 0 || (ret = ff_disctl_video_flush(v->video)) < 0 ||
         (ret = cc_segment_end(t)) < 0)
         return ret;
+    join_segment_end(t, v->video);
     for (int i = 1; i < t->cfg.nb_tracks; i++) {
         Track *k = &t->t[i];
         if (k->cfg.kind == DR_KIND_LAYER &&
@@ -1456,6 +1743,7 @@ static int title_finish(DRTitle *t)
     }
     av_log(t->log, AV_LOG_DEBUG, "Title timeline: GOP user data taken out of the video: %"PRId64" caption blocks, %"
            PRId64" other\n", t->cc_track >= 0 ? t->t[t->cc_track].cc_blocks : t->cc_dropped, t->user_data);
+    title_summary(t);
     t->finished = 1;
     return 0;
 }

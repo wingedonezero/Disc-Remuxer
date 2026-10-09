@@ -56,6 +56,10 @@ struct DRVerify {
 
     int            logged[DR_EV_VERIFY_OVERLAP - DR_EV_VERIFY_UNIT + 1];
     DRVerifyStats  st;
+
+    /* audio: the segment being checked, its largest stream-file error and where */
+    int            seg;
+    int64_t        seg_err, seg_at;
 };
 
 static void finding(DRVerify *v, int kind, int64_t pos, int64_t dur, int64_t count, const char *fmt, ...)
@@ -99,6 +103,7 @@ int ff_disctl_verify_open(DRVerify **vp, void *logctx, enum AVCodecID codec, int
     v->event = ev;
     v->event_opaque = ev_opaque;
     v->st.es_err_at = v->st.mkv_err_at = AV_NOPTS_VALUE;
+    v->seg_at = AV_NOPTS_VALUE;
     *vp = v;
     return 0;
 }
@@ -119,13 +124,41 @@ static int grow(void *a, int n, int *cap, size_t size)
     return 0;
 }
 
+/* The end of a segment's frames: its largest stream-file sync error, a
+ * finding beyond DR_SYNC_LIMIT. */
+static void sync_segment_end(DRVerify *v)
+{
+    if (v->seg_at == AV_NOPTS_VALUE)
+        return;
+    av_log(v->log, AV_LOG_VERBOSE, "Title timeline: check: track %d (%s): segment %d: sync error as a stream file "
+           "%+.3f ms at its largest (at %.3f ms)\n", v->track, v->codec->name, v->seg + 1, ms(v->seg_err),
+           ms(v->seg_at));
+    if (FFABS(v->seg_err) > DR_SYNC_LIMIT) {
+        v->st.sync_segments++;
+        if (v->event)
+            v->event(v->event_opaque, &(DREvent){ DR_EV_SYNC, v->track, v->seg_at, v->seg_err, 0, v->seg });
+    }
+    v->seg_at = AV_NOPTS_VALUE;
+}
+
 static void sync_error(DRVerify *v, const DRFrame *f)
 {
     int64_t es = v->es_pos - f->src, mkv = f->time - f->src;
 
+    if (f->seg != v->seg || !v->st.segments) {
+        sync_segment_end(v);
+        v->seg = f->seg;
+        v->st.segments++;
+    }
+    if (v->seg_at == AV_NOPTS_VALUE || FFABS(es) > FFABS(v->seg_err)) {
+        v->seg_err = es;
+        v->seg_at  = f->src;
+    }
+
     if (v->st.es_err_at == AV_NOPTS_VALUE || FFABS(es) > FFABS(v->st.es_err_max)) {
         v->st.es_err_max = es;
         v->st.es_err_at  = f->src;
+        v->st.sync_seg   = f->seg;
     }
     if (v->st.mkv_err_at == AV_NOPTS_VALUE || FFABS(mkv) > FFABS(v->st.mkv_err_max)) {
         v->st.mkv_err_max = mkv;
@@ -248,6 +281,8 @@ int ff_disctl_verify_finish(DRVerify *v)
 
     if (v->kind == DR_KIND_VIDEO)
         video_order(v);
+    if (v->kind == DR_KIND_AUDIO)
+        sync_segment_end(v);
     /* the summary goes to the debug log; every finding was a warning already */
     av_log(v->log, AV_LOG_VERBOSE,
            "Title timeline: check: track %d (%s): %"PRId64" frames, %"PRId64" units that do not parse, %"PRId64

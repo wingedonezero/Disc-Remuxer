@@ -46,6 +46,9 @@ typedef struct VUnit {
     int64_t  rank;
     int      adjusted;              /* position already includes the offset (repair) */
     int      key;                   /* key frame by the codec's own rule */
+    int      start;                 /* key frame: DRStart */
+    int      scan;                  /* DR_SCAN_* */
+    int      seq_end;               /* carries an end of sequence code */
     int64_t  seq;                   /* the unit's number in the segment */
 } VUnit;
 
@@ -95,6 +98,8 @@ struct DRVideo {
     int64_t             lastdiff;
     int                 have_lastdiff;
     int64_t             seq;       /* the unit being read */
+    int64_t             end_time;  /* the picture with an end of sequence code given out last, AV_NOPTS_VALUE: none
+                                      since (a later picture makes it one inside the segment) */
     DRFrameCb           side_cb;   void *side_opaque;
     Side               *side;      /* side[side_head .. side_head + side_n) wait for their picture */
     int                 side_head, side_n, side_cap;
@@ -496,6 +501,7 @@ static int side_out(DRVideo *v, int64_t before, int64_t t)
         sd->f.dur   = (int64_t)(v->v70 / v->v78);     /* one field */
         sd->f.flags = DR_F_KEY;
         v->st.side++;
+        v->st.side_bytes += sd->f.size;
         if (!v->side_cb) {
             ff_disctl_frame_unref(&sd->f);
             continue;
@@ -563,6 +569,9 @@ static int assign(DRVideo *v, int n, int no_check)
 
         q_pop(&v->q);
         if (u.type == DR_PIC_OTHER) {
+            v->st.other++;
+            v->st.other_bytes += u.f.size;
+            v->st.seq_end     += u.seq_end;
             ff_disctl_frame_unref(&u.f);
             continue;
         }
@@ -576,11 +585,31 @@ static int assign(DRVideo *v, int n, int no_check)
             if (p >= 0 && p > v->e8)
                 v->e8 = p;
         }
-        u.f.flags &= ~(DR_F_KEY | DR_F_DISCARD | DR_F_BATCH);
-        if ((u.type == DR_PIC_I && !v->rules->codec_keys) || u.key)
+        u.f.flags &= ~(DR_F_KEY | DR_F_DISCARD | DR_F_BATCH | DR_F_START_CLEAN | DR_F_START_BROKEN |
+                       DR_F_START_OPEN);
+        if ((u.type == DR_PIC_I && !v->rules->codec_keys) || u.key) {
             u.f.flags |= DR_F_KEY;
-        else if (u.type == DR_PIC_B)
+            u.f.flags |= u.start == DR_START_CLEAN  ? DR_F_START_CLEAN  :
+                         u.start == DR_START_BROKEN ? DR_F_START_BROKEN :
+                         u.start == DR_START_OPEN   ? DR_F_START_OPEN   : 0;
+        } else if (u.type == DR_PIC_B)
             u.f.flags |= DR_F_DISCARD;
+        /* an end of sequence code with a picture after it in the segment */
+        if (v->end_time != AV_NOPTS_VALUE) {
+            v->st.seq_end_inside++;
+            event(v, DR_EV_SEQ_END_INSIDE, v->end_time, 0, 1);
+            v->end_time = AV_NOPTS_VALUE;
+        }
+        if (u.seq_end) {
+            v->st.seq_end++;
+            v->end_time = u.f.time;
+        }
+        if (u.scan & DR_SCAN_KNOWN) {
+            v->st.scan_known++;
+            v->st.progressive += !!(u.scan & DR_SCAN_PROGRESSIVE);
+            v->st.tff         += !!(u.scan & DR_SCAN_TFF);
+            v->st.rff         += !!(u.scan & DR_SCAN_RFF);
+        }
         if (k == last_pic)
             u.f.flags |= DR_F_BATCH;
         v->emitted++;
@@ -893,6 +922,7 @@ static int unit_in(DRVideo *v, VUnit *u)
         a->buf  = buf;
         a->data = buf->data;
         a->size += b->size;
+        v->held.seq_end |= u->seq_end;
         ff_disctl_frame_unref(b);
         v->held.fields = 2;
         v->have_held   = 0;
@@ -936,6 +966,11 @@ void ff_disctl_video_set_side(DRVideo *v, DRFrameCb cb, void *opaque)
     v->side_opaque = opaque;
 }
 
+void ff_disctl_video_stuffing(DRVideo *v, int64_t bytes)
+{
+    v->st.stuffing += bytes;
+}
+
 int ff_disctl_video_unit(void *opaque, const DRUnit *du)
 {
     DRVideo *v = opaque;
@@ -959,10 +994,13 @@ int ff_disctl_video_unit(void *opaque, const DRUnit *du)
         ff_disctl_frame_unref(&u.f);
         return ret;
     }
-    u.type   = pic.type;
-    u.order  = pic.order;
-    u.fields = pic.fields;
-    u.key    = pic.key;
+    u.type    = pic.type;
+    u.order   = pic.order;
+    u.fields  = pic.fields;
+    u.key     = pic.key;
+    u.start   = pic.start;
+    u.scan    = pic.scan;
+    u.seq_end = pic.seq_end;
     if (is_pic(u.type) && u.fields <= 0) {
         av_log(v->log, AV_LOG_ERROR, "Title timeline: video: a picture without a duration\n");
         ff_disctl_frame_unref(&u.f);
@@ -1020,6 +1058,7 @@ int ff_disctl_video_open(DRVideo **vp, void *logctx, enum AVCodecID codec, int t
     v->opaque = opaque;
     v->event = ev;
     v->event_opaque = ev_opaque;
+    v->end_time = AV_NOPTS_VALUE;
     if (v->rules->priv_size && !(v->priv = av_mallocz(v->rules->priv_size))) {
         av_free(v);
         return AVERROR(ENOMEM);

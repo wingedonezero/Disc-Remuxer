@@ -150,12 +150,19 @@ static void sequence(DRVideo *v, Vc1State *s, const uint8_t *p, const uint8_t *e
 
 /* A unit as FFmpeg's VC-1 parser finds it in disc mode holds at most one frame (start code 0x0D)
  * and its second field (0x0C), with the headers before it and the user data
- * after it; a unit without a frame is left out. */
+ * after it; a unit without a frame is left out.
+ * How decoding can start at a key frame (SMPTE 421M 6.2.1): its entry point
+ * header's BROKEN_LINK (the B pictures after it cannot be decoded) or
+ * CLOSED_ENTRY (they use no picture before it: clean); otherwise they may.
+ * The scan: progressive frames (a progressive sequence, or FCM 0), or the
+ * TFF / RFF flags where the frame header carries them (pulldown); else not
+ * read. */
 static int picture_vc1(DRVideo *v, const DRFrame *f, DRPicture *pic)
 {
     Vc1State *s = ff_disctl_video_priv(v);
     const uint8_t *p = f->data;
     int n = f->size, i = 0, frame = -1, has_seq = 0, has_entry = 0, field2 = 0, user_data = 0, other = 0;
+    int broken = 0, closed = 0, seq_end = 0;
 
     while ((i = next_sc(p, n, i)) >= 0) {
         int code = p[i + 3], e = next_sc(p, n, i + 4);
@@ -164,9 +171,13 @@ static int picture_vc1(DRVideo *v, const DRFrame *f, DRPicture *pic)
         if (code == SC_SEQ) {
             has_seq = 1;
             sequence(v, s, p + i + 4, p + e);
-        } else if (code == SC_ENTRY)
+        } else if (code == SC_ENTRY) {
             has_entry = 1;
-        else if (code == SC_FRAME && frame < 0)
+            if (i + 4 < n) {
+                broken = p[i + 4] >> 7;
+                closed = (p[i + 4] >> 6) & 1;
+            }
+        } else if (code == SC_FRAME && frame < 0)
             frame = i;
         else if (code == SC_FIELD && frame >= 0)
             field2 = 1;
@@ -174,8 +185,11 @@ static int picture_vc1(DRVideo *v, const DRFrame *f, DRPicture *pic)
             user_data = 1;
         if (code != SC_END)
             other = 1;
+        else
+            seq_end = 1;
         i += 4;
     }
+    pic->seq_end = seq_end;
     if (frame < 0) {
         pic->type = DR_PIC_OTHER;
         if (!other) {
@@ -204,7 +218,7 @@ static int picture_vc1(DRVideo *v, const DRFrame *f, DRPicture *pic)
     }
     {
         Bits b;
-        int fcm = 0, type, fields = 2;
+        int fcm = 0, type, fields = 2, scan = 0;
         int e = next_sc(p, n, frame + 4);
 
         bits_init(&b, p + frame + 4, p + (e < 0 ? n : e));
@@ -244,11 +258,18 @@ static int picture_vc1(DRVideo *v, const DRFrame *f, DRPicture *pic)
             }
             if (s->pulldown) {
                 if (s->interlace && !s->psf) {
-                    u1(&b);                     /* TFF */
+                    int tff = u1(&b);           /* TFF */
                     if (u1(&b))                 /* RFF */
                         fields = 3;
-                } else
+                    scan = DR_SCAN_KNOWN | (fcm ? 0 : DR_SCAN_PROGRESSIVE) | (tff ? DR_SCAN_TFF : 0) |
+                           (fields == 3 ? DR_SCAN_RFF : 0);
+                } else {
                     fields *= u(&b, 2) + 1;     /* RPTFRM */
+                    if (!fcm)
+                        scan = DR_SCAN_KNOWN | DR_SCAN_PROGRESSIVE | (fields > 2 ? DR_SCAN_RFF : 0);
+                }
+            } else if (!fcm) {
+                scan = DR_SCAN_KNOWN | DR_SCAN_PROGRESSIVE;
             }
         }
         if (b.over) {
@@ -259,6 +280,9 @@ static int picture_vc1(DRVideo *v, const DRFrame *f, DRPicture *pic)
         pic->type   = type;
         pic->fields = fields;
         pic->key    = has_seq && has_entry;
+        pic->scan   = scan;
+        if (pic->key)
+            pic->start = broken ? DR_START_BROKEN : closed ? DR_START_CLEAN : DR_START_OPEN;
     }
     return 0;
 }

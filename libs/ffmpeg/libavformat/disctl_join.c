@@ -74,6 +74,7 @@ static int give(DRJoin *j, int track, DRFrame *f, int64_t ts, int64_t src)
 {
     f->time = ts + j->offset - j->start;
     f->src  = src + j->offset - j->start;
+    f->seg  = j->seg;
     /* the first frame after a chapter's position: the next open mark is its time */
     if (!track && (f->flags & DR_F_POSITION) && j->cfg.open_marks)
         for (int i = j->mark; i < j->cfg.nb_marks; i++)

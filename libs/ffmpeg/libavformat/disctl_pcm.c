@@ -59,6 +59,7 @@ struct DRPcm {
     int          started, finished, ended;
     int64_t      start_drop_dur;        /* frames dropped at the start so far (they may come over several calls) */
     int          start_drop_n;
+    int          seg;                   /* the segment of the frame whose samples were taken last */
     DRPcmStats   st;
 };
 
@@ -113,6 +114,7 @@ static int emit(DRPcm *p)
     f.time = (int64_t)((uint64_t)p->emitted * p->out / p->in);
     f.dur  = (int64_t)((uint64_t)p->fill * p->out / p->in);
     f.src  = f.time;
+    f.seg  = p->seg;
     p->emitted += p->fill;
     p->fill     = 0;
     p->st.out++;
@@ -304,6 +306,7 @@ static int timeline(DRPcm *p, DRFrame *f, int idx)
     int64_t n = samples_of(p, f), copy = n;
     int e = 0, r, ret;
 
+    p->seg = f->seg;
     if (p->carry)
         return AVERROR_BUG;
     if (FFABS(exp - pts) > DRIFT && FFABS(spos - opos) > 2) {

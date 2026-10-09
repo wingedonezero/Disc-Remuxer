@@ -275,8 +275,41 @@ The rules above are the default policy. Around them:
     as a stream file plays it (start delay + the durations before it) and by
     the output times; the largest of each and where, the stream file's at
     the end;
+    per segment (`DRFrame.seg`, set by the joiner): a segment where the
+    stream-file error goes beyond 1 ms (`DR_SYNC_LIMIT`) is a warning
+    (`DR_EV_SYNC`), a kept lead-in shift included;
   - not yet: joins where a different action would have given a smaller
     error.
+- **Title checks** (`disctl_title.c`, the master video's segments and
+  joins; nothing is changed, every finding is an event, a warning where it
+  may be a fault, and a summary ends the title):
+  - how decoding starts at each segment's first key frame, by the codec's
+    own marks (`DRPicture.start`): MPEG-2 closed_gop / broken_link of its GOP
+    header, VC-1 CLOSED_ENTRY / BROKEN_LINK of its entry point, H.264 IDR or
+    a recovery point (its broken_link_flag), HEVC IDR / BLA / CRA; and the
+    pictures after it in decoding order shown before it. An open start or a
+    broken link with such pictures is a warning (`DR_EV_JOIN_START`): they
+    may need the end of the segment before (or nothing exists before the
+    title's start), or cannot be decoded;
+  - a segment whose first picture is no key frame (`DR_EV_JOIN_NOT_KEY`);
+  - a segment that starts with the pictures the segment before ends with:
+    the same bytes in the same order, a key frame among them, up to 32
+    (`DR_EV_JOIN_REPEAT`; equal single pictures are no finding, a still
+    scene codes to equal skipped pictures);
+  - an end of sequence code with pictures after it in its segment
+    (`DR_EV_SEQ_END_INSIDE`);
+  - per segment the pictures the video stage read and gave out
+    (`DR_EV_PICTURES` when they differ);
+  - what was taken out of the video (zero stuffing after GOP headers, GOP
+    user data: captions to their track, units that are no picture) and the
+    scan the pictures state (progressive / interlaced, top field first,
+    repeat first field), all kept as they are;
+  - per track the output checks above as one line (PASS when nothing was
+    found);
+  - the title reader: the blocks read, those not usable, packets of streams
+    without a track; for program streams (`ff_mpegps_disc_stats`) the
+    sectors read and empty, navigation packets, system headers, padding and
+    other packets of no stream left out, sectors left out or cut.
 
 Events go to the log (messages 5xxx) and, at debug level, as one structured
 line each, so a run can be compared event by event with an expected list.

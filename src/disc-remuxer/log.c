@@ -151,14 +151,21 @@ static void emit(enum LogLevel level, int code, const char *source, const char *
 }
 
 /* Library lines already shown in this run (a title opened again repeats
- * the disc's messages): a repeat is a detail line. */
+ * the disc's messages): a repeat is a detail line. The lines of a title's
+ * rip (the title timeline's findings and checks) are each title's own and
+ * always shown. */
 #define SEEN_MAX 1024
 static unsigned long seen[SEEN_MAX];
 static int nb_seen;
 
 static int seen_before(const char *text)
 {
+    static const char *const own[] = { "Title check: ", "Title timeline: ", "Track ", "Captions: " };
     unsigned long h = 5381;
+
+    for (int i = 0; i < (int)(sizeof(own) / sizeof(*own)); i++)
+        if (!strncmp(text, own[i], strlen(own[i])))
+            return 0;
     for (const unsigned char *p = (const unsigned char *)text; *p; p++)
         h = h * 33 + *p;
     for (int i = 0; i < nb_seen; i++)

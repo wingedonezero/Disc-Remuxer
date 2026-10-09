@@ -71,6 +71,7 @@ static int split_mpv(DRVideo *v, DRFrame *f)
         if (z - i > 2 && z < n && p[z] == 1) {   /* zeros, then 00 00 01: the zeros before those two go */
             memmove(p + i, p + z - 2, n - (z - 2));
             n -= z - 2 - i;
+            ff_disctl_video_stuffing(v, z - 2 - i);
         }
         while ((i = next_sc(p, n, i)) >= 0 && p[i + 3] == 0xB2) {
             e = next_sc(p, n, i + 4);
@@ -91,13 +92,20 @@ static int split_mpv(DRVideo *v, DRFrame *f)
 /* A unit as FFmpeg's parser cuts it: sequence header (with its extension and
  * user data), GOP header (and its user data), picture header (with its
  * coding extension and user data) and slices; FFmpeg keeps both field
- * pictures of a frame in one unit. */
+ * pictures of a frame in one unit.
+ * How decoding can start at an I picture (ISO/IEC 13818-2 6.3.8): its GOP
+ * header's closed_gop (the B pictures right after it use only backward
+ * prediction: clean) or broken_link (they cannot be decoded); an I picture
+ * of an open GOP, or without a GOP header, may have B pictures after it
+ * that use the picture before it. The scan: MPEG-1 frames are progressive;
+ * MPEG-2 frames as the picture coding extension states (progressive_frame,
+ * top_field_first, repeat_first_field). */
 static int picture_mpv(DRVideo *v, const DRFrame *f, DRPicture *pic)
 {
     MpvState *s = ff_disctl_video_priv(v);
     const uint8_t *p = f->data;
     int n = f->size, i = 0, pictures = 0, structure = 3, tff = 0, rff = 0, prog_frame = 0, have_ext = 0;
-    int pct = 0, tr = 0;
+    int pct = 0, tr = 0, gop = 0, closed = 0, broken = 0, seq_end = 0;
 
     while ((i = next_sc(p, n, i)) >= 0) {
         int code = p[i + 3];
@@ -128,6 +136,12 @@ static int picture_mpv(DRVideo *v, const DRFrame *f, DRPicture *pic)
                 }
                 ff_disctl_video_set_rate(v, num, den);
             }
+        } else if (code == 0xB8 && i + 8 <= n && !pictures) {
+            gop    = 1;
+            closed = (p[i + 7] >> 6) & 1;
+            broken = (p[i + 7] >> 5) & 1;
+        } else if (code == 0xB7) {
+            seq_end = 1;
         } else if (code == 0x00 && i + 6 <= n) {
             if (!pictures++) {
                 pct = (p[i + 5] >> 3) & 7;
@@ -142,6 +156,7 @@ static int picture_mpv(DRVideo *v, const DRFrame *f, DRPicture *pic)
         }
         i += 4;
     }
+    pic->seq_end = seq_end;
     if (!pictures) {
         pic->type = DR_PIC_OTHER;
         return 0;
@@ -154,6 +169,13 @@ static int picture_mpv(DRVideo *v, const DRFrame *f, DRPicture *pic)
     }
     pic->type  = pct + 1;
     pic->order = tr;
+    if (pic->type == DR_PIC_I)
+        pic->start = !gop ? DR_START_OPEN : broken ? DR_START_BROKEN : closed ? DR_START_CLEAN : DR_START_OPEN;
+    if (!s->mpeg2)
+        pic->scan = DR_SCAN_KNOWN | DR_SCAN_PROGRESSIVE;
+    else if (have_ext)
+        pic->scan = DR_SCAN_KNOWN | (prog_frame ? DR_SCAN_PROGRESSIVE : 0) | (tff ? DR_SCAN_TFF : 0) |
+                    (rff ? DR_SCAN_RFF : 0);
     if (!s->mpeg2)
         pic->fields = 2;
     else if (structure != 3)

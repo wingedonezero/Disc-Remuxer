@@ -125,8 +125,63 @@ static int split_h264(DRVideo *v, DRFrame *f)
     return 0;
 }
 
+/* A recovery point SEI message's broken_link_flag in the unit (ITU-T H.264
+ * D.1.8: recovery_frame_cnt ue(v), exact_match_flag, broken_link_flag): 1 or
+ * 0, -1 when the unit has no recovery point SEI. */
+static int recovery_broken_link(const uint8_t *p, int n)
+{
+    for (int i = next_sc(p, n, 0); i >= 0; i = next_sc(p, n, i + 3)) {
+        uint8_t rbsp[256];
+        int len = 0, zeros = 0, pos = 0;
+
+        if (i + 3 >= n || (p[i + 3] & 0x1f) != 6)
+            continue;
+        /* the SEI NAL unit's payload without emulation prevention bytes */
+        for (int k = i + 4; k < n && len < (int)sizeof(rbsp); k++) {
+            if (zeros >= 2 && p[k] == 3) {
+                zeros = 0;
+                continue;
+            }
+            if (zeros >= 2 && p[k] <= 1)
+                break;                  /* the next start code */
+            zeros = p[k] ? 0 : zeros + 1;
+            rbsp[len++] = p[k];
+        }
+        while (pos < len && rbsp[pos] != 0x80) {
+            int type = 0, size = 0;
+            while (pos < len && rbsp[pos] == 0xFF)
+                type += rbsp[pos++];
+            if (pos >= len)
+                break;
+            type += rbsp[pos++];
+            while (pos < len && rbsp[pos] == 0xFF)
+                size += rbsp[pos++];
+            if (pos >= len)
+                break;
+            size += rbsp[pos++];
+            if (type == 6) {
+                /* ue(v): leading zero bits, a 1, as many bits again */
+                int bit = pos * 8, lz = 0;
+                while (bit < len * 8 && !((rbsp[bit >> 3] >> (7 - (bit & 7))) & 1) && lz < 32) {
+                    lz++;
+                    bit++;
+                }
+                bit += 1 + lz + 1;      /* the 1, the value bits, exact_match_flag */
+                if (bit >= len * 8)
+                    return -1;
+                return (rbsp[bit >> 3] >> (7 - (bit & 7))) & 1;
+            }
+            pos += size;
+        }
+    }
+    return -1;
+}
+
 /* The picture values come from the parser; a unit without a slice is no
- * picture. */
+ * picture. How decoding can start at a key frame: an IDR picture needs
+ * nothing before it; at a recovery point (H.264 D.2.8) the pictures shown
+ * before it may use pictures before it, unless its broken_link_flag says
+ * they cannot be decoded at all. */
 static int picture_h264(DRVideo *v, const DRFrame *f, DRPicture *pic)
 {
     H264State *s = ff_disctl_video_priv(v);
@@ -136,6 +191,13 @@ static int picture_h264(DRVideo *v, const DRFrame *f, DRPicture *pic)
     if (pic->fields <= 0 || pic->type < DR_PIC_I || pic->type > DR_PIC_B) {
         pic->type = DR_PIC_OTHER;
         return 0;
+    }
+    if (pic->key) {
+        int idr = 0;
+        for (int i = next_sc(f->data, f->size, 0); i >= 0 && !idr; i = next_sc(f->data, f->size, i + 3))
+            idr = i + 3 < f->size && (f->data[i + 3] & 0x1f) == 5;
+        pic->start = idr ? DR_START_CLEAN : recovery_broken_link(f->data, f->size) == 1 ? DR_START_BROKEN :
+                                                                                          DR_START_OPEN;
     }
     if (pic->fields == 1 && !s->said_field) {
         s->said_field = 1;

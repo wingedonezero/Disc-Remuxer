@@ -53,6 +53,10 @@
                                     knows the next picture (ff_disctl_hevc_seq_end) */
 #define DR_F_POSITION 0x0200   /**< video: the first frame at or after a chapter's position in the
                                     source (DVD-Video): the next open chapter mark takes its time */
+/* video key frames: how decoding can start there (DRPicture.start) */
+#define DR_F_START_CLEAN  0x0400 /**< nothing before it is needed */
+#define DR_F_START_BROKEN 0x0800 /**< marked as a broken link: the pictures shown before it are not decodable */
+#define DR_F_START_OPEN   0x1000 /**< the pictures shown before it may need pictures before it in the stream */
 
 typedef struct DRFrame {
     AVBufferRef *buf;      /**< owns the bytes (NULL for a marker) */
@@ -66,6 +70,7 @@ typedef struct DRFrame {
     int          rate;     /**< and their sample rate */
     int64_t      src;      /**< from the joiner on: the frame's own time on the title timeline (its
                                 PES-derived time, before the joiner moves it or the junction shifts it) */
+    int          seg;      /**< from the joiner on: the segment the frame comes from (from 0) */
 } DRFrame;
 
 /** Hands a frame on; the callee owns it (ff_disctl_frame_unref). */
@@ -84,12 +89,32 @@ enum DRPictureType {
     DR_PIC_OTHER = 5,   /**< not a picture (left out of the video track) */
 };
 
+/* How decoding can start at a key frame (the codec's own marks). */
+enum DRStart {
+    DR_START_UNKNOWN = 0,   /**< not a key frame, or the codec rule does not say */
+    DR_START_CLEAN,         /**< nothing before it is needed (MPEG-2 closed GOP, H.264 / HEVC IDR, VC-1
+                                 closed entry point) */
+    DR_START_BROKEN,        /**< a broken link (MPEG-2 / VC-1 broken_link, H.264 recovery point with
+                                 broken_link_flag, HEVC BLA): the pictures shown before it cannot be decoded */
+    DR_START_OPEN,          /**< the pictures shown before it may use pictures before it in the stream (MPEG-2
+                                 open GOP, H.264 recovery point, HEVC CRA, VC-1 open entry point) */
+};
+
+/* A picture's scan as its headers state it (DRPicture.scan); 0: not read. */
+#define DR_SCAN_KNOWN       0x01   /**< the bits below are the picture's */
+#define DR_SCAN_PROGRESSIVE 0x02   /**< a progressive frame (else interlaced) */
+#define DR_SCAN_TFF         0x04   /**< top field first */
+#define DR_SCAN_RFF         0x08   /**< repeat first field (or repeated frames) */
+
 typedef struct DRPicture {
     int type;           /**< DRPictureType */
     int order;          /**< display-order number (wraps at the codec's period) */
     int fields;         /**< duration in fields (2 = one frame) */
     int key;            /**< a key frame even when not an I picture (e.g. VC-1 sequence header + entry point) */
     int rate_num, rate_den;     /**< the frame rate the unit's headers give (0: none) */
+    int start;          /**< key frames: DRStart */
+    int scan;           /**< DR_SCAN_*, 0 = not read */
+    int seq_end;        /**< the unit carries an end of sequence code (MPEG-2, VC-1) */
 } DRPicture;
 
 /* What the core needs to know about a video codec. */
@@ -365,7 +390,27 @@ enum DREventKind {
                                 count samples), nothing written */
     DR_EV_PCM_TIMECODE,    /**< PCM: frames with a broken time appended where they follow on (pos = the first
                                 one's time, dur = the apparent skew, count = frames) */
+    /* title checks of the segments and their joins (findings, nothing is changed) */
+    DR_EV_JOIN_START,      /**< a segment's first key frame (pos = its time; skew = its DRStart; count = the
+                                pictures after it in decoding order that are shown before it; dur = the
+                                segment's number): one per segment, a warning when the start is not clean
+                                and such pictures follow */
+    DR_EV_JOIN_NOT_KEY,    /**< a segment's first picture is no key frame (pos = its time, dur = the segment) */
+    DR_EV_JOIN_REPEAT,     /**< a segment starts with the pictures the segment before ends with (the same
+                                bytes in the same order, a key frame among them; up to 32): count = how many,
+                                pos = the segment's first picture's time, skew = the segment */
+    DR_EV_SEQ_END_INSIDE,  /**< an end of sequence code with a picture after it in its segment (pos = the
+                                time of the picture that carries it) */
+    DR_EV_PICTURES,        /**< a segment's pictures read and given out differ (count = read - given out,
+                                dur = the segment) */
+    DR_EV_SYNC,            /**< audio: as a stream file plays it, a frame is more than DR_SYNC_LIMIT off its
+                                own time (pos = that time, dur = the largest error in the segment, count = the
+                                segment): one per segment */
 };
+
+/** Audio sync error (stream file position - own time) beyond which a
+ *  segment is reported (DR_EV_SYNC). */
+#define DR_SYNC_LIMIT (DR_TICKS_PER_SECOND / 1000)
 
 typedef struct DREvent {
     int     kind;          /**< DREventKind */
@@ -524,6 +569,13 @@ typedef struct DRVideoStats {
     int     num, den;          /**< frame rate */
     int64_t base;              /**< grid base (ticks) */
     int64_t side;              /**< side units handed on (or dropped without a side callback) */
+    int64_t side_bytes;        /**< and their bytes */
+    int64_t other, other_bytes;/**< units that are no picture, left out */
+    int64_t stuffing;          /**< zero stuffing bytes a codec rule took out (ff_disctl_video_stuffing) */
+    int64_t seq_end;           /**< units with an end of sequence code */
+    int64_t seq_end_inside;    /**< of them before the segment's last picture (DR_EV_SEQ_END_INSIDE) */
+    int64_t scan_known;        /**< pictures whose scan was read (DRPicture.scan) */
+    int64_t progressive, tff, rff; /**< of them: progressive frames, top field first, repeat first field */
 } DRVideoStats;
 
 /**
@@ -548,6 +600,9 @@ int  ff_disctl_video_field(const DRVideo *v, int64_t *ticks);
 int  ff_disctl_video_side(DRVideo *v, const uint8_t *data, int size, int64_t pos);
 /** Where side units go; without a callback they are dropped. */
 void ff_disctl_video_set_side(DRVideo *v, DRFrameCb cb, void *opaque);
+/** Zero stuffing bytes a codec rule took out of the unit being read (for
+ *  the statistics). */
+void ff_disctl_video_stuffing(DRVideo *v, int64_t bytes);
 /** The grid point nearest to a time t (ticks, the segment's own clock):
  *  *out = that point, or AV_NOPTS_VALUE when t is more than 0.1 ms before
  *  the grid base. AVERROR(EAGAIN) while the grid is not known yet. */
@@ -663,6 +718,9 @@ typedef struct DRVerifyStats {
                                         the own time where it is */
     int64_t es_err_end;        /**< audio: the same for the last frame */
     int64_t mkv_err_max, mkv_err_at; /**< audio: output time - own time, the largest by size, where */
+    int     segments;          /**< audio: segments the track's frames came from */
+    int     sync_segments;     /**< audio: of them with a stream-file error beyond DR_SYNC_LIMIT (DR_EV_SYNC) */
+    int     sync_seg;          /**< audio: the segment of es_err_max */
 } DRVerifyStats;
 
 typedef struct DRVerify DRVerify;
