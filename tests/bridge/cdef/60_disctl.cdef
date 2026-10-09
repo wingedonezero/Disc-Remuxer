@@ -219,6 +219,7 @@ int  ff_disctl_join_segment(DRJoin *j);
 int  ff_disctl_join_push(DRJoin *j, int track, DRFrame *frame);
 int  ff_disctl_join_finish(DRJoin *j);
 void ff_disctl_join_stats(const DRJoin *j, DRJoinStats *st);
+int  ff_disctl_join_segment_start(const DRJoin *j, int seg, int64_t *start);
 int  ff_disctl_join_chapters(const DRJoin *j, const int64_t **starts);
 void ff_disctl_join_close(DRJoin **j);
 

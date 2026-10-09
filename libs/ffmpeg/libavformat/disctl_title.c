@@ -1882,6 +1882,11 @@ const DRLpcm *ff_disctl_title_lpcm(const DRTitle *t, int track)
     return &t->t[track].lpcm;
 }
 
+int ff_disctl_title_segment_start(const DRTitle *t, int seg, int64_t *start)
+{
+    return ff_disctl_join_segment_start(t->join, seg, start);
+}
+
 int64_t ff_disctl_title_duration(const DRTitle *t)
 {
     return t->vend;

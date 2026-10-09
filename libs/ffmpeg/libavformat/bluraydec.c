@@ -69,6 +69,16 @@ static uint32_t clip_blocks(AVFormatContext *s, int k)
     return ff_bluray_seg_size_views(&c->title->segs[c->seg0 + k], c->both) / BLURAY_UNIT;
 }
 
+/* Where the playlist starts segment k: its first PlayItem's IN time (a
+ * clip title: its STC sequence's presentation start), 45 kHz -> 90 kHz. */
+static int64_t clip_start(AVFormatContext *s, int k)
+{
+    BlurayDemuxContext *c = ff_disc_part(s);
+    const BluraySegItem *it = &c->title->segs[c->seg0 + k].items[0];
+
+    return 2 * (int64_t)(it->item ? it->item->in_time : it->stc->start);
+}
+
 static int read_block(AVFormatContext *s, int k, uint32_t block, uint8_t *buf)
 {
     BlurayDemuxContext *c = ff_disc_part(s);
@@ -436,6 +446,8 @@ static int open_title(AVFormatContext *s, int i, int part, int *second_view_read
         .clip_name     = clip_name,
         .clip_blocks   = clip_blocks,
         .read_block    = read_block,
+        .clip_start    = clip_start,
+        .clip_start_name = "the start time the playlist gives it (IN time)",
         .ts            = 1,
         .chapter_times = c->chapter_times,
         .nb_chapters   = nb_marks,

@@ -313,6 +313,12 @@ The rules above are the default policy. Around them:
     repeat first field), all kept as they are;
   - per track the output checks above as one line (PASS when nothing was
     found);
+  - each segment's first picture against where the disc's own structure
+    starts it (`DiscTitleSource.clip_start`: DVD-Video its first VOBU's
+    VOBU_S_PTM from the navigation pack, HD DVD its EVOB's start time from
+    the VTI, Blu-ray its first PlayItem's IN time): a warning when they
+    differ (the title would leave out, or add, what the disc plays there),
+    a summary line per title;
   - the title reader: the blocks read, those not usable, packets of streams
     without a track; for program streams (`ff_mpegps_disc_stats`) the
     sectors read and empty, navigation packets, system headers, padding and

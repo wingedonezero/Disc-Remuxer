@@ -512,6 +512,9 @@ int  ff_disctl_join_push(DRJoin *j, int track, DRFrame *frame);
 /** The end of the title. */
 int  ff_disctl_join_finish(DRJoin *j);
 void ff_disctl_join_stats(const DRJoin *j, DRJoinStats *st);
+/** Segment seg's start (its first video time, ticks, its own clock) once
+ *  placed; AVERROR(EAGAIN) before. */
+int  ff_disctl_join_segment_start(const DRJoin *j, int seg, int64_t *start);
 /** The times of the frames marked as chapter starts so far (valid until
  *  the joiner is closed); returns their number. */
 int  ff_disctl_join_chapters(const DRJoin *j, const int64_t **starts);
@@ -926,6 +929,9 @@ int ff_disctl_title_cc_result(const DRTitle *t, int track, int64_t *blocks, int6
  *  out of its video and left out, and their entries that carry caption
  *  bytes (0: the caption slot was empty). */
 void ff_disctl_title_cc_dropped(const DRTitle *t, int64_t *blocks, int64_t *text);
+/** Segment seg's start (from 0) once the joiner placed it: its first video
+ *  time (ticks, the segment's own clock); AVERROR(EAGAIN) before. */
+int ff_disctl_title_segment_start(const DRTitle *t, int seg, int64_t *start);
 /** After finish: the end of the video (title duration, ticks). */
 int64_t ff_disctl_title_duration(const DRTitle *t);
 /** An event kind's name. */

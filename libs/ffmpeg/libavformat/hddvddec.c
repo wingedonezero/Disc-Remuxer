@@ -85,6 +85,13 @@ static int read_block(AVFormatContext *s, int k, uint32_t block, uint8_t *buf)
     return ff_hddvd_clip_block(s, c->aacs, c->fs, c->title->clips[k], block, buf);
 }
 
+/* Where the disc starts clip k: its EVOB's presentation start (VTI), 90 kHz. */
+static int64_t clip_start(AVFormatContext *s, int k)
+{
+    HDDVDDemuxContext *c = ff_disc_part(s);
+    return c->title->clips[k]->evob->start_ptm;
+}
+
 /* The opened title's chapter marks given back. */
 static void close_title(AVFormatContext *s)
 {
@@ -283,6 +290,8 @@ static int open_title(AVFormatContext *s, int i, int part, int *second_view)
         .clip_name     = clip_name,
         .clip_blocks   = clip_blocks,
         .read_block    = read_block,
+        .clip_start    = clip_start,
+        .clip_start_name = "its EVOB's start time (VTI)",
         .lpcm_header   = 5,
         .chapter_times = c->chapter_times,
         .chapter_names = (const char *const *)c->chapter_names,

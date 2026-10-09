@@ -181,7 +181,10 @@ struct DiscTitleReader {
     int            nb_unused;
     int64_t        unused_other;    /**< packets of further streams (the table is full) */
     MpegPsDiscStats ps_read;        /**< program streams: what the clips' demuxers read, summed */
+    int64_t       *clip_at;         /**< per clip read: where the disc's structure starts it (ticks, its clock),
+                                         AV_NOPTS_VALUE: not given */
 };
+
 
 /* A program-stream clip's reading added to the title's (before its demuxer
  * closes). */
@@ -369,6 +372,7 @@ void ff_disc_title_reader_close(DiscTitleReader **reader)
     av_freep(&r->pair_pts);
     av_freep(&r->pos_clip);
     av_freep(&r->pos_off);
+    av_freep(&r->clip_at);
     av_packet_free(&r->in);
     ff_disctl_title_close(&r->rip);
     ff_disctl_chapter_plan_free(&r->chapter_plan);
@@ -847,6 +851,59 @@ static int hold(DiscTitleReader *r, AVPacket *pkt)
     return 0;
 }
 
+/* The clip just read: where the disc's structure starts it, on the
+ * title timeline's clock for it (its wrap reference), kept for the check
+ * at the title's end. */
+static int start_keep(AVFormatContext *s)
+{
+    DiscTitleReader *r = reader_of(s);
+    const DiscTitleSource *src = r->src;
+    int64_t at, *p;
+
+    if (!src->clip_start)
+        return 0;
+    if (!(p = av_realloc_array(r->clip_at, r->clip - r->first_clip + 1, sizeof(*p))))
+        return AVERROR(ENOMEM);
+    r->clip_at = p;
+    at = r->pts_ref < 0 ? AV_NOPTS_VALUE : src->clip_start(s, r->clip);
+    p[r->clip - r->first_clip] = at == AV_NOPTS_VALUE ? at :
+                                 (at < r->pts_ref ? at + (1LL << 33) : at) * DR_TICKS_PER_PTS;
+    return 0;
+}
+
+/* Each clip's first picture against where the disc's structure starts it. */
+static void start_check(AVFormatContext *s)
+{
+    DiscTitleReader *r = reader_of(s);
+    const DiscTitleSource *src = r->src;
+    int checked = 0, off = 0;
+
+    if (!src->clip_start || !r->clip_at)
+        return;
+    for (int k = r->first_clip; k <= r->last_clip; k++) {
+        int64_t first, at = r->clip_at[k - r->first_clip], d;
+        if (at == AV_NOPTS_VALUE || ff_disctl_title_segment_start(r->rip, k - r->first_clip, &first) < 0) {
+            av_log(s, AV_LOG_VERBOSE, "Title check: %s %s: %s or its first picture not known: its start is not "
+                   "checked\n", src->clip_kind, src->clip_name(s, k), src->clip_start_name);
+            continue;
+        }
+        d = first - at;
+        checked++;
+        if (FFABS(d) < DR_TICKS_PER_PTS) {
+            av_log(s, AV_LOG_VERBOSE, "Title check: %s %s: its first picture is at %s: checked\n", src->clip_kind,
+                   src->clip_name(s, k), src->clip_start_name);
+            continue;
+        }
+        off++;
+        av_log(s, AV_LOG_WARNING, "Title check: %s %s (%d of %d): its first picture is %.3f ms %s %s (the title "
+               "%s there)\n", src->clip_kind, src->clip_name(s, k), k + 1, src->nb_clips,
+               FFABS(d) / (DR_TICKS_PER_SECOND / 1000.0), d > 0 ? "after" : "before", src->clip_start_name,
+               d > 0 ? "leaves out what the disc plays before it" : "has pictures the disc starts later");
+    }
+    av_log(s, off ? AV_LOG_WARNING : AV_LOG_INFO, "Title check: %d of %d %s(s) start their first picture at %s%s\n",
+           checked - off, checked, src->clip_kind, src->clip_start_name, off ? " (see the warnings above)" : "");
+}
+
 /* One PES packet of the title into the title timeline. The clip's PTS wrap
  * reference is the time of the first video packet that starts a sector in
  * its first 2000 sectors, less 300 s; packets before it wait for it. A
@@ -867,6 +924,8 @@ static int read_input(AVFormatContext *s)
                    src->clip_kind, src->clip_name(s, r->clip), PTS_REF_SECTORS);
             return AVERROR_INVALIDDATA;
         }
+        if ((ret = start_keep(s)) < 0)
+            return ret;
         if (r->clip + 1 <= r->last_clip)
             return clip_start(s, r->clip + 1);
         return ff_disctl_title_finish(r->rip);
@@ -983,6 +1042,7 @@ static int title_end(AVFormatContext *s)
                r->src->clip_kind, r->first_clip + 1, r->last_clip + 1, r->last_clip - r->first_clip + 1,
                r->src->nb_clips, r->unusable, r->nb_unused || r->unused_other ? bp.str : "none");
         av_bprint_finalize(&bp, NULL);
+        start_check(s);
         if (!r->src->ts) {
             const MpegPsDiscStats *p = &r->ps_read;
             ps_read_add(r);
