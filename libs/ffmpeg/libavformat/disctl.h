@@ -845,8 +845,8 @@ int ff_disctl_title_track_result(const DRTitle *t, int track, int64_t *frames, i
  *  the next one, units drawn outside the track's canvas. */
 int ff_disctl_title_spu_result(const DRTitle *t, int track, int64_t *no_stop, int64_t *outside);
 /** After finish, the caption track: caption blocks given to the converter,
- *  cues given out. */
-int ff_disctl_title_cc_result(const DRTitle *t, int track, int64_t *blocks, int64_t *cues);
+ *  cues given out, captions still shown at a segment's end (left out). */
+int ff_disctl_title_cc_result(const DRTitle *t, int track, int64_t *blocks, int64_t *cues, int64_t *lost);
 /** After finish, a title without a caption track: the caption blocks taken
  *  out of its video and left out, and their entries that carry caption
  *  bytes (0: the caption slot was empty). */

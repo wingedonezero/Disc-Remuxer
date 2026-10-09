@@ -933,7 +933,7 @@ static int title_end(AVFormatContext *s)
     }
     /* each track's result for the caller: frames, warnings, start delay (ms) */
     for (int i = 0; i < s->nb_streams; i++) {
-        int64_t frames, warnings, delay;
+        int64_t frames, warnings, delay, lost;
         AVDictionary **m = &s->streams[i]->metadata;
         if (ff_disctl_title_track_result(r->rip, i, &frames, &warnings, &delay) < 0)
             continue;
@@ -941,9 +941,10 @@ static int title_end(AVFormatContext *s)
             (ret = av_dict_set_int(m, "warnings", warnings, 0)) < 0 ||
             (ret = av_dict_set_int(m, "delay_us", delay / (DR_TICKS_PER_SECOND / 1000000), 0)) < 0)
             return ret;
-        if (ff_disctl_title_cc_result(r->rip, i, &frames, &warnings) >= 0 &&
+        if (ff_disctl_title_cc_result(r->rip, i, &frames, &warnings, &lost) >= 0 &&
             ((ret = av_dict_set_int(m, "cc_blocks", frames, 0)) < 0 ||
-             (ret = av_dict_set_int(m, "cues", warnings, 0)) < 0))
+             (ret = av_dict_set_int(m, "cues", warnings, 0)) < 0 ||
+             (ret = av_dict_set_int(m, "cc_lost", lost, 0)) < 0))
             return ret;
         if (ff_disctl_title_spu_result(r->rip, i, &frames, &warnings) >= 0 &&
             ((ret = av_dict_set_int(m, "no_stop", frames, 0)) < 0 ||

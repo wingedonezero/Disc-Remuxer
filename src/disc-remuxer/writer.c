@@ -526,11 +526,16 @@ static void subtitle_detail(const AVStream *st, int opened, char *json, size_t s
     const AVDictionaryEntry *pic = av_dict_get(st->metadata, "picture", NULL, 0);
     if (cap) {
         int64_t blocks = meta_int(st->metadata, "cc_blocks"), cues = meta_int(st->metadata, "cues");
-        char jp[256];
+        int64_t lost = meta_int(st->metadata, "cc_lost");
+        char jp[256], jl[96] = "";
         log_text(LOG_INFO, "      %s; %"PRId64" caption blocks -> %"PRId64" cues%s", cap->value, blocks, cues,
                  blocks && !cues ? " (the caption data carries no caption text)" : "");
-        snprintf(json, size, ",\"caption\":%s,\"cc_blocks\":%"PRId64",\"cues\":%"PRId64,
-                 json_str(jp, sizeof(jp), cap->value), blocks, cues);
+        if (lost) {
+            log_text(LOG_INFO, "      %"PRId64" caption(s) still shown at the end of a segment left out", lost);
+            snprintf(jl, sizeof(jl), ",\"cc_lost\":%"PRId64, lost);
+        }
+        snprintf(json, size, ",\"caption\":%s,\"cc_blocks\":%"PRId64",\"cues\":%"PRId64"%s",
+                 json_str(jp, sizeof(jp), cap->value), blocks, cues, jl);
         return;
     }
     int64_t no_stop = meta_int(st->metadata, "no_stop"), outside = meta_int(st->metadata, "outside");
