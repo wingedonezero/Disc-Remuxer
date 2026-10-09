@@ -434,7 +434,7 @@ static int tb_dvd_titles(DVDDisc *d, int cell_mode, int cell_check, int min_leng
     int ret;
 
     *dump = NULL;
-    *scan_ret = ff_dvd_scan(d, NULL, NULL, &scan);
+    *scan_ret = cell_mode == DVD_CELL_MODE_TRIM ? 0 : ff_dvd_scan(d, NULL, NULL, &scan);
     ret = ff_dvd_titles_build(d, &scan, &o, &list);
     if (ret >= 0 && !(*dump = ff_dvd_titles_dump(&list)))
         ret = AVERROR(ENOMEM);

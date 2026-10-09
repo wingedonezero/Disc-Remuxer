@@ -62,6 +62,8 @@ class Cell:
     still_time: int = 0
     cell_cmd_nr: int = 0
     first_ilvu_end_sector: int = 0
+    vob_id_nr: int = 1              # cell_position_t (cell_nr 0: the cell's number in its chain)
+    cell_nr: int = 0
 
     @classmethod
     def new(cls, first, last_vobu, last, secs):
@@ -216,8 +218,8 @@ def pgc_bytes(p):
             be32(b, 20, c.last_sector)
             d += b
         be16(d, 0xea, len(d))
-        for k in range(n):
-            d += bytes([0, 1, 0, k + 1])
+        for k, c in enumerate(p.cells):
+            d += bytes([c.vob_id_nr >> 8, c.vob_id_nr & 0xff, 0, c.cell_nr or k + 1])
     return d
 
 

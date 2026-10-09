@@ -121,9 +121,9 @@ static int dvd_open(AVFormatContext *s)
     d->info.label = c->disc.volume_name;
     d->info.name  = c->disc.text_name;
 
-    /* the titles: the navigation played, then the title list from it (a
-     * failed scan leaves no results) */
-    if (ff_dvd_scan(&c->disc, NULL, NULL, &c->scan) == AVERROR(ENOMEM) ||
+    /* the titles: the navigation played (not for trimmed cells), then the
+     * title list from it (a failed scan leaves no results) */
+    if ((o.cell_mode != DVD_CELL_MODE_TRIM && ff_dvd_scan(&c->disc, NULL, NULL, &c->scan) == AVERROR(ENOMEM)) ||
         (ret = ff_dvd_titles_build(&c->disc, &c->scan, &o, &c->titles)) < 0 ||
         (ret = describe_titles(s)) < 0)
         return ret < 0 ? ret : AVERROR(ENOMEM);

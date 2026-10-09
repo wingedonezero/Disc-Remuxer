@@ -158,6 +158,45 @@ def test_a_cell_s_last_vobu_ending_early_is_told_and_the_walk_goes_on(tmp_path):
     assert logged("title 1: the navigation information is invalid around")
 
 
+# ---- the cell list without the navigation (trim) ----
+
+TRIM, WALK_TRIM = 2, 3
+
+
+def filler(first, last, **kw):
+    """A cell without playback time: always rejected."""
+    return dataclasses.replace(c(first, last, 5, 0, **kw), playback_time=bytes(4))
+
+
+def test_trim_keeps_the_cells_between_filler_cells_of_other_vobs(tmp_path):
+    cells = [filler(0, 9, vob_id_nr=1, cell_nr=1), c(10, 19, 5, 10, vob_id_nr=2, cell_nr=1),
+             filler(20, 29, vob_id_nr=3, cell_nr=1)]
+    folder = build(tmp_path, [Pgc(cells=cells)], [[(1, 1)]], vobus(0, 9, 5) + vobus(10, 19, 5) + vobus(20, 29, 5), 30)
+    t = run(folder, [], cell_mode=TRIM)[0]
+    assert (t["map"], t["scan"]) == ("2", "-")
+    assert logged("title 1: cells 1-1 left out at the start") and logged("title 1: cells 3-3 left out at the end")
+
+
+def test_trim_drops_rejected_cells_at_both_ends(tmp_path):
+    # one VOB: not the first way; the cells that pass the checks from both ends
+    # in (60 sectors a cell: 50 sectors a second or more, else the chain is a decoy)
+    cells = [dataclasses.replace(c(0, 59, 30, 0), playback_time=bytes(4)), c(60, 119, 30, 1), c(120, 179, 30, 1),
+             dataclasses.replace(c(180, 239, 30, 0), playback_time=bytes(4))]
+    navs = [n for k in range(4) for n in vobus(60 * k, 60 * k + 59, 30)]
+    folder = build(tmp_path, [Pgc(cells=cells)], [[(1, 1)]], navs, 240)
+    t = run(folder, [], cell_mode=TRIM)[0]
+    assert t["map"] == "2-3"
+
+
+def test_walk_trim_lists_a_title_the_navigation_did_not_reach(tmp_path):
+    pgcs = [Pgc(cells=[c(0, 9, 5, 1)]), Pgc(cells=[c(10, 19, 5, 1)])]
+    folder = build(tmp_path, pgcs, [[(1, 1)], [(2, 1)]], vobus(0, 9, 5) + vobus(10, 19, 5), 20)
+    walk = run(folder, [("A1", 1, 1, [1])])
+    both = run(folder, [("A1", 1, 1, [1])], cell_mode=WALK_TRIM)
+    assert [t["name"] for t in walk] == ["1"]
+    assert [(t["name"], t["scan"]) for t in both][:2] == [("1", "A1"), ("2", "-")]
+
+
 # ---- the cell check (DVD_CELL_CHECK_*: every VOBU, 50 evenly spread, 50 at random) ----
 
 ALL, SPREAD, RANDOM = 0, 1, 2
@@ -222,9 +261,10 @@ def test_info_lists_a_dvd_s_titles(tmp_path):
 def test_the_cell_mode_setting_reaches_the_title_list(tmp_path):
     p = Pgc(cells=[c(0, 9, 5, 1)])
     folder = build(tmp_path, [p], [[(1, 1)]], vobus(0, 9, 5), 10)
-    ts, lines = info(folder, "dvd.cell_mode=trim", "dvd.cell_check=spread")
-    assert ts == []
-    assert any("not built yet" in x.get("text", "") for x in lines)
+    auto, _ = info(folder)
+    trim, _ = info(folder, "dvd.cell_mode=trim", "dvd.cell_check=spread")
+    assert "navigation" in auto[0]["source"]
+    assert trim[0]["source"] == "VTS_01 program chain 1, cells"  # trimmed: the navigation is not played
 
 
 def test_corpus_title_lists_are_the_expected_ones():
