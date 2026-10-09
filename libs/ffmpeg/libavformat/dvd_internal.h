@@ -325,6 +325,17 @@ typedef struct DVDChapter {
     int64_t  time;                      /**< 90 kHz: from the title's start to the end of its first VOBU */
 } DVDChapter;
 
+/** A title's audio or sub-picture stream: its stream number and the title
+ *  set's attributes it is described by (VTSI_MAT vts_audio_attr /
+ *  vts_subp_attr index). */
+typedef struct DVDStreamRef {
+    uint8_t stream, attr;
+} DVDStreamRef;
+
+#define DVD_VTS_VIDEO_ATTR  0x200       /* VTSI_MAT vts_video_attr (2 bytes) */
+#define DVD_VTS_AUDIO_ATTR  0x204       /* VTSI_MAT vts_audio_attr[8] (8 bytes each) */
+#define DVD_VTS_SUBP_ATTR   0x256       /* VTSI_MAT vts_subp_attr[32] (6 bytes each) */
+
 typedef struct DVDTitle {
     char           name[24];            /**< the title table entry ("4"), with its program chain ("4/1") */
     int            title;               /**< the title table entry, from 0 */
@@ -345,6 +356,12 @@ typedef struct DVDTitle {
     int            nav_invalid;         /**< places with invalid navigation found */
     int            short_title;         /**< shorter than the minimum length: listed, not selected */
     char           source[96];          /**< what the title is made from, for the disc info */
+    DVDStreamRef   audio[8];            /**< in the program chain's audio_control order, then the title set's
+                                             other audio streams */
+    int            nb_audio;
+    DVDStreamRef   subp[33];            /**< in the program chain's subp_control order */
+    int            nb_subp;
+    uint16_t       subp_width, subp_height; /**< the sub-pictures' canvas */
 } DVDTitle;
 
 typedef struct DVDTitleList {

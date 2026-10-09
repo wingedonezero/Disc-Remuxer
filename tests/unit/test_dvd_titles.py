@@ -158,6 +158,73 @@ def test_a_cell_s_last_vobu_ending_early_is_told_and_the_walk_goes_on(tmp_path):
     assert logged("title 1: the navigation information is invalid around")
 
 
+# ---- tracks and duplicates ----
+
+def ac3(lang=b"en", ext=0):
+    """vts_audio_attr: AC-3, language present (lang_type 1), code_extension."""
+    return bytes([0x04, 0x00]) + lang + bytes([0, ext, 0, 0])
+
+
+def subp(lang=b"en", ext=0):
+    """vts_subp_attr: language present (type 1), code_extension."""
+    return bytes([0x01, 0]) + lang + bytes([0, ext])
+
+
+def tracks(t):
+    return t["tracks"].split(",")
+
+
+def test_audio_tracks_follow_audio_control_then_the_title_set_s_others(tmp_path):
+    # audio_control lists stream 1, then stream 0; the title set declares 3
+    p = Pgc(cells=[c(0, 9, 5, 1)], audio_control=bytes([0x81, 0, 0x80, 0]) + bytes(12))
+    folder = build(tmp_path, [p], [[(1, 1)]], vobus(0, 9, 5), 10, audio_attrs=[ac3(), ac3(b"fr"), ac3(b"de")])
+    t = run(folder, [("A1", 1, 1, [1])])[0]
+    assert tracks(t) == ["V", "A1.0", "A0.1", "A2.2"]   # stream.attribute
+
+
+def test_subtitles_use_the_wide_stream_on_16_9_and_the_4_3_one_on_4_3(tmp_path):
+    ctl = bytes([0x80 | 2, 5, 7, 9]) + bytes([0x80 | 1, 3, 4, 6]) + bytes(120)
+    p = Pgc(cells=[c(0, 9, 5, 1)], subp_control=ctl)
+    for aspect, want in [(0x00, ["S2.0", "S1.1"]), (0x0c, ["S5.0", "S3.1"])]:
+        folder = build(tmp_path / str(aspect), [p], [[(1, 1)]], vobus(0, 9, 5), 10, video_attr=bytes([0x40 | aspect, 0]),
+                       subp_attrs=[subp(), subp(b"fr")])
+        assert tracks(run(folder, [("A1", 1, 1, [1])])[0])[1:] == want
+
+
+def test_one_wide_subtitle_stream_with_a_letterbox_stream_0_is_listed_twice(tmp_path):
+    p = Pgc(cells=[c(0, 9, 5, 1)], subp_control=bytes([0x80, 1, 0, 0]) + bytes(124))
+    folder = build(tmp_path, [p], [[(1, 1)]], vobus(0, 9, 5), 10, video_attr=bytes([0x4c, 0]), subp_attrs=[subp()])
+    assert tracks(run(folder, [("A1", 1, 1, [1])])[0])[1:] == ["S1.0", "S0.0"]
+
+
+def test_a_title_playing_an_earlier_one_s_sectors_is_left_out(tmp_path):
+    # titles 1 and 2 play the same chain's cells; title 2 has no more chapters
+    p = Pgc(cells=[c(0, 9, 5, 1), c(10, 19, 5, 1)], programs=[1, 2])
+    folder = build(tmp_path, [p], [[(1, 1), (1, 2)], [(1, 1)]], vobus(0, 9, 5) + vobus(10, 19, 5), 20)
+    ts = run(folder, [("A1", 1, 1, [1, 2]), ("A2", 2, 1, [1, 2])])
+    assert [t["name"] for t in ts] == ["1"]
+    assert logged("title 2 left out: it is the same as title 1 (VTS_01)")
+
+
+def test_of_two_titles_playing_the_same_sectors_the_one_with_fewer_chapters_goes(tmp_path):
+    p = Pgc(cells=[c(0, 9, 5, 1), c(10, 19, 5, 1)], programs=[1, 2])
+    folder = build(tmp_path, [p], [[(1, 1)], [(1, 1), (1, 2)]], vobus(0, 9, 5) + vobus(10, 19, 5), 20)
+    ts = run(folder, [("A1", 1, 1, [1, 2]), ("A2", 2, 1, [1, 2])])
+    # title 1 (1 chapter) is the same as title 2 (2 chapters): title 1 goes
+    assert [t["name"] for t in ts] == ["2"]
+
+
+def test_info_lists_a_dvd_title_s_tracks(tmp_path):
+    p = Pgc(cells=[c(0, 9, 5, 1)], audio_control=bytes([0x80, 0]) + bytes(14),
+            subp_control=bytes([0x80, 0, 0, 0]) + bytes(124))
+    folder = build(tmp_path, [p], [[(1, 1)]], vobus(0, 9, 5), 10, video_attr=bytes([0x40, 0]),
+                   audio_attrs=[ac3(b"zh", 3)], subp_attrs=[subp(b"en", 9)])
+    ts, _ = info(folder)
+    got = [(k["kind"], k["codec"], k["language"], k["width"], k["height"], k["roles"]) for k in ts[0]["tracks"]]
+    assert got == [("video", "Mpeg2", "", None, None, []), ("audio", "DD", "chi", None, None, ["commentary"]),
+                   ("subtitle", "VobSub", "eng", 720, 480, ["forced"])]
+
+
 # ---- the cell list without the navigation (trim) ----
 
 TRIM, WALK_TRIM = 2, 3

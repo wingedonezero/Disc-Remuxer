@@ -28,10 +28,12 @@
 #include "libavutil/bprint.h"
 #include "libavutil/error.h"
 #include "libavutil/log.h"
+#include "libavutil/avstring.h"
 #include "libavutil/mem.h"
 
 #include "avformat.h"
 #include "disc.h"
+#include "disclang.h"
 #include "dvd_internal.h"
 
 typedef struct DVDDemuxContext {
@@ -61,6 +63,80 @@ static void debug_lines(AVFormatContext *s, const char *head, const char *text)
     }
 }
 
+/* A DVD-Video code_extension as roles (audio: 2 visually impaired, 3
+ * director's comments, 4 alternate director's comments; sub-picture: 2
+ * large, 3 children's, 6 / 7 large / children's captions, 9 forced, 13-15
+ * director's comments (normal, large, children's)). */
+static int audio_roles(unsigned ext)
+{
+    static const int r[] = { DISC_ROLE_VISUALLY_IMPAIRED, DISC_ROLE_COMMENTARY, DISC_ROLE_ALT_COMMENTARY };
+    return ext >= 2 && ext <= 4 ? r[ext - 2] : 0;
+}
+
+static int subp_roles(unsigned ext)
+{
+    static const int r[] = { DISC_ROLE_LARGE, DISC_ROLE_CHILDREN, 0, 0, DISC_ROLE_LARGE, DISC_ROLE_CHILDREN, 0,
+                             DISC_ROLE_FORCED, 0, 0, 0, DISC_ROLE_COMMENTARY,
+                             DISC_ROLE_COMMENTARY | DISC_ROLE_LARGE, DISC_ROLE_COMMENTARY | DISC_ROLE_CHILDREN };
+    return ext >= 2 && ext <= 15 ? r[ext - 2] : 0;
+}
+
+/* A language code of the attributes (bytes 2-3) as ISO 639-2; none when it
+ * is not a known code (logged). */
+static void attr_language(AVFormatContext *s, char lang[4], const uint8_t *b)
+{
+    char code[3] = { b[0], b[1], 0 };
+    const char *iso = code[0] ? ff_disc_lang_code(code) : NULL;
+    if (iso)
+        av_strlcpy(lang, iso, 4);
+    else
+        av_log(s, AV_LOG_DEBUG, "DVD: language code bytes %02x %02x are no known language\n", b[0], b[1]);
+}
+
+/* The title's tracks as its title set's attributes describe them: the
+ * video, the audio streams, the sub-pictures (details come from the
+ * streams themselves). */
+static int describe_tracks(AVFormatContext *s, const DVDTitle *t, DiscTitleInfo *dt)
+{
+    const uint8_t *h = t->vts->header;
+    DiscStreamInfo *k;
+
+    if (!(k = ff_disc_title_add_stream(dt)))
+        return AVERROR(ENOMEM);
+    k->type  = AVMEDIA_TYPE_VIDEO;
+    k->codec = (h[DVD_VTS_VIDEO_ATTR] >> 6) == 0 ? AV_CODEC_ID_MPEG1VIDEO :
+               (h[DVD_VTS_VIDEO_ATTR] >> 6) == 1 ? AV_CODEC_ID_MPEG2VIDEO : AV_CODEC_ID_NONE;
+    for (int i = 0; i < t->nb_audio; i++) {
+        const uint8_t *a = h + DVD_VTS_AUDIO_ATTR + 8 * t->audio[i].attr;
+        static const enum AVCodecID codecs[8] = { AV_CODEC_ID_AC3, AV_CODEC_ID_NONE, AV_CODEC_ID_MP2, AV_CODEC_ID_MP2,
+                                                  AV_CODEC_ID_PCM_DVD, AV_CODEC_ID_NONE, AV_CODEC_ID_DTS,
+                                                  AV_CODEC_ID_NONE };
+        if (!(k = ff_disc_title_add_stream(dt)))
+            return AVERROR(ENOMEM);
+        k->type  = AVMEDIA_TYPE_AUDIO;
+        k->codec = codecs[a[0] >> 5];
+        if (k->codec == AV_CODEC_ID_NONE)
+            av_log(s, AV_LOG_WARNING, "DVD: VTS_%02d: audio stream %d has coding mode %d, which is not known\n",
+                   t->vtsn, t->audio[i].stream, a[0] >> 5);
+        if ((a[0] & 0x0c) == 4)
+            attr_language(s, k->language, a + 2);
+        k->roles = audio_roles(a[5]);
+    }
+    for (int i = 0; i < t->nb_subp; i++) {
+        const uint8_t *p = h + DVD_VTS_SUBP_ATTR + 6 * t->subp[i].attr;
+        if (!(k = ff_disc_title_add_stream(dt)))
+            return AVERROR(ENOMEM);
+        k->type   = AVMEDIA_TYPE_SUBTITLE;
+        k->codec  = AV_CODEC_ID_DVD_SUBTITLE;
+        k->width  = t->subp_width;
+        k->height = t->subp_height;
+        if ((p[0] & 3) == 1)
+            attr_language(s, k->language, p + 2);
+        k->roles = subp_roles(p[5]);
+    }
+    return 0;
+}
+
 /* The disc info's titles: length (the cells' playback times), size (the
  * title VOB sectors it plays), angle, whether selected, the program chain
  * and the navigation's recording it comes from, its segments' cells (as its
@@ -68,6 +144,7 @@ static void debug_lines(AVFormatContext *s, const char *head, const char *text)
 static int describe_titles(AVFormatContext *s)
 {
     DVDDemuxContext *c = ff_disc_part(s);
+    int ret;
 
     for (int i = 0; i < c->titles.nb_titles; i++) {
         DVDTitle *t = c->titles.titles[i];
@@ -95,6 +172,8 @@ static int describe_titles(AVFormatContext *s)
                 return AVERROR(ENOMEM);
             ch->start = av_rescale(t->chapters[k].time, AV_TIME_BASE, 90000);
         }
+        if ((ret = describe_tracks(s, t, dt)) < 0)
+            return ret;
     }
     return 0;
 }

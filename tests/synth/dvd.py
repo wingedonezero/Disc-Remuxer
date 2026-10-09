@@ -89,6 +89,8 @@ class Pgc:
     post: list = dataclasses.field(default_factory=list)
     cell_cmds: list = dataclasses.field(default_factory=list)
     entry_id: int = 0
+    audio_control: bytes = bytes(16)    # 8 x 16 bits as recorded
+    subp_control: bytes = bytes(128)    # 32 x 32 bits as recorded
     next_pgc_nr: int = 0
     prev_pgc_nr: int = 0
     goup_pgc_nr: int = 0
@@ -103,6 +105,9 @@ class Vts:
     ptts: list = dataclasses.field(default_factory=list)
     vobus: list = dataclasses.field(default_factory=list)
     vob_sectors: int = 0
+    video_attr: bytes = bytes(2)        # VTSI_MAT vts_video_attr
+    audio_attrs: list = dataclasses.field(default_factory=list)     # 8 bytes each
+    subp_attrs: list = dataclasses.field(default_factory=list)      # 6 bytes each
 
 
 def vts_ifo(v):
@@ -172,6 +177,13 @@ def vts_ifo(v):
     be32(d, 0xcc, places[1])  # vts_pgcit
     be32(d, 0xe0, places[2])  # vts_c_adt
     be32(d, 0xe4, places[3])  # vts_vobu_admap
+    d[0x200:0x202] = v.video_attr
+    be16(d, 0x202, len(v.audio_attrs))
+    for k, a in enumerate(v.audio_attrs):
+        d[0x204 + 8 * k:0x20c + 8 * k] = a
+    be16(d, 0x254, len(v.subp_attrs))
+    for k, a in enumerate(v.subp_attrs):
+        d[0x256 + 6 * k:0x25c + 6 * k] = a
     return d
 
 
@@ -185,6 +197,8 @@ def pgc_bytes(p):
     total = sum(bcd_secs(c.playback_time) for c in p.cells)
     d[4:8] = p.playback_time if p.playback_time is not None else time(total)
     be32(d, 8, p.prohibited_ops)
+    d[0x0c:0x1c] = p.audio_control
+    d[0x1c:0x9c] = p.subp_control
     be16(d, 0x9c, p.next_pgc_nr)
     be16(d, 0x9e, p.prev_pgc_nr)
     be16(d, 0xa0, p.goup_pgc_nr)

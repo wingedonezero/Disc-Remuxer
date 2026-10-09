@@ -1637,6 +1637,72 @@ static unsigned tt_byte(const DVDDisc *d, uint32_t o)
     return d->tt_srpt.data[o];
 }
 
+/* The title's audio streams: those the program chain's audio_control
+ * lists (present), in its order, then the title set's other ones. */
+static void title_audio(Titles *T, DVDTitle *t)
+{
+    const DVDIfo *f = t->vts;
+    unsigned n = AV_RB16(f->header + VTS_AUDIO_COUNT), mask = 0;
+
+    t->nb_audio = 0;
+    for (unsigned i = 0; i < n; i++) {
+        uint8_t b = t->pgc->audio_control[2 * i];
+        if (!(b & 0x80))
+            continue;
+        mask |= 1 << (b & 7);
+        t->audio[t->nb_audio++] = (DVDStreamRef){ b & 7, i };
+        if ((b & 7) != i)
+            av_log(T->d->log, AV_LOG_DEBUG, "DVD: title %s: audio_control %u names stream %u\n", t->name, i, b & 7);
+    }
+    for (unsigned k = 0; k < n; k++)
+        if (!(mask >> k & 1))
+            t->audio[t->nb_audio++] = (DVDStreamRef){ k, k };
+}
+
+/* The title's sub-picture streams: those the program chain's subp_control
+ * lists (present), each by its 4:3 stream number on a 4:3 title set, its
+ * wide one on a 16:9 title set; a single stream whose wide number is 1 and
+ * letterbox number 0 also as stream 0. Their canvas: the title set's video
+ * frame. */
+static void title_subp(Titles *T, DVDTitle *t)
+{
+    const DVDIfo *f = t->vts;
+    const uint8_t *v = f->header + DVD_VTS_VIDEO_ATTR;
+    unsigned n = AV_RB16(f->header + VTS_SUBP_COUNT), ar = v[0] >> 2 & 3, standard = v[0] >> 4 & 3;
+
+    if (standard == 0) {
+        t->subp_width  = 720;
+        t->subp_height = 480;
+    } else if (standard == 1) {
+        t->subp_width  = 720;
+        t->subp_height = 576;
+    } else {
+        t->subp_width  = 352;
+        t->subp_height = 480;
+        av_log(T->d->log, AV_LOG_WARNING, "DVD: VTS_%02d: video standard %u: the sub-pictures' canvas is taken as "
+               "352x480 [untested on real discs]\n", f->index, standard);
+    }
+    t->nb_subp = 0;
+    for (unsigned i = 0; i < n; i++) {
+        const uint8_t *c = t->pgc->subp_control + 4 * i;
+        uint8_t sid;
+        if (!(c[0] & 0x80))
+            continue;
+        if (ar == 0) {
+            sid = c[0];
+        } else if (ar == 3) {
+            sid = c[1];
+        } else {
+            sid = c[0];
+            av_log(T->d->log, AV_LOG_DEBUG, "DVD: VTS_%02d: aspect ratio code %u: the 4:3 sub-picture streams are "
+                   "used\n", f->index, ar);
+        }
+        t->subp[t->nb_subp++] = (DVDStreamRef){ sid & 0x1f, i };
+        if (n == 1 && ar == 3 && (c[1] & 0x1f) == 1 && (c[2] & 0x1f) == 0)
+            t->subp[t->nb_subp++] = (DVDStreamRef){ 0, i };
+    }
+}
+
 /* A program chain's title of title table entry idx (0-based), angle a. */
 static int title_init(Titles *T, DVDTitle *t, int idx, DVDIfo *f, DVDPgc *p, const DVDChapter *ch, int nb_ch,
                       int angle)
@@ -1671,11 +1737,13 @@ static int title_init(Titles *T, DVDTitle *t, int idx, DVDIfo *f, DVDPgc *p, con
                AV_RB16(f->header + VTS_AUDIO_COUNT));
         return 0;
     }
+    title_audio(T, t);
     if (AV_RB16(f->header + VTS_SUBP_COUNT) > MAX_SUBP) {
         av_log(T->d->log, AV_LOG_WARNING, "DVD: VTS_%02d has %u subpicture streams\n", f->index,
                AV_RB16(f->header + VTS_SUBP_COUNT));
         return 0;
     }
+    title_subp(T, t);
     return 1;
 }
 
@@ -1950,6 +2018,66 @@ end:
     return ret;
 }
 
+/* b plays a's sectors with a subset of its streams and no more chapters */
+static int same_title(const DVDTitle *a, const DVDTitle *b)
+{
+    if (a->nb_segments != b->nb_segments)
+        return 0;
+    for (int k = 0; k < a->nb_segments; k++) {
+        const DVDSegment *x = &a->segments[k], *y = &b->segments[k];
+        if (x->nb_extents != y->nb_extents)
+            return 0;
+        for (int e = 0; e < x->nb_extents; e++) {
+            const DVDExtent *p = &x->extents[e], *q = &y->extents[e];
+            if (p->count != q->count)
+                return 0;
+            if (a->vts->title_vob_base && b->vts->title_vob_base) {
+                if (p->sector + a->vts->title_vob_base != q->sector + b->vts->title_vob_base)
+                    return 0;
+            } else if (a->vts != b->vts || p->sector != q->sector) {
+                return 0;
+            }
+        }
+    }
+    for (int i = 0; i < b->nb_audio; i++) {
+        int found = 0;
+        for (int j = 0; j < a->nb_audio && !found; j++)
+            found = a->audio[j].stream == b->audio[i].stream;
+        if (!found)
+            return 0;
+    }
+    for (int i = 0; i < b->nb_subp; i++) {
+        int found = 0;
+        for (int j = 0; j < a->nb_subp && !found; j++)
+            found = a->subp[j].stream == b->subp[i].stream;
+        if (!found)
+            return 0;
+    }
+    return b->nb_chapters <= a->nb_chapters && (a->scan || !b->scan);
+}
+
+/* A title playing an earlier one's sectors with no more streams and
+ * chapters is left out (logged); the search starts over after each. */
+static void remove_duplicates(Titles *T)
+{
+    DVDTitleList *l = T->out;
+
+    for (int i = 0; i < l->nb_titles; i++) {
+        for (int j = 0; j < l->nb_titles; j++) {
+            DVDTitle *a = l->titles[i], *b = l->titles[j];
+            if (a == b || !same_title(a, b))
+                continue;
+            av_log(T->d->log, AV_LOG_INFO, "DVD: title %d left out: it is the same as title %d (VTS_%02d)\n",
+                   b->title + 1, a->title + 1, b->vtsn);
+            ff_dvd_title_free(&l->titles[j]);
+            memmove(l->titles + j, l->titles + j + 1, (l->nb_titles - j - 1) * sizeof(*l->titles));
+            l->nb_titles--;
+            i = -1;
+            break;
+        }
+    }
+}
+
 int ff_dvd_titles_build(DVDDisc *d, const DVDScan *scan, const DVDTitleOptions *o, DVDTitleList *out)
 {
     Titles T = { .d = d, .scan = scan, .o = o, .out = out };
@@ -1970,6 +2098,7 @@ int ff_dvd_titles_build(DVDDisc *d, const DVDScan *scan, const DVDTitleOptions *
             if ((ret = add_title(&T, i)) < 0)
                 goto fail;
     }
+    remove_duplicates(&T);
     return 0;
 fail:
     ff_dvd_titles_free(out);
@@ -2009,7 +2138,12 @@ char *ff_dvd_titles_dump(const DVDTitleList *l)
             av_bprintf(&bp, "%s%s", k ? "," : "", t->segments[k].cell_map);
         if (!t->nb_segments)
             av_bprintf(&bp, "-");
-        av_bprintf(&bp, " scan %s%s\n", t->scan ? t->scan->name : "-", t->short_title ? " short" : "");
+        av_bprintf(&bp, " scan %s tracks V", t->scan ? t->scan->name : "-");
+        for (int k = 0; k < t->nb_audio; k++)
+            av_bprintf(&bp, ",A%u.%u", t->audio[k].stream, t->audio[k].attr);
+        for (int k = 0; k < t->nb_subp; k++)
+            av_bprintf(&bp, ",S%u.%u", t->subp[k].stream, t->subp[k].attr);
+        av_bprintf(&bp, "%s\n", t->short_title ? " short" : "");
     }
     if (av_bprint_finalize(&bp, &s) < 0)
         return NULL;

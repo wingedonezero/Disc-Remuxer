@@ -58,19 +58,20 @@ def cell(first, last, secs=1, last_vobu=None, **kw):
     return dataclasses.replace(c, **kw)
 
 
-def build(tmp_path, pgcs, ptts, navs, vob_sectors, first_play=True, angles=None):
+def build(tmp_path, pgcs, ptts, navs, vob_sectors, first_play=True, angles=None, **vts):
     """A disc folder with one title set: its program chains, its titles
     (ptts: per title the (pgcn, pgn) of each part) and title VOBs of
     vob_sectors sectors holding navs. A last title is added for the
     first-play program chain to jump to (JumpTT), so the navigator starts
     without stopping and without touching the tested chains; first_play
     False leaves the first-play chain out; angles: per title its number of
-    angles (default 1)."""
+    angles (default 1); vts: more Vts fields (video_attr, audio_attrs,
+    subp_attrs)."""
     home = len(pgcs) + 1
     pgcs = list(pgcs) + [Pgc(cells=[Cell.new(vob_sectors, vob_sectors, vob_sectors, 0)])]
     ptts = list(ptts) + [[(home, 1)]]
     navs = list(navs) + [dvd.nav(vob_sectors, 1, None)]
-    v = Vts(pgcs=pgcs, ptts=ptts, vobus=sorted(n.lbn for n in navs), vob_sectors=vob_sectors + 1)
+    v = Vts(pgcs=pgcs, ptts=ptts, vobus=sorted(n.lbn for n in navs), vob_sectors=vob_sectors + 1, **vts)
     angles = list(angles or []) + [1] * (len(ptts) - len(angles or []))
     titles = [Title(1, k + 1, len(t), angles[k]) for k, t in enumerate(ptts)]
     fp = Pgc(cells=[], pre=[jump_tt(len(titles))]) if first_play else None
