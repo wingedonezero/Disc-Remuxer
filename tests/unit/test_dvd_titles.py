@@ -13,7 +13,7 @@ import json
 import pathlib
 import subprocess
 
-from helpers import DIST, LOG, install_log, lib
+from helpers import LOG, PROGRAM, install_log, lib
 from helpers.disc import env_or_skip
 from helpers.dvdnav import Pgc, build, cell, titles, titles_from, titles_text, vobus
 from synth import dvd
@@ -313,7 +313,7 @@ def test_the_cell_check_passes_a_whole_cell(tmp_path):
 # ---- the program ----
 
 def info(path, *sets):
-    args = [str(DIST / "disc-remuxer"), "--json"] + [a for x in sets for a in ("--set", x)] + ["info", str(path)]
+    args = [*PROGRAM, "--json"] + [a for x in sets for a in ("--set", x)] + ["info", str(path)]
     out = subprocess.run(args, capture_output=True, text=True)
     lines = [json.loads(line) for line in out.stdout.splitlines() if line.startswith("{")]
     return [x for x in lines if x.get("type") == "title"], lines

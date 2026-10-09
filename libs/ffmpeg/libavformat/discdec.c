@@ -26,11 +26,13 @@
  */
 
 #include <limits.h>
+#include <stdarg.h>
 #include <string.h>
 
 #include "libavcodec/avcodec.h"
 #include "libavcodec/defs.h"
 #include "libavutil/avstring.h"
+#include "libavutil/bprint.h"
 #include "libavutil/dict.h"
 #include "libavutil/error.h"
 #include "libavutil/log.h"
@@ -43,8 +45,10 @@
 #include "disc.h"
 #include "discinfo.h"
 #include "discio.h"
+#include "disclang.h"
 #include "disctl.h"
 #include "internal.h"
+#include "matroska.h"
 
 /* The format parts, by the disc kind the readers tell. */
 static const DiscFormat *const parts[] = {
@@ -122,6 +126,43 @@ DiscPartInfo *ff_disc_title_add_part(DiscTitleInfo *t)
 int ff_disc_title_add_file(DiscTitleInfo *t, const char *name)
 {
     return av_dynarray_add_nofree(&t->files, &t->nb_files, (void *)name);
+}
+
+static int add_prop(DiscPropertyInfo **props, int *nb, const char *name, const char *fmt, va_list vl)
+{
+    DiscPropertyInfo *p = av_dynarray2_add((void **)props, nb, sizeof(*p), NULL);
+    AVBPrint bp;
+
+    if (!p)
+        return AVERROR(ENOMEM);
+
+    p->name = name;
+    av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
+    av_vbprintf(&bp, fmt, vl);
+    return av_bprint_finalize(&bp, &p->value) < 0 ? AVERROR(ENOMEM) : 0;
+}
+
+int ff_disc_title_add_prop(DiscTitleInfo *t, const char *name, const char *fmt, ...)
+{
+    va_list vl;
+    int ret;
+
+    va_start(vl, fmt);
+    ret = add_prop(&t->props, &t->nb_props, name, fmt, vl);
+    va_end(vl);
+    return ret;
+}
+
+int ff_disc_add_prop(AVFormatContext *s, const char *name, const char *fmt, ...)
+{
+    DiscContext *d = s->priv_data;
+    va_list vl;
+    int ret;
+
+    va_start(vl, fmt);
+    ret = add_prop(&d->info.props, &d->info.nb_props, name, fmt, vl);
+    va_end(vl);
+    return ret;
 }
 
 void ff_disc_stream_init(DiscStreamInfo *k)
@@ -213,11 +254,11 @@ static int track_stream(AVFormatContext *s, const DiscTrack *k, int index, const
 }
 
 int ff_disc_open_tracks(AVFormatContext *s, const char *title, const DiscTrack *tracks, int nb_tracks, int ts,
-                        int second_view)
+                        int second_view, const uint8_t *keep)
 {
     DiscContext *d = s->priv_data;
     const char *fmt = d->fmt->log_name;
-    int n = 0, layer = -1, ret;
+    int n = 0, layer = -1, caption_left = 0, ret;
     char place[64];
 
     /* one more for a Dolby Vision enhancement layer (read from its own PID) */
@@ -232,6 +273,15 @@ int ff_disc_open_tracks(AVFormatContext *s, const char *title, const DiscTrack *
         enum AVCodecID codec = k->kind == DR_KIND_CAPTION ? AV_CODEC_ID_SUBRIP : k->info.codec;
         DRTitleTrack *t = &d->tracks[n];
 
+        /* the video and a video with its Dolby Vision layer always stay
+         * (the layer is ripped as option dolby_vision says, never left out) */
+        if (i && keep && !keep[i] && !(k->flags & DISC_TRACK_LAYER2)) {
+            av_log(s, AV_LOG_INFO, "%s: title %s: track %d (%s %s%s%s) is not selected: left out\n", fmt, title, i,
+                   av_get_media_type_string(k->info.type), avcodec_get_name(k->info.codec),
+                   k->info.language[0] ? ", " : "", k->info.language);
+            caption_left |= k->kind == DR_KIND_CAPTION;
+            continue;
+        }
         if (view && !second_view) {
             av_log(s, AV_LOG_INFO, "%s: title %s: track %d, the 3-D second view (PID 0x%04x), is left out (not "
                    "asked for)\n", fmt, title, i, k->feed.pid);
@@ -301,6 +351,10 @@ int ff_disc_open_tracks(AVFormatContext *s, const char *title, const DiscTrack *
                d->opt_dolby_vision ? "a stream of its own" : "merged into the video's frames");
         n++;
     }
+    /* line-21 caption data the video carries is left out as asked, not lost */
+    if (caption_left && s->nb_streams &&
+        (ret = av_dict_set(&s->streams[0]->metadata, "caption_track", "not selected", 0)) < 0)
+        return ret;
     d->src.ts        = ts;
     d->src.tracks    = d->tracks;
     d->src.nb_tracks = n;
@@ -316,17 +370,31 @@ const DiscInfo *disc_info(const AVFormatContext *s)
     return s && s->iformat == &ff_disc_demuxer.p ? &((const DiscContext *)s->priv_data)->info : NULL;
 }
 
-static int disc_close(AVFormatContext *s)
+/* The opened title's reader, tracks and the format part's state of it
+ * given back (the disc stays loaded). */
+static void title_close(AVFormatContext *s)
 {
     DiscContext *d = s->priv_data;
 
     ff_disc_title_reader_close(&d->reader);
-    if (d->fmt && d->part)
-        d->fmt->close(s);
-    av_freep(&d->part);
+    if (d->fmt && d->part && d->fmt->close_title)
+        d->fmt->close_title(s);
     av_freep(&d->tracks);
     av_freep(&d->feeds);
     av_freep(&d->pids);
+    memset(&d->src, 0, sizeof(d->src));
+    d->untested = 0;
+    d->progress = 0;
+}
+
+static int disc_close(AVFormatContext *s)
+{
+    DiscContext *d = s->priv_data;
+
+    title_close(s);
+    if (d->fmt && d->part)
+        d->fmt->close(s);
+    av_freep(&d->part);
     for (int i = 0; d->title_tracks && i < d->nb_title_slots; i++)
         av_freep(&d->title_tracks[i]);
     av_freep(&d->title_tracks);
@@ -337,9 +405,16 @@ static int disc_close(AVFormatContext *s)
         av_freep(&d->info.titles[i].chapters);
         av_freep(&d->info.titles[i].files);
         av_freep(&d->info.titles[i].parts);
+        for (int k = 0; k < d->info.titles[i].nb_props; k++)
+            av_freep(&d->info.titles[i].props[k].value);
+        av_freep(&d->info.titles[i].props);
     }
     av_freep(&d->info.titles);
     d->info.nb_titles = 0;
+    for (int k = 0; k < d->info.nb_props; k++)
+        av_freep(&d->info.props[k].value);
+    av_freep(&d->info.props);
+    d->info.nb_props = 0;
     ff_discio_fs_close(&d->fs);
     ff_discio_source_free(&d->image);
     return 0;
@@ -448,7 +523,8 @@ static int open_title(AVFormatContext *s)
     }
     if ((ret = f->open_title(s, i, d->opt_part, &both)) < 0)
         return ret;
-    return ff_disc_open_tracks(s, name ? name : "?", d->title_tracks[i], d->nb_title_tracks[i], d->src.ts, both);
+    return ff_disc_open_tracks(s, name ? name : "?", d->title_tracks[i], d->nb_title_tracks[i], d->src.ts, both,
+                               d->keep);
 }
 
 static int disc_read_header(AVFormatContext *s)
@@ -458,7 +534,8 @@ static int disc_read_header(AVFormatContext *s)
     enum DiscIODiscFormat kind;
     int ret;
 
-    opts.udf_reader = d->opt_udf_reader;
+    opts.udf_reader                = d->opt_udf_reader;
+    opts.prefer_iso_for_old_udf102 = d->opt_prefer_iso;
     if (ff_discio_folder_is_dir(s->url)) {
         /* a disc folder: its files are read as host files */
         if ((ret = ff_discio_mount_folder(s, s->url, d->opt_read_attempts, &d->fs)) < 0)
@@ -495,13 +572,90 @@ static int disc_read_header(AVFormatContext *s)
     d->info.udf_revision = d->fs->udf_revision;
     if (!(d->part = av_mallocz(d->fmt->priv_size)))
         return AVERROR(ENOMEM);
-    if ((ret = d->fmt->load(s)) < 0 || (ret = titles_pass(s)) < 0 || (ret = titles_info(s)) < 0)
+    if ((ret = d->fmt->load(s)) < 0 || (ret = titles_pass(s)) < 0 ||
+        (d->fmt->disc_done && (ret = d->fmt->disc_done(s)) < 0) || (ret = titles_info(s)) < 0)
         return ret;
     if (d->opt_title < 0)               /* only the disc info, no title opened */
         return 0;
     if ((ret = open_title(s)) < 0)
         return ret;
     return ff_disc_title_reader_open(s, &d->src);
+}
+
+void disc_title_close(AVFormatContext *s)
+{
+    if (!disc_info(s))
+        return;
+    /* FFmpeg's read state of the title's streams, then the streams, the
+     * chapters and the title's results themselves */
+    ff_read_frame_flush(s);
+    title_close(s);
+    while (s->nb_streams)
+        ff_remove_stream(s, s->streams[s->nb_streams - 1]);
+    while (s->nb_chapters) {
+        s->nb_chapters--;
+        av_dict_free(&s->chapters[s->nb_chapters]->metadata);
+        av_freep(&s->chapters[s->nb_chapters]);
+    }
+    av_freep(&s->chapters);
+    av_dict_set(&s->metadata, "untested", NULL, 0);
+    s->duration = AV_NOPTS_VALUE;
+}
+
+int disc_title_open(AVFormatContext *s, int title, int part, int second_view, const uint8_t *keep)
+{
+    DiscContext *d;
+    int ret;
+
+    if (!disc_info(s))
+        return AVERROR(EINVAL);
+    d = s->priv_data;
+    disc_title_close(s);
+    if (title < 0)
+        return AVERROR(EINVAL);
+    /* a 3-D title's second view is read only when one of its tracks is
+     * selected */
+    if (second_view && keep && title < d->info.nb_titles) {
+        int any = 0;
+        for (int i = 0; i < d->nb_title_tracks[title]; i++)
+            any |= (d->title_tracks[title][i].flags & DISC_TRACK_SECOND_VIEW) && keep[i];
+        second_view = any;
+    }
+    d->opt_title       = title;
+    d->opt_part        = part;
+    d->opt_second_view = second_view;
+    d->keep            = keep;
+    ret = open_title(s);
+    d->keep = NULL;
+    if (ret < 0 || (ret = ff_disc_title_reader_open(s, &d->src)) < 0)
+        disc_title_close(s);
+    return ret;
+}
+
+const char *disc_language(const char *code)
+{
+    return ff_disc_lang_code(code);
+}
+
+const char *disc_language_name(const char *code)
+{
+    return ff_disc_lang_name(code);
+}
+
+const char *disc_mkv_codec_id(const DiscStreamInfo *k)
+{
+    if (k->second_view)
+        return "V_MPEG4/ISO/MVC";
+    switch (k->codec) {
+    case AV_CODEC_ID_PCM_DVD:
+    case AV_CODEC_ID_PCM_BLURAY: return "A_PCM/INT/LIT";    /* written as PCM */
+    case AV_CODEC_ID_EIA_608:    return "S_TEXT/UTF8";      /* made into text */
+    default:
+        for (int i = 0; ff_mkv_codec_tags[i].id != AV_CODEC_ID_NONE; i++)
+            if (ff_mkv_codec_tags[i].id == k->codec)
+                return ff_mkv_codec_tags[i].str;
+        return NULL;
+    }
 }
 
 static int disc_read_packet(AVFormatContext *s, AVPacket *pkt)
@@ -535,6 +689,7 @@ static const AVOption disc_options[] = {
     {"cc_helper",       "the caption converter program (CCExtractor) for DVD caption tracks; default: the one next to the running program", OFFSET(opt_cc_helper), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, AV_OPT_FLAG_DECODING_PARAM },
     {"keydb",           "AACS key files (KEYDB.cfg), read in this order",          OFFSET(opt_keydb),          AV_OPT_TYPE_STRING | AV_OPT_TYPE_FLAG_ARRAY, { .arr = NULL }, 0, 0, AV_OPT_FLAG_DECODING_PARAM },
     {"read_attempts",   "read attempts per request on the disc",                    OFFSET(opt_read_attempts),  AV_OPT_TYPE_INT,    { .i64=DISCIO_DEFAULT_ATTEMPTS }, 1, 100, AV_OPT_FLAG_DECODING_PARAM },
+    {"prefer_iso_for_old_udf102", "disc images: a UDF 1.02 file system recorded before 2006 is read through ISO 9660 when that holds a valid DVD-Video structure", OFFSET(opt_prefer_iso), AV_OPT_TYPE_BOOL, { .i64=1 }, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
     {"udf_reader",      "UDF reader for disc images",                               OFFSET(opt_udf_reader),     AV_OPT_TYPE_INT,    { .i64=DISCIO_UDF_NETBSD }, DISCIO_UDF_NETBSD, DISCIO_UDF_LINUX, AV_OPT_FLAG_DECODING_PARAM, .unit = "udf_reader" },
         {"netbsd",      "based on NetBSD (default)",                                0,                          AV_OPT_TYPE_CONST,  { .i64=DISCIO_UDF_NETBSD }, 0, 0, AV_OPT_FLAG_DECODING_PARAM, .unit = "udf_reader" },
         {"linux",       "based on Linux",                                           0,                          AV_OPT_TYPE_CONST,  { .i64=DISCIO_UDF_LINUX },  0, 0, AV_OPT_FLAG_DECODING_PARAM, .unit = "udf_reader" },

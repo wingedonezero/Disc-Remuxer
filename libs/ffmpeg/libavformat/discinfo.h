@@ -5,13 +5,12 @@
  * plays, chapters) and each title's streams (kind, codec, language and the
  * stream details). It is filled on open whichever title is opened; with the
  * option title = -1 the disc is only described: no title is opened and
- * nothing is read.
+ * nothing is read until disc_title_open() opens one (the disc is read once,
+ * any number of titles are read from it, one after another).
  *
  * Separate from the streams a title is ripped from (AVStream): this only
  * describes the disc. A value of 0 (a number) or NULL (a string) is not
- * known; the stream details (bit rate, channels, sample rate, frame size,
- * aspect, frame rate) are not filled yet (they come from reading the start
- * of each title, still to be built).
+ * known.
  *
  * This file is part of FFmpeg.
  *
@@ -68,6 +67,12 @@ typedef struct DiscStreamInfo {
     int              profile;        /**< FFmpeg's profile of the codec (AV_PROFILE_*), AV_PROFILE_UNKNOWN */
     int              level;          /**< video: the codec's level (level_idc), AV_LEVEL_UNKNOWN */
     char             dolby_vision[40];/**< video: the Dolby Vision type ("dvhe.07.06 BL+FEL+RPU"), "" none */
+    char             hdr[16];        /**< video: "HDR10", "HDR10+", "HLG" or "SDR" from its first picture's colour
+                                          description and metadata, "" not known */
+    char             colour[96];     /**< video: its colour description (primaries, transfer, matrix, range) in
+                                          FFmpeg's names, "" not stated */
+    char             mastering[192]; /**< video: the mastering display's luminance (and primaries), "" none */
+    int              max_cll, max_fall;/**< video: content light level (cd/m²), 0 none */
     int              channels;       /**< audio */
     uint64_t         layout;         /**< audio: channel layout mask (FFmpeg's AV_CH_*), 0 unknown */
     int              sample_rate;    /**< audio, Hz */
@@ -92,6 +97,13 @@ typedef struct DiscPartInfo {
     int              nb_chapters;    /**< its own chapters (from its own start) */
 } DiscPartInfo;
 
+/** Something more the format part tells of a title (for the caller's
+ *  details): its name and value in words. */
+typedef struct DiscPropertyInfo {
+    const char      *name;           /**< e.g. "Title set" */
+    char            *value;          /**< e.g. "VTS_03, its title 2" */
+} DiscPropertyInfo;
+
 /** A title of the disc's title list. */
 typedef struct DiscTitleInfo {
     int              index;          /**< its number in the title list (the option title), from 0 */
@@ -110,6 +122,8 @@ typedef struct DiscTitleInfo {
     DiscStreamInfo  *streams;
     int              nb_parts;       /**< 0: the title is one piece */
     DiscPartInfo    *parts;
+    int              nb_props;
+    DiscPropertyInfo *props;         /**< what the format part tells more of it, in its order */
 } DiscTitleInfo;
 
 /** The disc. */
@@ -122,6 +136,8 @@ typedef struct DiscInfo {
     int              encrypted;
     int              nb_titles;
     DiscTitleInfo   *titles;
+    int              nb_props;
+    DiscPropertyInfo *props;         /**< what the format part tells more of the disc, in its order */
 } DiscInfo;
 
 /**
@@ -129,5 +145,46 @@ typedef struct DiscInfo {
  * context. Valid until s is closed.
  */
 const DiscInfo *disc_info(const AVFormatContext *s);
+
+/**
+ * Open title `title` of the disc s (opened with the disc demuxer, option
+ * title -1: the disc info only) for reading: the title before it is closed
+ * first. The disc stays loaded: its title list and each title's stream
+ * pass are not done again. part >= 0: only that part of the title
+ * (DiscTitleInfo.parts); second_view: a 3-D title's second view is read
+ * too. keep: NULL every track, else keep[i] 0 leaves track i of the title's
+ * streams (DiscTitleInfo.streams) out: not read, no stream (track 0, the
+ * video, is always read; the second view only when one of its tracks is
+ * kept). Its streams, chapters (at the end) and s->duration are the title's;
+ * av_read_frame() gives its packets. Returns 0 or an AVERROR (the title
+ * is then closed).
+ */
+int disc_title_open(AVFormatContext *s, int title, int part, int second_view, const uint8_t *keep);
+
+/**
+ * Close the title opened on s: its streams, chapters and results are
+ * removed; the disc stays loaded. Nothing to do when none is open.
+ */
+void disc_title_close(AVFormatContext *s);
+
+/**
+ * The ISO 639-2 bibliographic code the disc info uses for a language code
+ * (2 or 3 letters, either ISO 639-2 form), NULL when not known.
+ */
+const char *disc_language(const char *code);
+
+/**
+ * The English name of a language code ("eng": "English"), NULL when not
+ * known.
+ */
+const char *disc_language_name(const char *code);
+
+/**
+ * The Matroska codec ID a stream is stored with in a Matroska file
+ * ("V_MPEG2", "A_AC3", "S_HDMV/PGS", ...): LPCM as PCM ("A_PCM/INT/LIT"),
+ * closed captions as text ("S_TEXT/UTF8"), a 3-D second view as
+ * "V_MPEG4/ISO/MVC"; NULL when Matroska has none.
+ */
+const char *disc_mkv_codec_id(const DiscStreamInfo *k);
 
 #endif /* AVFORMAT_DISCINFO_H */

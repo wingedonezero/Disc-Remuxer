@@ -12,6 +12,13 @@ BUILD = ROOT / "build" / MODE
 DIST = ROOT / "dist" / MODE
 DATA = ROOT / "tests" / "data"
 
+# The program as the tests run it: with a settings file of the test run's
+# own (made with every setting at its default; the one next to the program
+# is the user's), removed when the run starts.
+TEST_SETTINGS = BUILD / "pytest" / "test-settings.toml"
+TEST_SETTINGS.unlink(missing_ok=True)
+PROGRAM = [str(DIST / "disc-remuxer"), "--config", str(TEST_SETTINGS)]
+
 sys.path.insert(0, str(BUILD / "pytest"))
 from _bridge import ffi, lib  # noqa: E402  (built by make test)
 

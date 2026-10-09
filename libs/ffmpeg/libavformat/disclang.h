@@ -32,4 +32,10 @@
  */
 const char *ff_disc_lang_code(const char *code);
 
+/**
+ * The English name of a language code as ff_disc_lang_code() reads it
+ * ("eng" -> "English"), from the ISO 639-2 code list; NULL when not known.
+ */
+const char *ff_disc_lang_name(const char *code);
+
 #endif /* AVFORMAT_DISCLANG_H */

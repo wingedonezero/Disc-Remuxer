@@ -13,7 +13,7 @@ import subprocess
 
 import pytest
 
-from helpers import DIST, LOG, ffi, install_log, lib, logged
+from helpers import LOG, PROGRAM, ffi, install_log, lib, logged
 from helpers.disc import Image
 from synth import dvd
 from synth.dvd import Cell, Pgc, Title, Vts
@@ -400,7 +400,7 @@ def test_title_vobs_the_header_and_the_file_system_disagree_on_are_decided_later
 # ---- the program ----
 
 def info(path):
-    out = subprocess.run([str(DIST / "disc-remuxer"), "--json", "info", str(path)], capture_output=True, text=True)
+    out = subprocess.run([*PROGRAM, "--json", "info", str(path)], capture_output=True, text=True)
     lines = [json.loads(line) for line in out.stdout.splitlines() if line.startswith("{")]
     return [x for x in lines if x.get("type") == "disc"], lines
 

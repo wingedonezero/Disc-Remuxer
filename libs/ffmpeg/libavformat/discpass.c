@@ -53,7 +53,9 @@
 #include "libavutil/error.h"
 #include "libavutil/frame.h"
 #include "libavutil/log.h"
+#include "libavutil/mastering_display_metadata.h"
 #include "libavutil/mem.h"
+#include "libavutil/pixdesc.h"
 
 #include "avformat.h"
 #include "disc.h"
@@ -158,8 +160,13 @@ static void cache_take(const Cached *k, Probe *p, int details)
     ds->bits        = k->ds.bits;
     ds->bit_rate    = k->ds.bit_rate;
     if (ds->type == AVMEDIA_TYPE_VIDEO) {
-        ds->width  = k->ds.width;
-        ds->height = k->ds.height;
+        ds->width    = k->ds.width;
+        ds->height   = k->ds.height;
+        ds->max_cll  = k->ds.max_cll;
+        ds->max_fall = k->ds.max_fall;
+        memcpy(ds->hdr, k->ds.hdr, sizeof(ds->hdr));
+        memcpy(ds->colour, k->ds.colour, sizeof(ds->colour));
+        memcpy(ds->mastering, k->ds.mastering, sizeof(ds->mastering));
     }
 }
 
@@ -224,6 +231,49 @@ static void dovi_text(DiscStreamInfo *ds, const AVFrame *f)
     snprintf(ds->dolby_vision, sizeof(ds->dolby_vision), "BL+%s+RPU", mel ? "MEL" : "FEL");
 }
 
+/* HDR from a decoded picture: its colour description (transfer PQ:
+ * HDR10, HDR10+ with its dynamic metadata; HLG; else SDR when stated), the
+ * mastering display (SMPTE ST 2086) and content light level side data. */
+static void hdr_text(DiscStreamInfo *ds, const AVFrame *f)
+{
+    const AVFrameSideData *md = av_frame_get_side_data(f, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA);
+    const AVFrameSideData *cl = av_frame_get_side_data(f, AV_FRAME_DATA_CONTENT_LIGHT_LEVEL);
+    int stated = f->color_primaries != AVCOL_PRI_UNSPECIFIED || f->color_trc != AVCOL_TRC_UNSPECIFIED ||
+                 f->colorspace != AVCOL_SPC_UNSPECIFIED;
+
+    if (f->color_trc == AVCOL_TRC_SMPTE2084)
+        av_strlcpy(ds->hdr, av_frame_get_side_data(f, AV_FRAME_DATA_DYNAMIC_HDR_PLUS) ? "HDR10+" : "HDR10",
+                   sizeof(ds->hdr));
+    else if (f->color_trc == AVCOL_TRC_ARIB_STD_B67)
+        av_strlcpy(ds->hdr, "HLG", sizeof(ds->hdr));
+    else if (stated)
+        av_strlcpy(ds->hdr, "SDR", sizeof(ds->hdr));
+    if (stated)
+        snprintf(ds->colour, sizeof(ds->colour), "%s / %s / %s, %s range",
+                 av_color_primaries_name(f->color_primaries) ? av_color_primaries_name(f->color_primaries) : "?",
+                 av_color_transfer_name(f->color_trc) ? av_color_transfer_name(f->color_trc) : "?",
+                 av_color_space_name(f->colorspace) ? av_color_space_name(f->colorspace) : "?",
+                 f->color_range == AVCOL_RANGE_JPEG ? "full" : "limited");
+    if (md) {
+        const AVMasteringDisplayMetadata *m = (const AVMasteringDisplayMetadata *)md->data;
+        if (m->has_luminance)
+            snprintf(ds->mastering, sizeof(ds->mastering), "luminance %.4f - %.0f cd/m2",
+                     av_q2d(m->min_luminance), av_q2d(m->max_luminance));
+        if (m->has_primaries)
+            snprintf(ds->mastering + strlen(ds->mastering), sizeof(ds->mastering) - strlen(ds->mastering),
+                     "%sprimaries R %.3f,%.3f G %.3f,%.3f B %.3f,%.3f white %.4f,%.4f", *ds->mastering ? ", " : "",
+                     av_q2d(m->display_primaries[0][0]), av_q2d(m->display_primaries[0][1]),
+                     av_q2d(m->display_primaries[1][0]), av_q2d(m->display_primaries[1][1]),
+                     av_q2d(m->display_primaries[2][0]), av_q2d(m->display_primaries[2][1]),
+                     av_q2d(m->white_point[0]), av_q2d(m->white_point[1]));
+    }
+    if (cl) {
+        const AVContentLightMetadata *c = (const AVContentLightMetadata *)cl->data;
+        ds->max_cll  = c->MaxCLL;
+        ds->max_fall = c->MaxFALL;
+    }
+}
+
 /* The decoded frame's values into the track's details. */
 static void take(Probe *p, const AVFrame *f)
 {
@@ -247,6 +297,7 @@ static void take(Probe *p, const AVFrame *f)
             av_reduce(&ds->aspect.num, &ds->aspect.den, (int64_t)f->width * sar.num, (int64_t)f->height * sar.den,
                       1 << 30);
         ds->frame_rate = d->framerate;
+        hdr_text(ds, f);
         /* the sequence header's (MPEG-2: its maximum), else none */
         ds->bit_rate   = !p->tc ? 0 : p->tc->video_bit_rate == DR_RATE_MAX ? d->rc_max_rate :
                          p->tc->video_bit_rate == DR_RATE_STATED ? d->bit_rate : 0;

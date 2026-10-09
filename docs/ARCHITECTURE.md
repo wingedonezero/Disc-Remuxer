@@ -12,7 +12,7 @@ One name per job, used everywhere (code comments, logs, docs):
 |---|---|---|
 | reader | gets bytes off the source: opens the image or folder, reads its file system, reads sectors with retries | `discio_*` |
 | decryption | makes encrypted sectors usable | libdvdcss (DVD), libaacs (HD DVD, Blu-ray) |
-| disc layer | opens a source once, tells which kind of disc it is, gives the disc info (every title, its streams and chapters), opens a title | `discdec.c`, `disc.h`, `discinfo.h` |
+| disc layer | opens a source once, tells which kind of disc it is, gives the disc info (every title, its streams and chapters), opens titles on it one after another (the disc read once) | `discdec.c`, `disc.h`, `discinfo.h` |
 | title reader | the disc layer's part that reads the opened title: its clips one after another through FFmpeg's line into the title timeline, the clip's time reference, the timeline's frames out as packets, chapters and track results at the end; the format part only says what the title is (clips, how a block is read, tracks, chapter marks, its own values) | `disctitle.c` |
 | disc info | the description of a disc for the caller's overview (not the streams a title is ripped from) | `discinfo.h` |
 | format part | knows one disc format's structure: titles, clips, tracks, chapters, keys; runs the line below for a title | DVD (`dvdvideo*`), HD DVD (`hddvd*`), Blu-ray (`bluray*`) |
@@ -28,7 +28,7 @@ One name per job, used everywhere (code comments, logs, docs):
 ## The shape
 
 ```
-disc-remuxer (src/disc-remuxer)   commands, settings, log, writing files
+disc-remuxer (src/disc-remuxer)   command line + engine (settings, log, choice, writing files)
   ▼
 disc layer                         one FFmpeg demuxer, "disc": open the source once,
   │                                which kind of disc, title list (info), open a title
@@ -66,7 +66,7 @@ Rules:
 |---|---|
 | `discio_*.c`, `discio.h` | stay: the readers (`discio_folder.c`: a disc folder on the host as a file system) |
 | `disclang.c` | stays: language codes for every format part |
-| `discdec.c`, `disc.h` (step 1, done; one flow: unification step D) | the disc layer, the only disc demuxer the program opens; `disc.h` is what a format part gives it: the same title entries for every format (load the disc and its title list; a title's tracks, probe, largest segment, info; leave a title out; open a title), and the disc layer runs the one flow: load, every title's stream pass, the titles left out, the disc info, the opened title. A title's tracks come from every format part in one shape (`DiscTrack`: what the disc info shows, where the data is, how the title reader takes it); the disc layer makes the disc info's streams and the opened title's streams and title-reader tracks from them (`ff_disc_title_add_tracks()`, `ff_disc_open_tracks()`) |
+| `discdec.c`, `disc.h` (step 1, done; one flow: unification step D) | the disc layer, the only disc demuxer the program opens; `disc.h` is what a format part gives it: the same title entries for every format (load the disc and its title list; a title's tracks, probe, largest segment, info; leave a title out; open a title, close it), and the disc layer runs the one flow: load, every title's stream pass, the titles left out, the disc info, the opened title. A title's tracks come from every format part in one shape (`DiscTrack`: what the disc info shows, where the data is, how the title reader takes it); the disc layer makes the disc info's streams and the opened title's streams and title-reader tracks from them (`ff_disc_title_add_tracks()`, `ff_disc_open_tracks()`) |
 | `discpass.c` (unification step B) | the stream pass of a title, the same for every format: its tracks against its largest segment's data, read as the title reader reads (the format's block reader, `mpeg.c` / `mpegts.c` in disc mode): duplicates left out, each video and audio track's details from FFmpeg's parser and decoder (the title list only), an audio track without data left out, a title whose video has none unusable; results kept per segment |
 | `disctitle.c` (step 6, done) | the disc layer's title reader: what `hddvddec.c` did that is not HD DVD (the clips through `mpeg.c`, the time reference, the payloads to the title timeline, its frames out, chapters, results); a format part fills `DiscTitleSource` (clips, block reading, tracks, chapter marks, LPCM header size, lead-in tolerance). Blu-ray (B5a): clips of 6144-byte units through `mpegts.c` in disc mode, each track's PID and PES keys (`DiscTsFeed`), the segment's time reference found before it is read (the video's first PTS in its first 2000 units) |
 | `dvdvideodec.c` | FFmpeg's own DVD-Video demuxer, unchanged (upstream again since 2026-10-08, with libdvdread, libdvdnav and libdvdcss); not opened by the program. DVD is being rebuilt as a format part of the disc layer, step by step as Blu-ray was |
@@ -162,19 +162,43 @@ unchanged and not opened by the program; DVD gets a format part of its own.
 
 ## The program (`src/disc-remuxer/`, C)
 
+Every file but `main.c` is the engine, built as `libdisc-remuxer.a`: the
+command line (`main.c`) and the GUI link it and call `engine.h`. FFmpeg and
+every library under it are linked into both as before.
+
 | File | Part |
 |---|---|
-| `main.c` | commands (`info`, `demux`, `settings`, `version`), options (`--config`, `--set`, `--json`, `--split`, `-v`), the run |
-| `settings.c` | the settings registry and `disc-remuxer.toml` next to the program (written with every setting and its help; new settings added, unknown ones removed, values kept) |
+| `main.c` | the command line: commands (`info`, `demux`, `settings`, `version`), options (`--config`, `--set`, `--json`, `--split`, `--second-view`, `--tracks`, `-v`), the engine called |
+| `engine.c`, `engine.h` | the engine's calls: settings and log set up (the folders `keydb` and `.config` next to the program made), a disc opened once (`engine_disc_open()`), its overview, the choice of titles and tracks, a run (its folder: given, or `<output.folder>/<disc name>`, `output` next to the program by default; its log files; its titles; the summary), a stop (`engine_cancel()`, Ctrl+C on the command line); `engine_set_sink()` gives log lines, progress and records to a GUI |
+| `select.c` | the tracks of a title to rip (`--tracks`) |
+| `settings.c` | the settings registry and `disc-remuxer.toml` next to the program (written with every setting and its help; new settings added, unknown ones removed, values kept); the registry for the GUI's settings menu (`settings_get()`, `settings_store()`, `settings_save()`; a save keeps what the file holds but the values changed in the run). The one settings system: every setting is in the registry with when it is read (as a disc is opened, as a rip runs, by the GUI); the CLI and the GUI read the same file; the settings menu is made from the registry; `tests/unit/test_settings.py` checks every setting is read and every option of the disc reader comes from a setting or is a run's choice |
 | `writer.c` | opening a title and writing its stream files, chapters and VobSub pairs |
 | `check.c` | the end check: each written video / audio file is read back with FFmpeg's decoders and its stream details (format, profile, size, aspect, frame rate, scan, colour, HDR; audio format, channels, layout, rate, depth, ...) must equal those read from the disc's stream while ripping; a missing or different field fails the title |
 | `names.c` | file names from `output.file_name_template` |
 | `log.c` | the log: terminal (colours), `--json` records, a log file per disc in the output folder |
 | `msg.h` | the numbers of the program's own messages |
 
+## The GUI (`src/gui/`, C++, Qt 6 Widgets)
+
+`disc-remuxer-gui` links the engine like the command line and uses the same
+settings file; its own values are the settings group `gui` (the window's
+sizes are kept there, not shown in the settings menu). `MainWindow` (menus;
+the queue: each disc's titles and tracks with check boxes, an unchecked
+title's tracks greyed with their choice kept, the video always ripped;
+the run: discs one after another, progress, Stop; the output folder
+`<output.folder>/<added folder>/<folders>/<disc name>` with
+`gui.keep_folder_structure`; a menu per row: parts, output folder, log,
+scan again, remove), `QueueTree` (drops, discs put in another order by
+dragging), `DiscFinder` (images and disc folders in what is added, searched
+a few levels deep), `EngineWorker` (the engine on a thread of its own: scans
+and rips; `LogRelay` brings the engine's log, progress and JSON records
+back), `PrefsDialog` (every setting from the registry, one tab per group,
+with its help), `DetailsPanel`, `Console`. Built by `mk/gui.mk` with CMake
+against the host's Qt.
+
 The demuxer contract the program relies on: `docs/FORMATS.md`. Finding
-discs, job folders and batches are the GUI's job; the program handles one
-disc per run.
+discs (searching folders, drag and drop), the queue and batches are the
+GUI's job; the engine handles one disc per run.
 
 ## Tests (`tests/`, Python)
 

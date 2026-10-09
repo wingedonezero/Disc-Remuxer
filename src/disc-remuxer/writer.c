@@ -5,7 +5,9 @@
  * as a VobSub pair (.sub packs + .idx); the chapters as Matroska XML.
  */
 
+#include <dirent.h>
 #include <errno.h>
+#include <limits.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,8 +30,23 @@
 #include "msg.h"
 #include "names.h"
 #include "check.h"
+#include "engine.h"
 #include "settings.h"
 #include "writer.h"
+
+static int64_t meta_int(AVDictionary *m, const char *key)
+{
+    const AVDictionaryEntry *e = av_dict_get(m, key, NULL, 0);
+    return e ? strtoll(e->value, NULL, 10) : 0;
+}
+
+/* A stream's number as the disc info lists its track (files and logs keep
+ * the disc's numbers whichever tracks are left out). */
+static int track_no(const AVStream *st)
+{
+    const AVDictionaryEntry *e = av_dict_get(st->metadata, "disc_track", NULL, 0);
+    return e ? atoi(e->value) : st->index;
+}
 
 /* One stream's result (times in ms on the title timeline). */
 typedef struct StreamResult {
@@ -64,6 +81,18 @@ static const char *es_extension(enum AVCodecID id)
     case AV_CODEC_ID_HDMV_PGS_SUBTITLE: return "sup";
     case AV_CODEC_ID_SUBRIP:       return "srt";
     default:                       return "bin";
+    }
+}
+
+const char *track_extension(const DiscStreamInfo *k)
+{
+    if (k->second_view)
+        return "mvc";
+    switch (k->codec) {
+    case AV_CODEC_ID_PCM_DVD:
+    case AV_CODEC_ID_PCM_BLURAY:   return "wav";   /* LPCM is written as PCM in a WAVE file */
+    case AV_CODEC_ID_EIA_608:      return "srt";   /* closed captions made into text */
+    default:                       return es_extension(k->codec);
     }
 }
 
@@ -344,12 +373,12 @@ static int es_open(const AVFormatContext *ctx, const AVStream *st, EsOut *o, con
             av_channel_layout_describe(cl, layout + 1, sizeof(layout) - 1);
             snprintf(o->layout, sizeof(o->layout), "%s", layout + 1);
         } else {
-            log_text(LOG_WARNING, "Track %d: channel layout not known: not in the file name", st->index);
+            log_text(LOG_WARNING, "Track %d: channel layout not known: not in the file name", track_no(st));
         }
         o->st.delay_ms = av_rescale_q_rnd(first, st->time_base, (AVRational){ 1, 1000 }, AV_ROUND_NEAR_INF);
         snprintf(delay, sizeof(delay), " DELAY %"PRId64"ms", o->st.delay_ms);
     }
-    if (!(o->name = av_asprintf("%s_%02d_%s_%s%s%s.%s", prefix, st->index, *o->st.lang ? o->st.lang : "und",
+    if (!(o->name = av_asprintf("%s_%02d_%s_%s%s%s.%s", prefix, track_no(st), *o->st.lang ? o->st.lang : "und",
                                 stream_label(st, profile), layout, delay,
                                 second ? "mvc" : es_extension(par->codec_id))))
         return AVERROR(ENOMEM);
@@ -361,7 +390,7 @@ static int es_open(const AVFormatContext *ctx, const AVStream *st, EsOut *o, con
         wav_header(o->f, par, 0);
         if (par->bits_per_coded_sample > 16 && par->bits_per_coded_sample < 24)
             log_text(LOG_INFO, "Track %d: %d-bit samples in 24-bit words, as on the disc (the WAV header says %d "
-                     "valid bits) [untested on real discs]", st->index, par->bits_per_coded_sample,
+                     "valid bits) [untested on real discs]", track_no(st), par->bits_per_coded_sample,
                      par->bits_per_coded_sample);
     }
     if (par->codec_id == AV_CODEC_ID_DVD_SUBTITLE) {
@@ -457,44 +486,67 @@ static int es_flush_hold(const AVFormatContext *ctx, const AVStream *st, EsOut *
     return ret;
 }
 
-int open_title(const char *format, const char *source, int title, int part, int second_view, AVFormatContext **ctx)
+/* A key file of the keydb folder: a regular file named *.cfg. */
+static int keydb_file(const struct dirent *e)
+{
+    size_t n = strlen(e->d_name);
+    return e->d_name[0] != '.' && n > 4 && !strcasecmp(e->d_name + n - 4, ".cfg");
+}
+
+/* The AACS key files: setting aacs.key_files, or (empty) every .cfg file of
+ * the keydb folder next to the program in name order; joined by commas into
+ * bp. */
+static void key_files(AVBPrint *bp)
+{
+    const char *const *keys;
+    int nb = setting_list("aacs.key_files", &keys);
+
+    if (nb) {
+        for (int i = 0; i < nb; i++)
+            av_bprintf(bp, "%s%s", i ? "," : "", keys[i]);
+    } else {
+        char dir[PATH_MAX];
+        struct dirent **list;
+        snprintf(dir, sizeof(dir), "%s/keydb", program_dir());
+        if ((nb = scandir(dir, &list, keydb_file, alphasort)) < 0)
+            return;
+        for (int i = 0; i < nb; i++) {
+            av_bprintf(bp, "%s%s/%s", bp->len ? "," : "", dir, list[i]->d_name);
+            free(list[i]);
+        }
+        free(list);
+    }
+}
+
+int open_disc(const char *format, const char *source, AVFormatContext **ctx)
 {
     const AVInputFormat *fmt = av_find_input_format(format);
     AVDictionary *opts = NULL;
-    const char *const *keys;
-    int nb_keys = setting_list("aacs.key_files", &keys), ret;
+    AVBPrint bp;
+    int ret;
 
     *ctx = NULL;
     if (!fmt)
         return AVERROR_DEMUXER_NOT_FOUND;
-    av_dict_set_int(&opts, "title", title, 0);
-    if (part >= 0)
-        av_dict_set_int(&opts, "part", part, 0);
-    if (second_view)
-        av_dict_set_int(&opts, "second_view", 1, 0);
+    /* the disc info only: the titles are opened on it one by one */
+    av_dict_set_int(&opts, "title", -1, 0);
     av_dict_set(&opts, "dolby_vision", setting_text("bluray.dolby_vision"), 0);
     av_dict_set_int(&opts, "read_attempts", setting_int("read.attempts"), 0);
+    av_dict_set_int(&opts, "min_length", setting_int("titles.min_length"), 0);
     av_dict_set(&opts, "udf_reader", setting_text("read.udf_reader"), 0);
+    av_dict_set_int(&opts, "prefer_iso_for_old_udf102", setting_bool("read.prefer_iso_for_old_udf102"), 0);
     av_dict_set(&opts, "dvd_cell_mode", setting_text("dvd.cell_mode"), 0);
     av_dict_set(&opts, "dvd_cell_check", setting_text("dvd.cell_check"), 0);
-    if (nb_keys) {
-        AVBPrint bp;
-        av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
-        for (int i = 0; i < nb_keys; i++)
-            av_bprintf(&bp, "%s%s", i ? "," : "", keys[i]);
+    av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
+    key_files(&bp);
+    if (bp.len)
         av_dict_set(&opts, "keydb", bp.str, 0);
-        av_bprint_finalize(&bp, NULL);
-    }
+    av_bprint_finalize(&bp, NULL);
     ret = avformat_open_input(ctx, source, fmt, &opts);
     av_dict_free(&opts);
     return ret;
 }
 
-static int64_t meta_int(AVDictionary *m, const char *key)
-{
-    const AVDictionaryEntry *e = av_dict_get(m, key, NULL, 0);
-    return e ? strtoll(e->value, NULL, 10) : 0;
-}
 
 /* A video track's details from the demuxer: line-21 caption data taken
  * out of the video and not kept (a format without caption tracks), with
@@ -502,13 +554,16 @@ static int64_t meta_int(AVDictionary *m, const char *key)
 static void video_detail(const AVStream *st, char *json, size_t size)
 {
     const AVDictionaryEntry *l21 = av_dict_get(st->metadata, "line21", NULL, 0);
+    /* the caption track left out as asked: its data is not lost by mistake */
+    int asked = !!av_dict_get(st->metadata, "caption_track", NULL, 0);
     int64_t blocks = meta_int(st->metadata, "cc_blocks"), text = meta_int(st->metadata, "cc_text");
     char jl[64];
 
     if (blocks)
-        log_text(text ? LOG_WARNING : LOG_INFO, "      line-21 caption data taken out of the video, not kept: %"PRId64
-                 " caption blocks, %s%s%s%s", blocks, text ? "WITH caption text" : "no caption text",
-                 l21 ? " (the disc marks captions on " : "", l21 ? l21->value : "", l21 ? ")" : "");
+        log_text(text && !asked ? LOG_WARNING : LOG_INFO, "      line-21 caption data taken out of the video, not "
+                 "kept%s: %"PRId64" caption blocks, %s%s%s%s", asked ? " (the caption track is not selected)" : "",
+                 blocks, text ? "WITH caption text" : "no caption text", l21 ? " (the disc marks captions on " : "",
+                 l21 ? l21->value : "", l21 ? ")" : "");
     else if (l21)
         log_text(LOG_INFO, "      the disc marks line-21 captions on %s, but the video carries none", l21->value);
     if (blocks || l21)
@@ -571,7 +626,7 @@ static void hms(char *buf, size_t size, double s)
 
 int demux_title(const TitleJob *job, TitleOutcome *res)
 {
-    AVFormatContext *ctx = NULL;
+    AVFormatContext *ctx = job->disc;
     const DiscInfo *info;
     const char *tname;
     EsOut *out = NULL;
@@ -586,7 +641,7 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         snprintf(jpart, sizeof(jpart), ",\"part\":%d", job->part + 1);
     } else
         snprintf(who, sizeof(who), "Title #%d", job->title);
-    if ((ret = open_title(job->format, job->source, job->title, job->part, job->second_view, &ctx)) < 0) {
+    if ((ret = disc_title_open(ctx, job->title, job->part, job->second_view, job->keep)) < 0) {
         log_step("=== Title %d/%d: %s ===", job->ordinal, job->count, who + 6);
         log_msg(MSG_TITLE_OPEN_FAILED, LOG_ERROR, "%s cannot be opened: %s", who, av_err2str(ret));
         res->failed = 1;
@@ -625,7 +680,7 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         const AVDictionaryEntry *lang = av_dict_get(st->metadata, "language", NULL, 0);
         EsOut *o = &out[i];
 
-        o->st.index    = i;
+        o->st.index    = track_no(st);
         o->st.kind     = av_get_media_type_string(st->codecpar->codec_type);
         o->st.codec    = avcodec_get_name(st->codecpar->codec_id);
         o->st.lang     = lang ? lang->value : "";
@@ -644,7 +699,7 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
             }
             if (!dec || !(o->avctx = avcodec_alloc_context3(dec)) || !(o->frame = av_frame_alloc()) ||
                 avcodec_open2(o->avctx, dec, NULL) < 0) {
-                log_text(LOG_DETAIL, "Track %u: no decoder for %s: its channel layout is not known", i,
+                log_text(LOG_DETAIL, "Track %d: no decoder for %s: its channel layout is not known", track_no(st),
                          avcodec_get_name(st->codecpar->codec_id));
                 avcodec_free_context(&o->avctx);
                 o->layout_done = 1;
@@ -655,16 +710,23 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     for (unsigned i = 0; i < ctx->nb_streams; i++) {
         enum AVMediaType t = ctx->streams[i]->codecpar->codec_type;
         if (second_view(ctx->streams[i])) {
-            log_text(LOG_DETAIL, "Track %u: the second view of a 3-D video: its details are not checked (its "
-                     "pictures are decoded with the base view's)", i);
+            log_text(LOG_DETAIL, "Track %d: the second view of a 3-D video: its details are not checked (its "
+                     "pictures are decoded with the base view's)", track_no(ctx->streams[i]));
             continue;
         }
         if ((t == AVMEDIA_TYPE_VIDEO || t == AVMEDIA_TYPE_AUDIO) && !out[i].probe_late &&
             details_probe_open(&out[i].probe, ctx->streams[i]->codecpar) < 0)
-            log_text(LOG_DETAIL, "Track %u: no decoder for %s: its details are not checked", i,
+            log_text(LOG_DETAIL, "Track %d: no decoder for %s: its details are not checked", track_no(ctx->streams[i]),
                      avcodec_get_name(ctx->streams[i]->codecpar->codec_id));
     }
     while ((ret = av_read_frame(ctx, pkt)) >= 0) {
+        /* a stop asked for (engine_cancel()): the title ends here */
+        if (engine_cancelled()) {
+            av_packet_unref(pkt);
+            ret = AVERROR_EXIT;
+            res->stopped = 1;
+            goto end;
+        }
         const AVStream *st = ctx->streams[pkt->stream_index];
         EsOut *o = &out[pkt->stream_index];
         int64_t progress;
@@ -672,7 +734,7 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         if (o->probe_late) {
             o->probe_late = 0;
             if (details_probe_open(&o->probe, st->codecpar) < 0)
-                log_text(LOG_DETAIL, "Track %d: no decoder for %s: its details are not checked", pkt->stream_index,
+                log_text(LOG_DETAIL, "Track %d: no decoder for %s: its details are not checked", track_no(st),
                          avcodec_get_name(st->codecpar->codec_id));
         }
         if (o->probe)
@@ -750,7 +812,10 @@ end:
             o->no_forced = 1;
         }
     }
-    if (ret < 0) {
+    if (res->stopped) {
+        log_msg(MSG_TITLE_FAILED, LOG_WARNING, "%s stopped as asked: its files are not complete", who);
+        res->failed = 1;
+    } else if (ret < 0) {
         log_msg(MSG_TITLE_FAILED, LOG_ERROR, "%s failed: %s", who, av_err2str(ret));
         res->failed = 1;
     } else {
@@ -790,8 +855,8 @@ end:
                 snprintf(delay, sizeof(delay), ", delay %"PRId64" ms", o->st.delay_ms);
             log_text(!o->opened && !empty_cc && !o->no_forced ? LOG_WARNING : warn || empty_cc || o->no_forced ?
                      LOG_INFO : LOG_OK,
-                     "  %02u  %-30s %8"PRId64" %-9s  %s%s",
-                     i, what, frames, unit, state, delay);
+                     "  %02d  %-30s %8"PRId64" %-9s  %s%s",
+                     track_no(st), what, frames, unit, state, delay);
             if (st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE)
                 subtitle_detail(st, o->opened, extra, sizeof(extra));
             else if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
@@ -807,9 +872,9 @@ end:
             if (o->opened)
                 log_text(LOG_DETAIL, "      %s", o->name);
             res->warnings += warn;
-            log_json("track", "\"title\":%d%s,\"index\":%u,\"codec\":%s,\"language\":%s,\"layout\":%s,"
+            log_json("track", "\"title\":%d%s,\"index\":%d,\"codec\":%s,\"language\":%s,\"layout\":%s,"
                      "\"frames\":%"PRId64",\"warnings\":%"PRId64",\"delay_ms\":%"PRId64",\"file\":%s%s", job->title,
-                     jpart, i, json_str(jc, sizeof(jc), stream_label(st, o->opened ? o->profile : st->codecpar->profile)),
+                     jpart, track_no(st), json_str(jc, sizeof(jc), stream_label(st, o->opened ? o->profile : st->codecpar->profile)),
                      json_str(jl, sizeof(jl), o->st.lang), json_str(jy, sizeof(jy), o->layout), frames, warn,
                      o->st.delay_ms, json_str(jf, sizeof(jf), o->opened ? o->name : ""), extra);
         }
@@ -841,7 +906,7 @@ end:
         }
     }
     log_json("title_result", "\"title\":%d%s,\"status\":\"%s\",\"warnings\":%"PRId64",\"folder\":%s", job->title, jpart,
-             res->failed ? "failed" : "ok", res->warnings, json_str(js, sizeof(js), dir));
+             res->stopped ? "stopped" : res->failed ? "failed" : "ok", res->warnings, json_str(js, sizeof(js), dir));
     for (unsigned i = 0; ctx && out && i < ctx->nb_streams; i++) {
         EsOut *o = &out[i];
         for (int k = 0; k < o->nb_hold; k++)
@@ -854,6 +919,6 @@ end:
     }
     av_free(out);
     av_packet_free(&pkt);
-    avformat_close_input(&ctx);
+    disc_title_close(ctx);
     return ret;
 }

@@ -12,7 +12,7 @@ import subprocess
 
 import pytest
 
-from helpers import DATA, DIST
+from helpers import DATA, PROGRAM
 from synth import bluray as bd
 from synth import h264
 from synth.bluray import Item, Stream
@@ -55,7 +55,7 @@ def disc(tmp_path, video=M2V):
 
 
 def info(path):
-    out = subprocess.run([str(DIST / "disc-remuxer"), "--json", "info", str(path)], capture_output=True, text=True)
+    out = subprocess.run([*PROGRAM, "--json", "info", str(path)], capture_output=True, text=True)
     titles = [json.loads(l) for l in out.stdout.splitlines() if l.startswith('{"type":"title"')]
     assert titles, out.stdout + out.stderr
     return titles

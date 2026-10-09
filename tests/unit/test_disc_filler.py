@@ -6,7 +6,7 @@ frame rate + 4 pictures span more than 1.001 s, so the end test for short
 segments of small pictures does not take it). Video only and under 15 s,
 that segment is filler and left out; with its audio it stays."""
 
-from helpers import DATA
+from helpers import DATA, PROGRAM
 from helpers.disctl import pictures
 from helpers.dvdnav import Pgc, build, cell
 from synth import dvd
@@ -14,7 +14,6 @@ from synth.dvd import S, flags
 from test_dvd_streams import put
 from test_dvd_titles import ac3, info
 import subprocess
-from helpers import DIST
 
 M2V = (DATA / "testsrc_1200.m2v").read_bytes()
 AC3 = (DATA / "sine_7680.ac3").read_bytes()
@@ -46,7 +45,7 @@ def two_segments(tmp_path, audio_in_last):
 
 
 def demux(folder, out):
-    p = subprocess.run([str(DIST / "disc-remuxer"), "demux", str(folder), "0", str(out)], capture_output=True,
+    p = subprocess.run([*PROGRAM, "demux", str(folder), "0", str(out)], capture_output=True,
                        text=True)
     return p.stdout + p.stderr
 

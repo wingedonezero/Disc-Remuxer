@@ -39,6 +39,21 @@ def test_language_codes_follow_iso_639_with_three_extras():
         assert lang(code) == want, code
 
 
+def lang_name(code):
+    r = lib.ff_disc_lang_name(code.encode())
+    return None if r == ffi.NULL else ffi.string(r).decode()
+
+
+def test_language_names_come_from_the_iso_639_2_list():
+    # by the bibliographic code, whichever form the disc writes
+    for code, want in [
+        ("eng", "English"), ("en", "English"), ("fre", "French"), ("fra", "French"), ("ger", "German"),
+        ("deu", "German"), ("jpn", "Japanese"), ("jp", "Japanese"), ("zho", "Chinese"), ("und", "Undetermined"),
+        ("xx", None), ("", None),
+    ]:
+        assert lang_name(code) == want, code
+
+
 def test_every_iso_639_1_code_is_known():
     # FFmpeg's ISO 639-1 table ends with its deprecated codes, after "zu":
     # a binary search alone missed "yo", "za", "zh" and "zu"

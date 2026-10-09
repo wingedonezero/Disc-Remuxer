@@ -86,12 +86,21 @@ static int read_block(AVFormatContext *s, int k, uint32_t block, uint8_t *buf)
     return ff_hddvd_clip_block(s, c->aacs, c->fs, c->title->clips[k], block, buf);
 }
 
-static void hddvd_close(AVFormatContext *s)
+/* The opened title's chapter marks given back. */
+static void close_title(AVFormatContext *s)
 {
     HDDVDDemuxContext *c = ff_disc_part(s);
 
     av_freep(&c->chapter_times);
     av_freep(&c->chapter_names);
+    c->title = NULL;
+}
+
+static void hddvd_close(AVFormatContext *s)
+{
+    HDDVDDemuxContext *c = ff_disc_part(s);
+
+    close_title(s);
     ff_hddvd_titles_free(&c->plan);
     ff_hddvd_aacs_close(&c->aacs);
     ff_hddvd_xpl_free_all(&c->xpls, c->nb_xpls);
@@ -235,6 +244,11 @@ static int title_info(AVFormatContext *s, int i, DiscTitleInfo *dt)
     dt->selected = !t->not_selected;
     if (t->lang)
         av_strlcpy(dt->language, t->lang, sizeof(dt->language));
+    if (ff_disc_title_add_prop(dt, "From", "%s", t->from_playlist ? "a title of the playlist" :
+                               "an EVOB no playlist title plays") < 0 ||
+        (t->segment >= 0 && t->segment < t->nb_clips &&
+         ff_disc_title_add_prop(dt, "Tracks described from", "%s", t->clips[t->segment]->evob->name) < 0))
+        return AVERROR(ENOMEM);
     for (int k = 0; k < t->nb_clips; k++)
         if (ff_disc_title_add_file(dt, t->clips[k]->evob->name) < 0)
             return AVERROR(ENOMEM);
@@ -295,6 +309,8 @@ static int hddvd_load(AVFormatContext *s)
                                   c->nb_xpls, &c->aacs)) < 0)
         return ret;
     d->info.encrypted = c->aacs != NULL;
+    if (ff_disc_add_prop(s, "Protection: AACS", "%s", c->aacs ? "yes" : "no") < 0)
+        return AVERROR(ENOMEM);
     if ((ret = ff_hddvd_titles_plan(s, c->fs, c->vti, c->xpls, c->nb_xpls, d->opt_min_length, &c->plan)) < 0)
         return ret;
     return ff_hddvd_tracks_build(s, c->fs, c->aacs, c->vti, c->xpls, c->nb_xpls, c->plan);
@@ -313,5 +329,6 @@ const DiscFormat ff_disc_hddvd = {
     .remove_title  = remove_title,
     .title_info    = title_info,
     .open_title    = open_title,
+    .close_title   = close_title,
     .close         = hddvd_close,
 };

@@ -13,10 +13,10 @@ things, listed here.
 
 | Option | Meaning |
 |---|---|
-| `title` | the title to open (index in the disc's title list, from 0); -1: only the disc info |
+| `title` | the title to open (index in the disc's title list, from 0); -1: only the disc info. The program opens with -1 and then opens each title on the open disc with `disc_title_open()` (below) |
 | `second_view` | 3-D titles: both views are read (the stream files interleaved at their extent start points) and the second view is a stream of its own (H.264, disposition dependent): each picture with the base-view frame of the same time; streams carry `eye` (`left` / `right`, from the playlist's MVC_Base_view_R_flag). The program sets it for `--second-view` / setting `bluray.second_view` |
 | `dolby_vision` | Dolby Vision titles (UHD Blu-ray): `merged` (default) the enhancement layer and its metadata go into the video's frames (each frame: the base picture, then the enhancement picture's units behind the NAL unit header 7E 01, the RPU as it is); `separate` the enhancement layer is a stream of its own (metadata `dolby_vision` = `EL`; the video's is `BL`, merged: `BL+EL+RPU`). The program sets it from setting `bluray.dolby_vision` |
-| `part` | with `title`: only that part of it (from 0, as the title's parts list them), opened as a title of its own; -1 (default): the whole title. The program sets it for `--split` / setting `output.split_joined_titles` |
+| `part` | with `title`: only that part of it (from 0, as the title's parts list them), opened as a title of its own; -1 (default): the whole title. The program gives it to `disc_title_open()` for `--split` / setting `output.split_joined_titles` |
 | `read_attempts`, `udf_reader` | from the settings `read.attempts`, `read.udf_reader` |
 | `keydb` | key files (setting `aacs.key_files`), where the format has keys |
 | `cc_helper` | formats with caption tracks: the caption converter (CCExtractor); unset: the `ccextractor` next to the running program |
@@ -32,8 +32,41 @@ fills the disc, the format part its titles.
 |---|---|
 | disc (`DiscInfo`) | kind (`HD DVD`, ...), volume label, file system and UDF revision, encrypted, the titles |
 | title (`DiscTitleInfo`) | number in the title list, name, source (what it is made from, e.g. `00800.mpls(1)`; Blu-ray), angle (Blu-ray, 0 none), language, duration, size in bytes, selected (0: shorter than the minimum length, listed only), the disc's files it plays in order, chapters (start, name), streams, parts |
+| more (`DiscPropertyInfo`, `props` of the disc and of each title) | what the format part tells more, as name and value in words: DVD titles their entry in the disc's title table, title set and its title number, program chain, the navigation's name, angles, cells, the measured length; Blu-ray discs their kind (BDMV, BDAV, AVCHD), the name's language and English name, AACS (with the disc ID), BD+, playlists, clips, BD-J archives, titles another name and recording time; HD DVD discs AACS, titles whether a playlist title, the EVOB their tracks are described from |
 | part (`DiscPartInfo`) | a title that plays whole stream files back to back (Blu-ray: items of connection condition 1 that each cover their whole STC sequence, e.g. the episodes of a series in one playlist) has one part per run of them: start in the title, duration, its files (a range of the title's), its own chapter count (the marks of its items, from its own start, without those in its last second, as a title of its own has them). A title of one piece has none |
 | stream (`DiscStreamInfo`) | kind, codec, language, the stream taken out of it / it is taken out of (a core, the forced-only copy of a subtitle, the second view of a 3-D video), forced (subtitles: only the forced ones), second view (video: of a 3-D video), second layer (video: an enhancement layer on its own PID read with it, e.g. Dolby Vision), offset sequence (subtitles of a 3-D title: the disc's depth data for it, -1 none), frame / canvas size; the stream details (aspect, frame rate, channels, sample rate, bits, bit rate) are 0 until the start of each title is read for them (to come) |
+
+A video stream's HDR comes from its first picture: `hdr` (`HDR10`,
+`HDR10+`, `HLG`, `SDR`), `colour` (primaries / transfer / matrix, range),
+`mastering` (the mastering display's luminance and primaries), `max_cll`,
+`max_fall`. The disc's protection is in its `props` as `Protection: <name>`
+(DVD: CSS, met while the stream passes read; Blu-ray: AACS and its disc
+ID, BD+, and AACS 2.0 and bus encryption as not checked yet; HD DVD:
+AACS); a DVD whose reading met CSS is `encrypted`. An audio stream's name
+by its channels (`Stereo`, `Surround 5.1`, ...) is the program's
+`audio_name()`.
+
+`disc_language_name()` gives a language code's English name (ISO 639-2
+list), `disc_mkv_codec_id()` the Matroska codec ID a stream is stored
+with (LPCM as PCM, closed captions as text). The program's `--json info`
+carries both per track (`language_name`, `codec_id`, with the stream
+file's type `file_type`) and the `properties` of the disc and each title.
+
+## Opening titles on the open disc
+
+The disc is read once: `disc_title_open(ctx, title, part, second_view,
+keep)` opens a title on a disc opened with `title` -1 (the title list and
+each title's stream pass are not done again), `av_read_frame()` gives its
+packets, `disc_title_close(ctx)` removes its streams, chapters and results
+(opening the next title closes the one before too). `part` and
+`second_view` are as the options above; `keep` (NULL: every track) says
+which of the title's tracks (its streams in the disc info) are read: a
+track not kept is not read and has no stream (logged "not selected"; track
+0, the video, is always read; the second view only when one of its tracks
+is kept). A caption track left out this way marks the video stream with
+`caption_track` = `not selected`. The program makes `keep` from `--tracks`
+(`src/disc-remuxer/select.c`). `disc_language()` gives the disc info's
+language code for a code the caller writes (2 or 3 letters).
 
 ## The opened title
 

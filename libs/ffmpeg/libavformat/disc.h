@@ -167,6 +167,9 @@ typedef struct DiscFormat {
     void (*segment_close)(AVFormatContext *s, DiscPassSource *src);
     /** Title i left out of the part's list (the titles after it move up). */
     void (*remove_title)(AVFormatContext *s, int i);
+    /** The disc info's disc-wide fields known once every title's stream
+     *  pass has read (what protection the reading met), or NULL. */
+    int  (*disc_done)(AVFormatContext *s);
     /** Title i's disc info but its streams: name, length, size, files,
      *  chapters, parts. */
     int  (*title_info)(AVFormatContext *s, int i, DiscTitleInfo *dt);
@@ -175,6 +178,9 @@ typedef struct DiscFormat {
      *  tolerance, ts), s->duration; *second_view: the second view of a 3-D
      *  title is read. */
     int  (*open_title)(AVFormatContext *s, int i, int part, int *second_view);
+    /** The opened title's own state given back (another title can be
+     *  opened after it); also after a failed open_title. */
+    void (*close_title)(AVFormatContext *s);
     /** Also after a failed load (the context as far as it came). */
     void (*close)(AVFormatContext *s);
 } DiscFormat;
@@ -188,9 +194,12 @@ typedef struct DiscContext {
     /* options, for every format part */
     int               opt_read_attempts;
     int               opt_udf_reader;
-    int               opt_title;        /**< -1: every title listed, none read */
+    int               opt_prefer_iso;   /**< DVD images: an old UDF 1.02 read through ISO 9660 (discio.h) */
+    int               opt_title;        /**< -1: every title listed, none read; then the opened title
+                                             (disc_title_open()) */
     int               opt_part;         /**< -1: the whole title, else that part of it (DiscTitleInfo.parts) */
     int               opt_second_view;  /**< 3-D titles: the second view is read (a track of its own) */
+    const uint8_t    *keep;             /**< the opened title's selected tracks (disc_title_open()), NULL all */
     int               opt_details;      /**< the title list (info) reads each track's details from the stream */
     int               opt_dolby_vision; /**< Dolby Vision enhancement layer: 0 merged into the video's frames,
                                              1 a track of its own */
@@ -241,6 +250,12 @@ DiscStreamInfo *ff_disc_title_add_stream(DiscTitleInfo *t);
 DiscChapterInfo *ff_disc_title_add_chapter(DiscTitleInfo *t);
 DiscPartInfo *ff_disc_title_add_part(DiscTitleInfo *t);
 int ff_disc_title_add_file(DiscTitleInfo *t, const char *name);
+/** A property of title t (DiscTitleInfo.props): name kept as given (a
+ *  string that lives until close), the value formatted; < 0: out of
+ *  memory. */
+int ff_disc_title_add_prop(DiscTitleInfo *t, const char *name, const char *fmt, ...) av_printf_format(3, 4);
+/** A property of the disc (DiscInfo.props), as ff_disc_title_add_prop(). */
+int ff_disc_add_prop(AVFormatContext *s, const char *name, const char *fmt, ...) av_printf_format(3, 4);
 /** A stream as ff_disc_title_add_stream() starts it: zeroed, no linked
  *  streams, no offset sequence, profile and level unknown. */
 void ff_disc_stream_init(DiscStreamInfo *k);
@@ -249,12 +264,14 @@ int  ff_disc_title_add_tracks(DiscTitleInfo *t, const DiscTrack *tracks, int nb_
 /** The opened title's streams and the title reader's tracks
  *  (DiscContext.src: tracks, nb_tracks; transport stream: ts, feeds, pids)
  *  from its tracks. Stream i is track i of what is read: a track left out
- *  (not read yet; a second view not read) has none and is logged; a Dolby
- *  Vision enhancement layer comes last (its own stream only with option
- *  dolby_vision = separate). title: its name, for the log; ts: transport
- *  stream; second_view: the second view of a 3-D video is read. */
+ *  (not selected; not read yet; a second view not read) has none and is
+ *  logged; a Dolby Vision enhancement layer comes last (its own stream only
+ *  with option dolby_vision = separate). title: its name, for the log; ts:
+ *  transport stream; second_view: the second view of a 3-D video is read;
+ *  keep: NULL every track, else keep[i] 0: track i not selected (track 0,
+ *  the video, and a video with a Dolby Vision layer are always read). */
 int  ff_disc_open_tracks(AVFormatContext *s, const char *title, const DiscTrack *tracks, int nb_tracks, int ts,
-                         int second_view);
+                         int second_view, const uint8_t *keep);
 
 /* ---- discpass.c ---- */
 

@@ -91,11 +91,22 @@ static int has_dir(DiscIOFS *fs, const char *path)
     return !fs->ops->find_dir(fs, path);
 }
 
-static void bluray_close(AVFormatContext *s)
+/* The opened title's segment reader and chapter marks given back; the
+ * next title starts without both views. */
+static void close_title(AVFormatContext *s)
 {
     BlurayDemuxContext *c = ff_disc_part(s);
     ff_bluray_seg_reader_close(&c->seg);
     av_freep(&c->chapter_times);
+    c->title = NULL;
+    c->seg0  = 0;
+    c->both  = 0;
+}
+
+static void bluray_close(AVFormatContext *s)
+{
+    BlurayDemuxContext *c = ff_disc_part(s);
+    close_title(s);
     for (int i = 0; i < c->nb_files; i++)
         av_free(c->files[i]);
     av_freep(&c->files);
@@ -322,6 +333,11 @@ static int title_info(AVFormatContext *s, int i, DiscTitleInfo *dt)
     dt->size     = ff_bluray_title_size(t);
     dt->selected = 1;
     av_strlcpy(dt->language, b->name_lang, sizeof(dt->language));
+    if ((t->alt_name && ff_disc_title_add_prop(dt, "Other name", "%s", t->alt_name) < 0) ||
+        (t->year && ff_disc_title_add_prop(dt, "Recorded", "%04d-%02d-%02d %02d:%02d:%02d", t->year, t->month,
+                                           t->day, t->hour, t->minute, t->second) < 0) ||
+        (t->nb_side && ff_disc_title_add_prop(dt, "Side clips (text subtitles)", "%d", t->nb_side) < 0))
+        return AVERROR(ENOMEM);
     for (int k = 0; k < t->nb_segs; k++)
         for (int j = 0; j < t->segs[k].nb_items; j++) {
             const BluraySegItem *it = &t->segs[k].items[j];
@@ -461,6 +477,25 @@ static int bluray_load(AVFormatContext *s)
     if ((ret = ff_bluray_titles_build(s, b, d->opt_min_length)) < 0)
         return ret;
     d->info.name      = b->name;
+    if (ff_disc_add_prop(s, "Kind", "%s", b->parent_fs ? "AVCHD" : b->bdav ? "BDAV (recorded)" : "BDMV") < 0 ||
+        (b->name && b->name_lang[0] && ff_disc_add_prop(s, "Name's language", "%s", b->name_lang) < 0) ||
+        (b->name_eng && (!b->name || strcmp(b->name_eng, b->name)) &&
+         ff_disc_add_prop(s, "English name", "%s", b->name_eng) < 0) ||
+        ff_disc_add_prop(s, "Protection: AACS", "%s", b->aacs ? "yes" : "no") < 0 ||
+        ff_disc_add_prop(s, "Protection: AACS 2.0", "not checked yet") < 0 ||
+        ff_disc_add_prop(s, "Protection: BD+", "%s", b->bdplus ? "yes (not supported yet)" : "no") < 0 ||
+        ff_disc_add_prop(s, "Protection: bus encryption", "not checked yet") < 0 ||
+        ff_disc_add_prop(s, "Playlists", "%d", b->nb_playlists) < 0 ||
+        ff_disc_add_prop(s, "Clips", "%d", b->nb_clips) < 0 ||
+        (b->nb_jars && ff_disc_add_prop(s, "BD-J archives", "%d", b->nb_jars) < 0))
+        return AVERROR(ENOMEM);
+    if (b->has_disc_id) {
+        char id[41];
+        for (int i = 0; i < 20; i++)
+            snprintf(id + 2 * i, 3, "%02X", b->disc_id[i]);
+        if (ff_disc_add_prop(s, "Protection: AACS disc ID", "%s", id) < 0)
+            return AVERROR(ENOMEM);
+    }
     d->info.encrypted = has_dir(d->fs, "/AACS") || has_dir(d->fs, "/AACS_bd") ||
                         has_dir(d->fs, "/AACS2_av") || has_dir(d->fs, "/AACS2_mv");
     return 0;
@@ -480,5 +515,6 @@ const DiscFormat ff_disc_bluray = {
     .remove_title  = remove_title,
     .title_info    = title_info,
     .open_title    = open_title,
+    .close_title   = close_title,
     .close         = bluray_close,
 };

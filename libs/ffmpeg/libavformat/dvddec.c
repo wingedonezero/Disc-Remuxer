@@ -83,12 +83,20 @@ static int read_block(AVFormatContext *s, int k, uint32_t block, uint8_t *buf)
     return ff_dvd_segment_read(&c->disc, c->title, k, block, buf);
 }
 
-static void dvd_close(AVFormatContext *s)
+/* The opened title's chapter records given back. */
+static void close_title(AVFormatContext *s)
 {
     DVDDemuxContext *c = ff_disc_part(s);
     av_freep(&c->chapter_times);
     av_freep(&c->chapter_clips);
     av_freep(&c->chapter_offsets);
+    c->title = NULL;
+}
+
+static void dvd_close(AVFormatContext *s)
+{
+    DVDDemuxContext *c = ff_disc_part(s);
+    close_title(s);
     ff_dvd_titles_free(&c->titles);
     ff_dvd_scan_free(&c->scan);
     ff_dvd_disc_free(&c->disc);
@@ -321,6 +329,16 @@ static int title_info(AVFormatContext *s, int i, DiscTitleInfo *dt)
     else
         snprintf(t->source, sizeof(t->source), "VTS_%02d program chain %d, cells", t->vtsn, t->pgc->number + 1);
     dt->source = t->source;
+    if (ff_disc_title_add_prop(dt, "Title on the disc", "%s", t->name) < 0 ||
+        ff_disc_title_add_prop(dt, "Title set", "VTS_%02d, its title %d", t->vtsn, t->vts_ttn) < 0 ||
+        ff_disc_title_add_prop(dt, "Program chain", "%d", t->pgc->number + 1) < 0 ||
+        ff_disc_title_add_prop(dt, "Navigation", "%s", t->scan ? t->scan->name : "not reached (cells trimmed)") < 0 ||
+        (t->nr_of_angles > 1 && ff_disc_title_add_prop(dt, "Angles", "%d", t->nr_of_angles) < 0) ||
+        ff_disc_title_add_prop(dt, "Cells", "%d", t->nb_cells) < 0 ||
+        ff_disc_title_add_prop(dt, "Length measured", "%u:%02u:%02u (the program chain says %u:%02u:%02u)",
+                               t->measured / 3600, t->measured / 60 % 60, t->measured % 60, t->declared / 3600,
+                               t->declared / 60 % 60, t->declared % 60) < 0)
+        return AVERROR(ENOMEM);
     for (int k = 0; k < t->nb_segments; k++) {
         dt->size += t->segments[k].size;
         if (ff_disc_title_add_file(dt, t->segments[k].cell_map) < 0)
@@ -410,6 +428,21 @@ static int dvd_load(AVFormatContext *s)
     return 0;
 }
 
+/* Protection: CSS when a title set's scrambled sectors were met while the
+ * stream passes read (its title key looked for). */
+static int disc_done(AVFormatContext *s)
+{
+    DiscContext *d = s->priv_data;
+    DVDDemuxContext *c = ff_disc_part(s);
+    int css = 0;
+
+    for (int i = 1; i < c->disc.nb_ifos; i++)
+        css |= c->disc.ifos[i] && c->disc.ifos[i]->css_state != 0;
+    d->info.encrypted = css;
+    return ff_disc_add_prop(s, "Protection: CSS", "%s", css ? "yes" :
+                            "no (no scrambled sector in what was read)");
+}
+
 const DiscFormat ff_disc_dvd = {
     .name          = "DVD-Video",
     .log_name      = "DVD",
@@ -422,7 +455,9 @@ const DiscFormat ff_disc_dvd = {
     .title_tracks  = title_tracks_of,
     .title_segment = title_segment,
     .remove_title  = remove_title,
+    .disc_done     = disc_done,
     .title_info    = title_info,
     .open_title    = open_title,
+    .close_title   = close_title,
     .close         = dvd_close,
 };

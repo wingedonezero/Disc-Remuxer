@@ -12,9 +12,12 @@
 #
 # Every library is built from libs/ and linked statically, so dist/<mode>/
 # holds programs that run on their own. Nothing installed on the host is
-# picked up (FFmpeg's autodetection is off; every library is ours).
+# picked up (FFmpeg's autodetection is off; every library is ours), but Qt:
+# the GUI links the host's Qt 6.
 #
-# Needs: a C compiler, make, nasm, pkg-config, cmake, rsync; for the tests
+# Needs: a C and C++ compiler, make, nasm, pkg-config, cmake, rsync, the Qt 6
+# Widgets development files (the GUI; the one library taken from the host);
+# for the tests
 # python3 with venv and its headers (pip fetches the test tools once).
 
 MODE ?= debug
