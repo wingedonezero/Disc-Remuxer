@@ -135,16 +135,25 @@ const DiscInfo *disc_info(const AVFormatContext *s);
  * first. The disc stays loaded: its title list and each title's stream
  * pass are not done again. part >= 0: only that part of the title
  * (DiscTitleInfo.parts); second_view: a 3-D title's second view is read
- * too. Its streams, chapters (at the end) and s->duration are the title's;
+ * too. keep: NULL every track, else keep[i] 0 leaves track i of the title's
+ * streams (DiscTitleInfo.streams) out: not read, no stream (track 0, the
+ * video, is always read; the second view only when one of its tracks is
+ * kept). Its streams, chapters (at the end) and s->duration are the title's;
  * av_read_frame() gives its packets. Returns 0 or an AVERROR (the title
  * is then closed).
  */
-int disc_title_open(AVFormatContext *s, int title, int part, int second_view);
+int disc_title_open(AVFormatContext *s, int title, int part, int second_view, const uint8_t *keep);
 
 /**
  * Close the title opened on s: its streams, chapters and results are
  * removed; the disc stays loaded. Nothing to do when none is open.
  */
 void disc_title_close(AVFormatContext *s);
+
+/**
+ * The ISO 639-2 bibliographic code the disc info uses for a language code
+ * (2 or 3 letters, either ISO 639-2 form), NULL when not known.
+ */
+const char *disc_language(const char *code);
 
 #endif /* AVFORMAT_DISCINFO_H */

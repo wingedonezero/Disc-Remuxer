@@ -21,7 +21,8 @@ typedef struct TitleJob {
     AVFormatContext *disc;     /* the open disc (open_disc()); the title is opened on it and closed again */
     int         title;         /* index in the disc's title list */
     int         part, nb_parts;/* part >= 0: only that part of the title's nb_parts (files _p1, _p2, ...) */
-    int         second_view;   /* a 3-D title's second view as a track of its own */
+    int         second_view;   /* a 3-D title's second view as a track of its own (with keep: when kept) */
+    const uint8_t *keep;       /* the title's tracks to rip (disc_title_open()), NULL every track */
     int         ordinal, count;/* this is title <ordinal> of <count> selected */
     const char *out_dir;
     int         sub_folder;    /* the title's files in a folder of its name */

@@ -25,6 +25,7 @@
 #include "names.h"
 #include "settings.h"
 #include "codecs.h"
+#include "select.h"
 #include "writer.h"
 
 #ifndef DISC_REMUXER_VERSION
@@ -42,7 +43,8 @@ static void usage(FILE *f)
           "  version                               program and library versions\n"
           "\n"
           "  <source>  a disc image (.iso) or a disc folder\n"
-          "  <titles>  all | 3 | 1,3-5   (numbers as info lists them, from 0)\n"
+          "  <titles>  all | 3 | 1,3-5   (numbers as info lists them, from 0; all: the titles not shorter\n"
+          "            than the minimum length, a number: that title whatever its length)\n"
           "\n"
           "options:\n"
           "  --config <file>      settings file to use (default: disc-remuxer.toml next to the program)\n"
@@ -50,6 +52,10 @@ static void usage(FILE *f)
           "  --json               JSON records on stdout, one per line, instead of text\n"
           "  --second-view <titles>  demux: also write the second view of these 3-D titles (the .mvc\n"
           "                       next to the base view); setting bluray.second_view does it for every title\n"
+          "  --tracks [<title>:]<steps>  which tracks: every one to start with, then steps left to right,\n"
+          "                       + (rip) or - (leave out) and all, video, audio, subtitle, forced, a\n"
+          "                       language (eng, fr, ...) or a track number; e.g. \"-subtitle,+eng\" (every\n"
+          "                       title), \"3:-2,-5\" (title 3 only); repeatable; info shows the result\n"
           "  --split <titles>     demux: write these titles' parts one by one (a title that plays whole\n"
           "                       stream files back to back, e.g. episodes; info lists the parts);\n"
           "                       setting output.split_joined_titles does it for every title\n"
@@ -130,7 +136,7 @@ static const char *roles_text(int roles, const char *sep, int quoted, char *buf,
 
 /* One title's line (and, with detail, its files and streams) plus its JSON
  * record. */
-static void title_overview(const DiscTitleInfo *t, int detail)
+static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *keep)
 {
     char dur[32], size[32], files[2048] = "", js[512], jl[16], extra[160] = "", pt[24] = "";
     AVBPrint streams, parts;
@@ -153,7 +159,7 @@ static void title_overview(const DiscTitleInfo *t, int detail)
                  "\"from_track\":%s,\"forced\":%s,\"second_view\":%s,\"second_layer\":%s,\"offset_sequence\":%s,\"width\":%s,"
                  "\"height\":%s,\"channels\":%s,\"sample_rate\":%s,\"bits\":%s,\"bit_rate\":%s,"
                  "\"description\":%s,\"profile\":%s,\"dolby_vision\":%s,\"frame_rate\":%s,\"aspect\":%s,"
-                 "\"layout\":%s,\"layout_mask\":%s,\"roles\":[%s]}",
+                 "\"layout\":%s,\"layout_mask\":%s,\"roles\":[%s],\"selected\":%s}",
                  i ? "," : "", i, av_get_media_type_string(k->type),
                  json_str(jc, sizeof(jc), codec_short(k)),
                  json_str(jsl, sizeof(jsl), k->language), json_index(ji, sizeof(ji), k->inner_track),
@@ -171,7 +177,8 @@ static void title_overview(const DiscTitleInfo *t, int detail)
                                           json_str(jr, sizeof(jr), fq)) : "null",
                  *aspect_text(k, as, sizeof(as)) ? json_str(ja, sizeof(ja), as) : "null",
                  *layout_text(k, lt, sizeof(lt)) && k->layout ? json_str(jl2, sizeof(jl2), lt) : "null",
-                 json_num(lm, sizeof(lm), (int64_t)k->layout), roles_text(k->roles, ",", 1, rl, sizeof(rl)));
+                 json_num(lm, sizeof(lm), (int64_t)k->layout), roles_text(k->roles, ",", 1, rl, sizeof(rl)),
+                 keep[i] ? "true" : "false");
     }
     for (int i = 0; i < t->nb_files; i++) {
         char jf[300];
@@ -218,6 +225,8 @@ static void title_overview(const DiscTitleInfo *t, int detail)
             if (k->offset_sequence >= 0)
                 snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "  3-D offset sequence %d",
                          k->offset_sequence);
+            if (!keep[i])
+                snprintf(link + strlen(link), sizeof(link) - strlen(link), "  not selected");
             {
                 /* what the stream is: its codec in full, then its details */
                 char d[96], det[160] = "", a[24], r[48], l[64], b[24];
@@ -276,19 +285,68 @@ static void title_overview(const DiscTitleInfo *t, int detail)
     av_bprint_finalize(&parts, NULL);
 }
 
+/* What the caller chose of the disc's tracks: the --tracks values, the
+ * 3-D titles whose second view is read (--second-view). */
+typedef struct Choice {
+    const char *const *tracks;
+    int                 nb_tracks;
+    const char         *second;
+} Choice;
+
+static int parse_titles(const char *spec, const DiscInfo *d, int only_selected, char *sel);
+
+/* Each title's tracks to rip (select.h) into keeps[title] (freed with
+ * free_keeps()), the --second-view titles into *second (nb_titles); 0, or
+ * -1 (logged). */
+static int title_choices(const DiscInfo *d, const Choice *c, uint8_t ***keeps, char **second)
+{
+    int t;
+
+    *keeps = calloc(d->nb_titles ? d->nb_titles : 1, sizeof(**keeps));
+    *second = calloc(d->nb_titles ? d->nb_titles : 1, 1);
+    if (!*keeps || !*second)
+        return -1;
+    if ((t = tracks_unknown_title(c->tracks, c->nb_tracks, d->nb_titles)) >= 0) {
+        log_msg(MSG_TITLE_MISSING, LOG_ERROR, "--tracks: title #%d does not exist (the disc has %d)", t,
+                d->nb_titles);
+        return -1;
+    }
+    if (c->second && parse_titles(c->second, d, 0, *second) < 0)
+        return -1;
+    if (setting_bool("bluray.second_view"))
+        memset(*second, 1, d->nb_titles);
+    for (t = 0; t < d->nb_titles; t++) {
+        if (!((*keeps)[t] = calloc(d->titles[t].nb_streams ? d->titles[t].nb_streams : 1, 1)))
+            return -1;
+        tracks_select(&d->titles[t], (*second)[t], c->tracks, c->nb_tracks, (*keeps)[t]);
+    }
+    return 0;
+}
+
+static void free_keeps(uint8_t **keeps, int nb)
+{
+    for (int t = 0; keeps && t < nb; t++)
+        free(keeps[t]);
+    free(keeps);
+}
+
 /* The disc line and the overview of its titles (with the JSON disc and title
  * records), from the one open of source (the disc info; no title opened);
- * detail: each title's files and streams too. The open disc into *disc (its
- * titles are opened on it), or NULL when source cannot be read as a disc
- * (logged). */
-static const DiscInfo *disc_overview(const char *source, int detail, AVFormatContext **disc)
+ * detail: each title's files and streams too; each track selected or not
+ * as c chose (*keeps, *second: title_choices()). The open disc into *disc
+ * (its titles are opened on it), or NULL when source cannot be read as a
+ * disc or the choice does not fit it (logged). */
+static const DiscInfo *disc_overview(const char *source, int detail, const Choice *c, AVFormatContext **disc,
+                                     uint8_t ***keeps, char **second)
 {
     AVFormatContext *ctx = NULL;
     const DiscInfo *d;
     char revs[32] = "", js1[64], js2[256], js3[64], js4[1024], jname[1100];
     int ret;
 
-    *disc = NULL;
+    *disc   = NULL;
+    *keeps  = NULL;
+    *second = NULL;
     if ((ret = open_disc(DISC_FORMAT, source, &ctx)) < 0 || !(d = disc_info(ctx))) {
         if (ret == AVERROR(ENOKEY))
             log_msg(MSG_SOURCE_UNSUPPORTED, LOG_ERROR, "%s is encrypted (AACS) and the key files have no key for "
@@ -314,23 +372,38 @@ static const DiscInfo *disc_overview(const char *source, int detail, AVFormatCon
              json_str(js1, sizeof(js1), d->kind), json_str(js2, sizeof(js2), d->label ? d->label : ""),
              json_str(js3, sizeof(js3), d->filesystem ? d->filesystem : ""), d->encrypted ? "true" : "false",
              d->nb_titles, jname);
+    if (title_choices(d, c, keeps, second) < 0) {
+        free_keeps(*keeps, d->nb_titles);
+        free(*second);
+        *keeps  = NULL;
+        *second = NULL;
+        avformat_close_input(&ctx);
+        return NULL;
+    }
     for (int t = 0; t < d->nb_titles; t++)
-        title_overview(&d->titles[t], detail);
+        title_overview(&d->titles[t], detail, (*keeps)[t]);
     *disc = ctx;
     return d;
 }
 
-/* "all" | "3" | "1,3-5" into a 0/1 list of nb_titles; returns the count
- * selected, or -1 (logged). */
-static int parse_titles(const char *spec, int nb_titles, char *sel)
+/* "all" | "3" | "1,3-5" into a 0/1 list of d's titles; all with
+ * only_selected: the titles not shorter than the minimum length (each one
+ * left out said); returns the count selected, or -1 (logged). */
+static int parse_titles(const char *spec, const DiscInfo *d, int only_selected, char *sel)
 {
-    int count = 0;
+    int count = 0, nb_titles = d->nb_titles;
     const char *p = spec;
 
     memset(sel, 0, nb_titles);
     if (!strcmp(spec, "all")) {
-        memset(sel, 1, nb_titles);
-        return nb_titles;
+        for (int t = 0; t < nb_titles; t++) {
+            sel[t] = !only_selected || d->titles[t].selected;
+            count += sel[t];
+            if (!sel[t])
+                log_msg(MSG_TITLE_SELECTION, LOG_INFO, "Title #%d is shorter than the minimum length: not ripped "
+                        "with all (name it to rip it)", t);
+        }
+        return count;
     }
     while (*p) {
         char *end;
@@ -397,23 +470,29 @@ static int mkdirs(const char *path)
     return mkdir(tmp, 0777) < 0 && errno != EEXIST ? -1 : 0;
 }
 
-static int cmd_info(const char *source)
+static int cmd_info(const char *source, const Choice *c)
 {
     AVFormatContext *disc;
+    const DiscInfo *d;
+    uint8_t **keeps;
+    char *second;
 
     log_msg(MSG_SOURCE, LOG_INFO, "Source: %s", source);
-    if (!disc_overview(source, 1, &disc))
+    if (!(d = disc_overview(source, 1, c, &disc, &keeps, &second)))
         return 1;
+    free_keeps(keeps, d->nb_titles);
+    free(second);
     avformat_close_input(&disc);
     return 0;
 }
 
 static int cmd_demux(const char *source, const char *titles, const char *out_dir, const char *split,
-                     const char *second)
+                     const Choice *c)
 {
     char name[512], logp[PATH_MAX + 600], dbgp[PATH_MAX + 600], *sel, *spl = NULL, *sv = NULL;
     AVFormatContext *disc;
     const DiscInfo *di;
+    uint8_t **keeps = NULL;
     int nb, count, ordinal = 0, failed = 0, done = 0, errors, warnings;
     int64_t track_warnings = 0;
 
@@ -434,21 +513,21 @@ static int cmd_demux(const char *source, const char *titles, const char *out_dir
     log_msg(MSG_OUTPUT_FOLDER, LOG_INFO, "Output folder: %s", out_dir);
 
     /* the disc is read once: every title is opened on it */
-    if (!(di = disc_overview(source, 0, &disc))) {
+    if (!(di = disc_overview(source, 0, c, &disc, &keeps, &sv))) {
         log_close_files();
         return 1;
     }
     nb = di->nb_titles;
     sel = calloc(nb ? nb : 1, 1);
     spl = calloc(nb ? nb : 1, 1);
-    sv  = calloc(nb ? nb : 1, 1);
-    if (!sel || !spl || !sv || (count = parse_titles(titles, nb, sel)) <= 0 ||
-        (split && parse_titles(split, nb, spl) < 0) || (second && parse_titles(second, nb, sv) < 0)) {
-        if (sel && spl && sv && !count)
+    if (!sel || !spl || (count = parse_titles(titles, di, 1, sel)) <= 0 ||
+        (split && parse_titles(split, di, 0, spl) < 0)) {
+        if (sel && spl && !count)
             log_msg(MSG_TITLE_SELECTION, LOG_ERROR, "No title selected");
         free(sel);
         free(spl);
         free(sv);
+        free_keeps(keeps, nb);
         avformat_close_input(&disc);
         log_close_files();
         return 2;
@@ -460,15 +539,14 @@ static int cmd_demux(const char *source, const char *titles, const char *out_dir
                     "back): written whole", t);
     if (setting_bool("output.split_joined_titles"))
         memset(spl, 1, nb);
-    if (setting_bool("bluray.second_view"))
-        memset(sv, 1, nb);
     for (int t = 0; t < nb; t++) {
         int parts = spl[t] ? di->titles[t].nb_parts : 0, part_failed = 0;
         if (!sel[t])
             continue;
         ++ordinal;
         for (int p = parts ? 0 : -1; p < parts; p++) {
-            TitleJob job = { disc, t, p, parts, sv[t], ordinal, count, out_dir, count > 1 };
+            /* the second view: read when one of its tracks is selected */
+            TitleJob job = { disc, t, p, parts, 1, keeps[t], ordinal, count, out_dir, count > 1 };
             TitleOutcome res;
             demux_title(&job, &res);
             part_failed    += res.failed;
@@ -480,6 +558,7 @@ static int cmd_demux(const char *source, const char *titles, const char *out_dir
     free(sel);
     free(spl);
     free(sv);
+    free_keeps(keeps, nb);
     avformat_close_input(&disc);
 
     log_counts(&errors, &warnings);
@@ -504,7 +583,8 @@ static void cmd_version(void)
 int main(int argc, char **argv)
 {
     const char *config = NULL, *split = NULL, *second = NULL, **sets = calloc(argc, sizeof(char *));
-    int json = 0, verbose = 0, nb_sets = 0, i, ret;
+    const char **tracks = calloc(argc, sizeof(char *));
+    int json = 0, verbose = 0, nb_sets = 0, nb_tracks = 0, i, ret;
 
     for (i = 1; i < argc && argv[i][0] == '-'; i++) {
         if (!strcmp(argv[i], "--json"))
@@ -521,6 +601,8 @@ int main(int argc, char **argv)
             split = argv[++i];
         else if (!strcmp(argv[i], "--second-view") && i + 1 < argc)
             second = argv[++i];
+        else if (!strcmp(argv[i], "--tracks") && i + 1 < argc)
+            tracks[nb_tracks++] = argv[++i];
         else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
             usage(stdout);
             return 0;
@@ -542,6 +624,9 @@ int main(int argc, char **argv)
         if (settings_set(sets[k]) < 0)
             return 2;
     config_dirs();
+    for (int k = 0; k < nb_tracks; k++)
+        if (tracks_check(tracks[k]) < 0)
+            return 2;
 
     if (!strcmp(argv[i], "version")) {
         cmd_version();
@@ -553,14 +638,17 @@ int main(int argc, char **argv)
             settings_show();
         ret = 0;
     } else if (!strcmp(argv[i], "info") && i + 1 < argc) {
-        ret = cmd_info(argv[i + 1]);
+        Choice c = { tracks, nb_tracks, second };
+        ret = cmd_info(argv[i + 1], &c);
     } else if (!strcmp(argv[i], "demux") && i + 3 < argc) {
-        ret = cmd_demux(argv[i + 1], argv[i + 2], argv[i + 3], split, second);
+        Choice c = { tracks, nb_tracks, second };
+        ret = cmd_demux(argv[i + 1], argv[i + 2], argv[i + 3], split, &c);
     } else {
         fprintf(stderr, "disc-remuxer: unknown command or missing arguments: %s\n\n", argv[i]);
         usage(stderr);
         ret = 2;
     }
     free(sets);
+    free(tracks);
     return ret;
 }

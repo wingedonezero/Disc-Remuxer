@@ -37,12 +37,19 @@ fills the disc, the format part its titles.
 
 ## Opening titles on the open disc
 
-The disc is read once: `disc_title_open(ctx, title, part, second_view)`
-opens a title on a disc opened with `title` -1 (the title list and each
-title's stream pass are not done again), `av_read_frame()` gives its
+The disc is read once: `disc_title_open(ctx, title, part, second_view,
+keep)` opens a title on a disc opened with `title` -1 (the title list and
+each title's stream pass are not done again), `av_read_frame()` gives its
 packets, `disc_title_close(ctx)` removes its streams, chapters and results
 (opening the next title closes the one before too). `part` and
-`second_view` are as the options above.
+`second_view` are as the options above; `keep` (NULL: every track) says
+which of the title's tracks (its streams in the disc info) are read: a
+track not kept is not read and has no stream (logged "not selected"; track
+0, the video, is always read; the second view only when one of its tracks
+is kept). A caption track left out this way marks the video stream with
+`caption_track` = `not selected`. The program makes `keep` from `--tracks`
+(`src/disc-remuxer/select.c`). `disc_language()` gives the disc info's
+language code for a code the caller writes (2 or 3 letters).
 
 ## The opened title
 

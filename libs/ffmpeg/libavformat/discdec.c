@@ -43,6 +43,7 @@
 #include "disc.h"
 #include "discinfo.h"
 #include "discio.h"
+#include "disclang.h"
 #include "disctl.h"
 #include "internal.h"
 
@@ -213,11 +214,11 @@ static int track_stream(AVFormatContext *s, const DiscTrack *k, int index, const
 }
 
 int ff_disc_open_tracks(AVFormatContext *s, const char *title, const DiscTrack *tracks, int nb_tracks, int ts,
-                        int second_view)
+                        int second_view, const uint8_t *keep)
 {
     DiscContext *d = s->priv_data;
     const char *fmt = d->fmt->log_name;
-    int n = 0, layer = -1, ret;
+    int n = 0, layer = -1, caption_left = 0, ret;
     char place[64];
 
     /* one more for a Dolby Vision enhancement layer (read from its own PID) */
@@ -232,6 +233,13 @@ int ff_disc_open_tracks(AVFormatContext *s, const char *title, const DiscTrack *
         enum AVCodecID codec = k->kind == DR_KIND_CAPTION ? AV_CODEC_ID_SUBRIP : k->info.codec;
         DRTitleTrack *t = &d->tracks[n];
 
+        if (i && keep && !keep[i]) {
+            av_log(s, AV_LOG_INFO, "%s: title %s: track %d (%s %s%s%s) is not selected: left out\n", fmt, title, i,
+                   av_get_media_type_string(k->info.type), avcodec_get_name(k->info.codec),
+                   k->info.language[0] ? ", " : "", k->info.language);
+            caption_left |= k->kind == DR_KIND_CAPTION;
+            continue;
+        }
         if (view && !second_view) {
             av_log(s, AV_LOG_INFO, "%s: title %s: track %d, the 3-D second view (PID 0x%04x), is left out (not "
                    "asked for)\n", fmt, title, i, k->feed.pid);
@@ -301,6 +309,10 @@ int ff_disc_open_tracks(AVFormatContext *s, const char *title, const DiscTrack *
                d->opt_dolby_vision ? "a stream of its own" : "merged into the video's frames");
         n++;
     }
+    /* line-21 caption data the video carries is left out as asked, not lost */
+    if (caption_left && s->nb_streams &&
+        (ret = av_dict_set(&s->streams[0]->metadata, "caption_track", "not selected", 0)) < 0)
+        return ret;
     d->src.ts        = ts;
     d->src.tracks    = d->tracks;
     d->src.nb_tracks = n;
@@ -462,7 +474,8 @@ static int open_title(AVFormatContext *s)
     }
     if ((ret = f->open_title(s, i, d->opt_part, &both)) < 0)
         return ret;
-    return ff_disc_open_tracks(s, name ? name : "?", d->title_tracks[i], d->nb_title_tracks[i], d->src.ts, both);
+    return ff_disc_open_tracks(s, name ? name : "?", d->title_tracks[i], d->nb_title_tracks[i], d->src.ts, both,
+                               d->keep);
 }
 
 static int disc_read_header(AVFormatContext *s)
@@ -538,7 +551,7 @@ void disc_title_close(AVFormatContext *s)
     s->duration = AV_NOPTS_VALUE;
 }
 
-int disc_title_open(AVFormatContext *s, int title, int part, int second_view)
+int disc_title_open(AVFormatContext *s, int title, int part, int second_view, const uint8_t *keep)
 {
     DiscContext *d;
     int ret;
@@ -549,12 +562,28 @@ int disc_title_open(AVFormatContext *s, int title, int part, int second_view)
     disc_title_close(s);
     if (title < 0)
         return AVERROR(EINVAL);
+    /* a 3-D title's second view is read only when one of its tracks is
+     * selected */
+    if (second_view && keep && title < d->info.nb_titles) {
+        int any = 0;
+        for (int i = 0; i < d->nb_title_tracks[title]; i++)
+            any |= (d->title_tracks[title][i].flags & DISC_TRACK_SECOND_VIEW) && keep[i];
+        second_view = any;
+    }
     d->opt_title       = title;
     d->opt_part        = part;
     d->opt_second_view = second_view;
-    if ((ret = open_title(s)) < 0 || (ret = ff_disc_title_reader_open(s, &d->src)) < 0)
+    d->keep            = keep;
+    ret = open_title(s);
+    d->keep = NULL;
+    if (ret < 0 || (ret = ff_disc_title_reader_open(s, &d->src)) < 0)
         disc_title_close(s);
     return ret;
+}
+
+const char *disc_language(const char *code)
+{
+    return ff_disc_lang_code(code);
 }
 
 static int disc_read_packet(AVFormatContext *s, AVPacket *pkt)

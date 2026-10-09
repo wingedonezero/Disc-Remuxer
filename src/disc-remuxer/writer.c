@@ -471,6 +471,7 @@ int open_disc(const char *format, const char *source, AVFormatContext **ctx)
     av_dict_set_int(&opts, "title", -1, 0);
     av_dict_set(&opts, "dolby_vision", setting_text("bluray.dolby_vision"), 0);
     av_dict_set_int(&opts, "read_attempts", setting_int("read.attempts"), 0);
+    av_dict_set_int(&opts, "min_length", setting_int("titles.min_length"), 0);
     av_dict_set(&opts, "udf_reader", setting_text("read.udf_reader"), 0);
     av_dict_set(&opts, "dvd_cell_mode", setting_text("dvd.cell_mode"), 0);
     av_dict_set(&opts, "dvd_cell_check", setting_text("dvd.cell_check"), 0);
@@ -499,13 +500,16 @@ static int64_t meta_int(AVDictionary *m, const char *key)
 static void video_detail(const AVStream *st, char *json, size_t size)
 {
     const AVDictionaryEntry *l21 = av_dict_get(st->metadata, "line21", NULL, 0);
+    /* the caption track left out as asked: its data is not lost by mistake */
+    int asked = !!av_dict_get(st->metadata, "caption_track", NULL, 0);
     int64_t blocks = meta_int(st->metadata, "cc_blocks"), text = meta_int(st->metadata, "cc_text");
     char jl[64];
 
     if (blocks)
-        log_text(text ? LOG_WARNING : LOG_INFO, "      line-21 caption data taken out of the video, not kept: %"PRId64
-                 " caption blocks, %s%s%s%s", blocks, text ? "WITH caption text" : "no caption text",
-                 l21 ? " (the disc marks captions on " : "", l21 ? l21->value : "", l21 ? ")" : "");
+        log_text(text && !asked ? LOG_WARNING : LOG_INFO, "      line-21 caption data taken out of the video, not "
+                 "kept%s: %"PRId64" caption blocks, %s%s%s%s", asked ? " (the caption track is not selected)" : "",
+                 blocks, text ? "WITH caption text" : "no caption text", l21 ? " (the disc marks captions on " : "",
+                 l21 ? l21->value : "", l21 ? ")" : "");
     else if (l21)
         log_text(LOG_INFO, "      the disc marks line-21 captions on %s, but the video carries none", l21->value);
     if (blocks || l21)
@@ -583,7 +587,7 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         snprintf(jpart, sizeof(jpart), ",\"part\":%d", job->part + 1);
     } else
         snprintf(who, sizeof(who), "Title #%d", job->title);
-    if ((ret = disc_title_open(ctx, job->title, job->part, job->second_view)) < 0) {
+    if ((ret = disc_title_open(ctx, job->title, job->part, job->second_view, job->keep)) < 0) {
         log_step("=== Title %d/%d: %s ===", job->ordinal, job->count, who + 6);
         log_msg(MSG_TITLE_OPEN_FAILED, LOG_ERROR, "%s cannot be opened: %s", who, av_err2str(ret));
         res->failed = 1;

@@ -41,6 +41,9 @@ static const Setting registry[] = {
     { "aacs", "key_files", SET_LIST, "", 0, 0, NULL,
       "AACS key files (KEYDB.cfg format), read in this order; the first one holding a key for the disc "
       "is used. Empty: .config/aacs/KEYDB.cfg next to the program." },
+    { "titles", "min_length", SET_INT, "0", 0, 86400, NULL,
+      "Titles shorter than this (seconds) are not ripped with demux all: a DVD or HD DVD lists them as not "
+      "selected (a title number still rips them), a Blu-ray leaves them out of its title list. 0: every title." },
     { "output", "file_name_template", SET_TEXT, "", 0, 0, NULL,
       "How a title's output files are named. {NAME1} the title's name, {CMNT1} its comment, {DT} its "
       "date, {N2} its number with two digits; {prefix:VAR} writes the prefix only after other text. "

@@ -35,6 +35,7 @@ enum {
 
     MSG_TRACK                = 5001,
     MSG_TRACK_EMPTY          = 5002,
+    MSG_TRACK_SELECTION      = 5003,
 
     MSG_OUTPUT_FOLDER        = 6001,
     MSG_TITLE_DONE           = 6002,
