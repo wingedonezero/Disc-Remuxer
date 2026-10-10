@@ -186,7 +186,9 @@ int ff_disctl_lpcm_bd_header(DRLpcm *p, void *log, const uint8_t *u, int size)
     av_log(log, AV_LOG_DEBUG, "Title timeline: LPCM: Blu-ray, %d bits, %d Hz, %d channels (%d stored, mask 0x%"PRIx64
            "), %d samples per %d-byte unit\n", p->bits, p->rate, p->channels, p->coded, p->chmask, p->spf,
            p->frame_bytes);
-    if (p->bits != 24 || p->channels != 2 || p->rate != 48000)
+    /* the formats real discs have shown, each = the reference's samples:
+     * 24-bit and 16-bit stereo at 48 kHz */
+    if ((p->bits != 24 && p->bits != 16) || p->channels != 2 || p->rate != 48000)
         av_log(log, AV_LOG_WARNING, "Title timeline: LPCM: Blu-ray %d-bit %d-channel %d Hz [untested on real discs]\n",
                p->bits, p->channels, p->rate);
     if (p->payload % ((p->bits == 16 ? 2 : 3) * p->coded))

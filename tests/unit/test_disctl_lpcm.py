@@ -5,7 +5,7 @@ through the frame step and the audio stage. The 16-bit stereo 48 kHz case is the
 one the reference program was observed on (a byte swap of each sample); the
 other sample sizes follow the DVD-Video sample layout."""
 
-from helpers import ffi, lib
+from helpers import ffi, install_log, lib, logged
 from helpers.disctl import Handles, codec_id, fn
 
 F_KEY, F_SYNC = lib.DR_F_KEY, lib.DR_F_SYNC
@@ -135,6 +135,16 @@ def test_the_blu_ray_header_sets_the_format():
     r = lpcm()
     assert bd_header(r, bd(1200, 1, 5, 2)) == 0, "mono, 192 kHz, 20 bits"
     assert (r.bits, r.rate, r.channels, r.coded, r.spf) == (20, 192000, 1, 2, 200), "mono is stored as 2 channels"
+
+
+def test_blu_ray_formats_no_real_disc_has_shown_are_said_untested():
+    # 24-bit and 16-bit stereo 48 kHz were met on real discs (= the
+    # reference's samples); other formats are ripped and said untested
+    for h, untested in ((bd(1440, 3, 1, 3), False), (bd(960, 3, 1, 1), False), (bd(960, 9, 1, 1), True),
+                        (bd(960, 3, 4, 1), True), (bd(1200, 3, 1, 2), True)):
+        install_log()
+        assert bd_header(lpcm(), h) == 0
+        assert logged("[untested on real discs]") == untested, h
 
 
 def test_a_blu_ray_header_that_states_no_format_is_refused():

@@ -124,6 +124,8 @@ static int sync_mlp(const uint8_t *p, int n)
     return major_sync(p, n);
 }
 
+static int output_timing(const MlpState *m, const uint8_t *p, int n);
+
 static int header_mlp(DRAudio *a, const DRFrame *f, DRAudioHeader *h)
 {
     MlpState *m = ff_disctl_audio_priv(a);
@@ -142,6 +144,15 @@ static int header_mlp(DRAudio *a, const DRFrame *f, DRAudioHeader *h)
     m->ext        = m->truehd && (p[0x1d] & 1) ? p[0x1e] >> 4 : 0;
     h->rate       = m->rate;
     h->samples    = m->samples;
+    /* The AUs before this first major sync (a segment that starts between
+     * two major syncs: they waited for the stream values) take their sample
+     * numbers counted back from its restart header: each holds the stream's
+     * samples per AU, and they lead up to it without a gap. */
+    if (m->rate > 0 && ff_disctl_audio_waiting(a)) {
+        int t = output_timing(m, p, n);
+        m->has_ctr = t >= 0;
+        m->ctr     = (t - ff_disctl_audio_waiting(a) * m->samples) & 0xFFFF;
+    }
     return m->rate > 0 ? 0 : -1;
 }
 

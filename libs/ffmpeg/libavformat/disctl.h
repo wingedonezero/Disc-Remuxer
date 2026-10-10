@@ -345,6 +345,9 @@ void *ff_disctl_audio_state(const DRAudio *a);
 
 /* the audio stream values the rules use (for rules that keep state) */
 const DRAudioHeader *ff_disctl_audio_header(const DRAudio *a);
+/* units that wait for the stream values: those before the first sync unit
+ * that gives them (rules->header() is called with that unit) */
+int ff_disctl_audio_waiting(const DRAudio *a);
 int ff_disctl_audio_flags(const DRAudio *a);
 void *ff_disctl_audio_priv(DRAudio *a);
 void *ff_disctl_audio_log(const DRAudio *a);

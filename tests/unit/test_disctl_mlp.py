@@ -125,3 +125,19 @@ def test_every_au_carries_its_first_sample_number_counted_from_the_restart_heade
             ctr = o.ctr
         majors = [o.ctr for o, au in zip(r.outs, units) if is_major(au)]
         assert majors[1] - majors[0] == 40 * [k for k, a in enumerate(units) if is_major(a)][1], codec
+
+
+def test_aus_before_the_first_major_sync_count_back_from_its_restart_header():
+    # a segment that starts between two major syncs (an HD DVD title's second
+    # EVOB): its first AUs wait for the stream values, then take the sample
+    # numbers that lead up to the first major sync's output timing
+    for codec, stream in (("truehd", THD), ("mlp", MLP)):
+        units = aus(stream)
+        k = [i for i, a in enumerate(units) if is_major(a)][1]
+        cut = units[1:]                               # starts with minor syncs, k - 1 of them
+        r = run(codec, payloads(b"".join(cut)))
+        assert len(r.outs) == len(cut), codec
+        assert all(o.flags & F_CTR for o in r.outs), "every AU has its sample number"
+        full = run(codec, payloads(stream))
+        assert [o.ctr for o in r.outs] == [o.ctr for o in full.outs[1:]], "the same numbers as in the whole stream"
+        assert r.outs[k - 1].ctr == output_timing(units[k]), codec
