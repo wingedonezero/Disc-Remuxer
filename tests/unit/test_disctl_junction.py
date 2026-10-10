@@ -300,10 +300,12 @@ def test_a_copy_of_two_frames_is_found_and_nothing_left_out():
 
 
 def test_an_overlap_one_tick_short_of_a_frame_counts_as_one_frame():
-    # Resident Evil French, join 3: the stamps overlap by 31.994 ms (the join
-    # place is off by less than one 90 kHz tick); B differs from A here, so the
-    # skew decides: one frame dropped, not carried on to the next join
-    ov = AC3 - 6480
+    # Resident Evil French, join 3: the stamps overlap by 32 ms less half a
+    # 90 kHz tick (the log shows 31.994 ms): the join is placed where the last
+    # picture ends, its stamp in whole ticks plus 3753.75 ticks (23.976 fps).
+    # B differs from A here, so the skew decides: one frame dropped, not
+    # carried on to the next join
+    ov = AC3 - TICK // 2
     s, st = junction(join(A, A_END - ov), AC3, Video())
     assert EV.DR_EV_DROP in kinds(s)
     assert st.dropped == 1
@@ -311,9 +313,9 @@ def test_an_overlap_one_tick_short_of_a_frame_counts_as_one_frame():
 
 
 def test_a_gap_of_one_frame_within_one_tick_is_a_missing_frame():
-    # 31.994 ms between two AC-3 frames (32 ms): one frame missing, left open
+    # 32 ms less half a tick between two AC-3 frames (32 ms): one frame missing, left open
     # (not closed by moving the rest of the track one frame earlier)
-    gap = AC3 - 6480
+    gap = AC3 - TICK // 2
     frames = run_of(0, AC3, 10, True) + run_of(10 * AC3 + gap, AC3, 10, True)
     s, st = junction(frames, AC3, Video())
     assert kinds(s) == [EV.DR_EV_GAP]
