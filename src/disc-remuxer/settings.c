@@ -88,6 +88,8 @@ static const Setting registry[] = {
     { "gui", "panes", SET_LIST, "", 0, 0, NULL, "Kept by the GUI: the sizes of the window's panes.", 1, SET_IN_GUI },
     { "gui", "last_folder", SET_TEXT, "", 0, 0, NULL,
       "Kept by the GUI: the folder discs were last added from.", 1, SET_IN_GUI },
+    { "gui", "show_detail_lines", SET_BOOL, "false", 0, 0, NULL,
+      "Kept by the GUI: the log shows its detail lines too.", 1, SET_IN_GUI },
 };
 #define NB_SETTINGS (int)(sizeof(registry) / sizeof(registry[0]))
 
