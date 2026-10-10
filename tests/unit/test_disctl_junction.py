@@ -7,7 +7,7 @@ moved), overlaps growing the skew, short gaps absorbed, real gaps (skew
 reset, nothing inserted), whole-frame drops only up to a sync unit."""
 
 from helpers import ffi, lib
-from helpers.disctl import Handles, events_into, video_ref
+from helpers.disctl import Handles, codec_id, events_into, video_ref
 
 MS = 1080000
 AC3 = 34560000  # 1536 samples at 48 kHz = 32 ms
@@ -47,8 +47,9 @@ def run_of(start, dur, n, sync):
     return [fr(start + k * dur, dur, sync) for k in range(n)]
 
 
-def junction(frames, frame_dur, video):
-    """frames: (time, dur, flags) or (time, dur, flags, segment, bytes)."""
+def junction(frames, frame_dur, video, codec=0, rate=0):
+    """frames: (time, dur, flags), (time, dur, flags, segment, bytes) or
+    (time, dur, flags, segment, bytes, sample number)."""
     sink = Sink()
 
     def on_out(f):
@@ -60,7 +61,7 @@ def junction(frames, frame_dur, video):
     cfg = ffi.new("DRJunctionConfig *", {
         "track": 1, "frame_dur": frame_dur, "video": video_ref(video, keep),
         "out": lib.tb_py_frame, "out_opaque": keep(on_out),
-        "event": lib.tb_py_event, "event_opaque": keep(events_into(sink.events)), "codec": 0, "rate": 0})
+        "event": lib.tb_py_event, "event_opaque": keep(events_into(sink.events)), "codec": codec, "rate": rate})
     j = ffi.new("DRJunction **")
     st = ffi.new("DRJunctionStats *")
     assert lib.ff_disctl_junction_open(j, ffi.NULL, cfg) == 0
@@ -68,10 +69,12 @@ def junction(frames, frame_dur, video):
     for time, dur, flags, *more in frames:
         f = {"size": 1, "time": time, "dur": dur, "flags": flags, "src": time}
         if more:
-            seg, payload = more
+            seg, payload = more[:2]
             data = ffi.new("uint8_t[]", payload)
             held.append(data)
             f.update({"seg": seg, "data": data, "size": len(payload)})
+            if len(more) > 2:
+                f.update({"ctr": more[2] & 0xFFFF, "flags": flags | lib.DR_F_CTR})
         held.append(ffi.new("DRFrame *", f))
         assert lib.ff_disctl_junction_push(j[0], held[-1]) == 0
     assert lib.ff_disctl_junction_finish(j[0]) == 0
@@ -326,3 +329,85 @@ def test_a_gap_of_one_frame_within_one_tick_is_a_missing_frame():
     frames = run_of(0, AC3, 10, True) + run_of(10 * AC3 + gap, AC3, 10, True)
     s, st = junction(frames, AC3, Video())
     assert kinds(s) == [EV.DR_EV_GAP_ABSORBED]
+
+
+# ---- TrueHD joins by the streams' sample numbers ----
+# Each clip's TrueHD is a stream of its own; every restart header carries the
+# number of its first sample, the units after it count on by 40 (48 kHz).
+# Aliens / Resident Evil UHD: every clip starts with two major syncs, and its
+# first unit is stamped on its first picture, so the stamps show an overlap of
+# 0..0.96 unit at every join whether a unit repeats or not.
+
+THD = 900000  # 40 samples at 48 kHz
+MAJOR = lib.DR_F_KEY | lib.DR_F_SYNC
+
+
+def thd_seg(seg, start, n, first):
+    """n units from time start whose first sample number is first; the first
+    two and every 16th are major syncs."""
+    return [(start + k * THD, THD, MAJOR if k < 2 or k % 16 == 0 else 0, seg, b"%c%04d" % (65 + seg, k), first + 40 * k)
+            for k in range(n)]
+
+
+def thd_junction(frames):
+    return junction(frames, THD, Video(), codec_id("truehd"), 48000)
+
+
+def joins(s):
+    return [e["count"] for e in s.events if e["kind"] == EV.DR_EV_SAMPLE_JOIN]
+
+
+def test_a_segment_that_continues_the_sample_numbers_keeps_everything_whatever_the_stamps():
+    # Aliens SE: three joins in a row whose stamps overlap by 0.6 unit each;
+    # the old skew rule would have dropped a real unit at the second
+    ov = THD * 6 // 10
+    a = thd_seg(0, 0, 40, 1000)
+    b = thd_seg(1, 40 * THD - ov, 40, 1000 + 40 * 40)
+    c = thd_seg(2, 80 * THD - 2 * ov, 40, 1000 + 80 * 40)
+    s, st = thd_junction(a + b + c)
+    assert joins(s) == [lib.DR_JOIN_CONTINUES] * 2
+    assert len(s.out) == 120 and st.dropped == 0
+    assert s.out[40][0] == 40 * THD and s.out[80][0] == 80 * THD, "each segment follows on"
+    assert list(st.joins)[lib.DR_JOIN_CONTINUES] == 2
+
+
+def test_a_first_unit_holding_the_last_samples_again_is_left_out():
+    # Resident Evil 00879 join 2: B's second unit starts where A ends
+    a = thd_seg(0, 0, 40, 65000)               # the counter wraps inside A
+    b = thd_seg(1, 40 * THD - THD * 63 // 100, 40, (65000 + 40 * 40 - 40) & 0xFFFF)
+    s, st = thd_junction(a + b)
+    assert joins(s) == [lib.DR_JOIN_SAME]
+    e = [e for e in s.events if e["kind"] == EV.DR_EV_SAMPLE_JOIN][0]
+    assert e["dur"] == 40
+    assert len(s.out) == 79 and st.dropped == 1
+    assert s.bytes[40] == b"B0001", "B's second unit follows A"
+    assert s.out[40][0] == 40 * THD
+    assert all(b[0] > a[0] for a, b in zip(s.out, s.out[1:]))
+
+
+def test_a_repeated_first_unit_stays_when_no_major_sync_follows_it():
+    a = thd_seg(0, 0, 40, 0)
+    b = thd_seg(1, 40 * THD, 40, 40 * 40 - 40)
+    b[1] = b[1][:2] + (0,) + b[1][3:]          # B's second unit a minor sync
+    s, st = thd_junction(a + b)
+    assert joins(s) == [lib.DR_JOIN_SAME_KEPT]
+    assert len(s.out) == 80 and st.dropped == 0
+
+
+def test_sample_numbers_that_do_not_connect_leave_the_join_to_the_skew_rule():
+    # a piece of another cut: its own timeline; the stamps overlap by a unit
+    a = thd_seg(0, 0, 40, 0)
+    b = thd_seg(1, 39 * THD, 40, 30000)
+    s, st = thd_junction(a + b)
+    assert joins(s) == [lib.DR_JOIN_APART]
+    e = [e for e in s.events if e["kind"] == EV.DR_EV_SAMPLE_JOIN][0]
+    assert e["dur"] == ((1600 - 30000 + 0x8000) & 0xFFFF) - 0x8000
+    assert EV.DR_EV_DROP in kinds(s) and st.dropped == 1, "a whole unit of overlap: the skew rule drops it"
+
+
+def test_a_side_without_sample_numbers_leaves_the_join_to_the_skew_rule():
+    a = thd_seg(0, 0, 40, 0)
+    b = [f[:5] for f in thd_seg(1, 40 * THD, 40, 1600)]
+    s, st = thd_junction(a + b)
+    assert joins(s) == [lib.DR_JOIN_NO_COUNT]
+    assert len(s.out) == 80

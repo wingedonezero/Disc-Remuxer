@@ -214,8 +214,17 @@ logged with the reason; nothing is guessed.
   segment's first frame, when it is byte for byte the frame the segment
   before ends with and the stamps overlap by more than one 90 kHz tick, is
   left out (at most one per join); a longer copy is only reported.
-- **TrueHD / MLP joins**: decided by the streams' own sample counters (the
-  restart headers' output timing); until that is in, the skew rule.
+- **TrueHD / MLP joins**: by the streams' own sample numbers. Every restart
+  header carries the number of its first sample (output timing, modulo
+  65536); the access units after it count on by one unit's samples. At a
+  join: the next segment's first unit starts where the earlier one ends:
+  everything kept; its second unit starts there: the first holds the
+  earlier segment's last samples again and is left out (only when the
+  second is a major sync). Either way the skew this leaves counts as right
+  (the skew rule only acts on skew beyond it: the stamps put every
+  segment's first unit on its first picture, so their overlap is no drift).
+  Numbers that do not connect (a piece on another timeline) or a side
+  without them: the skew rule. One event per join, a summary per track.
 - **PCM tracks** (`disctl_pcm.c`, in place of the junction): the samples
   leave in fixed frames (1/30 s at 48 / 44.1 kHz, else about 32 ms rounded up
   to a divisor of the rate) timed by a sample counter from the track's

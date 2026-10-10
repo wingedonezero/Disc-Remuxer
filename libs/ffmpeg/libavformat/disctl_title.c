@@ -212,6 +212,7 @@ static const char *const event_names[] = {
     [DR_EV_PCM_TIMECODE]         = "pcm_timecode",
     [DR_EV_AUDIO_COPY]           = "audio_copy",
     [DR_EV_AUDIO_COPY_LONG]      = "audio_copy_long",
+    [DR_EV_SAMPLE_JOIN]          = "sample_join",
 };
 
 const char *ff_disctl_event_name(int kind)
@@ -277,6 +278,30 @@ static void event_text(DRTitle *t, const DREvent *e)
                " frames (the stamps overlap by %s ms): found only, nothing left out\n", k, hms(a, 32, e->pos),
                e->count, msec(b, 32, e->dur, 0));
         break;
+    case DR_EV_SAMPLE_JOIN:
+        switch (e->count) {
+        case DR_JOIN_CONTINUES:
+            av_log(t->log, AV_LOG_INFO, "Track %d at %s: join: the next segment continues at the sample where this "
+                   "one ends: everything kept\n", k, hms(a, 32, e->pos));
+            return;
+        case DR_JOIN_SAME:
+            av_log(t->log, AV_LOG_INFO, "Track %d at %s: join: the next segment's first unit holds the last %"PRId64
+                   " samples of this one again: left out\n", k, hms(a, 32, e->pos), e->dur);
+            return;
+        case DR_JOIN_SAME_KEPT:
+            av_log(t->log, AV_LOG_WARNING, "Track %d at %s: join: the next segment's first unit holds the last %"PRId64
+                   " samples of this one again, but the unit after it is no major sync: kept\n", k,
+                   hms(a, 32, e->pos), e->dur);
+            return;
+        case DR_JOIN_APART:
+            av_log(t->log, AV_LOG_WARNING, "Track %d at %s: join: the sample numbers do not connect (%+"PRId64
+                   " samples; a piece on another timeline): the timing rule decides\n", k, hms(a, 32, e->pos), e->dur);
+            return;
+        default:
+            av_log(t->log, AV_LOG_WARNING, "Track %d at %s: join: a side has no sample numbers: the timing rule "
+                   "decides\n", k, hms(a, 32, e->pos));
+            return;
+        }
     case DR_EV_OVERLAP:
         av_log(t->log, AV_LOG_WARNING, "Track %d at %s: frames overlap by %s ms; audio skew now %s ms\n", k,
                hms(a, 32, e->pos), msec(b, 32, e->dur, 0), msec(c, 32, e->skew, 1));
@@ -1716,6 +1741,19 @@ static int title_finish(DRTitle *t)
             return ret;
         if (k->junction && (ret = ff_disctl_junction_finish(k->junction)) < 0)
             return ret;
+        if (k->junction) {
+            DRJunctionStats js;
+            int64_t n = 0;
+            ff_disctl_junction_stats(k->junction, &js);
+            for (int w = 1; w < DR_JOIN_KINDS; w++)
+                n += js.joins[w];
+            if (n)
+                av_log(t->log, AV_LOG_INFO, "Title timeline: track %d: %"PRId64" join(s) by the stream's sample numbers: "
+                       "%"PRId64" continue, %"PRId64" with a repeated unit left out, %"PRId64" with a repeated unit "
+                       "kept, %"PRId64" not connected, %"PRId64" without sample numbers\n", i, n,
+                       js.joins[DR_JOIN_CONTINUES], js.joins[DR_JOIN_SAME], js.joins[DR_JOIN_SAME_KEPT],
+                       js.joins[DR_JOIN_APART], js.joins[DR_JOIN_NO_COUNT]);
+        }
         if ((ret = spu_finish(t, k)) < 0)
             return ret;
         if (k->cfg.kind == DR_KIND_CAPTION && (ret = cc_finish(t, k)) < 0)

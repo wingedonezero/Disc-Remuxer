@@ -56,6 +56,7 @@
 #define DR_F_START_CLEAN  0x0400 /**< nothing before it is needed */
 #define DR_F_START_BROKEN 0x0800 /**< marked as a broken link: the pictures shown before it are not decodable */
 #define DR_F_START_OPEN   0x1000 /**< the pictures shown before it may need pictures before it in the stream */
+#define DR_F_CTR      0x2000   /**< audio: ctr holds the stream's own number of the frame's first sample */
 
 typedef struct DRFrame {
     AVBufferRef *buf;      /**< owns the bytes (NULL for a marker) */
@@ -70,6 +71,9 @@ typedef struct DRFrame {
     int64_t      src;      /**< from the joiner on: the frame's own time on the title timeline (its
                                 PES-derived time, before the joiner moves it or the junction shifts it) */
     int          seg;      /**< from the joiner on: the segment the frame comes from (from 0) */
+    int          ctr;      /**< with DR_F_CTR: the stream's own sample number of the frame's first sample,
+                                modulo 65536 (TrueHD / MLP: a restart header's output timing, counted on
+                                by the samples of an access unit) */
 } DRFrame;
 
 /** Hands a frame on; the callee owns it (ff_disctl_frame_unref). */
@@ -409,6 +413,9 @@ enum DREventKind {
     DR_EV_AUDIO_COPY_LONG, /**< a segment's first count frames are byte copies of the count frames the
                                 segment before ends with (the stamps overlap by dur, more than one frame):
                                 found only, nothing left out (pos = the first one's time) */
+    DR_EV_SAMPLE_JOIN,     /**< TrueHD / MLP at a join, by the streams' sample numbers (pos = the next
+                                segment's first frame's time, dur = the earlier segment's end less that
+                                frame's sample number, in samples; count = DRSampleJoin) */
 };
 
 /** Audio sync error (stream file position - own time) beyond which a
@@ -447,8 +454,19 @@ typedef struct DRJunctionConfig {
     int        rate;
 } DRJunctionConfig;
 
+/** How a TrueHD / MLP join was decided (DR_EV_SAMPLE_JOIN count). */
+enum DRSampleJoin {
+    DR_JOIN_CONTINUES = 1, /**< the next segment starts where the earlier one ends: everything kept */
+    DR_JOIN_SAME,          /**< its first unit holds the earlier one's last samples again: left out */
+    DR_JOIN_SAME_KEPT,     /**< the same, but the unit after it is no major sync: kept (no clean restart) */
+    DR_JOIN_APART,         /**< the sample numbers do not connect: the skew rule decides */
+    DR_JOIN_NO_COUNT,      /**< a side without sample numbers: the skew rule decides */
+    DR_JOIN_KINDS
+};
+
 typedef struct DRJunctionStats {
     int64_t in, out, dropped, dropped_dur, markers;
+    int64_t joins[DR_JOIN_KINDS]; /**< TrueHD / MLP joins by DRSampleJoin */
     int64_t copies;            /**< of the dropped: copies at a join left out (DR_EV_AUDIO_COPY) */
     int64_t skew;              /**< current skew */
     int     ended;             /**< the video ended before the track */

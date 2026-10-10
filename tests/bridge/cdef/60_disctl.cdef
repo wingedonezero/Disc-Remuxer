@@ -13,6 +13,7 @@
 #define DR_F_START_CLEAN ...
 #define DR_F_START_BROKEN ...
 #define DR_F_START_OPEN ...
+#define DR_F_CTR ...
 #define DR_SCAN_KNOWN ...
 #define DR_SCAN_PROGRESSIVE ...
 #define DR_SCAN_TFF ...
@@ -34,6 +35,7 @@ typedef struct DRFrame {
     int          rate;
     int64_t      src;
     int          seg;
+    int          ctr;
 } DRFrame;
 
 typedef int (*DRFrameCb)(void *opaque, DRFrame *frame);
@@ -144,6 +146,16 @@ enum DREventKind {
     DR_EV_SYNC,
     DR_EV_AUDIO_COPY,
     DR_EV_AUDIO_COPY_LONG,
+    DR_EV_SAMPLE_JOIN,
+};
+
+enum DRSampleJoin {
+    DR_JOIN_CONTINUES = 1,
+    DR_JOIN_SAME,
+    DR_JOIN_SAME_KEPT,
+    DR_JOIN_APART,
+    DR_JOIN_NO_COUNT,
+    DR_JOIN_KINDS
 };
 
 typedef struct DREvent {
@@ -177,6 +189,7 @@ typedef struct DRJunctionConfig {
 
 typedef struct DRJunctionStats {
     int64_t in, out, dropped, dropped_dur, markers;
+    int64_t joins[6];
     int64_t copies;
     int64_t skew;
     int     ended;

@@ -45,6 +45,8 @@ enum { HAVE = 1, NONE = 0, WAIT = 2 };
 typedef struct State {
     int64_t exp;       /* end of the previous input frame */
     int64_t skew;      /* added to every frame that leaves */
+    int64_t base;      /* the skew a join decided by sample numbers left (0 at the start): the skew
+                          rule drops frames only for skew beyond it */
     int64_t adv;       /* gap marker advance */
     int64_t drop_n, drop_d;
 } State;
@@ -64,7 +66,9 @@ struct DRJunction {
     DRFrame          tail[COPY_TAIL]; /* the last frames handed on (the copy check at a join), a ring */
     int              nb_tail, tail_pos;
     int              out_seg;      /* segment of the last frame handed on */
-    int              join_seg;     /* the segment whose join the copy check last ran for */
+    int              checked_seg;  /* the segment whose join was checked (once per join) */
+    int              has_end;      /* end: the sample number just past the last frame handed on */
+    int              end;
 
     DREvent          ev[4];        /* events of the running step */
     int              nb_ev;
@@ -159,6 +163,9 @@ static int out(DRJunction *j, DRFrame *f)
         return ret;
     }
     j->out_seg = f->seg;
+    j->has_end = !!(f->flags & DR_F_CTR) && j->cfg.rate > 0;
+    if (j->has_end)
+        j->end = (f->ctr + (int)(j->cfg.frame_dur * j->cfg.rate / DR_TICKS_PER_SECOND)) & 0xFFFF;
     if (j->have_out && f->time <= j->last_out) {
         event(j, DR_EV_TIME_ORDER, f->time, 0, j->s.skew, 0);
         events_flush(j);
@@ -276,7 +283,6 @@ static int copy_check(DRJunction *j, State *s)
         j->st.dropped++;
         j->st.dropped_dur += f->dur;
         j->st.copies++;
-        j->join_seg = f->seg;
         q_drop_head(j);
         j->s = *s;
         events_flush(j);
@@ -298,6 +304,63 @@ static int copy_check(DRJunction *j, State *s)
         if (i == n)
             event(j, DR_EV_AUDIO_COPY_LONG, f->time, ov, s->skew, n);
     }
+    return NONE;
+}
+
+/* ---- TrueHD / MLP at a join: the streams' sample numbers ----
+ * Each restart header carries the sample number of its first sample
+ * (output timing); the access units after it count on. When the next
+ * segment's first unit starts where the earlier segment ends, everything is
+ * kept; when its second unit starts there, the first holds the earlier
+ * segment's last samples again and is left out (its second unit must be a
+ * major sync, so decoding restarts there cleanly). Either way the skew this
+ * leaves is the right one (base): the stamps place every segment's first
+ * unit on its first picture, so their overlap is not drift. Sample numbers
+ * that do not connect, or a side without them: the skew rule decides. */
+static int sample_join(DRJunction *j, State *s)
+{
+    DRFrame *f = q_get(j, 0);
+    int spu = (int)(j->cfg.frame_dur * j->cfg.rate / DR_TICKS_PER_SECOND);
+    int d, r;
+
+    if (!j->has_end || !(f->flags & DR_F_CTR) || spu <= 0) {
+        event(j, DR_EV_SAMPLE_JOIN, f->time, 0, s->skew, DR_JOIN_NO_COUNT);
+        j->st.joins[DR_JOIN_NO_COUNT]++;
+        return NONE;
+    }
+    d = ((j->end - f->ctr + 0x8000) & 0xFFFF) - 0x8000;
+    if (d == 0) {
+        s->skew += s->exp - f->time;
+        s->exp   = f->time;
+        s->base  = s->skew;
+        event(j, DR_EV_SAMPLE_JOIN, f->time, d, s->skew, DR_JOIN_CONTINUES);
+        j->st.joins[DR_JOIN_CONTINUES]++;
+        return NONE;
+    }
+    if (d == spu) {
+        DRFrame *g;
+        if ((r = need(j, 1)) == WAIT)
+            return WAIT;
+        g = r == HAVE ? q_get(j, 1) : NULL;
+        if (!g || !(g->flags & DR_F_SYNC)) {
+            event(j, DR_EV_SAMPLE_JOIN, f->time, d, s->skew, DR_JOIN_SAME_KEPT);
+            j->st.joins[DR_JOIN_SAME_KEPT]++;
+            return NONE;
+        }
+        s->skew += s->exp - g->time;
+        s->exp   = g->time;
+        s->base  = s->skew;
+        event(j, DR_EV_SAMPLE_JOIN, f->time, d, s->skew, DR_JOIN_SAME);
+        j->st.joins[DR_JOIN_SAME]++;
+        j->st.dropped++;
+        j->st.dropped_dur += f->dur;
+        q_drop_head(j);
+        j->s = *s;
+        events_flush(j);
+        return HAVE;
+    }
+    event(j, DR_EV_SAMPLE_JOIN, f->time, d, s->skew, DR_JOIN_APART);
+    j->st.joins[DR_JOIN_APART]++;
     return NONE;
 }
 
@@ -325,9 +388,20 @@ static int step(DRJunction *j)
         return j->cfg.out(j->cfg.out_opaque, &m);
     }
 
-    if (!is_mlp(j) && j->have_out && f->seg != j->out_seg && f->seg != j->join_seg &&
-        (r = copy_check(j, &s)) != NONE)
-        return r;
+    /* once per join; its decision (event, state) is final at once, so a
+     * step that waits for more frames later does not check it again */
+    if (j->have_out && f->seg != j->out_seg && f->seg != j->checked_seg) {
+        int seg = f->seg;
+        r = is_mlp(j) ? sample_join(j, &s) : copy_check(j, &s);
+        if (r == WAIT)
+            return WAIT;
+        j->checked_seg = seg;
+        if (r != NONE)
+            return r;
+        j->s = s;
+        events_flush(j);
+        f = q_get(j, 0);
+    }
 
     if (f->time != s.exp) {
         if (f->time < s.exp) {
@@ -393,10 +467,10 @@ static int step(DRJunction *j)
     /* append */
     s.adv = 0;
     s.exp = f->time + f->dur;
-    if (f->dur <= s.skew + TICK) {
+    if (f->dur + s.base <= s.skew + TICK) {
         int n;
         int64_t d;
-        if ((r = drop_count(j, 0, s.skew, &n, &d)) == WAIT)
+        if ((r = drop_count(j, 0, s.skew - s.base, &n, &d)) == WAIT)
             return WAIT;
         if (n) {
             if ((r = need(j, n)) == WAIT)
@@ -469,7 +543,7 @@ int ff_disctl_junction_open(DRJunction **jp, void *logctx, const DRJunctionConfi
         return AVERROR(ENOMEM);
     j->log      = logctx;
     j->cfg      = *cfg;
-    j->join_seg  = -1;
+    j->checked_seg = -1;
     *jp = j;
     return 0;
 }

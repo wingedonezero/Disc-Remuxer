@@ -51,6 +51,9 @@ typedef struct MlpState {
     int samples;          /* samples per AU */
     int rate;
 
+    int has_ctr;          /* ctr is known (a major sync's restart header was read) */
+    int ctr;              /* sample number of the next AU's first sample, modulo 65536 */
+
     AVBufferRef *hist[HISTORY_MAX];   /* AUs since the last major sync */
     int          hist_size[HISTORY_MAX];
     int          nb_hist;
@@ -282,6 +285,32 @@ static int au_samples(DRAudio *a, MlpState *m, const uint8_t *p, int n)
     return cand ? cand : m->samples;
 }
 
+/* The output timing of a major-sync AU: the sample number of its first
+ * sample, modulo 65536, from substream 0's restart header (Dolby TrueHD
+ * bitstream description, restart_header: after the block's 2 flag bits
+ * (parameters, restart header present), the 13-bit restart sync 0x18F5
+ * (0x31EA / 0x31EB without its last bit) and 1 bit, the 16-bit
+ * output_timing). -1 when it cannot be read. */
+static int output_timing(const MlpState *m, const uint8_t *p, int n)
+{
+    int d, w;
+
+    if (n < 32 || !m->nsub || m->nsub > 16)
+        return -1;
+    d = p[7] == 0xBA && (p[0x1d] & 1) ? ((p[0x1e] >> 3) & 0x1E) + 0x22 : 0x20;
+    for (int i = 0; i < m->nsub; i++) {
+        if (d + 2 > n)
+            return -1;
+        d += 2 + 2 * (AV_RB16(p + d) >> 15);
+    }
+    if (d + 4 > n)
+        return -1;
+    w = AV_RB16(p + d);
+    if (w >> 14 != 3 || ((w >> 1) & 0x1FFF) != 0x18F5)
+        return -1;
+    return AV_RB16(p + d + 2);
+}
+
 static int duration_mlp(DRAudio *a, DRFrame *f)
 {
     MlpState *m = ff_disctl_audio_priv(a);
@@ -289,8 +318,18 @@ static int duration_mlp(DRAudio *a, DRFrame *f)
 
     if (f->size < 8)
         return AVERROR_INVALIDDATA;
-    if (major_sync(f->data, f->size))
+    if (major_sync(f->data, f->size)) {
+        int t = output_timing(m, f->data, f->size);
         history_clear(m);
+        m->has_ctr = t >= 0;
+        m->ctr     = t;
+    }
+    if (m->has_ctr) {
+        /* minor syncs: one AU's samples on from the last restart */
+        f->ctr    = m->ctr;
+        f->flags |= DR_F_CTR;
+        m->ctr    = (m->ctr + m->samples) & 0xFFFF;
+    }
     samples = au_samples(a, m, f->data, f->size);
     f->dur  = (int64_t)((uint64_t)samples * DR_TICKS_PER_SECOND / (uint64_t)m->rate);
     if (m->nb_hist < HISTORY_MAX) {
