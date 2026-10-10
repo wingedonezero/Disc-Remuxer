@@ -39,7 +39,7 @@
 #define TAIL_LOOK     540000000LL               /* 0.5 s */
 #define TAIL_UNITS    99
 #define MATCH         0xF3333333U              /* a correlation above 0.95 (Q32) */
-#define TICK          12000LL                   /* one 90 kHz tick: the disc's time resolution */
+#define TICK          DR_TICKS_PER_PTS          /* one 90 kHz tick: the disc's time resolution */
 #define COPY_TAIL     8                         /* frames of the earlier segment kept for the copy check */
 
 enum { HAVE = 1, NONE = 0, WAIT = 2 };
@@ -535,7 +535,8 @@ static int step(DRJunction *j)
                 event(j, DR_EV_OVERLAP, f->time, ov, s.skew, 0);
         } else {
             int64_t gap = f->time - s.exp, ns = s.skew - gap;
-            if (ns > -FFMAX(GAP_FLOOR, f->dur)) {
+            /* a gap of one frame (within one tick) is a missing frame, not absorbed */
+            if (ns > -(FFMAX(GAP_FLOOR, f->dur) - TICK)) {
                 s.skew = ns;
                 s.exp  = f->time;
                 if (gap > REPORT || FFABS(ns) > REPORT)

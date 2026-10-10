@@ -308,3 +308,19 @@ def test_an_overlap_one_tick_short_of_a_frame_counts_as_one_frame():
     assert EV.DR_EV_DROP in kinds(s)
     assert st.dropped == 1
     assert abs(st.skew) <= TICK
+
+
+def test_a_gap_of_one_frame_within_one_tick_is_a_missing_frame():
+    # 31.994 ms between two AC-3 frames (32 ms): one frame missing, left open
+    # (not closed by moving the rest of the track one frame earlier)
+    gap = AC3 - 6480
+    frames = run_of(0, AC3, 10, True) + run_of(10 * AC3 + gap, AC3, 10, True)
+    s, st = junction(frames, AC3, Video())
+    assert kinds(s) == [EV.DR_EV_GAP]
+    assert s.out[10][0] == 10 * AC3 + gap, "the gap stays"
+    assert st.skew == 0
+    # a gap short of one frame by more than a tick is still closed
+    gap = AC3 - TICK - 1
+    frames = run_of(0, AC3, 10, True) + run_of(10 * AC3 + gap, AC3, 10, True)
+    s, st = junction(frames, AC3, Video())
+    assert kinds(s) == [EV.DR_EV_GAP_ABSORBED]
