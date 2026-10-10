@@ -92,7 +92,7 @@ def test_a_lead_in_keeps_every_frame_at_its_time():
     assert s.out[0][0] == -lead, "the first frame keeps its time: a negative delay"
     assert all(o[0] == -lead + k * AC3 for k, o in enumerate(s.out))
     assert s.events == [{"kind": EV.DR_EV_START_EARLY, "track": 1, "pos": 0, "dur": lead, "skew": 0, "count": 0}]
-    assert (st.skew, st.base) == (0, 0)
+    assert st.skew == 0
 
 
 def test_overlap_grows_the_skew_and_short_gaps_are_absorbed():
@@ -172,7 +172,7 @@ def test_a_long_lead_in_keeps_every_frame_at_its_time():
     assert s.events[0]["dur"] == -first
     assert len(s.out) == 20
     assert [o[0] for o in s.out] == [first + k * AC3 for k in range(20)], "every frame at its own time"
-    assert (st.dropped, st.skew, st.base) == (0, 0, 0)
+    assert (st.dropped, st.skew) == (0, 0)
 
 
 def test_a_lead_in_inside_one_frame_is_kept_too():

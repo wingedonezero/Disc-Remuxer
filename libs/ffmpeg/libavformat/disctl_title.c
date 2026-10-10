@@ -54,7 +54,6 @@ typedef struct Track {
     int64_t       bytes;         /* payload bytes given to the frame step */
     int64_t      *posq;          /* video: chapter positions reached (bytes given by then), oldest first */
     int           nb_posq, posq_cap;
-    int64_t       tail_from;     /* stream offset where the payloads from the source's tail begin, -1 */
 
     /* the output side */
     DRAudioHeader header;        /* audio: the stream values of its first segment that gave them */
@@ -208,8 +207,6 @@ static const char *const event_names[] = {
     [DR_EV_VERIFY_ORDER]         = "verify_order",
     [DR_EV_VERIFY_HOLE]          = "verify_hole",
     [DR_EV_VERIFY_OVERLAP]       = "verify_overlap",
-    [DR_EV_SEAMLESS_SEARCH]      = "seamless_search",
-    [DR_EV_SEAMLESS_DROP]        = "seamless_drop",
     [DR_EV_PCM_SILENCE]          = "pcm_silence",
     [DR_EV_PCM_SKIP]             = "pcm_skip",
     [DR_EV_PCM_TIMECODE]         = "pcm_timecode",
@@ -1375,14 +1372,11 @@ static void title_summary(DRTitle *t)
 
 /* ---- the current segment ---- */
 
-/* A frame from a track's timing stage: marked when it was read from the
- * source's tail, then joined. */
+/* A frame from a track's timing stage, then joined. */
 static int seg_frame(void *opaque, DRFrame *f)
 {
     Track *k = opaque;
 
-    if (k->tail_from >= 0 && f->pos >= k->tail_from)
-        f->flags |= DR_F_TAIL;
     if (k->nb_posq && f->pos >= k->posq[0]) {
         f->flags |= DR_F_POSITION;
         memmove(k->posq, k->posq + 1, --k->nb_posq * sizeof(*k->posq));
@@ -1409,7 +1403,6 @@ static int seg_open(DRTitle *t)
         void *stage;
 
         k->bytes     = 0;
-        k->tail_from = -1;
         if (k->nb_posq)
             av_log(t->log, AV_LOG_WARNING, "Title timeline: %d chapter position(s) at the end of the segment "
                    "before: the next video frame starts them [untested on real discs]\n", k->nb_posq);
@@ -1608,7 +1601,7 @@ static int title_segment(DRTitle *t)
     return seg_open(t);
 }
 
-static int title_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time, int tail)
+static int title_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time)
 {
     Track *k;
     int ret;
@@ -1638,8 +1631,6 @@ static int title_payload(DRTitle *t, int track, const uint8_t *data, int size, i
         data += h;
         size -= h;
     }
-    if (tail && k->tail_from < 0)
-        k->tail_from = k->bytes;
     k->bytes += size;
     return ff_disctl_frames_write(k->cut, data, size, time);
 }
@@ -1792,9 +1783,9 @@ int ff_disctl_title_segment(DRTitle *t)
     return t->error ? t->error : sticky(t, title_segment(t));
 }
 
-int ff_disctl_title_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time, int tail)
+int ff_disctl_title_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time)
 {
-    return t->error ? t->error : sticky(t, title_payload(t, track, data, size, time, tail));
+    return t->error ? t->error : sticky(t, title_payload(t, track, data, size, time));
 }
 
 int ff_disctl_title_chapter_position(DRTitle *t)

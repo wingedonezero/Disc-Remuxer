@@ -36,9 +36,6 @@
 #define GAP_FLOOR     12960000LL                /* 12 ms */
 #define MARKER_AHEAD  4320000000LL              /* 4 s */
 #define MARKER_STEP   DR_TICKS_PER_SECOND       /* 1 s */
-#define TAIL_LOOK     540000000LL               /* 0.5 s */
-#define TAIL_UNITS    99
-#define MATCH         0xF3333333U              /* a correlation above 0.95 (Q32) */
 #define TICK          DR_TICKS_PER_PTS          /* one 90 kHz tick: the disc's time resolution */
 #define COPY_TAIL     8                         /* frames of the earlier segment kept for the copy check */
 
@@ -48,7 +45,6 @@ enum { HAVE = 1, NONE = 0, WAIT = 2 };
 typedef struct State {
     int64_t exp;       /* end of the previous input frame */
     int64_t skew;      /* added to every frame that leaves */
-    int64_t base;      /* the skew a seamless join's match left (0 at the start) */
     int64_t adv;       /* gap marker advance */
     int64_t drop_n, drop_d;
 } State;
@@ -60,14 +56,10 @@ struct DRJunction {
     DRFrame         *q;            /* input frames q[head .. head + n) */
     int              head, n, cap;
     int              finished, started, ended;
-    int64_t          tail_done;    /* input index of the frame the tail check last ran for */
 
     State            s;
     int64_t          last_out;     /* time of the last frame handed on */
     int              have_out;     /* a frame was handed on */
-
-    DRFrame         *hist;         /* frames handed on since the last sync unit (decoder preroll) */
-    int              nb_hist, cap_hist;
 
     DRFrame          tail[COPY_TAIL]; /* the last frames handed on (the copy check at a join), a ring */
     int              nb_tail, tail_pos;
@@ -111,44 +103,11 @@ static void events_flush(DRJunction *j)
     j->nb_ev = 0;
 }
 
-static int decodable(const DRJunction *j)
+/* TrueHD / MLP: joins are decided by the streams' own sample counters, not
+ * by comparing bytes. */
+static int is_mlp(const DRJunction *j)
 {
-    return (j->cfg.codec == AV_CODEC_ID_TRUEHD || j->cfg.codec == AV_CODEC_ID_MLP) && j->cfg.rate > 0;
-}
-
-static void hist_clear(DRJunction *j)
-{
-    for (int i = 0; i < j->nb_hist; i++)
-        ff_disctl_frame_unref(&j->hist[i]);
-    j->nb_hist = 0;
-}
-
-/* Keeps a frame handed on: the frames since the last sync unit are the
- * decoder's preroll for the next search. */
-static int hist_add(DRJunction *j, const DRFrame *f)
-{
-    DRFrame h = { .data = f->data, .size = f->size, .dur = f->dur, .flags = f->flags };
-
-    if (f->flags & DR_F_SYNC)
-        hist_clear(j);
-    if (j->nb_hist == j->cap_hist) {
-        int cap = j->cap_hist ? 2 * j->cap_hist : 64;
-        DRFrame *p = av_realloc_array(j->hist, cap, sizeof(*p));
-        if (!p)
-            return AVERROR(ENOMEM);
-        j->hist     = p;
-        j->cap_hist = cap;
-    }
-    if (f->buf)
-        h.buf = av_buffer_ref(f->buf);
-    else if ((h.buf = av_buffer_alloc(f->size + AV_INPUT_BUFFER_PADDING_SIZE))) {
-        memcpy(h.buf->data, f->data, f->size);
-        h.data = h.buf->data;
-    }
-    if (!h.buf)
-        return AVERROR(ENOMEM);
-    j->hist[j->nb_hist++] = h;
-    return 0;
+    return j->cfg.codec == AV_CODEC_ID_TRUEHD || j->cfg.codec == AV_CODEC_ID_MLP;
 }
 
 /* A reference to a frame's bytes (a copy when it owns none). */
@@ -195,11 +154,7 @@ static int out(DRJunction *j, DRFrame *f)
 {
     int ret;
 
-    if (decodable(j) && (ret = hist_add(j, f)) < 0) {
-        ff_disctl_frame_unref(f);
-        return ret;
-    }
-    if (!decodable(j) && f->size && f->data && (ret = tail_add(j, f)) < 0) {
+    if (!is_mlp(j) && f->size && f->data && (ret = tail_add(j, f)) < 0) {
         ff_disctl_frame_unref(f);
         return ret;
     }
@@ -291,131 +246,6 @@ static int start(DRJunction *j)
     return HAVE;
 }
 
-/* ---- the seamless overlap search at the tail of a segment ----
- * The next segment's first sync unit U (at idx) starts inside the run of
- * frames that ends at end. Candidate counts of frames duplicated at the end
- * of side A (the frames before U) are tried around the overlap / the frame
- * duration (+-5, at least 1, at most idx). TrueHD / MLP: both sides are
- * decoded (A after the frames since the last sync unit as preroll, B = U and
- * the idx + 1 frames after it), mixed down to one channel, and for each
- * candidate the end of A from where those frames start is compared with the
- * start of B; the last candidate above 0.95 is the match. k = the smallest
- * candidate whose frames fit the overlap (within frame / 16). A match close
- * to k (below k + 2) drops its frames: side A's frames before them go on,
- * the skew becomes where they ended against U. Otherwise: k = 0, side A goes
- * on unchanged; else the k frames are re-timed to end at U and the normal
- * path follows. */
-static int junction(DRJunction *j, State *s, int idx, int64_t end)
-{
-    DRFrame *u = q_get(j, idx);
-    uint64_t over = (uint64_t)(end + s->skew - (u->time + s->base));
-    uint64_t nom  = j->cfg.frame_dur ? over / (uint64_t)j->cfg.frame_dur : 0;
-    uint64_t lo   = nom > 6 ? nom - 5 : 1, bestd = UINT64_MAX;
-    int k = 0, best = 0, top_c = 0, na = 0, nb = 0, ret;
-    uint32_t best_r = 0, top_r = 0;
-    int32_t *a = NULL, *b = NULL;
-
-    if (nom + 5 >= lo) {
-        if (decodable(j)) {
-            int r = need(j, 2 * idx + 1), nB;
-            if (r == WAIT)
-                return WAIT;
-            nB = FFMIN(2 * idx + 2, j->n) - idx;
-            ret = ff_disctl_seamless_decode(j->log, j->cfg.codec, j->cfg.rate, j->hist, j->nb_hist,
-                                             q_get(j, 0), idx, &a, &na);
-            if (ret > 0)
-                ret = ff_disctl_seamless_decode(j->log, j->cfg.codec, j->cfg.rate, NULL, 0, u, nB, &b, &nb);
-            if (ret < 0) {
-                av_free(a);
-                return ret;
-            }
-            if (!ret) {
-                av_freep(&a);
-                na = nb = 0;
-            }
-        }
-        for (uint64_t cand = lo; cand <= nom + 5 && cand <= (uint64_t)idx; cand++) {
-            int n;
-            int64_t d;
-            if (drop_count(j, idx - (int)cand, (int64_t)over, &n, &d) == WAIT) {
-                av_free(a);
-                av_free(b);
-                return WAIT;
-            }
-            if (na) {
-                uint32_t off = 0, len, r;
-                for (int m = 0; m < idx - (int)cand; m++)
-                    off += (uint32_t)((int64_t)j->cfg.rate * q_get(j, m)->dur / DR_TICKS_PER_SECOND);
-                len = (uint32_t)na - off;
-                if ((uint32_t)nb <= len)
-                    len = nb;
-                r = len ? ff_disctl_seamless_corr(a + off, b, len) : 0;
-                if (r > top_r) {
-                    top_r = r;
-                    top_c = (int)cand;
-                }
-                if (r >= MATCH) {
-                    best   = (int)cand;
-                    best_r = r;
-                }
-            }
-            if ((uint64_t)n == cand && (uint64_t)d < bestd) {
-                bestd = d;
-                k     = (int)cand;
-            }
-        }
-        av_freep(&a);
-        av_freep(&b);
-    }
-    event(j, DR_EV_SEAMLESS_SEARCH, u->time, top_c, best_r && best < k + 2, top_r);
-    if (best_r && best < k + 2) {
-        int64_t dropped = 0, old;
-
-        av_log(j->log, AV_LOG_DEBUG, "Title timeline: audio track %d: seamless audio overlap frame_count=%d "
-               "covariance=0.%06u\n", j->cfg.track, best, (unsigned)((uint64_t)best_r * 1000000 >> 32));
-        j->s = *s;
-        events_flush(j);
-        for (int i = 0; i < idx - best; i++) {
-            DRFrame *f = q_get(j, 0);
-            j->s.exp = f->time + f->dur;
-            if ((ret = out_head(j, f->time + j->s.skew)) < 0)
-                return ret;
-        }
-        for (int i = 0; i < best; i++) {
-            dropped += q_get(j, 0)->dur;
-            j->st.dropped++;
-            j->st.dropped_dur += q_get(j, 0)->dur;
-            q_drop_head(j);
-        }
-        old        = j->s.exp;
-        u          = q_get(j, 0);
-        j->s.exp   = u->time;
-        j->s.skew += old - u->time;
-        j->s.base  = j->s.skew;
-        event(j, DR_EV_SEAMLESS_DROP, u->time + j->s.skew, dropped, j->s.skew, best);
-        events_flush(j);
-        return HAVE;
-    }
-    if (!k) {
-        /* side A unchanged, frame by frame */
-        av_log(j->log, AV_LOG_DEBUG, "Title timeline: audio track %d: no overlap count fits (estimate %"PRIu64
-               " frames): the earlier segment goes on unchanged\n", j->cfg.track, nom);
-        j->s = *s;
-        events_flush(j);
-        for (int i = 0; i < idx; i++) {
-            DRFrame *f = q_get(j, 0);
-            j->s.exp = f->time + f->dur;
-            if ((ret = out_head(j, f->time + j->s.skew)) < 0)
-                return ret;
-        }
-        return HAVE;
-    }
-    events_flush(j);
-    for (int m = idx - 1; m >= idx - k; m--)
-        q_get(j, m)->time = q_get(j, m + 1)->time - q_get(j, m)->dur;
-    return -1;   /* go on with the normal path */
-}
-
 /* ---- the copy check at a join ----
  * A = the segment before, B = the segment whose first frame is q[0]. When the
  * stamps overlap (by more than one 90 kHz tick) and B's first frame is a byte
@@ -495,36 +325,9 @@ static int step(DRJunction *j)
         return j->cfg.out(j->cfg.out_opaque, &m);
     }
 
-    if (!decodable(j) && j->have_out && f->seg != j->out_seg && f->seg != j->join_seg &&
+    if (!is_mlp(j) && j->have_out && f->seg != j->out_seg && f->seg != j->join_seg &&
         (r = copy_check(j, &s)) != NONE)
         return r;
-
-    if (f->time == s.exp && (f->flags & (DR_F_TAIL | DR_F_SYNC)) == DR_F_TAIL && j->cfg.frame_dur &&
-        j->tail_done != j->st.in - j->n) {
-        int64_t end = f->time + f->dur;
-        for (int i = 1; i <= TAIL_UNITS; i++) {
-            DRFrame *u;
-            if (end - f->time > TAIL_LOOK)
-                break;
-            if ((r = need(j, i)) == WAIT)
-                return WAIT;
-            if (r == NONE)
-                break;
-            u = q_get(j, i);
-            if (u->flags & DR_F_SYNC) {
-                if (end <= u->time)
-                    break;
-                r = junction(j, &s, i, end);
-                if (r != -1)
-                    return r;
-                j->tail_done = j->st.in - j->n;   /* re-timed: not searched again */
-                break;
-            }
-            if (u->time != end)
-                break;
-            end += u->dur;
-        }
-    }
 
     if (f->time != s.exp) {
         if (f->time < s.exp) {
@@ -590,10 +393,10 @@ static int step(DRJunction *j)
     /* append */
     s.adv = 0;
     s.exp = f->time + f->dur;
-    if (f->dur + s.base <= s.skew + TICK) {
+    if (f->dur <= s.skew + TICK) {
         int n;
         int64_t d;
-        if ((r = drop_count(j, 0, s.skew - s.base, &n, &d)) == WAIT)
+        if ((r = drop_count(j, 0, s.skew, &n, &d)) == WAIT)
             return WAIT;
         if (n) {
             if ((r = need(j, n)) == WAIT)
@@ -666,7 +469,6 @@ int ff_disctl_junction_open(DRJunction **jp, void *logctx, const DRJunctionConfi
         return AVERROR(ENOMEM);
     j->log      = logctx;
     j->cfg      = *cfg;
-    j->tail_done = -1;
     j->join_seg  = -1;
     *jp = j;
     return 0;
@@ -702,7 +504,6 @@ void ff_disctl_junction_stats(const DRJunction *j, DRJunctionStats *st)
 {
     *st      = j->st;
     st->skew = j->s.skew;
-    st->base = j->s.base;
 }
 
 void ff_disctl_junction_close(DRJunction **jp)
@@ -713,8 +514,6 @@ void ff_disctl_junction_close(DRJunction **jp)
         return;
     while (j->n)
         q_drop_head(j);
-    hist_clear(j);
-    av_freep(&j->hist);
     for (int i = 0; i < COPY_TAIL; i++)
         ff_disctl_frame_unref(&j->tail[i]);
     av_freep(&j->q);
