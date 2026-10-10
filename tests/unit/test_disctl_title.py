@@ -22,12 +22,11 @@ EOF_ = -0x20464F45
 
 @dataclasses.dataclass
 class Payload:
-    """A payload of a track: bytes, PES time, from the source's tail; order
+    """A payload of a track: bytes, PES time; order
     places it among the other track's payloads (video: its decode time)."""
     track: int
     data: bytes
     time: int
-    tail: bool
     order: int
 
 
@@ -46,7 +45,7 @@ class Out:
 def video(base, stream=M2V):
     """The video payloads of one segment: every picture of the test stream
     with its PES time on the grid from base."""
-    return [Payload(0, stream[a:b], base + disp * FRAME, False, base + (k - 1) * FRAME)
+    return [Payload(0, stream[a:b], base + disp * FRAME, base + (k - 1) * FRAME)
             for k, (a, b, disp, _) in enumerate(pictures(stream))]
 
 
@@ -54,7 +53,7 @@ def ac3(start, step, n):
     """AC-3 payloads: n frames (the test stream's frames over and over), one
     per payload, the first at start, each step after the one before."""
     frames = [AC3[i:i + 768] for i in range(0, len(AC3), 768)]
-    return [Payload(1, frames[k % len(frames)], start + k * step, False, start + k * step) for k in range(n)]
+    return [Payload(1, frames[k % len(frames)], start + k * step, start + k * step) for k in range(n)]
 
 
 def interleave(a, b):
@@ -93,7 +92,7 @@ def run(tracks, lpcm_hd, segments, spu=None, cc_helper=None):
     for seg in segments:
         assert lib.ff_disctl_title_segment(t[0]) == 0
         for p in seg:
-            assert lib.ff_disctl_title_payload(t[0], p.track, p.data, len(p.data), p.time, int(p.tail)) == 0
+            assert lib.ff_disctl_title_payload(t[0], p.track, p.data, len(p.data), p.time) == 0
             assert drain() == EAGAIN, "EAGAIN while the title goes on"
     assert lib.ff_disctl_title_finish(t[0]) == 0
     assert drain() == EOF_, "AVERROR_EOF after the last frame"
@@ -164,21 +163,10 @@ def test_the_second_segment_follows_the_video_of_the_first():
     assert all(b.time >= x.time for x, b in zip(a, a[1:])), "audio leaves in time order"
 
 
-def test_payloads_from_the_source_tail_mark_their_frames():
-    n = 1200 * 36036 // 34560
-    a = ac3(BASE, AC3_DUR, n)
-    for p in a[n - 10:]:
-        p.tail = True
-    outs, _, _, _ = run(tracks("ac3"), True, [interleave(video(BASE), a)])
-    a = [o for o in outs if o.track == 1]
-    assert sum(1 for o in a if o.flags & lib.DR_F_TAIL) == 10
-    assert all(o.flags & lib.DR_F_TAIL for o in a[n - 10:])
-
-
 def test_lpcm_payloads_carry_their_header_and_go_through_the_pcm_strategy():
     # DVD-Video LPCM, 16-bit stereo 48 kHz: each payload = 3-byte header +
     # 6 frames of 320 bytes (1/100 s); output frames of 1/30 s (1600 samples)
-    pay = [Payload(1, bytes([k % 32, 0x01, 0x80]) + bytes(6 * 320), BASE + k * 10 * MS, False, BASE + k * 10 * MS)
+    pay = [Payload(1, bytes([k % 32, 0x01, 0x80]) + bytes(6 * 320), BASE + k * 10 * MS, BASE + k * 10 * MS)
            for k in range(4000)]
     outs, events, _, _ = run(tracks("pcm_dvd"), False, [interleave(video(BASE), pay)])
     a = [o for o in outs if o.track == 1]
@@ -205,7 +193,7 @@ def test_untested_features_are_counted_for_the_caller():
         f[7] = 0
         return bytes(f)
     n = 1200 * 36036 // 34560
-    pay = [Payload(1, eac3(0, k % 200) + eac3(1, 0x55), BASE + k * AC3_DUR, False, BASE + k * AC3_DUR)
+    pay = [Payload(1, eac3(0, k % 200) + eac3(1, 0x55), BASE + k * AC3_DUR, BASE + k * AC3_DUR)
            for k in range(n)]
     outs, _, _, review = run(tracks("eac3"), True, [interleave(video(BASE), pay)])
     assert sum(1 for o in outs if o.track == 1) == n
@@ -214,7 +202,7 @@ def test_untested_features_are_counted_for_the_caller():
 
 def subs(units):
     """Sub-picture payloads of track 1: (unit, display position in frames)."""
-    return [Payload(1, u, BASE + n * FRAME, False, BASE + n * FRAME) for u, n in units]
+    return [Payload(1, u, BASE + n * FRAME, BASE + n * FRAME) for u, n in units]
 
 
 def sub_tracks():
@@ -228,7 +216,7 @@ def test_a_sub_picture_without_a_stop_time_lasts_until_the_next_one():
     s1 = subs([(spu(100, True, [], 1), 10), (spu(None, True, [], 2), 20), (spu(None, True, [], 3), 30),
                (spu(50, True, [], 4), 40), (spu(None, True, [], 5), 1190)])
     base2 = 500 * 1080000000
-    s2 = [Payload(1, spu(None, True, [], 6), base2 + 5 * FRAME, False, base2 + 5 * FRAME)]
+    s2 = [Payload(1, spu(None, True, [], 6), base2 + 5 * FRAME, base2 + 5 * FRAME)]
     res = []
     outs, events, duration, review = run(sub_tracks(), True,
                                          [interleave(video(BASE), s1), interleave(video(base2), s2)], res)
@@ -342,7 +330,7 @@ def dropped(stream):
     assert lib.ff_disctl_title_open(t, ffi.NULL, cfg) == 0
     assert lib.ff_disctl_title_segment(t[0]) == 0
     for p in video(BASE, stream):
-        assert lib.ff_disctl_title_payload(t[0], 0, p.data, len(p.data), p.time, 0) == 0
+        assert lib.ff_disctl_title_payload(t[0], 0, p.data, len(p.data), p.time) == 0
     assert lib.ff_disctl_title_finish(t[0]) == 0
     while lib.ff_disctl_title_frame(t[0], k, f) == 0:
         n += 1
@@ -377,14 +365,14 @@ def test_a_failed_title_stays_failed():
     assert lib.ff_disctl_title_segment(t[0]) == 0
     err = 0
     for p in video(BASE, stream):
-        err = lib.ff_disctl_title_payload(t[0], 0, p.data, len(p.data), p.time, 0)
+        err = lib.ff_disctl_title_payload(t[0], 0, p.data, len(p.data), p.time)
         if err:
             break
         while lib.ff_disctl_title_frame(t[0], k, f) == 0:
             lib.ff_disctl_frame_unref(f)
     assert err < 0
     p = video(BASE, stream)[-1]
-    assert lib.ff_disctl_title_payload(t[0], 0, p.data, len(p.data), p.time, 0) == err
+    assert lib.ff_disctl_title_payload(t[0], 0, p.data, len(p.data), p.time) == err
     assert lib.ff_disctl_title_segment(t[0]) == err
     assert lib.ff_disctl_title_finish(t[0]) == err
     assert lib.ff_disctl_title_frame(t[0], k, f) == err
@@ -419,13 +407,13 @@ def layer(base, skip=(), extra=(), split=False, stream=M2V):
         if k not in skip:
             pic = mvc_picture(k)
             if split:
-                out += [Payload(LAYER, pic[:7], base + disp * FRAME, False, order),
-                        Payload(LAYER, pic[7:], AV_NOPTS, False, order)]
+                out += [Payload(LAYER, pic[:7], base + disp * FRAME, order),
+                        Payload(LAYER, pic[7:], AV_NOPTS, order)]
             else:
-                out.append(Payload(LAYER, pic, base + disp * FRAME, False, order))
+                out.append(Payload(LAYER, pic, base + disp * FRAME, order))
         for after, t in extra:
             if after == k:
-                out.append(Payload(LAYER, mvc_picture(900 + k), t, False, order))
+                out.append(Payload(LAYER, mvc_picture(900 + k), t, order))
     return out
 
 
@@ -477,7 +465,7 @@ def test_a_video_frame_without_its_second_layer_picture_fails_the_title():
     assert lib.ff_disctl_title_open(t, ffi.NULL, cfg) == 0
     assert lib.ff_disctl_title_segment(t[0]) == 0
     for p in seg:
-        lib.ff_disctl_title_payload(t[0], p.track, p.data, len(p.data), p.time, 0)
+        lib.ff_disctl_title_payload(t[0], p.track, p.data, len(p.data), p.time)
     assert lib.ff_disctl_title_finish(t[0]) < 0, "the layer's stream would miss a picture"
     lib.ff_disctl_title_close(t)
 
@@ -535,7 +523,7 @@ def test_a_chapter_position_starts_the_chapter_at_the_first_picture_from_there()
     for k, p in enumerate(video(BASE)):
         if k in at:
             assert lib.ff_disctl_title_chapter_position(t[0]) == 0
-        assert lib.ff_disctl_title_payload(t[0], 0, p.data, len(p.data), p.time, 0) == 0
+        assert lib.ff_disctl_title_payload(t[0], 0, p.data, len(p.data), p.time) == 0
         drain()
     assert lib.ff_disctl_title_finish(t[0]) == 0
     drain()

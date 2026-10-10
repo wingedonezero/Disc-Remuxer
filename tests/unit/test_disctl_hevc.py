@@ -345,7 +345,7 @@ def run_title(segments):
     for seg in segments:
         assert lib.ff_disctl_title_segment(t[0]) == 0
         for u, time in seg:
-            assert lib.ff_disctl_title_payload(t[0], 0, u, len(u), time, 0) == 0
+            assert lib.ff_disctl_title_payload(t[0], 0, u, len(u), time) == 0
             drain()
     assert lib.ff_disctl_title_finish(t[0]) == 0
     drain()
@@ -467,12 +467,12 @@ def run_dv(base, el, merged=True):
     assert lib.ff_disctl_title_open(t, ffi.NULL, cfg) == 0
     assert lib.ff_disctl_title_segment(t[0]) == 0
     for (b, tb), (e, te) in zip(base, el + [(None, None)] * (len(base) - len(el))):
-        assert lib.ff_disctl_title_payload(t[0], 0, b, len(b), tb, 0) == 0
+        assert lib.ff_disctl_title_payload(t[0], 0, b, len(b), tb) == 0
         if e is not None:
-            assert lib.ff_disctl_title_payload(t[0], 1, e, len(e), te, 0) == 0
+            assert lib.ff_disctl_title_payload(t[0], 1, e, len(e), te) == 0
         drain()
     for e, te in el[len(base):]:
-        assert lib.ff_disctl_title_payload(t[0], 1, e, len(e), te, 0) == 0
+        assert lib.ff_disctl_title_payload(t[0], 1, e, len(e), te) == 0
     assert lib.ff_disctl_title_finish(t[0]) == 0
     drain()
     w = ffi.new("int64_t *")

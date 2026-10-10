@@ -146,8 +146,9 @@ static int place_frame(DRJoin *j, int track, DRFrame *f)
                    "%"PRId64" ticks before the one before it ends: kept at its time\n", track,
                    j->offset + ts - j->start, gap);
             event(j, DR_EV_SUB_OVERLAP, track, j->offset + ts - j->start, gap, 0);
-        } else if (gap > 0 && gap > f->dur) {
-            /* earlier than expected by more than its own duration */
+        } else if (gap > 0 && gap > f->dur + DR_TICKS_PER_PTS) {
+            /* earlier than expected by more than its own duration (by more
+             * than one 90 kHz tick: the disc's stamps are rounded to it) */
             if (t->kind == DR_KIND_AUDIO && gap != t->last_gap) {
                 event(j, DR_EV_RETIME, track, j->offset + t->e - j->start, f->dur, -gap);
                 t->last_gap = gap;

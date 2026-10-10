@@ -129,6 +129,20 @@ def test_audio_early_by_more_than_its_duration_is_moved_and_reported_once():
     assert st.retimed == 2
 
 
+def test_audio_early_by_its_duration_within_one_tick_is_not_moved():
+    # the disc's stamps are 90 kHz: a frame one frame early (a repeated stamp)
+    # can read up to a tick more; only more than that is moved
+    tick = 12000
+    s0 = gop(0, 0, 4) + [(1, fr(k * AC3, AC3, F_KEY)) for k in range(5)] + [
+        (1, fr(5 * AC3 - AC3 - tick // 2, AC3, F_KEY)),  # one frame early + half a tick: kept
+        (1, fr(5 * AC3 - tick // 2 - AC3 - tick - 1, AC3, F_KEY)),  # more than a tick past one frame: moved
+    ]
+    s, st = join([VIDEO, AUDIO], [], [s0])
+    assert track_times(s, 1)[5:] == [4 * AC3 - tick // 2, 5 * AC3 - tick // 2]
+    assert [e["kind"] for e in s.events] == [lib.DR_EV_RETIME]
+    assert st.retimed == 1
+
+
 def test_subtitles_keep_their_times():
     # the second starts 5 frames before the first ends (more than its own
     # 1 frame): it keeps its time (a sub-picture replaces the one shown);

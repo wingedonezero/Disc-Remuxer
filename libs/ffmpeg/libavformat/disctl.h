@@ -42,7 +42,6 @@
 #define DR_F_MARKER   0x0004   /**< empty marker: carries a time, no bytes */
 #define DR_F_DISCARD  0x0008   /**< not referenced (B picture) */
 #define DR_F_CHAPTER  0x0010   /**< a chapter starts here */
-#define DR_F_TAIL     0x0020   /**< read from the last 64 MiB of its segment's source */
 #define DR_F_BATCH    0x0040   /**< video: the last frame of a batch the video timing handed on */
 #define DR_F_NO_STOP  0x0080   /**< sub-picture: shows a picture but has no stop time: out of
                                     its stage it lasts one delay step; the title pipeline makes
@@ -57,6 +56,7 @@
 #define DR_F_START_CLEAN  0x0400 /**< nothing before it is needed */
 #define DR_F_START_BROKEN 0x0800 /**< marked as a broken link: the pictures shown before it are not decodable */
 #define DR_F_START_OPEN   0x1000 /**< the pictures shown before it may need pictures before it in the stream */
+#define DR_F_CTR      0x2000   /**< audio: ctr holds the stream's own number of the frame's first sample */
 
 typedef struct DRFrame {
     AVBufferRef *buf;      /**< owns the bytes (NULL for a marker) */
@@ -71,6 +71,9 @@ typedef struct DRFrame {
     int64_t      src;      /**< from the joiner on: the frame's own time on the title timeline (its
                                 PES-derived time, before the joiner moves it or the junction shifts it) */
     int          seg;      /**< from the joiner on: the segment the frame comes from (from 0) */
+    int          ctr;      /**< with DR_F_CTR: the stream's own sample number of the frame's first sample,
+                                modulo 65536 (TrueHD / MLP: a restart header's output timing, counted on
+                                by the samples of an access unit) */
 } DRFrame;
 
 /** Hands a frame on; the callee owns it (ff_disctl_frame_unref). */
@@ -348,9 +351,12 @@ void *ff_disctl_audio_log(const DRAudio *a);
 /* ---- Stage 4, audio: the junction of one output track (disctl_junction.c) ----
  * Title start: every frame keeps its own time, also when the track starts
  * before the video (a stream file's negative delay; nothing is dropped or
- * moved). Then per frame: overlaps grow the audio skew, short gaps are
- * absorbed into it, real gaps reset it (nothing is inserted), whole frames
- * are dropped (only up to a sync unit) once the skew reaches one frame.
+ * moved). At each join first (codecs other than TrueHD / MLP): a segment
+ * whose first frame is a byte copy of the frame the segment before ends
+ * with, while the stamps overlap, starts without the copy. Then per frame:
+ * overlaps grow the audio skew, short gaps are absorbed into it, real gaps
+ * reset it (nothing is inserted), whole frames are dropped (only up to a
+ * sync unit) once the skew reaches one frame (within one 90 kHz tick).
  * Every frame leaves at time + skew. */
 
 enum DREventKind {
@@ -379,12 +385,6 @@ enum DREventKind {
     DR_EV_VERIFY_ORDER,    /**< a unit without a duration, or (audio, subtitles) not after the one before it */
     DR_EV_VERIFY_HOLE,     /**< video in display order: no picture for dur from pos (count = placeholders in it) */
     DR_EV_VERIFY_OVERLAP,  /**< video in display order: a picture starts dur before the one before it ends */
-    DR_EV_SEAMLESS_SEARCH, /**< the overlap search at a join (pos = the next segment's first sync unit on
-                                the input clock): count = the best correlation of any candidate (Q32,
-                                0 = not compared), dur = that candidate's frame count, skew = 1 when a
-                                match was accepted */
-    DR_EV_SEAMLESS_DROP,   /**< a match: count frames (dur ticks) at the end of the earlier segment dropped,
-                                skew = the new skew */
     DR_EV_PCM_SILENCE,     /**< PCM: a gap filled with silence (pos = the output time, dur = the gap in ticks,
                                 count = samples) */
     DR_EV_PCM_SKIP,        /**< PCM: a start 5 s or more after the video skipped on the output clock (dur ticks,
@@ -407,6 +407,15 @@ enum DREventKind {
     DR_EV_SYNC,            /**< audio: as a stream file plays it, a frame is more than DR_SYNC_LIMIT off its
                                 own time (pos = that time, dur = the largest error in the segment, count = the
                                 segment): one per segment */
+    DR_EV_AUDIO_COPY,      /**< a segment's first frame is a byte copy of the frame the segment before ends
+                                with, and the stamps overlap: the copy is left out (pos = its time, dur = its
+                                duration, skew = the skew, count = the overlap in ticks) */
+    DR_EV_AUDIO_COPY_LONG, /**< a segment's first count frames are byte copies of the count frames the
+                                segment before ends with (the stamps overlap by dur, more than one frame):
+                                found only, nothing left out (pos = the first one's time) */
+    DR_EV_SAMPLE_JOIN,     /**< TrueHD / MLP at a join, by the streams' sample numbers (pos = the next
+                                segment's first frame's time, dur = the earlier segment's end less that
+                                frame's sample number, in samples; count = DRSampleJoin) */
 };
 
 /** Audio sync error (stream file position - own time) beyond which a
@@ -440,16 +449,26 @@ typedef struct DRJunctionConfig {
     DRVideoRef video;
     DRFrameCb  out;  void *out_opaque;
     DREventCb  event; void *event_opaque;
-    /** The stream's codec and sample rate: the seamless overlap search
-     *  decodes TrueHD / MLP to compare the two sides of a join (other
-     *  codecs, or rate 0: no comparison, durations only). */
+    /** The stream's codec and sample rate. */
     enum AVCodecID codec;
     int        rate;
 } DRJunctionConfig;
 
+/** How a TrueHD / MLP join was decided (DR_EV_SAMPLE_JOIN count). */
+enum DRSampleJoin {
+    DR_JOIN_CONTINUES = 1, /**< the next segment starts where the earlier one ends: everything kept */
+    DR_JOIN_SAME,          /**< its first unit holds the earlier one's last samples again: left out */
+    DR_JOIN_SAME_KEPT,     /**< the same, but the unit after it is no major sync: kept (no clean restart) */
+    DR_JOIN_APART,         /**< the sample numbers do not connect: the skew rule decides */
+    DR_JOIN_NO_COUNT,      /**< a side without sample numbers: the skew rule decides */
+    DR_JOIN_KINDS
+};
+
 typedef struct DRJunctionStats {
     int64_t in, out, dropped, dropped_dur, markers;
-    int64_t skew, base;        /**< current skew and start shift */
+    int64_t joins[DR_JOIN_KINDS]; /**< TrueHD / MLP joins by DRSampleJoin */
+    int64_t copies;            /**< of the dropped: copies at a join left out (DR_EV_AUDIO_COPY) */
+    int64_t skew;              /**< current skew */
     int     ended;             /**< the video ended before the track */
 } DRJunctionStats;
 
@@ -781,31 +800,6 @@ int  ff_disctl_pcm_finish(DRPcm *p);
 void ff_disctl_pcm_stats(const DRPcm *p, DRPcmStats *st);
 void ff_disctl_pcm_close(DRPcm **p);
 
-/* ---- the seamless overlap search's audio (disctl_seamless.c) ---- */
-
-/** Decodes TrueHD / MLP units (pre: decoded first and dropped) to one
- *  channel of 32-bit samples: 16-bit samples x 65536; channels mixed by
- *  ff_disctl_seamless_mix to front centre (centre 1, surround sqrt(2) / 8,
- *  LFE 0, normalised; Q30 coefficients, 64-bit sums shifted down by 30,
- *  clipped). Each unit must give one frame of its own duration; of each range
- *  frame its first rate x duration samples are kept. Returns 1 with *out
- *  (av_free()), 0 when the units do not decode as asked (logged), < 0 on
- *  error. */
-int ff_disctl_seamless_decode(void *logctx, enum AVCodecID codec, int rate, const DRFrame *pre, int nb_pre,
-                               const DRFrame *range, int nb_range, int32_t **out, int *nb_out);
-/** How alike n samples of a and b are: the Pearson correlation in Q32
- *  (0xFFFFFFFF = 1 or more), in integers; 0 when both are silent (no sample
- *  beyond +-99), 1 when they do not correlate positively. */
-uint32_t ff_disctl_seamless_corr(const int32_t *a, const int32_t *b, uint32_t n);
-/** The mono mix of a decoded layout (a native channel mask) as Q30
- *  coefficients, one per channel in mask order (llrint(2^30 c), clipped):
- *  libswresample's matrix to front centre (centre 1, surround sqrt(2) / 8,
- *  LFE 0, normalised to 1, Pro Logic II encoding) of the layout without its
- *  height, wide, surround direct and second LFE channels, which get 0.
- *  AVERROR(EINVAL) when no mix is built (no front speaker, more than 32
- *  channels, a layout libswresample refuses). */
-int ff_disctl_seamless_mix(void *logctx, uint64_t layout, int32_t *q30);
-
 /* ---- Linear PCM of DVD-Video, HD DVD and Blu-ray (disctl_lpcm.c) ----
  * DVD-Video / HD DVD: the packet source hands each PES packet's audio frame
  * header to ff_disctl_lpcm_header() before its payload goes to the frame
@@ -895,7 +889,7 @@ int  ff_disctl_title_segment(DRTitle *t);
 /** A payload of a track in the current segment: time in ticks or
  *  AV_NOPTS_VALUE; tail = read from the last 64 MiB of the segment's source.
  *  LPCM payloads start with their audio frame header. */
-int  ff_disctl_title_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time, int tail);
+int  ff_disctl_title_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time);
 /** The end of the title: every stage finishes. */
 int  ff_disctl_title_finish(DRTitle *t);
 /** The next output frame (taken over by the caller): 0, AVERROR(EAGAIN)

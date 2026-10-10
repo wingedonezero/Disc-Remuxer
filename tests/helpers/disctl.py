@@ -75,6 +75,7 @@ class Out:
     time: int
     dur: int
     flags: int
+    ctr: int = -1  # the stream's own sample number (DR_F_CTR), else -1
 
 
 def frame_bytes(f):
@@ -85,7 +86,7 @@ def collect(outs):
     """A DRFrameCb body that appends every frame to outs (as Out) and
     releases it."""
     def on_frame(f):
-        outs.append(Out(frame_bytes(f), f.time, f.dur, f.flags))
+        outs.append(Out(frame_bytes(f), f.time, f.dur, f.flags, f.ctr if f.flags & lib.DR_F_CTR else -1))
         lib.ff_disctl_frame_unref(f)
         return 0
     return on_frame

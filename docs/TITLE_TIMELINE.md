@@ -18,8 +18,8 @@ title timeline (libavformat/disctl_*.c)
   1 units      cut each track into units (FFmpeg parsers), timestamp records
   2 timing     per track: video grid / audio durations / sub-picture snap
   3 joiner     segments -> one timeline per track
-  4 junction   per output track: title start, audio skew (absorb / drop),
-               seamless overlap search, PCM gaps
+  4 junction   per output track: title start, copies at joins, audio skew
+               (absorb / drop), PCM gaps
   5 checks     measure + verify, events
         |  frames: data, time, duration, flags (key, discardable, chapter mark)
         v
@@ -37,8 +37,7 @@ prefix only where it must differ.
 
 `disctl_title.c` puts the stages together for one title: the demuxer calls
 `ff_disctl_title_segment()` at each segment, `ff_disctl_title_payload()`
-for each payload (track, bytes, PES time, from the last 64 MiB of the
-segment's source or not) and `ff_disctl_title_finish()` at the end, and
+for each payload (track, bytes, PES time) and `ff_disctl_title_finish()` at the end, and
 takes the output frames with `ff_disctl_title_frame()`. Per segment each
 track has a frame step (FFmpeg's parser) and its timing stage; the joiner's frames go to the
 junction (or the PCM strategy), every output frame to the checks. Audio
@@ -96,7 +95,6 @@ logged with the reason; nothing is guessed.
 | parser | FFmpeg's parser; `disc_parser`: its disc mode |
 | duration | rule for each unit (e.g. AC-3: samples / rate from the stream's first header; TrueHD: per major-sync access unit) |
 | sync unit | whether a unit may start a drop / join (AC-3, E-AC-3, DTS: every frame; TrueHD: major-sync units only) |
-| decoder | FFmpeg decoder for the overlap search, or none |
 | filter | FFmpeg bitstream filter each unit goes through (`eac3_core`: an AC-3 track; `dca_core`: a DTS track taken out of a DTS-HD stream) |
 | video only | units per frame (2 = fields), frame-rate source, display-order number and its wrap period |
 | sub-picture only | units found by FFmpeg's DVD subtitle parser in disc mode (unit size from its header); duration from the display-stop command; snapped to the video grid |
@@ -209,28 +207,24 @@ logged with the reason; nothing is guessed.
   - short gap: absorbed while skew - gap > -max(12 ms, unit duration);
   - real gap: reported with the missing frame count, skew back to 0,
     nothing inserted;
-  - when skew >= shift + one unit: whole units dropped, only up to the next
-    sync unit, with 1/16-unit tolerance;
+  - when skew >= one unit (within one 90 kHz tick): whole units dropped,
+    only up to the next sync unit, with 1/16-unit tolerance;
   - every change > 1 ms (or |skew| > 1 ms) is an event.
-- **Seamless overlap search** (`disctl_seamless.c`; entered by codecs with
-  non-sync units: TrueHD / MLP, compared only for those): at the tail of a
-  segment (frames from its last 64 MiB) a non-sync frame whose contiguous run
-  (at most 0.5 s, 99 frames) reaches past the start of the next segment's
-  first sync unit U. Candidate counts of duplicated frames: overlap / frame
-  duration +-5 (at least 1, at most the frames before U). Both sides are
-  decoded (side A after the frames handed on since the last sync unit;
-  side B = U and the frames after it, as many as side A + 2), turned into
-  32-bit samples, mixed to one channel (libavresample's matrix: centre 1,
-  surround sqrt(2)/8, LFE 0, normalised; Q30 integer mix), and for each
-  candidate the end of A from where its frames start is compared with the
-  start of B: the Pearson correlation in Q32, all integer (silence = 0); the
-  last candidate above 0.95 is the match. k = the smallest candidate whose
-  frames fit the overlap (within frame / 16). A match below k + 2 drops its
-  frames at the end of A (U's major sync is kept) and the skew becomes where
-  the frames before them ended against U; else k = 0: A goes on unchanged,
-  or the k frames are re-timed to end at U and the skew rule follows. Each
-  search is an event with its best correlation (for comparing it with other
-  ways of joining, Blu-ray).
+- **Copies at a join** (every audio codec but TrueHD / MLP): the next
+  segment's first frame, when it is byte for byte the frame the segment
+  before ends with and the stamps overlap by more than one 90 kHz tick, is
+  left out (at most one per join); a longer copy is only reported.
+- **TrueHD / MLP joins**: by the streams' own sample numbers. Every restart
+  header carries the number of its first sample (output timing, modulo
+  65536); the access units after it count on by one unit's samples. At a
+  join: the next segment's first unit starts where the earlier one ends:
+  everything kept; its second unit starts there: the first holds the
+  earlier segment's last samples again and is left out (only when the
+  second is a major sync). Either way the skew this leaves counts as right
+  (the skew rule only acts on skew beyond it: the stamps put every
+  segment's first unit on its first picture, so their overlap is no drift).
+  Numbers that do not connect (a piece on another timeline) or a side
+  without them: the skew rule. One event per join, a summary per track.
 - **PCM tracks** (`disctl_pcm.c`, in place of the junction): the samples
   leave in fixed frames (1/30 s at 48 / 44.1 kHz, else about 32 ms rounded up
   to a divisor of the rate) timed by a sample counter from the track's
@@ -359,7 +353,7 @@ line each, so a run can be compared event by event with an expected list.
 
 1. units + timestamp records; 2. audio durations and markers; 3. junction
 (title start, skew, drops, real gaps); 4. joiner; 5. video grid (vote,
-check, repair); 6. sub-picture snap; 7. checks; 8. seamless overlap search;
+check, repair); 6. sub-picture snap; 7. checks; 8. copies at joins;
 9. PCM tracks.
 
 Each rule gets a test on built payload streams (`tests/unit/test_disctl_*.py`).

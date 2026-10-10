@@ -54,7 +54,6 @@ typedef struct Track {
     int64_t       bytes;         /* payload bytes given to the frame step */
     int64_t      *posq;          /* video: chapter positions reached (bytes given by then), oldest first */
     int           nb_posq, posq_cap;
-    int64_t       tail_from;     /* stream offset where the payloads from the source's tail begin, -1 */
 
     /* the output side */
     DRAudioHeader header;        /* audio: the stream values of its first segment that gave them */
@@ -208,11 +207,12 @@ static const char *const event_names[] = {
     [DR_EV_VERIFY_ORDER]         = "verify_order",
     [DR_EV_VERIFY_HOLE]          = "verify_hole",
     [DR_EV_VERIFY_OVERLAP]       = "verify_overlap",
-    [DR_EV_SEAMLESS_SEARCH]      = "seamless_search",
-    [DR_EV_SEAMLESS_DROP]        = "seamless_drop",
     [DR_EV_PCM_SILENCE]          = "pcm_silence",
     [DR_EV_PCM_SKIP]             = "pcm_skip",
     [DR_EV_PCM_TIMECODE]         = "pcm_timecode",
+    [DR_EV_AUDIO_COPY]           = "audio_copy",
+    [DR_EV_AUDIO_COPY_LONG]      = "audio_copy_long",
+    [DR_EV_SAMPLE_JOIN]          = "sample_join",
 };
 
 const char *ff_disctl_event_name(int kind)
@@ -268,6 +268,40 @@ static void event_text(DRTitle *t, const DREvent *e)
         av_log(t->log, AV_LOG_WARNING, "Track %d at %s: %"PRId64" frame(s) (%s ms) dropped to bring the audio skew "
                "to %s ms\n", k, hms(a, 32, e->pos), e->count, msec(b, 32, e->dur, 0), msec(c, 32, e->skew, 1));
         break;
+    case DR_EV_AUDIO_COPY:
+        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: the next segment starts with a copy of the last frame (%s ms; "
+               "the stamps overlap by %s ms): the copy is left out\n", k, hms(a, 32, e->pos), msec(b, 32, e->dur, 0),
+               msec(c, 32, e->count, 0));
+        break;
+    case DR_EV_AUDIO_COPY_LONG:
+        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: the next segment starts with copies of the last %"PRId64
+               " frames (the stamps overlap by %s ms): found only, nothing left out\n", k, hms(a, 32, e->pos),
+               e->count, msec(b, 32, e->dur, 0));
+        break;
+    case DR_EV_SAMPLE_JOIN:
+        switch (e->count) {
+        case DR_JOIN_CONTINUES:
+            av_log(t->log, AV_LOG_INFO, "Track %d at %s: join: the next segment continues at the sample where this "
+                   "one ends: everything kept\n", k, hms(a, 32, e->pos));
+            return;
+        case DR_JOIN_SAME:
+            av_log(t->log, AV_LOG_INFO, "Track %d at %s: join: the next segment's first unit holds the last %"PRId64
+                   " samples of this one again: left out\n", k, hms(a, 32, e->pos), e->dur);
+            return;
+        case DR_JOIN_SAME_KEPT:
+            av_log(t->log, AV_LOG_WARNING, "Track %d at %s: join: the next segment's first unit holds the last %"PRId64
+                   " samples of this one again, but the unit after it is no major sync: kept\n", k,
+                   hms(a, 32, e->pos), e->dur);
+            return;
+        case DR_JOIN_APART:
+            av_log(t->log, AV_LOG_WARNING, "Track %d at %s: join: the sample numbers do not connect (%+"PRId64
+                   " samples; a piece on another timeline): the timing rule decides\n", k, hms(a, 32, e->pos), e->dur);
+            return;
+        default:
+            av_log(t->log, AV_LOG_WARNING, "Track %d at %s: join: a side has no sample numbers: the timing rule "
+                   "decides\n", k, hms(a, 32, e->pos));
+            return;
+        }
     case DR_EV_OVERLAP:
         av_log(t->log, AV_LOG_WARNING, "Track %d at %s: frames overlap by %s ms; audio skew now %s ms\n", k,
                hms(a, 32, e->pos), msec(b, 32, e->dur, 0), msec(c, 32, e->skew, 1));
@@ -1363,14 +1397,11 @@ static void title_summary(DRTitle *t)
 
 /* ---- the current segment ---- */
 
-/* A frame from a track's timing stage: marked when it was read from the
- * source's tail, then joined. */
+/* A frame from a track's timing stage, then joined. */
 static int seg_frame(void *opaque, DRFrame *f)
 {
     Track *k = opaque;
 
-    if (k->tail_from >= 0 && f->pos >= k->tail_from)
-        f->flags |= DR_F_TAIL;
     if (k->nb_posq && f->pos >= k->posq[0]) {
         f->flags |= DR_F_POSITION;
         memmove(k->posq, k->posq + 1, --k->nb_posq * sizeof(*k->posq));
@@ -1397,7 +1428,6 @@ static int seg_open(DRTitle *t)
         void *stage;
 
         k->bytes     = 0;
-        k->tail_from = -1;
         if (k->nb_posq)
             av_log(t->log, AV_LOG_WARNING, "Title timeline: %d chapter position(s) at the end of the segment "
                    "before: the next video frame starts them [untested on real discs]\n", k->nb_posq);
@@ -1596,7 +1626,7 @@ static int title_segment(DRTitle *t)
     return seg_open(t);
 }
 
-static int title_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time, int tail)
+static int title_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time)
 {
     Track *k;
     int ret;
@@ -1626,8 +1656,6 @@ static int title_payload(DRTitle *t, int track, const uint8_t *data, int size, i
         data += h;
         size -= h;
     }
-    if (tail && k->tail_from < 0)
-        k->tail_from = k->bytes;
     k->bytes += size;
     return ff_disctl_frames_write(k->cut, data, size, time);
 }
@@ -1713,6 +1741,19 @@ static int title_finish(DRTitle *t)
             return ret;
         if (k->junction && (ret = ff_disctl_junction_finish(k->junction)) < 0)
             return ret;
+        if (k->junction) {
+            DRJunctionStats js;
+            int64_t n = 0;
+            ff_disctl_junction_stats(k->junction, &js);
+            for (int w = 1; w < DR_JOIN_KINDS; w++)
+                n += js.joins[w];
+            if (n)
+                av_log(t->log, AV_LOG_INFO, "Title timeline: track %d: %"PRId64" join(s) by the stream's sample numbers: "
+                       "%"PRId64" continue, %"PRId64" with a repeated unit left out, %"PRId64" with a repeated unit "
+                       "kept, %"PRId64" not connected, %"PRId64" without sample numbers\n", i, n,
+                       js.joins[DR_JOIN_CONTINUES], js.joins[DR_JOIN_SAME], js.joins[DR_JOIN_SAME_KEPT],
+                       js.joins[DR_JOIN_APART], js.joins[DR_JOIN_NO_COUNT]);
+        }
         if ((ret = spu_finish(t, k)) < 0)
             return ret;
         if (k->cfg.kind == DR_KIND_CAPTION && (ret = cc_finish(t, k)) < 0)
@@ -1780,9 +1821,9 @@ int ff_disctl_title_segment(DRTitle *t)
     return t->error ? t->error : sticky(t, title_segment(t));
 }
 
-int ff_disctl_title_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time, int tail)
+int ff_disctl_title_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time)
 {
-    return t->error ? t->error : sticky(t, title_payload(t, track, data, size, time, tail));
+    return t->error ? t->error : sticky(t, title_payload(t, track, data, size, time));
 }
 
 int ff_disctl_title_chapter_position(DRTitle *t)

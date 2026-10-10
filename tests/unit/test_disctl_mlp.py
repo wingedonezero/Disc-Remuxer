@@ -1,15 +1,16 @@
 """libavformat/disctl_mlp.c: MLP / Dolby TrueHD access units (AUs) in the
 title timeline. An AU lasts the stream's samples per AU; only major-sync AUs are
 sync units and key frames; an AU that ends the stream (marker D2 34 at the
-end of its substreams) lasts the samples it decodes to. Streams made by
-FFmpeg's encoders (tests/data/README.md)."""
+end of its substreams) lasts the samples it decodes to; every AU carries the
+stream's own number of its first sample (a major sync's restart header, then
+counted on). Streams made by FFmpeg's encoders (tests/data/README.md)."""
 
 from helpers import AV_NOPTS_VALUE, DATA, lib
 from helpers.disctl import dur, run
 
 THD = (DATA / "sine_4813.thd").read_bytes()
 MLP = (DATA / "sine_4813.mlp").read_bytes()
-F_KEY, F_SYNC = lib.DR_F_KEY, lib.DR_F_SYNC
+F_KEY, F_SYNC, F_CTR = lib.DR_F_KEY, lib.DR_F_SYNC, lib.DR_F_CTR
 
 
 def aus(stream):
@@ -36,7 +37,7 @@ def check_units(outs, units):
     for o, au in zip(outs, units):
         assert o.bytes == au
         sync = F_KEY | F_SYNC if is_major(au) else 0
-        assert o.flags == sync, "only major-sync AUs are sync units and key frames"
+        assert o.flags & ~F_CTR == sync, "only major-sync AUs are sync units and key frames"
 
 
 def test_truehd_aus_last_40_samples_and_the_stream_end_au_its_decoded_13():
@@ -92,3 +93,35 @@ def test_a_cut_off_last_au_is_not_a_unit():
     r = run("truehd", [(THD[:-5], 5)])
     assert len(r.outs) == len(units) - 1
     assert r.frames.skipped_bytes == len(units[120]) - 5
+
+
+def output_timing(au):
+    """The output timing of a major-sync AU, read as the Dolby TrueHD bitstream
+    description lays it out: AU header (4 bytes), major sync (28 bytes, more
+    with extended substream info), one directory word per substream (+2 with
+    its extra word), then substream 0's block: 2 flag bits, the 13-bit restart
+    sync 0x18F5, 1 bit, the 16-bit output_timing."""
+    nsub = au[0x14] >> 4
+    d = ((au[0x1E] >> 3) & 0x1E) + 0x22 if au[7] == 0xBA and au[0x1D] & 1 else 0x20
+    for _ in range(nsub):
+        d += 2 + 2 * (au[d] >> 7)
+    w = int.from_bytes(au[d:d + 2], "big")
+    assert w >> 14 == 3 and (w >> 1) & 0x1FFF == 0x18F5, "a restart header"
+    return int.from_bytes(au[d + 2:d + 4], "big")
+
+
+def test_every_au_carries_its_first_sample_number_counted_from_the_restart_headers():
+    for codec, stream in (("truehd", THD), ("mlp", MLP)):
+        units = aus(stream)
+        r = run(codec, payloads(stream))
+        assert len(r.outs) == len(units)
+        ctr = None
+        for o, au in zip(r.outs, units):
+            assert o.flags & F_CTR, codec
+            if is_major(au):
+                assert o.ctr == output_timing(au), codec
+            else:
+                assert o.ctr == (ctr + 40) & 0xFFFF, "a minor sync counts on by one AU"
+            ctr = o.ctr
+        majors = [o.ctr for o, au in zip(r.outs, units) if is_major(au)]
+        assert majors[1] - majors[0] == 40 * [k for k, a in enumerate(units) if is_major(a)][1], codec

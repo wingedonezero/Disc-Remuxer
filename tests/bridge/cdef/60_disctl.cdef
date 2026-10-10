@@ -7,13 +7,13 @@
 #define DR_F_MARKER ...
 #define DR_F_DISCARD ...
 #define DR_F_CHAPTER ...
-#define DR_F_TAIL ...
 #define DR_F_BATCH ...
 #define DR_F_NO_STOP ...
 #define DR_F_SEQ_END ...
 #define DR_F_START_CLEAN ...
 #define DR_F_START_BROKEN ...
 #define DR_F_START_OPEN ...
+#define DR_F_CTR ...
 #define DR_SCAN_KNOWN ...
 #define DR_SCAN_PROGRESSIVE ...
 #define DR_SCAN_TFF ...
@@ -35,6 +35,7 @@ typedef struct DRFrame {
     int          rate;
     int64_t      src;
     int          seg;
+    int          ctr;
 } DRFrame;
 
 typedef int (*DRFrameCb)(void *opaque, DRFrame *frame);
@@ -134,8 +135,6 @@ enum DREventKind {
     DR_EV_VERIFY_ORDER,
     DR_EV_VERIFY_HOLE,
     DR_EV_VERIFY_OVERLAP,
-    DR_EV_SEAMLESS_SEARCH,
-    DR_EV_SEAMLESS_DROP,
     DR_EV_PCM_SILENCE,
     DR_EV_PCM_SKIP,
     DR_EV_PCM_TIMECODE,
@@ -145,6 +144,18 @@ enum DREventKind {
     DR_EV_SEQ_END_INSIDE,
     DR_EV_PICTURES,
     DR_EV_SYNC,
+    DR_EV_AUDIO_COPY,
+    DR_EV_AUDIO_COPY_LONG,
+    DR_EV_SAMPLE_JOIN,
+};
+
+enum DRSampleJoin {
+    DR_JOIN_CONTINUES = 1,
+    DR_JOIN_SAME,
+    DR_JOIN_SAME_KEPT,
+    DR_JOIN_APART,
+    DR_JOIN_NO_COUNT,
+    DR_JOIN_KINDS
 };
 
 typedef struct DREvent {
@@ -178,7 +189,9 @@ typedef struct DRJunctionConfig {
 
 typedef struct DRJunctionStats {
     int64_t in, out, dropped, dropped_dur, markers;
-    int64_t skew, base;
+    int64_t joins[6];
+    int64_t copies;
+    int64_t skew;
     int     ended;
 } DRJunctionStats;
 
@@ -344,10 +357,6 @@ int  ff_disctl_pcm_finish(DRPcm *p);
 void ff_disctl_pcm_stats(const DRPcm *p, DRPcmStats *st);
 void ff_disctl_pcm_close(DRPcm **p);
 
-int ff_disctl_seamless_decode(void *logctx, int codec, int rate, const DRFrame *pre, int nb_pre,
-                               const DRFrame *range, int nb_range, int32_t **out, int *nb_out);
-uint32_t ff_disctl_seamless_corr(const int32_t *a, const int32_t *b, uint32_t n);
-int ff_disctl_seamless_mix(void *logctx, uint64_t layout, int32_t *q30);
 
 typedef struct DRLpcm {
     int      init;
@@ -395,7 +404,7 @@ typedef struct DRTitleConfig {
 typedef struct DRTitle DRTitle;
 int  ff_disctl_title_open(DRTitle **t, void *logctx, const DRTitleConfig *cfg);
 int  ff_disctl_title_segment(DRTitle *t);
-int  ff_disctl_title_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time, int tail);
+int  ff_disctl_title_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time);
 int  ff_disctl_title_finish(DRTitle *t);
 int  ff_disctl_title_frame(DRTitle *t, int *track, DRFrame *frame);
 int  ff_disctl_title_track_result(const DRTitle *t, int track, int64_t *frames, int64_t *warnings, int64_t *delay);
