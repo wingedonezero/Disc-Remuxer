@@ -63,7 +63,7 @@ def test_an_unlisted_audio_stream_without_data_is_left_out(tmp_path):
     # audio_control lists stream 0; the title set declares a second one, with no data
     folder = disc(tmp_path, bytes([0x80, 0]), [ac3(b"en"), ac3(b"fr")], [(1, audio_pack(0))])
     ts, lines = info(folder)
-    assert kinds(ts[0]) == [("video", "Mpeg2", ""), ("audio", "DD", "eng")]
+    assert kinds(ts[0]) == [("video", "Mpeg2", "eng"), ("audio", "DD", "eng")]
     assert said(lines, "title 1: audio stream 1 has no data in the first 48 MiB and the program chain does not "
                        "list it: left out")
 
@@ -71,7 +71,7 @@ def test_an_unlisted_audio_stream_without_data_is_left_out(tmp_path):
 def test_a_listed_audio_stream_without_data_is_left_out_as_empty(tmp_path):
     folder = disc(tmp_path, bytes([0x80, 0, 0x81, 0]), [ac3(b"en"), ac3(b"fr")], [(1, audio_pack(0))])
     ts, lines = info(folder)
-    assert kinds(ts[0]) == [("video", "Mpeg2", ""), ("audio", "DD", "eng")]
+    assert kinds(ts[0]) == [("video", "Mpeg2", "eng"), ("audio", "DD", "eng")]
     assert said(lines, "title 1: audio stream 1 (track 1) looks empty (no data in the first 200 MiB, the 100 MiB "
                        "from the middle and the last 100 MiB of segment 1): left out")
 
@@ -80,7 +80,7 @@ def test_audio_streams_with_data_are_kept_wherever_it_is(tmp_path):
     folder = disc(tmp_path, bytes([0x80, 0, 0x81, 0]), [ac3(b"en"), ac3(b"fr")],
                   [(1, audio_pack(0)), (9, audio_pack(1))])
     ts, lines = info(folder)
-    assert kinds(ts[0]) == [("video", "Mpeg2", ""), ("audio", "DD", "eng"), ("audio", "DD", "fre")]
+    assert kinds(ts[0]) == [("video", "Mpeg2", "eng"), ("audio", "DD", "eng"), ("audio", "DD", "fre")]
     assert not said(lines, "audio stream")
 
 
@@ -90,7 +90,7 @@ def test_whether_audio_control_lists_a_stream_is_taken_from_its_place(tmp_path):
     # listed, stream 0 as listed
     folder = disc(tmp_path, bytes([0x81, 0]), [ac3(b"en"), ac3(b"fr")])
     ts, lines = info(folder)
-    assert kinds(ts[0]) == [("video", "Mpeg2", "")]
+    assert kinds(ts[0]) == [("video", "Mpeg2", "eng")]
     assert said(lines, "title 1: audio stream 1 has no data in the first 48 MiB and the program chain does not list it")
     assert said(lines, "title 1: audio stream 0 (track 1) looks empty")
 
@@ -103,7 +103,7 @@ def test_a_stream_listed_twice_keeps_its_first_track(tmp_path):
     folder = disc(tmp_path, bytes([0x80, 0, 0x80, 0]), [ac3(b"en"), ac3(b"en")], [(1, audio_pack(0))],
                   subp_control=bytes([0x80, 0, 0, 0, 0x80, 0, 0, 0]) + bytes(120), subp_attrs=[subp(), subp()])
     ts, lines = info(folder)
-    assert kinds(ts[0]) == [("video", "Mpeg2", ""), ("audio", "DD", "eng"), ("subtitle", "VobSub", "eng")]
+    assert kinds(ts[0]) == [("video", "Mpeg2", "eng"), ("audio", "DD", "eng"), ("subtitle", "VobSub", "eng")]
     assert said(lines, "DVD: Audio stream #2 is identical to stream #1 and was skipped")
     assert said(lines, "DVD: Subtitle stream #5 is identical to stream #4 and was skipped")
 
@@ -111,7 +111,7 @@ def test_a_stream_listed_twice_keeps_its_first_track(tmp_path):
 def test_an_audio_stream_of_an_unknown_coding_mode_is_left_out(tmp_path):
     folder = disc(tmp_path, bytes([0x80, 0]), [bytes([0x24, 0]) + b"en" + bytes(4)], [(1, audio_pack(0))])
     ts, lines = info(folder)
-    assert kinds(ts[0]) == [("video", "Mpeg2", "")]
+    assert kinds(ts[0]) == [("video", "Mpeg2", "eng")]
     assert said(lines, "title 1: audio stream 0 has coding mode 1, which is not known: left out")
 
 
@@ -122,13 +122,13 @@ def caption_pack(flag=0):
 def test_closed_captions_in_the_video_give_a_caption_track(tmp_path):
     folder = disc(tmp_path, b"", [], [(1, caption_pack())])
     ts, _ = info(folder)
-    assert kinds(ts[0]) == [("video", "Mpeg2", ""), ("subtitle", "eia_608", "eng")]
+    assert kinds(ts[0]) == [("video", "Mpeg2", "eng"), ("subtitle", "eia_608", "eng")]
 
 
 def test_caption_user_data_with_bit_6_set_gives_no_caption_track(tmp_path):
     folder = disc(tmp_path, b"", [], [(1, caption_pack(0x40))])
     ts, _ = info(folder)
-    assert kinds(ts[0]) == [("video", "Mpeg2", "")]
+    assert kinds(ts[0]) == [("video", "Mpeg2", "eng")]
 
 
 # ---- the details (step D3, part c) ----
@@ -155,7 +155,7 @@ def test_an_audio_stream_s_details_come_from_its_decoded_frame(tmp_path):
 def test_a_sub_picture_stream_without_packets_keeps_its_track(tmp_path):
     folder = disc(tmp_path, b"", [], subp_control=bytes([0x80, 0, 0, 0]) + bytes(124), subp_attrs=[subp()])
     ts, lines = info(folder)
-    assert kinds(ts[0]) == [("video", "Mpeg2", ""), ("subtitle", "VobSub", "eng")]
+    assert kinds(ts[0]) == [("video", "Mpeg2", "eng"), ("subtitle", "VobSub", "eng")]
     assert said(lines, "title 1: sub-picture stream 0 has no packet in segment 1: its track is empty")
 
 

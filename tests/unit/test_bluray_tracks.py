@@ -135,7 +135,7 @@ def test_an_identical_audio_or_subtitle_stream_is_left_out(tmp_path):
     recs = [json.loads(l) for l in out.stdout.splitlines() if l.startswith("{")]
     t = [r for r in recs if r.get("type") == "title"][0]
     assert [(k["kind"], k["codec"], k["language"], k["forced"]) for k in t["tracks"]] == [
-        ("video", "Mpeg4", "", False), ("audio", "DD", "eng", False), ("subtitle", "PGS", "eng", False),
+        ("video", "Mpeg4", "eng", False), ("audio", "DD", "eng", False), ("subtitle", "PGS", "eng", False),
         ("subtitle", "PGS", "eng", True)]
     texts = [r.get("text", "") for r in recs if r.get("type") == "message"]
     assert "Blu-ray: Audio stream #2 is identical to stream #1 and was skipped" in texts

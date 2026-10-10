@@ -211,7 +211,9 @@ typedef struct DiscContext {
     int               opt_min_length;
     int               opt_dvd_cell_mode;  /**< DVD: a title's cells (DVD_CELL_MODE_*) */
     int               opt_dvd_cell_check; /**< DVD: the VOBUs a full cell check reads (DVD_CELL_CHECK_*) */
-    char             *opt_cc_helper;    /**< the caption converter program (NULL: the one next to the program) */
+    char             *opt_cc_helper;
+    char             *opt_video_language; /**< the language of video tracks the disc names none for (ISO 639-2),
+                                             NULL / "": none */    /**< the caption converter program (NULL: the one next to the program) */
     char            **opt_keydb;
     unsigned          nb_opt_keydb;
     int64_t           progress;         /**< exported: how far the title is read (1/10000) */

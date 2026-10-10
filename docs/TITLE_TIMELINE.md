@@ -327,10 +327,17 @@ line each, so a run can be compared event by event with an expected list.
   same frame set as the Matroska path), plus the chapters. Gaps are logged
   per track; a stream file cannot hold them. Names:
   the title's name from the file-name template (`<title name>_t<NN>`), then
-  `_<track>_<language>_<codec>[_<channel layout>]`, audio with ` DELAY <ms>ms`
-  (its first frame's time against the title start, which is the video's,
-  rounded to ms, negative when the audio starts first; MKVToolNix reads
-  it). Codec words and layout names are the
+  `_<track>_[<language>]_<codec>[_<channel layout>]`, then ` (forced)`,
+  ` (commentary)`, ` (visually impaired)` as the disc marks the track, audio
+  with ` DELAY <ms>ms` (its first frame's time against the title start, which
+  is the video's, rounded to ms, negative when the audio starts first). The
+  shape is the one the MKVToolNix GUI reads a file name in: it splits the
+  name at `[ ] ( ) { } . + - = #` (not at `_` or space) and takes a piece
+  that is a language code as the track's language, the words forced and
+  commentary as those flags, and `delay <number>` as the delay. A language
+  the disc does not name is `und`; the video, which no disc format names a
+  language for, gets setting `output.video_language` (default `eng`, as the
+  reference program gives video). Codec words and layout names are the
   ones the reference's info output uses (`DD`, `DDplus`, `TrueHD`,
   `5.1(side)`, ...; the layout from FFmpeg's decoder on the first frames).
   LPCM leaves as little-endian PCM in a RIFF WAVE file (EXTENSIBLE with the

@@ -1,7 +1,11 @@
 /*
  * disc-remuxer: the stream files of a title (see writer.h). Each track's
- * packets back to back in a file named <name>_<NN>_<lang>_<codec>
- * [_<channel layout>][ DELAY <ms>ms].<ext>; PCM as RIFF WAVE; sub-pictures
+ * packets back to back in a file named <name>_<NN>_[<lang>]_<codec>
+ * [_<channel layout>][ (forced)][ (commentary)][ (visually impaired)]
+ * [ DELAY <ms>ms].<ext> (the language between brackets and the words in
+ * parentheses as the MKVToolNix GUI reads a file name: it splits it at
+ * [ ] ( ) { } . + - = #, and finds the delay as "delay <number>");
+ * PCM as RIFF WAVE; sub-pictures
  * as a VobSub pair (.sub packs + .idx); the chapters as Matroska XML.
  */
 
@@ -338,13 +342,14 @@ static int vobsub_write(EsOut *o, const AVStream *st, const AVPacket *pkt)
     return vobsub_unit(o, pkt->data, pkt->size, pts);
 }
 
-/* Chooses the stream's file name and opens it: <prefix>_<NN>_<lang>_<codec>
- * [_<channel layout>][ DELAY <ms>ms].<ext>; audio carries its start delay
- * (its first time against the title start, which is the video's). */
+/* Chooses the stream's file name and opens it: <prefix>_<NN>_[<lang>]_<codec>
+ * [_<channel layout>][ (forced)][ (commentary)][ (visually impaired)]
+ * [ DELAY <ms>ms].<ext>; audio carries its start delay (its first time
+ * against the title start, which is the video's). */
 static int es_open(const AVFormatContext *ctx, const AVStream *st, EsOut *o, const char *prefix, int64_t first)
 {
     const AVCodecParameters *par = st->codecpar;
-    char layout[64] = "", delay[32] = "";
+    char layout[64] = "", delay[32] = "", roles[64] = "";
     int audio = par->codec_type == AVMEDIA_TYPE_AUDIO;
     int profile = o->avctx ? o->avctx->profile : par->profile;
 
@@ -378,8 +383,11 @@ static int es_open(const AVFormatContext *ctx, const AVStream *st, EsOut *o, con
         o->st.delay_ms = av_rescale_q_rnd(first, st->time_base, (AVRational){ 1, 1000 }, AV_ROUND_NEAR_INF);
         snprintf(delay, sizeof(delay), " DELAY %"PRId64"ms", o->st.delay_ms);
     }
-    if (!(o->name = av_asprintf("%s_%02d_%s_%s%s%s.%s", prefix, track_no(st), *o->st.lang ? o->st.lang : "und",
-                                stream_label(st, profile), layout, delay,
+    snprintf(roles, sizeof(roles), "%s%s%s", st->disposition & AV_DISPOSITION_FORCED ? " (forced)" : "",
+             st->disposition & AV_DISPOSITION_COMMENT ? " (commentary)" : "",
+             st->disposition & AV_DISPOSITION_VISUAL_IMPAIRED ? " (visually impaired)" : "");
+    if (!(o->name = av_asprintf("%s_%02d_[%s]_%s%s%s%s.%s", prefix, track_no(st), *o->st.lang ? o->st.lang : "und",
+                                stream_label(st, profile), layout, roles, delay,
                                 second ? "mvc" : es_extension(par->codec_id))))
         return AVERROR(ENOMEM);
     o->st.file = o->name;
@@ -537,6 +545,7 @@ int open_disc(const char *format, const char *source, AVFormatContext **ctx)
     av_dict_set_int(&opts, "prefer_iso_for_old_udf102", setting_bool("read.prefer_iso_for_old_udf102"), 0);
     av_dict_set(&opts, "dvd_cell_mode", setting_text("dvd.cell_mode"), 0);
     av_dict_set(&opts, "dvd_cell_check", setting_text("dvd.cell_check"), 0);
+    av_dict_set(&opts, "video_language", setting_text("output.video_language"), 0);
     av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
     key_files(&bp);
     if (bp.len)
