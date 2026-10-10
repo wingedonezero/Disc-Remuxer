@@ -213,6 +213,8 @@ static const char *const event_names[] = {
     [DR_EV_PCM_SILENCE]          = "pcm_silence",
     [DR_EV_PCM_SKIP]             = "pcm_skip",
     [DR_EV_PCM_TIMECODE]         = "pcm_timecode",
+    [DR_EV_AUDIO_COPY]           = "audio_copy",
+    [DR_EV_AUDIO_COPY_LONG]      = "audio_copy_long",
 };
 
 const char *ff_disctl_event_name(int kind)
@@ -267,6 +269,16 @@ static void event_text(DRTitle *t, const DREvent *e)
     case DR_EV_DROP:
         av_log(t->log, AV_LOG_WARNING, "Track %d at %s: %"PRId64" frame(s) (%s ms) dropped to bring the audio skew "
                "to %s ms\n", k, hms(a, 32, e->pos), e->count, msec(b, 32, e->dur, 0), msec(c, 32, e->skew, 1));
+        break;
+    case DR_EV_AUDIO_COPY:
+        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: the next segment starts with a copy of the last frame (%s ms; "
+               "the stamps overlap by %s ms): the copy is left out\n", k, hms(a, 32, e->pos), msec(b, 32, e->dur, 0),
+               msec(c, 32, e->count, 0));
+        break;
+    case DR_EV_AUDIO_COPY_LONG:
+        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: the next segment starts with copies of the last %"PRId64
+               " frames (the stamps overlap by %s ms): found only, nothing left out\n", k, hms(a, 32, e->pos),
+               e->count, msec(b, 32, e->dur, 0));
         break;
     case DR_EV_OVERLAP:
         av_log(t->log, AV_LOG_WARNING, "Track %d at %s: frames overlap by %s ms; audio skew now %s ms\n", k,

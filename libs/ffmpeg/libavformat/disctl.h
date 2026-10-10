@@ -348,9 +348,12 @@ void *ff_disctl_audio_log(const DRAudio *a);
 /* ---- Stage 4, audio: the junction of one output track (disctl_junction.c) ----
  * Title start: every frame keeps its own time, also when the track starts
  * before the video (a stream file's negative delay; nothing is dropped or
- * moved). Then per frame: overlaps grow the audio skew, short gaps are
- * absorbed into it, real gaps reset it (nothing is inserted), whole frames
- * are dropped (only up to a sync unit) once the skew reaches one frame.
+ * moved). At each join first (codecs other than TrueHD / MLP): a segment
+ * whose first frame is a byte copy of the frame the segment before ends
+ * with, while the stamps overlap, starts without the copy. Then per frame:
+ * overlaps grow the audio skew, short gaps are absorbed into it, real gaps
+ * reset it (nothing is inserted), whole frames are dropped (only up to a
+ * sync unit) once the skew reaches one frame (within one 90 kHz tick).
  * Every frame leaves at time + skew. */
 
 enum DREventKind {
@@ -407,6 +410,12 @@ enum DREventKind {
     DR_EV_SYNC,            /**< audio: as a stream file plays it, a frame is more than DR_SYNC_LIMIT off its
                                 own time (pos = that time, dur = the largest error in the segment, count = the
                                 segment): one per segment */
+    DR_EV_AUDIO_COPY,      /**< a segment's first frame is a byte copy of the frame the segment before ends
+                                with, and the stamps overlap: the copy is left out (pos = its time, dur = its
+                                duration, skew = the skew, count = the overlap in ticks) */
+    DR_EV_AUDIO_COPY_LONG, /**< a segment's first count frames are byte copies of the count frames the
+                                segment before ends with (the stamps overlap by dur, more than one frame):
+                                found only, nothing left out (pos = the first one's time) */
 };
 
 /** Audio sync error (stream file position - own time) beyond which a
@@ -449,6 +458,7 @@ typedef struct DRJunctionConfig {
 
 typedef struct DRJunctionStats {
     int64_t in, out, dropped, dropped_dur, markers;
+    int64_t copies;            /**< of the dropped: copies at a join left out (DR_EV_AUDIO_COPY) */
     int64_t skew, base;        /**< current skew and start shift */
     int     ended;             /**< the video ended before the track */
 } DRJunctionStats;

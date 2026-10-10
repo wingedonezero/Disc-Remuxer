@@ -33,6 +33,7 @@ class Video:
 class Sink:
     def __init__(self):
         self.out = []  # time, dur, flags
+        self.bytes = []  # the bytes of each frame handed on
         self.events = []
 
 
@@ -47,10 +48,12 @@ def run_of(start, dur, n, sync):
 
 
 def junction(frames, frame_dur, video):
+    """frames: (time, dur, flags) or (time, dur, flags, segment, bytes)."""
     sink = Sink()
 
     def on_out(f):
         sink.out.append((f.time, f.dur, f.flags))
+        sink.bytes.append(bytes(ffi.buffer(f.data, f.size)) if f.data != ffi.NULL else None)
         lib.ff_disctl_frame_unref(f)
         return 0
     keep = Handles()
@@ -62,8 +65,14 @@ def junction(frames, frame_dur, video):
     st = ffi.new("DRJunctionStats *")
     assert lib.ff_disctl_junction_open(j, ffi.NULL, cfg) == 0
     held = []
-    for time, dur, flags in frames:
-        held.append(ffi.new("DRFrame *", {"size": 1, "time": time, "dur": dur, "flags": flags, "src": time}))
+    for time, dur, flags, *more in frames:
+        f = {"size": 1, "time": time, "dur": dur, "flags": flags, "src": time}
+        if more:
+            seg, payload = more
+            data = ffi.new("uint8_t[]", payload)
+            held.append(data)
+            f.update({"seg": seg, "data": data, "size": len(payload)})
+        held.append(ffi.new("DRFrame *", f))
         assert lib.ff_disctl_junction_push(j[0], held[-1]) == 0
     assert lib.ff_disctl_junction_finish(j[0]) == 0
     lib.ff_disctl_junction_stats(j[0], st)
@@ -204,3 +213,98 @@ def test_audio_after_the_end_of_the_video_is_left_out():
     assert kinds(s) == [EV.DR_EV_VIDEO_ENDED]
     assert len(s.out) == 10
     assert st.ended == 1
+
+
+# ---- the copy check at a join ----
+# Resident Evil UHD 00879 (Blu-ray, 8 seamless joins): clip B's first frame is
+# a byte copy of clip A's last one on French / Spanish AC-3 (stamps overlap by
+# one frame), English AC-3 core (0.29-0.86 frame) and DTS-HD MA (0.58-0.88
+# frame). The copy is left out (B's frame), A's end stays.
+
+TICK = 12000  # one 90 kHz tick
+
+
+def seg_run(seg, start, dur, n, tag):
+    """n contiguous AC-3-like frames of a segment, each with its own bytes."""
+    return [(start + k * dur, dur, lib.DR_F_KEY | lib.DR_F_SYNC, seg, b"%s%03d" % (tag, k)) for k in range(n)]
+
+
+def join(a, b_start, b_first=None, b_n=10):
+    """A = 10 frames of segment 0 from 0; B = segment 1 from b_start; B's
+    first frames replaced by b_first (bytes) when given."""
+    b = seg_run(1, b_start, AC3, b_n, b"B")
+    for k, payload in enumerate(b_first or []):
+        b[k] = b[k][:4] + (payload,)
+    return a + b
+
+
+A = seg_run(0, 0, AC3, 10, b"A")
+A_END = 10 * AC3
+
+
+def test_a_copy_at_a_one_frame_overlap_is_left_out():
+    s, st = junction(join(A, A_END - AC3, [b"A009"]), AC3, Video())
+    assert kinds(s) == [EV.DR_EV_AUDIO_COPY]
+    e = s.events[0]
+    assert (e["pos"], e["dur"], e["count"]) == (A_END - AC3, AC3, AC3)
+    assert s.bytes == [b"A%03d" % k for k in range(10)] + [b"B%03d" % k for k in range(1, 10)]
+    assert s.out[10][0] == A_END, "B's second frame follows A's end"
+    assert (st.dropped, st.copies, st.skew) == (1, 1, 0)
+
+
+def test_a_copy_at_a_partial_overlap_is_left_out_too():
+    # English AC-3 core, join 4: 9.178 ms of overlap
+    ov = 9912240
+    s, st = junction(join(A, A_END - ov, [b"A009"]), AC3, Video())
+    assert EV.DR_EV_AUDIO_COPY in kinds(s)
+    assert s.bytes[10] == b"B001"
+    assert (st.dropped, st.copies) == (1, 1)
+    assert s.out[10][0] == A_END, "a short gap after the copy is taken from the skew"
+
+
+def test_the_same_bytes_without_an_overlap_are_no_copy():
+    # ANGEL S2D1 (DVD): byte-equal digital silence on both sides, 0.000 ms overlap
+    s, st = junction(join(A, A_END, [b"A009"]), AC3, Video())
+    assert s.events == []
+    assert len(s.out) == 20 and s.bytes[10] == b"A009", "kept"
+    assert st.dropped == 0
+    s, st = junction(join(A, A_END - TICK, [b"A009"]), AC3, Video())
+    assert EV.DR_EV_AUDIO_COPY not in kinds(s), "one tick is no overlap"
+    assert st.copies == 0
+
+
+def test_different_bytes_at_an_overlap_are_kept():
+    ov = AC3 // 2
+    s, st = junction(join(A, A_END - ov), AC3, Video())
+    assert kinds(s) == [EV.DR_EV_OVERLAP], "no copy: the overlap only grows the skew"
+    assert s.bytes[10] == b"B000"
+    assert (st.copies, st.dropped, st.skew) == (0, 0, ov)
+
+
+def test_at_most_one_frame_per_join_is_left_out():
+    # B starts with A's last frame twice: only the first is a copy at the join
+    s, st = junction(join(A, A_END - 2 * AC3, [b"A009", b"A009"]), AC3, Video())
+    assert kinds(s).count(EV.DR_EV_AUDIO_COPY) == 1
+    assert st.copies == 1
+
+
+def test_a_copy_of_two_frames_is_found_and_nothing_left_out():
+    s, st = junction(join(A, A_END - 2 * AC3, [b"A008", b"A009"]), AC3, Video())
+    assert EV.DR_EV_AUDIO_COPY not in kinds(s)
+    e = [e for e in s.events if e["kind"] == EV.DR_EV_AUDIO_COPY_LONG]
+    assert len(e) == 1
+    assert (e[0]["pos"], e[0]["dur"], e[0]["count"]) == (A_END - 2 * AC3, 2 * AC3, 2)
+    assert st.copies == 0, "found only: the copy check leaves nothing out"
+    # the skew rule then goes on as before: two frames of skew, two dropped
+    assert st.dropped == 2 and s.bytes[10] == b"B002"
+
+
+def test_an_overlap_one_tick_short_of_a_frame_counts_as_one_frame():
+    # Resident Evil French, join 3: the stamps overlap by 31.994 ms (the join
+    # place is off by less than one 90 kHz tick); B differs from A here, so the
+    # skew decides: one frame dropped, not carried on to the next join
+    ov = AC3 - 6480
+    s, st = junction(join(A, A_END - ov), AC3, Video())
+    assert EV.DR_EV_DROP in kinds(s)
+    assert st.dropped == 1
+    assert abs(st.skew) <= TICK

@@ -145,6 +145,8 @@ enum DREventKind {
     DR_EV_SEQ_END_INSIDE,
     DR_EV_PICTURES,
     DR_EV_SYNC,
+    DR_EV_AUDIO_COPY,
+    DR_EV_AUDIO_COPY_LONG,
 };
 
 typedef struct DREvent {
@@ -178,6 +180,7 @@ typedef struct DRJunctionConfig {
 
 typedef struct DRJunctionStats {
     int64_t in, out, dropped, dropped_dur, markers;
+    int64_t copies;
     int64_t skew, base;
     int     ended;
 } DRJunctionStats;

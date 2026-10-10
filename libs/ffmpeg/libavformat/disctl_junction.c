@@ -39,6 +39,8 @@
 #define TAIL_LOOK     540000000LL               /* 0.5 s */
 #define TAIL_UNITS    99
 #define MATCH         0xF3333333U              /* a correlation above 0.95 (Q32) */
+#define TICK          12000LL                   /* one 90 kHz tick: the disc's time resolution */
+#define COPY_TAIL     8                         /* frames of the earlier segment kept for the copy check */
 
 enum { HAVE = 1, NONE = 0, WAIT = 2 };
 
@@ -66,6 +68,11 @@ struct DRJunction {
 
     DRFrame         *hist;         /* frames handed on since the last sync unit (decoder preroll) */
     int              nb_hist, cap_hist;
+
+    DRFrame          tail[COPY_TAIL]; /* the last frames handed on (the copy check at a join), a ring */
+    int              nb_tail, tail_pos;
+    int              out_seg;      /* segment of the last frame handed on */
+    int              join_seg;     /* the segment whose join the copy check last ran for */
 
     DREvent          ev[4];        /* events of the running step */
     int              nb_ev;
@@ -144,6 +151,45 @@ static int hist_add(DRJunction *j, const DRFrame *f)
     return 0;
 }
 
+/* A reference to a frame's bytes (a copy when it owns none). */
+static int frame_ref(DRFrame *dst, const DRFrame *f)
+{
+    *dst = (DRFrame){ .data = f->data, .size = f->size, .time = f->time, .dur = f->dur, .flags = f->flags,
+                      .seg = f->seg };
+    if (f->buf)
+        dst->buf = av_buffer_ref(f->buf);
+    else if ((dst->buf = av_buffer_alloc(f->size + AV_INPUT_BUFFER_PADDING_SIZE))) {
+        memcpy(dst->buf->data, f->data, f->size);
+        dst->data = dst->buf->data;
+    }
+    return dst->buf ? 0 : AVERROR(ENOMEM);
+}
+
+/* Keeps a frame handed on in the ring of the last COPY_TAIL ones. */
+static int tail_add(DRJunction *j, const DRFrame *f)
+{
+    DRFrame *slot = &j->tail[j->tail_pos];
+
+    ff_disctl_frame_unref(slot);
+    j->tail_pos = (j->tail_pos + 1) % COPY_TAIL;
+    if (j->nb_tail < COPY_TAIL)
+        j->nb_tail++;
+    return frame_ref(slot, f);
+}
+
+/* The k-th last frame handed on (1 = the last one); NULL when not kept. */
+static const DRFrame *tail_get(const DRJunction *j, int k)
+{
+    if (k < 1 || k > j->nb_tail)
+        return NULL;
+    return &j->tail[(j->tail_pos - k + COPY_TAIL) % COPY_TAIL];
+}
+
+static int same_bytes(const DRFrame *a, const DRFrame *b)
+{
+    return a && b && a->size == b->size && a->size > 0 && !memcmp(a->data, b->data, a->size);
+}
+
 /* Hands a frame on (its time already final). */
 static int out(DRJunction *j, DRFrame *f)
 {
@@ -153,6 +199,11 @@ static int out(DRJunction *j, DRFrame *f)
         ff_disctl_frame_unref(f);
         return ret;
     }
+    if (!decodable(j) && f->size && f->data && (ret = tail_add(j, f)) < 0) {
+        ff_disctl_frame_unref(f);
+        return ret;
+    }
+    j->out_seg = f->seg;
     if (j->have_out && f->time <= j->last_out) {
         event(j, DR_EV_TIME_ORDER, f->time, 0, j->s.skew, 0);
         events_flush(j);
@@ -365,6 +416,61 @@ static int junction(DRJunction *j, State *s, int idx, int64_t end)
     return -1;   /* go on with the normal path */
 }
 
+/* ---- the copy check at a join ----
+ * A = the segment before, B = the segment whose first frame is q[0]. When the
+ * stamps overlap (by more than one 90 kHz tick) and B's first frame is a byte
+ * copy of A's last one (a whole unit: DTS-HD core and extension, E-AC-3 with
+ * its dependent frames), the copy is left out: the sound is in the stream
+ * once and A's end stays where it is. At most one frame per join. A copy of
+ * more than one frame (the overlap covers n > 1 frames and B's first n frames
+ * are A's last n in order) is only reported. Equal bytes without an overlap
+ * (digital silence on both sides of a join) are no copy. */
+static int copy_check(DRJunction *j, State *s)
+{
+    DRFrame *f = q_get(j, 0);
+    int64_t ov = s->exp - f->time, n;
+    int r;
+
+    if (ov <= TICK) {
+        if (same_bytes(f, tail_get(j, 1)))
+            av_log(j->log, AV_LOG_DEBUG, "Title timeline: audio track %d: segment %d starts with the bytes of the "
+                   "frame before it, but the stamps do not overlap (%"PRId64" ticks): no copy, kept\n", j->cfg.track,
+                   f->seg + 1, ov);
+        return NONE;
+    }
+    if (same_bytes(f, tail_get(j, 1))) {
+        av_log(j->log, AV_LOG_DEBUG, "Title timeline: audio track %d: segment %d starts with a copy of the frame the "
+               "segment before ends with (stamps overlap by %"PRId64" ticks): the copy is left out\n", j->cfg.track,
+               f->seg + 1, ov);
+        event(j, DR_EV_AUDIO_COPY, f->time, f->dur, s->skew, ov);
+        j->st.dropped++;
+        j->st.dropped_dur += f->dur;
+        j->st.copies++;
+        j->join_seg = f->seg;
+        q_drop_head(j);
+        j->s = *s;
+        events_flush(j);
+        return HAVE;
+    }
+    n = f->dur > 0 ? (ov - TICK + f->dur - 1) / f->dur : 0;
+    if (n > j->nb_tail) {
+        av_log(j->log, AV_LOG_DEBUG, "Title timeline: audio track %d: segment %d: the stamps overlap by %"PRId64
+               " ticks, more frames than the %d kept: not compared\n", j->cfg.track, f->seg + 1, ov, j->nb_tail);
+    } else if (n > 1) {
+        int i;
+        if ((r = need(j, (int)n - 1)) != HAVE)
+            return r;
+        for (i = 0; i < n; i++) {
+            DRFrame *b = q_get(j, i);
+            if (b->seg != f->seg || !same_bytes(b, tail_get(j, (int)n - i)))
+                break;
+        }
+        if (i == n)
+            event(j, DR_EV_AUDIO_COPY_LONG, f->time, ov, s->skew, n);
+    }
+    return NONE;
+}
+
 /* ---- one input frame ---- */
 
 static int step(DRJunction *j)
@@ -388,6 +494,10 @@ static int step(DRJunction *j)
         j->st.markers++;
         return j->cfg.out(j->cfg.out_opaque, &m);
     }
+
+    if (!decodable(j) && j->have_out && f->seg != j->out_seg && f->seg != j->join_seg &&
+        (r = copy_check(j, &s)) != NONE)
+        return r;
 
     if (f->time == s.exp && (f->flags & (DR_F_TAIL | DR_F_SYNC)) == DR_F_TAIL && j->cfg.frame_dur &&
         j->tail_done != j->st.in - j->n) {
@@ -479,7 +589,7 @@ static int step(DRJunction *j)
     /* append */
     s.adv = 0;
     s.exp = f->time + f->dur;
-    if (f->dur + s.base <= s.skew) {
+    if (f->dur + s.base <= s.skew + TICK) {
         int n;
         int64_t d;
         if ((r = drop_count(j, 0, s.skew - s.base, &n, &d)) == WAIT)
@@ -556,6 +666,7 @@ int ff_disctl_junction_open(DRJunction **jp, void *logctx, const DRJunctionConfi
     j->log      = logctx;
     j->cfg      = *cfg;
     j->tail_done = -1;
+    j->join_seg  = -1;
     *jp = j;
     return 0;
 }
@@ -603,6 +714,8 @@ void ff_disctl_junction_close(DRJunction **jp)
         q_drop_head(j);
     hist_clear(j);
     av_freep(&j->hist);
+    for (int i = 0; i < COPY_TAIL; i++)
+        ff_disctl_frame_unref(&j->tail[i]);
     av_freep(&j->q);
     av_freep(jp);
 }
