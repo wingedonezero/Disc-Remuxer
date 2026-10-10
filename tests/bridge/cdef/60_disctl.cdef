@@ -60,6 +60,7 @@ typedef struct DRPicture {
     int start;
     int scan;
     int seq_end;
+    int seq_start;
 } DRPicture;
 
 typedef struct DRUnit {
@@ -265,6 +266,7 @@ typedef struct DRVideoStats {
     int64_t stuffing;
     int64_t seq_end;
     int64_t seq_end_inside;
+    int64_t seq_new;
     int64_t scan_known;
     int64_t progressive, tff, rff;
 } DRVideoStats;

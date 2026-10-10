@@ -361,8 +361,12 @@ static void event_text(DRTitle *t, const DREvent *e)
                hms(a, 32, e->pos), e->skew, e->count);
         break;
     case DR_EV_SEQ_END_INSIDE:
-        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: an end of sequence code with pictures after it in the same "
-               "segment\n", k, hms(a, 32, e->pos));
+        if (e->dur)
+            av_log(t->log, AV_LOG_INFO, "Track %d at %s: an end of sequence code, then a new sequence (its sequence "
+                   "header) in the same segment: kept as it is\n", k, hms(a, 32, e->pos));
+        else
+            av_log(t->log, AV_LOG_WARNING, "Track %d at %s: an end of sequence code with pictures after it in the "
+                   "same segment and no new sequence header\n", k, hms(a, 32, e->pos));
         break;
     case DR_EV_PICTURES:
         av_log(t->log, AV_LOG_WARNING, "Track %d: segment %"PRId64": %"PRId64" picture(s) read but not given out\n",
@@ -1321,6 +1325,7 @@ static void join_segment_end(DRTitle *t, const DRVideo *video)
     c->total.stuffing       += vs.stuffing;
     c->total.seq_end        += vs.seq_end;
     c->total.seq_end_inside += vs.seq_end_inside;
+    c->total.seq_new        += vs.seq_new;
     c->total.scan_known     += vs.scan_known;
     c->total.progressive    += vs.progressive;
     c->total.tff            += vs.tff;
@@ -1367,7 +1372,8 @@ static void title_summary(DRTitle *t)
         av_log(t->log, AV_LOG_INFO, "Title check: video scan: not read for this codec (kept as it is)\n");
     if (v->seq_end)
         av_log(t->log, AV_LOG_INFO, "Title check: video: %"PRId64" end of sequence code(s), %"PRId64" with pictures "
-               "after them in their segment (kept as they are)\n", v->seq_end, v->seq_end_inside);
+               "after them in their segment, %"PRId64" of those followed by a new sequence (kept as they are)\n",
+               v->seq_end, v->seq_end_inside, v->seq_new);
     for (int i = 0; i < t->cfg.nb_tracks; i++) {
         Track *k = &t->t[i];
         DRVerifyStats st;

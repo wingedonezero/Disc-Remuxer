@@ -289,11 +289,18 @@ static void window_consume(DRFrames *c, int64_t end)
     c->win_pos  = end;
 }
 
-/* Bytes that are no unit (damaged or cut stream): left out. */
+/* Bytes that are no unit: left out. At the track's start they are the end
+ * of a frame that starts before the title (its first payload begins inside
+ * a frame, cut at the cell or clip where the title starts); later, a
+ * damaged or cut stream. */
 static void not_a_unit(DRFrames *c, int k)
 {
-    av_log(c->log, AV_LOG_WARNING, "Title timeline: %s: %d bytes at stream offset %"PRId64" are not a unit "
-           "(damaged or cut stream): left out\n", c->codec->name, k, c->win_pos);
+    if (!c->win_pos)
+        av_log(c->log, AV_LOG_INFO, "Title timeline: %s: the first %d bytes are the end of a frame that starts "
+               "before the title (the title starts inside it): left out\n", c->codec->name, k);
+    else
+        av_log(c->log, AV_LOG_WARNING, "Title timeline: %s: %d bytes at stream offset %"PRId64" are not a unit "
+               "(damaged or cut stream): left out\n", c->codec->name, k, c->win_pos);
     c->st.skipped++;
     c->st.skipped_bytes += k;
 }

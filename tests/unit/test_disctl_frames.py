@@ -7,7 +7,7 @@ computed here from the built stream's layout, independently of the code."""
 import dataclasses
 
 from synth.a52 import with_crcs
-from helpers import AV_NOPTS_VALUE, ffi, lib
+from helpers import AV_NOPTS_VALUE, ffi, install_log, lib, logged
 from helpers.disctl import Handles, codec_id
 
 TICKS_PER_PTS = 12000
@@ -97,6 +97,16 @@ def test_ac3_times_go_to_the_first_frame_starting_in_each_payload():
         s = e
     assert st.timed == timed_with_start
     assert st.records_unused == st.records - st.timed
+
+
+def test_bytes_before_the_first_frame_are_the_end_of_a_cut_frame_later_ones_a_damaged_stream():
+    # a title that starts inside a frame (a DVD cell or clip boundary cuts
+    # it): its first payload begins with that frame's end; bytes that are no
+    # frame further on are damage
+    install_log()
+    run("ac3", [(b"\x11" * 92 + ac3_frame() * 3 + b"\x22" * 100 + ac3_frame() * 3, 0)])
+    assert logged("ac3: the first 92 bytes are the end of a frame that starts before the title"), "info"
+    assert logged("ac3: 100 bytes at stream offset 2396 are not a unit (damaged or cut stream)"), "warning"
 
 
 def test_a_time_is_never_given_to_a_frame_that_started_before_the_payload():

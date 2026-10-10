@@ -118,6 +118,7 @@ typedef struct DRPicture {
     int start;          /**< key frames: DRStart */
     int scan;           /**< DR_SCAN_*, 0 = not read */
     int seq_end;        /**< the unit carries an end of sequence code (MPEG-2, VC-1) */
+    int seq_start;      /**< the unit starts a sequence: a sequence header before its picture (MPEG-2, VC-1) */
 } DRPicture;
 
 /* What the core needs to know about a video codec. */
@@ -401,7 +402,8 @@ enum DREventKind {
                                 bytes in the same order, a key frame among them; up to 32): count = how many,
                                 pos = the segment's first picture's time, skew = the segment */
     DR_EV_SEQ_END_INSIDE,  /**< an end of sequence code with a picture after it in its segment (pos = the
-                                time of the picture that carries it) */
+                                time of the picture that carries it; dur 1: that picture starts a new
+                                sequence with its sequence header, a sequence change, not a fault) */
     DR_EV_PICTURES,        /**< a segment's pictures read and given out differ (count = read - given out,
                                 dur = the segment) */
     DR_EV_SYNC,            /**< audio: as a stream file plays it, a frame is more than DR_SYNC_LIMIT off its
@@ -596,6 +598,7 @@ typedef struct DRVideoStats {
     int64_t stuffing;          /**< zero stuffing bytes a codec rule took out (ff_disctl_video_stuffing) */
     int64_t seq_end;           /**< units with an end of sequence code */
     int64_t seq_end_inside;    /**< of them before the segment's last picture (DR_EV_SEQ_END_INSIDE) */
+    int64_t seq_new;           /**< of those: followed by a new sequence (its sequence header) */
     int64_t scan_known;        /**< pictures whose scan was read (DRPicture.scan) */
     int64_t progressive, tff, rff; /**< of them: progressive frames, top field first, repeat first field */
 } DRVideoStats;

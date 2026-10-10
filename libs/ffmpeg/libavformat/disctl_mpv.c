@@ -56,10 +56,21 @@ static int next_sc(const uint8_t *p, int n, int i)
 static int split_mpv(DRVideo *v, DRFrame *f)
 {
     uint8_t *p = f->data;
-    int n = f->size, i = 0, ret;
+    int n = f->size, i = 0, ret, z;
+
+    /* Zero stuffing after an end of sequence code (a unit of its own 4
+     * bytes; FFmpeg's parser ends a unit right after it): the zeros before
+     * the next start code's two leave the video, as after a GOP header. */
+    for (z = 0; z < n && !p[z]; z++)
+        ;
+    if (z > 2 && z < n && p[z] == 1) {
+        memmove(p, p + z - 2, n - (z - 2));
+        n -= z - 2;
+        ff_disctl_video_stuffing(v, z - 2);
+    }
 
     while ((i = next_sc(p, n, i)) >= 0) {
-        int e, z;
+        int e;
 
         if (p[i + 3] != 0xB8) {
             i += 4;
@@ -105,7 +116,7 @@ static int picture_mpv(DRVideo *v, const DRFrame *f, DRPicture *pic)
     MpvState *s = ff_disctl_video_priv(v);
     const uint8_t *p = f->data;
     int n = f->size, i = 0, pictures = 0, structure = 3, tff = 0, rff = 0, prog_frame = 0, have_ext = 0;
-    int pct = 0, tr = 0, gop = 0, closed = 0, broken = 0, seq_end = 0;
+    int pct = 0, tr = 0, gop = 0, closed = 0, broken = 0, seq_end = 0, seq_start = 0;
 
     while ((i = next_sc(p, n, i)) >= 0) {
         int code = p[i + 3];
@@ -129,6 +140,7 @@ static int picture_mpv(DRVideo *v, const DRFrame *f, DRPicture *pic)
                 if (!s->have_rate)
                     s->progressive_seq = (p[e + 5] >> 3) & 1;
             }
+            seq_start |= !pictures;
             if (num && den) {
                 if (!s->have_rate) {
                     s->have_rate = 1;
@@ -156,7 +168,8 @@ static int picture_mpv(DRVideo *v, const DRFrame *f, DRPicture *pic)
         }
         i += 4;
     }
-    pic->seq_end = seq_end;
+    pic->seq_end   = seq_end;
+    pic->seq_start = seq_start;
     if (!pictures) {
         pic->type = DR_PIC_OTHER;
         return 0;
