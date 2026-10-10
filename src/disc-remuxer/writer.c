@@ -669,7 +669,8 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     log_json("title_start", "\"title\":%d%s,\"name\":%s,\"ordinal\":%d,\"count\":%d", job->title, jpart,
              json_str(js, sizeof(js), res->name), job->ordinal, job->count);
 
-    snprintf(dir, sizeof(dir), "%s%s%s", job->out_dir, job->sub_folder ? "/" : "", job->sub_folder ? base : "");
+    /* a part is written as a title of its own: its own folder, like every title's */
+    snprintf(dir, sizeof(dir), "%s%s%s", job->out_dir, job->sub_folder ? "/" : "", job->sub_folder ? res->name : "");
     if (mkdir(dir, 0777) < 0 && errno != EEXIST) {
         ret = AVERROR(errno);
         log_msg(MSG_FOLDER_FAILED, LOG_ERROR, "The folder %s cannot be created: %s", dir, strerror(errno));

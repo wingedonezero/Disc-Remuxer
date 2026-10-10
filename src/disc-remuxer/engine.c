@@ -578,7 +578,7 @@ static int run_begin(const char *source, const char *out_dir, char *logp, size_t
 static int run_titles(EngineDisc *e, const char *sel, const char *split, const char *out_dir, const char *logp)
 {
     const DiscInfo *di = e->info;
-    int nb = di->nb_titles, count = 0, ordinal = 0, failed = 0, done = 0, errors, warnings;
+    int nb = di->nb_titles, count = 0, ordinal = 0, failed = 0, done = 0, outputs = 0, errors, warnings;
     char *spl = calloc(nb ? nb : 1, 1);
 
     if (!spl) {
@@ -596,6 +596,9 @@ static int run_titles(EngineDisc *e, const char *sel, const char *split, const c
                     "back): written whole", t);
     if (setting_bool("output.split_joined_titles"))
         memset(spl, 1, (size_t)FFMAX(nb, 0));
+    /* each part is an output of its own: a folder each as soon as there is more than one output */
+    for (int t = 0; t < nb; t++)
+        outputs += sel[t] ? (spl[t] && di->titles[t].nb_parts ? di->titles[t].nb_parts : 1) : 0;
     for (int t = 0; t < nb; t++) {
         int parts = spl[t] ? di->titles[t].nb_parts : 0, part_failed = 0, part_stopped = 0;
         if (!sel[t])
@@ -605,7 +608,7 @@ static int run_titles(EngineDisc *e, const char *sel, const char *split, const c
         ++ordinal;
         for (int p = parts ? 0 : -1; p < parts && !engine_cancelled(); p++) {
             /* the second view: read when one of its tracks is selected */
-            TitleJob job = { e->ctx, t, p, parts, 1, e->keeps[t], ordinal, count, out_dir, count > 1 };
+            TitleJob job = { e->ctx, t, p, parts, 1, e->keeps[t], ordinal, count, out_dir, outputs > 1 };
             TitleOutcome res;
             demux_title(&job, &res);
             /* a title stopped as asked is not written, not failed */
