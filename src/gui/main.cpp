@@ -4,7 +4,8 @@
 // put into the queue. DISC_REMUXER_GUI_SNAPSHOT=<file.png> (tests): the
 // window saved as a picture once they are scanned (DISC_REMUXER_GUI_TEST=rip:
 // once they are ripped too; =stop: the rip stopped after a second;
-// =uncheck: the disc unchecked; =prefs: the settings menu), then the
+// =uncheck: the disc unchecked; =expand: the first title opened; =prefs:
+// the settings menu), then the
 // program quits.
 #include <QApplication>
 #include <QMessageBox>

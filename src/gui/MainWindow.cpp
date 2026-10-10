@@ -34,11 +34,13 @@ extern "C" {
 #include "settings.h"
 }
 
-enum Column { C_NAME, C_CODEC, C_LANG, C_DETAILS, C_AUDIO, C_SUBS, C_CHAPTERS, C_DURATION, C_SIZE, C_STATUS,
-              C_PROGRESS, C_COUNT };
+enum Column { C_NAME, C_DESC, C_SIZE, C_STATUS, C_PROGRESS, C_COUNT };
+// R_TRACK: a track's number; -1 the disc or a title; R_CHAPTERS on a title's
+// chapter rows
 enum Role { R_JOB = Qt::UserRole, R_TITLE, R_TRACK };
+enum { R_CHAPTERS = -2 };
 
-static const int defaultWidths[C_COUNT] = { 280, 170, 70, 230, 50, 45, 65, 70, 70, 260, 140 };
+static const int defaultWidths[C_COUNT] = { 190, 520, 75, 170, 110 };
 
 MainWindow::MainWindow(LogRelay *r) : relay(r)
 {
@@ -64,10 +66,11 @@ MainWindow::MainWindow(LogRelay *r) : relay(r)
 
     tree = new QueueTree;
     tree->setColumnCount(C_COUNT);
-    tree->setHeaderLabels({ "Source / Title / Track", "Codec", "Language", "Details", "Audio", "Subs", "Chapters",
-                            "Duration", "Size", "Status", "Progress" });
-    // columns keep their width (the user's) whatever rows are opened
+    tree->setHeaderLabels({ "Type", "Description", "Size", "Status", "Progress" });
+    // columns keep their width (the user's) whatever rows are opened; the
+    // description takes what is left, so size, status and progress stay in view
     tree->header()->setSectionResizeMode(QHeaderView::Interactive);
+    tree->header()->setSectionResizeMode(C_DESC, QHeaderView::Stretch);
     tree->header()->setStretchLastSection(false);
     for (int c = 0; c < C_COUNT; c++)
         tree->setColumnWidth(c, defaultWidths[c]);
@@ -81,8 +84,8 @@ MainWindow::MainWindow(LogRelay *r) : relay(r)
     centerSplit = new QSplitter(Qt::Horizontal);
     centerSplit->addWidget(tree);
     centerSplit->addWidget(details);
-    centerSplit->setStretchFactor(0, 3);
-    centerSplit->setStretchFactor(1, 2);
+    centerSplit->setStretchFactor(0, 2);
+    centerSplit->setStretchFactor(1, 1);
     mainSplit = new QSplitter(Qt::Vertical);
     mainSplit->addWidget(centerSplit);
     mainSplit->addWidget(console);
@@ -215,7 +218,9 @@ void MainWindow::closeEvent(QCloseEvent *e)
         e->ignore();
         return;
     }
-    saveState();
+    // a test run (snapshot) leaves the user's window sizes as they are
+    if (snapshot.isEmpty())
+        saveState();
     e->accept();
 }
 
@@ -351,6 +356,12 @@ void MainWindow::scanned(quint64 id, quintptr handle)
             QApplication::quit();
             return;
         }
+        if (test == "expand" && j && j->item->childCount()) {
+            // the first title opened: its chapters and tracks
+            j->item->child(0)->setExpanded(true);
+            if (j->item->child(0)->childCount())
+                j->item->child(0)->child(0)->setExpanded(true);
+        }
         if (test == "uncheck" && j) {
             // the disc unchecked: its titles' tracks greyed, unchecked
             j->item->setCheckState(C_NAME, Qt::Unchecked);
@@ -391,8 +402,8 @@ void MainWindow::showTitleChecks(Job &job, int t)
     if (job.split[t])
         state = QString("written as %1 parts").arg(ti->nb_parts);
     title->setText(C_STATUS, state);
-    for (int i = 0; i < title->childCount(); i++) {
-        QTreeWidgetItem *track = title->child(i);
+    for (int i = 0; i < job.tracks[t].size(); i++) {
+        QTreeWidgetItem *track = job.tracks[t][i];
         bool changeable = on && i != 0 && !running;
         track->setCheckState(C_NAME, on && keep[i] ? Qt::Checked : Qt::Unchecked);
         track->setFlags(changeable ? track->flags() | Qt::ItemIsUserCheckable : track->flags() & ~Qt::ItemIsUserCheckable);
@@ -403,88 +414,129 @@ void MainWindow::showTitleChecks(Job &job, int t)
 
 void MainWindow::showDiscCheck(Job &job)
 {
+    const DiscInfo *d = engine_disc_info(job.disc);
     int n = job.sel.size(), c = 0;
-    for (char s : job.sel)
-        c += s != 0;
+    int64_t bytes = 0;
+    for (int t = 0; t < n; t++)
+        if (job.sel[t]) {
+            c++;
+            bytes += d->titles[t].size;
+        }
     updating = true;
     job.item->setCheckState(C_NAME, !c ? Qt::Unchecked : c == n ? Qt::Checked : Qt::PartiallyChecked);
+    // what the checked titles hold
+    job.item->setText(C_SIZE, bytes ? sizeText(bytes) : QString());
     updating = false;
 }
 
-// The disc's titles and their tracks under its row: titles shorter than
-// the minimum length unchecked; track 0 (the video, with a Dolby Vision
-// layer) always ripped.
+// A row of a title's chapters: no check box, not dragged.
+static void chapterRow(QTreeWidgetItem *it, quint64 job, int t)
+{
+    it->setData(C_NAME, R_JOB, job);
+    it->setData(C_NAME, R_TITLE, t);
+    it->setData(C_NAME, R_TRACK, R_CHAPTERS);
+    it->setFlags(it->flags() & ~(Qt::ItemIsUserCheckable | Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled));
+}
+
+// The disc's titles under its row, each with its chapters and its tracks (a
+// track taken out of another one under it: a core, forced subtitles, a 3-D
+// second view): titles shorter than the minimum length unchecked; track 0
+// (the video, with a Dolby Vision layer) always ripped.
 void MainWindow::fillDisc(Job &job)
 {
     const DiscInfo *d = engine_disc_info(job.disc);
 
     updating = true;
     job.item->setFlags(job.item->flags() | Qt::ItemIsUserCheckable);
-    job.item->setText(C_CODEC, QString::fromUtf8(d->kind));
-    job.item->setText(C_DETAILS, d->name ? QString::fromUtf8(d->name) : d->label ? QString::fromUtf8(d->label) : "");
+    QString what = QString::fromUtf8(d->kind);
+    if (d->name || d->label)
+        what += "  " + QString::fromUtf8(d->name ? d->name : d->label);
+    job.item->setText(C_DESC, what);
+    job.item->setToolTip(C_DESC, what);
     job.item->setText(C_STATUS, QString("%1 title%2").arg(d->nb_titles).arg(d->nb_titles == 1 ? "" : "s"));
     job.sel.fill(0, d->nb_titles);
     job.split.fill(0, d->nb_titles);
+    job.tracks.clear();
+    job.tracks.resize(d->nb_titles);
     for (int t = 0; t < d->nb_titles; t++) {
         const DiscTitleInfo *ti = &d->titles[t];
-        int na = 0, ns = 0;
-        for (int i = 0; i < ti->nb_streams; i++) {
-            na += ti->streams[i].type == AVMEDIA_TYPE_AUDIO;
-            ns += ti->streams[i].type == AVMEDIA_TYPE_SUBTITLE;
-        }
-        QString name = QString("#%1").arg(t);
-        if (ti->name && *ti->name)
-            name += "  " + QString::fromUtf8(ti->name);
-        // what it is made of: its segments, angle, parts
+        // name – chapters, duration, what it is made of (source)
         QStringList made;
-        if (ti->nb_files)
-            made << QString("%1 segment%2").arg(ti->nb_files).arg(ti->nb_files == 1 ? "" : "s");
+        made << QString("%1 chapter%2").arg(ti->nb_chapters).arg(ti->nb_chapters == 1 ? "" : "s") << hms(ti->duration);
+        if (ti->nb_files > 1)
+            made << QString("%1 segments").arg(ti->nb_files);
         if (ti->angle)
             made << QString("angle %1").arg(ti->angle);
         if (ti->nb_parts)
             made << QString("%1 parts").arg(ti->nb_parts);
+        QString desc = (ti->name && *ti->name ? QString::fromUtf8(ti->name) + " – " : QString()) + made.join(", ");
         if (ti->source)
-            made << QString::fromUtf8(ti->source);
-        auto *title = new QTreeWidgetItem(job.item, QStringList{ name });
-        title->setText(C_CODEC, ti->nb_streams && ti->streams[0].type == AVMEDIA_TYPE_VIDEO ?
-                                    QString::fromUtf8(engine_codec_label(ti->streams[0].codec, 0)) : "-");
-        title->setText(C_LANG, QString::fromUtf8(ti->language));
-        title->setText(C_DETAILS, made.join(", "));
-        title->setToolTip(C_DETAILS, made.join(", "));
-        title->setText(C_AUDIO, QString::number(na));
-        title->setText(C_SUBS, QString::number(ns));
-        title->setText(C_CHAPTERS, QString::number(ti->nb_chapters));
-        title->setText(C_DURATION, hms(ti->duration));
+            desc += QString(" (%1)").arg(QString::fromUtf8(ti->source));
+        auto *title = new QTreeWidgetItem(job.item, QStringList{ QString("Title #%1").arg(t) });
+        title->setText(C_DESC, desc);
+        title->setToolTip(C_DESC, desc);
         title->setText(C_SIZE, sizeText(ti->size));
         title->setData(C_NAME, R_JOB, job.id);
         title->setData(C_NAME, R_TITLE, t);
         title->setData(C_NAME, R_TRACK, -1);
         title->setFlags((title->flags() | Qt::ItemIsUserCheckable) & ~(Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled));
         job.sel[t] = ti->selected;
+        // its chapters
+        if (ti->nb_chapters) {
+            auto *chapters = new QTreeWidgetItem(title, QStringList{ "Chapters" });
+            chapters->setText(C_DESC, QString("%1 chapter%2").arg(ti->nb_chapters).arg(ti->nb_chapters == 1 ? "" : "s"));
+            chapterRow(chapters, job.id, t);
+            for (int c = 0; c < ti->nb_chapters; c++) {
+                auto *ch = new QTreeWidgetItem(chapters, QStringList{ QString("Chapter %1").arg(c + 1) });
+                ch->setText(C_DESC, hmsMs(ti->chapters[c].start) +
+                                        (ti->chapters[c].name ? "  " + QString::fromUtf8(ti->chapters[c].name) : ""));
+                chapterRow(ch, job.id, t);
+            }
+        }
+        // its tracks
+        job.tracks[t].resize(ti->nb_streams);
         for (int i = 0; i < ti->nb_streams; i++) {
             const DiscStreamInfo *k = &ti->streams[i];
-            char codec[96], rest[512];
+            char codec[96], rest[512], an[32];
             engine_track_parts(ti, i, codec, sizeof(codec), rest, sizeof(rest));
-            QString line = QString("%1  %2").arg(i).arg(kindText(k));
-            QString more = QString::fromUtf8(rest).trimmed();
-            char an[32];
+            QString more = QString::fromUtf8(rest);
+            // how it is linked to another track (the end of the text) the tree
+            // shows by where the row is: a short word instead
+            for (const char *link : { "  (forced subtitles of track", "  (3-D second view of track",
+                                      "  (taken out of track", "  (track " }) {
+                int at = more.lastIndexOf(QString::fromUtf8(link));
+                if (at >= 0)
+                    more.truncate(at);
+            }
+            more = more.trimmed();
+            if (k->forced)
+                more += "  forced only";
+            else if (k->second_view)
+                more += "  second view";
+            else if (k->from_track >= 0)
+                more += "  core";
             // the audio's name ("Surround 5.1"), the video's HDR first
             if (*audio_name(k, an, sizeof(an)))
                 more = QString::fromUtf8(an) + "  " + more;
             if (k->hdr[0] && k->hdr[0] != 'S')
                 more = QString::fromUtf8(k->hdr) + (k->dolby_vision[0] ? " + Dolby Vision" : "") + "  " + more;
-            auto *track = new QTreeWidgetItem(title, QStringList{ line });
-            track->setText(C_CODEC, QString::fromUtf8(codec));
-            track->setToolTip(C_CODEC, QString::fromUtf8(codec));
-            track->setText(C_LANG, QString::fromUtf8(k->language));
-            track->setToolTip(C_LANG, languageText(k->language));
-            track->setText(C_DETAILS, more);
-            track->setToolTip(C_DETAILS, more);
+            const char *lang = k->language[0] ? disc_language_name(k->language) : nullptr;
+            QString desc = QString("%1  %2").arg(QString::fromUtf8(codec), more).trimmed();
+            if (lang)
+                desc += "  " + QString::fromUtf8(lang);
+            // a track taken out of another one goes under it
+            QTreeWidgetItem *parent = k->from_track >= 0 && k->from_track < i ? job.tracks[t][k->from_track] : title;
+            auto *track = new QTreeWidgetItem(parent, QStringList{ QString("%1 #%2").arg(kindText(k)).arg(i) });
+            track->setText(C_DESC, desc);
+            track->setToolTip(C_DESC, desc);
             track->setData(C_NAME, R_JOB, job.id);
             track->setData(C_NAME, R_TITLE, t);
             track->setData(C_NAME, R_TRACK, i);
-            track->setToolTip(C_NAME, i == 0 ? "The video is always ripped" : line);
+            track->setToolTip(C_NAME, i == 0 ? "The video is always ripped" : QString());
             track->setFlags(track->flags() & ~(Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled));
+            if (parent != title)
+                parent->setExpanded(true);
+            job.tracks[t][i] = track;
         }
     }
     updating = false;
@@ -501,6 +553,8 @@ void MainWindow::itemChanged(QTreeWidgetItem *item, int column)
     if (updating || column != C_NAME || !(j = jobOf(item)) || !j->disc)
         return;
     int t = item->data(C_NAME, R_TITLE).toInt(), i = item->data(C_NAME, R_TRACK).toInt();
+    if (i == R_CHAPTERS)
+        return;
     bool on = item->checkState(C_NAME) != Qt::Unchecked;
 
     if (running) {
@@ -541,6 +595,8 @@ void MainWindow::currentChanged(QTreeWidgetItem *cur)
     int t = cur->data(C_NAME, R_TITLE).toInt(), i = cur->data(C_NAME, R_TRACK).toInt();
     if (t < 0)
         details->showDisc(j->found.path, d);
+    else if (i == R_CHAPTERS)
+        details->showChapters(&d->titles[t]);
     else if (i < 0)
         details->showTitle(&d->titles[t], engine_disc_tracks(j->disc, t));
     else
@@ -660,6 +716,7 @@ void MainWindow::rescanSelected()
     updating = false;
     j->sel.clear();
     j->split.clear();
+    j->tracks.clear();
     details->clear();
     queueScan(*j);
     updateControls();

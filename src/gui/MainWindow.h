@@ -72,6 +72,7 @@ private:
         bool             scanning = true;
         QVector<char>    sel;        // per title: rip it
         QVector<char>    split;      // per title: as parts
+        QVector<QVector<QTreeWidgetItem *>> tracks;  // per title: its tracks' rows
         QString          outDir;     // where its last run wrote
         QString          logFile;
     };
