@@ -56,7 +56,7 @@ def test_a_trailing_segment_of_half_a_second_without_audio_is_filler(tmp_path):
     assert ts[0]["files"] == ["1", "2"], "the disc info lists both segments"
     log = demux(folder, tmp_path / "out")
     assert "segment 2 (2 of 2): filler at the title's end: left out" in log, log
-    video = next((tmp_path / "out").glob("*.m2v")).read_bytes()
+    video = next((tmp_path / "out").rglob("*.m2v")).read_bytes()
     assert video == kept
 
 
@@ -64,5 +64,5 @@ def test_a_trailing_segment_with_audio_stays(tmp_path):
     folder, kept = two_segments(tmp_path, True)
     log = demux(folder, tmp_path / "out")
     assert "filler" not in log, log
-    video = next((tmp_path / "out").glob("*.m2v")).read_bytes()
+    video = next((tmp_path / "out").rglob("*.m2v")).read_bytes()
     assert video == M2V

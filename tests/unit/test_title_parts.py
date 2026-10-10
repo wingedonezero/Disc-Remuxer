@@ -1,9 +1,7 @@
-"""A title written as parts (--split, setting output.split_joined_titles,
-the GUI's row menu; src/disc-remuxer/engine.c, writer.c): each part is an
-output of its own, like a title: as soon as a run writes more than one
-output, each gets a folder of its own name (<title>_p1, <title>_p2, ...),
-also when the split title is the only one selected; one output stays in the
-output folder itself. A built Blu-ray (tests/synth/bluray.py) whose title
+"""Stream files go into a folder per title (src/disc-remuxer/engine.c,
+writer.c), also when one title is ripped; a title written as parts (--split,
+setting output.split_joined_titles, the GUI's row menu) is a title per part:
+a folder each (<title>_p1, <title>_p2, ...). A built Blu-ray (tests/synth/bluray.py) whose title
 plays two whole stream files back to back (two parts), each with MPEG-2
 video and AC-3."""
 
@@ -64,7 +62,7 @@ def test_each_part_gets_a_folder_of_its_own_like_a_title(tmp_path):
         assert any(n.startswith(f"title_t00_{p}_01_[eng]_DD") for n in names), names
 
 
-def test_a_title_written_whole_alone_stays_in_the_output_folder(tmp_path):
+def test_a_title_ripped_alone_gets_its_folder_too(tmp_path):
     got = layout(demux(tmp_path))
-    assert sorted(got) == ["."], got
-    assert any(n.startswith("title_t00_00_") for n in got["."]), got
+    assert sorted(got) == ["title_t00"], got
+    assert any(n.startswith("title_t00_00_") for n in got["title_t00"]), got

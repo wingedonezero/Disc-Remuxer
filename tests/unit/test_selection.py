@@ -61,8 +61,8 @@ def test_a_track_left_out_is_not_written_and_the_others_do_not_change(tmp_path):
     code, out = run("--tracks", "-audio", "demux", folder, "0", tmp_path / "video")
     assert code == 0, out
     assert "track 1 (audio ac3, eng) is not selected: left out" in out, out
-    assert not list((tmp_path / "video").glob("*.ac3"))
-    assert next((tmp_path / "video").glob("*.m2v")).read_bytes() == next((tmp_path / "all").glob("*.m2v")).read_bytes()
+    assert not list((tmp_path / "video").rglob("*.ac3"))
+    assert next((tmp_path / "video").rglob("*.m2v")).read_bytes() == next((tmp_path / "all").rglob("*.m2v")).read_bytes()
 
 
 def test_all_skips_titles_shorter_than_the_minimum_length_a_number_does_not(tmp_path):
@@ -72,4 +72,4 @@ def test_all_skips_titles_shorter_than_the_minimum_length_a_number_does_not(tmp_
     assert "No title selected" in out, out
     code, out = run("--set", "titles.min_length=3600", "demux", folder, "0", tmp_path / "named")
     assert code == 0, out
-    assert list((tmp_path / "named").glob("*.m2v"))
+    assert list((tmp_path / "named").rglob("*.m2v"))

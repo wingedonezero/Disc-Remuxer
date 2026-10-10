@@ -228,7 +228,7 @@ void DetailsPanel::showTitle(const DiscTitleInfo *t, const uint8_t *keep)
     if (t->angle)
         row(top, "Angle", QString::number(t->angle));
     row(top, "Language", languageText(t->language));
-    row(top, "Output file name", QString("%1_<track>_…  (in a folder %1 when more than one title is ripped)")
+    row(top, "Output file name", QString("%1/%1_<track>_…  (as parts: %1_p1/%1_p1_<track>_…, one folder per part)")
                                      .arg(QString::fromUtf8(name)));
     row(top, "Minimum length", t->selected ? "long enough" : "shorter: not ripped with all");
     for (int p = 0; p < t->nb_props; p++)
