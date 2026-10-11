@@ -518,27 +518,50 @@ static int dvd_load(AVFormatContext *s)
     return 0;
 }
 
+/* The disc's regions: VMGI_MAT vmg_category (0x22) bits 16-23, a set bit =
+ * not for that region (1-8). */
+static int add_region(AVFormatContext *s, DVDDisc *disc)
+{
+    const DVDIfo *vmg = disc->nb_ifos ? disc->ifos[0] : NULL;
+    unsigned mask;
+    char list[32] = "";
+
+    if (!vmg || vmg->failed)
+        return 0;
+    mask = ff_dvd_header32(vmg, DVD_VMG_CATEGORY) >> 16 & 0xff;
+    if (!mask)
+        return ff_disc_add_prop(s, "Region", "all (region free)");
+    if (mask == 0xff)
+        return ff_disc_add_prop(s, "Region", "none (every region locked out)");
+    for (int r = 1; r <= 8; r++)
+        if (!(mask & 1 << (r - 1)))
+            av_strlcatf(list, sizeof(list), "%s%d", list[0] ? ", " : "", r);
+    return ff_disc_add_prop(s, "Region", "%s", list);
+}
+
 /* Protection: CSS when a title set's scrambled sectors were met while the
- * stream passes read (its title key looked for). */
+ * stream passes read (its title key looked for); the disc's regions. */
 static int disc_done(AVFormatContext *s)
 {
     DiscContext *d = s->priv_data;
     DVDDemuxContext *c = ff_disc_part(s);
-    int css = 0;
+    int css = 0, ret;
 
     for (int i = 1; i < c->disc.nb_ifos; i++)
         css |= c->disc.ifos[i] && ff_dvd_css_state(&c->disc, c->disc.ifos[i], NULL) != 0;
     d->info.encrypted = css;
     {
-        int harmless, breaks, ret;
+        int harmless, breaks;
         ff_dvd_reports_count(&c->disc, &harmless, &breaks);
         if ((ret = !harmless && !breaks ? ff_disc_add_prop(s, "IFO and navigation check", "passed") :
                    ff_disc_add_prop(s, "IFO and navigation check", "%d finding(s) that break the DVD-Video rules, "
                                     "%d harmless", breaks, harmless)) < 0)
             return ret;
     }
-    return ff_disc_add_prop(s, "Protection: CSS", "%s", css ? "yes" :
-                            "no (no scrambled sector in what was read)");
+    if ((ret = ff_disc_add_prop(s, "Protection: CSS", "%s", css ? "yes" :
+                                "no (no scrambled sector in what was read)")) < 0)
+        return ret;
+    return add_region(s, &c->disc);
 }
 
 const DiscFormat ff_disc_dvd = {

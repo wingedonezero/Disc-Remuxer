@@ -41,6 +41,7 @@
 /* VMGI_MAT / VTSI_MAT fields (byte offsets in the IFO's first sector) */
 #define DVD_LAST_SECTOR         0x0c    /* vmg_last_sector / vts_last_sector */
 #define DVD_I_LAST_SECTOR       0x1c    /* vmgi_last_sector / vtsi_last_sector */
+#define DVD_VMG_CATEGORY        0x22    /* VMG: vmg_category (bits 16-23: the regions it is not for) */
 #define DVD_NR_OF_TITLE_SETS    0x3e    /* VMG: vmg_nr_of_title_sets (16 bits) */
 #define DVD_PROVIDER_ID         0x40    /* VMG: provider_identifier (32 bytes) */
 #define DVD_TT_SRPT             0xc4    /* VMG: tt_srpt; VTS: vtstt_vobs */
