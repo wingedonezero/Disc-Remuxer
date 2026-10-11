@@ -217,7 +217,8 @@ static dvd_damage_t sector_kind( const uint8_t *b )
 
 /* ---- CSS ---- */
 
-/* A finding of the CSS handling of the title set (table "CSS"). */
+/* A step of the CSS handling of the title set, said as it happens (an
+ * error, a warning, else a notice). */
 static void css_report( dvd_vob_reader_t *v, dvd_report_level_t level, const char *fmt, ... )
 {
   char text[256];
@@ -227,7 +228,8 @@ static void css_report( dvd_vob_reader_t *v, dvd_report_level_t level, const cha
   va_start( list, fmt );
   vsnprintf( text + n, sizeof(text) - n, fmt, list );
   va_end( list );
-  DVDReadReportf( v->ctx->priv, &v->ctx->logcb, level, NULL, "CSS", -1, "%s", text );
+  DVDReadLog( v->ctx->priv, &v->ctx->logcb, level == DVD_REPORT_ERROR ? DVD_LOGGER_LEVEL_ERROR :
+              level == DVD_REPORT_WARN ? DVD_LOGGER_LEVEL_WARN : DVD_LOGGER_LEVEL_NOTICE, "%s", text );
 }
 
 /* 1: the sector's packet is of a stream CSS scrambles (the video stream

@@ -41,8 +41,7 @@ dvd_vob_reader_t *ff_dvd_title_vobs_open(DVDDisc *d, DVDIfo *f)
 
     if (ff_dvd_reader_open(d) < 0)
         return NULL;
-    if (!(vr = DVDOpenTitleVOBs_rec(f->rec, f->index)))
-        ff_dvd_reports_log(d);          /* libdvdread says why, said now */
+    vr = DVDOpenTitleVOBs_rec(f->rec, f->index);  /* when they cannot be opened, libdvdread says why */
     return vr;
 }
 

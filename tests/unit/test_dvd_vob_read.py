@@ -125,7 +125,7 @@ def test_the_title_set_s_own_reading_says_its_ranges_but_keeps_them_out_of_the_f
     buf = ffi.new("uint8_t[]", S)
     assert lib.ff_dvd_title_vob_sector(d.d, d.ifo(1), 1, buf) == 0
     assert lib.ff_dvd_title_vob_sector(d.d, d.ifo(1), 2, buf) == 1
-    assert logged("libdvdread: VTS_01_1.VOB: title VOB sectors 1-1 (VTS_01_1.VOB bytes 2048-4095): every byte is "
+    assert logged("DVD: VTS_01_1.VOB: title VOB sectors 1-1 (VTS_01_1.VOB bytes 2048-4095): every byte is "
                   "zero: left out")
     assert findings(d) == before
     d.close()
@@ -336,12 +336,13 @@ def test_a_nav_pack_read_for_the_title_list_goes_through_libdvdread_s_checks(tmp
     d = Disc.folder(path)
     before = findings(d)
     n = ffi.new("DVDNav *")
+    install_log(lib.AV_LOG_VERBOSE)
     assert lib.ff_dvd_nav_read(d.d, d.ifo(1), 0, n) == 1
     assert n.vobu_ea == 5 and n.next_vobu & 0x3fffffff == 0x3fffffff   # 6 sectors, the end of the cell
     assert findings(d) == (before[0] + 1, before[1])
-    install_log(lib.AV_LOG_VERBOSE)
+    assert logged("navigation packet at sector 0: pci->pci_gi.zero1 == 0 does not hold: kept"), "said when found"
     lib.ff_dvd_reports_log(d.d)
-    assert logged("navigation packet at sector 0: pci->pci_gi.zero1 == 0 does not hold: kept")
+    assert logged("1 harmless finding(s)"), "and counted in the summary"
     # no NAV pack: recorded, not read again
     assert lib.ff_dvd_nav_read(d.d, d.ifo(1), 1, n) == 0
     d.close()
@@ -350,11 +351,10 @@ def test_a_nav_pack_read_for_the_title_list_goes_through_libdvdread_s_checks(tmp
 def test_a_sector_missing_from_the_vobu_address_map_is_said_as_an_ifo_finding(tmp_path):
     d = Disc.folder(folder_with(tmp_path, [plain()]))
     assert lib.ff_dvd_map_trusted(d.d, d.ifo(1))
+    install_log(lib.AV_LOG_WARNING)
     assert lib.ff_dvd_vobu_start_check(d.d, d.ifo(1), 0) == 1, "on the map"
     assert lib.ff_dvd_vobu_start_check(d.d, d.ifo(1), 1) == 0, "off the map, and no NAV pack there"
     assert not lib.ff_dvd_map_trusted(d.d, d.ifo(1))
-    install_log(lib.AV_LOG_WARNING)
-    lib.ff_dvd_reports_log(d.d)
     assert logged("IFO check: VTS_01_0.IFO VTS_VOBU_ADMAP: title VOB sector 1 starts no VOBU of the VOBU address map: "
                   "its VOBU starts are not trusted (the VOBs must be scanned)")
     d.close()

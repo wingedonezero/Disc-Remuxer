@@ -30,6 +30,11 @@
 #include "dvdread/ifo_read.h"
 #include "dvdread/title_list.h"
 #include "dvdread/vob_read.h"
+#include "dvdread_internal.h"
+#include "logger.h"
+
+/* the list's lines: what a user should see, details, warnings, debug lines */
+enum { DVD_NOTE_INFO, DVD_NOTE_DETAIL, DVD_NOTE_WARN, DVD_NOTE_DEBUG };
 
 #define HEADER_SIZE         0x400
 #define SUSPICIOUS_PGCS     80          /* program chains of a suspicious title set (more than) */
@@ -60,17 +65,21 @@ typedef struct {
   int                        suspicious[100];   /* 0 not decided, 1 its titles are left out, 2 they are not */
 } titles_t;
 
-static void note( titles_t *T, dvd_note_level_t level, const char *fmt, ... )
+/* A line of the list in the disc reader's log. */
+static void note( titles_t *T, int level, const char *fmt, ... )
 {
+  static const dvd_logger_level_t levels[] = { DVD_LOGGER_LEVEL_NOTICE, DVD_LOGGER_LEVEL_INFO, DVD_LOGGER_LEVEL_WARN,
+                                               DVD_LOGGER_LEVEL_DEBUG };
+  dvd_reader_t *ctx = T->disc->ctx;
   char text[512];
   va_list va;
 
-  if( !T->o->note )
+  if( !ctx )
     return;
   va_start( va, fmt );
   vsnprintf( text, sizeof(text), fmt, va );
   va_end( va );
-  T->o->note( T->o->opaque, level, text );
+  DVDReadLog( ctx->priv, &ctx->logcb, levels[level], "%s", text );
 }
 
 static uint16_t rb16( const uint8_t *p )

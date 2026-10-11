@@ -76,7 +76,7 @@ extern "C" {
  * part whose sequence_extension start code lies in the scrambled part; none:
  * used unchecked. Without a key (none found, the check fails) the title
  * set's scrambled sectors cannot be read, and the key is not looked for
- * again. The steps are reported (table "CSS", without a file).
+ * again. The steps are said in the log as they happen.
  */
 typedef struct dvd_vob_reader_s dvd_vob_reader_t;
 

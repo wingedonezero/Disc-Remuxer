@@ -28,6 +28,7 @@
 
 #include "libavutil/bprint.h"
 
+#include <dvdnav/dvdnav.h>
 #include <dvdread/disc_read.h>
 #include <dvdread/ifo_types.h>
 #include <dvdread/vob_read.h>
@@ -138,19 +139,6 @@ typedef struct DVDIfo {
 
 } DVDIfo;
 
-/** A finding of libdvdread / libdvdnav about the disc's data (their
- *  dvd_report_t), kept once. */
-typedef struct DVDReport {
-    int          level;                 /**< dvd_report_level_t: info (harmless), warning, error */
-    char         file[16];              /**< "VTS_01_0.IFO", "": not a file's data (navigation) */
-    char         table[24];
-    char        *text;
-    int64_t      offset;                /**< byte offset in the file, -1 */
-    int64_t      sector;                /**< VOB sector, -1 */
-    uint8_t      bytes[16];             /**< the field's bytes (at most 16) */
-    int          nb_bytes;
-} DVDReport;
-
 /** One of the disc's own files, looked up once (ff_dvd_disc_file()). */
 typedef struct DVDDiscFile {
     int          looked;
@@ -176,9 +164,8 @@ typedef struct DVDDisc {
     struct dvd_reader_s *reader;        /**< libdvdread on the disc's own files (ff_dvd_reader_open()) */
     dvd_disc_rec_t *rec;                /**< the disc's structure as libdvdread read it (DVDOpenDisc_rec()) */
     DVDDiscFile  files[DVD_MAX_TITLE_SETS + 1][DVD_FILE_SLOTS];
-    DVDReport   *reports;               /**< what libdvdread / libdvdnav found, each once */
-    int          nb_reports, reports_cap;
-    int          reports_said;          /**< the reports logged so far */
+    dvd_findings_t *findings;           /**< what libdvdread / libdvdnav found, each said once (both log into
+                                             the program's log; dvd_nav.c) */
 } DVDDisc;
 
 /* ---- dvd_ifo.c ---- */
@@ -223,11 +210,14 @@ int  ff_dvd_nav_open(DVDDisc *d, const DVDNavHooks *hooks, struct dvdnav_s **out
 /** libdvdread on the disc's own files (and the image), reporting to the
  *  disc: d->reader. */
 int  ff_dvd_reader_open(DVDDisc *d);
-/** The reports not logged yet: the findings that break a rule as warnings,
- *  the harmless ones as detail lines, one summary line per file. */
+/** The summary of the findings since the last one: per file its counts
+ *  (each finding was said when it was found). */
 void ff_dvd_reports_log(DVDDisc *d);
-/** Counts of the reports: harmless ones and rule breaks. */
+/** Counts of the findings: harmless ones and rule breaks. */
 void ff_dvd_reports_count(const DVDDisc *d, int *harmless, int *breaks);
+/** The logger the DVD engine's navigators use (the program's log, the
+ *  disc's findings book). < 0 on no memory. */
+int  ff_dvd_nav_logger(DVDDisc *d, dvdnav_logger_cb *cb);
 
 /** Read sector of a title set's title VOBs (menu 0) or menu VOB through
  *  the disc layer, as the navigator reads it. */

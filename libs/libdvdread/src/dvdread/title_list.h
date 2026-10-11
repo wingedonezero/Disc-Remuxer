@@ -74,7 +74,8 @@ extern "C" {
  * Duplicates. A title playing an earlier one's sectors with no more streams
  * and chapters is left out; the search starts over after each.
  *
- * What the list finds and decides is said through note (levels below).
+ * What the list finds and decides it says in the disc reader's log as it
+ * happens (decisions and steps a user should see as notices).
  */
 
 /** A recording of the navigation scan: the cells (from 1) the navigation
@@ -142,24 +143,12 @@ typedef struct
 
 enum { DVD_CELL_MODE_AUTO_REC, DVD_CELL_MODE_WALK_REC, DVD_CELL_MODE_TRIM_REC, DVD_CELL_MODE_WALK_TRIM_REC };
 
-/** The levels of the list's notes: what a viewer of the title list should
- *  see, details, warnings, debug lines. */
-typedef enum
-{
-  DVD_NOTE_INFO,
-  DVD_NOTE_DETAIL,
-  DVD_NOTE_WARN,
-  DVD_NOTE_DEBUG,
-} dvd_note_level_t;
-
 typedef struct
 {
   int      cell_mode;                 /* DVD_CELL_MODE_*_REC */
   int      cell_check;                /* dvd_cell_check_t: the VOBUs a full cell check reads */
   uint64_t seed;                      /* of a random cell check */
   int      min_length;                /* seconds */
-  void   (*note)( void *opaque, dvd_note_level_t level, const char *text );
-  void    *opaque;
 } dvd_title_options_t;
 
 /**

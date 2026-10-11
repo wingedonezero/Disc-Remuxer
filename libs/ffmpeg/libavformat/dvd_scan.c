@@ -5,8 +5,8 @@
  * reachable menu button pressed, the cells each path plays recorded per
  * title and program chain, named and ordered). Here the navigator is opened
  * on the disc layer (dvd_nav.c), every VOB sector it reads is handed to the
- * scan, the scan's lines are logged and its results copied for the title
- * list. A failed scan leaves no results: the titles keep the order of the
+ * scan (its lines go into the log as the navigators' do) and its results
+ * are copied for the title list. A failed scan leaves no results: the titles keep the order of the
  * title table.
  *
  * This file is part of FFmpeg.
@@ -40,19 +40,6 @@
 
 #include "dvd_internal.h"
 
-/* The scan's lines: libdvdnav's levels INFO, ERROR, WARN, DEBUG. */
-static void scan_log(void *priv, dvdnav_logger_level_t level, const char *fmt, va_list va)
-{
-    static const int levels[] = { AV_LOG_VERBOSE, AV_LOG_ERROR, AV_LOG_WARNING, AV_LOG_DEBUG };
-    DVDDisc *d = priv;
-    char line[1024];
-    size_t n;
-
-    vsnprintf(line, sizeof(line), fmt, va);
-    n = strlen(line);
-    av_log(d->log, levels[FFMIN((unsigned)level, 3)], "DVD: %s%s", line, n && line[n - 1] == '\n' ? "" : "\n");
-}
-
 /* A VOB sector the navigator read, to the scan. */
 static int scan_sector(void *opaque, int set, int menu, uint32_t sector, const uint8_t *data)
 {
@@ -61,14 +48,14 @@ static int scan_sector(void *opaque, int set, int menu, uint32_t sector, const u
 
 int ff_dvd_scan(DVDDisc *d, void (*trace)(void *opaque, const char *line), void *opaque, DVDScan *out)
 {
-    static const dvdnav_logger_cb logcb = { scan_log, NULL };
+    dvdnav_logger_cb logcb;
     dvdnav_scan_results_t r = { 0 };
     dvdnav_scan_t *s;
     dvdnav_t *nav;
     int ret;
 
     memset(out, 0, sizeof(*out));
-    if (!(s = dvdnav_scan_new(d->rec, d, &logcb, trace, opaque)))
+    if (ff_dvd_nav_logger(d, &logcb) < 0 || !(s = dvdnav_scan_new(d->rec, d, &logcb, trace, opaque)))
         return AVERROR(ENOMEM);
     if ((ret = ff_dvd_nav_open(d, &(DVDNavHooks){ s, scan_sector }, &nav)) >= 0) {
         ret = dvdnav_scan_run(s, nav, &r);

@@ -119,7 +119,8 @@ class Disc:
 
 
 def warnings():
-    return [line for line in LOG if "DVD:" in line]
+    """The DVD part's own warnings (libdvdread's findings, "... check: ...", aside)."""
+    return [line for line in LOG if "DVD:" in line and "check: " not in line]
 
 
 # ---- folders ----

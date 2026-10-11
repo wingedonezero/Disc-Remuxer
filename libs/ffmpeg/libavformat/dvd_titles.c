@@ -5,7 +5,8 @@
  * ones that should not be there left out, their cells (CellWalk / CellTrim),
  * lengths, segments, chapters, streams and angles, duplicates removed). Here
  * the scan's recordings are handed in, what the list says is logged, and
- * its titles are copied for the rest of the DVD format part.
+ * its titles are copied for the rest of the DVD format part (its lines go
+ * into the log through libdvdread's logger).
  *
  * This file is part of FFmpeg.
  *
@@ -42,14 +43,6 @@
 int ff_dvd_title_vobs_overlap(const DVDDisc *d, int vts)
 {
     return DVDDiscTitleVOBsOverlap_rec(d->rec, vts);
-}
-
-/* What the title list says: libdvdread's levels info, detail, warning, debug. */
-static void list_note(void *opaque, dvd_note_level_t level, const char *text)
-{
-    static const int levels[] = { AV_LOG_INFO, AV_LOG_VERBOSE, AV_LOG_WARNING, AV_LOG_DEBUG };
-    DVDDisc *d = opaque;
-    av_log(d->log, levels[FFMIN((unsigned)level, 3)], "DVD: %s\n", text);
 }
 
 void ff_dvd_title_free(DVDTitle **pt)
@@ -147,7 +140,7 @@ static int copy_title(DVDDisc *d, const DVDScan *scan, const dvd_nav_cells_t *na
 
 int ff_dvd_titles_build(DVDDisc *d, const DVDScan *scan, const DVDTitleOptions *o, DVDTitleList *out)
 {
-    dvd_title_options_t lo = { o->cell_mode, o->cell_check, av_get_random_seed(), o->min_length, list_note, d };
+    dvd_title_options_t lo = { o->cell_mode, o->cell_check, av_get_random_seed(), o->min_length };
     dvd_title_list_t list = { 0 };
     dvd_nav_cells_t *nav;
     int ret = 0;

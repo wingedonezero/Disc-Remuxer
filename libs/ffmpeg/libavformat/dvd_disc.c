@@ -126,10 +126,8 @@ void ff_dvd_disc_free(DVDDisc *d)
     d->text = NULL;
     av_freep(&d->volume_name);
     av_freep(&d->text_name);
-    for (int i = 0; i < d->nb_reports; i++)
-        av_freep(&d->reports[i].text);
-    av_freep(&d->reports);
-    d->nb_reports = d->reports_cap = d->reports_said = 0;
+    DVDFindingsFree(d->findings);
+    d->findings = NULL;
 }
 
 static void dump_text(const dvd_text_node_t *n, int depth, AVBPrint *bp)
