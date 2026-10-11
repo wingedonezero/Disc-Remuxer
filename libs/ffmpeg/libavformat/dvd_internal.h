@@ -80,26 +80,10 @@ typedef struct DVDPgc {
     DVDCell  *cells;                    /**< nr_of_cells */
 } DVDPgc;
 
-/** What a title-VOB sector's NAV pack says about its VOBU (recorded when
- *  the navigation reads it, dvd_scan.c), or that the sector is no NAV pack. */
-typedef struct DVDVobuRec {
-    uint32_t key;                       /**< the sector, relative to the title VOBs (+ DVDIfo.title_vob_base) */
-    uint16_t vobu_ea;
-    uint16_t ilvu_ea;
-    uint32_t next;                      /**< sml_pbi category & 0x6000 << 16 | distance to the next VOBU
-                                             (0x10000000: none); DVD_VOBU_NO_NAV: the sector is no NAV pack */
-    uint32_t vobu_s_ptm, vobu_e_ptm;
-} DVDVobuRec;
-
-#define DVD_VOBU_NO_NAV 0xffffffffu     /**< DVDVobuRec.next: the sector is no NAV pack */
-#define DVD_VOBU_END    0xfffffffeu     /**< a next VOBU: none, the cell ends */
-#define DVD_VOBU_SELF   0xfffffffdu     /**< a next VOBU: the VOBU names itself */
-
-/** VOBU records sorted by key, each key once (the first one recorded). */
-typedef struct DVDVobuRecs {
-    DVDVobuRec *recs;
-    int         nb, alloc;
-} DVDVobuRecs;
+/** What a title-VOB sector's NAV pack says about its VOBU, or that the
+ *  sector is no NAV pack: libdvdread's VOBU record (vob_read.h; key = the
+ *  sector + DVDIfo.title_vob_base; DVD_VOBU_NO_NAV / _END / _SELF). */
+typedef dvd_vobu_rec_t DVDVobuRec;
 
 /** A table of an IFO read whole (its length from its header). */
 typedef struct DVDTable {
@@ -135,7 +119,9 @@ typedef struct DVDIfo {
                                              header's or the file system's place; 0: none) */
     uint32_t     menu_vobu_last;        /**< the last VOBU start of the menu VOBU address map */
     int          no_pgcit;              /**< VTS without a program chain table */
-    int          vobu_map_distrusted;   /**< a cell does not start on the VOBU address map */
+    int          map_untrusted_at_load; /**< at load: the VOBU address map cannot be read or a cell does not start
+                                             on it (libdvdread keeps whether it is trusted from then on,
+                                             ff_dvd_map_trusted()) */
 
     DVDPgc     **pgcs;                  /**< VTS_PGCIT: NULL for a search pointer whose program chain is
                                              left out (outside the table, a repeated start, broken) */
@@ -145,10 +131,10 @@ typedef struct DVDIfo {
     uint32_t    *vobu_map;              /**< VTS_VOBU_ADMAP: the VOBU starts, sorted, without repeats */
     int          nb_vobu_map;
 
+    uint32_t     menu_vob_base;         /**< image: the menu VOBs' first sector as libdvdread decided it (0: none) */
     /* the navigation scan (dvd_scan.c) */
     uint32_t     title_vob_base;        /**< image: the title VOBs' absolute first sector (VOBU records of all
                                              such title sets are kept on the disc by absolute sector); 0 */
-    DVDVobuRecs  vobus;                 /**< VOBU records of its title VOBs (title_vob_base 0) */
     int          entered_by_navigation; /**< the navigation played one of its cells (title or menu) */
 
     /* the title list (dvd_titles.c) */
@@ -204,7 +190,6 @@ typedef struct DVDDisc {
     DVDTable     tt_srpt;               /**< TT_SRPT as recorded */
     uint32_t    *title_set_start;       /**< per title set, the start the title table gives (0: none) */
     DVDText     *text;                  /**< text data (NULL: none) */
-    DVDVobuRecs  vobus;                 /**< VOBU records of title sets with a title_vob_base */
     char        *volume_name;           /**< the volume label, else the provider identifier */
     char        *text_name;             /**< the disc's name in its text data, NULL when none */
     struct dvd_reader_s *reader;        /**< libdvdread on the disc as read here (ff_dvd_reader_open()) */
@@ -278,19 +263,19 @@ void ff_dvd_reports_count(const DVDDisc *d, int *harmless, int *breaks);
  *  the disc layer, as the navigator reads it. */
 int  ff_dvd_vob_read(DVDDisc *d, DVDIfo *f, int menu, uint32_t sector, uint8_t *buf);
 
-/* ---- dvd_vobu.c ---- */
+/* ---- VOBUs (dvd_read.c, on libdvdread's VOBU records, vob_read.h) ---- */
 /** The NAV pack fields of a VOBU (pci_gi, dsi_gi, sml_pbi, vobu_sri). */
-typedef struct DVDNav {
-    uint32_t vobu_s_ptm, vobu_e_ptm, vobu_ea, ilvu_ea, next_vobu;
-    uint16_t category;
-} DVDNav;
+typedef dvd_vobu_nav_t DVDNav;
 
 int  ff_dvd_is_nav_pack(const uint8_t *b);
-void ff_dvd_nav_parse(DVDNav *n, const uint8_t *b);
-/** The NAV pack at title-VOB sector of f: 1 with *n; 0 when the sector is
- *  no (usable) NAV pack or cannot be read (recorded as such). A NAV pack
- *  whose headers were blanked is accepted (0.5 s). */
+/** The NAV pack at title-VOB sector of f, read by libdvdread (its checks
+ *  report): 1 with *n; 0 when the sector is no (usable) NAV pack or cannot
+ *  be read (recorded as such). A NAV pack whose headers were blanked is
+ *  accepted (0.5 s). */
 int  ff_dvd_nav_read(DVDDisc *d, DVDIfo *f, uint32_t sector, DVDNav *n);
+/** A title-VOB sector of f the navigation read: recorded as its NAV pack's
+ *  VOBU, else as no NAV pack. < 0 on no memory. */
+int  ff_dvd_vobu_note(DVDDisc *d, DVDIfo *f, uint32_t sector, const uint8_t *b);
 /** Record the VOBU whose NAV pack n is at sector: *next = the next VOBU
  *  (DVD_VOBU_END, DVD_VOBU_SELF), *len = its length in sectors. 0 when it
  *  cannot be (it names itself and allow_self is 0; a following VOBU of its
@@ -299,17 +284,18 @@ int  ff_dvd_vobu_register(DVDDisc *d, DVDIfo *f, const DVDNav *n, uint32_t secto
                           uint32_t *next, uint32_t *len);
 /** Record title-VOB sector of f as no NAV pack. */
 int  ff_dvd_vobu_mark_bad(DVDDisc *d, DVDIfo *f, uint32_t sector);
-void ff_dvd_vobu_recs_free(DVDVobuRecs *v);
 /** The VOBU record of title-VOB sector of f (NULL: none); *next_key (when
  *  not NULL): the key after it, -1 when none. */
-const DVDVobuRec *ff_dvd_vobu_find(const DVDDisc *d, const DVDIfo *f, uint32_t sector, int64_t *next_key);
-/** Title set vts's title VOBs share sectors with another title set's. */
+const DVDVobuRec *ff_dvd_vobu_find(DVDDisc *d, DVDIfo *f, uint32_t sector, int64_t *next_key);
+/** Title set vts's title VOBs share sectors with another title set's (dvd_titles.c). */
 int  ff_dvd_title_vobs_overlap(const DVDDisc *d, int vts);
-/** The first VOBU address map entry not below sector (*exact: it is sector). */
+/** The first VOBU address map entry not below sector (*exact: it is sector; dvd_ifo.c). */
 int  ff_dvd_map_find(const DVDIfo *f, uint32_t sector, int *exact);
+/** Whether f's VOBU address map is trusted (libdvdread). */
+int  ff_dvd_map_trusted(const DVDDisc *d, const DVDIfo *f);
 /** sector starts a VOBU: by the VOBU address map while it is trusted (a
- *  sector missing from it ends that), else by the maps of title sets
- *  sharing the title VOBs, else by its NAV pack. */
+ *  sector missing from it ends that, reported), else by the maps of title
+ *  sets sharing the title VOBs, else by its NAV pack. */
 int  ff_dvd_vobu_start_check(DVDDisc *d, DVDIfo *f, uint32_t sector);
 /** The VOBU after the one at sector: by the map while trusted, else by the
  *  maps of title sets sharing the title VOBs, else by the NAV packs. */

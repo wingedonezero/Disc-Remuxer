@@ -421,7 +421,6 @@ void ff_dvd_disc_free(DVDDisc *d)
     d->nb_ifos = 0;
     ff_dvd_table_free(&d->tt_srpt);
     av_freep(&d->title_set_start);
-    ff_dvd_vobu_recs_free(&d->vobus);
     text_free(&d->text);
     av_freep(&d->volume_name);
     av_freep(&d->text_name);
@@ -458,7 +457,7 @@ void ff_dvd_disc_dump(const DVDDisc *d, AVBPrint *bp)
             av_bprintf(bp, ", IFO at %"PRId64", BUP at %"PRId64", title VOBs at %"PRIu32, f->ifo_sector,
                        f->bup_sector, f->title_vob_start);
         av_bprintf(bp, ", %d program chain(s), %d VOBU start(s)%s%s\n", f->nb_pgcs, f->nb_vobu_map,
-                   f->vobu_map_distrusted ? ", VOBU map not trusted" : "", f->no_pgcit ? ", no VTS_PGCIT" : "");
+                   !ff_dvd_map_trusted(d, f) ? ", VOBU map not trusted" : "", f->no_pgcit ? ", no VTS_PGCIT" : "");
         for (int p = 0; p < f->nb_pgcs; p++) {
             const DVDPgc *g = f->pgcs[p];
             if (!g) {

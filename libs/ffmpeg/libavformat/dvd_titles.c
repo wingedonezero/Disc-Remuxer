@@ -94,6 +94,38 @@ typedef struct Titles {
 } Titles;
 
 /* hh:mm:ss of a BCD playback time in seconds (frames left out) */
+/* ---- title sets sharing title VOBs ---- */
+
+/* the title VOB sectors of title set vts on the disc ([start, end)) */
+static int title_vob_range(const DVDDisc *d, int vts, uint32_t *start, uint32_t *end)
+{
+    const DVDIfo *f = vts < d->nb_ifos ? d->ifos[vts] : NULL;
+    uint32_t tv, last, ifol, b;
+
+    if (!f || f->failed)
+        return 0;
+    tv   = ff_dvd_header32(f, DVD_TT_SRPT);
+    last = ff_dvd_header32(f, DVD_LAST_SECTOR);
+    ifol = ff_dvd_header32(f, DVD_I_LAST_SECTOR) & 0x1ffff;
+    if (last <= ifol || (b = last - ifol) <= tv)
+        return 0;
+    *start = d->title_set_start[vts - 1] + tv;
+    *end   = d->title_set_start[vts - 1] + b;
+    return 1;
+}
+
+int ff_dvd_title_vobs_overlap(const DVDDisc *d, int vts)
+{
+    uint32_t s, e, s2, e2;
+
+    if (!title_vob_range(d, vts, &s, &e) || d->nb_ifos < 2)
+        return 0;
+    for (int k = 1; k < d->nb_ifos; k++)
+        if (k != vts && title_vob_range(d, k, &s2, &e2) && ((s <= s2 && s2 < e) || (s2 <= s && s < e2)))
+            return 1;
+    return 0;
+}
+
 static uint32_t bcd_seconds(uint32_t t)
 {
     return ((t >> 24 & 0xf) + (t >> 28) * 10) * 3600 + ((t >> 16 & 0xf) + (t >> 20 & 0xf) * 10) * 60 +
@@ -291,8 +323,8 @@ static int next_len(Titles *T, DVDIfo *f, DVDCell *c, uint32_t s, uint32_t *next
         if (!(FLAGS(c) & 1))
             ok = ff_dvd_vobu_next(T->d, f, s, &n);
         else
-            ok = !f->vobu_map_distrusted && seamless_angle_ok(T, f, c) && ff_dvd_vobu_next(T->d, f, s, &n);
-        if (ok && !f->vobu_map_distrusted) {
+            ok = ff_dvd_map_trusted(T->d, f) && seamless_angle_ok(T, f, c) && ff_dvd_vobu_next(T->d, f, s, &n);
+        if (ok && ff_dvd_map_trusted(T->d, f)) {
             *next = n;
             *len  = n - s;
             return 1;
@@ -525,7 +557,7 @@ static int ilvu_walk(Titles *T, DVDIfo *f, uint32_t from, uint32_t to)
             u = r->ilvu_ea;
         }
         from = from + 1 + u;
-        if (!f->vobu_map_distrusted) {
+        if (ff_dvd_map_trusted(T->d, f)) {
             int exact, at = ff_dvd_map_find(f, from, &exact);
             if (exact && at) {
                 uint32_t q = f->vobu_map[at - 1];
@@ -1146,7 +1178,7 @@ static uint32_t segment_last_vobu(Titles *T, DVDTitle *t, const DVDSegment *g)
     DVDCell *c = &t->pgc->cells[g->last_cell];
     DVDIfo *f = t->vts;
 
-    if (!f->vobu_map_distrusted) {
+    if (ff_dvd_map_trusted(T->d, f)) {
         int exact, at = ff_dvd_map_find(f, x, &exact);
         if (at < f->nb_vobu_map && at)
             return f->vobu_map[at - 1];
@@ -1219,7 +1251,7 @@ static int vobu_needs_scan(Titles *T, DVDIfo *f, DVDCell *c, uint32_t s)
 
     if (s < c->last_vobu_start_sector && !(FLAGS(c) & 0xf4)) {
         if (FLAGS(c) & 1)
-            return !(!f->vobu_map_distrusted && seamless_angle_ok(T, f, c) && ff_dvd_vobu_next(T->d, f, s, &n));
+            return !(ff_dvd_map_trusted(T->d, f) && seamless_angle_ok(T, f, c) && ff_dvd_vobu_next(T->d, f, s, &n));
         ff_dvd_vobu_next(T->d, f, s, &n);
         return 0;
     }
@@ -1274,7 +1306,7 @@ static int build_segments(Titles *T, DVDTitle *t)
                 ff_dvd_vobu_next(T->d, f, s, &n);
                 continue;
             }
-            if (!f->vobu_map_distrusted && seamless_angle_ok(T, f, c) && ff_dvd_vobu_next(T->d, f, s, &n))
+            if (ff_dvd_map_trusted(T->d, f) && seamless_angle_ok(T, f, c) && ff_dvd_vobu_next(T->d, f, s, &n))
                 continue;
         }
         if (s >= f->title_vob_blocks)
@@ -1331,7 +1363,7 @@ static int build_segments(Titles *T, DVDTitle *t)
             vobu_needs_scan(T, f, c, s);
             if (il) {
                 const DVDVobuRec *e = ff_dvd_vobu_find(T->d, f, s, NULL);
-                if (e && !f->vobu_map_distrusted) {
+                if (e && ff_dvd_map_trusted(T->d, f)) {
                     uint32_t len0 = e->ilvu_ea + 1, target = s + len0, n2, l2;
                     int exact, at = ff_dvd_map_find(f, target, &exact);
                     if (exact && at) {

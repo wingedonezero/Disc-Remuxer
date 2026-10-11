@@ -56,16 +56,25 @@ struct dvd_reader_s
     uint64_t ifoBUPflags[2];
     /* the title sets' title VOBs (vob_read.c), per title set: the CSS title
      * key (state 0 not looked for, 1 found, -1 none); on an image where
-     * they start (placed: decided; start 0: no title VOBs) and their length
-     * by the IFO (base: start, 0 while no reading recorded it) */
+     * they start (placed: decided; start 0: no title VOBs, a folder) and
+     * their length by the IFO (up to its BUP) */
     struct {
       int      state;
       uint8_t  key[5];
-      int64_t  base;
       uint32_t blocks;
       int      placed;
       int64_t  start;
+      /* its menu VOBs' start on an image (index 0: the video manager's) */
+      int      menu_placed;
+      int64_t  menu_start;
+      /* its VOBU address map, and its VOBU records when it keeps them alone */
+      uint32_t *map;
+      int      nb_map;
+      int      map_distrusted;
+      struct dvd_vobu_store_s { struct dvd_vobu_rec_s *recs; int nb, alloc; } vobus;
     } vob_css[100];
+    /* the VOBU records of title sets at a known place of an image */
+    struct dvd_vobu_store_s vobus;
 };
 
 /* The read position of a file (bytes from its start). */

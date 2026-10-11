@@ -247,7 +247,7 @@ def test_more_than_99_title_sets_refuse_the_disc(tmp_path):
 def test_a_cell_off_the_vobu_address_map_makes_it_untrusted(tmp_path):
     install_log(lib.AV_LOG_WARNING)
     d = Disc.folder(folder(tmp_path, v=vts(vobus=[1])))
-    assert d.ret == 0 and d.ifo(1).vobu_map_distrusted
+    assert d.ret == 0 and not lib.ff_dvd_map_trusted(d.d, d.ifo(1))
     assert logged("program chain 1 cell 1: sector 0 is no VOBU start of the VOBU address map")
     d.close()
 
@@ -363,7 +363,7 @@ def test_an_unreadable_menu_vobu_map_leaves_the_title_set_s_vobu_starts_untruste
     dvd.write_disc(path, vmg(), [(ifo, dvd.title_vobs(10, [dvd.nav(0, 10, None)]))])
     install_log(lib.AV_LOG_VERBOSE)
     d = Disc.folder(path)
-    assert d.ret == 0 and not d.ifo(1).failed and d.ifo(1).vobu_map_distrusted
+    assert d.ret == 0 and not d.ifo(1).failed and not lib.ff_dvd_map_trusted(d.d, d.ifo(1))
     assert logged("VTS_01: the VOBU address map at sector 32767 cannot be read: its VOBU starts are not trusted")
     assert logged(f"IFO check: VTS_01_0.IFO VTSM_VOBU_ADMAP at byte {0x7fff * S:#x}: VTSM_VOBU_ADMAP at sector 32767 "
                   "cannot be read")

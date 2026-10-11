@@ -241,7 +241,7 @@ static int load_vobu_map(DVDDisc *d, DVDIfo *f, ifo_handle_t *h, uint32_t sector
     if (!ifoRead_VOBU_ADMAP_rec(h, sector, table, &starts, &n)) {
         av_log(d->log, AV_LOG_WARNING, "DVD: %s: the VOBU address map at sector %"PRIu32" cannot be read: its "
                "VOBU starts are not trusted\n", name, sector);
-        f->vobu_map_distrusted = 1;
+        f->map_untrusted_at_load = 1;
         return 0;
     }
     av_freep(map);
@@ -331,7 +331,7 @@ static void check_cells(DVDDisc *d, DVDIfo *f)
                 av_log(d->log, AV_LOG_WARNING, "DVD: %s: program chain %d cell %d: sector %"PRIu32" is no VOBU "
                        "start of the VOBU address map: its VOBU starts are not trusted (the VOBs must be "
                        "scanned)\n", name, i + 1, c + 1, miss);
-                f->vobu_map_distrusted = 1;
+                f->map_untrusted_at_load = 1;
                 return;
             }
         }
@@ -361,6 +361,9 @@ static int load(DVDDisc *d, DVDIfo *f)
         f->title_vob_blocks = (uint32_t)(f->bup_sector - f->ifo_sector) - ff_dvd_header32(f, DVD_TT_SRPT);
     /* the VOBU address maps: through libdvdread (ff_dvd_ifo_tables()) */
 
+    /* where the menu VOBs start: libdvdread decides (vob_read.h) */
+    if (!d->folder)
+        f->menu_vob_base = (uint32_t)DVDMenuVOBStart_rec(f->rec, f->index);
     if (!f->index)
         return 0;
 
@@ -469,10 +472,29 @@ int ff_dvd_ifo_tables(DVDDisc *d, DVDIfo *f)
         check_cells(d, f);
     ret = 0;
 end:
+    /* the VOBU address map and whether it is trusted, to libdvdread (which
+     * answers the VOBU questions from here on) */
+    if (ret >= 0 && f->index && DVDSetVobuMap_rec(d->reader, f->index, f->vobu_map, f->nb_vobu_map,
+                                                 !f->map_untrusted_at_load) < 0)
+        ret = AVERROR(ENOMEM);
     av_free(menu_map);
     free(ptt);
     ifoFree_VTS_PGCIT_rec(&rec);
     return ret;
+}
+
+int ff_dvd_map_find(const DVDIfo *f, uint32_t sector, int *exact)
+{
+    int lo = 0, hi = f->nb_vobu_map;
+    while (lo < hi) {
+        int mid = (lo + hi) / 2;
+        if (f->vobu_map[mid] < sector)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    *exact = lo < f->nb_vobu_map && f->vobu_map[lo] == sector;
+    return lo;
 }
 
 int ff_dvd_ifo_load(DVDDisc *d, int index, DVDIfo **out)
@@ -518,6 +540,5 @@ void ff_dvd_ifo_free(DVDIfo **pf)
     av_freep(&f->pgc_same_as);
     ff_dvd_table_free(&f->ptt_srpt);
     av_freep(&f->vobu_map);
-    ff_dvd_vobu_recs_free(&f->vobus);
     av_freep(pf);
 }

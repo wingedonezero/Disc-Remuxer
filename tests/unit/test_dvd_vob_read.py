@@ -321,3 +321,67 @@ def test_a_damaged_range_in_a_vob_file_in_pieces_names_the_file():
     assert got[14][1] == (lib.DVD_DAMAGE_ZERO, 12, 2, "VTS_01_1.VOB", 10 * S, "VTS_01_1.VOB", 11 * S)
     r.close()
     d.close()
+
+
+# ---- VOBUs ----
+
+def test_a_nav_pack_read_for_the_title_list_goes_through_libdvdread_s_checks(tmp_path):
+    # the title VOBs' NAV pack at sector 0 with pci_gi's reserved field
+    # zero1 (byte 0x33) not zero
+    path = folder_with(tmp_path, [plain()])
+    vob = path / "VIDEO_TS" / "VTS_01_1.VOB"
+    data = bytearray(vob.read_bytes())
+    data[0x33] = 1
+    vob.write_bytes(bytes(data))
+    d = Disc.folder(path)
+    before = findings(d)
+    n = ffi.new("DVDNav *")
+    assert lib.ff_dvd_nav_read(d.d, d.ifo(1), 0, n) == 1
+    assert n.vobu_ea == 5 and n.next_vobu & 0x3fffffff == 0x3fffffff   # 6 sectors, the end of the cell
+    assert findings(d) == (before[0] + 1, before[1])
+    install_log(lib.AV_LOG_VERBOSE)
+    lib.ff_dvd_reports_log(d.d)
+    assert logged("navigation packet at sector 0: pci->pci_gi.zero1 == 0 does not hold: kept")
+    # no NAV pack: recorded, not read again
+    assert lib.ff_dvd_nav_read(d.d, d.ifo(1), 1, n) == 0
+    d.close()
+
+
+def test_a_sector_missing_from_the_vobu_address_map_is_said_as_an_ifo_finding(tmp_path):
+    d = Disc.folder(folder_with(tmp_path, [plain()]))
+    assert lib.ff_dvd_map_trusted(d.d, d.ifo(1))
+    assert lib.ff_dvd_vobu_start_check(d.d, d.ifo(1), 0) == 1, "on the map"
+    assert lib.ff_dvd_vobu_start_check(d.d, d.ifo(1), 1) == 0, "off the map, and no NAV pack there"
+    assert not lib.ff_dvd_map_trusted(d.d, d.ifo(1))
+    install_log(lib.AV_LOG_WARNING)
+    lib.ff_dvd_reports_log(d.d)
+    assert logged("IFO check: VTS_01_0.IFO VTS_VOBU_ADMAP: title VOB sector 1 starts no VOBU of the VOBU address map: "
+                  "its VOBU starts are not trusted (the VOBs must be scanned)")
+    d.close()
+
+
+def test_menu_vobs_start_where_the_vob_s_first_nav_pack_is_when_header_and_file_system_disagree():
+    # VTS_01_0.VOB (the title set's menu VOBs, a NAV pack first) 3 sectors
+    # after where the IFO header's vtsm_vobs puts them
+    files, ifo = disc_files()
+    files = dict(files)
+    menu = bytes(dvd.title_vobs(4, [dvd.nav(0, 4, None)]))
+    order = ["VIDEO_TS.IFO", "VIDEO_TS.BUP", "VTS_01_0.IFO", "VTS_01_0.VOB", "VTS_01_1.VOB", "VTS_01_0.BUP"]
+    files["VTS_01_0.VOB"] = menu
+    im, where = image([(n, files[n]) for n in order], gaps={"VTS_01_0.VOB": 3})
+    ifo = bytearray(ifo)
+    at = where["VTS_01_0.IFO"]
+    ifo[0xc0:0xc4] = (where["VTS_01_0.VOB"] - 3 - at).to_bytes(4, "big")     # vtsm_vobs: 3 sectors early
+    ifo[0xc4:0xc8] = (where["VTS_01_1.VOB"] - at).to_bytes(4, "big")         # vtstt_vobs: right
+    for n in ("VTS_01_0.IFO", "VTS_01_0.BUP"):
+        im.put(where[n], bytes(ifo))
+    install_log(lib.AV_LOG_WARNING)
+    d = Disc.image(im)
+    assert d.ret == 0
+    assert d.ifo(1).menu_vob_base == where["VTS_01_0.VOB"] and d.ifo(1).title_vob_base == where["VTS_01_1.VOB"]
+    assert logged(f"IFO check: VTS_01_0.IFO VTSI_MAT at byte 0xc0 (bytes 00 00 00 {where['VTS_01_0.VOB'] - 3 - at:02x}): "
+                  f"the IFO header puts the menu VOBs at sector {where['VTS_01_0.VOB'] - 3} (vtsm_vobs "
+                  f"{where['VTS_01_0.VOB'] - 3 - at}), the file system's VTS_01_0.VOB is at sector "
+                  f"{where['VTS_01_0.VOB']}: they are read from the file system's: its first sector is a VOB's first "
+                  "navigation pack")
+    d.close()

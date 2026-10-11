@@ -530,11 +530,11 @@ int ff_dvd_vob_read(DVDDisc *d, DVDIfo *f, int menu, uint32_t sector, uint8_t *b
     blocks = (d->fs->src->size + DVD_SECTOR - 1) / DVD_SECTOR;
     mvobs  = ff_dvd_header32(f, VMGM_VOBS);
     tvobs  = f->index ? ff_dvd_header32(f, DVD_TT_SRPT) : 0;
-    if (menu ? !mvobs : !f->title_vob_base)
+    if (menu ? !mvobs || !f->menu_vob_base : !f->title_vob_base)
         return AVERROR(EINVAL);
-    /* a menu VOB from the IFO header's place; the title VOBs from where
-     * libdvdread decided they start */
-    start = menu ? f->ifo_sector + mvobs : f->title_vob_base;
+    /* the menu VOBs and the title VOBs from where libdvdread decided they
+     * start; a title set's menu VOBs up to the IFO header's title VOBs */
+    start = menu ? f->menu_vob_base : f->title_vob_base;
     end   = menu && tvobs > mvobs ? f->ifo_sector + tvobs : blocks;
     if (start <= 0 || start + sector >= FFMIN(end, blocks))
         return AVERROR(EINVAL);
@@ -585,11 +585,13 @@ static int setup_set(DVDDisc *d, NavSet *s, DVDIfo *f)
         s->title_bytes = f->index ? f->title_vob_bytes : 0;
         return 0;
     }
-    /* the menu VOB up to the title VOBs (a title set's, by the IFO header),
-     * else to the end of the image; the title VOBs from where libdvdread
-     * decided they start to the end of the image */
-    if (menu && (ret = image_part(d, f->ifo_sector + menu, title > menu ? title - menu : INT64_MAX,
-                                  &s->menu, &s->menu_bytes)) < 0)
+    /* the menu VOB and the title VOBs from where libdvdread decided they
+     * start: the menu VOB up to the title VOBs (a title set's, by the IFO
+     * header), else to the end of the image; the title VOBs to the end of
+     * the image */
+    if (menu && f->menu_vob_base &&
+        (ret = image_part(d, f->menu_vob_base, title > menu ? (int64_t)f->ifo_sector + title - f->menu_vob_base :
+                          INT64_MAX, &s->menu, &s->menu_bytes)) < 0)
         return ret;
     if (f->title_vob_base && (ret = image_part(d, f->title_vob_base, INT64_MAX, &s->title, &s->title_bytes)) < 0)
         return ret;
