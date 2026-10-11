@@ -15,6 +15,7 @@
 #include <libavutil/stereo3d.h>
 
 #include "check.h"
+#include "log.h"
 
 #define PROBE_PACKETS 600   /* packets a decoder gets to give its first frame */
 
@@ -274,6 +275,7 @@ int details_of_file(const char *path, enum AVMediaType type, Details *d)
     /* room for enough pictures of a 2160p stream to measure its rate (the
      * default 5 MB holds a few dozen) */
     av_dict_set(&opts, "probesize", "67108864", 0);
+    log_ffmpeg_detail(1);
     ret = avformat_open_input(&fc, path, NULL, &opts);
     av_dict_free(&opts);
     if (ret < 0 || (ret = avformat_find_stream_info(fc, NULL)) < 0)
@@ -301,6 +303,7 @@ end:
     details_probe_close(&p);
     av_packet_free(&pkt);
     avformat_close_input(&fc);
+    log_ffmpeg_detail(0);
     return ret;
 }
 

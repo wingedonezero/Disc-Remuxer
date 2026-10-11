@@ -154,8 +154,9 @@ def test_an_audio_stream_s_details_come_from_its_decoded_frame(tmp_path):
 
 def test_a_sub_picture_stream_without_packets_keeps_its_track(tmp_path):
     folder = disc(tmp_path, b"", [], subp_control=bytes([0x80, 0, 0, 0]) + bytes(124), subp_attrs=[subp()])
-    ts, lines = info(folder)
+    ts, lines = info(folder, detail=True)
     assert kinds(ts[0]) == [("video", "Mpeg2", "eng"), ("subtitle", "VobSub", "eng")]
+    # a detail line (the rip's track list warns of the empty track)
     assert said(lines, "title 1: sub-picture stream 0 has no packet in segment 1: its track is empty")
 
 

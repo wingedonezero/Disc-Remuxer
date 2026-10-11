@@ -39,6 +39,10 @@ typedef struct TitleOutcome {
     char    name[512];         /* the name its files take */
 } TitleOutcome;
 
+/* A size in GB / MB of 1024^3 / 1024^2 bytes, one decimal, cut off (not
+ * rounded), into buf; returns buf. */
+const char *size_text(char *buf, size_t size, int64_t bytes);
+
 /* Writes one title's stream files and chapters (logged as a step of its
  * own); part >= 0: only that part of the title (one of the stream files a
  * title plays back to back), -1 the whole title; second_view: a 3-D title's

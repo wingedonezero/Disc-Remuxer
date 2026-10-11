@@ -283,7 +283,9 @@ The rules above are the default policy. Around them:
     error.
 - **Title checks** (`disctl_title.c`, the master video's segments and
   joins; nothing is changed, every finding is an event, a warning where it
-  may be a fault, and a summary ends the title):
+  may be a fault, and a summary ends the title; a summary that passes is a
+  detail line (`-v`, the debug log), so the standard log of a clean title is
+  its track list and one line: "done, all checks passed (chapters, size)"):
   - how decoding starts at each segment's first key frame, by the codec's
     own marks (`DRPicture.start`): MPEG-2 closed_gop / broken_link of its GOP
     header, VC-1 CLOSED_ENTRY / BROKEN_LINK of its entry point, H.264 IDR or

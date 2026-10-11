@@ -894,7 +894,7 @@ static void start_check(AVFormatContext *s)
                FFABS(d) / (DR_TICKS_PER_SECOND / 1000.0), d > 0 ? "after" : "before", src->clip_start_name,
                d > 0 ? "leaves out what the disc plays before it" : "has pictures the disc starts later");
     }
-    av_log(s, off ? AV_LOG_WARNING : AV_LOG_INFO, "Title check: %d of %d %s(s) start their first picture at %s%s\n",
+    av_log(s, off ? AV_LOG_WARNING : AV_LOG_VERBOSE, "Title check: %d of %d %s(s) start their first picture at %s%s\n",
            checked - off, checked, src->clip_kind, src->clip_start_name, off ? " (see the warnings above)" : "");
 }
 
@@ -1031,7 +1031,7 @@ static int title_end(AVFormatContext *s)
                        r->unused[u].packets, r->unused[u].bytes);
         if (r->unused_other)
             av_bprintf(&bp, ", %"PRId64" of further streams", r->unused_other);
-        av_log(s, AV_LOG_INFO, "Title check: read %"PRId64" blocks of %s(s) %d-%d (%d of %d; %"PRId64
+        av_log(s, r->unusable ? AV_LOG_INFO : AV_LOG_VERBOSE, "Title check: read %"PRId64" blocks of %s(s) %d-%d (%d of %d; %"PRId64
                " not usable, left out); packets of streams without a track, left out: %s\n", r->blocks_done,
                r->src->clip_kind, r->first_clip + 1, r->last_clip + 1, r->last_clip - r->first_clip + 1,
                r->src->nb_clips, r->unusable, r->nb_unused || r->unused_other ? bp.str : "none");
@@ -1040,7 +1040,7 @@ static int title_end(AVFormatContext *s)
         if (!r->src->ts) {
             const MpegPsDiscStats *p = &r->ps_read;
             ps_read_add(r);
-            av_log(s, AV_LOG_INFO, "Title check: sectors: %"PRId64" read, %"PRId64" empty; left out: %"PRId64
+            av_log(s, AV_LOG_VERBOSE, "Title check: sectors: %"PRId64" read, %"PRId64" empty; left out: %"PRId64
                    " navigation packets (%"PRId64" bytes), %"PRId64" system headers (%"PRId64" bytes), %"PRId64
                    " padding packets (%"PRId64" bytes), %"PRId64" other packets of no stream (%"PRId64" bytes)\n",
                    p->sectors, p->empty, p->nav, p->nav_bytes, p->system, p->system_bytes, p->padding,

@@ -592,7 +592,8 @@ static void subtitle_detail(const AVStream *st, int opened, char *json, size_t s
         int64_t blocks = meta_int(st->metadata, "cc_blocks"), cues = meta_int(st->metadata, "cues");
         int64_t lost = meta_int(st->metadata, "cc_lost");
         char jp[256], jl[96] = "";
-        log_text(LOG_INFO, "      %s; %"PRId64" caption blocks -> %"PRId64" cues%s", cap->value, blocks, cues,
+        log_text(blocks && !cues ? LOG_INFO : LOG_DETAIL, "      %s; %"PRId64" caption blocks -> %"PRId64" cues%s",
+                 cap->value, blocks, cues,
                  blocks && !cues ? " (the caption data carries no caption text)" : "");
         if (lost) {
             log_text(LOG_INFO, "      %"PRId64" caption(s) still shown at the end of a segment left out", lost);
@@ -621,10 +622,19 @@ static void subtitle_detail(const AVStream *st, int opened, char *json, size_t s
     if (av_dict_get(st->metadata, "forced_objects", NULL, 0))
         av_bprintf(&b, "; %"PRId64" forced object%s", meta_int(st->metadata, "forced_objects"),
                    meta_int(st->metadata, "forced_objects") == 1 ? "" : "s");
-    log_text(outside ? LOG_WARNING : LOG_INFO, "      %s", b.str);
+    log_text(outside ? LOG_WARNING : LOG_DETAIL, "      %s", b.str);
     av_bprint_finalize(&b, NULL);
     snprintf(json, size, ",\"picture\":%s,\"width\":%d,\"height\":%d,\"no_stop\":%"PRId64",\"outside\":%"PRId64,
              json_str(jp, sizeof(jp), pic ? pic->value : ""), w, h, no_stop, outside);
+}
+
+const char *size_text(char *buf, size_t size, int64_t bytes)
+{
+    int gb = bytes >= (1LL << 30);
+    int64_t tenths = bytes * 10 / (gb ? 1LL << 30 : 1LL << 20);
+
+    snprintf(buf, size, "%"PRId64".%d %s", tenths / 10, (int)(tenths % 10), gb ? "GB" : "MB");
+    return buf;
 }
 
 static void hms(char *buf, size_t size, double s)
@@ -831,6 +841,8 @@ end:
     } else {
         int64_t untested = meta_int(ctx->metadata, "untested");
         int checked = 0, check_failed = 0, unchecked = 0;
+        int64_t written = 0;
+        char made[96], sz[32];
 
         for (unsigned i = 0; i < ctx->nb_streams; i++) {
             enum AVMediaType t = ctx->streams[i]->codecpar->codec_type;
@@ -881,7 +893,7 @@ end:
             }
             if (o->opened)
                 log_text(LOG_DETAIL, "      %s", o->name);
-            res->warnings += warn;
+            res->warnings += warn + (!o->opened && !empty_cc && !o->no_forced);
             log_json("track", "\"title\":%d%s,\"index\":%d,\"codec\":%s,\"language\":%s,\"layout\":%s,"
                      "\"frames\":%"PRId64",\"warnings\":%"PRId64",\"delay_ms\":%"PRId64",\"file\":%s%s", job->title,
                      jpart, track_no(st), json_str(jc, sizeof(jc), stream_label(st, o->opened ? o->profile : st->codecpar->profile)),
@@ -889,14 +901,19 @@ end:
                      o->st.delay_ms, json_str(jf, sizeof(jf), o->opened ? o->name : ""), extra);
         }
         if (checked)
-            log_text(check_failed ? LOG_ERROR : LOG_OK, "Stream details (read back from the files): %d of %d "
+            log_text(check_failed ? LOG_ERROR : LOG_DETAIL, "Stream details (read back from the files): %d of %d "
                      "video / audio track%s match the disc streams%s", checked - check_failed, checked,
                      checked == 1 ? "" : "s", check_failed ? "" : ": PASS");
         if (unchecked)
             log_text(LOG_WARNING, "Stream details: %d video / audio track%s not checked (no decoder)", unchecked,
                      unchecked == 1 ? "" : "s");
         res->warnings += unchecked;
-        log_msg(MSG_CHAPTERS, LOG_INFO, "Chapters: %u", ctx->nb_chapters);
+        log_msg(MSG_CHAPTERS, LOG_DETAIL, "Chapters: %u", ctx->nb_chapters);
+        /* what was written, for the title's last line */
+        for (unsigned i = 0; i < ctx->nb_streams; i++)
+            written += out[i].opened ? out[i].st.bytes : 0;
+        snprintf(made, sizeof(made), "(%u chapter%s, %s)", ctx->nb_chapters, ctx->nb_chapters == 1 ? "" : "s",
+                 size_text(sz, sizeof(sz), written));
         if (check_failed) {
             log_msg(MSG_DETAILS_DIFFER, LOG_ERROR, "%s: its files are written, but %d of them do not keep "
                     "the disc stream's details (see above)", who, check_failed);
@@ -906,13 +923,13 @@ end:
              * real discs]"), a warning each */
             res->warnings += untested;
             log_msg(MSG_UNTESTED, LOG_WARNING, "%s: done with %"PRId64" warning%s, %"PRId64" of them feature(s) no "
-                    "real disc has tested yet (see the log's \"[untested on real discs]\" lines)", who,
-                    res->warnings, res->warnings == 1 ? "" : "s", untested);
+                    "real disc has tested yet (see the log's \"[untested on real discs]\" lines) %s", who,
+                    res->warnings, res->warnings == 1 ? "" : "s", untested, made);
         } else if (res->warnings) {
-            log_msg(MSG_TITLE_DONE, LOG_INFO, "%s: done with %"PRId64" warning%s", who, res->warnings,
-                    res->warnings == 1 ? "" : "s");
+            log_msg(MSG_TITLE_DONE, LOG_INFO, "%s: done with %"PRId64" warning%s (see above) %s", who, res->warnings,
+                    res->warnings == 1 ? "" : "s", made);
         } else {
-            log_msg(MSG_TITLE_DONE, LOG_OK, "%s: done", who);
+            log_msg(MSG_TITLE_DONE, LOG_OK, "%s: done, all checks passed %s", who, made);
         }
     }
     log_json("title_result", "\"title\":%d%s,\"status\":\"%s\",\"warnings\":%"PRId64",\"folder\":%s", job->title, jpart,

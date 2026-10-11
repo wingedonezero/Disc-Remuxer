@@ -56,15 +56,6 @@ static void hms(char *buf, size_t size, int64_t us)
  * progress as an option). */
 #define DISC_FORMAT "disc"
 
-/* A size in GB / MB of 1024^3 / 1024^2 bytes, one decimal, cut off (not rounded). */
-static void size_text(char *buf, size_t size, int64_t bytes)
-{
-    int gb = bytes >= (1LL << 30);
-    int64_t tenths = bytes * 10 / (gb ? 1LL << 30 : 1LL << 20);
-
-    snprintf(buf, size, "%"PRId64".%d %s", tenths / 10, (int)(tenths % 10), gb ? "GB" : "MB");
-}
-
 /* A linked stream's index for JSON, or null (-1: none). */
 static const char *json_index(char *buf, size_t size, int v)
 {

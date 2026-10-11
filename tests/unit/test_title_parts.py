@@ -66,3 +66,37 @@ def test_a_title_ripped_alone_gets_its_folder_too(tmp_path):
     got = layout(demux(tmp_path))
     assert sorted(got) == ["title_t00"], got
     assert any(n.startswith("title_t00_00_") for n in got["title_t00"]), got
+
+
+def test_a_clean_rip_logs_its_checks_as_detail_and_ends_with_one_line(tmp_path):
+    # the standard log: passing title checks are detail lines (-v, the debug
+    # log); the title's last line says the checks passed, its chapters and size
+    import json
+
+    def one_clip(path):
+        # one clip whose first picture is at the playlist's start time
+        packets = []
+        for i, c in enumerate(M2V[k:k + 60000] for k in range(0, len(M2V), 60000)):
+            packets += bd.ts_packets(0x1011, bd.pes(0xe0, c, pts=2 * S + 3003 * i))
+        for i, c in enumerate(AC3[k:k + 768] for k in range(0, len(AC3), 768)):
+            packets += bd.ts_packets(0x1100, bd.pes(0xfd, c, ext=0x71, pts=2 * S + 2880 * i))
+        data = bd.source_units(packets)
+        clips = {1: bd.clpi(packets=len(data) // 192, stcs=((0, 0x1001, S, E),), streams=STREAMS)}
+        item = Item("00001", S, E, videos=[Stream(0x1011, 0x02, b"\x31")], audio=[Stream(0x1100, 0x81, b"\x31eng")])
+        files = bd.bdmv(clips, {1: bd.mpls([item])})
+        files["BDMV/STREAM/00001.m2ts"] = data
+        return bd.write(path / "disc", files)
+    out = tmp_path / "out"
+    p = subprocess.run([*PROGRAM, "--json", "demux", str(one_clip(tmp_path)), "0", str(out)], capture_output=True,
+                       text=True)
+    msgs = [json.loads(l) for l in p.stdout.splitlines() if l.startswith('{"type":"message"')]
+    texts = [m["text"] for m in msgs]
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert not [t for t in texts if t.startswith("Title check:")], texts
+    done = [t for t in texts if t.startswith("Title #0: done")]
+    assert done and "all checks passed (" in done[0] and "chapter" in done[0] and "MB)" in done[0], done
+    (tmp_path / "v").mkdir()
+    v = subprocess.run([*PROGRAM, "-v", "--json", "demux", str(one_clip(tmp_path / "v")), "0", str(tmp_path / "out_v")],
+                       capture_output=True, text=True)
+    detail = [json.loads(l) for l in v.stdout.splitlines() if l.startswith('{"type":"message"')]
+    assert any(m["text"].startswith("Title check:") and m["level"] == "detail" for m in detail)

@@ -296,7 +296,7 @@ static void window_consume(DRFrames *c, int64_t end)
 static void not_a_unit(DRFrames *c, int k)
 {
     if (!c->win_pos)
-        av_log(c->log, AV_LOG_INFO, "Title timeline: %s: the first %d bytes are the end of a frame that starts "
+        av_log(c->log, AV_LOG_VERBOSE, "Title timeline: %s: the first %d bytes are the end of a frame that starts "
                "before the title (the title starts inside it): left out\n", c->codec->name, k);
     else
         av_log(c->log, AV_LOG_WARNING, "Title timeline: %s: %d bytes at stream offset %"PRId64" are not a unit "

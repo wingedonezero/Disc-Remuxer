@@ -312,8 +312,10 @@ def test_the_cell_check_passes_a_whole_cell(tmp_path):
 
 # ---- the program ----
 
-def info(path, *sets):
-    args = [*PROGRAM, "--json"] + [a for x in sets for a in ("--set", x)] + ["info", str(path)]
+def info(path, *sets, detail=False):
+    """detail: the log's detail lines too (-v)."""
+    args = [*PROGRAM, "--json"] + (["-v"] if detail else []) + [a for x in sets for a in ("--set", x)] + \
+        ["info", str(path)]
     out = subprocess.run(args, capture_output=True, text=True)
     lines = [json.loads(line) for line in out.stdout.splitlines() if line.startswith("{")]
     return [x for x in lines if x.get("type") == "title"], lines
