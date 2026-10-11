@@ -331,6 +331,26 @@ static void *nav_file_open(dvd_reader_filesystem_h *fs, const char *path)
     return file;
 }
 
+/* The disc reader's view of an image: where a title VOB file's pieces lie
+ * on it (DiscIOFile extents; a piece not recorded: -1). */
+static int nav_file_pieces(dvd_reader_filesystem_h *fs, const char *path, int64_t (*pieces)[2], int max)
+{
+    NavFS *n = (NavFS *)fs;
+    const char *name = NULL;
+    DiscIOFile *f;
+    NavSet *s;
+    int kind, part;
+
+    if (n->d->folder || parse_path(path, &name) != 2 || find_file(n, name, &s, &kind, &part) < 0 ||
+        kind != FILE_TITLE_VOB || !(f = real_title_vob(n, s, part)) || f->data)
+        return -1;
+    for (int i = 0; i < f->nb_extents && i < max; i++) {
+        pieces[i][0] = f->extents[i].sector == DISCIO_SECTOR_NOT_RECORDED ? -1 : f->extents[i].sector;
+        pieces[i][1] = f->extents[i].count;
+    }
+    return f->nb_extents;
+}
+
 /* The disc reader's view of an image: the whole image as one file. */
 static void *nav_image_open(dvd_reader_filesystem_h *fs)
 {
@@ -510,9 +530,11 @@ int ff_dvd_vob_read(DVDDisc *d, DVDIfo *f, int menu, uint32_t sector, uint8_t *b
     blocks = (d->fs->src->size + DVD_SECTOR - 1) / DVD_SECTOR;
     mvobs  = ff_dvd_header32(f, VMGM_VOBS);
     tvobs  = f->index ? ff_dvd_header32(f, DVD_TT_SRPT) : 0;
-    if (menu ? !mvobs : !tvobs)
+    if (menu ? !mvobs : !f->title_vob_base)
         return AVERROR(EINVAL);
-    start = f->ifo_sector + (menu ? mvobs : tvobs);
+    /* a menu VOB from the IFO header's place; the title VOBs from where
+     * libdvdread decided they start */
+    start = menu ? f->ifo_sector + mvobs : f->title_vob_base;
     end   = menu && tvobs > mvobs ? f->ifo_sector + tvobs : blocks;
     if (start <= 0 || start + sector >= FFMIN(end, blocks))
         return AVERROR(EINVAL);
@@ -563,12 +585,13 @@ static int setup_set(DVDDisc *d, NavSet *s, DVDIfo *f)
         s->title_bytes = f->index ? f->title_vob_bytes : 0;
         return 0;
     }
-    /* the menu VOB up to the title VOBs (a title set's), else to the end of
-     * the image; the title VOBs to the end of the image */
+    /* the menu VOB up to the title VOBs (a title set's, by the IFO header),
+     * else to the end of the image; the title VOBs from where libdvdread
+     * decided they start to the end of the image */
     if (menu && (ret = image_part(d, f->ifo_sector + menu, title > menu ? title - menu : INT64_MAX,
                                   &s->menu, &s->menu_bytes)) < 0)
         return ret;
-    if (title && (ret = image_part(d, f->ifo_sector + title, INT64_MAX, &s->title, &s->title_bytes)) < 0)
+    if (f->title_vob_base && (ret = image_part(d, f->title_vob_base, INT64_MAX, &s->title, &s->title_bytes)) < 0)
         return ret;
     return 0;
 }
@@ -733,7 +756,7 @@ static int nav_fs_new(DVDDisc *d, const DVDNavHooks *hooks, int real, NavFS **ou
         n->hooks = *hooks;
     n->fs = (dvd_reader_filesystem_h){ NULL, nav_close, nav_stat, nav_dir_open, nav_dir_read, nav_dir_close,
                                        nav_file_open, nav_file_read, nav_file_seek, nav_file_close,
-                                       real ? nav_image_open : NULL };
+                                       real ? nav_image_open : NULL, real ? nav_file_pieces : NULL };
     for (int i = 0; !real && i < d->nb_ifos && i <= DVD_MAX_TITLE_SETS; i++) {
         if (!d->ifos[i] || d->ifos[i]->failed)
             continue;

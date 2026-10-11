@@ -34,8 +34,24 @@ extern "C" {
  * opened with DVDOpenFiles(): the title VOBs are the title set's
  * VTS_nn_1..9.VOB files joined as bytes (up to the first missing one); on
  * a disc image (the file system has image_open and the IFO has a place on
- * it) the image's sectors from where the IFO header puts them (the IFO's
- * sector + vtstt_vobs) to the end of the image.
+ * it) the image's sectors from where they start to the end of the image.
+ * Where they start is decided once per title set (DVDTitleVOBStart_rec()):
+ * the IFO header's place (the IFO's sector + vtstt_vobs) and the file
+ * system's VTS_nn_1.VOB when they agree or the file system has no single
+ * place for that file; when they differ (reported as a finding of the IFO's
+ * vtstt_vobs), the one whose first sector is a navigation pack giving its
+ * own sector in the VOB as 0 (PCI and DSI nv_pck_lbn), the IFO header's
+ * first; neither: the IFO header's.
+ *
+ * On an image the title VOBs can also be read through the VOB files (the
+ * file view, DVDUseTitleVOBView_rec()): VTS_nn_1.VOB, _2, ... one after the
+ * other from the start, until they hold the title VOBs' sectors by the IFO
+ * (up to its BUP); each file must start where the previous one ends (by its
+ * first piece on the image, or no place known) and be whole sectors;
+ * VTS_nn_1 and _2 must be there unless the first holds them all; a missing
+ * third or later one is taken from the start place to the end. A read
+ * that fails at the start place is tried through the file view, then at
+ * the start place once more.
  *
  * Each sector read is checked: one that is no MPEG-2 pack (pack_start_code
  * with the '01' marker) followed by a packet start code (the pack header is
@@ -65,8 +81,9 @@ extern "C" {
 typedef struct dvd_vob_reader_s dvd_vob_reader_t;
 
 /** A damaged range of title VOB sectors: where it lies (the files of its
- *  first and last sector and the byte offsets there; "" and -1 when the
- *  file is not known) and what it is. */
+ *  first and last sector and the byte offsets there, an image's files by
+ *  their pieces on it (file_pieces, else their place when one piece); ""
+ *  and -1 when the file is not known) and what it is. */
 typedef struct
 {
   dvd_damage_t kind;
@@ -101,6 +118,22 @@ DVDREAD_API int DVDReadTitleVOBSector_rec( dvd_vob_reader_t *, uint32_t sector, 
 /** Ends the damaged range being read, if any (the reading stops or goes
  *  elsewhere): reported and put in *ended (nb_sectors 0: none). */
 DVDREAD_API void DVDEndTitleVOBDamage_rec( dvd_vob_reader_t *, dvd_vob_damage_t *ended );
+
+/** Where title set title's title VOBs start on the image (absolute sector,
+ *  decided once, see above); ifo: its ifoOpen_rec() handle. 0 on a folder or
+ *  without title VOBs. */
+DVDREAD_API int64_t DVDTitleVOBStart_rec( ifo_handle_t *ifo, int title );
+
+/**
+ * The file view for the segment read next (n extents: title VOB sectors
+ * from sectors[i], counts[i] of them; replaces the previous segment's): 1
+ * it is used when a read fails, 0 not (a folder, no file view, or: the
+ * first and the last extent must lie in both, their first two sectors and,
+ * of 3 or more, their last two must read the same through the file view
+ * and at the start place, and every extent must lie in the file view).
+ */
+DVDREAD_API int DVDUseTitleVOBView_rec( dvd_vob_reader_t *, const uint32_t *sectors, const uint32_t *counts,
+                                        int n );
 
 /** Title set title's CSS title key: 1 found (into key), 0 not looked for
  *  yet, -1 none. */

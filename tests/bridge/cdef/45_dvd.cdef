@@ -93,6 +93,7 @@ typedef struct {
 } dvd_vob_damage_t;
 uint32_t DVDTitleVOBSectors_rec(const dvd_vob_reader_t *v);
 void DVDEndTitleVOBDamage_rec(dvd_vob_reader_t *v, dvd_vob_damage_t *ended);
+int DVDUseTitleVOBView_rec(dvd_vob_reader_t *v, const uint32_t *sectors, const uint32_t *counts, int n);
 void DVDCloseTitleVOBs_rec(dvd_vob_reader_t *v);
 
 /* libavformat/dvd_read.c: a title VOB sector through the checks (a reading

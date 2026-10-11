@@ -131,8 +131,8 @@ typedef struct DVDIfo {
     int          nb_title_vobs;
 
     uint32_t     title_vob_blocks;      /**< the title VOBs' length in sectors */
-    uint32_t     title_vob_start;       /**< image: the title VOBs' first sector by the IFO header (0: not
-                                             decided yet: the header and the file system disagree) */
+    uint32_t     title_vob_start;       /**< image: the title VOBs' first sector as libdvdread decided it (the IFO
+                                             header's or the file system's place; 0: none) */
     uint32_t     menu_vobu_last;        /**< the last VOBU start of the menu VOBU address map */
     int          no_pgcit;              /**< VTS without a program chain table */
     int          vobu_map_distrusted;   /**< a cell does not start on the VOBU address map */
@@ -463,6 +463,9 @@ uint32_t ff_dvd_segment_blocks(const DVDSegment *g);
 /** Sector block of segment seg of title t, as ff_dvd_title_vob_read(). */
 int      ff_dvd_segment_read_vobs(DVDDisc *d, const DVDTitle *t, dvd_vob_reader_t *vr, int seg, uint32_t block,
                                   uint8_t *buf, dvd_vob_damage_t *ended);
+/** The file view (vob_read.h) of reading vr for segment seg of title t, read
+ *  next: 1 used when a read fails, 0 not, < 0 an error. */
+int      ff_dvd_segment_view(const DVDTitle *t, dvd_vob_reader_t *vr, int seg);
 /** Sector block of segment seg of title t, as ff_dvd_title_vob_sector(). */
 int      ff_dvd_segment_read(DVDDisc *d, const DVDTitle *t, int seg, uint32_t block, uint8_t *buf);
 

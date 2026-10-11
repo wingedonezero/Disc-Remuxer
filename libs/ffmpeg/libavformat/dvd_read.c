@@ -30,6 +30,8 @@
 
 #include "libavutil/error.h"
 #include "libavutil/log.h"
+#include "libavutil/macros.h"
+#include "libavutil/mem.h"
 
 #include "dvd_internal.h"
 
@@ -104,6 +106,25 @@ int ff_dvd_segment_read_vobs(DVDDisc *d, const DVDTitle *t, dvd_vob_reader_t *vr
     if (ended)
         memset(ended, 0, sizeof(*ended));
     return ret < 0 ? ret : ff_dvd_title_vob_read(d, t->vts, vr, sector, buf, ended);
+}
+
+int ff_dvd_segment_view(const DVDTitle *t, dvd_vob_reader_t *vr, int seg)
+{
+    const DVDSegment *g = &t->segments[seg];
+    uint32_t *sectors = av_malloc_array(FFMAX(g->nb_extents, 1), sizeof(*sectors));
+    uint32_t *counts  = av_malloc_array(FFMAX(g->nb_extents, 1), sizeof(*counts));
+    int ret = AVERROR(ENOMEM);
+
+    if (sectors && counts) {
+        for (int i = 0; i < g->nb_extents; i++) {
+            sectors[i] = g->extents[i].sector;
+            counts[i]  = g->extents[i].count;
+        }
+        ret = DVDUseTitleVOBView_rec(vr, sectors, counts, g->nb_extents);
+    }
+    av_free(sectors);
+    av_free(counts);
+    return ret;
 }
 
 int ff_dvd_segment_read(DVDDisc *d, const DVDTitle *t, int seg, uint32_t block, uint8_t *buf)

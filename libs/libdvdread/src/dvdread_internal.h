@@ -54,10 +54,18 @@ struct dvd_reader_s
     /* Set 100 flags for BUP fallback, most signifiant left
        [0] for upper remaining VTS, [1] for the first Main + 63 VTS */
     uint64_t ifoBUPflags[2];
-    /* the CSS title keys of the title sets' title VOBs (vob_read.c), per
-     * title set: state 0 not looked for, 1 found, -1 none; where its title
-     * VOBs lie on an image (base 0: not known, a folder) */
-    struct { int state; uint8_t key[5]; int64_t base; uint32_t blocks; } vob_css[100];
+    /* the title sets' title VOBs (vob_read.c), per title set: the CSS title
+     * key (state 0 not looked for, 1 found, -1 none); on an image where
+     * they start (placed: decided; start 0: no title VOBs) and their length
+     * by the IFO (base: start, 0 while no reading recorded it) */
+    struct {
+      int      state;
+      uint8_t  key[5];
+      int64_t  base;
+      uint32_t blocks;
+      int      placed;
+      int64_t  start;
+    } vob_css[100];
 };
 
 /* The read position of a file (bytes from its start). */

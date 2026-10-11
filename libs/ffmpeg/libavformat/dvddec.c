@@ -62,6 +62,7 @@ typedef struct DVDDemuxContext {
     const DVDTitle *title;
     dvd_vob_reader_t *vobs;             /* libdvdread's reading of its title VOBs, for the title reader */
     dvd_vob_damage_t ended;             /* the damaged range its latest read ended (nb_sectors 0: none) */
+    int             view_seg;           /* the segment its file view was set for (-1: none yet) */
     int64_t        *chapter_times;
     int            *chapter_clips;
     int64_t        *chapter_offsets;
@@ -82,6 +83,16 @@ static uint32_t clip_blocks(AVFormatContext *s, int k)
 static int read_block(AVFormatContext *s, int k, uint32_t block, uint8_t *buf)
 {
     DVDDemuxContext *c = ff_disc_part(s);
+    int ret;
+
+    /* a new segment: libdvdread checks its file view (an image's VOB files) */
+    if (k != c->view_seg) {
+        if ((ret = ff_dvd_segment_view(c->title, c->vobs, k)) < 0)
+            return ret;
+        av_log(s, AV_LOG_DEBUG, "segment %s: %s\n", c->title->segments[k].cell_map,
+               ret ? "a read that fails is tried through the VOB files" : "no second source");
+        c->view_seg = k;
+    }
     return ff_dvd_segment_read_vobs(&c->disc, c->title, c->vobs, k, block, buf, &c->ended);
 }
 
@@ -407,6 +418,7 @@ static int open_title(AVFormatContext *s, int i, int part, int *second_view)
 
     c->title = t;
     memset(&c->ended, 0, sizeof(c->ended));
+    c->view_seg = -1;
     if (!(c->vobs = ff_dvd_title_vobs_open(&c->disc, t->vts)))
         return AVERROR(EIO);
     if (!(c->chapter_times = av_calloc(FFMAX(t->nb_chapters, 1), sizeof(*c->chapter_times))) ||

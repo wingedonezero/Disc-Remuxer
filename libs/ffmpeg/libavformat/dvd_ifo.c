@@ -373,16 +373,10 @@ static int load(DVDDisc *d, DVDIfo *f)
     /* the program chain and chapter tables: through libdvdread once every
      * IFO is loaded (ff_dvd_ifo_tables()) */
     if (!d->folder) {
-        /* the title VOBs from the IFO header, when the file system agrees
-         * (or has no single piece for them) */
-        uint32_t start = ff_dvd_header32(f, DVD_TT_SRPT) + (uint32_t)f->ifo_sector;
-        if (ff_dvd_header32(f, DVD_TT_SRPT))
-            f->title_vob_base = start;  /* the title VOB stream the navigation reads (dvd_nav.c) */
-        if (!f->title_vob_sector || f->title_vob_sector == start)
-            f->title_vob_start = start;
-        else
-            av_log(d->log, AV_LOG_WARNING, "DVD: %s: the IFO header puts the title VOBs at sector %"PRIu32", the "
-                   "file system at %"PRId64": decided when they are read\n", name, start, f->title_vob_sector);
+        /* where the title VOBs start: libdvdread decides (the IFO header's
+         * place or the file system's, see vob_read.h); the title VOB stream
+         * the navigation reads too (dvd_nav.c) */
+        f->title_vob_start = f->title_vob_base = (uint32_t)DVDTitleVOBStart_rec(f->rec, f->index);
     }
     return 0;
 }
