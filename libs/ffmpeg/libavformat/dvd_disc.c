@@ -44,6 +44,7 @@
 #include <string.h>
 
 #include <dvdread/dvd_reader.h>
+#include <dvdread/ifo_read.h>
 
 #include "libavutil/avstring.h"
 #include "libavutil/error.h"
@@ -281,13 +282,9 @@ int ff_dvd_disc_open(void *log, DiscIOFS *fs, const char *dir, int folder, const
     d->folder = folder;
 
     /* the VMG */
-    ret = ff_dvd_ifo_load(d, 0, &vmg);
+    ret = ff_dvd_ifo_load(d, 0, &vmg);         /* it is d->ifos[0] then */
     if (!vmg)
         return AVERROR(ENOMEM);
-    if (av_dynarray_add_nofree(&d->ifos, &d->nb_ifos, vmg) < 0) {
-        ff_dvd_ifo_free(&vmg);
-        return AVERROR(ENOMEM);
-    }
     if (ret < 0) {
         av_log(log, AV_LOG_ERROR, "DVD: VIDEO_TS.IFO cannot be read: no DVD-Video\n");
         return ret;
@@ -304,12 +301,8 @@ int ff_dvd_disc_open(void *log, DiscIOFS *fs, const char *dir, int folder, const
     /* every title set's information file */
     for (int i = 1; i <= d->nr_of_title_sets; i++) {
         DVDIfo *f = NULL;
-        ret = ff_dvd_ifo_load(d, i, &f);
-        if (!f || av_dynarray_add_nofree(&d->ifos, &d->nb_ifos, f) < 0) {
-            ff_dvd_ifo_free(&f);
-            return AVERROR(ENOMEM);
-        }
-        if (ret == AVERROR(ENOMEM))
+        ret = ff_dvd_ifo_load(d, i, &f);           /* d->ifos[i] */
+        if (!f || ret == AVERROR(ENOMEM))
             return ret;
         if (ret < 0)
             av_log(log, AV_LOG_WARNING, "DVD: title set %d cannot be read: the disc is read without it\n", i);
@@ -407,8 +400,14 @@ int ff_dvd_disc_open(void *log, DiscIOFS *fs, const char *dir, int folder, const
 
 void ff_dvd_disc_free(DVDDisc *d)
 {
+    /* libdvdread's handles, then libdvdread (its callbacks read the IFOs below) */
+    for (int i = 0; i < d->nb_ifos; i++)
+        if (d->ifos[i] && d->ifos[i]->rec) {
+            ifoClose(d->ifos[i]->rec);
+            d->ifos[i]->rec = NULL;
+        }
     if (d->reader)
-        DVDClose(d->reader);        /* its callbacks read the IFOs below */
+        DVDClose(d->reader);
     d->reader = NULL;
     for (int i = 0; i < d->nb_ifos; i++)
         ff_dvd_ifo_free(&d->ifos[i]);

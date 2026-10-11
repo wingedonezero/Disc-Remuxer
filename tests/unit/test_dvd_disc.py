@@ -147,7 +147,9 @@ def test_a_wrong_ifo_signature_reads_the_bup(tmp_path):
     install_log(lib.AV_LOG_WARNING)
     d = Disc.folder(path)
     assert d.ret == 0 and not d.ifo(1).failed and d.ifo(1).bup_only
-    assert logged("VTS_01.IFO does not start with DVDVIDEO-VTS: its BUP is read instead")
+    # libdvdread's report
+    assert logged("IFO check: VTS_01_0.IFO at byte 0x0: the IFO does not start with DVDVIDEO-VTS: its BUP is read "
+                  "instead")
     d.close()
 
 
@@ -201,7 +203,9 @@ def test_the_bup_position_of_a_folder_is_checked_by_the_file_sizes(tmp_path):
     d = Disc.folder(path)
     assert d.ret == 0
     ifo_sectors = len(ifo) // S
-    assert logged(f"VTS_01: the header puts the BUP {ifo_sectors + 10 + 16} sectors after the IFO")
+    # libdvdread's report, at the header's vts_last_sector
+    assert logged(f"IFO check: VTS_01_0.IFO at byte 0xc: the header puts the BUP {ifo_sectors + 10 + 16} sectors after "
+                  "the IFO")
     assert logged(f"the IFO and VOB files make {ifo_sectors + 10} sectors")
     d.close()
 
@@ -443,7 +447,7 @@ def test_an_unreadable_ifo_piece_is_read_from_the_bup():
     install_log(lib.AV_LOG_WARNING)
     d = Disc.image(im)
     assert d.ret == 0 and not d.ifo(1).failed
-    assert logged("VTS_01: IFO bytes 0-1023 read from the BUP")
+    assert logged("IFO check: VTS_01_0.IFO at byte 0x0: IFO bytes 0-1023 read from the BUP")
     # the whole IFO: the first try (IFO, whole) fails, the second (BUP, one
     # sector) reads, and the copy that read is kept
     assert logged("reading the whole IFO") and logged("from the IFO failed") and logged("try 1 of 16")
@@ -470,7 +474,7 @@ def test_the_bup_position_of_an_image_comes_from_the_file_system():
     install_log(lib.AV_LOG_WARNING)
     d = Disc.image(im)
     n = len(ifo) // S + 10
-    assert logged(f"VTS_01: the header puts the BUP {n} sectors after the IFO")
+    assert logged(f"IFO check: VTS_01_0.IFO at byte 0xc: the header puts the BUP {n} sectors after the IFO")
     assert logged(f"the file system puts it {n + 16} sectors")
     d.close()
 

@@ -28,14 +28,14 @@
 
 #include "libavutil/bprint.h"
 
+#include <dvdread/ifo_types.h>
+
 #include "discio.h"
 #include "discinfo.h"
 
 #define DVD_SECTOR          2048
 #define DVD_MAX_TITLE_SETS  99
 #define DVD_IFO_HEADER      0x400       /* the part of an IFO read for its header */
-#define DVD_IFO_CACHE_MAX   (2 << 20)   /* an IFO read whole when it is no larger */
-#define DVD_IFO_CACHE_TRIES 16          /* tries of that read (alternating IFO and BUP) */
 
 /* VMGI_MAT / VTSI_MAT fields (byte offsets in the IFO's first sector) */
 #define DVD_LAST_SECTOR         0x0c    /* vmg_last_sector / vts_last_sector */
@@ -115,8 +115,9 @@ typedef struct DVDIfo {
      * image from the file's position to its end (the IFO's tables are read
      * by their sector from there). */
     DiscIOFile  *copy[2];
+    ifo_handle_t *rec;                  /**< libdvdread's handle (ifoOpen_rec()): it chose IFO / BUP and read them */
     int          bup_only;              /**< the IFO's signature is wrong: only the BUP is read */
-    uint8_t     *cache;                 /**< the whole IFO, read once (NULL: read from the copies) */
+    const uint8_t *cache;               /**< the whole IFO as libdvdread read it (NULL: read in pieces) */
     int          cache_size;
     uint8_t      header[DVD_IFO_HEADER];
 
@@ -233,14 +234,10 @@ int  ff_dvd_ifo_raw_table(DVDDisc *d, DVDIfo *f, uint32_t sector, int last_byte_
  *  VOB file holds it. */
 int  ff_dvd_title_vob_place(DVDDisc *d, DVDIfo *f, uint32_t sector, char *file, int size, int64_t *offset);
 void ff_dvd_ifo_free(DVDIfo **ifo);
-/** Bytes of the IFO from sector on: from the whole-IFO read when there is
- *  one, else per 2048-byte piece from the IFO, the BUP when that fails. */
+/** Bytes of the IFO from sector on, as libdvdread chose and read them:
+ *  from the whole-IFO read when there is one, else per 2048-byte piece from
+ *  the IFO, the BUP when that fails. */
 int  ff_dvd_ifo_read(DVDDisc *d, DVDIfo *f, uint32_t sector, uint8_t *buf, int len);
-/** A table of the IFO at sector; its length from its first sector by
- *  len_of (0: empty, no error). 0 or < 0. */
-int  ff_dvd_ifo_table(DVDDisc *d, DVDIfo *f, uint32_t sector, DVDTable *t,
-                      uint32_t (*len_of)(const uint8_t *first, uint32_t field), uint32_t field);
-uint32_t ff_dvd_table_len_last_byte(const uint8_t *first, uint32_t field);
 void ff_dvd_table_free(DVDTable *t);
 
 static inline uint32_t ff_dvd_header32(const DVDIfo *f, int off)

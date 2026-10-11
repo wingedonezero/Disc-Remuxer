@@ -153,6 +153,28 @@ DVDREAD_API int ifoRead_PGCIT(ifo_handle_t *);
  * read. Free with ifoFree_VTS_PGCIT_rec().
  */
 DVDREAD_API int ifoRead_VTS_PGCIT_rec(ifo_handle_t *, pgcit_rec_t **);
+
+/**
+ * ifofile = ifoOpen_rec(dvd, title);
+ *
+ * An information file (title 0: VIDEO_TS, else a title set's) opened by
+ * the title list's rules, holding the IFO and its BUP: the header from the
+ * IFO, from the BUP when the IFO's signature is wrong (both wrong: not
+ * opened); the whole IFO (its size by its header, at most 2 MiB) read once,
+ * each failed try moving to the other copy (16 tries, after the first one a
+ * sector at a time); without it each read goes piece by piece, a piece the
+ * IFO cannot give taken from the BUP. Every read of the handle (its tables,
+ * the _rec readers) comes from these chosen bytes; the classic tables are
+ * not read (only VMGI_MAT / VTSI_MAT). Each step reported. Close with
+ * ifoClose().
+ */
+DVDREAD_API ifo_handle_t *ifoOpen_rec(dvd_reader_t *, int title);
+/** Bytes of an information file as ifoOpen_rec() chose them; 1, 0 when
+ *  they cannot be read (reported). */
+DVDREAD_API int ifoRead_rec_bytes(ifo_handle_t *, int64_t pos, uint8_t *buf, size_t len);
+/** Of an ifoOpen_rec() handle: only its BUP is read (the IFO's signature is
+ *  wrong); the whole IFO as read (NULL: read piece by piece) and its size. */
+DVDREAD_API void ifoGet_rec_state(ifo_handle_t *, int *bup_only, const uint8_t **cache, int *cache_size);
 DVDREAD_API void ifoFree_VTS_PGCIT_rec(pgcit_rec_t **);
 
 /**

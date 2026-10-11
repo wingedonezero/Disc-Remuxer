@@ -207,104 +207,7 @@ static int open_folder_files(DVDDisc *d, DVDIfo *f)
 
 int ff_dvd_ifo_read(DVDDisc *d, DVDIfo *f, uint32_t sector, uint8_t *buf, int len)
 {
-    int64_t pos = (int64_t)sector * DVD_SECTOR;
-    char name[16];
-    int ret = 0;
-
-    ifo_name(f, name, sizeof(name));
-    if (f->cache) {
-        if (pos + len > f->cache_size) {
-            av_log(d->log, AV_LOG_WARNING, "DVD: %s: %d bytes at sector %"PRIu32" lie past the IFO's %d "
-                   "bytes\n", name, len, sector, f->cache_size);
-            return AVERROR_INVALIDDATA;
-        }
-        memcpy(buf, f->cache + pos, len);
-        return 0;
-    }
-    for (int done = 0; done < len; ) {
-        int n = FFMIN(len - done, DVD_SECTOR);
-        if (f->bup_only || (ret = ff_discio_file_read(d->fs, f->copy[0], pos + done, buf + done, n)) < 0) {
-            if (!f->bup_only)
-                av_log(d->log, AV_LOG_WARNING, "DVD: %s: IFO bytes %"PRId64"-%"PRId64" read from the BUP\n",
-                       name, pos + done, pos + done + n - 1);
-            if ((ret = ff_discio_file_read(d->fs, f->copy[1], pos + done, buf + done, n)) < 0) {
-                av_log(d->log, AV_LOG_ERROR, "DVD: %s: IFO bytes %"PRId64"-%"PRId64" cannot be read from the "
-                       "IFO or the BUP\n", name, pos + done, pos + done + n - 1);
-                return ret;
-            }
-        }
-        done += n;
-    }
-    return 0;
-}
-
-/* The whole IFO: tries per piece, each failed try moving to the other copy;
- * after the first failed try one sector at a time. */
-static int read_whole(DVDDisc *d, DVDIfo *f, uint8_t *buf, int len)
-{
-    DiscIOFile *copies[2] = { f->copy[0], f->copy[1] };
-    int nb = 2, cur = 0, single = 0;
-    char name[16];
-
-    ifo_name(f, name, sizeof(name));
-    if (f->bup_only) {
-        copies[0] = f->copy[1];
-        nb = 1;
-    }
-    for (int off = 0; off < len; ) {
-        int tries = 0, want, ret;
-        for (;;) {
-            if (tries && !single)
-                single = 1;
-            want = single ? FFMIN(DVD_SECTOR, len - off) : len - off;
-            if (off + want > copies[cur]->size)
-                ret = AVERROR(EIO);         /* past the end of a folder's file */
-            else
-                ret = ff_discio_file_read_attempts(d->fs, copies[cur], off, buf + off, want, 1, 1);
-            if (ret >= 0)
-                break;
-            tries++;
-            av_log(d->log, AV_LOG_WARNING, "DVD: %s: reading the whole IFO, %d bytes at %d from the %s failed "
-                   "(%s); try %d of %d\n", name, want, off, copies[cur] == f->copy[0] ? "IFO" : "BUP",
-                   av_err2str(ret), tries, DVD_IFO_CACHE_TRIES);
-            if (tries >= DVD_IFO_CACHE_TRIES)
-                return ret;
-            cur = (cur + 1) % nb;
-        }
-        off += want;
-    }
-    return 0;
-}
-
-uint32_t ff_dvd_table_len_last_byte(const uint8_t *first, uint32_t field)
-{
-    uint32_t v = AV_RB32(first + field) + 1;
-    return v >= field + 4 ? v : 0;
-}
-
-int ff_dvd_ifo_table(DVDDisc *d, DVDIfo *f, uint32_t sector, DVDTable *t,
-                     uint32_t (*len_of)(const uint8_t *first, uint32_t field), uint32_t field)
-{
-    uint8_t first[DVD_SECTOR];
-    uint32_t len;
-    int ret;
-
-    ff_dvd_table_free(t);
-    if ((ret = ff_dvd_ifo_read(d, f, sector, first, DVD_SECTOR)) < 0)
-        return ret;
-    if (!(len = len_of(first, field)))
-        return 0;
-    if (len > 0x3fffffff)
-        return AVERROR_INVALIDDATA;
-    if (!(t->data = av_malloc(len)))
-        return AVERROR(ENOMEM);
-    t->size = len;
-    memcpy(t->data, first, FFMIN(len, DVD_SECTOR));
-    if (len > DVD_SECTOR && (ret = ff_dvd_ifo_read(d, f, sector + 1, t->data + DVD_SECTOR, len - DVD_SECTOR)) < 0) {
-        ff_dvd_table_free(t);
-        return ret;
-    }
-    return 0;
+    return f->rec && ifoRead_rec_bytes(f->rec, (int64_t)sector * DVD_SECTOR, buf, len) ? 0 : AVERROR_INVALIDDATA;
 }
 
 void ff_dvd_table_free(DVDTable *t)
@@ -412,11 +315,6 @@ static DVDPgc *pgc_of(const pgc_rec_t *r)
 
 /* ---- the IFO ---- */
 
-static const char *signature(const DVDIfo *f)
-{
-    return f->index ? "DVDVIDEO-VTS" : "DVDVIDEO-VMG";
-}
-
 /* Every cell's first sector and last VOBU start on the VOBU address map;
  * the first that is not makes the map untrusted. */
 static void check_cells(DVDDisc *d, DVDIfo *f)
@@ -442,83 +340,31 @@ static void check_cells(DVDDisc *d, DVDIfo *f)
     }
 }
 
-/* Where the header puts the BUP against where it is. */
-static void check_bup(DVDDisc *d, DVDIfo *f)
-{
-    int64_t want = (int64_t)(ff_dvd_header32(f, DVD_LAST_SECTOR) - ff_dvd_header32(f, DVD_I_LAST_SECTOR)) * DVD_SECTOR;
-    int64_t have;
-    char name[16];
-
-    ifo_name(f, name, sizeof(name));
-    if (d->folder)
-        have = f->ifo_bytes + f->menu_vob_bytes + (f->index ? f->title_vob_bytes : 0);
-    else
-        have = (f->bup_sector - f->ifo_sector) * DVD_SECTOR;
-    if (have != want)
-        av_log(d->log, AV_LOG_WARNING, "DVD: %s: the header puts the BUP %"PRId64" sectors after the IFO "
-               "(vts_last_sector %"PRIu32" - vtsi_last_sector %"PRIu32"), %s %"PRId64" sectors%s\n", name,
-               want / DVD_SECTOR, ff_dvd_header32(f, DVD_LAST_SECTOR), ff_dvd_header32(f, DVD_I_LAST_SECTOR),
-               d->folder ? "the IFO and VOB files make" : "the file system puts it", have / DVD_SECTOR,
-               d->folder && have % DVD_SECTOR ? " (not whole sectors)" : "");
-}
-
 static int load(DVDDisc *d, DVDIfo *f)
 {
     char name[16];
-    uint32_t size, pgcit;
+    uint32_t pgcit;
     int ret;
 
     ifo_name(f, name, sizeof(name));
-    if ((ret = ff_dvd_ifo_read(d, f, 0, f->header, DVD_IFO_HEADER)) < 0)
+    /* libdvdread opens the IFO and its BUP and chooses: the header from the
+     * IFO, from the BUP when the IFO's signature is wrong; the whole IFO
+     * read once, else piece by piece (what it finds: reported) */
+    if ((ret = ff_dvd_reader_open(d)) < 0)
         return ret;
-    if (memcmp(f->header, signature(f), 12)) {
-        av_log(d->log, AV_LOG_WARNING, "DVD: %s.IFO does not start with %s: its BUP is read instead\n", name,
-               signature(f));
-        f->bup_only = 1;
-        if ((ret = ff_dvd_ifo_read(d, f, 0, f->header, DVD_IFO_HEADER)) < 0)
-            return ret;
-        if (memcmp(f->header, signature(f), 12)) {
-            av_log(d->log, AV_LOG_ERROR, "DVD: %s: neither the IFO nor the BUP starts with %s: it cannot be "
-                   "read\n", name, signature(f));
-            return AVERROR_INVALIDDATA;
-        }
-    }
-
-    /* the whole IFO, once */
-    size = (ff_dvd_header32(f, DVD_I_LAST_SECTOR) & 0x1ffff) * DVD_SECTOR;
-    if (size > DVD_IFO_CACHE_MAX - DVD_SECTOR) {
-        av_log(d->log, AV_LOG_VERBOSE, "DVD: %s: the IFO is larger than %d bytes: its tables are read from the "
-               "files\n", name, DVD_IFO_CACHE_MAX);
-    } else {
-        size += DVD_SECTOR;
-        if (!(f->cache = av_malloc(size)))
-            return AVERROR(ENOMEM);
-        if (read_whole(d, f, f->cache, size) < 0) {
-            av_log(d->log, AV_LOG_WARNING, "DVD: %s: the whole IFO (%"PRIu32" bytes) cannot be read: its tables "
-                   "are read piece by piece\n", name, size);
-            av_freep(&f->cache);
-        } else {
-            f->cache_size = size;
-        }
-    }
+    if (!(f->rec = ifoOpen_rec(d->reader, f->index)) ||
+        !ifoRead_rec_bytes(f->rec, 0, f->header, DVD_IFO_HEADER))
+        return AVERROR_INVALIDDATA;
+    ifoGet_rec_state(f->rec, &f->bup_only, &f->cache, &f->cache_size);
 
     if (d->folder)
         f->title_vob_blocks = (f->index ? f->title_vob_bytes : f->menu_vob_bytes) / DVD_SECTOR;
     else
         f->title_vob_blocks = (uint32_t)(f->bup_sector - f->ifo_sector) - ff_dvd_header32(f, DVD_TT_SRPT);
-    check_bup(d, f);
     /* the VOBU address maps: through libdvdread (ff_dvd_ifo_tables()) */
 
-    if (!f->index) {
-        const uint8_t *pid = f->header + DVD_PROVIDER_ID;
-        for (int i = 0; i + 4 <= 32; i++)
-            if (!memcmp(pid + i, "(Fab", 4)) {
-                av_log(d->log, AV_LOG_WARNING, "DVD: the provider identifier (%.32s) says the disc was "
-                       "processed by DVDFab / MacTheRipper, which are known to rewrite IFOs\n", (const char *)pid);
-                break;
-            }
+    if (!f->index)
         return 0;
-    }
 
     pgcit = ff_dvd_header32(f, DVD_VTS_PGCIT);
     if (pgcit == 0 || pgcit == 0xffffffff) {
@@ -588,7 +434,7 @@ int ff_dvd_title_vob_place(DVDDisc *d, DVDIfo *f, uint32_t sector, char *file, i
 int ff_dvd_ifo_raw_table(DVDDisc *d, DVDIfo *f, uint32_t sector, int last_byte_at, const char *table,
                          DVDTable *t)
 {
-    ifo_handle_t *h = !d->reader ? NULL : f->index ? ifoOpenVTSI(d->reader, f->index) : ifoOpenVMGI(d->reader);
+    ifo_handle_t *h = f->rec;
     uint8_t *data = NULL;
     uint32_t size;
     int ok, ret = 0;
@@ -605,13 +451,12 @@ int ff_dvd_ifo_raw_table(DVDDisc *d, DVDIfo *f, uint32_t sector, int last_byte_a
     else
         t->size = data ? size : 0;
     free(data);
-    ifoClose(h);
     return ret;
 }
 
 int ff_dvd_ifo_tables(DVDDisc *d, DVDIfo *f)
 {
-    ifo_handle_t *h = !d->reader ? NULL : f->index ? ifoOpenVTSI(d->reader, f->index) : ifoOpenVMGI(d->reader);
+    ifo_handle_t *h = f->rec;
     pgcit_rec_t *rec = NULL;
     uint32_t *menu_map = NULL, ptt_size;
     uint8_t *ptt = NULL;
@@ -677,8 +522,6 @@ end:
     av_free(menu_map);
     free(ptt);
     ifoFree_VTS_PGCIT_rec(&rec);
-    if (h)
-        ifoClose(h);
     return ret;
 }
 
@@ -690,6 +533,10 @@ int ff_dvd_ifo_load(DVDDisc *d, int index, DVDIfo **out)
     if (!f)
         return AVERROR(ENOMEM);
     f->index = index;
+    if (av_dynarray_add_nofree(&d->ifos, &d->nb_ifos, f) < 0) {
+        av_free(f);
+        return AVERROR(ENOMEM);
+    }
     *out = f;
     ret = d->folder ? open_folder_files(d, f) : open_image_files(d, f);
     if (ret >= 0)
@@ -711,7 +558,10 @@ void ff_dvd_ifo_free(DVDIfo **pf)
     for (int i = 0; i < f->nb_title_vobs; i++)
         ff_discio_file_free(&f->title_vobs[i]);
     av_freep(&f->title_vobs);
-    av_freep(&f->cache);
+    f->cache = NULL;                    /* libdvdread's */
+    if (f->rec)
+        ifoClose(f->rec);
+    f->rec = NULL;
     for (int i = 0; i < f->nb_pgcs; i++)
         free_pgc(&f->pgcs[i]);
     av_freep(&f->pgcs);

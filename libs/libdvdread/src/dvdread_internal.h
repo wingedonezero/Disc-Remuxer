@@ -58,6 +58,9 @@ struct dvd_reader_s
 
 /* The read position of a file (bytes from its start). */
 int64_t DVDFileTell_( dvd_file_t *dvd_file );
+/* A file of the disc ("/VIDEO_TS/VTS_01_0.IFO") through the application's
+ * file system (DVDOpenFiles()): its size and place; < 0 when there is none. */
+int DVDStatFile_( dvd_reader_t *ctx, const char *filename, dvdstat_t *st );
 
 struct ifo_handle_private_s
 {
@@ -71,6 +74,15 @@ struct ifo_handle_private_s
     char name[16];
     struct { const uint8_t *data; size_t size; int64_t pos; } span[32];
     unsigned int nb_span;
+    /* opened by ifoOpen_rec(): its BUP beside it (NULL: the IFO stands in),
+     * reads from the chosen bytes (the IFO read whole, else piece by piece
+     * with the BUP for a piece the IFO cannot give) at rec_pos */
+    int rec;
+    dvd_file_t *bup;
+    int bup_only;                       /* the IFO's signature is wrong: only the BUP is read */
+    uint8_t *rec_cache;
+    int rec_cache_size;
+    int64_t rec_pos;
 };
 
 enum TagIdentifier {
