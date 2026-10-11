@@ -2,19 +2,15 @@
  * DVD-Video: reading a title's segments sector by sector. A segment's
  * extents name sectors of its title set's title VOBs (the same title VOB
  * stream the navigation reads: an image's sectors from the IFO header's
- * title VOB start, a folder's VTS_nn_1..9.VOB joined); each sector read is
- * checked before it is used:
+ * title VOB start, a folder's VTS_nn_1..9.VOB joined). libdvdread reads
+ * them (vob_read.h): it checks each sector (one that is no MPEG-2 pack
+ * followed by a packet start code is left out, no packet of it reaches the
+ * demuxer) and says the damaged ranges, once each, to whoever reads. Then:
  *
- * - a sector that is no MPEG-2 pack (pack_start_code, '01' marker) or whose
- *   pack header is not followed by a packet start code is left out (no
- *   packet of it reaches the demuxer);
  * - a packet of the video stream 0xE0, private stream 1 or MPEG audio
  *   0xC0-0xC7 whose PES_scrambling_control is set is descrambled with its
  *   title set's CSS title key (DVD-Video, CSS) and the bits cleared; every
  *   other sector is used as it is.
- *
- * The pack header is 14 bytes plus pack_stuffing_length, the stuffing
- * counted only when its first byte is not zero.
  *
  * The title key is looked for when a title set's first scrambled sector is
  * read: a title set whose title VOBs lie inside those of a title set that
@@ -250,18 +246,34 @@ static int find_key(DVDDisc *d, DVDIfo *f, uint32_t sector)
     return 0;
 }
 
-int ff_dvd_title_vob_sector(DVDDisc *d, DVDIfo *f, uint32_t sector, uint8_t *buf)
+dvd_vob_reader_t *ff_dvd_title_vobs_open(DVDDisc *d, DVDIfo *f)
 {
-    int ret, h, kind;
+    dvd_vob_reader_t *vr;
 
-    if ((ret = ff_dvd_vob_read(d, f, 0, sector, buf)) < 0)
-        return ret;
-    if ((kind = sector_kind(buf, &h)) < 0) {
-        av_log(d->log, AV_LOG_DEBUG, "DVD: VTS_%02d: title VOB sector %"PRIu32" is no MPEG-2 pack with a packet: "
-               "left out\n", f->index, sector);
-        return 0;
+    if (ff_dvd_reader_open(d) < 0)
+        return NULL;
+    if (!(vr = DVDOpenTitleVOBs_rec(f->rec, f->index)))
+        av_log(d->log, AV_LOG_ERROR, "DVD: VTS_%02d: libdvdread cannot open the title VOBs\n", f->index);
+    return vr;
+}
+
+int ff_dvd_title_vob_read(DVDDisc *d, DVDIfo *f, dvd_vob_reader_t *vr, uint32_t sector, uint8_t *buf,
+                          dvd_vob_damage_t *ended)
+{
+    int ret, h;
+
+    if (!vr && !(vr = f->vobs)) {
+        if (f->vobs_failed || !(vr = f->vobs = ff_dvd_title_vobs_open(d, f))) {
+            f->vobs_failed = 1;
+            return AVERROR(EINVAL);
+        }
     }
-    if (!kind)
+    if ((ret = DVDReadTitleVOBSector_rec(vr, sector, buf, ended)) < 0)
+        return AVERROR(EIO);
+    if (!ret)
+        return 0;
+    /* a pack with a packet (libdvdread checked it): scrambled or not */
+    if (sector_kind(buf, &h) != 1)
         return 1;
     if (f->css_state < 0)
         return AVERROR_INVALIDDATA;
@@ -270,6 +282,11 @@ int ff_dvd_title_vob_sector(DVDDisc *d, DVDIfo *f, uint32_t sector, uint8_t *buf
     dvdcss_descramble(f->css_key, buf);
     buf[h + 6] &= 0xcf;
     return 1;
+}
+
+int ff_dvd_title_vob_sector(DVDDisc *d, DVDIfo *f, uint32_t sector, uint8_t *buf)
+{
+    return ff_dvd_title_vob_read(d, f, NULL, sector, buf, NULL);
 }
 
 uint32_t ff_dvd_segment_blocks(const DVDSegment *g)
@@ -298,19 +315,18 @@ static int segment_sector(const DVDSegment *g, uint32_t block, uint32_t *sector)
     return AVERROR(EINVAL);
 }
 
-int ff_dvd_segment_read(DVDDisc *d, const DVDTitle *t, int seg, uint32_t block, uint8_t *buf)
+int ff_dvd_segment_read_vobs(DVDDisc *d, const DVDTitle *t, dvd_vob_reader_t *vr, int seg, uint32_t block,
+                             uint8_t *buf, dvd_vob_damage_t *ended)
 {
     uint32_t sector;
     int ret = segment_sector(&t->segments[seg], block, &sector);
 
-    return ret < 0 ? ret : ff_dvd_title_vob_sector(d, t->vts, sector, buf);
+    if (ended)
+        memset(ended, 0, sizeof(*ended));
+    return ret < 0 ? ret : ff_dvd_title_vob_read(d, t->vts, vr, sector, buf, ended);
 }
 
-int ff_dvd_segment_place(DVDDisc *d, const DVDTitle *t, int seg, uint32_t block, char *file, int size,
-                         int64_t *offset)
+int ff_dvd_segment_read(DVDDisc *d, const DVDTitle *t, int seg, uint32_t block, uint8_t *buf)
 {
-    uint32_t sector;
-    int ret = segment_sector(&t->segments[seg], block, &sector);
-
-    return ret < 0 ? ret : ff_dvd_title_vob_place(d, t->vts, sector, file, size, offset);
+    return ff_dvd_segment_read_vobs(d, t, NULL, seg, block, buf, NULL);
 }

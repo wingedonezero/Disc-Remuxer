@@ -40,7 +40,7 @@
 static void nav_check_failed(dvd_reader_t *ctx, const char *table, const char *what, uint32_t sector)
 {
   char text[320];
-  dvd_report_t r;
+  dvd_report_t r = { 0 };
   int zero = strstr(what, "zero") && strstr(what, "== 0");
 
   snprintf(text, sizeof(text), "navigation packet at sector %u: %s does not hold: kept", sector, what);

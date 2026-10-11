@@ -87,6 +87,10 @@ struct dvd_reader_filesystem_s
     ssize_t (*file_read) (void *file, char *buf, size_t size);
     off64_t (*file_seek) (void *file, off64_t offset, int whence);
     int     (*file_close)(void *file);
+    /* optional (NULL: none): the whole disc image as one file, read with
+     * file_read / file_seek / file_close; NULL when the disc is no image
+     * (a folder) */
+    void   *(*image_open)(dvd_reader_filesystem_h *fs);
 };
 
 #endif /* DVDREAD_FILESYSTEM_H_ */

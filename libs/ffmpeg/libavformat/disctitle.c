@@ -144,7 +144,8 @@ void ff_disc_demux_close(DiscDemux *dm)
 /* ---- the title reader ---- */
 
 /* Blocks left out as not usable, one after the other in a clip and of one
- * kind (every byte zero, or else no MPEG pack): a damaged range. */
+ * kind (every byte zero, or else no MPEG pack): a damaged range. The disc's
+ * own reader names them where it can (DiscTitleSource.damage). */
 typedef struct DamageRange {
     int      clip;
     uint32_t first, last;           /* blocks of the clip */
@@ -152,6 +153,7 @@ typedef struct DamageRange {
     int      place;                 /* the title timeline's place at its start, -1 none */
     int64_t  disc_before, disc_after; /* the latest video time on the disc before it, the first after it
                                          (ticks, the clip's clock), AV_NOPTS_VALUE: none */
+    DiscDamage named;               /* as the disc's reader named it (kind 0: found here) */
 } DamageRange;
 
 struct DiscTitleReader {
@@ -190,7 +192,11 @@ struct DiscTitleReader {
     int64_t        unusable;
     DamageRange   *damage;          /**< the damaged ranges, in reading order */
     int            nb_damage, damage_cap;
-    int            damage_open;     /**< the last block read was left out: the last range may grow */
+    int            damage_open;     /**< the last block read was left out: the last range may grow (src->damage:
+                                         a run of blocks left out is being read) */
+    int            run_place;       /**< src->damage: the run's place on the title timeline (-1 none), */
+    int64_t        run_vlast;       /**< the latest video time before it, */
+    uint32_t       run_next;        /**< and the first block of the next range named in it */
     int            damage_wait;     /**< the ranges from this one on wait for the video time after them */
     int64_t        vlast;           /**< the latest video time read in the clip (ticks), AV_NOPTS_VALUE: none */
     struct { int id; int64_t packets, bytes; } unused[32];
@@ -233,13 +239,37 @@ static DiscTitleReader *reader_of(AVFormatContext *s)
     return ((DiscContext *)s->priv_data)->reader;
 }
 
+/* Room for one more damaged range. */
+static int damage_room(DiscTitleReader *r)
+{
+    if (r->nb_damage == r->damage_cap) {
+        int cap = r->damage_cap ? 2 * r->damage_cap : 16;
+        DamageRange *d = av_realloc_array(r->damage, cap, sizeof(*d));
+        if (!d)
+            return AVERROR(ENOMEM);
+        r->damage     = d;
+        r->damage_cap = cap;
+    }
+    return 0;
+}
+
+/* The place on the title timeline where damage starts: the next picture
+ * (none while the clip's packets wait for their time reference). */
+static int damage_place(DiscTitleReader *r, int *place)
+{
+    *place = -1;
+    if (r->pts_ref >= 0 && (*place = ff_disctl_title_place(r->rip)) < 0)
+        return *place;
+    return 0;
+}
+
 /* Block b of the clip being read, in buf, is not usable: it starts a damaged
  * range or makes the last one longer (the block after it, of the same kind). */
 static int damaged(AVFormatContext *s, uint32_t b, const uint8_t *buf)
 {
     DiscTitleReader *r = reader_of(s);
     DamageRange *g = r->nb_damage ? &r->damage[r->nb_damage - 1] : NULL;
-    int zeros = 1, place;
+    int zeros = 1, place, ret;
 
     for (int i = 0; i < r->bs && zeros; i++)
         zeros = !buf[i];
@@ -249,22 +279,49 @@ static int damaged(AVFormatContext *s, uint32_t b, const uint8_t *buf)
         g->last = b;
         return 0;
     }
-    /* a new range; its place on the title timeline: the next picture (none
-     * while the clip's packets wait for their time reference) */
-    place = -1;
-    if (r->pts_ref >= 0 && (place = ff_disctl_title_place(r->rip)) < 0)
-        return place;
-    if (r->nb_damage == r->damage_cap) {
-        int cap = r->damage_cap ? 2 * r->damage_cap : 16;
-        DamageRange *d = av_realloc_array(r->damage, cap, sizeof(*d));
-        if (!d)
-            return AVERROR(ENOMEM);
-        r->damage     = d;
-        r->damage_cap = cap;
-    }
+    if ((ret = damage_place(r, &place)) < 0 || (ret = damage_room(r)) < 0)
+        return ret;
     r->damage[r->nb_damage++] = (DamageRange){ r->clip, b, b, zeros, place, r->vlast, AV_NOPTS_VALUE };
     r->damage_open = 1;
     return 0;
+}
+
+/* src->damage: block b of the clip being read is not usable; the first of
+ * a run starts it (where the title is, the video time before it). */
+static int run_left_out(AVFormatContext *s, uint32_t b)
+{
+    DiscTitleReader *r = reader_of(s);
+    int ret;
+
+    av_log(s, AV_LOG_DEBUG, "%s %s: block %"PRIu32" is not usable: left out\n", r->src->clip_kind,
+           r->src->clip_name(s, r->clip), b);
+    if (r->damage_open)
+        return 0;
+    if ((ret = damage_place(r, &r->run_place)) < 0)
+        return ret;
+    r->run_vlast   = r->vlast;
+    r->run_next    = b;
+    r->damage_open = 1;
+    return 0;
+}
+
+/* src->damage: a range the disc's reader named (the next blocks of the run
+ * being read); 1 one taken, 0 none. */
+static int named_damage(AVFormatContext *s, int flush)
+{
+    DiscTitleReader *r = reader_of(s);
+    DiscDamage g;
+    int ret;
+
+    if ((ret = r->src->damage(s, r->clip, flush, &g)) <= 0)
+        return ret;
+    if ((ret = damage_room(r)) < 0)
+        return ret;
+    r->damage[r->nb_damage++] = (DamageRange){ r->clip, r->run_next, r->run_next + g.blocks - 1,
+                                               g.kind == DISC_DAMAGE_ZERO, r->run_place, r->run_vlast,
+                                               AV_NOPTS_VALUE, g };
+    r->run_next += g.blocks;
+    return 1;
 }
 
 /* The next block of the clip being read; EOF at the clip's end. */
@@ -291,8 +348,14 @@ static int ps_read(void *opaque, uint8_t *buf, int buf_size)
         r->blocks_done++;
         if (r->blocks_total)
             ((DiscContext *)s->priv_data)->progress = r->blocks_done * 10000 / r->blocks_total;
+        if (src->damage) {
+            /* the range this read ended, if any (blocks before it) */
+            int err = named_damage(s, 0);
+            if (err < 0)
+                return err;
+        }
         if (!ret) {
-            if ((ret = damaged(s, b, buf)) < 0)
+            if ((ret = src->damage ? run_left_out(s, b) : damaged(s, b, buf)) < 0)
                 return ret;
             r->skipped++;
             r->unusable++;
@@ -301,6 +364,12 @@ static int ps_read(void *opaque, uint8_t *buf, int buf_size)
         r->damage_open = 0;
         return r->bs;
     }
+    /* the clip's reading ends: the range being read too */
+    while (src->damage && (ret = named_damage(s, 1)) > 0)
+        ;
+    if (src->damage && ret < 0)
+        return ret;
+    r->damage_open = 0;
     r->clip_done = 1;
     return AVERROR_EOF;
 }
@@ -1098,6 +1167,27 @@ static double mb(int64_t bytes)
     return (double)(bytes * 10 / 1048576) / 10;
 }
 
+/* Where a damaged range lies: the files holding its first and last block
+ * and the byte offsets there (as the disc's reader named them, else from
+ * src->block_place); 0 when not known. */
+static int damage_where(AVFormatContext *s, const DamageRange *g, char *file0, char *file1, int size,
+                        int64_t *off0, int64_t *off1)
+{
+    const DiscTitleSource *src = reader_of(s)->src;
+
+    if (g->named.kind) {
+        if (!g->named.file[0] || !g->named.last_file[0])
+            return 0;
+        snprintf(file0, size, "%s", g->named.file);
+        snprintf(file1, size, "%s", g->named.last_file);
+        *off0 = g->named.offset;
+        *off1 = g->named.last_offset;
+        return 1;
+    }
+    return src->block_place && src->block_place(s, g->clip, g->first, file0, size, off0) >= 0 &&
+           src->block_place(s, g->clip, g->last, file1, size, off1) >= 0;
+}
+
 /* The damaged ranges of the title, one line each (where they lie on the
  * disc, what they are, where the title passes them), for the caller too:
  * metadata damaged_ranges, damaged_bytes and damage (the lines). */
@@ -1121,8 +1211,7 @@ static int report_damage(AVFormatContext *s)
 
         bytes += n * r->bs;
         /* where: the files holding its first and last block */
-        if (src->block_place && src->block_place(s, g->clip, g->first, file0, sizeof(file0), &off0) >= 0 &&
-            src->block_place(s, g->clip, g->last, file1, sizeof(file1), &off1) >= 0) {
+        if (damage_where(s, g, file0, file1, sizeof(file0), &off0, &off1)) {
             if (!strcmp(file0, file1))
                 snprintf(where, sizeof(where), "%s %.1f-%.1f MB", file0, mb(off0),
                          mb(off1 + r->bs));

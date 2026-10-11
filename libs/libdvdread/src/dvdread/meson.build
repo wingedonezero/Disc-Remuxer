@@ -12,6 +12,7 @@ dvdread_api_headers = files(
     'ifo_types.h',
     'nav_print.h',
     'nav_read.h',
+    'vob_read.h',
     'nav_types.h',
 )
 

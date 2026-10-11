@@ -29,6 +29,7 @@
 #include "libavutil/bprint.h"
 
 #include <dvdread/ifo_types.h>
+#include <dvdread/vob_read.h>
 
 #include "discio.h"
 #include "discinfo.h"
@@ -154,6 +155,8 @@ typedef struct DVDIfo {
     int          suspicious;            /**< 0 not decided, 1 its titles are left out, 2 they are not */
 
     /* reading (dvd_read.c) */
+    dvd_vob_reader_t *vobs;             /**< libdvdread's reading of its title VOBs (NULL: not opened yet) */
+    int          vobs_failed;           /**< they cannot be opened */
     int          css_state;             /**< CSS title key: 0 not looked for yet, 1 found, -1 none */
     uint8_t      css_key[5];
 } DVDIfo;
@@ -229,10 +232,10 @@ int  ff_dvd_ifo_tables(DVDDisc *d, DVDIfo *f);
  *  with at most n entries. 0, or < 0 when it cannot be read. */
 int  ff_dvd_ifo_raw_table(DVDDisc *d, DVDIfo *f, uint32_t sector, int last_byte_at, const char *table,
                           DVDTable *t);
-/** Where sector of title set f's title VOBs lies, for the log: the VOB
- *  file's name (VTS_nn_k.VOB) and the byte offset in it; < 0 when no title
- *  VOB file holds it. */
-int  ff_dvd_title_vob_place(DVDDisc *d, DVDIfo *f, uint32_t sector, char *file, int size, int64_t *offset);
+/** A file of title set index (0: VIDEO_TS) by its extension ("IFO", "BUP",
+ *  "VOB"; part: the title VOB number, 0 for the IFO / BUP / menu VOB),
+ *  through the disc layer's file system. */
+int  ff_dvd_set_file(DVDDisc *d, int index, int part, const char *ext, DiscIOFile **out);
 void ff_dvd_ifo_free(DVDIfo **ifo);
 /** Bytes of the IFO from sector on, as libdvdread chose and read them:
  *  from the whole-IFO read when there is one, else per 2048-byte piece from
@@ -440,17 +443,27 @@ int   ff_dvd_cell_check(DVDDisc *d, int vts, int pgcn, int cell, int mode);
 char *ff_dvd_titles_dump(const DVDTitleList *l);
 
 /* ---- dvd_read.c ---- */
-/** Sector of title set f's title VOBs, checked (CSS descrambled, see
- *  dvd_read.c): 1 read, 0 left out (no MPEG-2 pack with a packet), < 0
- *  cannot be read (a read error, or scrambled without a title key). */
+/** A reading of title set f's title VOBs of its own (libdvdread's, with its
+ *  own damaged ranges); NULL when they cannot be opened.
+ *  DVDCloseTitleVOBs_rec() it. */
+dvd_vob_reader_t *ff_dvd_title_vobs_open(DVDDisc *d, DVDIfo *f);
+/** Sector of title set f's title VOBs, read and checked by libdvdread and
+ *  CSS descrambled (see dvd_read.c): 1 read, 0 left out (damaged: no MPEG-2
+ *  pack with a packet), < 0 cannot be read (a read error, or scrambled
+ *  without a title key). vr: a reading of its own (ff_dvd_title_vobs_open()),
+ *  a damaged range that this read ends into *ended (may be NULL); NULL: f's
+ *  own reading (its ranges are not given back). */
+int      ff_dvd_title_vob_read(DVDDisc *d, DVDIfo *f, dvd_vob_reader_t *vr, uint32_t sector, uint8_t *buf,
+                               dvd_vob_damage_t *ended);
+/** ff_dvd_title_vob_read() on f's own reading. */
 int      ff_dvd_title_vob_sector(DVDDisc *d, DVDIfo *f, uint32_t sector, uint8_t *buf);
 /** The sectors of a segment. */
 uint32_t ff_dvd_segment_blocks(const DVDSegment *g);
+/** Sector block of segment seg of title t, as ff_dvd_title_vob_read(). */
+int      ff_dvd_segment_read_vobs(DVDDisc *d, const DVDTitle *t, dvd_vob_reader_t *vr, int seg, uint32_t block,
+                                  uint8_t *buf, dvd_vob_damage_t *ended);
 /** Sector block of segment seg of title t, as ff_dvd_title_vob_sector(). */
 int      ff_dvd_segment_read(DVDDisc *d, const DVDTitle *t, int seg, uint32_t block, uint8_t *buf);
-/** Where block of segment seg of title t lies, as ff_dvd_title_vob_place(). */
-int      ff_dvd_segment_place(DVDDisc *d, const DVDTitle *t, int seg, uint32_t block, char *file, int size,
-                              int64_t *offset);
 
 /* ---- dvd_streams.c ---- */
 /** The probe of title t's streams (its largest segment read from the

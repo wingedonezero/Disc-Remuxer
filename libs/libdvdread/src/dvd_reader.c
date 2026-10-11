@@ -1831,6 +1831,11 @@ int DVDStatFile_( dvd_reader_t *ctx, const char *filename, dvdstat_t *st )
   return ctx->fs->stat( ctx->fs, full_path, st );
 }
 
+int DVDFindFile_( dvd_reader_t *ctx, const char *filename, char *full_path )
+{
+  return ctx && ctx->fs && findDVDFile( ctx, filename, full_path ) ? 0 : -1;
+}
+
 int64_t DVDFileTell_( dvd_file_t *dvd_file )
 {
   return dvd_file ? (int64_t) dvd_file->seek_pos : -1;

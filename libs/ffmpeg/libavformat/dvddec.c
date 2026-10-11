@@ -60,6 +60,8 @@ typedef struct DVDDemuxContext {
 
     /* the opened title, as the title reader gets it (DiscContext.src) */
     const DVDTitle *title;
+    dvd_vob_reader_t *vobs;             /* libdvdread's reading of its title VOBs, for the title reader */
+    dvd_vob_damage_t ended;             /* the damaged range its latest read ended (nb_sectors 0: none) */
     int64_t        *chapter_times;
     int            *chapter_clips;
     int64_t        *chapter_offsets;
@@ -80,13 +82,27 @@ static uint32_t clip_blocks(AVFormatContext *s, int k)
 static int read_block(AVFormatContext *s, int k, uint32_t block, uint8_t *buf)
 {
     DVDDemuxContext *c = ff_disc_part(s);
-    return ff_dvd_segment_read(&c->disc, c->title, k, block, buf);
+    return ff_dvd_segment_read_vobs(&c->disc, c->title, c->vobs, k, block, buf, &c->ended);
 }
 
-static int block_place(AVFormatContext *s, int k, uint32_t block, char *file, int size, int64_t *offset)
+/* The damaged ranges as libdvdread names them: the one the latest read
+ * ended; flush: the one being read ends too. */
+static int damage(AVFormatContext *s, int k, int flush, DiscDamage *out)
 {
     DVDDemuxContext *c = ff_disc_part(s);
-    return ff_dvd_segment_place(&c->disc, c->title, k, block, file, size, offset);
+    const dvd_vob_damage_t *g = &c->ended;
+
+    if (!g->nb_sectors && flush)
+        DVDEndTitleVOBDamage_rec(c->vobs, &c->ended);
+    if (!g->nb_sectors)
+        return 0;
+    *out = (DiscDamage){ g->kind == DVD_DAMAGE_ZERO ? DISC_DAMAGE_ZERO : DISC_DAMAGE_NO_MPEG, g->nb_sectors };
+    snprintf(out->file, sizeof(out->file), "%s", g->file);
+    snprintf(out->last_file, sizeof(out->last_file), "%s", g->last_file);
+    out->offset      = g->offset;
+    out->last_offset = g->last_offset;
+    c->ended.nb_sectors = 0;
+    return 1;
 }
 
 /* Where the disc starts segment k: the presentation start of its first
@@ -96,9 +112,12 @@ static int block_place(AVFormatContext *s, int k, uint32_t block, char *file, in
  * pack or cannot be read. */
 static int64_t clip_start(AVFormatContext *s, int k)
 {
+    DVDDemuxContext *c = ff_disc_part(s);
     uint8_t b[DVD_SECTOR];
 
-    if (read_block(s, k, 0, b) <= 0 || AV_RB32(b) != 0x1ba || AV_RB32(b + 0x26) != 0x1bf || b[0x2c])
+    /* (on the title set's own reading: the title reader's ranges stay its own) */
+    if (ff_dvd_segment_read(&c->disc, c->title, k, 0, b) <= 0 || AV_RB32(b) != 0x1ba ||
+        AV_RB32(b + 0x26) != 0x1bf || b[0x2c])
         return AV_NOPTS_VALUE;
     return AV_RB32(b + 0x2d + 0x0c);
 }
@@ -110,6 +129,8 @@ static void close_title(AVFormatContext *s)
     av_freep(&c->chapter_times);
     av_freep(&c->chapter_clips);
     av_freep(&c->chapter_offsets);
+    DVDCloseTitleVOBs_rec(c->vobs);
+    c->vobs  = NULL;
     c->title = NULL;
 }
 
@@ -385,6 +406,9 @@ static int open_title(AVFormatContext *s, int i, int part, int *second_view)
     int nb_ch = 0;
 
     c->title = t;
+    memset(&c->ended, 0, sizeof(c->ended));
+    if (!(c->vobs = ff_dvd_title_vobs_open(&c->disc, t->vts)))
+        return AVERROR(EIO);
     if (!(c->chapter_times = av_calloc(FFMAX(t->nb_chapters, 1), sizeof(*c->chapter_times))) ||
         !(c->chapter_clips = av_calloc(FFMAX(t->nb_chapters, 1), sizeof(*c->chapter_clips))) ||
         !(c->chapter_offsets = av_calloc(FFMAX(t->nb_chapters, 1), sizeof(*c->chapter_offsets))))
@@ -404,7 +428,7 @@ static int open_title(AVFormatContext *s, int i, int part, int *second_view)
         .clip_name     = clip_name,
         .clip_blocks   = clip_blocks,
         .read_block    = read_block,
-        .block_place   = block_place,
+        .damage        = damage,
         .clip_start    = clip_start,
         .clip_start_name = "its first VOBU's start time (navigation pack)",
         .lpcm_header   = 3,

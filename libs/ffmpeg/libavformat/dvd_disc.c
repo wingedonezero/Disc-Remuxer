@@ -45,6 +45,7 @@
 
 #include <dvdread/dvd_reader.h>
 #include <dvdread/ifo_read.h>
+#include <dvdread/vob_read.h>
 
 #include "libavutil/avstring.h"
 #include "libavutil/error.h"
@@ -401,11 +402,16 @@ int ff_dvd_disc_open(void *log, DiscIOFS *fs, const char *dir, int folder, const
 void ff_dvd_disc_free(DVDDisc *d)
 {
     /* libdvdread's handles, then libdvdread (its callbacks read the IFOs below) */
-    for (int i = 0; i < d->nb_ifos; i++)
+    for (int i = 0; i < d->nb_ifos; i++) {
+        if (d->ifos[i] && d->ifos[i]->vobs) {
+            DVDCloseTitleVOBs_rec(d->ifos[i]->vobs);
+            d->ifos[i]->vobs = NULL;
+        }
         if (d->ifos[i] && d->ifos[i]->rec) {
             ifoClose(d->ifos[i]->rec);
             d->ifos[i]->rec = NULL;
         }
+    }
     if (d->reader)
         DVDClose(d->reader);
     d->reader = NULL;

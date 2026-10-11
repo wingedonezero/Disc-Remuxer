@@ -131,7 +131,20 @@ typedef struct
   const uint8_t *bytes;     /* the field's bytes as read, NULL: none */
   size_t         nb_bytes;
   const char    *text;      /* what was found and what was done */
+  int64_t        nb_sectors; /* damaged data: title VOB sectors from sector on, 0: none */
+  int            damage;    /* such a range's kind (dvd_damage_t) */
 } dvd_report_t;
+
+/**
+ * What a damaged range of title VOB sectors is (vob_read.h): sectors left
+ * out because they hold no stream data the demuxer can use.
+ */
+typedef enum
+{
+    DVD_DAMAGE_NONE,
+    DVD_DAMAGE_ZERO,      /* every byte of the sector is zero */
+    DVD_DAMAGE_NO_PACK,   /* no MPEG-2 pack header followed by a packet start code */
+} dvd_damage_t;
 
 typedef struct
 {

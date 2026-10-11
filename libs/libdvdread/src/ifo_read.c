@@ -145,7 +145,7 @@ static void ifo_check_failed(struct ifo_handle_private_s *ifop, const char *func
   uint8_t raw[16];
   size_t nb_raw = 0;
   int64_t off = p ? ifo_offset(ifop, p) : -1;
-  dvd_report_t r;
+  dvd_report_t r = { 0 };
 
   /* the field's bytes as on the disc (the read ones may be converted in
    * place already): read again, the read position put back */

@@ -169,9 +169,14 @@ def test_sectors_that_are_no_pack_are_left_out_and_others_used_as_they_are(tmp_p
     assert read(d, 1) == (1, bytes(plain))
     assert read(d, 2) == (1, bytes(padding))
     assert read(d, 3)[0] == 0 and read(d, 5)[0] == 0      # MPEG-1 pack; a zero sector
-    assert logged("VTS_01: title VOB sector 3 is no MPEG-2 pack with a packet: left out")
+    # libdvdread says each damaged range once, when it ends (reading sector 5
+    # ends sector 3's; closing ends sector 5's)
+    assert logged("VTS_01_1.VOB: title VOB sectors 3-3 (VTS_01_1.VOB bytes 6144-8191): no MPEG-2 pack with a "
+                  "packet: left out")
+    assert not logged("title VOB sectors 5-5")
     assert d.ifo(1).css_state == 0, "no scrambled sector read"
     d.close()
+    assert logged("VTS_01_1.VOB: title VOB sectors 5-5 (VTS_01_1.VOB bytes 10240-12287): every byte is zero: left out")
 
 
 def test_a_title_set_inside_another_ones_title_vobs_takes_its_key():
