@@ -132,6 +132,18 @@ def test_a_program_chain_failing_the_check_without_the_navigation_s_cells_is_lef
     assert logged("title 1: program chain 2 left out: it fails the program chain check (reason 3)")
 
 
+def test_a_program_chain_with_a_broken_program_map_fails_the_check(tmp_path):
+    # chain 2's program map: entries out of order (reason 6), then one past
+    # its cells (reason 5); the navigation recorded chain 1 only
+    for programs, reason in (([2, 1], 6), ([1, 3], 5)):
+        pgcs = [Pgc(cells=[c(0, 9, 5, 1)]), Pgc(cells=[c(10, 14, 5, 1), c(15, 19, 5, 1)], programs=programs)]
+        navs = vobus(0, 9, 5) + vobus(10, 14, 5) + vobus(15, 19, 5)
+        folder = build(tmp_path, pgcs, [[(1, 1), (2, 1)]], navs, 20)
+        ts = run(folder, [("A1", 1, 1, [1])])
+        assert [t["name"] for t in ts] == ["1"], programs
+        assert logged(f"title 1: program chain 2 left out: it fails the program chain check (reason {reason})")
+
+
 def test_a_chapter_before_the_previous_one_is_dropped(tmp_path):
     p = Pgc(cells=[c(0, 9, 5, 1), c(10, 19, 5, 1)], programs=[1, 2])
     folder = build(tmp_path, [p], [[(1, 2), (1, 1)]], vobus(0, 9, 5) + vobus(10, 19, 5), 20)

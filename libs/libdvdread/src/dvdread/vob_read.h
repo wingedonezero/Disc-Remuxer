@@ -311,6 +311,23 @@ DVDREAD_API int DVDCellCheckFailed_rec( dvd_vob_reader_t *, int pgcn, int cell )
  *  unit, each unit's first VOBU starting it. */
 DVDREAD_API int DVDIlvuWalk_rec( dvd_vob_reader_t *, uint32_t from, uint32_t to );
 
+/**
+ * The program chain check: the chain is broken or a decoy, the reason, -1
+ * when it passes. 0 no cells; with title VOBs shared with another title set
+ * (shared, the caller's answer from the title table): 1 a new timeline at
+ * every cell after the first and 12 cells or more, 2 the same, out of
+ * order on the disc and 7 cells or more (the last cell left out of the
+ * order when rejected, or a short cell of another VOB starting it); 4
+ * cells or more: 3 no playback time in the cells not rejected (quick), 4
+ * fewer than 50 sectors per second; 5 a program map entry 0 or past the
+ * cells, 6 entries out of order; programs 2 on (3 programs or more), cells
+ * played seamlessly without cell commands: 7 angle blocks joined to a cell
+ * whose places do not follow each other, 8 a plain cell and an interleaved
+ * one that do not follow each other nor by interleaved units, 9 (shared)
+ * an interleaved angle block whose cells' places disagree.
+ */
+DVDREAD_API int DVDPgcRejected_rec( dvd_vob_reader_t *, int pgcn, int shared );
+
 /** Closes the title VOBs; a damaged range still open is reported. */
 DVDREAD_API void DVDCloseTitleVOBs_rec( dvd_vob_reader_t * );
 

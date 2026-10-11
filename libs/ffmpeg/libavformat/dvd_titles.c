@@ -202,45 +202,6 @@ static int next_cell(Titles *T, const DVDPgc *p, int i)
     return -1;
 }
 
-/* the cell of an interleaved angle block lying first (highest 0) / last
- * (highest 1) on the disc */
-static int angle_block_extreme(Titles *T, const DVDPgc *p, int i, int highest)
-{
-    uint8_t f = FLAGS(&p->cells[i]);
-    int first, last, best = i;
-
-    if ((f & 0x34) != 0x14)
-        return i;
-    if (BLOCK_MODE(f) == 1) {
-        first = i;
-        for (last = i + 1; last < p->nr_of_cells && BLOCK_MODE(FLAGS(&p->cells[last])) == 2; last++)
-            ;
-        if (last >= p->nr_of_cells || BLOCK_MODE(FLAGS(&p->cells[last])) != 3) {
-            av_log(T->d->log, AV_LOG_DEBUG, "DVD: program chain %d: the angle block of cell %d has no end\n",
-                   p->number + 1, i + 1);
-            return i;
-        }
-    } else if (BLOCK_MODE(f) == 3) {
-        last = i;
-        for (first = i - 1; first >= 0 && BLOCK_MODE(FLAGS(&p->cells[first])) == 2; first--)
-            ;
-        if (first < 0 || BLOCK_MODE(FLAGS(&p->cells[first])) != 1) {
-            av_log(T->d->log, AV_LOG_DEBUG, "DVD: program chain %d: the angle block of cell %d has no start\n",
-                   p->number + 1, i + 1);
-            return i;
-        }
-    } else {
-        av_log(T->d->log, AV_LOG_DEBUG, "DVD: program chain %d: cell %d is inside an angle block\n",
-               p->number + 1, i + 1);
-        return i;
-    }
-    for (int k = first; k <= last; k++)
-        if (highest ? p->cells[k].first_sector > p->cells[best].first_sector
-                    : p->cells[k].first_sector < p->cells[best].first_sector)
-            best = k;
-    return best;
-}
-
 /* ---- VOBUs of a cell, cell checks: libdvdread (vob_read.h) ---- */
 
 /* The cell's title set's own reading (NULL: its title VOBs cannot be read). */
@@ -304,136 +265,15 @@ static int ilvu_walk(Titles *T, DVDIfo *f, uint32_t from, uint32_t to)
     return vr && DVDIlvuWalk_rec(vr, from, to);
 }
 
-/* ---- the program chain check ---- */
-
-static int pair_ok(const DVDCell *p, const DVDCell *q)
-{
-    const DVDCell *lo, *hi;
-    uint32_t end;
-
-    if (p->first_sector == q->first_sector && p->last_vobu_start_sector == q->last_vobu_start_sector &&
-        p->last_sector == q->last_sector)
-        return 1;
-    if ((p->first_sector < q->first_sector && q->first_sector < p->last_vobu_start_sector) ||
-        (q->first_sector < p->first_sector && p->first_sector < q->last_vobu_start_sector))
-        return 1;
-    if (p->last_sector == p->first_ilvu_end_sector && q->last_sector == q->first_ilvu_end_sector)
-        return 1;
-    lo = p->first_sector <= q->first_sector ? p : q;
-    hi = lo == p ? q : p;
-    end = FFMAX(lo->last_sector, lo->first_ilvu_end_sector);
-    if (p->last_sector < p->first_ilvu_end_sector) {
-        if (q->last_sector < q->first_ilvu_end_sector && end + 1 <= hi->first_sector)
-            return 1;
-        return 0;
-    }
-    return !p->first_ilvu_end_sector && !q->first_ilvu_end_sector && end + 1 <= hi->first_sector;
-}
-
-/* an interleaved angle block starting at cell x whose cells' places agree */
-static int angle_block_ok(const DVDPgc *p, int x)
-{
-    int n = 1, k = x;
-
-    for (;;) {
-        uint8_t g;
-        if (++k >= p->nr_of_cells || (FLAGS(&p->cells[k]) & 0x35) != 0x14)
-            return 0;
-        g = BLOCK_MODE(FLAGS(&p->cells[k]));
-        n++;
-        if (g == 3)
-            break;
-        if (g != 2)
-            return 0;
-    }
-    for (int a = 0; a < n; a++)
-        for (int b = a + 1; b < n; b++)
-            if (!pair_ok(&p->cells[x + a], &p->cells[x + b]))
-                return 0;
-    return 1;
-}
+/* ---- the program chain check: libdvdread (vob_read.h) ---- */
 
 /* The program chain is broken or a decoy: the reason (0-9), -1 when it
- * passes. */
+ * passes (whether the title set's title VOBs share sectors with another's
+ * is the title table's, handed in). */
 static int pgc_rejected(Titles *T, DVDIfo *f, DVDPgc *p)
 {
-    int n = p->nr_of_cells, ov;
-
-    if (!n)
-        return 0;
-    ov = ff_dvd_title_vobs_overlap(T->d, f->index);
-    if (ov && n >= 2) {
-        int all = 1, n2 = n, mono = 1;
-        for (int k = 1; k < n && all; k++)
-            all = FLAGS(&p->cells[k]) & 2;
-        if (all && n >= 12)
-            return 1;
-        if (n > 3 && (cell_rejected(T, f, p, n - 1, 0, n - 2) ||
-                      ((p->cells[n - 1].playback_time & 0xffffff00) < 0x301 &&
-                       p->cells[n - 1].vob_id_nr != p->cells[n - 2].vob_id_nr && p->cells[n - 1].cell_nr == 1)))
-            n2 = n - 1;
-        for (int k = 1; k < n2 && mono; k++)
-            mono = p->cells[k - 1].first_sector <= p->cells[k].first_sector;
-        if (all && !mono && n >= 7)
-            return 2;
-    }
-    if (n >= 4) {
-        uint32_t secs = 0, sectors = 0;
-        for (int k = 0; k < n; k++) {
-            if (!cell_rejected(T, f, p, k, 1, k - 1))
-                secs += bcd_seconds(p->cells[k].playback_time);
-            sectors += p->cells[k].last_sector - p->cells[k].first_sector + 1;
-        }
-        if (!secs)
-            return 3;
-        if (sectors / secs < 50)
-            return 4;
-    }
-    if (!p->nr_of_programs)
-        return -1;
-    if (!p->program_map[0] || p->program_map[0] > n)
-        return 5;
-    for (int k = 1; k < p->nr_of_programs; k++) {
-        if (!p->program_map[k] || p->program_map[k] > n)
-            return 5;
-        if (p->program_map[k] < p->program_map[k - 1])
-            return 6;
-    }
-    if (p->nr_of_programs < 3)
-        return -1;
-    /* programs 2.. : seamless cells without cell commands follow each other on the disc */
-    for (int pg = 1; pg < p->nr_of_programs; pg++) {
-        for (int a = p->program_map[pg] - 1, b = a + 1; b < n; a++, b++) {
-            uint8_t fa = FLAGS(&p->cells[a]), fb = FLAGS(&p->cells[b]), fx;
-            int x = a, y = b;
-            if (!(fb & 8) || CMD_NR(&p->cells[a]) || CMD_NR(&p->cells[b]))
-                break;
-            fx = fa;
-            if (!((fa | fb) & 1)) {
-                int join;
-                if (!(fa & 4))
-                    join = !(fa & 0x30) && fa < 0x40 &&
-                           ((!(fb & 4) && !(fb & 0x30) && fb < 0x40) ||
-                            ((fb & 4) && (fb & 0x30) == 0x10 && (fb & 0xc0) == 0x40));
-                else
-                    join = (fa & 0x30) == 0x10 && fa >= 0xc0 && !(fb & 4) && !(fb & 0x30) && fb <= 0x3f;
-                if (join) {
-                    x = angle_block_extreme(T, p, a, 1);
-                    y = angle_block_extreme(T, p, b, 0);
-                    if (p->cells[x].last_sector + 1 != p->cells[y].first_sector)
-                        return 7;
-                    fx = FLAGS(&p->cells[x]);
-                }
-            }
-            if (fx < 0x10 && ((fx & 4) ? (FLAGS(&p->cells[y]) & 0xf4) == 0 : (FLAGS(&p->cells[y]) & 0xf4) == 4) &&
-                p->cells[x].last_sector + 1 != p->cells[y].first_sector &&
-                !ilvu_walk(T, f, p->cells[x].last_sector + 1, p->cells[y].first_sector))
-                return 8;
-            if (ov && (FLAGS(&p->cells[x]) & 0xf5) == 0x54 && !angle_block_ok(p, x))
-                return 9;
-        }
-    }
-    return -1;
+    dvd_vob_reader_t *vr = reading(T, f);
+    return vr ? DVDPgcRejected_rec(vr, p->number, ff_dvd_title_vobs_overlap(T->d, f->index)) : 0;
 }
 
 /* ---- a title's cell list ---- */
