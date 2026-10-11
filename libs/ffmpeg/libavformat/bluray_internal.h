@@ -562,6 +562,8 @@ typedef struct BlurayDisc {
     char           *name;            /**< disc name (av_free()), or NULL */
     char           *name_eng;        /**< its English name when another language was chosen */
     char            name_lang[4];    /**< language of the name's disc library file */
+    char            meta_lang[16][4];/**< the languages of its disc library files (bdmt_<lang>.xml) */
+    int             nb_meta_lang;
     BlurayClip     *clips;           /**< in listing order; clips that do not load are left out */
     int             nb_clips;
     BlurayPlaylist *playlists;

@@ -33,7 +33,8 @@ def packets(pid, chunks, stream_id, step, start=900, ext=None):
     return out
 
 
-def disc(tmp_path):
+def disc(tmp_path, meta=()):
+    """meta: the languages of disc library files (BDMV/META/DL/bdmt_<lang>.xml) to put on it."""
     pgs = [display_set([obj(0, forced=True), obj(1)]), display_set([obj(2)], 2)]
     data = bd.source_units(packets(0x1011, [M2V[i:i + 60000] for i in range(0, len(M2V), 60000)], 0xe0, 3003) +
                            packets(0x1100, [AC3[i:i + 768] for i in range(0, len(AC3), 768)], 0xfd, 2880, ext=0x71) +
@@ -47,6 +48,8 @@ def disc(tmp_path):
                 pg=[Stream(0x1200, 0x90, b"eng")])
     files = bd.bdmv(clips, {1: bd.mpls([item])})
     files["BDMV/STREAM/00001.m2ts"] = data
+    for lang in meta:
+        files[f"BDMV/META/DL/bdmt_{lang}.xml"] = bd.bdmt("A name", lang)
     return bd.write(tmp_path / "disc", files)
 
 
@@ -120,3 +123,21 @@ def test_a_video_language_that_is_no_language_code_stops_the_run(tmp_path):
     p = subprocess.run([*PROGRAM, "--set", "output.video_language=klingon", "info", str(disc(tmp_path))],
                        capture_output=True, text=True)
     assert p.returncode != 0 and "video_language 'klingon' is no ISO 639 language code" in p.stdout + p.stderr
+
+
+def video_language(tmp_path, meta, *opts):
+    p = subprocess.run([*PROGRAM, *opts, "--json", "info", str(disc(tmp_path, meta))], capture_output=True, text=True)
+    recs = [json.loads(l) for l in p.stdout.splitlines() if l.startswith("{")]
+    d = next(r for r in recs if r.get("type") == "disc")
+    t = next(r for r in recs if r.get("type") == "title")
+    return t["tracks"][0]["language"], d["properties"]["Market language"]
+
+
+def test_the_video_takes_the_disc_s_market_language_else_english(tmp_path):
+    # market (the default): the languages of the disc library files; one: that
+    # one; several in no order: English when it is among them; none: English
+    assert video_language(tmp_path / "jpn", ["jpn"]) == ("jpn", "jpn (its disc library files)")
+    assert video_language(tmp_path / "both", ["jpn", "eng"])[0] == "eng"
+    assert video_language(tmp_path / "none", []) == ("eng", "none named")
+    # a code is every disc's
+    assert video_language(tmp_path / "set", ["jpn"], "--set", "output.video_language=fra")[0] == "fre"

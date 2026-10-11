@@ -47,9 +47,11 @@ static const Setting registry[] = {
       "How a title's output files are named. {NAME1} the title's name, {CMNT1} its comment, {DT} its "
       "date, {N2} its number with two digits; {prefix:VAR} writes the prefix only after other text. "
       "Empty: {NAME1}{-:CMNT1}{-:DT}{title:+DFLT}{_t:N2}.", 0, SET_AT_RIP },
-    { "output", "video_language", SET_TEXT, "eng", 0, 0, NULL,
-      "The language given to a title's video, which the disc formats never name (an ISO 639 code, e.g. eng, "
-      "fra, jpn): shown in the title list and written into the video file's name. Empty: none (und).",
+    { "output", "video_language", SET_TEXT, "market", 0, 0, NULL,
+      "The language given to a title's video, which the disc formats never name: market (the disc's market "
+      "language: a Blu-ray's disc library files, a DVD's menus, an HD DVD's title set; when there is none, "
+      "eng), or an ISO 639 code (eng, fra, jpn, ...) for every disc. Shown in the title list and written into "
+      "the video file's name. Empty: none (und).",
       0, SET_AT_OPEN },
     { "output", "split_joined_titles", SET_BOOL, "false", 0, 0, NULL,
       "A title that plays whole stream files back to back (the episodes of a series one after another in one "

@@ -487,6 +487,7 @@ static int bluray_load(AVFormatContext *s)
     if ((ret = ff_bluray_titles_build(s, b, d->opt_min_length)) < 0)
         return ret;
     d->info.name      = b->name;
+    ff_disc_set_market(s, (const char (*)[4])b->meta_lang, b->nb_meta_lang, 0, "its disc library files");
     if (ff_disc_add_prop(s, "Kind", "%s", b->parent_fs ? "AVCHD" : b->bdav ? "BDAV (recorded)" : "BDMV") < 0 ||
         (b->name && b->name_lang[0] && ff_disc_add_prop(s, "Name's language", "%s", b->name_lang) < 0) ||
         (b->name_eng && (!b->name || strcmp(b->name_eng, b->name)) &&

@@ -338,8 +338,10 @@ line each, so a run can be compared event by event with an expected list.
   that is a language code as the track's language, the words forced and
   commentary as those flags, and `delay <number>` as the delay. A language
   the disc does not name is `und`; the video, which no disc format names a
-  language for, gets setting `output.video_language` (default `eng`, as the
-  reference program gives video). Codec words and layout names are the
+  language for, gets setting `output.video_language`: by default `market`,
+  the disc's market language (a Blu-ray's disc library files, a DVD's menus,
+  an HD DVD's title set default language; several in no order: English when
+  among them), English when the disc names none; or a fixed code. Codec words and layout names are the
   ones the reference's info output uses (`DD`, `DDplus`, `TrueHD`,
   `5.1(side)`, ...; the layout from FFmpeg's decoder on the first frames).
   LPCM leaves as little-endian PCM in a RIFF WAVE file (EXTENSIBLE with the

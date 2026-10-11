@@ -409,6 +409,35 @@ static int open_title(AVFormatContext *s, int i, int part, int *second_view)
     return 0;
 }
 
+/* The disc's menu languages, in the order its menu language units list
+ * them (VMGM_PGCI_UT, else the first title set's VTSM_PGCI_UT): each unit's
+ * lang_code (ISO 639-1). */
+static void menu_languages(AVFormatContext *s, DVDDisc *disc)
+{
+    char codes[32][4];
+    int n = 0;
+
+    for (int i = 0; i < disc->nb_ifos && !n; i++) {
+        DVDIfo *f = disc->ifos[i];
+        uint8_t p[DVD_SECTOR];
+        uint32_t sector;
+
+        if (!f || f->failed || !(sector = ff_dvd_header32(f, i ? 0xD0 : 0xC8)) ||
+            ff_dvd_ifo_read(disc, f, sector, p, sizeof(p)) < 0)
+            continue;
+        for (int k = 0; k < FFMIN(AV_RB16(p), 32) && 8 + 8 * k + 2 <= DVD_SECTOR; k++) {
+            const uint8_t *lu = p + 8 + 8 * k;
+            if (lu[0] >= 'a' && lu[0] <= 'z' && lu[1] >= 'a' && lu[1] <= 'z') {
+                codes[n][0] = lu[0];
+                codes[n][1] = lu[1];
+                codes[n][2] = 0;
+                n++;
+            }
+        }
+    }
+    ff_disc_set_market(s, (const char (*)[4])codes, n, 1, "its menus");
+}
+
 static int dvd_load(AVFormatContext *s)
 {
     DiscContext *d = s->priv_data;
@@ -430,6 +459,7 @@ static int dvd_load(AVFormatContext *s)
     }
     d->info.label = c->disc.volume_name;
     d->info.name  = c->disc.text_name;
+    menu_languages(s, &c->disc);
 
     /* the titles: the navigation played (not for trimmed cells), then the
      * title list from it (a failed scan leaves no results) */

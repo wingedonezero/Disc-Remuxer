@@ -320,6 +320,11 @@ static int hddvd_load(AVFormatContext *s)
         return AVERROR(ENOMEM);
     if ((ret = ff_hddvd_titles_plan(s, c->fs, c->vti, c->xpls, c->nb_xpls, d->opt_min_length, &c->plan)) < 0)
         return ret;
+    if (c->plan->nb_titles && c->plan->titles[0].lang) {
+        char lang[1][4];
+        av_strlcpy(lang[0], c->plan->titles[0].lang, sizeof(lang[0]));
+        ff_disc_set_market(s, (const char (*)[4])lang, 1, 1, "its title set's default language");
+    }
     return ff_hddvd_tracks_build(s, c->fs, c->aacs, c->vti, c->xpls, c->nb_xpls, c->plan);
 }
 
