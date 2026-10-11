@@ -27,6 +27,7 @@
 #include <inttypes.h>
 #include <string.h>
 
+#include <stdarg.h>
 #include "bswap.h"
 #include "dvdread/ifo_types.h"
 #include "dvdread/ifo_read.h"
@@ -59,14 +60,19 @@
 
 static const uint8_t my_friendly_zeros[2048];
 
+/* Returns the bytes read, 0 when not all of them could be read: every
+ * caller tests for 0, while DVDReadBytes() gives a negative value for a read
+ * error (which passed as success). */
 static ssize_t ifo_read(struct ifo_handle_private_s *ifop, void *data, size_t size)
 {
   unsigned int k = ifop->nb_span++ % (sizeof(ifop->span) / sizeof(ifop->span[0]));
+  ssize_t ret;
 
   ifop->span[k].data = data;
   ifop->span[k].size = size;
   ifop->span[k].pos  = DVDFileTell_(ifop->file);
-  return DVDReadBytes(ifop->file, data, size);
+  ret = DVDReadBytes(ifop->file, data, size);
+  return ret == (ssize_t)size ? ret : 0;
 }
 
 /* Byte offset in the file of the data at p (the latest read holding it), -1. */
@@ -3166,8 +3172,7 @@ static int ifoRead_VOBU_ADMAP_internal(ifo_handle_t *ifofile,
     return 0;
   }
   if(info_length &&
-     !(DVDReadBytes(ifop->file,
-                    vobu_admap->vobu_start_sectors, info_length))) {
+     !(ifo_read(ifop, vobu_admap->vobu_start_sectors, info_length))) {
     free(vobu_admap->vobu_start_sectors);
     return 0;
   }
@@ -3200,6 +3205,413 @@ void ifoFree_TITLE_VOBU_ADMAP(ifo_handle_t *ifofile) {
 
   ifoFree_VOBU_ADMAP_internal(ifofile->vts_vobu_admap);
   ifofile->vts_vobu_admap = NULL;
+}
+
+/* ---- the program chain table for title lists (ifoRead_VTS_PGCIT_rec) ----
+ * Read inside the table only: its whole sectors up to its last byte, a field
+ * past them reads as 0. */
+
+#define PGC_REC_MAX_COMMANDS 128      /* pre + post + cell commands of one program chain */
+
+typedef struct {
+  struct ifo_handle_private_s *ifop;
+  const uint8_t *p;
+  uint32_t len;                       /* the table's bytes read */
+  int64_t  pos;                       /* the table's byte offset in the file */
+  int64_t  outside;                   /* the first field read past them (file offset), -1: none */
+} rec_table_t;
+
+static void rec_report(rec_table_t *t, dvd_report_level_t level, int64_t offset, const char *fmt, ...)
+{
+  dvd_reader_t *ctx = t->ifop->ctx;
+  char text[320];
+  va_list ap;
+  dvd_report_t r = { level, t->ifop->name[0] ? t->ifop->name : NULL, "VTS_PGCIT", NULL, offset, -1,
+                     NULL, 0, text };
+
+  va_start(ap, fmt);
+  vsnprintf(text, sizeof(text), fmt, ap);
+  va_end(ap);
+  DVDReadReport(ctx->priv, &ctx->logcb, &r);
+}
+
+static void rec_report_table(rec_table_t *t, const char *table, dvd_report_level_t level, int64_t offset,
+                             const char *fmt, ...)
+{
+  dvd_reader_t *ctx = t->ifop->ctx;
+  char text[320];
+  va_list ap;
+  dvd_report_t r = { level, t->ifop->name[0] ? t->ifop->name : NULL, table, NULL, offset, -1, NULL, 0, text };
+
+  va_start(ap, fmt);
+  vsnprintf(text, sizeof(text), fmt, ap);
+  va_end(ap);
+  DVDReadReport(ctx->priv, &ctx->logcb, &r);
+}
+
+static void rec_outside(rec_table_t *t, uint32_t o)
+{
+  if(t->outside < 0)
+    t->outside = t->pos + o;
+}
+
+static uint8_t rec_B(rec_table_t *t, uint32_t o)
+{
+  if((uint64_t)o + 1 > t->len) { rec_outside(t, o); return 0; }
+  return t->p[o];
+}
+
+static uint16_t rec_W(rec_table_t *t, uint32_t o)
+{
+  if((uint64_t)o + 2 > t->len) { rec_outside(t, o); return 0; }
+  return (uint16_t)(t->p[o] << 8 | t->p[o + 1]);
+}
+
+static uint32_t rec_L(rec_table_t *t, uint32_t o)
+{
+  if((uint64_t)o + 4 > t->len) { rec_outside(t, o); return 0; }
+  return (uint32_t)t->p[o] << 24 | (uint32_t)t->p[o + 1] << 16 | (uint32_t)t->p[o + 2] << 8 | t->p[o + 3];
+}
+
+static void free_pgc_rec(pgc_rec_t **pgc)
+{
+  if(!*pgc)
+    return;
+  free((*pgc)->commands);
+  free((*pgc)->program_map);
+  free((*pgc)->cells);
+  free(*pgc);
+  *pgc = NULL;
+}
+
+/* Program chain i at off of the table: *out, or NULL when it is left out
+ * (reported); -1 out of memory. */
+static int rec_pgc(rec_table_t *t, int i, uint32_t entry, uint32_t off, pgc_rec_t **out)
+{
+  pgc_rec_t *p;
+  uint16_t pm, cply, cpos, ct;
+
+  *out = NULL;
+  t->outside = -1;
+  if(!(p = calloc(1, sizeof(*p))))
+    return -1;
+  p->number         = i;
+  p->entry          = entry;
+  p->nr_of_programs = rec_B(t, off + 2);
+  p->nr_of_cells    = rec_B(t, off + 3);
+  p->playback_time  = rec_L(t, off + 4);
+  p->prohibited_ops = rec_L(t, off + 8);
+  if((p->nr_of_programs && !(p->program_map = calloc(p->nr_of_programs, 1))) ||
+     (p->nr_of_cells && !(p->cells = calloc(p->nr_of_cells, sizeof(*p->cells))))) {
+    free_pgc_rec(&p);
+    return -1;
+  }
+  pm = rec_W(t, off + 0xe6);
+  for(int k = 0; k < p->nr_of_programs; k++)
+    p->program_map[k] = rec_B(t, off + pm + k);
+  cpos = rec_W(t, off + 0xea);
+  cply = rec_W(t, off + 0xe8);
+  if(!p->nr_of_cells) {
+    *out = p;                         /* no cells: nothing more is read */
+    return 1;
+  }
+  /* a cell table pointer 0 reads the cells from the program chain's own
+   * start (as the title list's reference reads them; looked into again
+   * later) */
+  if(!cply || !cpos)
+    rec_report(t, DVD_REPORT_WARN, t->pos + off + (cply ? 0xea : 0xe8),
+               "program chain %d has %d cell(s) but its cell %s table pointer is 0: they are read from the "
+               "program chain's start", i + 1, p->nr_of_cells, cply ? "position" : "playback");
+  for(int c = 0; c < p->nr_of_cells; c++) {
+    cell_rec_t *cl = &p->cells[c];
+    uint32_t cp = off + cply + 0x18 * c;
+    cl->vob_id_nr = rec_W(t, off + cpos + 4 * c);
+    cl->cell_nr   = rec_B(t, off + cpos + 4 * c + 3);
+    if((uint64_t)cp + 4 <= t->len)
+      memcpy(cl->category, t->p + cp, 4);
+    cl->playback_time          = rec_L(t, cp + 4);
+    cl->first_sector           = rec_L(t, cp + 8);
+    cl->first_ilvu_end_sector  = rec_L(t, cp + 0x0c);
+    cl->last_vobu_start_sector = rec_L(t, cp + 0x10);
+    cl->last_sector            = rec_L(t, cp + 0x14);
+  }
+  if((uint64_t)off + 0x9c > t->len)
+    goto broken;
+  memcpy(p->audio_control, t->p + off + 0x0c, 16);
+  memcpy(p->subp_control, t->p + off + 0x1c, 128);
+  if((uint64_t)off + 0xe6 <= t->len)
+    ct = (uint16_t)(t->p[off + 0xe4] << 8 | t->p[off + 0xe5]);
+  else {
+    rec_outside(t, off + 0xe4);
+    ct = 0;
+  }
+  if(ct) {
+    uint32_t b = off + ct, n;
+    p->nr_of_pre  = rec_W(t, b);
+    p->nr_of_post = rec_W(t, b + 2);
+    p->nr_of_cell = rec_W(t, b + 4);
+    n = (uint32_t)p->nr_of_pre + p->nr_of_post + p->nr_of_cell;
+    if(n > PGC_REC_MAX_COMMANDS) {
+      rec_report(t, DVD_REPORT_WARN, t->pos + b, "program chain %d has %u commands (more than %d): it is left out",
+                 i + 1, n, PGC_REC_MAX_COMMANDS);
+      free_pgc_rec(&p);
+      return 1;
+    }
+    /* the command table's header and its commands inside the table (also
+     * without commands: one byte past the header) */
+    if((uint64_t)b + 8 >= t->len || (uint64_t)b + n * 8 + 8 > t->len)
+      goto broken;
+    if(n) {
+      if(!(p->commands = malloc(n * 8))) {
+        free_pgc_rec(&p);
+        return -1;
+      }
+      memcpy(p->commands, t->p + b + 8, n * 8);
+    }
+  }
+  for(int j = 0; j < 16; j++)
+    p->palette[j] = rec_L(t, off + 0xa4 + 4 * j);
+  if(t->outside >= 0)
+    rec_report(t, DVD_REPORT_WARN, t->outside, "program chain %d: fields past the table's end are read as 0",
+               i + 1);
+  *out = p;
+  return 1;
+broken:
+  rec_report(t, DVD_REPORT_WARN, t->pos + off, "program chain %d runs past the end of VTS_PGCIT: it is left out",
+             i + 1);
+  free_pgc_rec(&p);
+  return 1;
+}
+
+/* The information file's size by its header (VMG or VTS). */
+static int64_t rec_ifo_size(const ifo_handle_t *ifofile)
+{
+  uint32_t last = ifofile->vtsi_mat ? ifofile->vtsi_mat->vtsi_last_sector :
+                  ifofile->vmgi_mat ? ifofile->vmgi_mat->vmgi_last_sector : 0;
+  return ((int64_t)(last & 0x1ffff) + 1) * DVD_BLOCK_LEN;
+}
+
+/* A table's length from its first sector: last_byte_at >= 0, its last-byte
+ * field there (+ 1; 0 = empty when that does not reach past the field);
+ * else a title table: its entries (at most max_entries) x 12 + 8. */
+static uint32_t rec_len(const uint8_t *first, int last_byte_at, unsigned max_entries)
+{
+  if(last_byte_at < 0) {
+    unsigned n = (unsigned)first[0] << 8 | first[1];
+    return (n < max_entries ? n : max_entries) * 12 + 8;
+  } else {
+    uint32_t len = ((uint32_t)first[last_byte_at] << 24 | (uint32_t)first[last_byte_at + 1] << 16 |
+                    (uint32_t)first[last_byte_at + 2] << 8 | first[last_byte_at + 3]) + 1;
+    return len < (uint32_t)last_byte_at + 4 ? 0 : len;
+  }
+}
+
+static int rec_read(ifo_handle_t *ifofile, uint32_t sector, int last_byte_at, unsigned max_entries,
+                    const char *table, uint8_t **data, uint32_t *size)
+{
+  struct ifo_handle_private_s *ifop;
+  uint8_t first[DVD_BLOCK_LEN];
+  rec_table_t t = { 0 };
+  int64_t ifo_size;
+  uint32_t len;
+
+  *data = NULL;
+  *size = 0;
+  if(!ifofile || (!ifofile->vtsi_mat && !ifofile->vmgi_mat) || last_byte_at + 4 > DVD_BLOCK_LEN)
+    return 0;
+  ifop     = PRIV(ifofile);
+  t.ifop   = ifop;
+  t.pos    = (int64_t)sector * DVD_BLOCK_LEN;
+  ifo_size = rec_ifo_size(ifofile);
+  if(t.pos + DVD_BLOCK_LEN > ifo_size || !DVDFileSeek_(ifop->file, (uint32_t)t.pos) ||
+     !ifo_read(ifop, first, DVD_BLOCK_LEN)) {
+    rec_report_table(&t, table, DVD_REPORT_ERROR, t.pos, "%s at sector %u cannot be read (the information file "
+                     "has %" PRId64 " bytes)", table, sector, ifo_size);
+    return 0;
+  }
+  if(!(len = rec_len(first, last_byte_at, max_entries)))
+    return 1;                         /* empty */
+  if(len > 0x3fffffff || t.pos + (len > DVD_BLOCK_LEN ? len : DVD_BLOCK_LEN) > ifo_size) {
+    rec_report_table(&t, table, DVD_REPORT_ERROR, t.pos + (last_byte_at > 0 ? last_byte_at : 0),
+                     "%s's %u bytes at sector %u lie past the information file's %" PRId64 " bytes: it cannot be "
+                     "read", table, len, sector, ifo_size);
+    return 0;
+  }
+  if(!(*data = malloc(len)))
+    return 0;
+  memcpy(*data, first, len < DVD_BLOCK_LEN ? len : DVD_BLOCK_LEN);
+  if(len > DVD_BLOCK_LEN && (!DVDFileSeek_(ifop->file, (uint32_t)t.pos + DVD_BLOCK_LEN) ||
+                             !ifo_read(ifop, *data + DVD_BLOCK_LEN, len - DVD_BLOCK_LEN))) {
+    rec_report_table(&t, table, DVD_REPORT_ERROR, t.pos + DVD_BLOCK_LEN, "%s at sector %u cannot be read",
+                     table, sector);
+    free(*data);
+    *data = NULL;
+    return 0;
+  }
+  *size = len;
+  return 1;
+}
+
+int ifoRead_table_rec(ifo_handle_t *ifofile, uint32_t sector, unsigned last_byte_at, const char *table,
+                      uint8_t **data, uint32_t *size)
+{
+  return rec_read(ifofile, sector, (int)last_byte_at, 0, table, data, size);
+}
+
+int ifoRead_TT_SRPT_rec(ifo_handle_t *ifofile, unsigned max_entries, uint8_t **data, uint32_t *size)
+{
+  *data = NULL;
+  *size = 0;
+  if(!ifofile || !ifofile->vmgi_mat)
+    return 0;
+  return rec_read(ifofile, ifofile->vmgi_mat->tt_srpt, -1, max_entries, "TT_SRPT", data, size);
+}
+
+static int rec_cmp_u32(const void *a, const void *b)
+{
+  uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+  return x < y ? -1 : x > y;
+}
+
+int ifoRead_VOBU_ADMAP_rec(ifo_handle_t *ifofile, uint32_t sector, const char *table, uint32_t **starts, int *nb)
+{
+  rec_table_t t = { 0 };
+  uint8_t *data;
+  uint32_t size, *s;
+  int n, k = 0;
+
+  *starts = NULL;
+  *nb = 0;
+  if(!ifoRead_table_rec(ifofile, sector, 0, table, &data, &size))
+    return 0;
+  if(size < 4) {
+    t.ifop = PRIV(ifofile);
+    rec_report_table(&t, table, DVD_REPORT_ERROR, (int64_t)sector * DVD_BLOCK_LEN,
+                     "%s at sector %u is shorter than its header", table, sector);
+    free(data);
+    return 0;
+  }
+  n = size / 4;
+  if(!(s = malloc((n > 1 ? n - 1 : 1) * sizeof(*s)))) {
+    free(data);
+    return 0;
+  }
+  for(int i = 1; i < n; i++)
+    s[k++] = (uint32_t)data[4 * i] << 24 | (uint32_t)data[4 * i + 1] << 16 |
+             (uint32_t)data[4 * i + 2] << 8 | data[4 * i + 3];
+  free(data);
+  qsort(s, k, sizeof(*s), rec_cmp_u32);
+  n = 0;
+  for(int i = 0; i < k; i++)
+    if(!n || s[n - 1] != s[i])
+      s[n++] = s[i];
+  *starts = s;
+  *nb = n;
+  return 1;
+}
+
+void ifoFree_VTS_PGCIT_rec(pgcit_rec_t **pgcit)
+{
+  if(!pgcit || !*pgcit)
+    return;
+  for(int i = 0; i < (*pgcit)->nr_of_pgcs; i++)
+    free_pgc_rec(&(*pgcit)->pgcs[i]);
+  free((*pgcit)->pgcs);
+  free((*pgcit)->same_as);
+  free(*pgcit);
+  *pgcit = NULL;
+}
+
+int ifoRead_VTS_PGCIT_rec(ifo_handle_t *ifofile, pgcit_rec_t **out)
+{
+  struct ifo_handle_private_s *ifop;
+  rec_table_t t = { 0 };
+  uint8_t first[DVD_BLOCK_LEN], *data = NULL;
+  uint32_t sector, len, last, *starts = NULL;
+  int64_t ifo_size;
+  int *start_of = NULL, nr, nb_starts = 0, ok = 0;
+  pgcit_rec_t *pgcit = NULL;
+
+  *out = NULL;
+  if(!ifofile || !ifofile->vtsi_mat)
+    return 0;
+  ifop = PRIV(ifofile);
+  t.ifop = ifop;
+  sector = ifofile->vtsi_mat->vts_pgcit;
+  if(sector == 0 || sector == 0xffffffff)
+    return 1;                         /* no table */
+  /* the information file's size by its header */
+  ifo_size = ((int64_t)(ifofile->vtsi_mat->vtsi_last_sector & 0x1ffff) + 1) * DVD_BLOCK_LEN;
+  t.pos    = (int64_t)sector * DVD_BLOCK_LEN;
+  if(t.pos + DVD_BLOCK_LEN > ifo_size || !DVDFileSeek_(ifop->file, (uint32_t)t.pos) ||
+     !ifo_read(ifop, first, DVD_BLOCK_LEN)) {
+    rec_report(&t, DVD_REPORT_ERROR, t.pos, "VTS_PGCIT at sector %u cannot be read (the information file has "
+               "%" PRId64 " bytes)", sector, ifo_size);
+    return 0;
+  }
+  len = ((uint32_t)first[4] << 24 | (uint32_t)first[5] << 16 | (uint32_t)first[6] << 8 | first[7]);
+  len = (len & 0xfffff800) + DVD_BLOCK_LEN;
+  if(len > 0x3fffffff || t.pos + len > ifo_size) {
+    rec_report(&t, DVD_REPORT_ERROR, t.pos + 4, "VTS_PGCIT's %u bytes at sector %u lie past the information "
+               "file's %" PRId64 " bytes: it cannot be read", len, sector, ifo_size);
+    return 0;
+  }
+  if(!(data = malloc(len)))
+    return 0;
+  memcpy(data, first, len < DVD_BLOCK_LEN ? len : DVD_BLOCK_LEN);
+  if(len > DVD_BLOCK_LEN && (!DVDFileSeek_(ifop->file, (uint32_t)t.pos + DVD_BLOCK_LEN) ||
+                             !ifo_read(ifop, data + DVD_BLOCK_LEN, len - DVD_BLOCK_LEN))) {
+    rec_report(&t, DVD_REPORT_ERROR, t.pos + DVD_BLOCK_LEN, "VTS_PGCIT at sector %u cannot be read", sector);
+    free(data);
+    return 0;
+  }
+  t.p   = data;
+  t.len = len;
+  t.outside = -1;
+  nr   = rec_W(&t, 0);
+  last = t.len >= 8 ? ((uint32_t)data[4] << 24 | (uint32_t)data[5] << 16 | (uint32_t)data[6] << 8 | data[7]) + 1 : 1;
+  if(!(pgcit = calloc(1, sizeof(*pgcit))) ||
+     (nr && (!(pgcit->pgcs = calloc(nr, sizeof(*pgcit->pgcs))) || !(pgcit->same_as = malloc(nr * sizeof(int))) ||
+             !(starts = malloc(nr * sizeof(*starts))) || !(start_of = malloc(nr * sizeof(int))))))
+    goto end;
+  pgcit->nr_of_pgcs = nr;
+  for(int i = 0; i < nr; i++) {
+    uint32_t entry = rec_L(&t, 8 + 8 * i), off = rec_L(&t, 0x0c + 8 * i);
+    pgcit->same_as[i] = -1;
+    if((uint64_t)off + 4 >= last) {
+      rec_report(&t, DVD_REPORT_WARN, t.pos + 0x0c + 8 * i, "program chain %d starts outside VTS_PGCIT (byte %u): "
+                 "it is left out", i + 1, off);
+      continue;
+    }
+    if(nr != 1) {
+      int dup = -1;
+      for(int k = 0; k < nb_starts && dup < 0; k++)
+        if(starts[k] == off)
+          dup = k;
+      if(dup >= 0) {
+        /* two search pointers to one program chain: the later one names the first */
+        pgcit->same_as[i] = start_of[dup];
+        Log2(ifop->ctx, "%s: VTS_PGCIT: program chain %d starts where program chain %d does: it is left out",
+             ifop->name, i + 1, pgcit->same_as[i] + 1);
+        continue;
+      }
+      start_of[nb_starts] = i;
+      starts[nb_starts++] = off;
+    }
+    if(rec_pgc(&t, i, entry, off, &pgcit->pgcs[i]) < 0)
+      goto end;
+  }
+  ok = 1;
+end:
+  free(starts);
+  free(start_of);
+  free(data);
+  if(!ok) {
+    ifoFree_VTS_PGCIT_rec(&pgcit);
+    return 0;
+  }
+  *out = pgcit;
+  return 1;
 }
 
 int ifoRead_PGCIT(ifo_handle_t *ifofile) {

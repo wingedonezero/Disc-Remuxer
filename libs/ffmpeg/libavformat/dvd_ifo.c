@@ -61,6 +61,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <dvdread/dvd_reader.h>
+#include <dvdread/ifo_read.h>
+
 #include "libavutil/error.h"
 #include "libavutil/intreadwrite.h"
 #include "libavutil/log.h"
@@ -68,7 +71,6 @@
 
 #include "dvd_internal.h"
 
-#define MAX_COMMANDS 128            /* pre + post + cell commands of one program chain */
 
 static void ifo_name(const DVDIfo *f, char *buf, size_t size)
 {
@@ -280,12 +282,6 @@ uint32_t ff_dvd_table_len_last_byte(const uint8_t *first, uint32_t field)
     return v >= field + 4 ? v : 0;
 }
 
-/* VTS_PGCIT: whole sectors up to its last byte. */
-static uint32_t len_pgcit(const uint8_t *first, uint32_t field)
-{
-    return (AV_RB32(first + 4) & 0xfffff800) + DVD_SECTOR;
-}
-
 int ff_dvd_ifo_table(DVDDisc *d, DVDIfo *f, uint32_t sector, DVDTable *t,
                      uint32_t (*len_of)(const uint8_t *first, uint32_t field), uint32_t field)
 {
@@ -328,38 +324,31 @@ static int cmp_u32(const void *a, const void *b)
 /* The VOBU starts of the map at sector, sorted without repeats; 0 for no
  * map, 1 loaded, < 0 an error. A map that cannot be read makes the IFO's
  * VOBU starts untrusted. */
-static int load_vobu_map(DVDDisc *d, DVDIfo *f, uint32_t sector, uint32_t **map, int *nb)
+/* A VOBU address map at sector through libdvdread (h): 1 read, 0 none
+ * (sector 0) or not readable (then the title set's VOBU starts are not
+ * trusted), or AVERROR(ENOMEM). */
+static int load_vobu_map(DVDDisc *d, DVDIfo *f, ifo_handle_t *h, uint32_t sector, const char *table,
+                         uint32_t **map, int *nb)
 {
-    DVDTable t = { 0 };
+    uint32_t *starts;
     char name[16];
-    int n, k = 0, ret;
+    int n;
 
     if (!sector)
         return 0;
     ifo_name(f, name, sizeof(name));
-    ret = ff_dvd_ifo_table(d, f, sector, &t, ff_dvd_table_len_last_byte, 0);
-    if (ret < 0 || t.size < 4) {
+    if (!ifoRead_VOBU_ADMAP_rec(h, sector, table, &starts, &n)) {
         av_log(d->log, AV_LOG_WARNING, "DVD: %s: the VOBU address map at sector %"PRIu32" cannot be read: its "
                "VOBU starts are not trusted\n", name, sector);
         f->vobu_map_distrusted = 1;
-        ff_dvd_table_free(&t);
-        return ret == AVERROR(ENOMEM) ? ret : 0;
+        return 0;
     }
-    n = t.size / 4;
     av_freep(map);
-    if (!(*map = av_malloc_array(FFMAX(n - 1, 1), sizeof(**map)))) {
-        ff_dvd_table_free(&t);
+    *map = av_memdup(starts, FFMAX(n, 1) * sizeof(*starts));
+    free(starts);
+    if (!*map)
         return AVERROR(ENOMEM);
-    }
-    for (int i = 1; i < n; i++)
-        (*map)[k++] = AV_RB32(t.data + 4 * i);
-    qsort(*map, k, sizeof(**map), cmp_u32);
-    n = 0;
-    for (int i = 0; i < k; i++)
-        if (!n || (*map)[n - 1] != (*map)[i])
-            (*map)[n++] = (*map)[i];
     *nb = n;
-    ff_dvd_table_free(&t);
     return 1;
 }
 
@@ -369,25 +358,6 @@ static int on_map(const DVDIfo *f, uint32_t sector)
 }
 
 /* ---- VTS_PGCIT ---- */
-
-typedef struct Fields {
-    DVDDisc       *d;
-    const DVDIfo  *f;
-    const uint8_t *p;
-    uint32_t       len;
-} Fields;
-
-static void outside(const Fields *t, uint32_t off, int bytes)
-{
-    char name[16];
-    ifo_name(t->f, name, sizeof(name));
-    av_log(t->d->log, AV_LOG_DEBUG, "DVD: %s: VTS_PGCIT field of %d byte(s) at %"PRIu32" lies outside the "
-           "table (%"PRIu32" bytes): read as 0\n", name, bytes, off, t->len);
-}
-
-static uint8_t  B(const Fields *t, uint32_t o) { if ((uint64_t)o + 1 > t->len) { outside(t, o, 1); return 0; } return t->p[o]; }
-static uint16_t W(const Fields *t, uint32_t o) { if ((uint64_t)o + 2 > t->len) { outside(t, o, 2); return 0; } return AV_RB16(t->p + o); }
-static uint32_t L(const Fields *t, uint32_t o) { if ((uint64_t)o + 4 > t->len) { outside(t, o, 4); return 0; } return AV_RB32(t->p + o); }
 
 static void free_pgc(DVDPgc **pgc)
 {
@@ -399,142 +369,45 @@ static void free_pgc(DVDPgc **pgc)
     av_freep(pgc);
 }
 
-/* One program chain at off; NULL (logged) when it is left out. */
-static int parse_pgc(const Fields *t, int i, uint32_t entry, uint32_t off, DVDPgc **out)
+/* A program chain as libdvdread read it, ours (NULL: out of memory). */
+static DVDPgc *pgc_of(const pgc_rec_t *r)
 {
-    char name[16];
-    DVDPgc *p;
-    uint16_t pm, cply, cpos, ct;
+    DVDPgc *p = av_mallocz(sizeof(*p));
+    int n = r->nr_of_pre + r->nr_of_post + r->nr_of_cell;
 
-    *out = NULL;
-    ifo_name(t->f, name, sizeof(name));
-    if (!(p = av_mallocz(sizeof(*p))))
-        return AVERROR(ENOMEM);
-    p->number         = i;
-    p->entry          = entry;
-    p->nr_of_programs = B(t, off + 2);
-    p->nr_of_cells    = B(t, off + 3);
-    p->playback_time  = L(t, off + 4);
-    p->prohibited_ops = L(t, off + 8);
-    if ((p->nr_of_programs && !(p->program_map = av_mallocz(p->nr_of_programs))) ||
-        (p->nr_of_cells && !(p->cells = av_calloc(p->nr_of_cells, sizeof(*p->cells))))) {
+    if (!p)
+        return NULL;
+    p->number         = r->number;
+    p->entry          = r->entry;
+    p->nr_of_programs = r->nr_of_programs;
+    p->nr_of_cells    = r->nr_of_cells;
+    p->playback_time  = r->playback_time;
+    p->prohibited_ops = r->prohibited_ops;
+    memcpy(p->audio_control, r->audio_control, sizeof(p->audio_control));
+    memcpy(p->subp_control, r->subp_control, sizeof(p->subp_control));
+    memcpy(p->palette, r->palette, sizeof(p->palette));
+    p->nr_of_pre  = r->nr_of_pre;
+    p->nr_of_post = r->nr_of_post;
+    p->nr_of_cell = r->nr_of_cell;
+    if ((r->commands && n && !(p->commands = av_memdup(r->commands, n * 8))) ||
+        (r->program_map && r->nr_of_programs && !(p->program_map = av_memdup(r->program_map, r->nr_of_programs))) ||
+        (r->cells && r->nr_of_cells && !(p->cells = av_calloc(r->nr_of_cells, sizeof(*p->cells))))) {
         free_pgc(&p);
-        return AVERROR(ENOMEM);
+        return NULL;
     }
-    pm = W(t, off + 0xe6);
-    for (int k = 0; k < p->nr_of_programs; k++)
-        p->program_map[k] = B(t, off + pm + k);
-    cpos = W(t, off + 0xea);
-    cply = W(t, off + 0xe8);
-    if (!p->nr_of_cells) {
-        *out = p;                       /* no cells: nothing more is read */
-        return 0;
-    }
-    for (int c = 0; c < p->nr_of_cells; c++) {
+    for (int c = 0; c < r->nr_of_cells && p->cells; c++) {
         DVDCell *cl = &p->cells[c];
-        uint32_t cp = off + cply + 0x18 * c;
-        cl->vob_id_nr = W(t, off + cpos + 4 * c);
-        cl->cell_nr   = B(t, off + cpos + 4 * c + 3);
-        if ((uint64_t)cp + 4 <= t->len)
-            memcpy(cl->category, t->p + cp, 4);
-        cl->playback_time          = L(t, cp + 4);
-        cl->first_sector           = L(t, cp + 8);
-        cl->first_ilvu_end_sector  = L(t, cp + 0x0c);
-        cl->last_vobu_start_sector = L(t, cp + 0x10);
-        cl->last_sector            = L(t, cp + 0x14);
+        const cell_rec_t *rc = &r->cells[c];
+        memcpy(cl->category, rc->category, 4);
+        cl->playback_time          = rc->playback_time;
+        cl->first_sector           = rc->first_sector;
+        cl->first_ilvu_end_sector  = rc->first_ilvu_end_sector;
+        cl->last_vobu_start_sector = rc->last_vobu_start_sector;
+        cl->last_sector            = rc->last_sector;
+        cl->vob_id_nr              = rc->vob_id_nr;
+        cl->cell_nr                = rc->cell_nr;
     }
-    if ((uint64_t)off + 0x9c > t->len)
-        goto broken;
-    memcpy(p->audio_control, t->p + off + 0x0c, 16);
-    memcpy(p->subp_control, t->p + off + 0x1c, 128);
-    ct = (uint64_t)off + 0xe6 <= t->len ? AV_RB16(t->p + off + 0xe4) : (outside(t, off + 0xe4, 2), 0);
-    if (ct) {
-        uint32_t b = off + ct, n;
-        p->nr_of_pre  = W(t, b);
-        p->nr_of_post = W(t, b + 2);
-        p->nr_of_cell = W(t, b + 4);
-        n = p->nr_of_pre + p->nr_of_post + p->nr_of_cell;
-        if (n > MAX_COMMANDS) {
-            av_log(t->d->log, AV_LOG_WARNING, "DVD: %s: program chain %d has %"PRIu32" commands (more than %d): "
-                   "it is left out\n", name, i + 1, n, MAX_COMMANDS);
-            free_pgc(&p);
-            return 0;
-        }
-        /* the table's header and its commands inside the table (also
-         * without commands: one byte past the header) */
-        if ((uint64_t)b + 8 >= t->len || (uint64_t)b + n * 8 + 8 > t->len)
-            goto broken;
-        if (n) {
-            if (!(p->commands = av_malloc(n * 8))) {
-                free_pgc(&p);
-                return AVERROR(ENOMEM);
-            }
-            memcpy(p->commands, t->p + b + 8, n * 8);
-        }
-    }
-    for (int j = 0; j < 16; j++)
-        p->palette[j] = L(t, off + 0xa4 + 4 * j);
-    *out = p;
-    return 0;
-broken:
-    av_log(t->d->log, AV_LOG_WARNING, "DVD: %s: program chain %d runs past the end of VTS_PGCIT: it is left out\n",
-           name, i + 1);
-    free_pgc(&p);
-    return 0;
-}
-
-static int load_pgcit(DVDDisc *d, DVDIfo *f, uint32_t sector)
-{
-    DVDTable tab = { 0 };
-    Fields t = { d, f };
-    uint32_t *starts = NULL, last;
-    int *start_of = NULL, nr, nb_starts = 0, ret;
-    char name[16];
-
-    ifo_name(f, name, sizeof(name));
-    if ((ret = ff_dvd_ifo_table(d, f, sector, &tab, len_pgcit, 0)) < 0)
-        return ret;
-    t.p   = tab.data;
-    t.len = tab.size;
-    nr   = W(&t, 0);
-    last = t.len >= 8 ? AV_RB32(t.p + 4) + 1 : (outside(&t, 4, 4), 1);
-    if (nr && (!(f->pgcs = av_calloc(nr, sizeof(*f->pgcs))) || !(f->pgc_same_as = av_malloc_array(nr, sizeof(int))) ||
-               !(starts = av_malloc_array(nr, sizeof(*starts))) || !(start_of = av_malloc_array(nr, sizeof(int))))) {
-        ret = AVERROR(ENOMEM);
-        goto end;
-    }
-    f->nb_pgcs = nr;
-    for (int i = 0; i < nr; i++) {
-        uint32_t entry = L(&t, 8 + 8 * i), off = L(&t, 0x0c + 8 * i);
-        f->pgc_same_as[i] = -1;
-        if ((uint64_t)off + 4 >= last) {
-            av_log(d->log, AV_LOG_WARNING, "DVD: %s: program chain %d starts outside VTS_PGCIT (byte %"PRIu32
-                   "): it is left out\n", name, i + 1, off);
-            continue;
-        }
-        if (nr != 1) {
-            int dup = -1;
-            for (int k = 0; k < nb_starts && dup < 0; k++)
-                if (starts[k] == off)
-                    dup = k;
-            if (dup >= 0) {
-                f->pgc_same_as[i] = start_of[dup];
-                av_log(d->log, AV_LOG_VERBOSE, "DVD: %s: program chain %d starts where program chain %d does: "
-                       "it is left out\n", name, i + 1, f->pgc_same_as[i] + 1);
-                continue;
-            }
-            start_of[nb_starts] = i;
-            starts[nb_starts++] = off;
-        }
-        if ((ret = parse_pgc(&t, i, entry, off, &f->pgcs[i])) < 0)
-            goto end;
-    }
-    ret = 0;
-end:
-    av_free(starts);
-    av_free(start_of);
-    ff_dvd_table_free(&tab);
-    return ret;
+    return p;
 }
 
 /* ---- the IFO ---- */
@@ -593,8 +466,7 @@ static int load(DVDDisc *d, DVDIfo *f)
 {
     char name[16];
     uint32_t size, pgcit;
-    uint32_t *menu_map = NULL;
-    int nb_menu_map = 0, ret;
+    int ret;
 
     ifo_name(f, name, sizeof(name));
     if ((ret = ff_dvd_ifo_read(d, f, 0, f->header, DVD_IFO_HEADER)) < 0)
@@ -635,11 +507,7 @@ static int load(DVDDisc *d, DVDIfo *f)
     else
         f->title_vob_blocks = (uint32_t)(f->bup_sector - f->ifo_sector) - ff_dvd_header32(f, DVD_TT_SRPT);
     check_bup(d, f);
-    if ((ret = load_vobu_map(d, f, ff_dvd_header32(f, DVD_M_VOBU_ADMAP), &menu_map, &nb_menu_map)) < 0)
-        return ret;
-    if (ret > 0 && nb_menu_map)
-        f->menu_vobu_last = menu_map[nb_menu_map - 1];
-    av_freep(&menu_map);
+    /* the VOBU address maps: through libdvdread (ff_dvd_ifo_tables()) */
 
     if (!f->index) {
         const uint8_t *pid = f->header + DVD_PROVIDER_ID;
@@ -658,19 +526,8 @@ static int load(DVDDisc *d, DVDIfo *f)
         f->no_pgcit = 1;
         return 0;
     }
-    if ((ret = load_pgcit(d, f, pgcit)) < 0) {
-        av_log(d->log, AV_LOG_ERROR, "DVD: %s: its program chain table (VTS_PGCIT) cannot be read\n", name);
-        return ret;
-    }
-    if ((ret = ff_dvd_ifo_table(d, f, ff_dvd_header32(f, DVD_VTS_PTT_SRPT), &f->ptt_srpt,
-                                ff_dvd_table_len_last_byte, 4)) < 0) {
-        av_log(d->log, AV_LOG_ERROR, "DVD: %s: its chapter table (VTS_PTT_SRPT) cannot be read\n", name);
-        return ret;
-    }
-    if ((ret = load_vobu_map(d, f, ff_dvd_header32(f, DVD_VTS_VOBU_ADMAP), &f->vobu_map, &f->nb_vobu_map)) < 0)
-        return ret;
-    if (ret > 0)
-        check_cells(d, f);
+    /* the program chain and chapter tables: through libdvdread once every
+     * IFO is loaded (ff_dvd_ifo_tables()) */
     if (!d->folder) {
         /* the title VOBs from the IFO header, when the file system agrees
          * (or has no single piece for them) */
@@ -726,6 +583,103 @@ int ff_dvd_title_vob_place(DVDDisc *d, DVDIfo *f, uint32_t sector, char *file, i
         ff_discio_file_free(&v);
     }
     return AVERROR(EINVAL);
+}
+
+int ff_dvd_ifo_raw_table(DVDDisc *d, DVDIfo *f, uint32_t sector, int last_byte_at, const char *table,
+                         DVDTable *t)
+{
+    ifo_handle_t *h = !d->reader ? NULL : f->index ? ifoOpenVTSI(d->reader, f->index) : ifoOpenVMGI(d->reader);
+    uint8_t *data = NULL;
+    uint32_t size;
+    int ok, ret = 0;
+
+    ff_dvd_table_free(t);
+    if (!h)
+        return AVERROR_INVALIDDATA;
+    ok = last_byte_at < 0 ? ifoRead_TT_SRPT_rec(h, -last_byte_at, &data, &size) :
+                            ifoRead_table_rec(h, sector, last_byte_at, table, &data, &size);
+    if (!ok)
+        ret = AVERROR_INVALIDDATA;
+    else if (data && !(t->data = av_memdup(data, size)))
+        ret = AVERROR(ENOMEM);
+    else
+        t->size = data ? size : 0;
+    free(data);
+    ifoClose(h);
+    return ret;
+}
+
+int ff_dvd_ifo_tables(DVDDisc *d, DVDIfo *f)
+{
+    ifo_handle_t *h = !d->reader ? NULL : f->index ? ifoOpenVTSI(d->reader, f->index) : ifoOpenVMGI(d->reader);
+    pgcit_rec_t *rec = NULL;
+    uint32_t *menu_map = NULL, ptt_size;
+    uint8_t *ptt = NULL;
+    char name[16];
+    int nb_menu_map = 0, ret = 0;
+
+    ifo_name(f, name, sizeof(name));
+    if (!h) {
+        av_log(d->log, AV_LOG_ERROR, "DVD: %s cannot be read by libdvdread\n", name);
+        return AVERROR_INVALIDDATA;
+    }
+    /* the menus' VOBU address map: its last VOBU start */
+    if ((ret = load_vobu_map(d, f, h, ff_dvd_header32(f, DVD_M_VOBU_ADMAP), f->index ? "VTSM_VOBU_ADMAP" :
+                             "VMGM_VOBU_ADMAP", &menu_map, &nb_menu_map)) < 0)
+        goto end;
+    if (ret > 0 && nb_menu_map)
+        f->menu_vobu_last = menu_map[nb_menu_map - 1];
+    ret = 0;
+    if (!f->index || f->no_pgcit)
+        goto end;
+    if (!ifoRead_VTS_PGCIT_rec(h, &rec)) {
+        av_log(d->log, AV_LOG_ERROR, "DVD: %s: its program chain table (VTS_PGCIT) cannot be read\n", name);
+        ret = AVERROR_INVALIDDATA;
+        goto end;
+    }
+    if (!rec) {
+        f->no_pgcit = 1;
+        goto end;
+    }
+    if (rec->nr_of_pgcs &&
+        (!(f->pgcs = av_calloc(rec->nr_of_pgcs, sizeof(*f->pgcs))) ||
+         !(f->pgc_same_as = av_malloc_array(rec->nr_of_pgcs, sizeof(*f->pgc_same_as))))) {
+        ret = AVERROR(ENOMEM);
+        goto end;
+    }
+    f->nb_pgcs = rec->nr_of_pgcs;
+    for (int i = 0; i < rec->nr_of_pgcs; i++) {
+        f->pgc_same_as[i] = rec->same_as[i];
+        if (rec->pgcs[i] && !(f->pgcs[i] = pgc_of(rec->pgcs[i]))) {
+            ret = AVERROR(ENOMEM);
+            goto end;
+        }
+    }
+    /* the chapter table as recorded (the title list reads it) */
+    if (!ifoRead_table_rec(h, h->vtsi_mat->vts_ptt_srpt, 4, "VTS_PTT_SRPT", &ptt, &ptt_size)) {
+        av_log(d->log, AV_LOG_ERROR, "DVD: %s: its chapter table (VTS_PTT_SRPT) cannot be read\n", name);
+        ret = AVERROR_INVALIDDATA;
+        goto end;
+    }
+    if (ptt && !(f->ptt_srpt.data = av_memdup(ptt, ptt_size))) {
+        ret = AVERROR(ENOMEM);
+        goto end;
+    }
+    f->ptt_srpt.size = ptt ? ptt_size : 0;
+    /* the title VOBs' VOBU address map, checked against the cells */
+    if ((ret = load_vobu_map(d, f, h, ff_dvd_header32(f, DVD_VTS_VOBU_ADMAP), "VTS_VOBU_ADMAP", &f->vobu_map,
+                             &f->nb_vobu_map)) < 0)
+        goto end;
+    if (ret > 0)
+        check_cells(d, f);
+    ret = 0;
+end:
+    av_free(menu_map);
+    free(ptt);
+    ifoFree_VTS_PGCIT_rec(&rec);
+    if (h)
+        ifoClose(h);
+    return ret;
 }
 
 int ff_dvd_ifo_load(DVDDisc *d, int index, DVDIfo **out)

@@ -456,9 +456,6 @@ static int dvd_load(AVFormatContext *s)
     if ((ret = ff_dvd_disc_open(s, d->fs, d->dvd_flat ? "" : "/VIDEO_TS", folder, folder ? NULL : d->fs->label,
                                 &c->disc)) < 0)
         return ret;
-    /* every information file through libdvdread once: what it finds */
-    ff_dvd_ifo_check(&c->disc);
-    ff_dvd_reports_log(&c->disc);
     if (av_log_get_level() >= AV_LOG_DEBUG) {
         AVBPrint bp;
         av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);

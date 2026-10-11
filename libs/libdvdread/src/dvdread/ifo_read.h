@@ -138,6 +138,55 @@ DVDREAD_API int ifoRead_FP_PGC(ifo_handle_t *);
 DVDREAD_API int ifoRead_PGCIT(ifo_handle_t *);
 
 /**
+ * okay = ifoRead_VTS_PGCIT_rec(ifofile, &pgcit);
+ *
+ * The title set's program chain table read by stricter rules than
+ * ifoRead_PGCIT(), for building title lists: only the table's whole sectors
+ * up to its last byte are read (a field past them reads as 0); a program
+ * chain is left out when it starts outside the table, when it starts where
+ * an earlier one does (same_as names that one), when it has more than 128
+ * commands, or when its header or command table runs past the table. Every
+ * program chain left out and every oddity is reported (dvd_report_t, with
+ * the byte offset in the file). The table must lie inside the information
+ * file (its size by its header). Returns 1 with *pgcit (NULL when the title
+ * set has no table: vts_pgcit 0 or 0xffffffff), 0 when the table cannot be
+ * read. Free with ifoFree_VTS_PGCIT_rec().
+ */
+DVDREAD_API int ifoRead_VTS_PGCIT_rec(ifo_handle_t *, pgcit_rec_t **);
+DVDREAD_API void ifoFree_VTS_PGCIT_rec(pgcit_rec_t **);
+
+/**
+ * okay = ifoRead_table_rec(ifofile, sector, last_byte_at, table, &data, &size);
+ *
+ * A table of the information file as recorded, for readers with their own
+ * rules: at sector, as long as the 32-bit last-byte field at byte
+ * last_byte_at of its first sector says (+ 1; when that does not reach past
+ * the field, an empty table: *data NULL, *size 0). The table must lie inside
+ * the information file (its size by its header). table names it in reports.
+ * Returns 1, 0 when it cannot be read (reported). Free *data with free().
+ */
+DVDREAD_API int ifoRead_table_rec(ifo_handle_t *, uint32_t sector, unsigned last_byte_at, const char *table,
+                                  uint8_t **data, uint32_t *size);
+
+/**
+ * okay = ifoRead_TT_SRPT_rec(ifofile, max_entries, &data, &size);
+ *
+ * The video manager's title table as recorded (as ifoRead_table_rec(), its
+ * length by its entries, at most max_entries, x 12 + 8).
+ */
+DVDREAD_API int ifoRead_TT_SRPT_rec(ifo_handle_t *, unsigned max_entries, uint8_t **data, uint32_t *size);
+
+/**
+ * okay = ifoRead_VOBU_ADMAP_rec(ifofile, sector, table, &starts, &nb);
+ *
+ * A VOBU address map at sector (ifoRead_table_rec(), its last byte at 0):
+ * its VOBU start sectors sorted, each once. Returns 1, 0 when it cannot be
+ * read or is shorter than its header (reported). Free *starts with free().
+ */
+DVDREAD_API int ifoRead_VOBU_ADMAP_rec(ifo_handle_t *, uint32_t sector, const char *table,
+                                       uint32_t **starts, int *nb);
+
+/**
  * okay = ifoRead_PGCI_UT(ifofile);
  *
  * Reads in the menu PGCI unit table for the menu VOB.  For the video manager,

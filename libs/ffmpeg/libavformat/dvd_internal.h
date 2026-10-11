@@ -205,6 +205,7 @@ typedef struct DVDDisc {
     DVDVobuRecs  vobus;                 /**< VOBU records of title sets with a title_vob_base */
     char        *volume_name;           /**< the volume label, else the provider identifier */
     char        *text_name;             /**< the disc's name in its text data, NULL when none */
+    struct dvd_reader_s *reader;        /**< libdvdread on the disc as read here (ff_dvd_reader_open()) */
     DVDReport   *reports;               /**< what libdvdread / libdvdnav found, each once */
     int          nb_reports, reports_cap;
     int          reports_said;          /**< the reports logged so far */
@@ -215,6 +216,18 @@ typedef struct DVDDisc {
  *  it: < 0 when it cannot be used (the caller keeps a placeholder for a
  *  title set). */
 int  ff_dvd_ifo_load(DVDDisc *d, int index, DVDIfo **out);
+/** IFO f's tables by libdvdread (d->reader): the menus' VOBU address map;
+ *  of a title set also its program chains (read with the title list's
+ *  rules), chapter table (as recorded) and title VOBs' VOBU address map, its
+ *  cells checked against that map. A VOBU address map that cannot be read
+ *  leaves the VOBU starts untrusted. < 0 when a needed table cannot be
+ *  read. */
+int  ff_dvd_ifo_tables(DVDDisc *d, DVDIfo *f);
+/** A table of IFO f as recorded, by libdvdread (d->reader): at sector, its
+ *  last-byte field at last_byte_at; last_byte_at = -n: the VMG's title table
+ *  with at most n entries. 0, or < 0 when it cannot be read. */
+int  ff_dvd_ifo_raw_table(DVDDisc *d, DVDIfo *f, uint32_t sector, int last_byte_at, const char *table,
+                          DVDTable *t);
 /** Where sector of title set f's title VOBs lies, for the log: the VOB
  *  file's name (VTS_nn_k.VOB) and the byte offset in it; < 0 when no title
  *  VOB file holds it. */
@@ -254,6 +267,9 @@ int  ff_dvd_nav_open(DVDDisc *d, const DVDNavHooks *hooks, struct dvdnav_s **out
 /** The IFO check: every information file read once by libdvdread (all its
  *  tables), what it finds kept as reports of the disc. */
 void ff_dvd_ifo_check(DVDDisc *d);
+/** libdvdread on the disc as read here (every loaded IFO, the VOBs from the
+ *  disc layer), reporting to the disc: d->reader. */
+int  ff_dvd_reader_open(DVDDisc *d);
 /** The reports not logged yet: the findings that break a rule as warnings,
  *  the harmless ones as detail lines, one summary line per file. */
 void ff_dvd_reports_log(DVDDisc *d);

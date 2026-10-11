@@ -541,36 +541,53 @@ static void report_line(void *log, int level, const char *check, const DVDReport
     av_log(log, level, "%s: %s%s%s\n", check, where, where[0] ? ": " : "", k->text);
 }
 
+/* The order of the files in the log: VIDEO_TS, the title sets by number,
+ * then the navigation's findings (no file). */
+static int file_rank(const char *file)
+{
+    int n;
+    if (!file[0])
+        return 1000;
+    if (!strncmp(file, "VIDEO_TS", 8))
+        return 0;
+    return sscanf(file, "VTS_%d", &n) == 1 ? n : 999;
+}
+
 void ff_dvd_reports_log(DVDDisc *d)
 {
-    /* per file (the navigation's findings: no file), in the order found */
-    for (int i = d->reports_said; i < d->nb_reports; i++) {
-        const char *file = d->reports[i].file;
-        const char *check = file[0] ? "IFO check" : "Navigation check";
-        int harmless = 0, breaks = 0, done = 0;
+    /* per file, in file order; within a file in the order found */
+    for (int rank = 0; rank <= 1000; rank++) {
+        for (int i = d->reports_said; i < d->nb_reports; i++) {
+            const char *file = d->reports[i].file;
+            const char *check = file[0] ? "IFO check" : "Navigation check";
+            int harmless = 0, breaks = 0, done = 0;
 
-        for (int j = d->reports_said; j < i && !done; j++)
-            done = !strcmp(d->reports[j].file, file);
-        if (done)
-            continue;
-        for (int j = i; j < d->nb_reports; j++) {
-            const DVDReport *k = &d->reports[j];
-            if (strcmp(k->file, file))
+            if (file_rank(file) != rank)
                 continue;
-            /* rule breaks as warnings, the first REPORTS_SAID of a file */
-            report_line(d->log, k->level != DVD_REPORT_INFO && breaks < REPORTS_SAID ? AV_LOG_WARNING :
-                        AV_LOG_VERBOSE, check, k);
-            if (k->level == DVD_REPORT_INFO)
-                harmless++;
-            else
-                breaks++;
+            for (int j = d->reports_said; j < i && !done; j++)
+                done = !strcmp(d->reports[j].file, file);
+            if (done)
+                continue;
+            for (int j = i; j < d->nb_reports; j++) {
+                const DVDReport *k = &d->reports[j];
+                if (strcmp(k->file, file))
+                    continue;
+                /* rule breaks as warnings, the first REPORTS_SAID of a file */
+                report_line(d->log, k->level != DVD_REPORT_INFO && breaks < REPORTS_SAID ? AV_LOG_WARNING :
+                            AV_LOG_VERBOSE, check, k);
+                if (k->level == DVD_REPORT_INFO)
+                    harmless++;
+                else
+                    breaks++;
+            }
+            if (breaks)
+                av_log(d->log, AV_LOG_INFO, "%s: %s%s%d finding(s) that break the DVD-Video rules (%s)\n", check,
+                       file, file[0] ? ": " : "", breaks,
+                       breaks > REPORTS_SAID ? "the first ones above, all in the detail lines" : "above");
+            if (harmless)
+                av_log(d->log, AV_LOG_INFO, "%s: %s%s%d harmless finding(s) (see the detail lines): kept\n", check,
+                       file, file[0] ? ": " : "", harmless);
         }
-        if (breaks)
-            av_log(d->log, AV_LOG_INFO, "%s: %s%s%d finding(s) that break the DVD-Video rules (%s)\n", check,
-                   file, file[0] ? ": " : "", breaks,
-                   breaks > REPORTS_SAID ? "the first ones above, all in the detail lines" : "above");
-        if (harmless)
-            av_log(d->log, AV_LOG_INFO, "%s: %s%s%d harmless finding(s) (see the detail lines): kept\n", check, file, file[0] ? ": " : "", harmless);
     }
     d->reports_said = d->nb_reports;
 }
@@ -602,28 +619,36 @@ static int nav_fs_new(DVDDisc *d, const DVDNavHooks *hooks, NavFS **out)
     return 0;
 }
 
-void ff_dvd_ifo_check(DVDDisc *d)
+int ff_dvd_reader_open(DVDDisc *d)
 {
     static const dvd_logger_cb logcb = { read_log, lib_report };
-    dvd_reader_t *dvd;
     NavFS *n;
+    int ret;
 
-    if (nav_fs_new(d, NULL, &n) < 0)
-        return;
+    if (d->reader)
+        return 0;
+    if ((ret = nav_fs_new(d, NULL, &n)) < 0)
+        return ret;
     /* the reader owns the callbacks once open */
-    if (!(dvd = DVDOpenFiles(d, &logcb, "/" NAV_ROOT, &n->fs))) {
-        av_log(d->log, AV_LOG_WARNING, "IFO check: libdvdread cannot open the disc's information files\n");
+    if (!(d->reader = DVDOpenFiles(d, &logcb, "/" NAV_ROOT, &n->fs))) {
+        av_log(d->log, AV_LOG_ERROR, "DVD: libdvdread cannot open the disc's information files\n");
         nav_close(&n->fs);
-        return;
+        return AVERROR_EXTERNAL;
     }
+    return 0;
+}
+
+void ff_dvd_ifo_check(DVDDisc *d)
+{
+    if (ff_dvd_reader_open(d) < 0)
+        return;
     for (int i = 0; i < d->nb_ifos && i <= DVD_MAX_TITLE_SETS; i++) {
         ifo_handle_t *h;
         if (!d->ifos[i] || d->ifos[i]->failed)
             continue;
-        if ((h = ifoOpen(dvd, i)))
+        if ((h = ifoOpen(d->reader, i)))
             ifoClose(h);
     }
-    DVDClose(dvd);
 }
 
 int ff_dvd_nav_open(DVDDisc *d, const DVDNavHooks *hooks, dvdnav_t **out)
