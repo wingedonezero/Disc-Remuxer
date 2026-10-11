@@ -339,7 +339,7 @@ static int mount_without_udf(DiscIOSource *src, DiscIOFS **out)
         if ((ret = ff_discio_dvd_video_check(jol)) < 0)
             goto fail;
         if (ret) {
-            av_log(src->logctx, AV_LOG_VERBOSE, "Reading '%s' through Joliet (ISO 9660 fails the DVD-Video check); "
+            av_log(src->logctx, AV_LOG_INFO, "Reading '%s' through Joliet (ISO 9660 fails the DVD-Video check); "
                    "label '%s'\n", src->name, jol->label);
             ff_discio_fs_close(&iso);
             *out = jol;
@@ -347,7 +347,7 @@ static int mount_without_udf(DiscIOSource *src, DiscIOFS **out)
         }
         ff_discio_fs_close(&jol);
     }
-    av_log(src->logctx, AV_LOG_VERBOSE, "Reading '%s' through ISO 9660 (no file system passes the DVD-Video check); "
+    av_log(src->logctx, AV_LOG_INFO, "Reading '%s' through ISO 9660 (no file system passes the DVD-Video check); "
            "label '%s'\n", src->name, iso->label);
     *out = iso;
     return 0;
@@ -393,7 +393,7 @@ int ff_discio_mount_image(DiscIOSource *src, const DiscIOImageOptions *opts, Dis
     }
     year = AV_RL16(udf->udf_recording_time + 2);
     if (opts->prefer_iso_for_old_udf102 && year < UDF102_ISO_BEFORE) {
-        av_log(src->logctx, AV_LOG_VERBOSE, "'%s' has a UDF 1.02 file system recorded in %d (before %d): ISO 9660 "
+        av_log(src->logctx, AV_LOG_INFO, "'%s' has a UDF 1.02 file system recorded in %d (before %d): ISO 9660 "
                "is preferred when it holds a valid DVD-Video structure\n", src->name, year, UDF102_ISO_BEFORE);
     } else if ((ret = ff_discio_dvd_video_check(udf)) < 0) {
         goto fail;
@@ -403,7 +403,7 @@ int ff_discio_mount_image(DiscIOSource *src, const DiscIOImageOptions *opts, Dis
         *out = udf;
         return 0;
     } else {
-        av_log(src->logctx, AV_LOG_VERBOSE, "The UDF 1.02 file system of '%s' fails the DVD-Video check; trying "
+        av_log(src->logctx, AV_LOG_INFO, "The UDF 1.02 file system of '%s' fails the DVD-Video check; trying "
                "ISO 9660 and Joliet\n", src->name);
     }
 
@@ -419,7 +419,7 @@ int ff_discio_mount_image(DiscIOSource *src, const DiscIOImageOptions *opts, Dis
 
             memcpy(own, iso->label, sizeof(own));
             ff_discio_label_copy(iso->label, udf->label);
-            av_log(src->logctx, AV_LOG_VERBOSE, "Reading '%s' through %s instead of UDF 1.02; label '%s' (%s label "
+            av_log(src->logctx, AV_LOG_INFO, "Reading '%s' through %s instead of UDF 1.02; label '%s' (%s label "
                    "'%s', UDF label '%s')\n", src->name, iso->ops->name, iso->label, iso->ops->name, own,
                    udf->label);
             ff_discio_fs_close(&udf);

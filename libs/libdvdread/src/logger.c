@@ -142,10 +142,11 @@ int DVDFindingsAdd( dvd_findings_t *b, const dvd_report_t *r, char *line, size_t
   snprintf( where, sizeof(where), "%s%s%s%s%s", file, file[0] && table[0] ? " " : "", table, at, bytes );
   snprintf( line, size, "%s: %s%s%s", file[0] ? "IFO check" : "Navigation check", where, where[0] ? ": " : "",
             r->text );
-  /* rule breaks as warnings, the first FINDINGS_SAID of a file; data that
-   * cannot be used always */
+  /* rule breaks as warnings, the first FINDINGS_SAID of a file (the rest
+   * in the detail lines, counted in the summary); data that cannot be used
+   * always; harmless ones (unused bytes not zero, kept) as notices */
   *level = r->level == DVD_REPORT_ERROR || (r->level != DVD_REPORT_INFO && breaks < FINDINGS_SAID) ?
-           DVD_LOGGER_LEVEL_WARN : DVD_LOGGER_LEVEL_INFO;
+           DVD_LOGGER_LEVEL_WARN : r->level == DVD_REPORT_INFO ? DVD_LOGGER_LEVEL_NOTICE : DVD_LOGGER_LEVEL_INFO;
   return 1;
 }
 
@@ -188,13 +189,17 @@ void DVDFindingsSummary( dvd_findings_t *b, void (*say)( void *priv, dvd_logger_
             breaks++;
         }
       if( breaks ) {
-        snprintf( line, sizeof(line), "%s: %s%s%d finding(s) that break the DVD-Video rules (%s)", check, file,
-                  file[0] ? ": " : "", breaks, breaks > FINDINGS_SAID ? "the first ones above, all in the detail lines" :
-                  "above" );
+        if( breaks > FINDINGS_SAID )
+          snprintf( line, sizeof(line), "%s: %s%s%d finding(s) that break the DVD-Video rules (the first %d above, "
+                    "the other %d in the detail lines)", check, file, file[0] ? ": " : "", breaks, FINDINGS_SAID,
+                    breaks - FINDINGS_SAID );
+        else
+          snprintf( line, sizeof(line), "%s: %s%s%d finding(s) that break the DVD-Video rules (above)", check, file,
+                    file[0] ? ": " : "", breaks );
         say( priv, DVD_LOGGER_LEVEL_NOTICE, line );
       }
       if( harmless ) {
-        snprintf( line, sizeof(line), "%s: %s%s%d harmless finding(s) (see the detail lines): kept", check, file,
+        snprintf( line, sizeof(line), "%s: %s%s%d harmless finding(s) (above): kept", check, file,
                   file[0] ? ": " : "", harmless );
         say( priv, DVD_LOGGER_LEVEL_NOTICE, line );
       }

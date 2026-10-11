@@ -548,7 +548,7 @@ static int position_plan(AVFormatContext *s, DiscTitleReader *r)
     }
     for (int i = first; i < n; i++) {
         if (src->chapter_clips[i] < r->first_clip || src->chapter_clips[i] > r->last_clip) {
-            av_log(s, AV_LOG_VERBOSE, "Chapters: record %d lies on no segment that is read: left out\n", i);
+            av_log(s, AV_LOG_INFO, "Chapters: record %d lies on no segment that is read: left out\n", i);
             continue;
         }
         r->pos_clip[r->nb_pos]  = src->chapter_clips[i];
@@ -792,31 +792,56 @@ end:
 
 /* The clips to read (first_clip .. last_clip) and the length of the filler
  * left out before them (*skip, ticks). */
+/* Clips a .. b (from 0), filler at the title's start or end, said in one
+ * line (why: the reason, NULL none). */
+static void filler_said(AVFormatContext *s, int a, int b, const char *where, const char *why)
+{
+    const DiscTitleSource *src = reader_of(s)->src;
+    char reason[64] = "";
+
+    if (why)
+        snprintf(reason, sizeof(reason), " (%s)", why);
+    if (a == b)
+        av_log(s, AV_LOG_INFO, "%s %s (%d of %d): filler at the title's %s%s: left out\n", src->clip_kind,
+               src->clip_name(s, a), a + 1, src->nb_clips, where, reason);
+    else
+        av_log(s, AV_LOG_INFO, "%ss %s to %s (%d-%d of %d): filler at the title's %s%s: left out\n", src->clip_kind,
+               src->clip_name(s, a), src->clip_name(s, b), a + 1, b + 1, src->nb_clips, where, reason);
+}
+
 static int filler_trim(AVFormatContext *s, DiscTitleReader *r, int64_t *skip)
 {
     const DiscTitleSource *src = r->src;
-    int first = 0, last = src->nb_clips - 1, filler, ret;
+    int first = 0, last = src->nb_clips - 1, filler, ret, run = 0;
+    const char *why = NULL, *w;
     int64_t len;
 
     *skip = 0;
+    /* a run of clips left out for the same reason is one line */
     for (; first < last; first++) {
         if ((ret = filler_clip(s, first, 0, &filler, &len)) < 0)
             return ret;
         if (!filler)
             break;
-        av_log(s, AV_LOG_INFO, "%s %s (%d of %d): filler at the title's start (%s): left out\n", src->clip_kind,
-               src->clip_name(s, first), first + 1, src->nb_clips, len ? "short, without other tracks' data" :
-               "no video frame");
+        w = len ? "short, without other tracks' data" : "no video frame";
+        if (first && why && w != why) {
+            filler_said(s, run, first - 1, "start", why);
+            run = first;
+        }
+        why = w;
         *skip += len;
     }
+    if (why)
+        filler_said(s, run, first - 1, "start", why);
+    run = last;
     for (; last > first; last--) {
         if ((ret = filler_clip(s, last, 1, &filler, &len)) < 0)
             return ret;
         if (!filler)
             break;
-        av_log(s, AV_LOG_INFO, "%s %s (%d of %d): filler at the title's end: left out\n", src->clip_kind,
-               src->clip_name(s, last), last + 1, src->nb_clips);
     }
+    if (last < run)
+        filler_said(s, last + 1, run, "end", NULL);
     r->first_clip = first;
     r->last_clip  = last;
     return 0;

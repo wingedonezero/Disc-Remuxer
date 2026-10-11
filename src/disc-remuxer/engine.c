@@ -444,6 +444,9 @@ void engine_disc_overview(const EngineDisc *e, int detail)
             d->nb_titles, d->nb_titles == 1 ? "" : "s");
     if (d->name)
         log_msg(MSG_SOURCE, LOG_INFO, "Disc name: %s", d->name);
+    /* what the format part tells more of the disc (region, protection, checks, ...) */
+    for (int p = 0; p < d->nb_props; p++)
+        log_msg(MSG_SOURCE, LOG_INFO, "Disc %s: %s", d->props[p].name, d->props[p].value);
     jname[0] = 0;
     if (d->name)
         snprintf(jname, sizeof(jname), ",\"name\":%s", json_str(js4, sizeof(js4), d->name));

@@ -463,3 +463,20 @@ def test_info_tells_each_angle_title_its_angle_the_main_one_and_the_shared_cells
     assert "1 chapter, angle 1\n" in out and "1 chapter, angle 2 (main)\n" in out
     assert "cells: 1-2; angle 1, main is angle 2 (#1); cell 1 shared by all angles" in out
     assert "cells: (1,3); angle 2 (main); cell 1 shared by all angles" in out
+
+
+def test_cells_left_out_and_angles_are_lines_of_the_standard_log(tmp_path):
+    # what the title list does to a title is said at the standard level (info), not only in the detail lines
+    folder = six_cells(tmp_path / "a", [2, 10, 10, 10, 10, 10])
+    install_log(lib.AV_LOG_INFO)
+    d = Disc.folder(folder)
+    titles_from(d.d, [("A1", 1, 1, [1, 3, 4, 5, 6])])
+    d.close()
+    assert logged("title 1: cells 1-2 left out at the start")
+    folder = two_angles(tmp_path / "b")
+    install_log(lib.AV_LOG_INFO)
+    d = Disc.folder(folder)
+    titles_from(d.d, [("A1", 1, 1, [1, 2, 3], [2, 1])])
+    d.close()
+    assert logged("title 1: angle 2 added")
+    assert logged("title 1: angle 2 is the main angle (the navigation plays it first)")

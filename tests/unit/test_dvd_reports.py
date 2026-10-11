@@ -3,8 +3,9 @@ reports: every information file is read once by libdvdread at load (all its
 tables, all its checks), the navigation adds what it finds; each finding once
 however often the navigation reads the file again, with the file, the
 table, the field's byte offset and the disc's own bytes there. Harmless
-findings (fields that must be zero and are not) are detail lines with one
-summary line per file, rule breaks warnings; the disc info gives the result.
+findings (fields that must be zero and are not) are lines of the standard
+log ("kept") with one summary line per file, rule breaks warnings; the disc
+info gives the result.
 A built DVD with one title set: VTS_01_0.IFO (and its BUP) changed by hand.
 The builder's own stub program chain has a cell of one sector; libdvdread's
 rule for the cell address table wants its start below its last sector, so
@@ -61,13 +62,13 @@ def unused_audio_entry(b):
 def test_an_unused_entry_that_is_not_zero_is_one_harmless_finding_with_its_place_and_bytes(tmp_path):
     folder = disc(tmp_path, unused_audio_entry)
     log = info(folder)
-    assert "DVD: IFO check: VTS_01_0.IFO: 1 harmless finding(s) (see the detail lines): kept" in log, log
+    assert "DVD: IFO check: VTS_01_0.IFO: 1 harmless finding(s) (above): kept" in log, log
     assert "libdvdnav:" not in log and "libdvdread:" not in log, log
-    detail = info(folder, "-v")
-    line = ("IFO check: VTS_01_0.IFO VTSI_MAT at byte 0x20c (bytes 04 c1 65 6e 00 00 00 00): "
+    line = ("DVD: IFO check: VTS_01_0.IFO VTSI_MAT at byte 0x20c (bytes 04 c1 65 6e 00 00 00 00): "
             "vtsi_mat->vts_audio_attr[i] is not zero (must be zero): kept")
-    # once, though the navigation reads the file again
-    assert detail.count(line) == 1, detail
+    # in the standard log, once, though the navigation reads the file again
+    assert log.count(line) == 1, log
+    assert info(folder, "-v").count(line) == 1
     # + BUILT; the video manager's copy of the attributes holds the entry too (one more harmless finding,
     # in VIDEO_TS.IFO)
     assert check_property(folder) == "1 finding(s) that break the DVD-Video rules, 2 harmless"
@@ -88,7 +89,7 @@ def test_a_value_that_breaks_a_rule_is_a_warning(tmp_path):
 def test_the_built_disc_has_only_its_one_sector_cell_finding(tmp_path):
     folder = disc(tmp_path)
     log = info(folder)
-    assert [line for line in log.splitlines() if "check: " in line] == \
+    assert [line for line in log.splitlines() if "check: " in line and not line.startswith("Disc ")] == \
         [BUILT, "DVD: IFO check: VTS_01_0.IFO: 1 finding(s) that break the DVD-Video rules (above)"], log
     assert check_property(folder) == "1 finding(s) that break the DVD-Video rules, 0 harmless"
 

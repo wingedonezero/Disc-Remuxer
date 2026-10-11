@@ -117,3 +117,14 @@ def test_a_title_without_damage_after_one_with_damage_reports_none(tmp_path):
     assert "damaged data" not in done[1][1], log
     assert re.findall(r"^  Title #(\d+): VTS_01_1\.VOB", log, re.M) and \
         set(re.findall(r"^  Title #(\d+): VTS_01_1\.VOB", log, re.M)) == {done[0][0]}, log
+
+
+def test_a_title_s_warning_count_is_its_warning_lines(tmp_path):
+    # the title's last line counts the warning lines above it, as the run's summary counts them
+    folder, holes = damaged_disc(tmp_path)
+    log = demux(folder, tmp_path / "out")
+    section = log[log.index("=== Title 1/1"):log.index("=== Summary")]
+    n = int(re.search(r"done with (\d+) warning", section).group(1))
+    assert n == sum(1 for line in section.splitlines() if line.startswith("WARNING")), section
+    total = int(re.search(r"; (\d+) warnings?, ", log).group(1))
+    assert total == sum(1 for line in log.splitlines() if line.startswith("WARNING")), log

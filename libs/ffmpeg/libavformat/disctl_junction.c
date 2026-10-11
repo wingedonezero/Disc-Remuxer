@@ -270,13 +270,13 @@ static int copy_check(DRJunction *j, State *s)
 
     if (ov <= TICK) {
         if (same_bytes(f, tail_get(j, 1)))
-            av_log(j->log, AV_LOG_DEBUG, "Title timeline: audio track %d: segment %d starts with the bytes of the "
+            av_log(j->log, AV_LOG_INFO, "Title timeline: audio track %d: segment %d starts with the bytes of the "
                    "frame before it, but the stamps do not overlap (%"PRId64" ticks): no copy, kept\n", j->cfg.track,
                    f->seg + 1, ov);
         return NONE;
     }
     if (same_bytes(f, tail_get(j, 1))) {
-        av_log(j->log, AV_LOG_DEBUG, "Title timeline: audio track %d: segment %d starts with a copy of the frame the "
+        av_log(j->log, AV_LOG_INFO, "Title timeline: audio track %d: segment %d starts with a copy of the frame the "
                "segment before ends with (stamps overlap by %"PRId64" ticks): the copy is left out\n", j->cfg.track,
                f->seg + 1, ov);
         event(j, DR_EV_AUDIO_COPY, f->time, f->dur, s->skew, ov);
@@ -290,7 +290,7 @@ static int copy_check(DRJunction *j, State *s)
     }
     n = f->dur > 0 ? (ov - TICK + f->dur - 1) / f->dur : 0;
     if (n > j->nb_tail) {
-        av_log(j->log, AV_LOG_DEBUG, "Title timeline: audio track %d: segment %d: the stamps overlap by %"PRId64
+        av_log(j->log, AV_LOG_INFO, "Title timeline: audio track %d: segment %d: the stamps overlap by %"PRId64
                " ticks, more frames than the %d kept: not compared\n", j->cfg.track, f->seg + 1, ov, j->nb_tail);
     } else if (n > 1) {
         int i;
