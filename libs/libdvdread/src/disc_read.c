@@ -512,6 +512,8 @@ end:
 
 static void close_ifo( dvd_ifo_rec_t *f )
 {
+  if( f->own )
+    DVDCloseTitleVOBs_rec( f->own );
   if( f->ifo )
     ifoClose( f->ifo );
   free( f->ptt_srpt );
@@ -633,6 +635,51 @@ dvd_disc_rec_t *DVDOpenDisc_rec( dvd_reader_t *ctx )
 fail:
   DVDCloseDisc_rec( d );
   return NULL;
+}
+
+dvd_vob_reader_t *DVDDiscTitleVOBs_rec( dvd_disc_rec_t *d, int title )
+{
+  dvd_ifo_rec_t *f;
+
+  if( !d || title < 1 || title > d->nr_of_title_sets )
+    return NULL;
+  f = &d->ifos[title];
+  if( !f->own_opened && f->ifo ) {
+    f->own_opened = 1;
+    f->own = DVDOpenTitleVOBs_rec( f->ifo, title );
+  }
+  return f->own;
+}
+
+/* The title VOB sectors of title set title on the disc ([start, end)). */
+static int title_vob_range( const dvd_disc_rec_t *d, int title, uint32_t *start, uint32_t *end )
+{
+  uint8_t h[HEADER_SIZE];
+  uint32_t tv, last, ifol, b;
+
+  if( title < 1 || title > d->nr_of_title_sets || !d->ifos[title].ifo ||
+      !ifoRead_rec_bytes( d->ifos[title].ifo, 0, h, sizeof(h) ) )
+    return 0;
+  tv   = be32( h + TT_SRPT );           /* vtstt_vobs */
+  last = be32( h + LAST_SECTOR );
+  ifol = be32( h + 0x1c ) & 0x1ffff;    /* vtsi_last_sector */
+  if( last <= ifol || (b = last - ifol) <= tv )
+    return 0;
+  *start = d->title_set_start[title - 1] + tv;
+  *end   = d->title_set_start[title - 1] + b;
+  return 1;
+}
+
+int DVDDiscTitleVOBsOverlap_rec( const dvd_disc_rec_t *d, int title )
+{
+  uint32_t s, e, s2, e2;
+
+  if( !d || !title_vob_range( d, title, &s, &e ) || d->nr_of_title_sets < 1 )
+    return 0;
+  for( int k = 1; k <= d->nr_of_title_sets; k++ )
+    if( k != title && title_vob_range( d, k, &s2, &e2 ) && ((s <= s2 && s2 < e) || (s2 <= s && s < e2)) )
+      return 1;
+  return 0;
 }
 
 void DVDCloseDisc_rec( dvd_disc_rec_t *d )

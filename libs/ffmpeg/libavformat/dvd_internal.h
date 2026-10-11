@@ -139,9 +139,6 @@ typedef struct DVDIfo {
     /* the title list (dvd_titles.c) */
     int          suspicious;            /**< 0 not decided, 1 its titles are left out, 2 they are not */
 
-    /* reading (dvd_read.c) */
-    dvd_vob_reader_t *vobs;             /**< libdvdread's reading of its title VOBs (NULL: not opened yet) */
-    int          vobs_failed;           /**< they cannot be opened */
 } DVDIfo;
 
 /** A finding of libdvdread / libdvdnav about the disc's data (their
@@ -240,8 +237,8 @@ void ff_dvd_reports_count(const DVDDisc *d, int *harmless, int *breaks);
 int  ff_dvd_vob_read(DVDDisc *d, DVDIfo *f, int menu, uint32_t sector, uint8_t *buf);
 
 /* ---- VOBUs (dvd_read.c, on libdvdread's VOBU records, vob_read.h) ---- */
-/** Title set f's own reading of its title VOBs (opened once; NULL: they
- *  cannot be read). */
+/** Title set f's own reading of its title VOBs (libdvdread's, kept with the
+ *  disc: DVDDiscTitleVOBs_rec(); NULL: they cannot be read). */
 dvd_vob_reader_t *ff_dvd_own_reading(DVDDisc *d, DVDIfo *f);
 /** The NAV pack fields of a VOBU (pci_gi, dsi_gi, sml_pbi, vobu_sri). */
 typedef dvd_vobu_nav_t DVDNav;

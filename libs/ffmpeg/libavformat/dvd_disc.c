@@ -106,13 +106,7 @@ int ff_dvd_disc_open(void *log, DiscIOFS *fs, const char *dir, int folder, const
 void ff_dvd_disc_free(DVDDisc *d)
 {
     /* libdvdread's handles, then libdvdread (its callbacks read the IFOs below) */
-    for (int i = 0; i < d->nb_ifos; i++) {
-        if (d->ifos[i] && d->ifos[i]->vobs) {
-            DVDCloseTitleVOBs_rec(d->ifos[i]->vobs);
-            d->ifos[i]->vobs = NULL;
-        }
-    }
-    DVDCloseDisc_rec(d->rec);           /* its information files */
+    DVDCloseDisc_rec(d->rec);           /* its information files and title VOB readings */
     d->rec = NULL;
     if (d->reader)
         DVDClose(d->reader);

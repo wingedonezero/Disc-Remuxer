@@ -98,7 +98,9 @@ typedef struct
 /**
  * Opens title set title's title VOBs; ifo is its information file as
  * ifoOpen_rec() opened it (its header gives vtstt_vobs). NULL when the
- * title set has no title VOBs.
+ * title set has no title VOBs or they cannot be opened (an error report of
+ * its IFO saying why: a missing first VOB file, no place for them in the
+ * IFO header or on the image, ...).
  */
 DVDREAD_API dvd_vob_reader_t *DVDOpenTitleVOBs_rec( ifo_handle_t *ifo, int title );
 

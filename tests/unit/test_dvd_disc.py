@@ -203,6 +203,20 @@ def test_a_missing_bup_lets_the_ifo_stand_in(tmp_path):
     d.close()
 
 
+def test_title_vobs_that_cannot_be_opened_are_said_with_why(tmp_path):
+    # libdvdread says it whoever asks for the reading (the title list, the
+    # navigation scan, a rip), and why
+    path = folder(tmp_path)
+    (path / "VIDEO_TS" / "VTS_01_1.VOB").unlink()
+    install_log(lib.AV_LOG_WARNING)
+    d = Disc.folder(path)
+    assert d.ret == 0 and not d.ifo(1).failed
+    assert lib.ff_dvd_own_reading(d.d, d.ifo(1)) == ffi.NULL
+    assert lib.ff_dvd_title_vobs_open(d.d, d.ifo(1)) == ffi.NULL
+    assert logged("IFO check: VTS_01_0.IFO: title set 1: its title VOBs cannot be opened: VTS_01_1.VOB is missing")
+    d.close()
+
+
 def test_the_bup_position_of_a_folder_is_checked_by_the_file_sizes(tmp_path):
     v = vts()
     ifo = bytearray(dvd.vts_ifo(v))

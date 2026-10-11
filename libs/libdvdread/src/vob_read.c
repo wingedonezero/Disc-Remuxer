@@ -716,9 +716,10 @@ dvd_vob_reader_t *DVDOpenTitleVOBs_rec( ifo_handle_t *ifo, int title )
   struct ifo_handle_private_s *ifop;
   dvd_reader_t *ctx;
   dvd_vob_reader_t *v;
-  char path[48], full[PATH_MAX + 1];
+  char path[48], full[PATH_MAX + 1], why[96] = "";
   dvdstat_t st;
   uint8_t b[4];
+  int found;
 
   if( !ifo || title < 1 || title > 99 )
     return NULL;
@@ -758,21 +759,34 @@ dvd_vob_reader_t *DVDOpenTitleVOBs_rec( ifo_handle_t *ifo, int title )
   snprintf( path, sizeof(path), "/VIDEO_TS/VTS_%02d_0.IFO", title );
   if( ctx->fs->image_open && DVDStatFile_( ctx, path, &st ) >= 0 && st.sector >= 0 ) {
     int64_t size;
-    if( !ifoRead_rec_bytes( ifo, 0xc4, b, 4 ) || !be32( b ) )     /* vtstt_vobs */
+    if( !ifoRead_rec_bytes( ifo, 0xc4, b, 4 ) || !be32( b ) ) {   /* vtstt_vobs */
+      snprintf( why, sizeof(why), "the IFO header gives no place for them (vtstt_vobs)" );
       goto fail;
-    if( !(v->image = ctx->fs->image_open( ctx->fs )) ||
-        !(v->start = place_title_vobs( ctx, ifo, title, v->image, st.sector )) )
+    }
+    if( !(v->image = ctx->fs->image_open( ctx->fs )) ) {
+      snprintf( why, sizeof(why), "the image cannot be opened" );
       goto fail;
-    if( (size = ctx->fs->file_seek( v->image, 0, SEEK_END )) < 0 )
+    }
+    if( !(v->start = place_title_vobs( ctx, ifo, title, v->image, st.sector )) ) {
+      snprintf( why, sizeof(why), "where they start on the image cannot be found" );
       goto fail;
+    }
+    if( (size = ctx->fs->file_seek( v->image, 0, SEEK_END )) < 0 ) {
+      snprintf( why, sizeof(why), "the image's size cannot be read" );
+      goto fail;
+    }
     v->image_sectors = (size + SECTOR - 1) / SECTOR;
-    if( v->start >= v->image_sectors )
+    if( v->start >= v->image_sectors ) {
+      snprintf( why, sizeof(why), "they start at sector %" PRId64 ", past the image's %" PRId64 " sectors",
+                v->start, v->image_sectors );
       goto fail;
+    }
     v->blocks = ctx->vob_css[title].blocks;
     return opened( v, ifo );
   }
 
   /* a folder: the files joined */
+  found = v->nb_parts;
   for( int i = 0; i < v->nb_parts; i++ ) {
     vob_part_t *p = &v->parts[i];
     snprintf( path, sizeof(path), "/VIDEO_TS/%s", p->name );
@@ -782,13 +796,18 @@ dvd_vob_reader_t *DVDOpenTitleVOBs_rec( ifo_handle_t *ifo, int title )
     }
     v->bytes += p->size;
   }
-  if( !v->nb_parts )
+  if( !v->nb_parts ) {
+    snprintf( why, sizeof(why), found ? "VTS_%02d_1.VOB cannot be opened" : "VTS_%02d_1.VOB is missing", title );
     goto fail;
+  }
   v->blocks = (uint32_t)(v->bytes / SECTOR);
   return opened( v, ifo );
 
 fail:
-  Log3( ctx, "VTS_%02d: the title VOBs cannot be opened", title );
+  /* said, with why, to whoever asked for them (the title list, the scan, a rip) */
+  snprintf( path, sizeof(path), "VTS_%02d_0.IFO", title );
+  DVDReadReportf( ctx->priv, &ctx->logcb, DVD_REPORT_ERROR, path, NULL, -1, "title set %d: its title VOBs cannot be "
+                  "opened: %s", title, why );
   DVDCloseTitleVOBs_rec( v );
   return NULL;
 }

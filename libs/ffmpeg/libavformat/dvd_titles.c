@@ -89,37 +89,9 @@ typedef struct Titles {
     DVDTitleList           *out;
 } Titles;
 
-/* hh:mm:ss of a BCD playback time in seconds (frames left out) */
-/* ---- title sets sharing title VOBs ---- */
-
-/* the title VOB sectors of title set vts on the disc ([start, end)) */
-static int title_vob_range(const DVDDisc *d, int vts, uint32_t *start, uint32_t *end)
-{
-    const DVDIfo *f = vts < d->nb_ifos ? d->ifos[vts] : NULL;
-    uint32_t tv, last, ifol, b;
-
-    if (!f || f->failed)
-        return 0;
-    tv   = ff_dvd_header32(f, DVD_TT_SRPT);
-    last = ff_dvd_header32(f, DVD_LAST_SECTOR);
-    ifol = ff_dvd_header32(f, DVD_I_LAST_SECTOR) & 0x1ffff;
-    if (last <= ifol || (b = last - ifol) <= tv)
-        return 0;
-    *start = d->title_set_start[vts - 1] + tv;
-    *end   = d->title_set_start[vts - 1] + b;
-    return 1;
-}
-
 int ff_dvd_title_vobs_overlap(const DVDDisc *d, int vts)
 {
-    uint32_t s, e, s2, e2;
-
-    if (!title_vob_range(d, vts, &s, &e) || d->nb_ifos < 2)
-        return 0;
-    for (int k = 1; k < d->nb_ifos; k++)
-        if (k != vts && title_vob_range(d, k, &s2, &e2) && ((s <= s2 && s2 < e) || (s2 <= s && s < e2)))
-            return 1;
-    return 0;
+    return DVDDiscTitleVOBsOverlap_rec(d->rec, vts);
 }
 
 static uint32_t bcd_seconds(uint32_t t)

@@ -42,7 +42,7 @@ dvd_vob_reader_t *ff_dvd_title_vobs_open(DVDDisc *d, DVDIfo *f)
     if (ff_dvd_reader_open(d) < 0)
         return NULL;
     if (!(vr = DVDOpenTitleVOBs_rec(f->rec, f->index)))
-        av_log(d->log, AV_LOG_ERROR, "DVD: VTS_%02d: libdvdread cannot open the title VOBs\n", f->index);
+        ff_dvd_reports_log(d);          /* libdvdread says why, said now */
     return vr;
 }
 
@@ -51,12 +51,8 @@ int ff_dvd_title_vob_read(DVDDisc *d, DVDIfo *f, dvd_vob_reader_t *vr, uint32_t 
 {
     int ret;
 
-    if (!vr && !(vr = f->vobs)) {
-        if (f->vobs_failed || !(vr = f->vobs = ff_dvd_title_vobs_open(d, f))) {
-            f->vobs_failed = 1;
-            return AVERROR(EINVAL);
-        }
-    }
+    if (!vr && !(vr = ff_dvd_own_reading(d, f)))
+        return AVERROR(EINVAL);
     ret = DVDReadTitleVOBSector_rec(vr, sector, buf, ended);
     return ret == -2 ? AVERROR_INVALIDDATA : ret < 0 ? AVERROR(EIO) : ret;
 }
@@ -136,9 +132,8 @@ int ff_dvd_segment_read(DVDDisc *d, const DVDTitle *t, int seg, uint32_t block, 
 
 dvd_vob_reader_t *ff_dvd_own_reading(DVDDisc *d, DVDIfo *f)
 {
-    if (!f->vobs && !f->vobs_failed && !(f->vobs = ff_dvd_title_vobs_open(d, f)))
-        f->vobs_failed = 1;
-    return f->vobs;
+    /* when they cannot be opened libdvdread says why (a report) */
+    return DVDDiscTitleVOBs_rec(d->rec, f->index);
 }
 
 int ff_dvd_is_nav_pack(const uint8_t *b)

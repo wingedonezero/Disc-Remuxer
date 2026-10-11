@@ -57,7 +57,7 @@ $(DVDREAD_INC)/config.h: mk/dvd.mk $(DVDREAD_SRC)/dvdread/version.h.in $(DVDCSS_
 DVDNAV_SRC := $(LIBS)/libdvdnav/src
 DVDNAV_INC := $(BUILD)/dvdnav/include
 DVDNAV_FILES := dvdnav.c highlight.c logger.c navigation.c read_cache.c searching.c settings.c \
-                vm/decoder.c vm/getset.c vm/play.c vm/rand.c vm/vm.c vm/vmcmd.c vm/vmget.c
+                scan.c vm/decoder.c vm/getset.c vm/play.c vm/rand.c vm/vm.c vm/vmcmd.c vm/vmget.c
 DVDNAV_CFLAGS := -std=c17 -DHAVE_CONFIG_H -D_DEFAULT_SOURCE -I$(DVDNAV_INC) -I$(LIBS)/libdvdnav -I$(DVDNAV_SRC) \
                  -I$(DVDNAV_SRC)/dvdnav -I$(DVDNAV_SRC)/vm -I$(DVDREAD_INC) -I$(DVDREAD_SRC)
 $(eval $(call c_library,dvdnav,$(DVDNAV_SRC),$(DVDNAV_FILES),$(DVDNAV_CFLAGS)))

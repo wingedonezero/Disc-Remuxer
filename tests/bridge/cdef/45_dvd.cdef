@@ -33,6 +33,7 @@ typedef struct DVDIfo {
     int          nb_vobu_map;
     uint32_t     menu_vob_base;
     uint32_t     title_vob_base;
+    int          entered_by_navigation;
     ...;
 } DVDIfo;
 
@@ -101,6 +102,7 @@ void DVDCloseTitleVOBs_rec(dvd_vob_reader_t *v);
  * of its own: its damaged ranges given back); through the bridge: a title's
  * segment read through the checks */
 dvd_vob_reader_t *ff_dvd_title_vobs_open(DVDDisc *d, DVDIfo *f);
+dvd_vob_reader_t *ff_dvd_own_reading(DVDDisc *d, DVDIfo *f);
 int ff_dvd_title_vob_read(DVDDisc *d, DVDIfo *f, dvd_vob_reader_t *vr, uint32_t sector, uint8_t *buf,
                           dvd_vob_damage_t *ended);
 int ff_dvd_title_vob_sector(DVDDisc *d, DVDIfo *f, uint32_t sector, uint8_t *buf);

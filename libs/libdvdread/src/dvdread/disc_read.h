@@ -23,6 +23,7 @@
 
 #include "dvd_reader.h"
 #include "ifo_types.h"
+#include "vob_read.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -108,6 +109,8 @@ typedef struct
   int                nb_vobu_map;
   int                map_trusted;       /* its VOBU address map holds every cell (as set by DVDSetVobuMap_rec()) */
   uint32_t           menu_vobu_last;    /* the last VOBU start of the menus' VOBU address map */
+  dvd_vob_reader_t  *own;               /* its title VOBs' own reading (DVDDiscTitleVOBs_rec()) */
+  int                own_opened;
 } dvd_ifo_rec_t;
 
 typedef struct
@@ -129,6 +132,22 @@ typedef struct
  */
 DVDREAD_API dvd_disc_rec_t *DVDOpenDisc_rec( dvd_reader_t * );
 DVDREAD_API void DVDCloseDisc_rec( dvd_disc_rec_t * );
+
+/**
+ * Title set title's own reading of its title VOBs (DVDOpenTitleVOBs_rec()),
+ * opened the first time it is asked for and kept with the disc: the reading
+ * the VOBU records, the cell checks and the stream probe of the title set
+ * use. NULL when the title set was not read or its title VOBs cannot be
+ * opened.
+ */
+DVDREAD_API dvd_vob_reader_t *DVDDiscTitleVOBs_rec( dvd_disc_rec_t *, int title );
+
+/**
+ * Title set title's title VOBs share sectors with another title set's: by
+ * each one's start in the title table and its IFO header (vtstt_vobs up to
+ * vts_last_sector - vtsi_last_sector).
+ */
+DVDREAD_API int DVDDiscTitleVOBsOverlap_rec( const dvd_disc_rec_t *, int title );
 
 #ifdef __cplusplus
 };

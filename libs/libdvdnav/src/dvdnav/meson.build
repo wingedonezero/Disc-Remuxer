@@ -5,6 +5,7 @@ dvdnav_api_headers = files(
     'dvdnav.h',
     'dvdnav_events.h',
     'dvd_types.h',
+    'scan.h',
 )
 
 dvdnav_api_headers += configure_file(input: 'version.h.in',
