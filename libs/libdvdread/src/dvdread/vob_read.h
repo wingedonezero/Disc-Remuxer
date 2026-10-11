@@ -353,6 +353,34 @@ DVDREAD_API int DVDCellList_rec( dvd_vob_reader_t *, int pgcn, int first, int la
 DVDREAD_API int DVDCellWalk_rec( dvd_vob_reader_t *, int pgcn, const uint8_t *played, int nb_played, int angle,
                                  int angles, int *cells, int *nb, int *first, int *last );
 
+/** What CellTrim chose besides the cells. */
+typedef struct
+{
+  int first, last;                    /* the run's first and last cell index, -1: none chosen */
+  int fake_percent;                   /* the cells were left out as fake cells making up this much of the
+                                         chain's declared length (100: no length at all), -1: not so */
+} dvd_cell_trim_t;
+
+/**
+ * CellTrim: the chain's cells without the navigation, decoys at the start
+ * and end trimmed (nb_chapters: the title's chapters; first_cell /
+ * middle_cell: the cells its first and middle chapter start at, -1 none).
+ * First way, 4 chapters or fewer: a chain of 3-5 cells whose first and
+ * last are rejected filler around one VOB keeps its inner cells, one of 5
+ * cells or more with rejected ends and exactly one run of 10 s or more
+ * between cell commands that jump away keeps that run (its filler ends
+ * dropped). Else, with fewer than 5 chapters, the cells between the first
+ * and the last that pass the full test; with 5 or more, the run around the
+ * middle chapter between cell commands that jump away, widened back over
+ * runs of 30 s or more before the program after its start, trimmed of
+ * cells failing the full check and of short cells starting a new timeline
+ * at its end, and of filler at both ends. A run whose cells in disc order
+ * are 26 % or more short of the chain's declared length is fake: no cells.
+ * 1 done (no cells when none are left), 0 failed.
+ */
+DVDREAD_API int DVDCellTrim_rec( dvd_vob_reader_t *, int pgcn, int nb_chapters, int first_cell, int middle_cell,
+                                 int angle, int angles, int *cells, int *nb, dvd_cell_trim_t *result );
+
 /** Closes the title VOBs; a damaged range still open is reported. */
 DVDREAD_API void DVDCloseTitleVOBs_rec( dvd_vob_reader_t * );
 

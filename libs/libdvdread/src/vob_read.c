@@ -2012,6 +2012,324 @@ int DVDCellWalk_rec( dvd_vob_reader_t *v, int pgcn, const uint8_t *played, int n
   return ret;
 }
 
+/* ---- CellTrim: the cell list without the navigation ---- */
+
+typedef struct {
+  dvd_vob_reader_t *v;
+  const pgc_rec_t  *p;
+  int               pgcn, angle, angles;
+  int              *cells, *nb;
+  dvd_cell_trim_t  *res;
+} trim_t;
+
+/* The cell command cmd_nr (from 1) of the chain may jump away: a Goto /
+ * Link / Jump that is not a plain "go on" (DVD-Video command groups: link,
+ * jump and set-with-link instructions). */
+static int cmd_jumps( const pgc_rec_t *p, unsigned cmd_nr )
+{
+  const uint8_t *c;
+  unsigned u, u7, u5, op;
+  int b;
+
+  if( !cmd_nr || cmd_nr > p->nr_of_cell || !p->commands )
+    return 0;
+  c  = p->commands + 8 * (p->nr_of_pre + p->nr_of_post + cmd_nr - 1);
+  u  = (unsigned)c[0] << 8 | c[1];
+  u7 = u & 0xff0f;
+  u5 = u & 0xf0ff;
+  if( u7 == 0x2001 && !c[7] )
+    return 0;
+  if( (u5 == 0x7001 || u5 == 0x6001) && !c[7] )
+    return 0;
+  if( u7 == 0x2001 || u7 == 0x2005 || u7 == 0x2006 || u7 == 0x2007 || u7 == 0x3008 ) {
+    op = c[1] >> 4 & 7;
+    if( !(c[1] & 0x80) )
+      b = !((op == 3 || op == 5 || op == 7) && c[5] == c[3]);
+    else
+      b = op != 1 || (c[4] << 8 | c[5]) != 0;
+  } else {
+    b = 0;
+  }
+  if( u5 == 0x6001 || (u5 >= 0x6004 && u5 <= 0x6007) || u5 == 0x7001 || (u5 >= 0x7004 && u5 <= 0x7007) )
+    return 1;
+  return b;
+}
+
+/* The run of cells around cell i on one timeline between cell commands
+ * that jump away. */
+static void segment_around( const pgc_rec_t *p, int i, int *first, int *last )
+{
+  int k = i;
+
+  while( k && (CELL_FLAGS( &p->cells[k] ) & 0x32) != 2 && !cmd_jumps( p, CELL_CMD_NR( &p->cells[k - 1] ) ) )
+    k--;
+  *first = k;
+  k = i;
+  while( !cmd_jumps( p, CELL_CMD_NR( &p->cells[k] ) ) && k + 1 < p->nr_of_cells &&
+         (CELL_FLAGS( &p->cells[k + 1] ) & 0x32) != 2 )
+    k++;
+  *last = k;
+}
+
+static uint32_t cells_seconds( const pgc_rec_t *p, int first, int last )
+{
+  uint32_t sum = 0;
+  for( int k = first; k <= last; k++ )
+    sum += bcd_seconds( p->cells[k].playback_time );
+  return sum;
+}
+
+/* From cell b toward cell a, the first cell that is not filler; a when none
+ * (simple: the first one passing the full test). */
+static int pick_end( trim_t *T, int a, int b, int simple )
+{
+  const pgc_rec_t *p = T->p;
+  int dir = a < b ? 1 : -1, i = a < b ? b - a : a - b;
+
+  if( a == b )
+    return a;
+  if( simple ) {
+    for( int j = i; j >= 1; j-- )
+      if( !DVDCellRejected_rec( T->v, T->pgcn, a + dir * j, 0, -1 ) )
+        return a + dir * j;
+    return a;
+  }
+  while( i ) {
+    int c = a + dir * i, step = 1;
+    if( bcd_seconds( p->cells[c].playback_time ) > 2 && !DVDCellRejected_rec( T->v, T->pgcn, c, 0, -1 ) ) {
+      if( (p->cells[c].playback_time & 0xffffff00) > 0x3000 || i < 4 ||
+          bcd_seconds( p->cells[a + dir * (i - 1)].playback_time ) > 2 ||
+          bcd_seconds( p->cells[a + dir * (i - 2)].playback_time ) > 2 )
+        return c;
+      step = 3;                         /* a short cell after two of at most 2 s: skipped with them */
+    }
+    i -= step;
+  }
+  return a;
+}
+
+/* The longest run of cells first..last lying in disc order; 1 when it is
+ * not mostly fake against the chain's declared length (else, unless quiet,
+ * the fake share is given back). */
+static int best_run( trim_t *T, int first, int last, int *rf, int *rl, int quiet )
+{
+  const pgc_rec_t *p = T->p;
+  uint32_t best = 0, declared, run, pct;
+  int start = first, cur = first;
+
+  for( ;; ) {
+    int end = cur, next = -1;
+    if( cur != last && cur + 1 >= p->nr_of_cells ) {
+      Log3( T->v->ctx, "VTS_%02d program chain %d: cell %d lies after cell %d", T->v->title, T->pgcn + 1,
+            first + 1, last + 1 );
+    } else if( cur != last ) {
+      next = cur + 1;
+      if( p->cells[cur].first_sector <= p->cells[next].first_sector ) {
+        cur = next;
+        continue;
+      }
+    }
+    if( (run = cells_seconds( p, start, end )) > best ) {
+      *rf  = start;
+      *rl  = end;
+      best = run;
+    }
+    if( next < 0 )
+      break;
+    start = cur = next;
+  }
+  if( !best ) {
+    if( !quiet )
+      T->res->fake_percent = 100;
+    return 0;
+  }
+  declared = bcd_seconds( p->playback_time );
+  run = cells_seconds( p, *rf, *rl );
+  pct = declared && declared > run ? (uint32_t)((uint64_t)(declared - run) * 100 / declared) : 0;
+  if( !declared )
+    Log3( T->v->ctx, "VTS_%02d program chain %d declares no length [untested on real discs]", T->v->title,
+          T->pgcn + 1 );
+  if( pct < 26 )
+    return 1;
+  if( !quiet )
+    T->res->fake_percent = (int)pct;
+  return 0;
+}
+
+/* Cells first..last as the cell list. */
+static int trim_cells( trim_t *T, int first, int last )
+{
+  T->res->first = first;
+  T->res->last  = last;
+  return DVDCellList_rec( T->v, T->pgcn, first, last, T->angle, T->angles, T->cells, T->nb );
+}
+
+/* First way (see DVDCellTrim_rec()): 1 done, 0 no such shape. */
+static int trim_edges( trim_t *T, int nb_chapters )
+{
+  const pgc_rec_t *p = T->p;
+  int n = p->nr_of_cells, F = 0, L = n - 1, gs = -1, ge = -1, ret;
+
+  if( nb_chapters > 4 )
+    return 0;
+  if( n >= 3 && n <= 5 && DVDCellRejected_rec( T->v, T->pgcn, F, 0, -1 ) &&
+      DVDCellRejected_rec( T->v, T->pgcn, L, 0, -1 ) ) {
+    int S = 1, E = n - 2, prev = -1, ok;
+    if( p->cells[F].vob_id_nr != p->cells[S].vob_id_nr && p->cells[L].vob_id_nr != p->cells[E].vob_id_nr ) {
+      int same = p->cells[F].vob_id_nr == p->cells[L].vob_id_nr && p->cells[F].cell_nr == p->cells[L].cell_nr;
+      ok = p->cells[F].cell_nr == 1 && p->cells[L].cell_nr == 1 ? 1 : same;
+      for( int x = S; ok && x != E; x++ ) {
+        if( p->cells[x].vob_id_nr != p->cells[E].vob_id_nr || DVDCellRejected_rec( T->v, T->pgcn, x, 0, prev ) ||
+            CELL_CMD_NR( &p->cells[x] ) ) {
+          ok = 0;
+          break;
+        }
+        prev = x;
+      }
+      if( !DVDCellRejected_rec( T->v, T->pgcn, E, 0, prev ) && ok && (ret = trim_cells( T, S, E )) != 0 )
+        return ret;
+    }
+  }
+  if( n < 5 || !DVDCellRejected_rec( T->v, T->pgcn, F, 0, -1 ) || !DVDCellRejected_rec( T->v, T->pgcn, L, 0, -1 ) )
+    return 0;
+  for( int c = F; c <= L; ) {
+    int s, e;
+    segment_around( p, c, &s, &e );
+    if( cells_seconds( p, s, e ) > 9 ) {
+      if( gs >= 0 )
+        return 0;                       /* two long runs */
+      gs = s;
+      ge = e;
+    }
+    if( e == L || e + 1 >= n )
+      break;
+    c = e + 1;
+  }
+  if( gs < 0 )
+    return 0;
+  gs = pick_end( T, ge, gs, 1 );
+  return trim_cells( T, gs, pick_end( T, gs, ge, 1 ) );
+}
+
+/* The entry cell (index) of the first program starting after cell i (next
+ * 1) or of the program holding it (next 0); -1 none. */
+static int program_entry( const pgc_rec_t *p, int i, int next )
+{
+  int k = 1, np = p->nr_of_programs, at;
+
+  if( !np )
+    return -1;
+  for( ; k <= np; k++ )
+    if( p->program_map[k - 1] > i + 1 )
+      break;
+  at = next ? k : k - 1;                /* the program number, from 1 */
+  if( !at || at > np || !p->program_map[at - 1] || p->program_map[at - 1] > p->nr_of_cells )
+    return -1;
+  return p->program_map[at - 1] - 1;
+}
+
+/* Second way (see DVDCellTrim_rec()): 1 done (no cells when it finds none),
+ * 0 failed. */
+static int trim_runs( trim_t *T, int nb_chapters, int first, int mid )
+{
+  const pgc_rec_t *p = T->p;
+  dvd_vob_reader_t *v = T->v;
+  int n = p->nr_of_cells, rf, rl;
+
+  if( nb_chapters < 5 ) {
+    int fi = 0, li = n - 1;
+    if( !n )
+      goto clear;
+    while( DVDCellRejected_rec( v, T->pgcn, fi, 0, -1 ) || DVDCellCheckFailed_rec( v, T->pgcn, fi ) )
+      if( ++fi > n - 1 )
+        goto clear;
+    while( DVDCellRejected_rec( v, T->pgcn, li, 0, -1 ) || DVDCellCheckFailed_rec( v, T->pgcn, li ) ) {
+      if( li == fi )
+        goto clear;
+      li--;
+    }
+    if( best_run( T, fi, li, &rf, &rl, 1 ) )
+      return trim_cells( T, rf, rl );
+  } else {
+    int S, E, A, B, C, D, x, y;
+    if( first < 0 || mid < 0 ) {
+      Log3( v->ctx, "VTS_%02d program chain %d: a chapter without a cell", v->title, T->pgcn + 1 );
+      return 0;
+    }
+    for( S = mid; S != first; S-- ) {
+      if( S - 1 < 0 ) {
+        Log3( v->ctx, "VTS_%02d program chain %d: no cell before cell %d", v->title, T->pgcn + 1, S + 1 );
+        return 0;
+      }
+      if( cmd_jumps( p, CELL_CMD_NR( &p->cells[S - 1] ) ) )
+        break;
+    }
+    for( E = mid; E + 1 < n; )
+      if( cmd_jumps( p, CELL_CMD_NR( &p->cells[++E] ) ) )
+        break;
+    if( !best_run( T, S, E, &rf, &rl, 0 ) )
+      goto clear;
+    if( (A = program_entry( p, S, 1 )) < 0 ) {
+      Log1( v->ctx, "VTS_%02d program chain %d: the middle chapter's cells lie in the last program: they cannot be "
+            "trimmed [untested on real discs]", v->title, T->pgcn + 1 );
+      return 0;
+    }
+    /* back from A over runs of 30 seconds or more, not past S */
+    B = S;
+    for( int at = A; at != S; ) {
+      int s, e, s2, e2;
+      segment_around( p, at, &s, &e );
+      B = s;
+      if( s == S || s - 1 < 0 )
+        break;
+      segment_around( p, s - 1, &s2, &e2 );
+      if( cells_seconds( p, s2, e2 ) < 30 )
+        break;
+      B = S;
+      if( s2 == S )
+        break;
+      at = s2;
+    }
+    /* back from A over cells passing the full check, not past B */
+    for( C = A; C != B && !DVDCellCheckFailed_rec( v, T->pgcn, C - 1 ); C-- )
+      ;
+    /* back from E over short new-timeline cells, not past C */
+    for( D = E; D != C && (CELL_FLAGS( &p->cells[D] ) & 0xf2) == 2 && bcd_seconds( p->cells[D].playback_time ) < 2; ) {
+      if( !D ) {
+        Log3( v->ctx, "VTS_%02d program chain %d: no cell before cell 1", v->title, T->pgcn + 1 );
+        return 0;
+      }
+      D--;
+    }
+    x = pick_end( T, A, C, 0 );
+    if( (y = program_entry( p, D, 0 )) < 0 ) {
+      Log1( v->ctx, "VTS_%02d program chain %d: cell %d lies in no program [untested on real discs]", v->title,
+            T->pgcn + 1, D + 1 );
+      return 0;
+    }
+    y = pick_end( T, y, D, 0 );
+    if( best_run( T, x, y, &rf, &rl, 0 ) )
+      return trim_cells( T, rf, rl );
+  }
+clear:
+  *T->nb = 0;
+  return 1;
+}
+
+int DVDCellTrim_rec( dvd_vob_reader_t *v, int pgcn, int nb_chapters, int first_cell, int middle_cell, int angle,
+                     int angles, int *cells, int *nb, dvd_cell_trim_t *result )
+{
+  trim_t T = { v, pgc_of( v, pgcn ), pgcn, angle, angles, cells, nb, result };
+  int ret;
+
+  *nb = 0;
+  result->first = result->last = result->fake_percent = -1;
+  if( !T.p )
+    return 0;
+  ret = trim_edges( &T, nb_chapters );
+  return ret ? ret : trim_runs( &T, nb_chapters, first_cell, middle_cell );
+}
+
 void DVDCloseTitleVOBs_rec( dvd_vob_reader_t *v )
 {
   if( !v )

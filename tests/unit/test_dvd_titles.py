@@ -280,6 +280,17 @@ def test_trim_drops_rejected_cells_at_both_ends(tmp_path):
     assert t["map"] == "2-3"
 
 
+def test_trim_leaves_out_a_run_far_shorter_than_the_chain_s_declared_length(tmp_path):
+    # 5 chapters (a program per cell), cells of 1 s in disc order: 5 s
+    # against the 10 s the chain declares -> fake cells make up 50 %
+    cells = [c(60 * k, 60 * k + 59, 30, 1) for k in range(5)]
+    navs = [n for k in range(5) for n in vobus(60 * k, 60 * k + 59, 30)]
+    p = Pgc(cells=cells, programs=[1, 2, 3, 4, 5], playback_time=bytes([0, 0, 0x10, 0]))
+    folder = build(tmp_path, [p], [[(1, k + 1) for k in range(5)]], navs, 300)
+    run(folder, [], cell_mode=TRIM)
+    assert logged("title 1: fake cells make up 50% of it: its cells are left out")
+
+
 def test_walk_trim_lists_a_title_the_navigation_did_not_reach(tmp_path):
     pgcs = [Pgc(cells=[c(0, 9, 5, 1)]), Pgc(cells=[c(10, 19, 5, 1)])]
     folder = build(tmp_path, pgcs, [[(1, 1)], [(2, 1)]], vobus(0, 9, 5) + vobus(10, 19, 5), 20)
