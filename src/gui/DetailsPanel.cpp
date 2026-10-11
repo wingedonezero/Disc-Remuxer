@@ -248,8 +248,22 @@ void DetailsPanel::showTitle(const DiscTitleInfo *t, const uint8_t *keep)
         h.row("Segments", QString::number(t->nb_files));
         h.row("Segment map", files.join(", "));
     }
-    if (t->angle)
+    if (t->angle) {
         h.row("Angle", QString::number(t->angle));
+        if (t->main_angle == t->angle)
+            h.row("Main angle", QString("%1 (this title)").arg(t->main_angle));
+        else if (t->main_angle)
+            h.row("Main angle", t->main_title >= 0 ? QString("%1 (title #%2)").arg(t->main_angle).arg(t->main_title)
+                                                    : QString::number(t->main_angle));
+        if (t->angle_order[0] && t->angle_order[1]) {
+            QStringList order;
+            for (int k = 0; k < 9 && t->angle_order[k]; k++)
+                order << QString::number(t->angle_order[k]);
+            h.row("Angle order", order.join(", ") + " (as the disc plays them)");
+        }
+        if (t->shared_cells)
+            h.row("Shared cells", QString::fromUtf8(t->shared_cells) + " (all angles play them)");
+    }
     h.row("Language", languageText(t->language));
     h.row("Output", QString("%1/%1_<track>_…  (as parts: %1_p1/%1_p1_<track>_…, one folder per part)")
                         .arg(QString::fromUtf8(name)));

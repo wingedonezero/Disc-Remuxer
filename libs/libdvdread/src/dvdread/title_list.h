@@ -132,6 +132,8 @@ typedef struct
   uint32_t               measured;    /* seconds: the cells' VOBUs' presentation times */
   dvd_title_segments_t   segs;        /* its segments (DVDTitleSegments_rec()) */
   char                 **cell_maps;   /* per segment its cell runs as text: "1-3", "(1-3,5)" */
+  char                  *shared_cells;   /* a title with angles: its cells all angles play (outside the angle
+                                            blocks) as text, "1, 2"; NULL none */
   int                    built;
   int                    nav_invalid; /* places with invalid navigation found */
   int                    short_title; /* shorter than the minimum length: listed, not selected */

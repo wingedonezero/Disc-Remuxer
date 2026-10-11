@@ -374,7 +374,9 @@ static void remove_title(AVFormatContext *s, int i)
 }
 
 /* The disc info's title: length (the cells' playback times), size (the
- * title VOB sectors it plays), angle, whether selected, the program chain
+ * title VOB sectors it plays), angle (with the main angle and its title, the
+ * order the disc plays the angles in, the cells all angles play), whether
+ * selected, the program chain
  * and the navigation's recording it comes from, its segments' cells (as its
  * "files"), its chapters. */
 static int title_info(AVFormatContext *s, int i, DiscTitleInfo *dt)
@@ -386,6 +388,18 @@ static int title_info(AVFormatContext *s, int i, DiscTitleInfo *dt)
     dt->duration = (int64_t)t->declared * AV_TIME_BASE;
     dt->angle    = t->nr_of_angles > 1 ? t->angle + 1 : 0;
     dt->selected = !t->short_title;
+    if (dt->angle) {
+        dt->main_angle   = t->main_angle;
+        dt->main_title   = -1;
+        dt->shared_cells = t->shared_cells;
+        for (int j = 0; j < c->titles.nb_titles; j++) {
+            const dvd_title_t *o = c->titles.titles[j];
+            if (o->title == t->title && o->pgcn == t->pgcn && o->angle + 1 == t->main_angle)
+                dt->main_title = j;
+        }
+        if (t->scan)
+            memcpy(dt->angle_order, t->scan->angles, sizeof(dt->angle_order));
+    }
     if (t->scan)
         snprintf(source, sizeof(c->sources[i]), "VTS_%02d program chain %d (navigation %s), cells", t->vtsn,
                  t->pgcn + 1, t->scan->name);

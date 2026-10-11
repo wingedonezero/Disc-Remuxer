@@ -442,3 +442,24 @@ def test_corpus_title_lists_are_the_expected_ones():
         if ret != 0 or text != expected.read_text():
             differ.append(disc)
     assert done and not differ
+
+
+def test_info_tells_each_angle_title_its_angle_the_main_one_and_the_shared_cells(tmp_path):
+    # cell 1, then an angle block of two cells; the chain's pre command selects angle 2
+    first = flags.ANGLE_BLOCK | flags.FIRST_IN_BLOCK
+    last = flags.ANGLE_BLOCK | flags.LAST_IN_BLOCK
+    p = Pgc(cells=[c(0, 9, 5, 1), c(10, 19, 5, 1, flags=first), c(20, 29, 5, 1, flags=last)],
+            pre=[[0x51, 0, 0, 0, 0, 0x82, 0, 0]])          # SetSTN: angle = 2
+    navs = vobus(0, 9, 5) + vobus(10, 19, 5) + vobus(20, 29, 5)
+    folder = build(tmp_path, [p], [[(1, 1)]], navs, 30, angles=[2])
+    from test_dvd_streams import put, video
+    for sector in (1, 11, 21):
+        put(folder, sector, video())
+    ts, _ = info(folder)
+    got = [(t["angle"], t["main_angle"], t["main_title"], t["shared_cells"]) for t in ts if "angle" in t]
+    assert got == [(1, 2, 1, "1"), (2, 2, 1, "1")]
+    assert all("angle_order" not in t for t in ts), "the disc plays one angle"
+    out = subprocess.run([*PROGRAM, "-v", "info", str(folder)], capture_output=True, text=True).stdout
+    assert "1 chapter, angle 1\n" in out and "1 chapter, angle 2 (main)\n" in out
+    assert "cells: 1-2; angle 1, main is angle 2 (#1); cell 1 shared by all angles" in out
+    assert "cells: (1,3); angle 2 (main); cell 1 shared by all angles" in out

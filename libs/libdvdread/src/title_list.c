@@ -297,6 +297,30 @@ static int cell_maps( dvd_title_t *t )
   return 0;
 }
 
+/* A title with angles: its cells outside the angle blocks (those all its
+ * angles play) as text, "1, 2"; none: NULL. */
+static int shared_cells( titles_t *T, dvd_title_t *t )
+{
+  const pgc_rec_t *p = title_pgc( T, t );
+  size_t size = 1 + (size_t)t->nb_cells * 5, at = 0;
+  char *s;
+
+  if( t->nr_of_angles < 2 || !p || !p->cells )
+    return 0;
+  if( !(s = malloc( size )) )
+    return -1;
+  s[0] = 0;
+  for( int i = 0; i < t->nb_cells; i++ )
+    if( t->cells[i] < p->nr_of_cells && (p->cells[t->cells[i]].category[0] >> 4 & 3) != 1 )
+      at += snprintf( s + at, size - at, "%s%d", at ? ", " : "", t->cells[i] + 1 );
+  if( !at ) {
+    free( s );
+    return 0;
+  }
+  t->shared_cells = s;
+  return 0;
+}
+
 /* The chapters' places in the segments; unplaced ones dropped, a leading
  * one that cannot be placed dropped or (the next one not at the start) put
  * at the start. */
@@ -380,7 +404,7 @@ static int build_segments( titles_t *T, dvd_title_t *t )
     return ret < 0 ? -1 : 0;
   }
   t->segs = o;                        /* the title's from here on */
-  if( cell_maps( t ) < 0 || place_chapters( T, t, vr ) < 0 )
+  if( cell_maps( t ) < 0 || shared_cells( T, t ) < 0 || place_chapters( T, t, vr ) < 0 )
     return -1;
   t->built = 1;
   return 1;
@@ -499,6 +523,7 @@ void DVDFreeTitle_rec( dvd_title_t *t )
   for( int k = 0; t->cell_maps && k < t->segs.nb_segments; k++ )
     free( t->cell_maps[k] );
   free( t->cell_maps );
+  free( t->shared_cells );
   DVDFreeTitleSegments_rec( &t->segs );
   free( t->chapters );
   free( t->cells );

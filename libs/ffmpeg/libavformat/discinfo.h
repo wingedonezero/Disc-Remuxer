@@ -110,6 +110,11 @@ typedef struct DiscTitleInfo {
     const char      *name;           /**< NULL when the disc names none */
     const char      *source;         /**< what the title is made from (e.g. "00800.mpls(1)"), NULL when not told */
     int              angle;          /**< its angle (1-based) when the disc has several, else 0 */
+    int              main_angle;     /**< with angle: the angle a player plays (1-based), 0 when not told */
+    int              main_title;     /**< with main_angle: the index of that angle's title, -1 not listed */
+    uint8_t          angle_order[10]; /**< with angle: the angles in the order the disc plays them (1-based,
+                                          0 ends); empty when not told */
+    const char      *shared_cells;   /**< with angle: the cells (DVD) all its angles play, "1, 2"; NULL none */
     char             language[4];    /**< the title's language (ISO 639-2), "" when none */
     int64_t          duration;       /**< AV_TIME_BASE, as the disc records it */
     int64_t          size;           /**< bytes of the files it plays */

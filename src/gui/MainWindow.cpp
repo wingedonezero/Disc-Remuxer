@@ -466,7 +466,7 @@ void MainWindow::fillDisc(Job &job)
         if (ti->nb_files > 1)
             made << QString("%1 segments").arg(ti->nb_files);
         if (ti->angle)
-            made << QString("angle %1").arg(ti->angle);
+            made << QString("angle %1%2").arg(ti->angle).arg(ti->angle == ti->main_angle ? " (main)" : "");
         if (ti->nb_parts)
             made << QString("%1 parts").arg(ti->nb_parts);
         QString desc = (ti->name && *ti->name ? QString::fromUtf8(ti->name) + " – " : QString()) + made.join(", ");
