@@ -14,6 +14,7 @@ dvdread_src = files(
     'nav_print.c',
     'nav_read.c',
     'vob_read.c',
+    'disc_read.c',
 )
 
 # Platform-specific filesystem implementation

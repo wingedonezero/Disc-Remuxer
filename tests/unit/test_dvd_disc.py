@@ -189,7 +189,17 @@ def test_a_missing_ifo_is_read_from_its_bup(tmp_path):
     install_log(lib.AV_LOG_WARNING)
     d = Disc.folder(path)
     assert d.ret == 0 and not d.ifo(1).failed
-    assert logged("VTS_01.IFO is missing: its BUP is read as the IFO")
+    assert logged("IFO check: VTS_01_0.IFO: the IFO is missing: its BUP is read as the IFO")
+    d.close()
+
+
+def test_a_missing_bup_lets_the_ifo_stand_in(tmp_path):
+    path = folder(tmp_path)
+    (path / "VIDEO_TS" / "VTS_01_0.BUP").unlink()
+    install_log(lib.AV_LOG_WARNING)
+    d = Disc.folder(path)
+    assert d.ret == 0 and not d.ifo(1).failed
+    assert logged("IFO check: VTS_01_0.IFO: the BUP is missing: the IFO stands in for it")
     d.close()
 
 
@@ -364,7 +374,8 @@ def test_an_unreadable_menu_vobu_map_leaves_the_title_set_s_vobu_starts_untruste
     install_log(lib.AV_LOG_VERBOSE)
     d = Disc.folder(path)
     assert d.ret == 0 and not d.ifo(1).failed and not lib.ff_dvd_map_trusted(d.d, d.ifo(1))
-    assert logged("VTS_01: the VOBU address map at sector 32767 cannot be read: its VOBU starts are not trusted")
+    assert logged("IFO check: VTS_01_0.IFO VTSM_VOBU_ADMAP: the VOBU address map at sector 32767 cannot be read: its "
+                  "VOBU starts are not trusted")
     assert logged(f"IFO check: VTS_01_0.IFO VTSM_VOBU_ADMAP at byte {0x7fff * S:#x}: VTSM_VOBU_ADMAP at sector 32767 "
                   "cannot be read")
     d.close()
@@ -380,18 +391,21 @@ def test_the_text_data_names_the_disc(tmp_path):
 
 
 def test_text_bytes_outside_0x20_to_0x7a_are_dropped_and_logged(tmp_path):
-    install_log(lib.AV_LOG_WARNING)
+    # a choice of the reading, not a fault of the disc: a harmless finding
+    install_log(lib.AV_LOG_VERBOSE)
     d = Disc.folder(folder(tmp_path, m=vmg(text=txtdt([(0x30, b"Caf\xe9 {1}")]))))
     assert ffi.string(d.d.text_name) == b"Caf 1"
-    assert logged('text data item 0x30: 3 byte(s) outside 0x20-0x7A dropped (kept: "Caf 1")')
+    assert logged('IFO check: VIDEO_TS.IFO TXTDT_MGI: text data item 0x30: 3 byte(s) outside 0x20-0x7A dropped '
+                  '(kept: "Caf 1")')
+    assert logged("VIDEO_TS.IFO: 1 harmless finding(s)")
     d.close()
 
 
 def test_text_data_in_another_character_set_is_not_used(tmp_path):
-    install_log(lib.AV_LOG_WARNING)
+    install_log(lib.AV_LOG_VERBOSE)
     d = Disc.folder(folder(tmp_path, m=vmg(text=txtdt([(0x30, b"Name")], charset=0x02))))
     assert d.ret == 0 and d.d.text_name == ffi.NULL
-    assert logged("text data in character set 0x02 is not read")
+    assert logged("IFO check: VIDEO_TS.IFO TXTDT_MGI: text data in character set 0x02 is not read")
     d.close()
 
 
@@ -464,7 +478,31 @@ def test_an_ifo_table_unreadable_in_both_copies_leaves_the_title_set_out():
     assert d.ret == 0 and d.ifo(1).failed
     assert logged("try 16 of 16"), "16 tries, alternating"
     assert logged("cannot be read: its tables are read piece by piece")
-    assert logged("title set 1 cannot be read")
+    assert logged("IFO check: VTS_01_0.IFO: title set 1 cannot be read: the disc is read without it"), \
+        "said although the file has more than 20 findings before it"
+    d.close()
+
+
+def test_an_image_without_a_bup_reads_the_ifo_alone():
+    files, _ = disc_files()
+    im, _ = image([f for f in files if f[0] != "VTS_01_0.BUP"])
+    install_log(lib.AV_LOG_WARNING)
+    d = Disc.image(im)
+    f = d.ifo(1)
+    assert d.ret == 0 and not f.failed and f.bup_sector == f.ifo_sector
+    assert logged("IFO check: VTS_01_0.IFO: the BUP is missing: the IFO stands in for it")
+    d.close()
+
+
+def test_an_image_without_an_ifo_does_not_read_its_bup():
+    # on an image the IFO's place is where its tables are read from: no BUP stands in
+    files, _ = disc_files()
+    im, _ = image([f for f in files if f[0] != "VTS_01_0.IFO"])
+    install_log(lib.AV_LOG_WARNING)
+    d = Disc.image(im)
+    assert d.ret == 0 and d.ifo(1).failed
+    assert logged("IFO check: VTS_01_0.IFO: the IFO cannot be opened")
+    assert logged("IFO check: VTS_01_0.IFO: title set 1 cannot be read: the disc is read without it")
     d.close()
 
 

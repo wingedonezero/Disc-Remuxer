@@ -1,27 +1,13 @@
 /*
- * DVD-Video: the disc's structure. VIDEO_TS.IFO (the VMG) is loaded first
- * (dvd_ifo.c); a VMG that cannot be read is no DVD. Then:
- *
- * - the title table (TT_SRPT, at most 101 entries read): each entry with a
- *   title set, a title number in it and chapters must name a title set the
- *   disc has (1..99 and at most vmg_nr_of_title_sets, else the disc is
- *   refused); entries that give one title set different start sectors are
- *   reported;
- * - the text data (TXTDT_MG), when the VMG has one: a tree of item nodes
- *   (kinds below 0x30) with their texts (kinds 0x30 and up), which gives
- *   the disc's name and later its titles' and chapters' names. Texts are
- *   kept for the character sets 0x01 and 0x11 only, and of each text only
- *   the bytes 0x20-0x7A (others are dropped, and logged); any other
- *   character set, or a structure that does not hold together, leaves the
- *   disc without text data;
- * - more than 99 title sets: the disc is refused;
- * - the names: the volume label (an image), else (a folder) the VMG's
- *   provider identifier; the text data's name (item 0x30, else 0x39, 0x38,
- *   0x3A, 0x3B of its first node);
- * - every title set in order. A title set that cannot be loaded stays a
- *   placeholder (the disc goes on without it). Where each title set starts
- *   (in an image its IFO's position, in a folder the sum of the sets before
- *   it by their headers) is checked against the title table.
+ * DVD-Video: the disc's structure, read and checked by libdvdread
+ * (dvdread/disc_read.h, DVDOpenDisc_rec(): the VMG, the title table and its
+ * checks, the text data and the disc's name in it, every title set and its
+ * tables, where each title set starts, the VOBU address maps' trust), on
+ * the disc's own files (dvd_nav.c). Here it is copied for the rest of the
+ * DVD format part (dvd_ifo.c), what libdvdread found is logged, and the
+ * disc is named: the volume label (an image), else (a folder) the VMG's
+ * provider identifier; the text data's name besides. Without text data a
+ * /DVDROM/iTunesInfo.xml is noted (its name is not read).
  *
  * This file is part of FFmpeg.
  *
@@ -55,225 +41,9 @@
 
 #include "dvd_internal.h"
 
-#define TT_SRPT_MAX     101     /* title table entries read */
-#define TEXT_MAX        0x400   /* bytes of one text read (it ends at a TAB) */
-
-/* ---- the title table ---- */
-
-/* A title table field, 0 when it lies outside the table. */
-static unsigned tt8(const DVDDisc *d, uint32_t o)  { return o + 1 <= d->tt_srpt.size ? d->tt_srpt.data[o] : 0; }
-static unsigned tt16(const DVDDisc *d, uint32_t o) { return o + 2 <= d->tt_srpt.size ? AV_RB16(d->tt_srpt.data + o) : 0; }
-static uint32_t tt32(const DVDDisc *d, uint32_t o) { return o + 4 <= d->tt_srpt.size ? AV_RB32(d->tt_srpt.data + o) : 0; }
-
-/* An entry without a title set, a title number in it or chapters. */
-static int tt_broken(const DVDDisc *d, int i)
-{
-    return !tt8(d, 8 + 12 * i + 6) || !tt8(d, 8 + 12 * i + 7) || !tt16(d, 8 + 12 * i + 2);
-}
-
-static int check_title_table(DVDDisc *d)
-{
-    int n = tt16(d, 0);
-
-    for (int i = 0; i < n; i++) {
-        unsigned tsn = tt8(d, 8 + 12 * i + 6);
-        uint32_t sec = tt32(d, 8 + 12 * i + 8);
-        if (tt_broken(d, i))
-            continue;
-        if (tsn > DVD_MAX_TITLE_SETS || tsn > d->nr_of_title_sets) {
-            av_log(d->log, AV_LOG_ERROR, "DVD: title %d of the title table is in title set %u, which the disc "
-                   "does not have (it has %d)\n", i + 1, tsn, d->nr_of_title_sets);
-            return AVERROR_INVALIDDATA;
-        }
-        if (!d->title_set_start[tsn - 1])
-            d->title_set_start[tsn - 1] = sec;
-        else if (d->title_set_start[tsn - 1] != sec)
-            av_log(d->log, AV_LOG_WARNING, "DVD: the title table starts title set %u at sector %"PRIu32" (title %d) "
-                   "and at %"PRIu32"\n", tsn, sec, i + 1, d->title_set_start[tsn - 1]);
-    }
-    return 0;
-}
-
-/* ---- text data ---- */
-
-static void text_node_free(DVDTextNode *n)
-{
-    for (int i = 0; i < n->nb_texts; i++)
-        av_free(n->texts[i]);
-    av_free(n->texts);
-    av_free(n->text_kinds);
-    av_free(n->children);
-    av_free(n);
-}
-
-static void text_free(DVDText **pt)
-{
-    DVDText *t = *pt;
-    if (!t)
-        return;
-    for (int i = 0; i < t->nb_nodes; i++)
-        text_node_free(t->nodes[i]);
-    av_free(t->nodes);
-    av_freep(pt);
-}
-
-/* A text of kind under node n (the first of a kind is kept): 1, 0 when the
- * character set is not read (the text data is dropped), < 0 an error. */
-static int text_add(DVDDisc *d, DVDTextNode *n, uint8_t kind, uint8_t charset, const uint8_t *raw)
-{
-    const uint8_t *tab = memchr(raw, 0x09, TEXT_MAX + 1);
-    int len = tab - raw, k = 0, dropped = 0, pos;
-    char *s;
-
-    if (len && (charset | 0x10) != 0x11) {
-        av_log(d->log, AV_LOG_WARNING, "DVD: text data in character set 0x%02x is not read\n", charset);
-        return 0;
-    }
-    if (!(s = av_malloc(len + 1)))
-        return AVERROR(ENOMEM);
-    for (int i = 0; i < len; i++) {
-        if (raw[i] >= 0x20 && raw[i] <= 0x7a)
-            s[k++] = raw[i];
-        else
-            dropped++;
-    }
-    s[k] = 0;
-    if (dropped)
-        av_log(d->log, AV_LOG_WARNING, "DVD: text data item 0x%02x: %d byte(s) outside 0x20-0x7A dropped (kept: "
-               "\"%s\")\n", kind, dropped, s);
-    for (pos = 0; pos < n->nb_texts && n->text_kinds[pos] < kind; pos++)
-        ;
-    if (pos < n->nb_texts && n->text_kinds[pos] == kind) {
-        av_free(s);                     /* the first text of a kind is kept */
-        return 1;
-    }
-    if (av_reallocp_array(&n->texts, n->nb_texts + 1, sizeof(*n->texts)) < 0 ||
-        av_reallocp_array(&n->text_kinds, n->nb_texts + 1, 1) < 0) {
-        av_free(s);
-        n->nb_texts = 0;
-        return AVERROR(ENOMEM);
-    }
-    memmove(n->texts + pos + 1, n->texts + pos, (n->nb_texts - pos) * sizeof(*n->texts));
-    memmove(n->text_kinds + pos + 1, n->text_kinds + pos, n->nb_texts - pos);
-    n->texts[pos]      = s;
-    n->text_kinds[pos] = kind;
-    n->nb_texts++;
-    return 1;
-}
-
-static const char *text_of(const DVDTextNode *n, uint8_t kind)
-{
-    for (int i = 0; n && i < n->nb_texts; i++)
-        if (n->text_kinds[i] == kind)
-            return n->texts[i];
-    return NULL;
-}
-
-/* A field of the text data table, 0 when outside it. */
-static unsigned tx8(const DVDTable *b, uint64_t o)  { return o + 1 <= b->size ? b->data[o] : 0; }
-static unsigned tx16(const DVDTable *b, uint64_t o) { return o + 2 <= b->size ? AV_RB16(b->data + o) : 0; }
-
-/* The text data tree of table b; NULL (and 0) when it does not hold
- * together. */
-static int parse_text(DVDDisc *d, const DVDTable *b, DVDText **out)
-{
-    DVDTextNode root = { 0 }, *cur = &root;
-    DVDText *t;
-    uint32_t L = b->size, X, cnt;
-    uint8_t charset, raw[TEXT_MAX + 1];
-    const char *why = NULL;
-    int ret = 0;
-
-    *out = NULL;
-    if (L < 0x10 || !AV_RN16(b->data + 0x0e))
-        return 0;
-    charset = tx8(b, 0x17);
-    X = L >= 0x1c ? AV_RB32(b->data + 0x18) : 0;
-    if (X >= L) {
-        av_log(d->log, AV_LOG_WARNING, "DVD: text data: its language unit (byte %"PRIu32") lies outside it\n", X);
-        return 0;
-    }
-    if ((uint64_t)tx16(b, (uint64_t)X + 2) + 1 + X > L) {
-        av_log(d->log, AV_LOG_WARNING, "DVD: text data: its language unit runs past its end\n");
-        return 0;
-    }
-    if (!(t = av_mallocz(sizeof(*t))))
-        return AVERROR(ENOMEM);
-    t->language[0] = tx8(b, 0x14);
-    t->language[1] = tx8(b, 0x15);
-    t->language[2] = tx8(b, 0x16);
-    for (int k = 0; k < 99; k++)
-        t->title_offsets[k] = tx16(b, (uint64_t)X + 6 + 2 * k);
-    if ((uint64_t)X + 0xce > L || !(cnt = AV_RB16(b->data + X + 0xcc)))
-        goto drop;
-    if ((uint64_t)X + 0xd1 > L || b->data[X + 0xd0] != 1) {
-        why = "its first entry is not the disc's";
-        goto drop;
-    }
-    for (uint32_t i = 0; i != cnt; i++) {
-        uint64_t e = (uint64_t)X + 0xd0 + 4 * i;
-        uint8_t kind = e + 1 <= L ? b->data[e] : 0;
-
-        if (!kind) {                    /* the end, when its offset is 0 */
-            if (tx16(b, e + 2))
-                av_log(d->log, AV_LOG_VERBOSE, "DVD: text data: entry %"PRIu32" of kind 0 is not an end\n", i);
-            break;
-        }
-        if (kind < 0x30) {
-            DVDTextNode *n = av_mallocz(sizeof(*n));
-            if (!n || av_dynarray_add_nofree(&t->nodes, &t->nb_nodes, n) < 0) {
-                av_free(n);
-                ret = AVERROR(ENOMEM);
-                goto drop;
-            }
-            n->offset = 0xd0 + 4 * i;
-            n->kind   = kind;
-            while (kind <= cur->kind)
-                cur = cur->parent;
-            n->parent = cur;
-            if ((ret = av_dynarray_add_nofree(&cur->children, &cur->nb_children, n)) < 0)
-                goto drop;
-            cur = n;
-        } else {
-            uint64_t s = (uint64_t)tx16(b, e + 2) + X + 0xcc;
-            uint64_t len;
-            if (s >= L) {
-                why = "a text lies outside it";
-                goto drop;
-            }
-            len = FFMIN(L - s, TEXT_MAX + 1);
-            memcpy(raw, b->data + s, len);
-            raw[TEXT_MAX] = 0x09;
-            if (len < TEXT_MAX)
-                memset(raw + len, 0x09, TEXT_MAX - len);
-            if ((ret = text_add(d, cur, kind, charset, raw)) <= 0)
-                goto drop;
-        }
-    }
-    if (root.nb_children != 1) {
-        why = "it has not exactly one disc entry";
-        goto drop;
-    }
-    t->root = root.children[0];
-    t->root->parent = NULL;
-    av_free(root.children);
-    *out = t;
-    return 0;
-drop:
-    if (why)
-        av_log(d->log, AV_LOG_WARNING, "DVD: text data: %s: it is not used\n", why);
-    av_free(root.children);
-    text_free(&t);
-    return ret < 0 ? ret : 0;
-}
-
-/* ---- the disc ---- */
-
 int ff_dvd_disc_open(void *log, DiscIOFS *fs, const char *dir, int folder, const char *label, DVDDisc *d)
 {
-    static const uint8_t name_items[] = { 0x30, 0x39, 0x38, 0x3a, 0x3b };
-    DVDIfo *vmg = NULL;
-    uint32_t next, txt;
+    const dvd_disc_rec_t *r;
     int ret;
 
     memset(d, 0, sizeof(*d));
@@ -282,124 +52,53 @@ int ff_dvd_disc_open(void *log, DiscIOFS *fs, const char *dir, int folder, const
     d->dir    = dir;
     d->folder = folder;
 
-    /* the VMG */
-    ret = ff_dvd_ifo_load(d, 0, &vmg);         /* it is d->ifos[0] then */
-    if (!vmg)
-        return AVERROR(ENOMEM);
-    if (ret < 0) {
-        av_log(log, AV_LOG_ERROR, "DVD: VIDEO_TS.IFO cannot be read: no DVD-Video\n");
-        return ret;
-    }
-    d->nr_of_title_sets = AV_RB16(vmg->header + DVD_NR_OF_TITLE_SETS);
-    if (!(d->title_set_start = av_calloc(d->nr_of_title_sets + 1, sizeof(*d->title_set_start))))
-        return AVERROR(ENOMEM);
-    if (d->nr_of_title_sets > DVD_MAX_TITLE_SETS) {
-        av_log(log, AV_LOG_ERROR, "DVD: the disc has %d title sets, more than %d\n", d->nr_of_title_sets,
-               DVD_MAX_TITLE_SETS);
-        return AVERROR_INVALIDDATA;
-    }
-
-    /* every title set's information file */
-    for (int i = 1; i <= d->nr_of_title_sets; i++) {
-        DVDIfo *f = NULL;
-        ret = ff_dvd_ifo_load(d, i, &f);           /* d->ifos[i] */
-        if (!f || ret == AVERROR(ENOMEM))
-            return ret;
-        if (ret < 0)
-            av_log(log, AV_LOG_WARNING, "DVD: title set %d cannot be read: the disc is read without it\n", i);
-    }
-
-    /* libdvdread on the disc as read here: the tables of every information
-     * file from here on */
+    /* libdvdread reads and checks the disc */
     if ((ret = ff_dvd_reader_open(d)) < 0)
         return ret;
-
-    /* the title table */
-    if ((ret = ff_dvd_ifo_raw_table(d, vmg, 0, -TT_SRPT_MAX, "TT_SRPT", &d->tt_srpt)) < 0) {
-        av_log(log, AV_LOG_ERROR, "DVD: the title table (TT_SRPT) cannot be read\n");
-        return ret;
+    if (!(r = d->rec = DVDOpenDisc_rec(d->reader))) {
+        ff_dvd_reports_log(d);
+        av_log(log, AV_LOG_ERROR, "DVD: the disc cannot be read as DVD-Video (see the IFO check above)\n");
+        return AVERROR_INVALIDDATA;
     }
-    if (d->tt_srpt.size >= 8 && AV_RB16(d->tt_srpt.data) > TT_SRPT_MAX)
-        av_log(log, AV_LOG_WARNING, "DVD: the title table has %u entries: the first %d are read\n",
-               AV_RB16(d->tt_srpt.data), TT_SRPT_MAX);
-    if ((ret = check_title_table(d)) < 0)
-        return ret;
+    d->nr_of_title_sets = r->nr_of_title_sets;
+    d->text             = r->text;
+    if (!(d->title_set_start = av_calloc(d->nr_of_title_sets + 1, sizeof(*d->title_set_start))))
+        return AVERROR(ENOMEM);
+    memcpy(d->title_set_start, r->title_set_start, d->nr_of_title_sets * sizeof(*d->title_set_start));
+    if (r->tt_srpt && !(d->tt_srpt.data = av_memdup(r->tt_srpt, r->tt_srpt_size)))
+        return AVERROR(ENOMEM);
+    d->tt_srpt.size = r->tt_srpt ? r->tt_srpt_size : 0;
 
-    /* the text data */
-    if ((txt = ff_dvd_header32(vmg, DVD_TXTDT_MGI))) {
-        DVDTable b = { 0 };
-        if ((ret = ff_dvd_ifo_raw_table(d, vmg, txt, 0x10, "TXTDT_MGI", &b)) == AVERROR(ENOMEM))
-            return ret;
-        if (ret < 0)
-            av_log(log, AV_LOG_WARNING, "DVD: the text data at sector %"PRIu32" cannot be read\n", txt);
-        ret = ret < 0 ? 0 : parse_text(d, &b, &d->text);
-        ff_dvd_table_free(&b);
-        if (ret < 0)
+    /* every information file (a title set libdvdread could not read stays a
+     * placeholder) and a folder's VOB files */
+    for (int i = 0; i <= d->nr_of_title_sets; i++) {
+        DVDIfo *f = av_mallocz(sizeof(*f));
+        if (!f || av_dynarray_add_nofree(&d->ifos, &d->nb_ifos, f) < 0) {
+            av_free(f);
+            return AVERROR(ENOMEM);
+        }
+        f->index = i;
+        if ((ret = ff_dvd_ifo_from_rec(d, f, &r->ifos[i])) < 0 ||
+            (!f->failed && (ret = ff_dvd_ifo_files(d, f)) < 0))
             return ret;
     }
 
     /* the names */
-    if (label)
-        d->volume_name = av_strdup(label);
-    if (d->text)
-        for (int i = 0; i < FF_ARRAY_ELEMS(name_items) && !d->text_name; i++) {
-            const char *s = text_of(d->text->root, name_items[i]);
-            if (s && !(d->text_name = av_strdup(s)))
-                return AVERROR(ENOMEM);
-        }
-    else {
+    if (label && !(d->volume_name = av_strdup(label)))
+        return AVERROR(ENOMEM);
+    if (r->text_name && !(d->text_name = av_strdup(r->text_name)))
+        return AVERROR(ENOMEM);
+    if (!d->text) {
         DiscIOFile *f = NULL;
         if (fs->ops->open_file(fs, "/DVDROM/iTunesInfo.xml", &f) >= 0)
             av_log(log, AV_LOG_WARNING, "DVD: /DVDROM/iTunesInfo.xml is present: the name in it is not read "
                    "[untested on real discs]\n");
         ff_discio_file_free(&f);
     }
-    if (!d->volume_name)
-        d->volume_name = av_strndup((const char *)vmg->header + DVD_PROVIDER_ID, 32);
-    if (!d->volume_name)
+    if (!d->volume_name && !(d->volume_name = av_strndup(r->provider_id, 32)))
         return AVERROR(ENOMEM);
 
-    /* where each title set starts, against the title table */
-    next = ff_dvd_header32(vmg, DVD_LAST_SECTOR) + 1;
-    for (int i = 1; i < d->nb_ifos; i++) {
-        DVDIfo *f = d->ifos[i];
-        if (!f->failed) {
-            if (!folder && f->ifo_sector && vmg->ifo_sector)
-                next = f->ifo_sector - vmg->ifo_sector;
-            if (d->title_set_start[i - 1] && next != d->title_set_start[i - 1])
-                av_log(log, AV_LOG_WARNING, "DVD: title set %d starts at sector %"PRIu32" by %s, at %"PRIu32" by the "
-                       "title table\n", i, next, folder ? "the headers of the sets before it" : "its IFO's position",
-                       d->title_set_start[i - 1]);
-            next += ff_dvd_header32(f, DVD_LAST_SECTOR) + 1;
-        } else if (d->title_set_start[i]) {
-            next = d->title_set_start[i];
-        }
-    }
-
-    /* each information file's own tables */
-    for (int i = 0; i < d->nb_ifos; i++) {
-        DVDIfo *f = d->ifos[i];
-        if (!f || f->failed)
-            continue;
-        if ((ret = ff_dvd_ifo_tables(d, f)) == AVERROR(ENOMEM))
-            return ret;
-        if (ret < 0 && !i) {
-            av_log(log, AV_LOG_ERROR, "DVD: VIDEO_TS.IFO cannot be read: no DVD-Video\n");
-            return ret;
-        }
-        if (ret < 0) {
-            f->failed = 1;
-            av_log(log, AV_LOG_WARNING, "DVD: title set %d cannot be read: the disc is read without it\n", i);
-        }
-    }
-    /* the video manager's copy of each title set's attributes against the
-     * title set's own (libdvdread) */
-    for (int i = 1; i < d->nb_ifos && d->ifos[0] && d->ifos[0]->rec; i++)
-        if (d->ifos[i] && !d->ifos[i]->failed && d->ifos[i]->rec)
-            ifoCheckVtsAttributes_rec(d->ifos[0]->rec, d->ifos[i]->rec, i);
-    /* every information file through libdvdread once more, all its tables
-     * and checks; what libdvdread found, logged */
-    ff_dvd_ifo_check(d);
+    /* what libdvdread found, logged */
     ff_dvd_reports_log(d);
     return 0;
 }
@@ -412,21 +111,25 @@ void ff_dvd_disc_free(DVDDisc *d)
             DVDCloseTitleVOBs_rec(d->ifos[i]->vobs);
             d->ifos[i]->vobs = NULL;
         }
-        if (d->ifos[i] && d->ifos[i]->rec) {
-            ifoClose(d->ifos[i]->rec);
-            d->ifos[i]->rec = NULL;
-        }
     }
+    DVDCloseDisc_rec(d->rec);           /* its information files */
+    d->rec = NULL;
     if (d->reader)
         DVDClose(d->reader);
     d->reader = NULL;
     for (int i = 0; i < d->nb_ifos; i++)
         ff_dvd_ifo_free(&d->ifos[i]);
     av_freep(&d->ifos);
+    for (int i = 0; i <= DVD_MAX_TITLE_SETS; i++)
+        for (int k = 0; k < DVD_FILE_SLOTS; k++) {
+            ff_discio_file_free(&d->files[i][k].file);
+            ff_discio_file_free(&d->files[i][k].region);
+            d->files[i][k].looked = 0;
+        }
     d->nb_ifos = 0;
     ff_dvd_table_free(&d->tt_srpt);
     av_freep(&d->title_set_start);
-    text_free(&d->text);
+    d->text = NULL;
     av_freep(&d->volume_name);
     av_freep(&d->text_name);
     for (int i = 0; i < d->nb_reports; i++)
@@ -435,7 +138,7 @@ void ff_dvd_disc_free(DVDDisc *d)
     d->nb_reports = d->reports_cap = d->reports_said = 0;
 }
 
-static void dump_text(const DVDTextNode *n, int depth, AVBPrint *bp)
+static void dump_text(const dvd_text_node_t *n, int depth, AVBPrint *bp)
 {
     av_bprintf(bp, "%*s  node kind 0x%02x at %u\n", 2 * depth, "", n->kind, n->offset);
     for (int i = 0; i < n->nb_texts; i++)

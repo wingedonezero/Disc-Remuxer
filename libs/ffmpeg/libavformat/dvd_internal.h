@@ -1,6 +1,6 @@
 /*
  * DVD-Video: the disc's structure as the DVD format part of the disc layer
- * reads it (dvd_disc.c, dvd_ifo.c). Field names follow libdvdread's public
+ * has it from libdvdread (dvd_disc.c, dvd_ifo.c). Field names follow libdvdread's public
  * headers (dvdread/ifo_types.h); the layouts are those of the DVD-Video
  * information files as libdvdread documents them.
  *
@@ -28,6 +28,7 @@
 
 #include "libavutil/bprint.h"
 
+#include <dvdread/disc_read.h>
 #include <dvdread/ifo_types.h>
 #include <dvdread/vob_read.h>
 
@@ -93,16 +94,13 @@ typedef struct DVDTable {
     uint32_t  size;
 } DVDTable;
 
-/** One information file: the VMG (index 0) or title set index. */
+/** One information file: the VMG (index 0) or title set index, as
+ *  libdvdread read it (dvd_ifo_rec_t, ff_dvd_ifo_from_rec()). */
 typedef struct DVDIfo {
     int          index;
-    int          failed;                /**< not loaded: a placeholder (the disc goes on without it) */
-    /* the two copies: [0] the IFO, [1] the BUP. In a folder the files
-     * themselves (a missing one replaced by the other); in an image the
-     * image from the file's position to its end (the IFO's tables are read
-     * by their sector from there). */
-    DiscIOFile  *copy[2];
-    ifo_handle_t *rec;                  /**< libdvdread's handle (ifoOpen_rec()): it chose IFO / BUP and read them */
+    int          failed;                /**< not read: a placeholder (the disc goes on without it) */
+    ifo_handle_t *rec;                  /**< libdvdread's handle (ifoOpen_rec(), the disc's dvd_disc_rec_t owns
+                                             it): it chose IFO / BUP and read them */
     int          bup_only;              /**< the IFO's signature is wrong: only the BUP is read */
     const uint8_t *cache;               /**< the whole IFO as libdvdread read it (NULL: read in pieces) */
     int          cache_size;
@@ -110,10 +108,9 @@ typedef struct DVDIfo {
 
     /* where its files are */
     int64_t      ifo_sector, bup_sector;        /**< image: file system positions (0 in a folder) */
-    int64_t      menu_vob_sector, title_vob_sector; /**< image: file system positions, 0 when not one extent */
-    int64_t      ifo_bytes, menu_vob_bytes, title_vob_bytes, bup_bytes; /**< folder: file sizes */
-    DiscIOFile  *menu_vob;              /**< folder: the menu VOB (NULL: none) */
-    DiscIOFile **title_vobs;            /**< folder: VTS_nn_1..9.VOB up to the first missing one */
+    int64_t      menu_vob_bytes, title_vob_bytes; /**< folder: file sizes */
+    DiscIOFile  *menu_vob;              /**< folder: the menu VOB (NULL: none; the disc's, ff_dvd_disc_file()) */
+    DiscIOFile  *title_vobs[9];         /**< folder: VTS_nn_1..9.VOB up to the first missing one (the disc's) */
     int          nb_title_vobs;
 
     uint32_t     title_vob_blocks;      /**< the title VOBs' length in sectors */
@@ -147,27 +144,6 @@ typedef struct DVDIfo {
     int          vobs_failed;           /**< they cannot be opened */
 } DVDIfo;
 
-/** A node of the disc's text data (TXTDT_MG): an item kind below 0x30
- *  with the texts recorded under it. */
-typedef struct DVDTextNode {
-    struct DVDTextNode  *parent;
-    uint16_t             offset;        /**< its entry's offset in the language unit */
-    uint8_t              kind;
-    int                  nb_texts;
-    uint8_t             *text_kinds;    /**< sorted; the first text of a kind is kept */
-    char               **texts;
-    int                  nb_children;
-    struct DVDTextNode **children;
-} DVDTextNode;
-
-typedef struct DVDText {
-    char          language[4];          /**< as recorded */
-    uint16_t      title_offsets[99];    /**< each title's node offset (0: none) */
-    DVDTextNode  *root;
-    DVDTextNode **nodes;                /**< every node (owned) */
-    int           nb_nodes;
-} DVDText;
-
 /** A finding of libdvdread / libdvdnav about the disc's data (their
  *  dvd_report_t), kept once. */
 typedef struct DVDReport {
@@ -181,6 +157,15 @@ typedef struct DVDReport {
     int          nb_bytes;
 } DVDReport;
 
+/** One of the disc's own files, looked up once (ff_dvd_disc_file()). */
+typedef struct DVDDiscFile {
+    int          looked;
+    DiscIOFile  *file;                  /**< NULL: the disc has no such file */
+    DiscIOFile  *region;                /**< an image's IFO / BUP in one piece: the image from its place on */
+} DVDDiscFile;
+
+#define DVD_FILE_SLOTS 12               /* per information file: IFO, BUP, menu VOB, title VOB files 1..9 */
+
 typedef struct DVDDisc {
     void        *log;
     DiscIOFS    *fs;
@@ -191,36 +176,28 @@ typedef struct DVDDisc {
     int          nr_of_title_sets;
     DVDTable     tt_srpt;               /**< TT_SRPT as recorded */
     uint32_t    *title_set_start;       /**< per title set, the start the title table gives (0: none) */
-    DVDText     *text;                  /**< text data (NULL: none) */
+    const dvd_text_t *text;             /**< text data (NULL: none; libdvdread's, in rec) */
     char        *volume_name;           /**< the volume label, else the provider identifier */
     char        *text_name;             /**< the disc's name in its text data, NULL when none */
-    struct dvd_reader_s *reader;        /**< libdvdread on the disc as read here (ff_dvd_reader_open()) */
+    struct dvd_reader_s *reader;        /**< libdvdread on the disc's own files (ff_dvd_reader_open()) */
+    dvd_disc_rec_t *rec;                /**< the disc's structure as libdvdread read it (DVDOpenDisc_rec()) */
+    DVDDiscFile  files[DVD_MAX_TITLE_SETS + 1][DVD_FILE_SLOTS];
     DVDReport   *reports;               /**< what libdvdread / libdvdnav found, each once */
     int          nb_reports, reports_cap;
     int          reports_said;          /**< the reports logged so far */
 } DVDDisc;
 
 /* ---- dvd_ifo.c ---- */
-/** Open the files of IFO index of the disc (index 0: VIDEO_TS) and load
- *  it: < 0 when it cannot be used (the caller keeps a placeholder for a
- *  title set). */
-int  ff_dvd_ifo_load(DVDDisc *d, int index, DVDIfo **out);
-/** IFO f's tables by libdvdread (d->reader): the menus' VOBU address map;
- *  of a title set also its program chains (read with the title list's
- *  rules), chapter table (as recorded) and title VOBs' VOBU address map, its
- *  cells checked against that map. A VOBU address map that cannot be read
- *  leaves the VOBU starts untrusted. < 0 when a needed table cannot be
- *  read. */
-int  ff_dvd_ifo_tables(DVDDisc *d, DVDIfo *f);
-/** A table of IFO f as recorded, by libdvdread (d->reader): at sector, its
- *  last-byte field at last_byte_at; last_byte_at = -n: the VMG's title table
- *  with at most n entries. 0, or < 0 when it cannot be read. */
-int  ff_dvd_ifo_raw_table(DVDDisc *d, DVDIfo *f, uint32_t sector, int last_byte_at, const char *table,
-                          DVDTable *t);
-/** A file of title set index (0: VIDEO_TS) by its extension ("IFO", "BUP",
- *  "VOB"; part: the title VOB number, 0 for the IFO / BUP / menu VOB),
- *  through the disc layer's file system. */
-int  ff_dvd_set_file(DVDDisc *d, int index, int part, const char *ext, DiscIOFile **out);
+/** IFO f from what libdvdread read (r): a placeholder (f->failed) when it
+ *  could not read it. < 0 on no memory. */
+int  ff_dvd_ifo_from_rec(DVDDisc *d, DVDIfo *f, const dvd_ifo_rec_t *r);
+/** A disc folder's VOB files of IFO f (its menu VOB, its title VOBs), for
+ *  the navigator's reads. */
+int  ff_dvd_ifo_files(DVDDisc *d, DVDIfo *f);
+/** The disc's own file of information file set (0: VIDEO_TS), slot 0 its
+ *  IFO, 1 its BUP, 2 its menu VOB, 3.. its title VOB files 1..9, looked up
+ *  once through the disc layer's file system; NULL when there is none. */
+const DVDDiscFile *ff_dvd_disc_file(DVDDisc *d, int set, int slot);
 void ff_dvd_ifo_free(DVDIfo **ifo);
 /** Bytes of the IFO from sector on, as libdvdread chose and read them:
  *  from the whole-IFO read when there is one, else per 2048-byte piece from
@@ -249,11 +226,8 @@ typedef struct DVDNavHooks {
  *  from the disc layer). hooks may be NULL. The disc must outlive the
  *  navigator (dvdnav_close). */
 int  ff_dvd_nav_open(DVDDisc *d, const DVDNavHooks *hooks, struct dvdnav_s **out);
-/** The IFO check: every information file read once by libdvdread (all its
- *  tables), what it finds kept as reports of the disc. */
-void ff_dvd_ifo_check(DVDDisc *d);
-/** libdvdread on the disc as read here (every loaded IFO, the VOBs from the
- *  disc layer), reporting to the disc: d->reader. */
+/** libdvdread on the disc's own files (and the image), reporting to the
+ *  disc: d->reader. */
 int  ff_dvd_reader_open(DVDDisc *d);
 /** The reports not logged yet: the findings that break a rule as warnings,
  *  the harmless ones as detail lines, one summary line per file. */
@@ -468,10 +442,11 @@ int      ff_dvd_segment_read(DVDDisc *d, const DVDTitle *t, int seg, uint32_t bl
 int ff_dvd_title_streams(DVDDisc *d, DVDTitle *t);
 
 /* ---- dvd_disc.c ---- */
-/** Read the disc's structure: the VMG, its title table and text data, and
- *  every title set (a title set that cannot be loaded stays a placeholder).
- *  dir: the folder of VIDEO_TS.IFO ("/VIDEO_TS" or ""); label: the volume
- *  label (NULL for a folder). */
+/** The disc's structure as libdvdread reads and checks it (DVDOpenDisc_rec():
+ *  the VMG, its title table and text data, every title set; one that cannot
+ *  be read stays a placeholder); what it finds logged. dir: the folder of
+ *  VIDEO_TS.IFO ("/VIDEO_TS" or ""); label: the volume label (NULL for a
+ *  folder). */
 int  ff_dvd_disc_open(void *log, DiscIOFS *fs, const char *dir, int folder, const char *label, DVDDisc *d);
 void ff_dvd_disc_free(DVDDisc *d);
 /** The structure as text (debug log). */
