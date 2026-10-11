@@ -34,14 +34,39 @@
 #define getbits_init dvdread_getbits_init
 #define getbits dvdread_getbits
 
+/* A failed check of a navigation packet: reported with the packet's own
+ * sector (to the reader's reporter; without a reader: logged as upstream). A
+ * reserved field that is not zero is harmless (info), the rest a warning. */
+static void nav_check_failed(dvd_reader_t *ctx, const char *table, const char *what, uint32_t sector)
+{
+  char text[320];
+  dvd_report_t r;
+  int zero = strstr(what, "zero") && strstr(what, "== 0");
+
+  snprintf(text, sizeof(text), "navigation packet at sector %u: %s does not hold: kept", sector, what);
+  r.level    = zero ? DVD_REPORT_INFO : DVD_REPORT_WARN;
+  r.file     = NULL;
+  r.table    = table;
+  r.field    = what;
+  r.offset   = -1;
+  r.sector   = sector;
+  r.bytes    = NULL;
+  r.nb_bytes = 0;
+  r.text     = text;
+  if(ctx)
+    DVDReadReport(ctx->priv, &ctx->logcb, &r);
+  else
+    DVDReadReport(NULL, NULL, &r);
+}
+
 #define CHECK_VALUE(arg)\
   if(!(arg)) {\
-    DVDReadLog(NULL, NULL, DVD_LOGGER_LEVEL_WARN,\
-                "CHECK_VALUE failed in %s:%i for %s",\
-                __FILE__, __LINE__, # arg );\
+    nav_check_failed(ctx, NAV_TABLE, # arg, NAV_SECTOR);\
   }
 
-void navRead_PCI(pci_t *pci, unsigned char *buffer) {
+#define NAV_TABLE  "PCI"
+#define NAV_SECTOR pci->pci_gi.nv_pck_lbn
+static void nav_read_pci(dvd_reader_t *ctx, pci_t *pci, unsigned char *buffer) {
   int32_t i, j;
   getbits_state_t state;
   if (!getbits_init(&state, buffer)) abort(); /* Passed NULL pointers */
@@ -208,7 +233,20 @@ void navRead_PCI(pci_t *pci, unsigned char *buffer) {
 #endif /* !NDEBUG */
 }
 
-void navRead_DSI(dsi_t *dsi, unsigned char *buffer) {
+#undef NAV_TABLE
+#undef NAV_SECTOR
+
+void navRead_PCI(pci_t *pci, unsigned char *buffer) {
+  nav_read_pci(NULL, pci, buffer);
+}
+
+void navRead_PCI_ctx(dvd_reader_t *ctx, pci_t *pci, unsigned char *buffer) {
+  nav_read_pci(ctx, pci, buffer);
+}
+
+#define NAV_TABLE  "DSI"
+#define NAV_SECTOR dsi->dsi_gi.nv_pck_lbn
+static void nav_read_dsi(dvd_reader_t *ctx, dsi_t *dsi, unsigned char *buffer) {
   int i;
   getbits_state_t state;
   if (!getbits_init(&state, buffer)) abort(); /* Passed NULL pointers */
@@ -269,4 +307,15 @@ void navRead_DSI(dsi_t *dsi, unsigned char *buffer) {
 
   /* dsi dsi gi */
   CHECK_VALUE(dsi->dsi_gi.zero1 == 0);
+}
+
+#undef NAV_TABLE
+#undef NAV_SECTOR
+
+void navRead_DSI(dsi_t *dsi, unsigned char *buffer) {
+  nav_read_dsi(NULL, dsi, buffer);
+}
+
+void navRead_DSI_ctx(dvd_reader_t *ctx, dsi_t *dsi, unsigned char *buffer) {
+  nav_read_dsi(ctx, dsi, buffer);
 }

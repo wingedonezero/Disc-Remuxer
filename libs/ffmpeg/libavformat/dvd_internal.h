@@ -28,14 +28,14 @@
 
 #include "libavutil/bprint.h"
 
+#include <dvdread/ifo_types.h>
+
 #include "discio.h"
 #include "discinfo.h"
 
 #define DVD_SECTOR          2048
 #define DVD_MAX_TITLE_SETS  99
 #define DVD_IFO_HEADER      0x400       /* the part of an IFO read for its header */
-#define DVD_IFO_CACHE_MAX   (2 << 20)   /* an IFO read whole when it is no larger */
-#define DVD_IFO_CACHE_TRIES 16          /* tries of that read (alternating IFO and BUP) */
 
 /* VMGI_MAT / VTSI_MAT fields (byte offsets in the IFO's first sector) */
 #define DVD_LAST_SECTOR         0x0c    /* vmg_last_sector / vts_last_sector */
@@ -115,8 +115,9 @@ typedef struct DVDIfo {
      * image from the file's position to its end (the IFO's tables are read
      * by their sector from there). */
     DiscIOFile  *copy[2];
+    ifo_handle_t *rec;                  /**< libdvdread's handle (ifoOpen_rec()): it chose IFO / BUP and read them */
     int          bup_only;              /**< the IFO's signature is wrong: only the BUP is read */
-    uint8_t     *cache;                 /**< the whole IFO, read once (NULL: read from the copies) */
+    const uint8_t *cache;               /**< the whole IFO as libdvdread read it (NULL: read in pieces) */
     int          cache_size;
     uint8_t      header[DVD_IFO_HEADER];
 
@@ -178,6 +179,19 @@ typedef struct DVDText {
     int           nb_nodes;
 } DVDText;
 
+/** A finding of libdvdread / libdvdnav about the disc's data (their
+ *  dvd_report_t), kept once. */
+typedef struct DVDReport {
+    int          level;                 /**< dvd_report_level_t: info (harmless), warning, error */
+    char         file[16];              /**< "VTS_01_0.IFO", "": not a file's data (navigation) */
+    char         table[24];
+    char        *text;
+    int64_t      offset;                /**< byte offset in the file, -1 */
+    int64_t      sector;                /**< VOB sector, -1 */
+    uint8_t      bytes[16];             /**< the field's bytes (at most 16) */
+    int          nb_bytes;
+} DVDReport;
+
 typedef struct DVDDisc {
     void        *log;
     DiscIOFS    *fs;
@@ -192,6 +206,10 @@ typedef struct DVDDisc {
     DVDVobuRecs  vobus;                 /**< VOBU records of title sets with a title_vob_base */
     char        *volume_name;           /**< the volume label, else the provider identifier */
     char        *text_name;             /**< the disc's name in its text data, NULL when none */
+    struct dvd_reader_s *reader;        /**< libdvdread on the disc as read here (ff_dvd_reader_open()) */
+    DVDReport   *reports;               /**< what libdvdread / libdvdnav found, each once */
+    int          nb_reports, reports_cap;
+    int          reports_said;          /**< the reports logged so far */
 } DVDDisc;
 
 /* ---- dvd_ifo.c ---- */
@@ -199,15 +217,27 @@ typedef struct DVDDisc {
  *  it: < 0 when it cannot be used (the caller keeps a placeholder for a
  *  title set). */
 int  ff_dvd_ifo_load(DVDDisc *d, int index, DVDIfo **out);
+/** IFO f's tables by libdvdread (d->reader): the menus' VOBU address map;
+ *  of a title set also its program chains (read with the title list's
+ *  rules), chapter table (as recorded) and title VOBs' VOBU address map, its
+ *  cells checked against that map. A VOBU address map that cannot be read
+ *  leaves the VOBU starts untrusted. < 0 when a needed table cannot be
+ *  read. */
+int  ff_dvd_ifo_tables(DVDDisc *d, DVDIfo *f);
+/** A table of IFO f as recorded, by libdvdread (d->reader): at sector, its
+ *  last-byte field at last_byte_at; last_byte_at = -n: the VMG's title table
+ *  with at most n entries. 0, or < 0 when it cannot be read. */
+int  ff_dvd_ifo_raw_table(DVDDisc *d, DVDIfo *f, uint32_t sector, int last_byte_at, const char *table,
+                          DVDTable *t);
+/** Where sector of title set f's title VOBs lies, for the log: the VOB
+ *  file's name (VTS_nn_k.VOB) and the byte offset in it; < 0 when no title
+ *  VOB file holds it. */
+int  ff_dvd_title_vob_place(DVDDisc *d, DVDIfo *f, uint32_t sector, char *file, int size, int64_t *offset);
 void ff_dvd_ifo_free(DVDIfo **ifo);
-/** Bytes of the IFO from sector on: from the whole-IFO read when there is
- *  one, else per 2048-byte piece from the IFO, the BUP when that fails. */
+/** Bytes of the IFO from sector on, as libdvdread chose and read them:
+ *  from the whole-IFO read when there is one, else per 2048-byte piece from
+ *  the IFO, the BUP when that fails. */
 int  ff_dvd_ifo_read(DVDDisc *d, DVDIfo *f, uint32_t sector, uint8_t *buf, int len);
-/** A table of the IFO at sector; its length from its first sector by
- *  len_of (0: empty, no error). 0 or < 0. */
-int  ff_dvd_ifo_table(DVDDisc *d, DVDIfo *f, uint32_t sector, DVDTable *t,
-                      uint32_t (*len_of)(const uint8_t *first, uint32_t field), uint32_t field);
-uint32_t ff_dvd_table_len_last_byte(const uint8_t *first, uint32_t field);
 void ff_dvd_table_free(DVDTable *t);
 
 static inline uint32_t ff_dvd_header32(const DVDIfo *f, int off)
@@ -231,6 +261,17 @@ typedef struct DVDNavHooks {
  *  from the disc layer). hooks may be NULL. The disc must outlive the
  *  navigator (dvdnav_close). */
 int  ff_dvd_nav_open(DVDDisc *d, const DVDNavHooks *hooks, struct dvdnav_s **out);
+/** The IFO check: every information file read once by libdvdread (all its
+ *  tables), what it finds kept as reports of the disc. */
+void ff_dvd_ifo_check(DVDDisc *d);
+/** libdvdread on the disc as read here (every loaded IFO, the VOBs from the
+ *  disc layer), reporting to the disc: d->reader. */
+int  ff_dvd_reader_open(DVDDisc *d);
+/** The reports not logged yet: the findings that break a rule as warnings,
+ *  the harmless ones as detail lines, one summary line per file. */
+void ff_dvd_reports_log(DVDDisc *d);
+/** Counts of the reports: harmless ones and rule breaks. */
+void ff_dvd_reports_count(const DVDDisc *d, int *harmless, int *breaks);
 
 /** Read sector of a title set's title VOBs (menu 0) or menu VOB through
  *  the disc layer, as the navigator reads it. */
@@ -407,6 +448,9 @@ int      ff_dvd_title_vob_sector(DVDDisc *d, DVDIfo *f, uint32_t sector, uint8_t
 uint32_t ff_dvd_segment_blocks(const DVDSegment *g);
 /** Sector block of segment seg of title t, as ff_dvd_title_vob_sector(). */
 int      ff_dvd_segment_read(DVDDisc *d, const DVDTitle *t, int seg, uint32_t block, uint8_t *buf);
+/** Where block of segment seg of title t lies, as ff_dvd_title_vob_place(). */
+int      ff_dvd_segment_place(DVDDisc *d, const DVDTitle *t, int seg, uint32_t block, char *file, int size,
+                              int64_t *offset);
 
 /* ---- dvd_streams.c ---- */
 /** The probe of title t's streams (its largest segment read from the

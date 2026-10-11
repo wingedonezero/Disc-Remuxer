@@ -83,6 +83,12 @@ static int read_block(AVFormatContext *s, int k, uint32_t block, uint8_t *buf)
     return ff_dvd_segment_read(&c->disc, c->title, k, block, buf);
 }
 
+static int block_place(AVFormatContext *s, int k, uint32_t block, char *file, int size, int64_t *offset)
+{
+    DVDDemuxContext *c = ff_disc_part(s);
+    return ff_dvd_segment_place(&c->disc, c->title, k, block, file, size, offset);
+}
+
 /* Where the disc starts segment k: the presentation start of its first
  * VOBU (VOBU_S_PTM of the PCI in the navigation pack its first sector is:
  * the pack header, the system header, then private stream 2 with sub-stream
@@ -398,6 +404,7 @@ static int open_title(AVFormatContext *s, int i, int part, int *second_view)
         .clip_name     = clip_name,
         .clip_blocks   = clip_blocks,
         .read_block    = read_block,
+        .block_place   = block_place,
         .clip_start    = clip_start,
         .clip_start_name = "its first VOBU's start time (navigation pack)",
         .lpcm_header   = 3,
@@ -466,6 +473,8 @@ static int dvd_load(AVFormatContext *s)
     if ((o.cell_mode != DVD_CELL_MODE_TRIM && ff_dvd_scan(&c->disc, NULL, NULL, &c->scan) == AVERROR(ENOMEM)) ||
         (ret = ff_dvd_titles_build(&c->disc, &c->scan, &o, &c->titles)) < 0)
         return ret < 0 ? ret : AVERROR(ENOMEM);
+    /* what the navigation found */
+    ff_dvd_reports_log(&c->disc);
     if (av_log_get_level() >= AV_LOG_DEBUG && (dump = ff_dvd_titles_dump(&c->titles))) {
         debug_lines(s, "DVD titles:", dump);
         av_free(dump);
@@ -484,6 +493,14 @@ static int disc_done(AVFormatContext *s)
     for (int i = 1; i < c->disc.nb_ifos; i++)
         css |= c->disc.ifos[i] && c->disc.ifos[i]->css_state != 0;
     d->info.encrypted = css;
+    {
+        int harmless, breaks, ret;
+        ff_dvd_reports_count(&c->disc, &harmless, &breaks);
+        if ((ret = !harmless && !breaks ? ff_disc_add_prop(s, "IFO and navigation check", "passed") :
+                   ff_disc_add_prop(s, "IFO and navigation check", "%d finding(s) that break the DVD-Video rules, "
+                                    "%d harmless", breaks, harmless)) < 0)
+            return ret;
+    }
     return ff_disc_add_prop(s, "Protection: CSS", "%s", css ? "yes" :
                             "no (no scrambled sector in what was read)");
 }

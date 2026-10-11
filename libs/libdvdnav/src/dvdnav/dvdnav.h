@@ -91,6 +91,10 @@ typedef enum
 typedef struct
 {
   void ( *pf_log )  ( void *, dvdnav_logger_level_t, const char *, va_list );
+  /* optional, may be NULL: findings about the disc's data, libdvdread's and
+   * libdvdnav's own (dvdread/dvd_reader.h, dvd_report_t); with it set, the
+   * log line of a finding comes at the debug level */
+  void ( *pf_report )( void *, const dvd_report_t * );
 } dvdnav_logger_cb;
 
 /*

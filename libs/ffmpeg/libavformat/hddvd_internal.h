@@ -394,6 +394,9 @@ int ff_hddvd_aacs_sector(void *logctx, HDDVDAACS *aacs, DiscIOFS *fs, HDDVDClip 
  * @return 1 usable, 0 not usable (logged), < 0 read error / no such block
  */
 int ff_hddvd_clip_block(void *logctx, HDDVDAACS *aacs, DiscIOFS *fs, HDDVDClip *clip, uint32_t block, uint8_t *buf);
+/** Where block of the clip's stream lies: its EVO file's name and the byte
+ *  offset in it; < 0 when no extent holds it. */
+int ff_hddvd_clip_place(HDDVDClip *clip, uint32_t block, char *file, int size, int64_t *offset);
 
 /* ---- tracks ---- */
 

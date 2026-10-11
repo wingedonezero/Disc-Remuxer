@@ -60,6 +60,7 @@ typedef struct
 {
     uint64_t size;
     unsigned int st_mode;
+    int64_t sector;    /* where the file starts on a disc image (2048-byte sectors), -1: not known (a folder's file) */
 } dvdstat_t;
 
 /*

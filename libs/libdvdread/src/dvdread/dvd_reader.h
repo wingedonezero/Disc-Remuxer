@@ -106,9 +106,37 @@ typedef enum
     DVD_LOGGER_LEVEL_DEBUG,
 } dvd_logger_level_t;
 
+/**
+ * A finding about the disc's data: an IFO or navigation packet value that
+ * breaks a DVD-Video rule, a table that cannot be read, a sector that is no
+ * navigation packet where one must be. Given to pf_report (when set) as it
+ * is found, besides the log line (which then comes at the debug level).
+ * Every pointer is valid during the call only.
+ */
+typedef enum
+{
+    DVD_REPORT_INFO,      /* harmless: e.g. reserved or unused bytes that are not zero */
+    DVD_REPORT_WARN,      /* a value breaks a rule; reading went on */
+    DVD_REPORT_ERROR,     /* data cannot be used (a table left out, a file not read) */
+} dvd_report_level_t;
+
+typedef struct
+{
+  dvd_report_level_t level;
+  const char    *file;      /* the file it was found in ("VTS_01_0.IFO"), NULL: not a file's data */
+  const char    *table;     /* the table ("VTSI_MAT", "PGC", "PCI"), NULL: none */
+  const char    *field;     /* the field or rule as the reader states it, NULL: none */
+  int64_t        offset;    /* byte offset of the field in the file, -1: not known */
+  int64_t        sector;    /* VOB sector (navigation packets), -1: none */
+  const uint8_t *bytes;     /* the field's bytes as read, NULL: none */
+  size_t         nb_bytes;
+  const char    *text;      /* what was found and what was done */
+} dvd_report_t;
+
 typedef struct
 {
   void ( *pf_log )  ( void *, dvd_logger_level_t, const char *, va_list );
+  void ( *pf_report )( void *, const dvd_report_t * );   /* optional, may be NULL */
 } dvd_logger_cb;
 
 /**

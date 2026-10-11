@@ -1400,4 +1400,42 @@ typedef struct {
 
 } ifo_handle_t;
 
+/**
+ * A title set's program chain table as ifoRead_VTS_PGCIT_rec() reads it:
+ * the values as recorded (not unpacked), for a reader that applies its own
+ * rules to them.
+ */
+typedef struct {
+  uint8_t  category[4];             /* the first 4 bytes of cell_playback_t, as recorded */
+  uint32_t playback_time;           /* BCD hh:mm:ss:ff as recorded */
+  uint32_t first_sector;
+  uint32_t first_ilvu_end_sector;
+  uint32_t last_vobu_start_sector;
+  uint32_t last_sector;
+  uint16_t vob_id_nr;               /* cell_position_t */
+  uint8_t  cell_nr;
+} cell_rec_t;
+
+typedef struct {
+  int       number;                 /* its search pointer's index, from 0 */
+  uint32_t  entry;                  /* the search pointer's first field (entry_id, ptl mask) */
+  uint8_t   nr_of_programs;
+  uint8_t   nr_of_cells;
+  uint32_t  playback_time;          /* BCD as recorded */
+  uint32_t  prohibited_ops;
+  uint8_t   audio_control[16];      /* 8 x 16 bits as recorded */
+  uint8_t   subp_control[128];      /* 32 x 32 bits as recorded */
+  uint32_t  palette[16];
+  uint16_t  nr_of_pre, nr_of_post, nr_of_cell;
+  uint8_t  *commands;               /* (pre + post + cell) x 8 bytes, NULL when none */
+  uint8_t  *program_map;            /* nr_of_programs entry cells */
+  cell_rec_t *cells;                /* nr_of_cells */
+} pgc_rec_t;
+
+typedef struct {
+  int         nr_of_pgcs;           /* search pointers */
+  pgc_rec_t **pgcs;                 /* NULL for a program chain left out */
+  int        *same_as;              /* a program chain starting where an earlier one does: that one, else -1 */
+} pgcit_rec_t;
+
 #endif /* LIBDVDREAD_IFO_TYPES_H */

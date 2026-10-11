@@ -85,7 +85,8 @@ int vm_get_current_title_part(vm_t *vm, int *title_result, int *part_result) {
   part++;
 
   if (!found) {
-    Log1(vm, "chapter NOT FOUND!");
+    REPORT(vm, DVD_REPORT_INFO, -1, "VTS_%02d: program chain %d, program %d (played) is in no title's chapter "
+           "table (VTS_PTT_SRPT): no title / chapter number for it", vm->state.vtsN, pgcN, pgN);
     return 0;
   }
 
@@ -296,7 +297,7 @@ int vm_get_video_aspect(vm_t *vm) {
   int aspect = vm_get_video_attr(vm).display_aspect_ratio;
 
   if(aspect != 0 && aspect != 3) {
-    Log1(vm, "display aspect ratio is unexpected: %d!", aspect);
+    REPORT(vm, DVD_REPORT_WARN, -1, "the video's display aspect ratio code is %d (only 0 and 3 are defined)", aspect);
     return -1;
   }
 

@@ -54,3 +54,36 @@ void DVDReadLog( void *priv, const dvd_logger_cb *logcb,
     }
     va_end(list);
 }
+
+static dvd_logger_level_t report_log_level( dvd_report_level_t level )
+{
+    return level == DVD_REPORT_ERROR ? DVD_LOGGER_LEVEL_ERROR :
+           level == DVD_REPORT_WARN  ? DVD_LOGGER_LEVEL_WARN : DVD_LOGGER_LEVEL_INFO;
+}
+
+void DVDReadReport( void *priv, const dvd_logger_cb *logcb,
+                    const dvd_report_t *report )
+{
+    int reported = logcb && logcb->pf_report;
+
+    if( reported )
+        logcb->pf_report( priv, report );
+    DVDReadLog( priv, logcb,
+                reported ? DVD_LOGGER_LEVEL_DEBUG : report_log_level( report->level ),
+                "%s%s%s", report->file ? report->file : "", report->file ? ": " : "",
+                report->text );
+}
+
+void DVDReadReportf( void *priv, const dvd_logger_cb *logcb,
+                     dvd_report_level_t level, const char *file,
+                     const char *table, int64_t sector, const char *fmt, ... )
+{
+    char text[512];
+    va_list list;
+    dvd_report_t report = { level, file, table, NULL, -1, sector, NULL, 0, text };
+
+    va_start( list, fmt );
+    vsnprintf( text, sizeof(text), fmt, list );
+    va_end( list );
+    DVDReadReport( priv, logcb, &report );
+}

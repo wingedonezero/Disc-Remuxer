@@ -70,6 +70,14 @@ static void dvd_reader_logger_handler( void *priv, dvd_logger_level_t level,
     if(vm->logcb.pf_log)
         vm->logcb.pf_log(vm->priv, (dvdnav_logger_level_t) level, fmt, list );
 }
+
+/* libdvdread's findings go to the application's reporter as they are */
+static void dvd_reader_report_handler( void *priv, const dvd_report_t *report )
+{
+    vm_t *vm = priv;
+    if(vm->logcb.pf_report)
+        vm->logcb.pf_report(vm->priv, report);
+}
 #endif
 
 static int dvd_reader_seek_handler(void *priv, uint64_t pos)
@@ -265,27 +273,27 @@ int ifoOpenNewVTSI(vm_t *vm, dvd_reader_t *dvd, int vtsN) {
 
   vm->vtsi = ifoOpenVTSI(dvd, vtsN);
   if(vm->vtsi == NULL) {
-    Log0(vm, "ifoOpenVTSI failed");
+    REPORT(vm, DVD_REPORT_ERROR, -1, "VTS_%02d: ifoOpenVTSI failed: the title set cannot be played", vtsN);
     return 0;
   }
   if(!ifoRead_VTS_PTT_SRPT(vm->vtsi)) {
-    Log0(vm, "ifoRead_VTS_PTT_SRPT failed");
+    REPORT(vm, DVD_REPORT_ERROR, -1, "VTS_%02d: ifoRead_VTS_PTT_SRPT failed: the title set cannot be played", vtsN);
     return 0;
   }
   if(!ifoRead_PGCIT(vm->vtsi)) {
-    Log0(vm, "ifoRead_PGCIT failed");
+    REPORT(vm, DVD_REPORT_ERROR, -1, "VTS_%02d: ifoRead_PGCIT failed: the title set cannot be played", vtsN);
     return 0;
   }
   if(!ifoRead_PGCI_UT(vm->vtsi)) {
-    Log0(vm, "ifoRead_PGCI_UT failed");
+    REPORT(vm, DVD_REPORT_ERROR, -1, "VTS_%02d: ifoRead_PGCI_UT failed: the title set cannot be played", vtsN);
     return 0;
   }
   if(!ifoRead_VOBU_ADMAP(vm->vtsi)) {
-    Log0(vm, "ifoRead_VOBU_ADMAP vtsi failed");
+    REPORT(vm, DVD_REPORT_ERROR, -1, "VTS_%02d: ifoRead_VOBU_ADMAP vtsi failed: the title set cannot be played", vtsN);
     return 0;
   }
   if(!ifoRead_TITLE_VOBU_ADMAP(vm->vtsi)) {
-    Log0(vm, "ifoRead_TITLE_VOBU_ADMAP vtsi failed");
+    REPORT(vm, DVD_REPORT_ERROR, -1, "VTS_%02d: ifoRead_TITLE_VOBU_ADMAP vtsi failed: the title set cannot be played", vtsN);
     return 0;
   }
   vm->state.vtsN = vtsN;
@@ -429,7 +437,8 @@ int vm_reset(vm_t *vm, const char *dvdroot,
     int from_files = 0;
     /* dvdread stream callback handlers for redirection */
 #if DVDREAD_VERSION >= DVDREAD_VERSION_CODE(6,1,0)
-    dvd_logger_cb dvdread_logcb = { .pf_log = dvd_reader_logger_handler };
+    dvd_logger_cb dvdread_logcb = { .pf_log = dvd_reader_logger_handler,
+                                    .pf_report = vm->logcb.pf_report ? dvd_reader_report_handler : NULL };
     /* Only install log handler if we have one ourself */
     dvd_logger_cb *p_dvdread_logcb = vm->logcb.pf_log ? &dvdread_logcb : NULL;
     if(dvdroot && vm->files) {
@@ -457,31 +466,31 @@ int vm_reset(vm_t *vm, const char *dvdroot,
     }
     vm->vmgi = ifoOpenVMGI(vm->dvd);
     if(!vm->vmgi) {
-      Log0(vm, "vm: vm: failed to read VIDEO_TS.IFO");
+      REPORT(vm, DVD_REPORT_ERROR, -1, "VIDEO_TS: failed to read VIDEO_TS.IFO: the disc cannot be played");
       return 0;
     }
     if(!ifoRead_FP_PGC(vm->vmgi)) {
-      Log0(vm, "vm: vm: ifoRead_FP_PGC failed");
+      REPORT(vm, DVD_REPORT_ERROR, -1, "VIDEO_TS: ifoRead_FP_PGC failed: the disc cannot be played");
       return 0;
     }
     if(!ifoRead_TT_SRPT(vm->vmgi)) {
-      Log0(vm, "vm: vm: ifoRead_TT_SRPT failed");
+      REPORT(vm, DVD_REPORT_ERROR, -1, "VIDEO_TS: ifoRead_TT_SRPT failed: the disc cannot be played");
       return 0;
     }
     if(!ifoRead_PGCI_UT(vm->vmgi)) {
-      Log0(vm, "vm: vm: ifoRead_PGCI_UT failed");
+      REPORT(vm, DVD_REPORT_ERROR, -1, "VIDEO_TS: ifoRead_PGCI_UT failed: the disc cannot be played");
       return 0;
     }
     if(!ifoRead_PTL_MAIT(vm->vmgi)) {
-      Log0(vm, "vm: ifoRead_PTL_MAIT failed");
+      REPORT(vm, DVD_REPORT_WARN, -1, "VIDEO_TS: ifoRead_PTL_MAIT failed: not used");
       /* return 0; Not really used for now.. */
     }
     if(!ifoRead_VTS_ATRT(vm->vmgi)) {
-      Log0(vm, "vm: ifoRead_VTS_ATRT failed");
+      REPORT(vm, DVD_REPORT_WARN, -1, "VIDEO_TS: ifoRead_VTS_ATRT failed: not used");
       /* return 0; Not really used for now.. */
     }
     if(!ifoRead_VOBU_ADMAP(vm->vmgi)) {
-      Log0(vm, "vm: ifoRead_VOBU_ADMAP vgmi failed");
+      REPORT(vm, DVD_REPORT_WARN, -1, "VIDEO_TS: ifoRead_VOBU_ADMAP vgmi failed: not used");
       /* return 0; Not really used for now.. */
     }
     /* ifoRead_TXTDT_MGI(vmgi); Not implemented yet */
@@ -776,7 +785,7 @@ int vm_exec_cmd(vm_t *vm, const vm_cmd_t *cmd) {
 int vm_failed(vm_t *vm, const char *what) {
   if(vm->failures++ == 0)
     vm->first_failure = what;
-  Log0(vm, "broken navigation data, VM stopped: %s", what);
+  REPORT(vm, DVD_REPORT_ERROR, -1, "broken navigation data, VM stopped: %s", what);
   vm->stopped = 1;
   return 0;
 }

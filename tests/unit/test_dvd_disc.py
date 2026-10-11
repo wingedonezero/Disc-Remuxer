@@ -147,7 +147,9 @@ def test_a_wrong_ifo_signature_reads_the_bup(tmp_path):
     install_log(lib.AV_LOG_WARNING)
     d = Disc.folder(path)
     assert d.ret == 0 and not d.ifo(1).failed and d.ifo(1).bup_only
-    assert logged("VTS_01.IFO does not start with DVDVIDEO-VTS: its BUP is read instead")
+    # libdvdread's report
+    assert logged("IFO check: VTS_01_0.IFO at byte 0x0: the IFO does not start with DVDVIDEO-VTS: its BUP is read "
+                  "instead")
     d.close()
 
 
@@ -201,7 +203,9 @@ def test_the_bup_position_of_a_folder_is_checked_by_the_file_sizes(tmp_path):
     d = Disc.folder(path)
     assert d.ret == 0
     ifo_sectors = len(ifo) // S
-    assert logged(f"VTS_01: the header puts the BUP {ifo_sectors + 10 + 16} sectors after the IFO")
+    # libdvdread's report, at the header's vts_last_sector
+    assert logged(f"IFO check: VTS_01_0.IFO at byte 0xc: the header puts the BUP {ifo_sectors + 10 + 16} sectors after "
+                  "the IFO")
     assert logged(f"the IFO and VOB files make {ifo_sectors + 10} sectors")
     d.close()
 
@@ -275,6 +279,94 @@ def test_a_program_chain_starting_where_another_starts_is_left_out(tmp_path):
     d = Disc.folder(path)
     assert d.ret == 0 and d.ifo(1).pgc_same_as[1] == 0
     assert logged("program chain 2 starts where program chain 1 does: it is left out")
+    d.close()
+
+
+def two_pgc_disc(tmp_path, patch):
+    """A title set with two program chains; patch(ifo, pgcit, second) changes
+    its IFO (and BUP): pgcit = the table's byte offset, second = program
+    chain 2's offset in the table."""
+    v = vts(pgcs=[Pgc(cells=[Cell.new(0, 0, 9, 1)]), Pgc(cells=[Cell.new(0, 0, 9, 1)], programs=[1])])
+    ifo = bytearray(dvd.vts_ifo(v))
+    pgcit = struct.unpack(">I", ifo[0xcc:0xd0])[0] * S
+    second = struct.unpack(">I", ifo[pgcit + 0x14:pgcit + 0x18])[0]
+    patch(ifo, pgcit, second)
+    path = tmp_path / "disc"
+    dvd.write_disc(path, vmg(), [(ifo, dvd.title_vobs(10, [dvd.nav(0, 10, None)]))])
+    return path
+
+
+def table_bytes(ifo, pgcit):
+    """The table's bytes the title list reads: whole sectors up to its last byte."""
+    return (struct.unpack(">I", ifo[pgcit + 4:pgcit + 8])[0] & 0xfffff800) + S
+
+
+def test_a_program_chain_starting_outside_the_table_is_left_out_and_reported_with_its_place(tmp_path):
+    def patch(ifo, pgcit, second):
+        last = struct.unpack(">I", ifo[pgcit + 4:pgcit + 8])[0]
+        ifo[pgcit + 0x14:pgcit + 0x18] = struct.pack(">I", last + 8)
+        patch.at = pgcit + 0x14
+    install_log(lib.AV_LOG_VERBOSE)
+    d = Disc.folder(two_pgc_disc(tmp_path, patch))
+    assert d.ret == 0 and d.ifo(1).nb_pgcs == 2 and d.ifo(1).pgcs[1] == ffi.NULL
+    assert logged(f"IFO check: VTS_01_0.IFO VTS_PGCIT at byte {patch.at:#x}: program chain 2 starts outside "
+                  "VTS_PGCIT")
+    d.close()
+
+
+def test_a_program_chain_whose_command_table_runs_past_the_table_is_left_out(tmp_path):
+    def patch(ifo, pgcit, second):
+        # its command table's header ends past the table's last sector
+        ct = table_bytes(ifo, pgcit) - second - 4
+        ifo[pgcit + second + 0xe4:pgcit + second + 0xe6] = struct.pack(">H", ct)
+    install_log(lib.AV_LOG_VERBOSE)
+    d = Disc.folder(two_pgc_disc(tmp_path, patch))
+    assert d.ret == 0 and d.ifo(1).pgcs[0] != ffi.NULL and d.ifo(1).pgcs[1] == ffi.NULL
+    assert logged("program chain 2 runs past the end of VTS_PGCIT: it is left out")
+    d.close()
+
+
+def test_fields_past_the_table_read_as_0_and_the_program_chain_stays(tmp_path):
+    def patch(ifo, pgcit, second):
+        # its program map lies past the table's last sector
+        pm = table_bytes(ifo, pgcit) - second + 16
+        ifo[pgcit + second + 0xe6:pgcit + second + 0xe8] = struct.pack(">H", pm)
+        ifo[pgcit + second + pm:pgcit + second + pm + 1] = b"\x07"   # in the file, but not read
+    install_log(lib.AV_LOG_VERBOSE)
+    d = Disc.folder(two_pgc_disc(tmp_path, patch))
+    p = d.ifo(1).pgcs[1]
+    assert d.ret == 0 and p != ffi.NULL and p.nr_of_programs == 1 and p.program_map[0] == 0
+    assert logged("program chain 2: fields past the table's end are read as 0")
+    d.close()
+
+
+def test_a_cell_table_pointer_of_0_reads_the_cells_from_the_program_chain_s_start(tmp_path):
+    # as the title list's reference reads them; looked into again later
+    def patch(ifo, pgcit, second):
+        ifo[pgcit + second + 0xe8:pgcit + second + 0xea] = bytes(2)
+        patch.first = struct.unpack(">I", ifo[pgcit + second + 8:pgcit + second + 12])[0]
+    install_log(lib.AV_LOG_VERBOSE)
+    d = Disc.folder(two_pgc_disc(tmp_path, patch))
+    p = d.ifo(1).pgcs[1]
+    assert d.ret == 0 and p != ffi.NULL and p.cells[0].first_sector == patch.first
+    assert logged("program chain 2 has 1 cell(s) but its cell playback table pointer is 0: they are read from the "
+                  "program chain's start")
+    d.close()
+
+
+def test_an_unreadable_menu_vobu_map_leaves_the_title_set_s_vobu_starts_untrusted(tmp_path):
+    # either VOBU address map of a title set that cannot be read: its VOBU
+    # starts are checked from the VOBs (the map past the IFO's end here)
+    ifo = bytearray(dvd.vts_ifo(vts()))
+    ifo[0xdc:0xe0] = struct.pack(">I", 0x7fff)
+    path = tmp_path / "disc"
+    dvd.write_disc(path, vmg(), [(ifo, dvd.title_vobs(10, [dvd.nav(0, 10, None)]))])
+    install_log(lib.AV_LOG_VERBOSE)
+    d = Disc.folder(path)
+    assert d.ret == 0 and not d.ifo(1).failed and d.ifo(1).vobu_map_distrusted
+    assert logged("VTS_01: the VOBU address map at sector 32767 cannot be read: its VOBU starts are not trusted")
+    assert logged(f"IFO check: VTS_01_0.IFO VTSM_VOBU_ADMAP at byte {0x7fff * S:#x}: VTSM_VOBU_ADMAP at sector 32767 "
+                  "cannot be read")
     d.close()
 
 
@@ -355,7 +447,7 @@ def test_an_unreadable_ifo_piece_is_read_from_the_bup():
     install_log(lib.AV_LOG_WARNING)
     d = Disc.image(im)
     assert d.ret == 0 and not d.ifo(1).failed
-    assert logged("VTS_01: IFO bytes 0-1023 read from the BUP")
+    assert logged("IFO check: VTS_01_0.IFO at byte 0x0: IFO bytes 0-1023 read from the BUP")
     # the whole IFO: the first try (IFO, whole) fails, the second (BUP, one
     # sector) reads, and the copy that read is kept
     assert logged("reading the whole IFO") and logged("from the IFO failed") and logged("try 1 of 16")
@@ -382,7 +474,7 @@ def test_the_bup_position_of_an_image_comes_from_the_file_system():
     install_log(lib.AV_LOG_WARNING)
     d = Disc.image(im)
     n = len(ifo) // S + 10
-    assert logged(f"VTS_01: the header puts the BUP {n} sectors after the IFO")
+    assert logged(f"IFO check: VTS_01_0.IFO at byte 0xc: the header puts the BUP {n} sectors after the IFO")
     assert logged(f"the file system puts it {n + 16} sectors")
     d.close()
 

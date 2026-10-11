@@ -1821,6 +1821,21 @@ int32_t DVDFileSeek( dvd_file_t *dvd_file, int32_t offset )
   return offset;
 }
 
+int DVDStatFile_( dvd_reader_t *ctx, const char *filename, dvdstat_t *st )
+{
+  char full_path[ PATH_MAX + 1 ];
+
+  if( !ctx || !ctx->fs || !findDVDFile( ctx, filename, full_path ) )
+    return -1;
+  st->sector = -1;
+  return ctx->fs->stat( ctx->fs, full_path, st );
+}
+
+int64_t DVDFileTell_( dvd_file_t *dvd_file )
+{
+  return dvd_file ? (int64_t) dvd_file->seek_pos : -1;
+}
+
 int DVDFileSeekForce(dvd_file_t *dvd_file, int offset, int force_size)
 {
   dvd_reader_t *ctx = dvd_file->ctx;

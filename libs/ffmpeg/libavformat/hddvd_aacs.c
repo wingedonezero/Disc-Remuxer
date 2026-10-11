@@ -332,6 +332,17 @@ int ff_hddvd_aacs_sector(void *logctx, HDDVDAACS *a, DiscIOFS *fs, HDDVDClip *c,
     return 1;
 }
 
+int ff_hddvd_clip_place(HDDVDClip *c, uint32_t block, char *file, int size, int64_t *offset)
+{
+    const HDDVDExtent *x = extent_at(c, (int64_t)block * 2048);
+
+    if (!x || block - x->stream >= x->count)
+        return AVERROR(EINVAL);
+    snprintf(file, size, "%s", c->evob->name);
+    *offset = ((int64_t)x->file + block - x->stream) * 2048;
+    return 0;
+}
+
 int ff_hddvd_clip_block(void *logctx, HDDVDAACS *a, DiscIOFS *fs, HDDVDClip *c, uint32_t block, uint8_t *buf)
 {
     const HDDVDExtent *x = extent_at(c, (int64_t)block * 2048);

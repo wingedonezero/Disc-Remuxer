@@ -39,3 +39,24 @@ void dvdnav_log( void *priv, const dvdnav_logger_cb *logcb,
     }
     va_end(list);
 }
+
+void dvdnav_report( void *priv, const dvdnav_logger_cb *logcb,
+                    dvd_report_level_t level, int64_t sector,
+                    const char *fmt, ... )
+{
+    char text[512];
+    va_list list;
+    dvd_report_t report = { level, NULL, NULL, NULL, -1, sector, NULL, 0, text };
+
+    va_start(list, fmt);
+    vsnprintf(text, sizeof(text), fmt, list);
+    va_end(list);
+    if(logcb && logcb->pf_report) {
+        logcb->pf_report(priv, &report);
+        dvdnav_log(priv, logcb, DVDNAV_LOGGER_LEVEL_DEBUG, "%s", text);
+    } else {
+        dvdnav_log(priv, logcb, level == DVD_REPORT_ERROR ? DVDNAV_LOGGER_LEVEL_ERROR :
+                                level == DVD_REPORT_WARN  ? DVDNAV_LOGGER_LEVEL_WARN :
+                                                            DVDNAV_LOGGER_LEVEL_INFO, "%s", text);
+    }
+}

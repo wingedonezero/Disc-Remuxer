@@ -278,9 +278,9 @@ uint32_t ff_dvd_segment_blocks(const DVDSegment *g)
     return e ? e->logical + e->count : 0;
 }
 
-int ff_dvd_segment_read(DVDDisc *d, const DVDTitle *t, int seg, uint32_t block, uint8_t *buf)
+/* The title VOB sector of a segment's block; < 0 when none holds it. */
+static int segment_sector(const DVDSegment *g, uint32_t block, uint32_t *sector)
 {
-    const DVDSegment *g = &t->segments[seg];
     int lo = 0, hi = g->nb_extents - 1;
 
     while (lo <= hi) {                  /* the extent holding block (the extents follow each other) */
@@ -290,8 +290,27 @@ int ff_dvd_segment_read(DVDDisc *d, const DVDTitle *t, int seg, uint32_t block, 
             hi = mid - 1;
         else if (block >= e->logical + e->count)
             lo = mid + 1;
-        else
-            return ff_dvd_title_vob_sector(d, t->vts, e->sector + (block - e->logical), buf);
+        else {
+            *sector = e->sector + (block - e->logical);
+            return 0;
+        }
     }
     return AVERROR(EINVAL);
+}
+
+int ff_dvd_segment_read(DVDDisc *d, const DVDTitle *t, int seg, uint32_t block, uint8_t *buf)
+{
+    uint32_t sector;
+    int ret = segment_sector(&t->segments[seg], block, &sector);
+
+    return ret < 0 ? ret : ff_dvd_title_vob_sector(d, t->vts, sector, buf);
+}
+
+int ff_dvd_segment_place(DVDDisc *d, const DVDTitle *t, int seg, uint32_t block, char *file, int size,
+                         int64_t *offset)
+{
+    uint32_t sector;
+    int ret = segment_sector(&t->segments[seg], block, &sector);
+
+    return ret < 0 ? ret : ff_dvd_title_vob_place(d, t->vts, sector, file, size, offset);
 }

@@ -57,6 +57,8 @@
 #define DR_F_START_BROKEN 0x0800 /**< marked as a broken link: the pictures shown before it are not decodable */
 #define DR_F_START_OPEN   0x1000 /**< the pictures shown before it may need pictures before it in the stream */
 #define DR_F_CTR      0x2000   /**< audio: ctr holds the stream's own number of the frame's first sample */
+#define DR_F_PLACE    0x4000   /**< video: the first picture at or after one or more places of the source
+                                    (ff_disctl_title_place()); ctr holds how many */
 
 typedef struct DRFrame {
     AVBufferRef *buf;      /**< owns the bytes (NULL for a marker) */
@@ -73,7 +75,7 @@ typedef struct DRFrame {
     int          seg;      /**< from the joiner on: the segment the frame comes from (from 0) */
     int          ctr;      /**< with DR_F_CTR: the stream's own sample number of the frame's first sample,
                                 modulo 65536 (TrueHD / MLP: a restart header's output timing, counted on
-                                by the samples of an access unit) */
+                                by the samples of an access unit); with DR_F_PLACE: the places it marks */
 } DRFrame;
 
 /** Hands a frame on; the callee owns it (ff_disctl_frame_unref). */
@@ -905,6 +907,13 @@ int  ff_disctl_title_frame(DRTitle *t, int *track, DRFrame *frame);
  *  byte offset in the segment): the first video unit from the bytes given
  *  so far gets DR_F_POSITION, and the next open chapter mark its time. */
 int  ff_disctl_title_chapter_position(DRTitle *t);
+/** A place in the video's source (where the title reader left blocks out):
+ *  the first picture from the bytes given so far marks it. Its number (from
+ *  0), or < 0. */
+int  ff_disctl_title_place(DRTitle *t);
+/** Place p's time on the title timeline (ticks): the end of the pictures
+ *  given out before it; 0, or < 0 while not known (no picture after it). */
+int  ff_disctl_title_place_time(const DRTitle *t, int p, int64_t *time);
 /** After finish: the chapters of the plan the marks came from (*out freed
  *  with av_free()). */
 int  ff_disctl_title_chapters(const DRTitle *t, const DRChapterPlan *plan, DRChapter **out, int *nb_out);

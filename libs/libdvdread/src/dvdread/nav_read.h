@@ -23,6 +23,7 @@
 
 #include <dvdread/attributes.h>
 #include <dvdread/nav_types.h>
+#include <dvdread/dvd_reader.h>
 
 /**
  * Parsing of NAV data, PCI and DSI parts.
@@ -47,6 +48,13 @@ DVDREAD_API void navRead_PCI(pci_t *, unsigned char *);
  * @param buffer Pointer to the buffer of the on disc DSI data.
  */
 DVDREAD_API void navRead_DSI(dsi_t *, unsigned char *);
+
+/**
+ * navRead_PCI / navRead_DSI that report what their checks find to ctx's
+ * reporter (dvd_logger_cb pf_report), with the packet's own sector.
+ */
+DVDREAD_API void navRead_PCI_ctx(dvd_reader_t *, pci_t *, unsigned char *);
+DVDREAD_API void navRead_DSI_ctx(dvd_reader_t *, dsi_t *, unsigned char *);
 
 #ifdef __cplusplus
 };
