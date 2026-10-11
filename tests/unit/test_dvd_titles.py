@@ -120,6 +120,38 @@ def test_an_angle_block_gives_a_title_per_angle(tmp_path):
     assert logged("title 1: angle 2 added")
 
 
+def two_angles(tmp_path):
+    first = flags.ANGLE_BLOCK | flags.FIRST_IN_BLOCK
+    last = flags.ANGLE_BLOCK | flags.LAST_IN_BLOCK
+    p = Pgc(cells=[c(0, 9, 5, 1), c(10, 19, 5, 1, flags=first), c(20, 29, 5, 1, flags=last)])
+    navs = vobus(0, 9, 5) + vobus(10, 19, 5) + vobus(20, 29, 5)
+    return build(tmp_path, [p], [[(1, 1)]], navs, 30, angles=[2])
+
+
+def test_the_main_angle_is_the_one_the_navigation_plays(tmp_path):
+    ts = [t for t in run(two_angles(tmp_path), [("A1", 1, 1, [1, 2, 3], [2, 1])]) if t["name"] == "1"]
+    assert [(t["angle"], t["main"]) for t in ts] == [("1/2", "2"), ("2/2", "2")]
+    assert logged("title 1: angle 2 is the main angle (the navigation plays it first); it plays angles 2, 1 in that order")
+
+
+def test_without_an_angle_from_the_navigation_the_main_angle_is_1(tmp_path):
+    ts = [t for t in run(two_angles(tmp_path), [("A1", 1, 1, [1, 2, 3])]) if t["name"] == "1"]
+    assert [t["main"] for t in ts] == ["1", "1"]
+    assert logged("title 1: angle 1 is the main angle (players start on angle 1)")
+
+
+def test_a_main_angle_beyond_the_title_s_angles_is_told(tmp_path):
+    ts = [t for t in run(two_angles(tmp_path), [("A1", 1, 1, [1, 2, 3], [3])]) if t["name"] == "1"]
+    assert [t["main"] for t in ts] == ["3", "3"]
+    assert logged("title 1: the navigation plays angle 3, the title has 2 angles")
+
+
+def test_a_title_without_angles_has_no_main_angle(tmp_path):
+    p = Pgc(cells=[c(0, 9, 5, 1)])
+    ts = run(build(tmp_path, [p], [[(1, 1)]], vobus(0, 9, 5), 10), [("A1", 1, 1, [1])])
+    assert ts and all("main" not in t for t in ts)
+
+
 def test_an_angle_block_of_another_size_than_the_title_s_angles_is_told_by_libdvdread(tmp_path):
     first = flags.ANGLE_BLOCK | flags.FIRST_IN_BLOCK
     last = flags.ANGLE_BLOCK | flags.LAST_IN_BLOCK

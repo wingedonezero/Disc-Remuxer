@@ -60,7 +60,9 @@ extern "C" {
  * chapters: DVDTitleSegments_rec(), DVDChapterPlaces_rec() (chapters that
  * cannot be placed are dropped; a first one that cannot be placed is put at
  * the start when the next one is not there). An angle block gives one more
- * title per further angle (at most 8). A title of a program chain whose
+ * title per further angle (at most 8); the main angle is the one the
+ * navigation played first in the program chain (its scan recording), else
+ * angle 1 (the angle register's start value). A title of a program chain whose
  * playback time or declared length is shorter than the minimum length is
  * listed as short.
  *
@@ -80,11 +82,15 @@ extern "C" {
 
 /** A recording of the navigation scan: the cells (from 1) the navigation
  *  played in title (title table number, low 8 bits) / program chain pgc, and
- *  the name of the path that played them. */
+ *  the name of the path that played them; the angles (the angle register's,
+ *  SPRM 3) the navigation played in its angle blocks, in the order played
+ *  (this recording's, then those of the other recordings of the title /
+ *  program chain). */
 typedef struct
 {
   char     name[16];
   uint8_t  title, pgc;
+  uint8_t  angles[10];                /* from 1; 0 ends (none: no angle block played) */
   int      nb_cells;
   uint8_t *cells;
 } dvd_nav_cells_t;
@@ -114,6 +120,8 @@ typedef struct
   int                    title;       /* the title table entry, from 0 */
   uint8_t                pb_ty, vtsn, vts_ttn;
   uint8_t                nr_of_angles, angle;   /* angle from 0 */
+  uint8_t                main_angle;  /* from 1: the angle a player plays (the navigation's, else angle 1, the
+                                         angle register's start value); may be one beyond nr_of_angles */
   int                    pgcn;        /* its program chain's search pointer index, from 0 */
   const dvd_nav_cells_t *scan;        /* the navigation's cells of this title / program chain, NULL none */
   dvd_title_chapter_t   *chapters;

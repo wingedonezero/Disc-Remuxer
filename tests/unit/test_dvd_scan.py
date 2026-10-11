@@ -115,3 +115,56 @@ def test_corpus_scans_give_the_reference_conversation():
         if lines != expected.read_text().splitlines():
             differ.append(disc)
     assert differ == []
+
+
+def set_angle(n):
+    """SetSTN: SPRM 3 (the angle) = n."""
+    return [0x51, 0, 0, 0, 0, 0x80 | n, 0, 0]
+
+
+def angle_disc(tmp_path, pre):
+    # cell 1, then an angle block of two cells (angles 1 and 2)
+    first = flags.ANGLE_BLOCK | flags.FIRST_IN_BLOCK
+    last = flags.ANGLE_BLOCK | flags.LAST_IN_BLOCK
+    p = Pgc(cells=[cell(0, 9), cell(10, 19, flags=first), cell(20, 29, flags=last)], pre=pre)
+    return build(tmp_path, [p], [[(1, 1)]], vobus(0, 9, 5) + vobus(10, 19, 5) + vobus(20, 29, 5), 30, angles=[2])
+
+
+def test_the_angle_the_disc_s_commands_select_is_recorded(tmp_path):
+    ret, res, _ = results(angle_disc(tmp_path, [set_angle(2)]))
+    assert ret == 0
+    assert res[(1, 1)].cells == [1, 2, 3], "the whole angle block is recorded"
+    assert res[(1, 1)].angles == [2]
+
+
+def test_without_an_angle_command_angle_1_is_recorded(tmp_path):
+    ret, res, _ = results(angle_disc(tmp_path, []))
+    assert ret == 0 and res[(1, 1)].angles == [1]
+
+
+def test_an_angle_beyond_the_block_plays_its_first_cell(tmp_path):
+    # angle 5 of a block of two: the navigator falls back to the block's first cell
+    ret, res, _ = results(angle_disc(tmp_path, [set_angle(5)]))
+    assert ret == 0 and res[(1, 1)].angles == [1]
+
+
+def test_a_chain_without_an_angle_block_records_no_angle(tmp_path):
+    p = Pgc(cells=[cell(0, 9), cell(10, 19)])
+    ret, res, _ = results(build(tmp_path, [p], [[(1, 1)]], vobus(0, 9, 5) + vobus(10, 19, 5), 20))
+    assert ret == 0 and res[(1, 1)].angles == []
+
+
+
+def test_the_angles_are_kept_in_the_order_the_disc_plays_them(tmp_path):
+    # the chain plays itself twice: angle 3 - 1 = 2, then 3 - 2 = 1 (not in number order)
+    pre = [[0x73, 0, 0, 0, 0, 1, 0, 0],         # GPRM 0 += 1
+           [0x71, 0, 0, 2, 0, 3, 0, 0],         # GPRM 2 = 3
+           [0x64, 0, 0, 2, 0, 0, 0, 0],         # GPRM 2 -= GPRM 0
+           [0x41, 0, 0, 0, 0, 0x82, 0, 0]]      # SetSTN: angle = GPRM 2
+    first = flags.ANGLE_BLOCK | flags.FIRST_IN_BLOCK
+    last = flags.ANGLE_BLOCK | flags.LAST_IN_BLOCK
+    p = Pgc(cells=[cell(0, 9), cell(10, 19, flags=first), cell(20, 29, flags=last)], pre=pre,
+            post=[if_link_pgcn(0, 1, 1)])
+    navs = vobus(0, 9, 5) + vobus(10, 19, 5) + vobus(20, 29, 5)
+    ret, res, _ = results(build(tmp_path, [p], [[(1, 1)]], navs, 30, angles=[2]))
+    assert ret == 0 and res[(1, 1)].angles == [2, 1]

@@ -75,10 +75,12 @@ char *ff_dvd_titles_dump(const dvd_title_list_t *l)
     for (int i = 0; i < l->nb_titles; i++) {
         const dvd_title_t *t = l->titles[i];
         int64_t size = 0;
-        av_bprintf(&bp, "title %d name %s ttn %d vts %d pgc %d angle %d/%d cells %d chapters %d length %"PRIu32
-                   " real %"PRIu32" segments %d", i, t->name, t->title + 1, t->vtsn, t->pgcn + 1,
-                   t->angle + 1, t->nr_of_angles, t->nb_cells, t->nb_chapters, t->declared, t->measured,
-                   t->segs.nb_segments);
+        av_bprintf(&bp, "title %d name %s ttn %d vts %d pgc %d angle %d/%d", i, t->name, t->title + 1, t->vtsn,
+                   t->pgcn + 1, t->angle + 1, t->nr_of_angles);
+        if (t->nr_of_angles > 1)
+            av_bprintf(&bp, " main %d", t->main_angle);
+        av_bprintf(&bp, " cells %d chapters %d length %"PRIu32" real %"PRIu32" segments %d", t->nb_cells,
+                   t->nb_chapters, t->declared, t->measured, t->segs.nb_segments);
         for (int k = 0; k < t->segs.nb_segments; k++)
             size += t->segs.segments[k].size;
         av_bprintf(&bp, " size %"PRId64" map ", size);

@@ -631,6 +631,7 @@ static int title_init( titles_t *T, dvd_title_t *t, int idx, unsigned vtsn, cons
   memcpy( t->chapters, ch, nb_ch * sizeof(*ch) );
   t->nb_chapters = nb_ch;
   t->scan = scan_find( T, idx + 1, p->number + 1 );
+  t->main_angle = t->scan && t->scan->angles[0] ? t->scan->angles[0] : 1;
   if( !h )
     return 0;
   if( rb16( h + VTS_AUDIO_COUNT ) > MAX_AUDIO ) {
@@ -669,6 +670,26 @@ static int fake_length( const dvd_title_t *t )
     return 0;
   diff = t->declared > t->measured ? t->declared - t->measured : t->measured - t->declared;
   return !t->declared || (diff > FAKE_SECONDS && diff * 100 / t->declared > FAKE_PERCENT);
+}
+
+/* Which of the program chain's angles a player plays, and the order the
+ * navigation played them in when it played several. */
+static void main_angle_note( titles_t *T, const dvd_title_t *t )
+{
+  char order[64] = "";
+  int n = 0;
+
+  for( ; t->scan && n < 9 && t->scan->angles[n]; n++ )
+    snprintf( order + strlen( order ), sizeof(order) - strlen( order ), "%s%d", n ? ", " : "", t->scan->angles[n] );
+  if( t->main_angle > t->nr_of_angles )
+    note( T, DVD_NOTE_WARN, "title %s: the navigation plays angle %d, the title has %d angles", t->name,
+          t->main_angle, t->nr_of_angles );
+  else if( n > 1 )
+    note( T, DVD_NOTE_DETAIL, "title %s: angle %d is the main angle (the navigation plays it first); it plays "
+          "angles %s in that order", t->name, t->main_angle, order );
+  else
+    note( T, DVD_NOTE_DETAIL, "title %s: angle %d is the main angle (%s)", t->name, t->main_angle,
+          n ? "the navigation plays it" : "players start on angle 1" );
 }
 
 /* The titles of one program chain of title table entry idx: the first
@@ -722,6 +743,8 @@ static int add_pgc_titles( titles_t *T, int idx, unsigned vtsn, const pgc_rec_t 
         t->short_title ? ", shorter than the minimum length" : "" );
   if( (ret = list_add( T->out, t )) < 0 )
     goto drop;
+  if( t->nr_of_angles > 1 )
+    main_angle_note( T, t );
   for( int a = 1; a < t->nr_of_angles; a++ ) {
     dvd_title_t *ta = calloc( 1, sizeof(*ta) );
     if( !ta )

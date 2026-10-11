@@ -148,6 +148,7 @@ class ScanResult:
     title: int
     pgc: int
     cells: list
+    angles: list = dataclasses.field(default_factory=list)   # every angle played, in the order played
 
 
 def scan(disc, with_trace=False):
@@ -155,8 +156,8 @@ def scan(disc, with_trace=False):
     SCAN_LINES.clear()
     out = ffi.new("dvdnav_scan_results_t *")
     ret = lib.tb_dvd_scan(disc, lib.tb_py_scan_line if with_trace else ffi.NULL, out)
-    res = [ScanResult(ffi.string(r.name).decode(), r.title, r.pgc, list(ffi.unpack(r.cells, r.nb_cells)))
-           for r in out.results[0:out.nb_results]]
+    res = [ScanResult(ffi.string(r.name).decode(), r.title, r.pgc, list(ffi.unpack(r.cells, r.nb_cells)),
+                      [a for a in r.angles if a]) for r in out.results[0:out.nb_results]]
     scan.entered = [i for i in range(100) if out.entered[i]]   # the title sets the navigation entered
     lib.dvdnav_scan_free_results(out)
     return ret, res, list(SCAN_LINES)
@@ -178,7 +179,8 @@ def titles_text(disc, cell_mode=0, cell_check=0, min_length=0):
 def titles(disc, cell_mode=0, cell_check=0, min_length=0):
     """The navigation scan, then ff_dvd_titles_build() on a DVDDisc *:
     (return value, the scan's return value, [dict per title of
-    ff_dvd_titles_dump(): name, ttn, vts, pgc, angle, cells, chapters,
+    ff_dvd_titles_dump(): name, ttn, vts, pgc, angle, main (titles with
+    angles: the main angle), cells, chapters,
     length, real, segments, size, map, scan, short])."""
     dump = ffi.new("char **")
     scan_ret = ffi.new("int *")
@@ -200,14 +202,17 @@ def _dump(dump):
 
 def titles_from(disc, results, cell_mode=0, cell_check=0, min_length=0):
     """ff_dvd_titles_build() on a DVDDisc * with given scan results
-    [(name, title, pgc, [cells])] instead of a scan: (return value, [dict per
-    title as titles() gives])."""
+    [(name, title, pgc, [cells])] (or with the angles played, in order:
+    (name, title, pgc, [cells], [angles]))
+    instead of a scan: (return value, [dict per title as titles() gives])."""
     res = ffi.new("dvd_nav_cells_t[]", max(len(results), 1))
     keep = []
-    for k, (name, title, pgc, cells) in enumerate(results):
+    for k, (name, title, pgc, cells, *angle) in enumerate(results):
         res[k].name = name.encode()
         res[k].title = title
         res[k].pgc = pgc
+        if angle:
+            res[k].angles = list(angle[0]) + [0] * (10 - len(angle[0]))
         c = ffi.new("uint8_t[]", list(cells) or [0])
         keep.append(c)
         res[k].cells = c
