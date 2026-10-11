@@ -310,6 +310,14 @@ def test_the_cell_check_passes_a_whole_cell(tmp_path):
     assert [check(folder, m) for m in (ALL, SPREAD, RANDOM)] == [0, 0, 0]
 
 
+def test_libdvdread_runs_the_cell_check_and_says_which_vobus_it_read(tmp_path):
+    folder = one_long_cell(tmp_path, [])
+    for mode, what in ((ALL, "all read"), (SPREAD, "50 evenly spread"), (RANDOM, "50 at random")):
+        install_log(lib.AV_LOG_DEBUG)
+        assert check(folder, mode) == 0
+        assert logged(f"libdvdread: cell check, VTS_01 program chain 1 cell 1 (69 VOBUs, {what}): passed"), what
+
+
 # ---- the program ----
 
 def info(path, *sets, detail=False):

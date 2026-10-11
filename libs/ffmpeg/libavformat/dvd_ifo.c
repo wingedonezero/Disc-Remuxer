@@ -307,6 +307,8 @@ static DVDPgc *pgc_of(const pgc_rec_t *r)
         cl->last_sector            = rc->last_sector;
         cl->vob_id_nr              = rc->vob_id_nr;
         cl->cell_nr                = rc->cell_nr;
+        cl->pgcn                   = r->number;
+        cl->index                  = c;
     }
     return p;
 }
@@ -453,6 +455,12 @@ int ff_dvd_ifo_tables(DVDDisc *d, DVDIfo *f)
             goto end;
         }
     }
+    /* the table itself to libdvdread, which walks and checks the cells */
+    if (DVDKeepPGCIT_rec(d->reader, f->index, rec) < 0) {
+        ret = AVERROR(ENOMEM);
+        goto end;
+    }
+    rec = NULL;
     /* the chapter table as recorded (the title list reads it) */
     if (!ifoRead_table_rec(h, h->vtsi_mat->vts_ptt_srpt, 4, "VTS_PTT_SRPT", &ptt, &ptt_size)) {
         av_log(d->log, AV_LOG_ERROR, "DVD: %s: its chapter table (VTS_PTT_SRPT) cannot be read\n", name);

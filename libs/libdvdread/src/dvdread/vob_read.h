@@ -240,6 +240,77 @@ DVDREAD_API int DVDVobuBad_rec( dvd_vob_reader_t *, uint32_t sector );
  *  pack: the IFO header's. 0 on a folder or without menu VOBs. */
 DVDREAD_API int64_t DVDMenuVOBStart_rec( ifo_handle_t *ifo, int title );
 
+/* ---- cells ----
+ *
+ * A title set's program chain table as ifoRead_VTS_PGCIT_rec() read it,
+ * handed to the reader (DVDKeepPGCIT_rec()); its cells (pgcn: the program
+ * chain's search pointer index, cell: the cell's index, both from 0) are
+ * walked and checked:
+ *
+ * - inside a cell the VOBU address map gives the next VOBU (a cell neither
+ *   in an angle block nor interleaved; with the seamless-angle flag only
+ *   when its first VOBUs and last VOBU follow each other by their
+ *   navigation packs, checked once), else the navigation packs;
+ * - a cell is rejected when a VOBU of it is known not to start one, it has
+ *   no playback time, it lies outside the title VOBs, it is a cell of at
+ *   most 1 s (unless a single VOBU right after the previous cell, without a
+ *   cell command, not the next to last, that passes the full check) or of
+ *   at most 5 s with a cell command, the only cell of its chain and a long
+ *   run of tiny VOBUs of one size, or (the full test) fails the full check
+ *   or its real length cannot be measured;
+ * - the full check reads the navigation packs of its first and last VOBU,
+ *   of every VOBU (or 50 evenly spread, or 50 at random: DVDSetCellCheck_rec())
+ *   and their presentation times must be in order.
+ */
+
+typedef enum
+{
+    DVD_CHECK_ALL,                      /* every VOBU of the cell */
+    DVD_CHECK_SPREAD,                   /* 50 VOBUs evenly spread (all of fewer) */
+    DVD_CHECK_RANDOM,                   /* 50 VOBUs at random (all of fewer) */
+} dvd_cell_check_t;
+
+/** Title set title's program chain table: the reader keeps it (frees it
+ *  when it closes). */
+DVDREAD_API int DVDKeepPGCIT_rec( dvd_reader_t *, int title, pgcit_rec_t *pgcit );
+
+/** Which VOBUs the full cell check reads; seed: the random sample's. */
+DVDREAD_API void DVDSetCellCheck_rec( dvd_reader_t *, dvd_cell_check_t mode, uint64_t seed );
+
+/** The next VOBU and the length of the VOBU at sector in the cell (*next
+ *  DVD_VOBU_END after its last): 1, 0 none. */
+DVDREAD_API int DVDCellNextVobu_rec( dvd_vob_reader_t *, int pgcn, int cell, uint32_t sector, uint32_t *next,
+                                     uint32_t *len );
+
+/** The same by the navigation packs alone (recorded, else read). */
+DVDREAD_API int DVDCellNavNextVobu_rec( dvd_vob_reader_t *, int pgcn, int cell, uint32_t sector, uint32_t *next,
+                                        uint32_t *len );
+
+/** The seamless-angle cell's first VOBUs and last VOBU follow each other by
+ *  their navigation packs (found once per cell). */
+DVDREAD_API int DVDCellSeamlessAngleOk_rec( dvd_vob_reader_t *, int pgcn, int cell );
+
+/** The presentation start and end of the VOBU at sector of the cell (read
+ *  when not recorded; without read_anyway only when the cell passes its
+ *  checks): 1, 0 none. */
+DVDREAD_API int DVDCellVobuTimes_rec( dvd_vob_reader_t *, int pgcn, int cell, uint32_t sector, uint32_t *s_ptm,
+                                      uint32_t *e_ptm, int read_anyway );
+
+/** The cell's real length in 90 kHz ticks: its last VOBU's end against its
+ *  first VOBU's start: 1, 0 not measurable. */
+DVDREAD_API int DVDCellDuration_rec( dvd_vob_reader_t *, int pgcn, int cell, uint64_t *duration, int read_anyway );
+
+/** The cell is rejected (see above; quick: without the full check and the
+ *  measure); prev: the index of the cell played before it, -1 none. */
+DVDREAD_API int DVDCellRejected_rec( dvd_vob_reader_t *, int pgcn, int cell, int quick, int prev );
+
+/** The cell fails the full check. */
+DVDREAD_API int DVDCellCheckFailed_rec( dvd_vob_reader_t *, int pgcn, int cell );
+
+/** From VOBU start from to VOBU start to interleaved unit by interleaved
+ *  unit, each unit's first VOBU starting it. */
+DVDREAD_API int DVDIlvuWalk_rec( dvd_vob_reader_t *, uint32_t from, uint32_t to );
+
 /** Closes the title VOBs; a damaged range still open is reported. */
 DVDREAD_API void DVDCloseTitleVOBs_rec( dvd_vob_reader_t * );
 

@@ -60,7 +60,8 @@ typedef struct DVDCell {
     uint32_t last_sector;
     uint16_t vob_id_nr;                 /**< cell_position_t */
     uint8_t  cell_nr;
-    uint8_t  seamless_angle_checked;    /**< title list: 0 not yet, 1 its VOBUs disagree, 2 they agree */
+    int      pgcn, index;               /**< its program chain's search pointer index and its own index (from 0):
+                                             how libdvdread names it (vob_read.h, cells) */
 } DVDCell;
 
 /** A program chain (pgc_t) of a title set's VTS_PGCIT. */
@@ -264,6 +265,9 @@ void ff_dvd_reports_count(const DVDDisc *d, int *harmless, int *breaks);
 int  ff_dvd_vob_read(DVDDisc *d, DVDIfo *f, int menu, uint32_t sector, uint8_t *buf);
 
 /* ---- VOBUs (dvd_read.c, on libdvdread's VOBU records, vob_read.h) ---- */
+/** Title set f's own reading of its title VOBs (opened once; NULL: they
+ *  cannot be read). */
+dvd_vob_reader_t *ff_dvd_own_reading(DVDDisc *d, DVDIfo *f);
 /** The NAV pack fields of a VOBU (pci_gi, dsi_gi, sml_pbi, vobu_sri). */
 typedef dvd_vobu_nav_t DVDNav;
 
