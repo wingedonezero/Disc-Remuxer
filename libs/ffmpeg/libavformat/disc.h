@@ -120,6 +120,10 @@ typedef struct DiscTitleSource {
      *  check. */
     int64_t     (*clip_start)(AVFormatContext *s, int clip);
     const char  *clip_start_name;   /**< for the log: "the playlist's IN time" */
+    /** The disc's own check of the stream data read (Blu-ray: its AACS
+     *  content hashes), at the title's end: logged; returns the damaged
+     *  units found (each logged as a warning). NULL: none. */
+    int64_t     (*integrity)(AVFormatContext *s);
 
     int          ts;                /**< Blu-ray stream data (6144-byte units, MPEG-TS) */
     const int   *pids;              /**< ts: the PIDs read */

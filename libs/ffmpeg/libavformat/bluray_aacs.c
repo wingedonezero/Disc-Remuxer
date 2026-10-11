@@ -115,7 +115,7 @@ static int load_path(DiscIOFS *fs, const char *path, int64_t size_wanted, Bluray
  * read, the DUPLICATE copy of the directory it was found in (/AACS when it
  * was found in neither), read with the first copy's size.
  * @return 1, 0 no copy exists, < 0 no copy can be read */
-static int load_aacs_file(void *log, DiscIOFS *fs, const char *name, int quiet, BlurayFile *out)
+int ff_bluray_aacs_file(void *log, DiscIOFS *fs, const char *name, int quiet, BlurayFile *out)
 {
     const char *dir = "AACS";
     int64_t size = -1;
@@ -554,7 +554,7 @@ int ff_bluray_aacs_open(void *log, BlurayDisc *d, const char *const *key_files, 
     }
 
     /* the unit keys and the media key block */
-    if ((ret = load_aacs_file(log, fs, "Unit_Key_RO.inf", 1, &uk)) < 0)
+    if ((ret = ff_bluray_aacs_file(log, fs, "Unit_Key_RO.inf", 1, &uk)) < 0)
         goto end;
     if (!ret) {
         if (has_dir(fs, "/AACS/AACS_av") || has_dir(fs, "/AACS/AACS_mv") ||
@@ -568,7 +568,7 @@ int ff_bluray_aacs_open(void *log, BlurayDisc *d, const char *const *key_files, 
         }
         goto end;
     }
-    if ((ret = load_aacs_file(log, fs, "MKB_RO.inf", 0, &mkb)) <= 0) {
+    if ((ret = ff_bluray_aacs_file(log, fs, "MKB_RO.inf", 0, &mkb)) <= 0) {
         if (!ret) {
             av_log(log, AV_LOG_ERROR, "Blu-ray: AACS: the disc has no MKB_RO.inf\n");
             ret = AVERROR_INVALIDDATA;

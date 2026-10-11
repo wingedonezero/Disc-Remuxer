@@ -45,6 +45,7 @@
 typedef struct BlurayDemuxContext {
     BlurayDisc disc;
     BlurayAACS *aacs;
+    BlurayHash *hash;          /* the disc's content hash tables: the stream files read are checked */
     char     **files;          /* the titles' file names (disc info) */
     int        nb_files;
 
@@ -88,6 +89,7 @@ static int read_block(AVFormatContext *s, int k, uint32_t block, uint8_t *buf)
     if (c->seg.s != seg) {
         ff_bluray_seg_reader_close(&c->seg);
         ff_bluray_seg_reader_init(&c->seg, s, ((DiscContext *)s->priv_data)->fs, c->aacs, seg);
+        c->seg.hash = c->hash;
         if (c->both)
             ff_bluray_seg_reader_both(&c->seg);
     }
@@ -120,6 +122,7 @@ static void bluray_close(AVFormatContext *s)
         av_free(c->files[i]);
     av_freep(&c->files);
     ff_bluray_aacs_close(&c->aacs);
+    ff_bluray_hash_free(&c->hash);
     ff_bluray_disc_free(&c->disc);
 }
 
@@ -374,6 +377,29 @@ static int title_info(AVFormatContext *s, int i, DiscTitleInfo *dt)
 /* The opened title's source (its streams and tracks: the disc layer's):
  * its segments (a part's), chapter marks, both views of a 3-D title when
  * asked for. */
+/* The title's stream data against the disc's content hash tables: one
+ * line; the damaged hash units (each already logged). */
+static int64_t integrity(AVFormatContext *s)
+{
+    BlurayDemuxContext *c = ff_disc_part(s);
+    int64_t checked, failed;
+    int files;
+
+    if (!c->hash)
+        return 0;
+    ff_bluray_hash_stats(c->hash, &checked, &failed, &files);
+    if (!checked)
+        av_log(s, AV_LOG_INFO, "Blu-ray: content hash check: no whole hash unit of this title was read: nothing "
+               "checked\n");
+    else if (!failed)
+        av_log(s, AV_LOG_INFO, "Blu-ray: content hash check: %"PRId64" blocks (%.1f GB) checked against the disc's "
+               "content hashes: all correct\n", checked, checked * 196608.0 / (1 << 30));
+    else
+        av_log(s, AV_LOG_WARNING, "Blu-ray: content hash check: %"PRId64" of %"PRId64" blocks checked are damaged, in "
+               "%d stream file%s (see above)\n", failed, checked, files, files == 1 ? "" : "s");
+    return failed;
+}
+
 static int open_title(AVFormatContext *s, int i, int part, int *second_view_read)
 {
     DiscContext *d = s->priv_data;
@@ -440,6 +466,7 @@ static int open_title(AVFormatContext *s, int i, int part, int *second_view_read
         c->chapter_times[i] = marks[i];
     av_free(marks);
     s->duration = av_rescale(ff_bluray_segs_duration(t, s0, s1), AV_TIME_BASE, 45000);
+    ff_bluray_hash_reset(c->hash);
     d->src = (DiscTitleSource){
         .nb_clips      = s1 - s0,
         .clip_kind     = "segment",
@@ -448,6 +475,7 @@ static int open_title(AVFormatContext *s, int i, int part, int *second_view_read
         .read_block    = read_block,
         .clip_start    = clip_start,
         .clip_start_name = "the start time the playlist gives it (IN time)",
+        .integrity     = integrity,
         .ts            = 1,
         .chapter_times = c->chapter_times,
         .nb_chapters   = nb_marks,
@@ -483,6 +511,10 @@ static int bluray_load(AVFormatContext *s)
     }
     if ((ret = ff_bluray_aacs_open(s, b, (const char *const *)d->opt_keydb, d->nb_opt_keydb, &c->aacs)) < 0)
         return ret;
+    /* an AACS disc read with its keys: its stream files against its content
+     * hash tables (hashes of the bytes as they are on the disc) */
+    if (c->aacs && (ret = ff_bluray_hash_open(s, d->fs, &c->hash)) < 0)
+        return ret;
     b->keys = c->aacs;
     if ((ret = ff_bluray_titles_build(s, b, d->opt_min_length)) < 0)
         return ret;
@@ -493,6 +525,8 @@ static int bluray_load(AVFormatContext *s)
         (b->name_eng && (!b->name || strcmp(b->name_eng, b->name)) &&
          ff_disc_add_prop(s, "English name", "%s", b->name_eng) < 0) ||
         ff_disc_add_prop(s, "Protection: AACS", "%s", b->aacs ? "yes" : "no") < 0 ||
+        (c->aacs && ff_disc_add_prop(s, "Content hash check", "%s", c->hash ? "yes: the stream files read are "
+                                     "checked against the disc's content hashes" : "no table") < 0) ||
         ff_disc_add_prop(s, "Protection: AACS 2.0", "not checked yet") < 0 ||
         ff_disc_add_prop(s, "Protection: BD+", "%s", b->bdplus ? "yes (not supported yet)" : "no") < 0 ||
         ff_disc_add_prop(s, "Protection: bus encryption", "not checked yet") < 0 ||

@@ -1022,6 +1022,12 @@ static int title_end(AVFormatContext *s)
 
     if ((ret = set_chapters(s)) < 0)
         return ret;
+    /* the disc's own check of what was read */
+    if (r->src->integrity) {
+        int64_t damaged = r->src->integrity(s);
+        if (damaged && (ret = av_dict_set_int(&s->metadata, "damaged", damaged, 0)) < 0)
+            return ret;
+    }
     /* what was read and not ripped */
     {
         AVBPrint bp;

@@ -373,6 +373,7 @@ typedef struct BluraySegment {
 } BluraySegment;
 
 typedef struct BlurayAACS BlurayAACS;   /**< bluray_aacs.c */
+typedef struct BlurayHash BlurayHash;   /**< bluray_hash.c */
 
 /** A text subtitle (TextST) stream of a title, read from its own clip. */
 typedef struct BluraySide {
@@ -505,6 +506,7 @@ typedef struct BluraySegReader {
     void                *log;
     DiscIOFS            *fs;
     BlurayAACS          *aacs;
+    BlurayHash          *hash;         /**< the units read are checked against it (NULL: not) */
     const BluraySegment *s;
     int                  both;         /**< 3-D items: both views */
     int                  item;         /**< the open item, -1 none */
@@ -615,6 +617,26 @@ void ff_bluray_aacs_close(BlurayAACS **a);
  * @return 0, < 0 error (the unit cannot be decrypted)
  */
 int  ff_bluray_aacs_unit(void *log, BlurayAACS *a, BlurayClip *c, uint8_t *unit);
+/**
+ * An AACS file read whole: /AACS/<name>, else /AACS_bd/<name>, else the
+ * DUPLICATE copy of that directory. quiet: no log line when there is none.
+ * @return 1, 0 no copy exists, < 0 no copy can be read
+ */
+int  ff_bluray_aacs_file(void *log, DiscIOFS *fs, const char *name, int quiet, BlurayFile *out);
+
+/* ---- bluray_hash.c: the stream files against the disc's content hash tables ---- */
+/** Load an AACS disc's content certificates and content hash tables (every
+ *  layer). @return 1 loaded, 0 none (or not usable: logged, *out NULL), < 0
+ *  out of memory */
+int  ff_bluray_hash_open(void *log, DiscIOFS *fs, BlurayHash **out);
+/** A title's read starts: counts 0, every clip waiting for a hash unit's start. */
+void ff_bluray_hash_reset(BlurayHash *h);
+/** One aligned unit of clip `clip` at byte offset off of its stream file, as
+ *  read (before decryption). A damaged hash unit is logged. 0 or AVERROR(ENOMEM). */
+int  ff_bluray_hash_unit(void *log, BlurayHash *h, uint32_t clip, int64_t off, const uint8_t *unit);
+/** Hash units checked and found damaged since the reset, files with a damaged one. */
+void ff_bluray_hash_stats(const BlurayHash *h, int64_t *checked, int64_t *failed, int *files_failed);
+void ff_bluray_hash_free(BlurayHash **h);
 
 /**
  * Read a Blu-ray disc's structure: its kind (BDMV / BDAV), name, clip

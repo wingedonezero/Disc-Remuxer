@@ -908,6 +908,8 @@ end:
             log_text(LOG_WARNING, "Stream details: %d video / audio track%s not checked (no decoder)", unchecked,
                      unchecked == 1 ? "" : "s");
         res->warnings += unchecked;
+        /* blocks the disc's own check found damaged (each a warning above) */
+        res->warnings += meta_int(ctx->metadata, "damaged");
         log_msg(MSG_CHAPTERS, LOG_DETAIL, "Chapters: %u", ctx->nb_chapters);
         /* what was written, for the title's last line */
         for (unsigned i = 0; i < ctx->nb_streams; i++)
