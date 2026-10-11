@@ -3655,6 +3655,121 @@ static void rec_check_provider(struct ifo_handle_private_s *ifop, const uint8_t 
     }
 }
 
+/* ---- consistency of an IFO's tables with each other ---- */
+
+/* A finding of table (its bytes at offset in the information file, n of them). */
+static void rec_table_note(struct ifo_handle_private_s *ifop, dvd_report_level_t level, const char *table,
+                           int64_t offset, const uint8_t *bytes, size_t n, const char *fmt, ...)
+{
+  dvd_reader_t *ctx = ifop->ctx;
+  char text[320];
+  va_list ap;
+  dvd_report_t r = { level, ifop->name[0] ? ifop->name : NULL, table, NULL, offset, -1, bytes, n, text, 0, 0 };
+
+  va_start(ap, fmt);
+  vsnprintf(text, sizeof(text), fmt, ap);
+  va_end(ap);
+  DVDReadReport(ctx->priv, &ctx->logcb, &r);
+}
+
+int ifoCheckCellAddresses_rec(ifo_handle_t *ifofile, const pgcit_rec_t *pgcit)
+{
+  struct ifo_handle_private_s *ifop;
+  uint8_t *d = NULL, raw[4];
+  uint32_t size = 0, sector;
+  int64_t base;
+  int found = 0;
+
+  if(!ifofile || !pgcit)
+    return 0;
+  ifop = PRIV(ifofile);
+  if(!ifoRead_rec_bytes(ifofile, 0xe0, raw, 4) || !(sector = rec_be32(raw)))
+    return 0;                             /* no cell address table */
+  if(!ifoRead_table_rec(ifofile, sector, 4, "VTS_C_ADT", &d, &size) || !d)
+    return 0;                             /* (reported by the reading) */
+  base = (int64_t)sector * DVD_BLOCK_LEN;
+  for(int i = 0; i < pgcit->nr_of_pgcs; i++) {
+    const pgc_rec_t *p = pgcit->pgcs[i];
+    if(!p || !p->cells)
+      continue;
+    for(int c = 0; c < p->nr_of_cells; c++) {
+      const cell_rec_t *cl = &p->cells[c];
+      uint32_t first = 0, last = 0;
+      int64_t at_first = -1, at_last = -1;
+      /* the cell's pieces: entries of its VOB id and cell id (12 bytes each from 8) */
+      for(uint32_t o = 8; o + 12 <= size; o += 12)
+        if(((uint32_t)d[o] << 8 | d[o + 1]) == cl->vob_id_nr && d[o + 2] == cl->cell_nr) {
+          if(at_first < 0) {
+            first    = rec_be32(d + o + 4);
+            at_first = o;
+          }
+          last    = rec_be32(d + o + 8);
+          at_last = o;
+        }
+      if(at_first < 0) {
+        rec_table_note(ifop, DVD_REPORT_WARN, "VTS_C_ADT", base, NULL, 0, "program chain %d cell %d (VOB id %u, "
+                       "cell id %u) is not in the cell address table", i + 1, c + 1, cl->vob_id_nr, cl->cell_nr);
+        found++;
+        continue;
+      }
+      if(first != cl->first_sector)
+        rec_table_note(ifop, DVD_REPORT_WARN, "VTS_C_ADT", base + at_first + 4, d + at_first + 4, 4,
+                       "program chain %d cell %d starts at sector %u, its first piece in the cell address table "
+                       "at %u", i + 1, c + 1, cl->first_sector, first);
+      if(last != cl->last_sector)
+        rec_table_note(ifop, DVD_REPORT_WARN, "VTS_C_ADT", base + at_last + 8, d + at_last + 8, 4,
+                       "program chain %d cell %d ends at sector %u, its last piece in the cell address table "
+                       "at %u", i + 1, c + 1, cl->last_sector, last);
+      found += (first != cl->first_sector) + (last != cl->last_sector);
+    }
+  }
+  free(d);
+  return found;
+}
+
+#define REC_ATRT_ATTRS 0x216              /* VTSI_MAT 0x100..0x315: the menus' and titles' attributes */
+
+int ifoCheckVtsAttributes_rec(ifo_handle_t *vmg, ifo_handle_t *vts, int title)
+{
+  struct ifo_handle_private_s *vmgp;
+  uint8_t *d = NULL, raw[4], own[REC_ATRT_ATTRS];
+  uint32_t size = 0, sector, entry, cat;
+  int64_t base;
+  int found = 0;
+
+  if(!vmg || !vts || title < 1 || title > 99)
+    return 0;
+  vmgp = PRIV(vmg);
+  if(!ifoRead_rec_bytes(vmg, 0xd0, raw, 4) || !(sector = rec_be32(raw)))
+    return 0;                             /* no attribute table */
+  if(!ifoRead_table_rec(vmg, sector, 4, "VMG_VTS_ATRT", &d, &size) || !d)
+    return 0;
+  base = (int64_t)sector * DVD_BLOCK_LEN;
+  if(size < 8 + 4u * title || (entry = rec_be32(d + 8 + 4 * (title - 1))) + 8 + REC_ATRT_ATTRS > size) {
+    rec_table_note(vmgp, DVD_REPORT_WARN, "VMG_VTS_ATRT", base, NULL, 0, "title set %d has no complete entry in "
+                   "the title set attribute table", title);
+    free(d);
+    return 1;
+  }
+  if(ifoRead_rec_bytes(vts, 0x22, raw, 4) && (cat = rec_be32(raw)) != rec_be32(d + entry + 4)) {
+    rec_table_note(vmgp, DVD_REPORT_WARN, "VMG_VTS_ATRT", base + entry + 4, d + entry + 4, 4, "title set %d's "
+                   "category is %08x in the title set attribute table, %08x in its own IFO (vts_category)", title,
+                   rec_be32(d + entry + 4), cat);
+    found++;
+  }
+  if(ifoRead_rec_bytes(vts, 0x100, own, sizeof(own)) && memcmp(own, d + entry + 8, sizeof(own))) {
+    int at = 0;
+    while(own[at] == d[entry + 8 + at])
+      at++;
+    rec_table_note(vmgp, DVD_REPORT_WARN, "VMG_VTS_ATRT", base + entry + 8 + at, d + entry + 8 + at, 1,
+                   "title set %d's attributes differ from those in its own IFO, first at VTSI_MAT byte 0x%x (%02x "
+                   "there)", title, 0x100 + at, own[at]);
+    found++;
+  }
+  free(d);
+  return found;
+}
+
 ifo_handle_t *ifoOpen_rec(dvd_reader_t *ctx, int title)
 {
   struct ifo_handle_private_s *ifop;

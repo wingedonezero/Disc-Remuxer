@@ -392,6 +392,11 @@ int ff_dvd_disc_open(void *log, DiscIOFS *fs, const char *dir, int folder, const
             av_log(log, AV_LOG_WARNING, "DVD: title set %d cannot be read: the disc is read without it\n", i);
         }
     }
+    /* the video manager's copy of each title set's attributes against the
+     * title set's own (libdvdread) */
+    for (int i = 1; i < d->nb_ifos && d->ifos[0] && d->ifos[0]->rec; i++)
+        if (d->ifos[i] && !d->ifos[i]->failed && d->ifos[i]->rec)
+            ifoCheckVtsAttributes_rec(d->ifos[0]->rec, d->ifos[i]->rec, i);
     /* every information file through libdvdread once more, all its tables
      * and checks; what libdvdread found, logged */
     ff_dvd_ifo_check(d);

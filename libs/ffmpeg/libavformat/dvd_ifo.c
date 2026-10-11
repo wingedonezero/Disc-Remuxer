@@ -455,11 +455,13 @@ int ff_dvd_ifo_tables(DVDDisc *d, DVDIfo *f)
             goto end;
         }
     }
-    /* the table itself to libdvdread, which walks and checks the cells */
+    /* the table itself to libdvdread, which walks and checks the cells (and
+     * checks them against the cell address table) */
     if (DVDKeepPGCIT_rec(d->reader, f->index, rec) < 0) {
         ret = AVERROR(ENOMEM);
         goto end;
     }
+    ifoCheckCellAddresses_rec(h, rec);
     rec = NULL;
     /* the chapter table as recorded (the title list reads it) */
     if (!ifoRead_table_rec(h, h->vtsi_mat->vts_ptt_srpt, 4, "VTS_PTT_SRPT", &ptt, &ptt_size)) {
