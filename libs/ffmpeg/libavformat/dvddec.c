@@ -515,7 +515,7 @@ static int disc_done(AVFormatContext *s)
     int css = 0;
 
     for (int i = 1; i < c->disc.nb_ifos; i++)
-        css |= c->disc.ifos[i] && c->disc.ifos[i]->css_state != 0;
+        css |= c->disc.ifos[i] && ff_dvd_css_state(&c->disc, c->disc.ifos[i], NULL) != 0;
     d->info.encrypted = css;
     {
         int harmless, breaks, ret;

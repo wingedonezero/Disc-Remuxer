@@ -157,8 +157,6 @@ typedef struct DVDIfo {
     /* reading (dvd_read.c) */
     dvd_vob_reader_t *vobs;             /**< libdvdread's reading of its title VOBs (NULL: not opened yet) */
     int          vobs_failed;           /**< they cannot be opened */
-    int          css_state;             /**< CSS title key: 0 not looked for yet, 1 found, -1 none */
-    uint8_t      css_key[5];
 } DVDIfo;
 
 /** A node of the disc's text data (TXTDT_MG): an item kind below 0x30
@@ -447,14 +445,17 @@ char *ff_dvd_titles_dump(const DVDTitleList *l);
  *  own damaged ranges); NULL when they cannot be opened.
  *  DVDCloseTitleVOBs_rec() it. */
 dvd_vob_reader_t *ff_dvd_title_vobs_open(DVDDisc *d, DVDIfo *f);
-/** Sector of title set f's title VOBs, read and checked by libdvdread and
- *  CSS descrambled (see dvd_read.c): 1 read, 0 left out (damaged: no MPEG-2
- *  pack with a packet), < 0 cannot be read (a read error, or scrambled
- *  without a title key). vr: a reading of its own (ff_dvd_title_vobs_open()),
+/** Sector of title set f's title VOBs, read, checked and CSS descrambled by
+ *  libdvdread (see dvd_read.c): 1 read, 0 left out (damaged: no MPEG-2 pack
+ *  with a packet), < 0 cannot be read (a read error; AVERROR_INVALIDDATA:
+ *  scrambled without a title key). vr: a reading of its own (ff_dvd_title_vobs_open()),
  *  a damaged range that this read ends into *ended (may be NULL); NULL: f's
  *  own reading (its ranges are not given back). */
 int      ff_dvd_title_vob_read(DVDDisc *d, DVDIfo *f, dvd_vob_reader_t *vr, uint32_t sector, uint8_t *buf,
                                dvd_vob_damage_t *ended);
+/** Title set f's CSS title key as libdvdread found it: 1 found (into key,
+ *  5 bytes, may be NULL), 0 not looked for yet, -1 none. */
+int      ff_dvd_css_state(DVDDisc *d, const DVDIfo *f, uint8_t *key);
 /** ff_dvd_title_vob_read() on f's own reading. */
 int      ff_dvd_title_vob_sector(DVDDisc *d, DVDIfo *f, uint32_t sector, uint8_t *buf);
 /** The sectors of a segment. */

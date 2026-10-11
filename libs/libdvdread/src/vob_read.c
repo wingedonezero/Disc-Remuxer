@@ -1,6 +1,6 @@
 /*
- * Title VOB sectors read for ripping: the sector check and the damaged
- * ranges (dvdread/vob_read.h).
+ * Title VOB sectors read for ripping: the sector check, the damaged ranges
+ * and CSS (dvdread/vob_read.h).
  *
  * This file is part of libdvdread.
  *
@@ -23,9 +23,14 @@
 
 #include <inttypes.h>
 #include <limits.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef HAVE_DVDCSS_DVDCSS_H
+# include <dvdcss/dvdcss.h>
+#endif
 
 #include "dvdread/dvd_filesystem.h"
 #include "dvdread/dvd_reader.h"
@@ -38,8 +43,10 @@
 #define PATH_MAX 4096
 #endif
 
-#define SECTOR    DVD_VIDEO_LB_LEN
-#define MAX_PARTS 9                    /* VTS_nn_1..9.VOB */
+#define SECTOR      DVD_VIDEO_LB_LEN
+#define MAX_PARTS   9                  /* VTS_nn_1..9.VOB */
+#define CLEAR       0x80               /* CSS leaves the first 128 bytes of a sector clear */
+#define CHECK_LIMIT 8192               /* sectors after the key's start searched for one the key check can use */
 
 typedef struct {
   char     name[16];                  /* "VTS_01_1.VOB" */
@@ -51,6 +58,8 @@ typedef struct {
 struct dvd_vob_reader_s {
   dvd_reader_t *ctx;
   int           title;
+  uint32_t      blocks;               /* the title VOBs' length in sectors by the IFO / the files (CSS) */
+  int           mpeg2;                /* the title set's video is MPEG-2 (its video attributes) */
   vob_part_t    parts[MAX_PARTS];
   int           nb_parts;
   /* image: the image, the title VOBs' first sector on it, its sectors */
@@ -180,6 +189,246 @@ static dvd_damage_t sector_kind( const uint8_t *b )
   return DVD_DAMAGE_ZERO;
 }
 
+/* ---- CSS ---- */
+
+/* A finding of the CSS handling of the title set (table "CSS"). */
+static void css_report( dvd_vob_reader_t *v, dvd_report_level_t level, const char *fmt, ... )
+{
+  char text[256];
+  int n = snprintf( text, sizeof(text), "VTS_%02d: ", v->title );
+  va_list list;
+
+  va_start( list, fmt );
+  vsnprintf( text + n, sizeof(text) - n, fmt, list );
+  va_end( list );
+  DVDReadReportf( v->ctx->priv, &v->ctx->logcb, level, NULL, "CSS", -1, "%s", text );
+}
+
+/* 1: the sector's packet is of a stream CSS scrambles (the video stream
+ * 0xE0, private stream 1, MPEG audio 0xC0-0xC7) and its
+ * PES_scrambling_control is set (*h: the pack header's length); 0: not;
+ * -1: no MPEG-2 pack with a packet. */
+static int css_kind( const uint8_t *b, int *h )
+{
+  int st, id;
+
+  *h = 0;
+  if( b[0] != 0 || b[1] != 0 || b[2] != 1 || b[3] != 0xba || (b[4] & 0xc0) != 0x40 )
+    return -1;
+  st = b[13] & 7;
+  *h = st && b[14] ? 14 + st : 14;
+  if( b[*h] != 0 || b[*h + 1] != 0 || b[*h + 2] != 1 )
+    return -1;
+  id = b[*h + 3];
+  if( id != 0xbd && id != 0xe0 && (id & 0xf8) != 0xc0 )
+    return 0;
+  return !!(b[*h + 6] & 0x30);
+}
+
+/* An AC-3 frame's size in bytes from its syncinfo (A/52 table 5.18), 0
+ * when fscod / frmsizecod are not valid. */
+static int ac3_frame_size( const uint8_t *si )
+{
+  static const uint16_t words[19][3] = {     /* 48, 44.1, 32 kHz */
+    {   64,   69,   96 }, {   80,   87,  120 }, {   96,  104,  144 }, {  112,  121,  168 },
+    {  128,  139,  192 }, {  160,  174,  240 }, {  192,  208,  288 }, {  224,  243,  336 },
+    {  256,  278,  384 }, {  320,  348,  480 }, {  384,  417,  576 }, {  448,  487,  672 },
+    {  512,  557,  768 }, {  640,  696,  960 }, {  768,  835, 1152 }, {  896,  975, 1344 },
+    { 1024, 1114, 1536 }, { 1152, 1253, 1728 }, { 1280, 1393, 1920 },
+  };
+  int fscod = si[4] >> 6, frmsizecod = si[4] & 0x3f;
+
+  if( fscod == 3 || frmsizecod >= 38 )
+    return 0;
+  return 2 * (words[frmsizecod >> 1][fscod] + (fscod == 1 ? frmsizecod & 1 : 0));
+}
+
+/* The A/52 CRC (generator x^16 + x^15 + x^2 + 1, A/52 7.10.1) of n bytes:
+ * 0 over a whole frame after its syncword when the frame is intact. */
+static uint16_t ac3_crc( const uint8_t *p, size_t n )
+{
+  uint16_t c = 0;
+
+  while( n-- ) {
+    c ^= (uint16_t)(*p++ << 8);
+    for( int i = 0; i < 8; i++ )
+      c = c & 0x8000 ? (uint16_t)(c << 1) ^ 0x8005 : (uint16_t)(c << 1);
+  }
+  return c;
+}
+
+/* Whether a descrambled sector (pack header h bytes) shows the key right:
+ * 1 right, 0 wrong, -1 the sector cannot tell (*what: 1 AC-3, 2 video):
+ * an AC-3 frame whose sync information lies in the sector's clear part and
+ * which ends in its scrambled part (the frame's CRC, A/52 7.10.1), or an
+ * MPEG-2 sequence header in the clear part whose sequence_extension start
+ * code lies in the scrambled part (ISO/IEC 13818-2 6.2.2: in MPEG-2 video a
+ * sequence_extension follows every sequence header). */
+static int key_check( const uint8_t *sec, int h, int mpeg2, int *what )
+{
+  int id = sec[h + 3], len = sec[h + 4] << 8 | sec[h + 5], start = h + 9 + sec[h + 8], end = h + 6 + len;
+
+  if( end > SECTOR || start >= end )
+    return -1;
+  if( id == 0xbd && (sec[start] & 0xf8) == 0x80 && end - start > 4 ) {
+    /* AC-3: sub-stream id, frame count, first access unit pointer (from the
+     * byte after it) */
+    int first = sec[start + 2] << 8 | sec[start + 3], au = start + 3 + first, fs;
+
+    if( !first || au + 7 > CLEAR || sec[au] != 0x0b || sec[au + 1] != 0x77 || !(fs = ac3_frame_size( sec + au )) ||
+        au + fs > end || au + fs <= CLEAR )
+      return -1;
+    *what = 1;
+    return !ac3_crc( sec + au + 2, (size_t)fs - 2 );
+  }
+  if( id == 0xe0 && mpeg2 ) {
+    /* MPEG-2 video: a sequence header starting at the payload */
+    int p = start, ext;
+
+    if( p + 12 > CLEAR || sec[p] != 0 || sec[p + 1] != 0 || sec[p + 2] != 1 || sec[p + 3] != 0xb3 )
+      return -1;
+    ext = p + 12;
+    if( sec[p + 11] & 2 )               /* load_intra_quantiser_matrix: 64 bytes, then the non-intra flag */
+      ext += 64;
+    if( ext > end || (sec[ext - 1] & 1 && (ext += 64) > end) || ext + 5 > end || ext + 4 <= CLEAR )
+      return -1;
+    *what = 2;
+    return sec[ext] == 0 && sec[ext + 1] == 0 && sec[ext + 2] == 1 && sec[ext + 3] == 0xb5 && sec[ext + 4] >> 4 == 1;
+  }
+  return -1;
+}
+
+#ifdef HAVE_DVDCSS_DVDCSS_H
+/* The title VOBs as a stream for libdvdcss (it cracks the key from their
+ * scrambled sectors). */
+typedef struct {
+  dvd_vob_reader_t *v;
+  uint32_t          pos;              /* sector */
+} key_stream_t;
+
+static int read_sector( dvd_vob_reader_t *v, uint32_t sector, uint8_t *buf );
+
+static int ks_seek( void *opaque, uint64_t pos )
+{
+  key_stream_t *k = opaque;
+  k->pos = (uint32_t)(pos / SECTOR);
+  return 0;
+}
+
+static int ks_read( void *opaque, void *buf, int size )
+{
+  key_stream_t *k = opaque;
+  int done = 0;
+
+  for( ; done + SECTOR <= size && k->pos < k->v->blocks; done += SECTOR, k->pos++ )
+    if( read_sector( k->v, k->pos, (uint8_t *)buf + done ) < 0 )
+      return done ? done : -1;
+  return done;
+}
+
+static int ks_readv( void *opaque, const void *iov, int blocks )
+{
+  (void)opaque; (void)iov; (void)blocks;
+  return -1;
+}
+
+/* The key's check: the sectors from sector on, descrambled, until one tells:
+ * 1 right, 0 wrong (or none can be read). */
+static int check_key( dvd_vob_reader_t *v, uint32_t sector, const uint8_t *key )
+{
+  uint8_t b[SECTOR];
+
+  for( uint32_t s = sector; s < v->blocks && s - sector < CHECK_LIMIT; s++ ) {
+    int h, what = 0, ok;
+
+    if( read_sector( v, s, b ) < 0 )
+      return 0;
+    if( css_kind( b, &h ) != 1 )
+      continue;
+    dvdcss_descramble( key, b );
+    if( (ok = key_check( b, h, v->mpeg2, &what )) < 0 )
+      continue;
+    if( ok )
+      Log2( v->ctx, "VTS_%02d: the CSS title key is right on sector %" PRIu32 " (%s)", v->title, s,
+            what == 1 ? "an AC-3 frame's CRC" : "an MPEG-2 sequence header's extension" );
+    else
+      css_report( v, DVD_REPORT_ERROR, "the CSS title key is wrong on sector %" PRIu32 " (%s)", s,
+                  what == 1 ? "an AC-3 frame's CRC" : "an MPEG-2 sequence header's extension" );
+    return ok;
+  }
+  css_report( v, DVD_REPORT_WARN, "no sector within %d after %" PRIu32 " can check the CSS title key: it is used "
+              "unchecked [untested on real discs]", CHECK_LIMIT, sector );
+  return 1;
+}
+#endif
+
+/* The title set's title VOBs lie inside title set o's (the same sectors of
+ * an image) and o has its key. */
+static int key_shared( const dvd_reader_t *ctx, int title, int o )
+{
+  int64_t fb = ctx->vob_css[title].base, ob = ctx->vob_css[o].base;
+  uint32_t fn = ctx->vob_css[title].blocks, on = ctx->vob_css[o].blocks;
+
+  return o != title && ctx->vob_css[o].state > 0 && fb && ob &&
+         (ob == fb || (ob < fb && fn + fb <= ob + on));
+}
+
+/* The title set's key, looked for from its scrambled sector on: 0 found
+ * (or taken), -1 none (never looked for again). */
+static int find_key( dvd_vob_reader_t *v, uint32_t sector )
+{
+  dvd_reader_t *ctx = v->ctx;
+  uint8_t *key = ctx->vob_css[v->title].key;
+
+  for( int o = 1; o < 100; o++ )
+    if( key_shared( ctx, v->title, o ) ) {
+      memcpy( key, ctx->vob_css[o].key, 5 );
+      ctx->vob_css[v->title].state = 1;
+      Log2( ctx, "VTS_%02d: CSS title key taken from VTS_%02d (its title VOBs hold these)", v->title, o );
+      return 0;
+    }
+  css_report( v, DVD_REPORT_INFO, "sector %" PRIu32 " is scrambled: looking for the CSS title key", sector );
+  ctx->vob_css[v->title].state = -1;
+#ifdef HAVE_DVDCSS_DVDCSS_H
+  {
+    key_stream_t ks = { v, 0 };
+    dvdcss_stream_cb cb = { ks_seek, ks_read, ks_readv };
+    dvdcss_t css;
+    int ret;
+
+    if( !(css = dvdcss_open_stream( &ks, &cb )) ) {
+      css_report( v, DVD_REPORT_ERROR, "libdvdcss cannot be opened on the title VOBs" );
+      return -1;
+    }
+    ret = dvdcss_title_key( css, (int)sector, key );
+    dvdcss_close( css );
+    if( ret <= 0 ) {
+      css_report( v, DVD_REPORT_ERROR, "no CSS title key found (%s): its scrambled sectors cannot be read",
+                  ret < 0 ? "libdvdcss failed" : "no scrambled data from there on" );
+      return -1;
+    }
+    Log3( ctx, "VTS_%02d: CSS title key %02x %02x %02x %02x %02x", v->title, key[0], key[1], key[2], key[3], key[4] );
+    if( !check_key( v, sector, key ) )
+      return -1;
+    ctx->vob_css[v->title].state = 1;
+    css_report( v, DVD_REPORT_INFO, "CSS title key found" );
+    return 0;
+  }
+#else
+  css_report( v, DVD_REPORT_ERROR, "no CSS title key (built without libdvdcss): its scrambled sectors cannot be read" );
+  return -1;
+#endif
+}
+
+/* The title set's video coding (vts_video_attr, its first two bits: 1 = MPEG-2). */
+static dvd_vob_reader_t *opened( dvd_vob_reader_t *v, ifo_handle_t *ifo )
+{
+  uint8_t attr;
+
+  v->mpeg2 = ifoRead_rec_bytes( ifo, 0x200, &attr, 1 ) && attr >> 6 == 1;
+  return v;
+}
+
 dvd_vob_reader_t *DVDOpenTitleVOBs_rec( ifo_handle_t *ifo, int title )
 {
   struct ifo_handle_private_s *ifop;
@@ -227,7 +476,16 @@ dvd_vob_reader_t *DVDOpenTitleVOBs_rec( ifo_handle_t *ifo, int title )
     v->image_sectors = (size + SECTOR - 1) / SECTOR;
     if( v->start >= v->image_sectors )
       goto fail;
-    return v;
+    /* up to the BUP (the IFO's place when the BUP has none of its own) */
+    snprintf( path, sizeof(path), "/VIDEO_TS/VTS_%02d_0.BUP", title );
+    {
+      dvdstat_t bup;
+      int64_t bup_at = DVDStatFile_( ctx, path, &bup ) >= 0 && bup.sector >= 0 ? bup.sector : st.sector;
+      v->blocks = (uint32_t)(bup_at - st.sector) - (uint32_t)(v->start - st.sector);
+    }
+    ctx->vob_css[title].base   = v->start;
+    ctx->vob_css[title].blocks = v->blocks;
+    return opened( v, ifo );
   }
 
   /* a folder: the files joined */
@@ -242,7 +500,8 @@ dvd_vob_reader_t *DVDOpenTitleVOBs_rec( ifo_handle_t *ifo, int title )
   }
   if( !v->nb_parts )
     goto fail;
-  return v;
+  v->blocks = (uint32_t)(v->bytes / SECTOR);
+  return opened( v, ifo );
 
 fail:
   Log3( ctx, "VTS_%02d: the title VOBs cannot be opened", title );
@@ -292,6 +551,7 @@ static int read_sector( dvd_vob_reader_t *v, uint32_t sector, uint8_t *buf )
 int DVDReadTitleVOBSector_rec( dvd_vob_reader_t *v, uint32_t sector, uint8_t *buf, dvd_vob_damage_t *ended )
 {
   dvd_damage_t kind;
+  int h;
 
   if( ended )
     memset( ended, 0, sizeof(*ended) );
@@ -307,7 +567,27 @@ int DVDReadTitleVOBSector_rec( dvd_vob_reader_t *v, uint32_t sector, uint8_t *bu
     return 0;
   }
   end_damage( v, ended );
+  /* CSS: a scrambled packet descrambled with the title set's key, the
+   * scrambling bits cleared */
+  if( css_kind( buf, &h ) == 1 ) {
+    int state = v->ctx->vob_css[v->title].state;
+    if( state < 0 || (!state && find_key( v, sector ) < 0) )
+      return -2;
+#ifdef HAVE_DVDCSS_DVDCSS_H
+    dvdcss_descramble( v->ctx->vob_css[v->title].key, buf );
+#endif
+    buf[h + 6] &= 0xcf;
+  }
   return 1;
+}
+
+int DVDTitleVOBKey_rec( dvd_reader_t *ctx, int title, uint8_t key[5] )
+{
+  if( !ctx || title < 1 || title > 99 )
+    return 0;
+  if( ctx->vob_css[title].state > 0 && key )
+    memcpy( key, ctx->vob_css[title].key, 5 );
+  return ctx->vob_css[title].state;
 }
 
 void DVDEndTitleVOBDamage_rec( dvd_vob_reader_t *v, dvd_vob_damage_t *ended )

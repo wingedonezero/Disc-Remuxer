@@ -128,3 +128,33 @@ def test_the_title_set_s_own_reading_says_its_ranges_but_keeps_them_out_of_the_f
                   "zero: left out")
     assert findings(d) == before
     d.close()
+
+
+def test_a_title_set_s_css_key_is_one_for_all_its_readings_and_a_missing_one_fails_the_read(tmp_path):
+    from test_dvd_read import KEY, css, css_scramble
+    d = Disc.folder(folder_with(tmp_path, [css_scramble(KEY, ac3_pack()), css_scramble(KEY, ac3_pack())]))
+    install_log(lib.AV_LOG_DEBUG)
+    buf = ffi.new("uint8_t[]", S)
+    # the title set's own reading finds the key ...
+    assert lib.ff_dvd_title_vob_sector(d.d, d.ifo(1), 1, buf) == 1 and css(d) == (1, KEY)
+    assert logged("DVD: VTS_01: sector 1 is scrambled: looking for the CSS title key")
+    assert logged("DVD: VTS_01: CSS title key found")
+    # ... and a reading of its own uses it: not looked for again, descrambled
+    install_log(lib.AV_LOG_DEBUG)
+    r = Reading(d)
+    ret, _ = r.read(2)
+    assert ret == 1 and not logged("looking for")
+    r.close()
+    d.close()
+
+    # no key: the read fails, the search is said once and not made again
+    bad = bytearray(ac3_pack(good_crc=False))
+    d = Disc.folder(folder_with(tmp_path, [css_scramble(KEY, bytes(bad)), css_scramble(KEY, bytes(bad))]))
+    install_log(lib.AV_LOG_DEBUG)
+    r = Reading(d)
+    assert r.read(1)[0] < 0 and css(d) == (-1, None)
+    assert logged("DVD: VTS_01: the CSS title key is wrong on sector 1 (an AC-3 frame's CRC)")
+    install_log(lib.AV_LOG_DEBUG)
+    assert r.read(2)[0] < 0 and not logged("looking for")
+    r.close()
+    d.close()

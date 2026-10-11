@@ -45,6 +45,22 @@ extern "C" {
  * reported once (dvd_report_t with nb_sectors and damage, level error) when
  * it ends: when a sector that is not part of it is read, or the caller ends
  * it (DVDEndTitleVOBDamage_rec()), and it is given back to the caller.
+ *
+ * CSS (DVD-Video, CSS): a packet of the video stream 0xE0, private stream 1
+ * or MPEG audio 0xC0-0xC7 whose PES_scrambling_control is set is
+ * descrambled with its title set's title key and the bits cleared. The key
+ * is looked for when the title set's first scrambled sector is read (by any
+ * of its readings; the reader keeps one key per title set): a title set
+ * whose title VOBs lie inside those of a title set that has its key takes
+ * that key (an image); otherwise libdvdcss cracks it from the scrambled
+ * sectors from there on. The key is checked on the first sector after it
+ * (within 8192) that can tell a right key from a wrong one: an AC-3 frame
+ * whose sync information lies in the sector's clear part and which ends in
+ * its scrambled part (its CRC), or an MPEG-2 sequence header in the clear
+ * part whose sequence_extension start code lies in the scrambled part; none:
+ * used unchecked. Without a key (none found, the check fails) the title
+ * set's scrambled sectors cannot be read, and the key is not looked for
+ * again. The steps are reported (table "CSS", without a file).
  */
 typedef struct dvd_vob_reader_s dvd_vob_reader_t;
 
@@ -73,10 +89,11 @@ DVDREAD_API dvd_vob_reader_t *DVDOpenTitleVOBs_rec( ifo_handle_t *ifo, int title
 DVDREAD_API uint32_t DVDTitleVOBSectors_rec( const dvd_vob_reader_t * );
 
 /**
- * Reads title VOB sector into buf (2048 bytes): 1 the sector is usable, 0
- * it is damaged and left out, -1 it cannot be read (past the title VOBs, a
- * read error: reported). When this read ends a damaged range, the range is
- * put in *ended (nb_sectors 0: none); ended may be NULL.
+ * Reads title VOB sector into buf (2048 bytes, descrambled): 1 the sector
+ * is usable, 0 it is damaged and left out, -1 it cannot be read (past the
+ * title VOBs, a read error), -2 it is scrambled and the title set has no
+ * key. When this read ends a damaged range, the range is put in *ended
+ * (nb_sectors 0: none); ended may be NULL.
  */
 DVDREAD_API int DVDReadTitleVOBSector_rec( dvd_vob_reader_t *, uint32_t sector, uint8_t *buf,
                                            dvd_vob_damage_t *ended );
@@ -84,6 +101,10 @@ DVDREAD_API int DVDReadTitleVOBSector_rec( dvd_vob_reader_t *, uint32_t sector, 
 /** Ends the damaged range being read, if any (the reading stops or goes
  *  elsewhere): reported and put in *ended (nb_sectors 0: none). */
 DVDREAD_API void DVDEndTitleVOBDamage_rec( dvd_vob_reader_t *, dvd_vob_damage_t *ended );
+
+/** Title set title's CSS title key: 1 found (into key), 0 not looked for
+ *  yet, -1 none. */
+DVDREAD_API int DVDTitleVOBKey_rec( dvd_reader_t *, int title, uint8_t key[5] );
 
 /** Closes the title VOBs; a damaged range still open is reported. */
 DVDREAD_API void DVDCloseTitleVOBs_rec( dvd_vob_reader_t * );

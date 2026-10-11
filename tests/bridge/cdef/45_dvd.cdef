@@ -32,8 +32,6 @@ typedef struct DVDIfo {
     int          nb_pgcs;
     int          nb_vobu_map;
     uint32_t     title_vob_base;
-    int          css_state;
-    uint8_t      css_key[5];
     ...;
 } DVDIfo;
 
@@ -104,6 +102,7 @@ dvd_vob_reader_t *ff_dvd_title_vobs_open(DVDDisc *d, DVDIfo *f);
 int ff_dvd_title_vob_read(DVDDisc *d, DVDIfo *f, dvd_vob_reader_t *vr, uint32_t sector, uint8_t *buf,
                           dvd_vob_damage_t *ended);
 int ff_dvd_title_vob_sector(DVDDisc *d, DVDIfo *f, uint32_t sector, uint8_t *buf);
+int ff_dvd_css_state(DVDDisc *d, const DVDIfo *f, uint8_t *key);
 int tb_dvd_segment_dump(DVDDisc *d, int cell_mode, int t, int seg, const char *path, int64_t *nread, int64_t *left);
 
 /* libdvdcss (our addition): one block descrambled with a title key */

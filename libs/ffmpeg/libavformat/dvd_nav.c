@@ -606,6 +606,12 @@ static void lib_report(void *priv, const dvd_report_t *r)
      * (the title reader says them); the report's own line is at the debug level */
     if (r->nb_sectors)
         return;
+    /* the CSS steps of the title VOB reading: said as they happen */
+    if (r->table && !strcmp(r->table, "CSS")) {
+        av_log(d->log, r->level == DVD_REPORT_ERROR ? AV_LOG_ERROR : r->level == DVD_REPORT_WARN ? AV_LOG_WARNING :
+               AV_LOG_INFO, "DVD: %s\n", r->text);
+        return;
+    }
     for (int i = 0; i < d->nb_reports; i++) {
         const DVDReport *o = &d->reports[i];
         if (o->level == (int)r->level && o->offset == r->offset && o->sector == r->sector &&
