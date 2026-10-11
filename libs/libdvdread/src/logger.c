@@ -17,8 +17,11 @@
  */
 
 #include "config.h"
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "dvdread/dvd_reader.h"
 #include "logger.h"
@@ -61,10 +64,170 @@ static dvd_logger_level_t report_log_level( dvd_report_level_t level )
            level == DVD_REPORT_WARN  ? DVD_LOGGER_LEVEL_WARN : DVD_LOGGER_LEVEL_INFO;
 }
 
+/* ---- the findings book ---- */
+
+#define FINDINGS_SAID 20                /* rule breaks of one file said as warnings */
+
+typedef struct
+{
+  dvd_report_level_t level;
+  char     file[16];
+  char     table[24];
+  char    *text;
+  int64_t  offset, sector;
+} finding_t;
+
+struct dvd_findings_s
+{
+  finding_t *list;
+  int        nb, alloc;
+  int        summarized;              /* the findings counted in a summary so far */
+};
+
+dvd_findings_t *DVDFindingsNew( void )
+{
+  return calloc( 1, sizeof(dvd_findings_t) );
+}
+
+void DVDFindingsFree( dvd_findings_t *b )
+{
+  if( !b )
+    return;
+  for( int i = 0; i < b->nb; i++ )
+    free( b->list[i].text );
+  free( b->list );
+  free( b );
+}
+
+int DVDFindingsAdd( dvd_findings_t *b, const dvd_report_t *r, char *line, size_t size, dvd_logger_level_t *level )
+{
+  const char *file = r->file ? r->file : "", *table = r->table ? r->table : "";
+  char where[96], at[48] = "", bytes[64] = "";
+  int breaks = 0;
+  finding_t *f;
+
+  for( int i = 0; i < b->nb; i++ ) {
+    const finding_t *o = &b->list[i];
+    if( o->level == r->level && o->offset == r->offset && o->sector == r->sector && !strcmp( o->file, file ) &&
+        !strcmp( o->table, table ) && !strcmp( o->text, r->text ) )
+      return 0;
+    breaks += !strcmp( o->file, file ) && o->level != DVD_REPORT_INFO;
+  }
+  if( b->nb == b->alloc ) {
+    int cap = b->alloc ? 2 * b->alloc : 32;
+    finding_t *n = realloc( b->list, cap * sizeof(*n) );
+    if( !n )
+      return 0;
+    b->list  = n;
+    b->alloc = cap;
+  }
+  f = &b->list[b->nb];
+  memset( f, 0, sizeof(*f) );
+  if( !(f->text = strdup( r->text )) )
+    return 0;
+  f->level  = r->level;
+  f->offset = r->offset;
+  f->sector = r->sector;
+  snprintf( f->file, sizeof(f->file), "%s", file );
+  snprintf( f->table, sizeof(f->table), "%s", table );
+  b->nb++;
+
+  /* the line: where (file, table, byte offset, the bytes), then what */
+  if( r->offset >= 0 )
+    snprintf( at, sizeof(at), " at byte 0x%" PRIx64, r->offset );
+  for( size_t k = 0, p = 0; r->bytes && k < r->nb_bytes && k < 16 && p + 4 < sizeof(bytes); k++ )
+    p += snprintf( bytes + p, sizeof(bytes) - p, "%s%02x", k ? " " : " (bytes ", r->bytes[k] );
+  if( bytes[0] )
+    strcat( bytes, ")" );
+  snprintf( where, sizeof(where), "%s%s%s%s%s", file, file[0] && table[0] ? " " : "", table, at, bytes );
+  snprintf( line, size, "%s: %s%s%s", file[0] ? "IFO check" : "Navigation check", where, where[0] ? ": " : "",
+            r->text );
+  /* rule breaks as warnings, the first FINDINGS_SAID of a file; data that
+   * cannot be used always */
+  *level = r->level == DVD_REPORT_ERROR || (r->level != DVD_REPORT_INFO && breaks < FINDINGS_SAID) ?
+           DVD_LOGGER_LEVEL_WARN : DVD_LOGGER_LEVEL_INFO;
+  return 1;
+}
+
+/* The order of the files in a summary: VIDEO_TS, the title sets by number,
+ * then the navigation's findings (no file). */
+static int file_rank( const char *file )
+{
+  int n;
+  if( !file[0] )
+    return 1000;
+  if( !strncmp( file, "VIDEO_TS", 8 ) )
+    return 0;
+  return sscanf( file, "VTS_%d", &n ) == 1 ? n : 999;
+}
+
+void DVDFindingsSummary( dvd_findings_t *b, void (*say)( void *priv, dvd_logger_level_t level, const char *line ),
+                         void *priv )
+{
+  char line[256];
+
+  if( !b )
+    return;
+  for( int rank = 0; rank <= 1000; rank++ ) {
+    for( int i = b->summarized; i < b->nb; i++ ) {
+      const char *file = b->list[i].file;
+      const char *check = file[0] ? "IFO check" : "Navigation check";
+      int harmless = 0, breaks = 0, done = 0;
+
+      if( file_rank( file ) != rank )
+        continue;
+      for( int j = b->summarized; j < i && !done; j++ )
+        done = !strcmp( b->list[j].file, file );
+      if( done )
+        continue;
+      for( int j = i; j < b->nb; j++ )
+        if( !strcmp( b->list[j].file, file ) ) {
+          if( b->list[j].level == DVD_REPORT_INFO )
+            harmless++;
+          else
+            breaks++;
+        }
+      if( breaks ) {
+        snprintf( line, sizeof(line), "%s: %s%s%d finding(s) that break the DVD-Video rules (%s)", check, file,
+                  file[0] ? ": " : "", breaks, breaks > FINDINGS_SAID ? "the first ones above, all in the detail lines" :
+                  "above" );
+        say( priv, DVD_LOGGER_LEVEL_NOTICE, line );
+      }
+      if( harmless ) {
+        snprintf( line, sizeof(line), "%s: %s%s%d harmless finding(s) (see the detail lines): kept", check, file,
+                  file[0] ? ": " : "", harmless );
+        say( priv, DVD_LOGGER_LEVEL_NOTICE, line );
+      }
+    }
+  }
+  b->summarized = b->nb;
+}
+
+void DVDFindingsCount( const dvd_findings_t *b, int *harmless, int *breaks )
+{
+  *harmless = *breaks = 0;
+  for( int i = 0; b && i < b->nb; i++ )
+    if( b->list[i].level == DVD_REPORT_INFO )
+      (*harmless)++;
+    else
+      (*breaks)++;
+}
+
 void DVDReadReport( void *priv, const dvd_logger_cb *logcb,
                     const dvd_report_t *report )
 {
     int reported = logcb && logcb->pf_report;
+
+    if( logcb && logcb->findings ) {
+        char line[1024];
+        dvd_logger_level_t level;
+        if( report->nb_sectors )        /* damaged data: whoever reads says it */
+            DVDReadLog( priv, logcb, DVD_LOGGER_LEVEL_DEBUG, "%s%s%s", report->file ? report->file : "",
+                        report->file ? ": " : "", report->text );
+        else if( DVDFindingsAdd( logcb->findings, report, line, sizeof(line), &level ) )
+            DVDReadLog( priv, logcb, level, "%s", line );
+        return;
+    }
 
     if( reported )
         logcb->pf_report( priv, report );

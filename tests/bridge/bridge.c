@@ -25,6 +25,7 @@
 #include "libavformat/disctl.h"
 #include "libavformat/dvd_internal.h"
 #include "libavformat/hddvd_internal.h"
+#include "libavformat/mpeg.h"
 
 #include <dvdcss/dvdcss.h>
 #include <dvdread/dvd_udf.h>
@@ -419,7 +420,7 @@ static int tb_dvd_nav_trace(DVDDisc *d, int title, unsigned opts, int max_steps,
 
 /* libavformat/dvd_scan.c: the navigation scan (trace: NULL, or the Python
  * callback receiving its trace lines). */
-static int tb_dvd_scan(DVDDisc *d, void (*trace)(void *, const char *), DVDScan *out)
+static int tb_dvd_scan(DVDDisc *d, void (*trace)(void *, const char *), dvdnav_scan_results_t *out)
 {
     return ff_dvd_scan(d, trace, NULL, out);
 }
@@ -429,8 +430,8 @@ static int tb_dvd_scan(DVDDisc *d, void (*trace)(void *, const char *), DVDScan 
  * the scan's return value. */
 static int tb_dvd_titles(DVDDisc *d, int cell_mode, int cell_check, int min_length, int *scan_ret, char **dump)
 {
-    DVDScan scan = { 0 };
-    DVDTitleList list = { 0 };
+    dvdnav_scan_results_t scan = { 0 };
+    dvd_title_list_t list = { 0 };
     DVDTitleOptions o = { cell_mode, cell_check, min_length };
     int ret;
 
@@ -439,8 +440,8 @@ static int tb_dvd_titles(DVDDisc *d, int cell_mode, int cell_check, int min_leng
     ret = ff_dvd_titles_build(d, &scan, &o, &list);
     if (ret >= 0 && !(*dump = ff_dvd_titles_dump(&list)))
         ret = AVERROR(ENOMEM);
-    ff_dvd_titles_free(&list);
-    ff_dvd_scan_free(&scan);
+    DVDFreeTitleList_rec(&list);
+    dvdnav_scan_free_results(&scan);
     return ret;
 }
 
@@ -451,8 +452,8 @@ static int tb_dvd_titles(DVDDisc *d, int cell_mode, int cell_check, int min_leng
 static int tb_dvd_segment_dump(DVDDisc *d, int cell_mode, int t, int seg, const char *path, int64_t *nread,
                                int64_t *left)
 {
-    DVDScan scan = { 0 };
-    DVDTitleList list = { 0 };
+    dvdnav_scan_results_t scan = { 0 };
+    dvd_title_list_t list = { 0 };
     DVDTitleOptions o = { cell_mode, DVD_CELL_CHECK_ALL, 0 };
     FILE *out = NULL;
     uint8_t buf[DVD_SECTOR];
@@ -463,7 +464,7 @@ static int tb_dvd_segment_dump(DVDDisc *d, int cell_mode, int t, int seg, const 
         ff_dvd_scan(d, NULL, NULL, &scan);
     if ((ret = ff_dvd_titles_build(d, &scan, &o, &list)) < 0)
         goto end;
-    if (t < 0 || t >= list.nb_titles || seg < 0 || seg >= list.titles[t]->nb_segments) {
+    if (t < 0 || t >= list.nb_titles || seg < 0 || seg >= list.titles[t]->segs.nb_segments) {
         ret = AVERROR(EINVAL);
         goto end;
     }
@@ -471,7 +472,7 @@ static int tb_dvd_segment_dump(DVDDisc *d, int cell_mode, int t, int seg, const 
         ret = AVERROR(errno);
         goto end;
     }
-    for (uint32_t b = 0, n = ff_dvd_segment_blocks(&list.titles[t]->segments[seg]); b < n; b++) {
+    for (uint32_t b = 0, n = ff_dvd_segment_blocks(&list.titles[t]->segs.segments[seg]); b < n; b++) {
         if ((ret = ff_dvd_segment_read(d, list.titles[t], seg, b, buf)) < 0)
             goto end;
         if (!ret) {
@@ -488,23 +489,23 @@ static int tb_dvd_segment_dump(DVDDisc *d, int cell_mode, int t, int seg, const 
 end:
     if (out)
         fclose(out);
-    ff_dvd_titles_free(&list);
-    ff_dvd_scan_free(&scan);
+    DVDFreeTitleList_rec(&list);
+    dvdnav_scan_free_results(&scan);
     return ret;
 }
 
 /* The title list from given scan results (no scan run). */
-static int tb_dvd_titles_from(DVDDisc *d, DVDScanResult *res, int nb, int cell_mode, int cell_check,
+static int tb_dvd_titles_from(DVDDisc *d, dvd_nav_cells_t *res, int nb, int cell_mode, int cell_check,
                               int min_length, char **dump)
 {
-    DVDScan scan = { res, nb };
-    DVDTitleList list = { 0 };
+    dvdnav_scan_results_t scan = { res, nb };
+    dvd_title_list_t list = { 0 };
     DVDTitleOptions o = { cell_mode, cell_check, min_length };
     int ret = ff_dvd_titles_build(d, &scan, &o, &list);
 
     *dump = NULL;
     if (ret >= 0 && !(*dump = ff_dvd_titles_dump(&list)))
         ret = AVERROR(ENOMEM);
-    ff_dvd_titles_free(&list);
+    DVDFreeTitleList_rec(&list);
     return ret;
 }

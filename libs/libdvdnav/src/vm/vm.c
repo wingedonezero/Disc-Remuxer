@@ -438,7 +438,8 @@ int vm_reset(vm_t *vm, const char *dvdroot,
     /* dvdread stream callback handlers for redirection */
 #if DVDREAD_VERSION >= DVDREAD_VERSION_CODE(6,1,0)
     dvd_logger_cb dvdread_logcb = { .pf_log = dvd_reader_logger_handler,
-                                    .pf_report = vm->logcb.pf_report ? dvd_reader_report_handler : NULL };
+                                    .pf_report = vm->logcb.pf_report ? dvd_reader_report_handler : NULL,
+                                    .findings = vm->logcb.findings };
     /* Only install log handler if we have one ourself */
     dvd_logger_cb *p_dvdread_logcb = vm->logcb.pf_log ? &dvdread_logcb : NULL;
     if(dvdroot && vm->files) {

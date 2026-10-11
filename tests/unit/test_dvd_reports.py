@@ -20,7 +20,7 @@ from test_dvd_streams import put, video
 from test_dvd_titles import ac3, c, vobus
 
 
-BUILT = ("WARNING IFO check: VTS_01_0.IFO C_ADT: c_adt->cell_adr_table[i].start_sector < "
+BUILT = ("WARNING DVD: IFO check: VTS_01_0.IFO C_ADT: c_adt->cell_adr_table[i].start_sector < "
          "c_adt->cell_adr_table[i].last_sector does not hold: kept")
 
 
@@ -61,7 +61,7 @@ def unused_audio_entry(b):
 def test_an_unused_entry_that_is_not_zero_is_one_harmless_finding_with_its_place_and_bytes(tmp_path):
     folder = disc(tmp_path, unused_audio_entry)
     log = info(folder)
-    assert "IFO check: VTS_01_0.IFO: 1 harmless finding(s) (see the detail lines): kept" in log, log
+    assert "DVD: IFO check: VTS_01_0.IFO: 1 harmless finding(s) (see the detail lines): kept" in log, log
     assert "libdvdnav:" not in log and "libdvdread:" not in log, log
     detail = info(folder, "-v")
     line = ("IFO check: VTS_01_0.IFO VTSI_MAT at byte 0x20c (bytes 04 c1 65 6e 00 00 00 00): "
@@ -78,9 +78,9 @@ def test_a_value_that_breaks_a_rule_is_a_warning(tmp_path):
         b[0x102:0x104] = (2).to_bytes(2, "big")     # nr_of_vtsm_audio_streams: at most 1
     folder = disc(tmp_path, menu_audio_streams)
     log = info(folder)
-    assert ("WARNING IFO check: VTS_01_0.IFO VTSI_MAT: vtsi_mat->nr_of_vtsm_audio_streams <= 1 does not hold: kept"
+    assert ("WARNING DVD: IFO check: VTS_01_0.IFO VTSI_MAT: vtsi_mat->nr_of_vtsm_audio_streams <= 1 does not hold: kept"
             in log), log
-    assert "IFO check: VTS_01_0.IFO: 2 finding(s) that break the DVD-Video rules (above)" in log, log  # + BUILT
+    assert "DVD: IFO check: VTS_01_0.IFO: 2 finding(s) that break the DVD-Video rules (above)" in log, log  # + BUILT
     # + BUILT, + the same rule broken in the video manager's copy of the attributes (VIDEO_TS.IFO)
     assert check_property(folder) == "3 finding(s) that break the DVD-Video rules, 0 harmless"
 
@@ -89,7 +89,7 @@ def test_the_built_disc_has_only_its_one_sector_cell_finding(tmp_path):
     folder = disc(tmp_path)
     log = info(folder)
     assert [line for line in log.splitlines() if "check: " in line] == \
-        [BUILT, "IFO check: VTS_01_0.IFO: 1 finding(s) that break the DVD-Video rules (above)"], log
+        [BUILT, "DVD: IFO check: VTS_01_0.IFO: 1 finding(s) that break the DVD-Video rules (above)"], log
     assert check_property(folder) == "1 finding(s) that break the DVD-Video rules, 0 harmless"
 
 
@@ -105,7 +105,7 @@ def test_a_cell_whose_end_the_cell_address_table_gives_otherwise_is_a_warning(tm
         at = cadt_entry(b, 0) + 8                   # (VOB 1, cell 1): its last sector
         b[at:at + 4] = (8).to_bytes(4, "big")
     log = info(disc(tmp_path, last_piece_end))
-    assert "WARNING IFO check: VTS_01_0.IFO VTS_C_ADT at byte" in log, log
+    assert "WARNING DVD: IFO check: VTS_01_0.IFO VTS_C_ADT at byte" in log, log
     assert "program chain 1 cell 1 ends at sector 9, its last piece in the cell address table at 8" in log, log
 
 
@@ -132,7 +132,7 @@ def test_the_video_manager_s_copy_of_a_title_set_s_attributes_must_be_its_own(tm
         b[entry + 8 + 0x100] ^= 0x40                # vts_video_attr (VTSI_MAT 0x200): another aspect
     vmg_copy(folder, video)
     log = info(folder)
-    assert "WARNING IFO check: VIDEO_TS.IFO VMG_VTS_ATRT at byte" in log, log
+    assert "WARNING DVD: IFO check: VIDEO_TS.IFO VMG_VTS_ATRT at byte" in log, log
     assert "title set 1's attributes differ from those in its own IFO, first at VTSI_MAT byte 0x200" in log, log
     folder = disc(tmp_path)
     def category(b, entry):

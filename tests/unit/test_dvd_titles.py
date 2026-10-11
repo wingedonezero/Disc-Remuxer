@@ -127,7 +127,7 @@ def test_an_angle_block_of_another_size_than_the_title_s_angles_is_told_by_libdv
     navs = vobus(0, 9, 5) + vobus(10, 19, 5) + vobus(20, 29, 5)
     folder = build(tmp_path, [p], [[(1, 1)]], navs, 30, angles=[3])
     run(folder, [("A1", 1, 1, [1, 2])])
-    assert logged("libdvdread: VTS_01 program chain 1: the angle block at cell 2 has 2 cells, the title 3 angles")
+    assert logged("DVD: VTS_01 program chain 1: the angle block at cell 2 has 2 cells, the title 3 angles")
 
 
 def test_more_than_100_vobus_read_one_by_one_are_told_as_a_complex_multiplex(tmp_path):
@@ -359,7 +359,7 @@ def test_libdvdread_runs_the_cell_check_and_says_which_vobus_it_read(tmp_path):
     for mode, what in ((ALL, "all read"), (SPREAD, "50 evenly spread"), (RANDOM, "50 at random")):
         install_log(lib.AV_LOG_DEBUG)
         assert check(folder, mode) == 0
-        assert logged(f"libdvdread: cell check, VTS_01 program chain 1 cell 1 (69 VOBUs, {what}): passed"), what
+        assert logged(f"DVD: cell check, VTS_01 program chain 1 cell 1 (69 VOBUs, {what}): passed"), what
 
 
 # ---- the program ----

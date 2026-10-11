@@ -51,7 +51,12 @@ void dvdnav_report( void *priv, const dvdnav_logger_cb *logcb,
     va_start(list, fmt);
     vsnprintf(text, sizeof(text), fmt, list);
     va_end(list);
-    if(logcb && logcb->pf_report) {
+    if(logcb && logcb->findings) {
+        char line[1024];
+        dvd_logger_level_t lv;
+        if(DVDFindingsAdd(logcb->findings, &report, line, sizeof(line), &lv))
+            dvdnav_log(priv, logcb, (dvdnav_logger_level_t) lv, "%s", line);
+    } else if(logcb && logcb->pf_report) {
         logcb->pf_report(priv, &report);
         dvdnav_log(priv, logcb, DVDNAV_LOGGER_LEVEL_DEBUG, "%s", text);
     } else {

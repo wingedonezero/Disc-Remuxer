@@ -3593,6 +3593,20 @@ static int rec_read_whole(struct ifo_handle_private_s *ifop, uint8_t *buf, int l
   return 1;
 }
 
+/* Where file ext ("IFO", "BUP") of information file title starts on the
+ * image when it is one piece there, else -1. */
+static int64_t rec_file_sector(dvd_reader_t *ctx, int title, const char *ext)
+{
+  char path[48];
+  dvdstat_t st;
+
+  if(title)
+    snprintf(path, sizeof(path), "/VIDEO_TS/VTS_%02d_0.%s", title, ext);
+  else
+    snprintf(path, sizeof(path), "/VIDEO_TS/VIDEO_TS.%s", ext);
+  return DVDStatFile_(ctx, path, &st) < 0 ? -1 : st.sector;
+}
+
 static uint32_t rec_be32(const uint8_t *p)
 {
   return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
@@ -3787,6 +3801,26 @@ ifo_handle_t *ifoOpen_rec(dvd_reader_t *ctx, int title)
     snprintf(ifop->name, sizeof(ifop->name), "VIDEO_TS.IFO");
   ifop->file = DVDOpenFile(ctx, title, DVD_READ_INFO_FILE);
   ifop->bup  = DVDOpenFile(ctx, title, DVD_READ_INFO_BACKUP_FILE);
+  if(ctx->fs && ctx->fs->image_open) {
+    /* an image: the IFO must be one piece on it (its tables are read by
+     * sector from its place); a BUP that is not stands aside */
+    if(!ifop->file || rec_file_sector(ctx, title, "IFO") < 0) {
+      rec_note(ifop, DVD_REPORT_ERROR, -1, ifop->file ? "the IFO is not one piece on the image: it is not read" :
+               "the IFO cannot be opened");
+      goto fail;
+    }
+    if(ifop->bup && rec_file_sector(ctx, title, "BUP") < 0) {
+      Log2(ctx, "%s: the BUP is not one piece on the image: the IFO stands in for it", ifop->name);
+      DVDCloseFile(ifop->bup);
+      ifop->bup = NULL;
+    } else if(!ifop->bup) {
+      rec_note(ifop, DVD_REPORT_WARN, -1, "the BUP is missing: the IFO stands in for it");
+    }
+  } else if(!ifop->file && ifop->bup) {
+    rec_note(ifop, DVD_REPORT_WARN, -1, "the IFO is missing: its BUP is read as the IFO");
+  } else if(ifop->file && !ifop->bup) {
+    rec_note(ifop, DVD_REPORT_WARN, -1, "the BUP is missing: the IFO stands in for it");
+  }
   if(!ifop->file) {
     ifop->file = ifop->bup;           /* the BUP stands in */
     ifop->bup  = NULL;

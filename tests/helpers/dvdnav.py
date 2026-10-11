@@ -153,11 +153,12 @@ class ScanResult:
 def scan(disc, with_trace=False):
     """ff_dvd_scan() on a DVDDisc *: (return value, [ScanResult], trace lines)."""
     SCAN_LINES.clear()
-    out = ffi.new("DVDScan *")
+    out = ffi.new("dvdnav_scan_results_t *")
     ret = lib.tb_dvd_scan(disc, lib.tb_py_scan_line if with_trace else ffi.NULL, out)
     res = [ScanResult(ffi.string(r.name).decode(), r.title, r.pgc, list(ffi.unpack(r.cells, r.nb_cells)))
            for r in out.results[0:out.nb_results]]
-    lib.ff_dvd_scan_free(out)
+    scan.entered = [i for i in range(100) if out.entered[i]]   # the title sets the navigation entered
+    lib.dvdnav_scan_free_results(out)
     return ret, res, list(SCAN_LINES)
 
 
@@ -201,7 +202,7 @@ def titles_from(disc, results, cell_mode=0, cell_check=0, min_length=0):
     """ff_dvd_titles_build() on a DVDDisc * with given scan results
     [(name, title, pgc, [cells])] instead of a scan: (return value, [dict per
     title as titles() gives])."""
-    res = ffi.new("DVDScanResult[]", max(len(results), 1))
+    res = ffi.new("dvd_nav_cells_t[]", max(len(results), 1))
     keep = []
     for k, (name, title, pgc, cells) in enumerate(results):
         res[k].name = name.encode()

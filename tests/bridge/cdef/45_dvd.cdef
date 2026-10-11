@@ -1,47 +1,55 @@
-/* libavformat/dvd_internal.h: the DVD-Video disc structure. */
+/* libdvdread (dvdread/ifo_types.h, disc_read.h): the disc's structure as
+ * libdvdread reads it; libavformat/dvd_internal.h: the DVD part's disc. */
 
-typedef struct DVDCell {
+typedef struct {
     uint32_t     first_sector;
     uint32_t     last_vobu_start_sector;
     uint32_t     last_sector;
     ...;
-} DVDCell;
+} cell_rec_t;
 
-typedef struct DVDPgc {
+typedef struct {
     uint8_t      nr_of_programs;
     uint8_t      nr_of_cells;
     uint8_t     *program_map;
-    DVDCell     *cells;
+    cell_rec_t  *cells;
     ...;
-} DVDPgc;
+} pgc_rec_t;
 
-typedef struct DVDIfo {
-    int          index;
-    int          failed;
+typedef struct {
+    int          nr_of_pgcs;
+    pgc_rec_t  **pgcs;
+    int         *same_as;
+} pgcit_rec_t;
+
+typedef ... ifo_handle_t;
+
+typedef struct {
+    ifo_handle_t *ifo;
     int          bup_only;
-    const uint8_t *cache;
-    int          cache_size;
+    int          whole;
     int64_t      ifo_sector;
     int64_t      bup_sector;
-    uint32_t     title_vob_blocks;
-    uint32_t     title_vob_start;
+    uint32_t     title_vob_sectors;
+    int64_t      menu_vob_start;
+    int64_t      title_vob_start;
     int          no_pgcit;
-    int          map_untrusted_at_load;
-    DVDPgc     **pgcs;
-    int         *pgc_same_as;
-    int          nb_pgcs;
+    const pgcit_rec_t *pgcit;
     int          nb_vobu_map;
-    uint32_t     menu_vob_base;
-    uint32_t     title_vob_base;
+    int          map_trusted;
     ...;
-} DVDIfo;
+} dvd_ifo_rec_t;
+
+typedef struct {
+    int          nr_of_title_sets;
+    char        *text_name;
+    dvd_ifo_rec_t ifos[100];
+    ...;
+} dvd_disc_rec_t;
 
 typedef struct DVDDisc {
-    DVDIfo     **ifos;
-    int          nb_ifos;
-    int          nr_of_title_sets;
     char        *volume_name;
-    char        *text_name;
+    dvd_disc_rec_t *rec;
     ...;
 } DVDDisc;
 
@@ -56,26 +64,28 @@ void ff_dvd_reports_count(const DVDDisc *d, int *harmless, int *breaks);
 int tb_dvd_nav_trace(DVDDisc *d, int title, unsigned opts, int max_steps,
                      dr_nav_event *ev, int max_events, dr_nav_result *res);
 
-/* libavformat/dvd_scan.c */
-typedef struct DVDScanResult {
+/* libavformat/dvd_scan.c: the navigation scan (libdvdnav, dvdnav/scan.h; its
+ * recordings in libdvdread's dvd_nav_cells_t) */
+typedef struct {
     char      name[16];
     uint8_t   title, pgc;
     int       nb_cells;
     uint8_t  *cells;
-} DVDScanResult;
+} dvd_nav_cells_t;
 
-typedef struct DVDScan {
-    DVDScanResult *results;
-    int            nb_results;
-} DVDScan;
+typedef struct {
+    dvd_nav_cells_t *results;
+    int              nb_results;
+    uint8_t          entered[100];
+} dvdnav_scan_results_t;
 
-void ff_dvd_scan_free(DVDScan *s);
+void dvdnav_scan_free_results(dvdnav_scan_results_t *s);
 extern "Python" void tb_py_scan_line(void *opaque, const char *line);
-int tb_dvd_scan(DVDDisc *d, void (*trace)(void *, const char *), DVDScan *out);
+int tb_dvd_scan(DVDDisc *d, void (*trace)(void *, const char *), dvdnav_scan_results_t *out);
 
 /* libavformat/dvd_titles.c through the bridge: scan + title list as text */
 int tb_dvd_titles(DVDDisc *d, int cell_mode, int cell_check, int min_length, int *scan_ret, char **dump);
-int tb_dvd_titles_from(DVDDisc *d, DVDScanResult *res, int nb, int cell_mode, int cell_check,
+int tb_dvd_titles_from(DVDDisc *d, dvd_nav_cells_t *res, int nb, int cell_mode, int cell_check,
                        int min_length, char **dump);
 int ff_dvd_cell_check(DVDDisc *d, int vts, int pgcn, int cell, int mode);
 
@@ -100,21 +110,46 @@ void DVDCloseTitleVOBs_rec(dvd_vob_reader_t *v);
 /* libavformat/dvd_read.c: a title VOB sector through the checks (a reading
  * of its own: its damaged ranges given back); through the bridge: a title's
  * segment read through the checks */
-dvd_vob_reader_t *ff_dvd_title_vobs_open(DVDDisc *d, DVDIfo *f);
-int ff_dvd_title_vob_read(DVDDisc *d, DVDIfo *f, dvd_vob_reader_t *vr, uint32_t sector, uint8_t *buf,
+dvd_vob_reader_t *ff_dvd_title_vobs_open(DVDDisc *d, int vts);
+dvd_vob_reader_t *ff_dvd_own_reading(DVDDisc *d, int vts);
+int ff_dvd_title_vob_read(DVDDisc *d, int vts, dvd_vob_reader_t *vr, uint32_t sector, uint8_t *buf,
                           dvd_vob_damage_t *ended);
-int ff_dvd_title_vob_sector(DVDDisc *d, DVDIfo *f, uint32_t sector, uint8_t *buf);
-int ff_dvd_css_state(DVDDisc *d, const DVDIfo *f, uint8_t *key);
-int ff_dvd_map_trusted(const DVDDisc *d, const DVDIfo *f);
+int ff_dvd_title_vob_sector(DVDDisc *d, int vts, uint32_t sector, uint8_t *buf);
+int ff_dvd_css_state(DVDDisc *d, int vts, uint8_t *key);
+int ff_dvd_map_trusted(const DVDDisc *d, int vts);
 /* VOBUs on libdvdread's records (dvd_read.c, vob_read.h) */
 typedef struct {
     uint32_t vobu_s_ptm, vobu_e_ptm, vobu_ea, ilvu_ea, next_vobu;
     uint16_t category;
 } dvd_vobu_nav_t;
-typedef dvd_vobu_nav_t DVDNav;
-int ff_dvd_nav_read(DVDDisc *d, DVDIfo *f, uint32_t sector, DVDNav *n);
-int ff_dvd_vobu_start_check(DVDDisc *d, DVDIfo *f, uint32_t sector);
+int ff_dvd_nav_read(DVDDisc *d, int vts, uint32_t sector, dvd_vobu_nav_t *n);
+int ff_dvd_vobu_start_check(DVDDisc *d, int vts, uint32_t sector);
 int tb_dvd_segment_dump(DVDDisc *d, int cell_mode, int t, int seg, const char *path, int64_t *nread, int64_t *left);
 
 /* libdvdcss (our addition): one block descrambled with a title key */
 void dvdcss_descramble(const unsigned char *p_key, void *p_block);
+
+/* the packets of a sector: libdvdread's reader for its stream probe
+ * (vob_read.h) and the demuxer's (libavformat/mpeg.h), compared */
+typedef struct {
+    int         at;
+    int         len;
+    int         key;
+    int         payload;
+    int         first_au;
+    int         extra;
+    const char *why;
+} dvd_pack_packet_t;
+int DVDPackPacket_rec(const uint8_t *sector, int *off, dvd_pack_packet_t *p);
+
+typedef struct MpegPsDiscPacket {
+    int         len;
+    int         key;
+    int         payload;
+    int         first_au;
+    int         extra;
+    int         at;
+    const char *why;
+    ...;
+} MpegPsDiscPacket;
+int ff_mpegps_disc_packet(const uint8_t *s, int *off, MpegPsDiscPacket *p, int lpcm5);

@@ -76,7 +76,7 @@ extern "C" {
  * part whose sequence_extension start code lies in the scrambled part; none:
  * used unchecked. Without a key (none found, the check fails) the title
  * set's scrambled sectors cannot be read, and the key is not looked for
- * again. The steps are reported (table "CSS", without a file).
+ * again. The steps are said in the log as they happen.
  */
 typedef struct dvd_vob_reader_s dvd_vob_reader_t;
 
@@ -98,7 +98,9 @@ typedef struct
 /**
  * Opens title set title's title VOBs; ifo is its information file as
  * ifoOpen_rec() opened it (its header gives vtstt_vobs). NULL when the
- * title set has no title VOBs.
+ * title set has no title VOBs or they cannot be opened (an error report of
+ * its IFO saying why: a missing first VOB file, no place for them in the
+ * IFO header or on the image, ...).
  */
 DVDREAD_API dvd_vob_reader_t *DVDOpenTitleVOBs_rec( ifo_handle_t *ifo, int title );
 
@@ -447,6 +449,75 @@ typedef struct
  *  placed is not placed). */
 DVDREAD_API void DVDChapterPlaces_rec( dvd_vob_reader_t *, int pgcn, const dvd_title_segments_t *segs,
                                        dvd_chapter_place_t *chapters, int nb );
+
+/**
+ * A packet of a title VOB sector by the program stream rules the stream
+ * probe uses: at *off of the sector (0: the pack header first, 14 bytes plus
+ * pack_stuffing_length, the stuffing counted only when its first byte is
+ * not zero). *off becomes the next packet's offset, DVD_VIDEO_LB_LEN or more
+ * when the sector is done: after private stream 2, at fill bytes (0x00 or
+ * 0xff to the end), after padding packets (a packet after padding near the
+ * sector's end only when it parses). The key: stream_id; private stream 1
+ * the sub-stream id << 8 | 0xbd (after its sub-stream header: sub-pictures
+ * 1 byte, audio 4, MLP 5); with a PES extension 2 its stream_id_extension
+ * << 8 | stream_id. An LPCM packet (sub-stream 0xA0-0xAF) holding only its
+ * 3-byte audio frame header counts as padding (0xbe); one shorter than the
+ * header, or whose first access unit starts inside it, does not parse.
+ * 1, 0 when the packet does not parse (why says why).
+ */
+typedef struct
+{
+  int         at;                     /* the packet's offset in the sector */
+  int         len;                    /* PES_packet_length + 6; 0 when the field is 0 */
+  int         key;
+  int         payload;                /* the payload's offset in the packet */
+  int         first_au;               /* the first access unit's offset in the payload, -1 none, -2 sub-picture */
+  int         extra;                  /* LPCM: its audio frame header's bytes, kept before payload */
+  const char *why;
+} dvd_pack_packet_t;
+
+DVDREAD_API int DVDPackPacket_rec( const uint8_t *sector, int *off, dvd_pack_packet_t *p );
+
+/**
+ * The stream probe of a title: one of its segments (extents: the segment's
+ * extents, as DVDTitleSegments_rec() gives them) read from its start, the
+ * first two packets of each sector looked at, for what the title set's
+ * attributes cannot tell:
+ * - closed captions: the video packets (0xE0) of its first 8 MiB searched
+ *   for the DVD caption user data (00 00 01 B2 'C' 'C' 0x01 0xF8, its next
+ *   byte's bit 6 clear, nine bytes or more to the payload's end);
+ * - each audio stream (stream number and audio_coding_mode in, whether the
+ *   program chain's audio_control lists it): its packets (AC-3 0x80 + n, MPEG
+ *   audio 0xC0 + n, LPCM 0xA0 + n, DTS 0x88 + n) looked for in the first
+ *   48 MiB; none and not listed: DVD_PROBE_NOT_LISTED; listed: also the first
+ *   200 MiB, the 100 MiB from the middle and the last 100 MiB (a segment
+ *   shorter than 200 MiB: all of it), none there: DVD_PROBE_EMPTY. A coding
+ *   mode that is not known: DVD_PROBE_UNKNOWN.
+ * Each zone is read once (a later search goes on where an earlier one
+ * stopped) and a search stops at the sector that has what it looks for.
+ * 1 done; -1 no memory; -2 a sector cannot be read, -3 it is scrambled and
+ * the title set has no title key (*failed_block: the segment's block).
+ */
+typedef enum
+{
+  DVD_PROBE_FOUND,                    /* data in the first 48 MiB */
+  DVD_PROBE_FOUND_LATER,              /* data, not in the first 48 MiB (a listed stream) */
+  DVD_PROBE_NOT_LISTED,
+  DVD_PROBE_EMPTY,
+  DVD_PROBE_UNKNOWN,
+} dvd_probe_result_t;
+
+typedef struct
+{
+  uint8_t            stream;          /* in: its stream number */
+  uint8_t            coding;          /* in: its attributes' audio_coding_mode */
+  int                listed;          /* in: audio_control lists it */
+  dvd_probe_result_t result;          /* out */
+} dvd_probe_audio_t;
+
+DVDREAD_API int DVDProbeTitleStreams_rec( dvd_vob_reader_t *, const dvd_extent_t *extents, int nb_extents,
+                                          dvd_probe_audio_t *audio, int nb_audio, int *captions,
+                                          uint32_t *failed_block );
 
 /** Closes the title VOBs; a damaged range still open is reported. */
 DVDREAD_API void DVDCloseTitleVOBs_rec( dvd_vob_reader_t * );

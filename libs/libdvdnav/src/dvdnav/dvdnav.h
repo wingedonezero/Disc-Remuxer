@@ -86,6 +86,7 @@ typedef enum
     DVDNAV_LOGGER_LEVEL_ERROR,
     DVDNAV_LOGGER_LEVEL_WARN,
     DVDNAV_LOGGER_LEVEL_DEBUG,
+    DVDNAV_LOGGER_LEVEL_NOTICE,     /* what a user should see (= DVD_LOGGER_LEVEL_NOTICE) */
 } dvdnav_logger_level_t;
 
 typedef struct
@@ -95,6 +96,10 @@ typedef struct
    * libdvdnav's own (dvdread/dvd_reader.h, dvd_report_t); with it set, the
    * log line of a finding comes at the debug level */
   void ( *pf_report )( void *, const dvd_report_t * );
+  /* optional, may be NULL: the disc's findings book (dvdread/dvd_reader.h):
+   * findings, libdvdread's and libdvdnav's, said once each as log lines;
+   * pf_report is then not used */
+  dvd_findings_t *findings;
 } dvdnav_logger_cb;
 
 /*

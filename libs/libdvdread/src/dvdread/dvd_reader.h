@@ -100,18 +100,21 @@ typedef struct dvd_reader_stream_cb dvd_reader_stream_cb;
  */
 typedef enum
 {
-    DVD_LOGGER_LEVEL_INFO,
+    DVD_LOGGER_LEVEL_INFO,      /* details */
     DVD_LOGGER_LEVEL_ERROR,
     DVD_LOGGER_LEVEL_WARN,
     DVD_LOGGER_LEVEL_DEBUG,
+    DVD_LOGGER_LEVEL_NOTICE,    /* what a user should see: a decision, a step done */
 } dvd_logger_level_t;
 
 /**
  * A finding about the disc's data: an IFO or navigation packet value that
  * breaks a DVD-Video rule, a table that cannot be read, a sector that is no
- * navigation packet where one must be. Given to pf_report (when set) as it
- * is found, besides the log line (which then comes at the debug level).
- * Every pointer is valid during the call only.
+ * navigation packet where one must be. With a findings book in the logger
+ * (dvd_logger_cb.findings) it is said once, as a log line, when it is found
+ * (see DVDFindingsAdd()); else given to pf_report (when set), besides the
+ * log line (which then comes at the debug level). Every pointer is valid
+ * during the call only.
  */
 typedef enum
 {
@@ -146,10 +149,29 @@ typedef enum
     DVD_DAMAGE_NO_PACK,   /* no MPEG-2 pack header followed by a packet start code */
 } dvd_damage_t;
 
+/**
+ * The findings of one disc, said once each and counted per file: one book
+ * shared by every reader of the disc (libdvdnav's navigators too), so a
+ * finding met again by another reader is not said again.
+ *
+ * DVDFindingsAdd(): a finding not met before gives its line and its log
+ * level (1); one met before nothing (0). The line: "IFO check: FILE TABLE at
+ * byte 0x..: (bytes ..): text" for a file's data, "Navigation check: text"
+ * else. Level: a rule break (warning or error) is a warning for the first
+ * 20 of its file, then a detail (DVD_LOGGER_LEVEL_INFO); a harmless one a
+ * detail.
+ * DVDFindingsSummary(): for each file with findings since the last summary
+ * (the video manager, the title sets by number, then the navigation's), its
+ * counts as lines (DVD_LOGGER_LEVEL_NOTICE) to say.
+ * DVDFindingsCount(): all findings so far, harmless ones and rule breaks.
+ */
+typedef struct dvd_findings_s dvd_findings_t;
+
 typedef struct
 {
   void ( *pf_log )  ( void *, dvd_logger_level_t, const char *, va_list );
   void ( *pf_report )( void *, const dvd_report_t * );   /* optional, may be NULL */
+  dvd_findings_t *findings;                               /* optional, may be NULL */
 } dvd_logger_cb;
 
 /**
@@ -243,6 +265,14 @@ DVDREAD_API dvd_reader_t *DVDOpenFiles( void *priv, const dvd_logger_cb *logcb, 
  * DVDClose(dvd);
  */
 DVDREAD_API void DVDClose( dvd_reader_t * );
+
+DVDREAD_API dvd_findings_t *DVDFindingsNew( void );
+DVDREAD_API void DVDFindingsFree( dvd_findings_t * );
+DVDREAD_API int DVDFindingsAdd( dvd_findings_t *, const dvd_report_t *, char *line, size_t size,
+                                dvd_logger_level_t *level );
+DVDREAD_API void DVDFindingsSummary( dvd_findings_t *, void ( *say )( void *priv, dvd_logger_level_t level,
+                                     const char *line ), void *priv );
+DVDREAD_API void DVDFindingsCount( const dvd_findings_t *, int *harmless, int *breaks );
 
 /**
  *
