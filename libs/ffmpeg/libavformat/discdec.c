@@ -636,7 +636,12 @@ void disc_title_close(AVFormatContext *s)
         av_freep(&s->chapters[s->nb_chapters]);
     }
     av_freep(&s->chapters);
+    /* the title's own results (the next title sets its own) */
     av_dict_set(&s->metadata, "untested", NULL, 0);
+    av_dict_set(&s->metadata, "damaged", NULL, 0);
+    av_dict_set(&s->metadata, "damaged_ranges", NULL, 0);
+    av_dict_set(&s->metadata, "damaged_bytes", NULL, 0);
+    av_dict_set(&s->metadata, "damage", NULL, 0);
     s->duration = AV_NOPTS_VALUE;
 }
 
@@ -736,7 +741,7 @@ static const AVOption disc_options[] = {
     {"merged",          "one track: each frame the base picture, then the enhancement picture's units", 0, AV_OPT_TYPE_CONST, { .i64=0 }, 0, 0, AV_OPT_FLAG_DECODING_PARAM, .unit = "dolby_vision" },
     {"separate",        "the enhancement layer as a track of its own, as on the disc", 0, AV_OPT_TYPE_CONST, { .i64=1 }, 0, 0, AV_OPT_FLAG_DECODING_PARAM, .unit = "dolby_vision" },
     {"second_view",     "3-D titles: read the second view as a track of its own (a second layer of the video)", OFFSET(opt_second_view), AV_OPT_TYPE_BOOL, { .i64=0 }, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
-    {"min_length",      "titles shorter than this (seconds) are listed, not selected", OFFSET(opt_min_length), AV_OPT_TYPE_INT, { .i64=0 }, 0, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
+    {"min_length",      "titles shorter than this (seconds) are left out of the title list", OFFSET(opt_min_length), AV_OPT_TYPE_INT, { .i64=0 }, 0, INT_MAX, AV_OPT_FLAG_DECODING_PARAM },
     {"dvd_cell_mode",   "DVD: a title's cells: auto (the navigation's when the scan worked, else trimmed), walk (the cells the navigation played), trim (the program chain's, start and end trimmed), walk_trim (walk, trim for titles the navigation did not reach)", OFFSET(opt_dvd_cell_mode), AV_OPT_TYPE_INT, { .i64=0 }, 0, 3, AV_OPT_FLAG_DECODING_PARAM, .unit = "dvd_cell_mode" },
         {"auto",        "the navigation's cells when the scan worked, else trimmed", 0, AV_OPT_TYPE_CONST, { .i64=0 }, 0, 0, AV_OPT_FLAG_DECODING_PARAM, .unit = "dvd_cell_mode" },
         {"walk",        "the cells the navigation played",                 0, AV_OPT_TYPE_CONST, { .i64=1 }, 0, 0, AV_OPT_FLAG_DECODING_PARAM, .unit = "dvd_cell_mode" },

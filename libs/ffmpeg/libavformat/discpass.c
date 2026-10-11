@@ -722,8 +722,8 @@ int ff_disc_stream_pass(AVFormatContext *s, const char *title, const DiscPassSou
                    title, av_get_media_type_string(k->info.type), k->stream, src->index + 1);
             drop[nb_drop++] = k - tracks;
         } else if (src->read_all) {
-            /* a detail: the rip's track list says it again for the title it rips */
-            av_log(s, AV_LOG_VERBOSE, "%s: title %s: %s stream %d has no packet in segment %d: its track is "
+            /* said for every title (the rip's track list says it again for the titles it rips) */
+            av_log(s, AV_LOG_INFO, "%s: title %s: %s stream %d has no packet in segment %d: its track is "
                    "empty\n", fmt, title, k->info.codec == AV_CODEC_ID_DVD_SUBTITLE ? "sub-picture" : "subtitle",
                    k->stream, src->index + 1);
         }

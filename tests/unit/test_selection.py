@@ -65,11 +65,14 @@ def test_a_track_left_out_is_not_written_and_the_others_do_not_change(tmp_path):
     assert next((tmp_path / "video").rglob("*.m2v")).read_bytes() == next((tmp_path / "all").rglob("*.m2v")).read_bytes()
 
 
-def test_all_skips_titles_shorter_than_the_minimum_length_a_number_does_not(tmp_path):
+def test_titles_shorter_than_the_minimum_length_are_left_out_of_the_title_list(tmp_path):
     folder, _ = two_segments(tmp_path, True)
-    code, out = run("--set", "titles.min_length=3600", "demux", folder, "all", tmp_path / "all")
-    assert code == 2 and "Title #0 is shorter than the minimum length: not ripped with all" in out, out
-    assert "No title selected" in out, out
+    code, out = run("--set", "titles.min_length=3600", "info", folder)
+    assert "less than the minimum length of 3600 s" in out and "left out" in out, out
+    assert ", 0 titles" in out, out
+    # its number no longer names it: the list has no title 0
     code, out = run("--set", "titles.min_length=3600", "demux", folder, "0", tmp_path / "named")
-    assert code == 0, out
-    assert list((tmp_path / "named").rglob("*.m2v"))
+    assert code != 0 and not list((tmp_path / "named").rglob("*.m2v")), out
+    # without a minimum length it is title 0
+    code, out = run("--set", "titles.min_length=0", "demux", folder, "0", tmp_path / "all")
+    assert code == 0 and list((tmp_path / "all").rglob("*.m2v")), out

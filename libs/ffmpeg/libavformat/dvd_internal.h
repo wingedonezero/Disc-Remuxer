@@ -208,6 +208,10 @@ int      ff_dvd_css_state(DVDDisc *d, int vts, uint8_t *key);
 /** ff_dvd_title_vob_read() on the title set's own reading. */
 int      ff_dvd_title_vob_sector(DVDDisc *d, int vts, uint32_t sector, uint8_t *buf);
 /** The sectors of a segment. */
+/** The VOB file holding block (from 0) of segment seg of title t and the
+ *  byte offset there (libdvdread's reading vr names it); < 0 not known. */
+int ff_dvd_segment_place(const dvd_title_t *t, const dvd_vob_reader_t *vr, int seg, uint32_t block, char *file,
+                         int size, int64_t *offset);
 uint32_t ff_dvd_segment_blocks(const dvd_segment_t *g);
 /** Sector block of segment seg of title t, as ff_dvd_title_vob_read(). */
 int      ff_dvd_segment_read_vobs(DVDDisc *d, const dvd_title_t *t, dvd_vob_reader_t *vr, int seg, uint32_t block,

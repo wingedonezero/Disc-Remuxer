@@ -64,6 +64,9 @@ typedef struct {
   dvd_title_list_t          *out;
   uint8_t                   *headers[100];      /* each title set's IFO header, read once */
   int                        suspicious[100];   /* 0 not decided, 1 its titles are left out, 2 they are not */
+  int                        shared_mixed;      /* the last title built: not reached by the navigation, its cells
+                                                   on shared title VOBs do not follow each other */
+  const char                *no_cells;         /* the last title built: why it has no cells (NULL: it has) */
 } titles_t;
 
 /* A line of the list in the disc reader's log. */
@@ -198,9 +201,9 @@ static void say_left_out( titles_t *T, dvd_title_t *t, int first, int last )
   const pgc_rec_t *p = title_pgc( T, t );
 
   if( first )
-    note( T, DVD_NOTE_DETAIL, "title %s: cells 1-%d left out at the start", t->name, first );
+    note( T, DVD_NOTE_INFO, "title %s: cells 1-%d left out at the start", t->name, first );
   if( last != p->nr_of_cells - 1 )
-    note( T, DVD_NOTE_DETAIL, "title %s: cells %d-%d left out at the end", t->name, last + 2, p->nr_of_cells );
+    note( T, DVD_NOTE_INFO, "title %s: cells %d-%d left out at the end", t->name, last + 2, p->nr_of_cells );
 }
 
 /* Room for the title's cells. */
@@ -297,6 +300,30 @@ static int cell_maps( dvd_title_t *t )
   return 0;
 }
 
+/* A title with angles: its cells outside the angle blocks (those all its
+ * angles play) as text, "1, 2"; none: NULL. */
+static int shared_cells( titles_t *T, dvd_title_t *t )
+{
+  const pgc_rec_t *p = title_pgc( T, t );
+  size_t size = 1 + (size_t)t->nb_cells * 5, at = 0;
+  char *s;
+
+  if( t->nr_of_angles < 2 || !p || !p->cells )
+    return 0;
+  if( !(s = malloc( size )) )
+    return -1;
+  s[0] = 0;
+  for( int i = 0; i < t->nb_cells; i++ )
+    if( t->cells[i] < p->nr_of_cells && (p->cells[t->cells[i]].category[0] >> 4 & 3) != 1 )
+      at += snprintf( s + at, size - at, "%s%d", at ? ", " : "", t->cells[i] + 1 );
+  if( !at ) {
+    free( s );
+    return 0;
+  }
+  t->shared_cells = s;
+  return 0;
+}
+
 /* The chapters' places in the segments; unplaced ones dropped, a leading
  * one that cannot be placed dropped or (the next one not at the start) put
  * at the start. */
@@ -380,7 +407,7 @@ static int build_segments( titles_t *T, dvd_title_t *t )
     return ret < 0 ? -1 : 0;
   }
   t->segs = o;                        /* the title's from here on */
-  if( cell_maps( t ) < 0 || place_chapters( T, t, vr ) < 0 )
+  if( cell_maps( t ) < 0 || shared_cells( T, t ) < 0 || place_chapters( T, t, vr ) < 0 )
     return -1;
   t->built = 1;
   return 1;
@@ -395,8 +422,10 @@ static int build_title( titles_t *T, dvd_title_t *t )
   uint64_t real = 0;
   int mode = T->o->cell_mode, ret, suspect = 0;
 
+  T->no_cells = NULL;
   if( !t->scan && pgc_rejected( T, t->vtsn, p ) >= 0 ) {
     t->nb_cells = 0;
+    T->no_cells = "the navigation does not reach it and its program chain fails the program chain check";
   } else {
     if( !mode )
       mode = T->nb_scan ? DVD_CELL_MODE_WALK_REC : DVD_CELL_MODE_TRIM_REC;
@@ -404,6 +433,7 @@ static int build_title( titles_t *T, dvd_title_t *t )
     case DVD_CELL_MODE_WALK_REC:
       if( !t->scan ) {
         t->nb_cells = 0;
+        T->no_cells = "the navigation does not reach this program chain";
         ret = 1;
       } else {
         ret = cell_walk( T, t );
@@ -420,6 +450,7 @@ static int build_title( titles_t *T, dvd_title_t *t )
               "are trimmed instead", t->name );
         if( pgc_rejected( T, t->vtsn, p ) >= 0 ) {
           t->nb_cells = 0;
+          T->no_cells = "the navigation's cells do not work and its program chain fails the program chain check";
           ret = 1;
           break;
         }
@@ -431,6 +462,8 @@ static int build_title( titles_t *T, dvd_title_t *t )
         note( T, DVD_NOTE_DEBUG, "title %s: no cell list", t->name );
       return ret;
     }
+    if( !t->nb_cells && !T->no_cells )
+      T->no_cells = "trimming its decoy cells leaves none";
   }
 
   /* length */
@@ -447,6 +480,7 @@ static int build_title( titles_t *T, dvd_title_t *t )
     if( !t->declared || (diff > FAKE_SECONDS && diff * 100 / t->declared > FAKE_PERCENT) )
       suspect = 1;
   }
+  T->shared_mixed = 0;
   if( !suspect && t->nb_cells >= 2 && !t->scan && overlap( T, t->vtsn ) ) {
     /* on title VOBs shared with another title set: cells must follow each other */
     int over = 0, last = 0;
@@ -479,6 +513,7 @@ static int build_title( titles_t *T, dvd_title_t *t )
       if( p->cells[t->cells[k]].last_sector >= p->cells[t->cells[j]].first_sector )
         suspect = 1;
     }
+    T->shared_mixed = suspect;
   }
   if( suspect ) {
     note( T, DVD_NOTE_DEBUG, "title %s: declared %" PRIu32 " s, real %" PRIu32 " s: no segments", t->name,
@@ -499,6 +534,7 @@ void DVDFreeTitle_rec( dvd_title_t *t )
   for( int k = 0; t->cell_maps && k < t->segs.nb_segments; k++ )
     free( t->cell_maps[k] );
   free( t->cell_maps );
+  free( t->shared_cells );
   DVDFreeTitleSegments_rec( &t->segs );
   free( t->chapters );
   free( t->cells );
@@ -617,7 +653,8 @@ static int title_init( titles_t *T, dvd_title_t *t, int idx, unsigned vtsn, cons
   if( !angles )
     angles = 1;
   if( angles > MAX_ANGLES ) {
-    note( T, DVD_NOTE_DEBUG, "title %d: %u angles: %d are read", idx + 1, angles, MAX_ANGLES );
+    note( T, DVD_NOTE_WARN, "title %d has %u angles: only the first %d are read, the others are left out", idx + 1,
+          angles, MAX_ANGLES );
     angles = MAX_ANGLES;
   }
   t->nr_of_angles = angles;
@@ -631,6 +668,7 @@ static int title_init( titles_t *T, dvd_title_t *t, int idx, unsigned vtsn, cons
   memcpy( t->chapters, ch, nb_ch * sizeof(*ch) );
   t->nb_chapters = nb_ch;
   t->scan = scan_find( T, idx + 1, p->number + 1 );
+  t->main_angle = 1;                  /* the angle block's first cell (the reference's way) */
   if( !h )
     return 0;
   if( rb16( h + VTS_AUDIO_COUNT ) > MAX_AUDIO ) {
@@ -671,6 +709,27 @@ static int fake_length( const dvd_title_t *t )
   return !t->declared || (diff > FAKE_SECONDS && diff * 100 / t->declared > FAKE_PERCENT);
 }
 
+/* The program chain's main angle (angle 1, the angle block's first cell)
+ * and the angles the navigation plays, in its order. */
+static void main_angle_note( titles_t *T, const dvd_title_t *t )
+{
+  char order[64] = "";
+  int n = 0, over = 0;
+
+  for( ; t->scan && n < 9 && t->scan->angles[n]; n++ ) {
+    snprintf( order + strlen( order ), sizeof(order) - strlen( order ), "%s%d", n ? ", " : "", t->scan->angles[n] );
+    over |= t->scan->angles[n] > t->nr_of_angles;
+  }
+  if( over )
+    note( T, DVD_NOTE_WARN, "title %s: the navigation plays angle(s) %s, the title has %d angles", t->name, order,
+          t->nr_of_angles );
+  if( n > 1 || (n == 1 && t->scan->angles[0] != 1) )
+    note( T, DVD_NOTE_INFO, "title %s: angle 1 is the main angle (the angle block's first cell); the navigation "
+          "plays angle(s) %s in that order", t->name, order );
+  else
+    note( T, DVD_NOTE_INFO, "title %s: angle 1 is the main angle (the angle block's first cell)", t->name );
+}
+
 /* The titles of one program chain of title table entry idx: the first
  * angle, then one per further angle. 0, -1 no memory. */
 static int add_pgc_titles( titles_t *T, int idx, unsigned vtsn, const pgc_rec_t *p, const dvd_title_chapter_t *ch,
@@ -694,8 +753,16 @@ static int add_pgc_titles( titles_t *T, int idx, unsigned vtsn, const pgc_rec_t 
     title_skip( T, vtsn, p );
     goto drop;
   }
-  if( bcd_seconds( p->playback_time ) < (uint32_t)T->o->min_length )
-    t->short_title = 1;
+  /* shorter than the minimum length: left out (by the program chain's own
+   * length before the title is built, by the title's after) */
+  if( bcd_seconds( p->playback_time ) < (uint32_t)T->o->min_length ) {
+    hms( d1, sizeof(d1), bcd_seconds( p->playback_time ) );
+    note( T, DVD_NOTE_INFO, "title %s left out: its program chain lasts %s, less than the minimum length of %d s",
+          t->name, d1, T->o->min_length );
+    title_skip( T, vtsn, p );
+    ret = 0;
+    goto drop;
+  }
   if( (ret = build_title( T, t )) <= 0 ) {
     if( !ret )
       note( T, DVD_NOTE_INFO, "title %s (VTS %u PGC %d) left out: navigation error", t->name, vtsn, p->number + 1 );
@@ -703,11 +770,28 @@ static int add_pgc_titles( titles_t *T, int idx, unsigned vtsn, const pgc_rec_t 
     goto drop;
   }
   if( !t->segs.nb_segments && !fake_length( t ) ) {
+    if( !t->nb_cells )
+      note( T, DVD_NOTE_INFO, "title %s (VTS %u PGC %d) left out: %s", t->name, vtsn, p->number + 1,
+            T->no_cells ? T->no_cells : "no cells are left to play" );
+    else if( T->shared_mixed )
+      note( T, DVD_NOTE_INFO, "title %s (VTS %u PGC %d) left out: the navigation does not reach it and its cells on "
+            "title VOBs shared with another title set do not follow each other (a fake title)", t->name, vtsn,
+            p->number + 1 );
+    else
+      note( T, DVD_NOTE_INFO, "title %s (VTS %u PGC %d) left out: its cells hold no sectors that can be read",
+            t->name, vtsn, p->number + 1 );
     title_skip( T, vtsn, p );
     ret = 0;
     goto drop;
   }
   hms( d1, sizeof(d1), t->declared );
+  if( t->declared < (uint32_t)T->o->min_length ) {
+    note( T, DVD_NOTE_INFO, "title %s left out: it lasts %s, less than the minimum length of %d s", t->name, d1,
+          T->o->min_length );
+    title_skip( T, vtsn, p );
+    ret = 0;
+    goto drop;
+  }
   if( fake_length( t ) ) {
     hms( d2, sizeof(d2), t->measured );
     note( T, DVD_NOTE_INFO, "title %s left out: its declared length is %s, its real length %s (a fake title)",
@@ -716,12 +800,11 @@ static int add_pgc_titles( titles_t *T, int idx, unsigned vtsn, const pgc_rec_t 
     ret = 0;
     goto drop;
   }
-  if( t->declared < (uint32_t)T->o->min_length )
-    t->short_title = 1;
-  note( T, DVD_NOTE_DETAIL, "title %s added (%d cell(s), %s)%s", t->name, t->nb_cells, d1,
-        t->short_title ? ", shorter than the minimum length" : "" );
+  note( T, DVD_NOTE_DETAIL, "title %s added (%d cell(s), %s)", t->name, t->nb_cells, d1 );
   if( (ret = list_add( T->out, t )) < 0 )
     goto drop;
+  if( t->nr_of_angles > 1 )
+    main_angle_note( T, t );
   for( int a = 1; a < t->nr_of_angles; a++ ) {
     dvd_title_t *ta = calloc( 1, sizeof(*ta) );
     if( !ta )
@@ -736,12 +819,11 @@ static int add_pgc_titles( titles_t *T, int idx, unsigned vtsn, const pgc_rec_t 
       DVDFreeTitle_rec( ta );
       return 0;
     }
-    ta->short_title = t->short_title;
     if( list_add( T->out, ta ) < 0 ) {
       DVDFreeTitle_rec( ta );
       return -1;
     }
-    note( T, DVD_NOTE_DETAIL, "title %s: angle %d added", t->name, a + 1 );
+    note( T, DVD_NOTE_INFO, "title %s: angle %d added", t->name, a + 1 );
   }
   return 0;
 drop:
@@ -764,7 +846,7 @@ static int title_chapters( titles_t *T, int idx, unsigned f, dvd_title_chapter_t
   *nb_out = 0;
   n = size >= 2 ? rb16( data ) : 0;
   if( !ttn || ttn > n ) {
-    note( T, DVD_NOTE_WARN, "VTS_%02u has no title %u", vtsn, ttn );
+    note( T, DVD_NOTE_WARN, "VTS_%02u has no title %u: title %d left out", vtsn, ttn, idx + 1 );
     return 0;
   }
   start = 4 * ttn + 8 <= size ? rb32( data + 4 * ttn + 4 ) : 0;
@@ -779,7 +861,8 @@ static int title_chapters( titles_t *T, int idx, unsigned f, dvd_title_chapter_t
     }
   }
   if( (start & 3) || end < start || (end & 3) || end - start <= 3 ) {
-    note( T, DVD_NOTE_DEBUG, "VTS_%02u title %u: its chapter list is broken", vtsn, ttn );
+    note( T, DVD_NOTE_WARN, "VTS_%02u title %u: its chapter table (VTS_PTT_SRPT) is broken: title %d left out", vtsn,
+          ttn, idx + 1 );
     return 0;
   }
   for( uint32_t k = 0; k < (end - start) >> 2; k++ ) {
@@ -867,8 +950,11 @@ static int add_title( titles_t *T, int idx )
           idx + 1 );
     return 0;
   }
-  if( vtsn > (unsigned)T->disc->nr_of_title_sets )
+  if( vtsn > (unsigned)T->disc->nr_of_title_sets ) {
+    note( T, DVD_NOTE_INFO, "title %d left out: its title set VTS_%02u is beyond the disc's %d title sets", idx + 1,
+          vtsn, T->disc->nr_of_title_sets );
     return 0;
+  }
   if( !T->disc->ifos[vtsn].ifo ) {
     note( T, DVD_NOTE_INFO, "title %d left out: its title set (VTS_%02u) could not be read", idx + 1, vtsn );
     return 0;
@@ -896,8 +982,11 @@ static int add_title( titles_t *T, int idx )
     unsigned pgcn = pgcns[k];
     const pgc_rec_t *p = pgc_of( T, vtsn, pgcn );
     int ns = 0, why;
-    if( !p )
+    if( !p ) {
+      note( T, DVD_NOTE_INFO, "title %d: program chain %u left out: VTS_%02u has no such program chain (or it cannot "
+            "be read)", idx + 1, pgcn, vtsn );
       continue;
+    }
     why = pgc_rejected( T, vtsn, p );
     if( why >= 0 && !scan_find( T, idx + 1, pgcn ) ) {
       note( T, DVD_NOTE_INFO, "title %d: program chain %u left out: it fails the program chain check (reason %d)",

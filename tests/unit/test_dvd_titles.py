@@ -120,6 +120,39 @@ def test_an_angle_block_gives_a_title_per_angle(tmp_path):
     assert logged("title 1: angle 2 added")
 
 
+def two_angles(tmp_path):
+    first = flags.ANGLE_BLOCK | flags.FIRST_IN_BLOCK
+    last = flags.ANGLE_BLOCK | flags.LAST_IN_BLOCK
+    p = Pgc(cells=[c(0, 9, 5, 1), c(10, 19, 5, 1, flags=first), c(20, 29, 5, 1, flags=last)])
+    navs = vobus(0, 9, 5) + vobus(10, 19, 5) + vobus(20, 29, 5)
+    return build(tmp_path, [p], [[(1, 1)]], navs, 30, angles=[2])
+
+
+def test_the_main_angle_is_angle_1_and_the_navigation_s_order_is_said(tmp_path):
+    ts = [t for t in run(two_angles(tmp_path), [("A1", 1, 1, [1, 2, 3], [2, 1])]) if t["name"] == "1"]
+    assert [(t["angle"], t["main"]) for t in ts] == [("1/2", "1"), ("2/2", "1")]
+    assert logged("title 1: angle 1 is the main angle (the angle block's first cell); the navigation plays angle(s) "
+                  "2, 1 in that order")
+
+
+def test_without_an_angle_from_the_navigation_the_main_angle_is_1(tmp_path):
+    ts = [t for t in run(two_angles(tmp_path), [("A1", 1, 1, [1, 2, 3])]) if t["name"] == "1"]
+    assert [t["main"] for t in ts] == ["1", "1"]
+    assert logged("title 1: angle 1 is the main angle (the angle block's first cell)")
+
+
+def test_a_main_angle_beyond_the_title_s_angles_is_told(tmp_path):
+    ts = [t for t in run(two_angles(tmp_path), [("A1", 1, 1, [1, 2, 3], [3])]) if t["name"] == "1"]
+    assert [t["main"] for t in ts] == ["1", "1"]
+    assert logged("title 1: the navigation plays angle(s) 3, the title has 2 angles")
+
+
+def test_a_title_without_angles_has_no_main_angle(tmp_path):
+    p = Pgc(cells=[c(0, 9, 5, 1)])
+    ts = run(build(tmp_path, [p], [[(1, 1)]], vobus(0, 9, 5), 10), [("A1", 1, 1, [1])])
+    assert ts and all("main" not in t for t in ts)
+
+
 def test_an_angle_block_of_another_size_than_the_title_s_angles_is_told_by_libdvdread(tmp_path):
     first = flags.ANGLE_BLOCK | flags.FIRST_IN_BLOCK
     last = flags.ANGLE_BLOCK | flags.LAST_IN_BLOCK
@@ -172,11 +205,12 @@ def test_a_chapter_before_the_previous_one_is_dropped(tmp_path):
     assert t["chapters"] == "1"
 
 
-def test_a_title_shorter_than_the_minimum_length_is_listed_not_selected(tmp_path):
+def test_a_title_shorter_than_the_minimum_length_is_left_out_and_said(tmp_path):
     p = Pgc(cells=[c(0, 9, 5, 1), c(10, 19, 5, 1)])
     folder = build(tmp_path, [p], [[(1, 1)]], vobus(0, 9, 5) + vobus(10, 19, 5), 20)
-    assert run(folder, [("A1", 1, 1, [1, 2])], min_length=5)[0]["short"]
-    assert not run(folder, [("A1", 1, 1, [1, 2])], min_length=2)[0]["short"]
+    assert not [t for t in run(folder, [("A1", 1, 1, [1, 2])], min_length=5) if t["name"] == "1"]
+    assert logged("title 1 left out: its program chain lasts 0:00:02, less than the minimum length of 5 s")
+    assert [t["name"] for t in run(folder, [("A1", 1, 1, [1, 2])], min_length=2)][:1] == ["1"]
 
 
 def test_a_cell_s_last_vobu_ending_early_is_told_and_the_walk_goes_on(tmp_path):
@@ -410,3 +444,44 @@ def test_corpus_title_lists_are_the_expected_ones():
         if ret != 0 or text != expected.read_text():
             differ.append(disc)
     assert done and not differ
+
+
+def test_info_tells_each_angle_title_its_angle_the_main_one_and_the_shared_cells(tmp_path):
+    # cell 1, then an angle block of two cells; the chain's pre command selects angle 2 (the navigation plays it)
+    first = flags.ANGLE_BLOCK | flags.FIRST_IN_BLOCK
+    last = flags.ANGLE_BLOCK | flags.LAST_IN_BLOCK
+    p = Pgc(cells=[c(0, 9, 5, 1), c(10, 19, 5, 1, flags=first), c(20, 29, 5, 1, flags=last)],
+            pre=[[0x51, 0, 0, 0, 0, 0x82, 0, 0]])          # SetSTN: angle = 2
+    navs = vobus(0, 9, 5) + vobus(10, 19, 5) + vobus(20, 29, 5)
+    folder = build(tmp_path, [p], [[(1, 1)]], navs, 30, angles=[2])
+    from test_dvd_streams import put, video
+    for sector in (1, 11, 21):
+        put(folder, sector, video())
+    ts, _ = info(folder)
+    got = [(t["angle"], t["main_angle"], t["main_title"], t["shared_cells"], t["selected"]) for t in ts if "angle" in t]
+    # angle 1 is the main one, the only one ripped with all (the navigation plays angle 2: said in the log)
+    assert got == [(1, 1, 0, "1", True), (2, 1, 0, "1", False)]
+    assert all("angle_order" not in t for t in ts), "the disc plays one angle"
+    out = subprocess.run([*PROGRAM, "-v", "info", str(folder)], capture_output=True, text=True).stdout
+    assert "1 chapter, angle 1 (main)\n" in out and "1 chapter, angle 2\n" in out
+    assert "cells: 1-2; angle 1 (main); cell 1 shared by all angles" in out
+    assert "cells: (1,3); angle 2, main is angle 1 (#0); cell 1 shared by all angles, not selected (not the main " \
+           "angle: name it to rip it)" in out
+    assert "the navigation plays angle(s) 2 in that order" in out
+
+
+def test_cells_left_out_and_angles_are_lines_of_the_standard_log(tmp_path):
+    # what the title list does to a title is said at the standard level (info), not only in the detail lines
+    folder = six_cells(tmp_path / "a", [2, 10, 10, 10, 10, 10])
+    install_log(lib.AV_LOG_INFO)
+    d = Disc.folder(folder)
+    titles_from(d.d, [("A1", 1, 1, [1, 3, 4, 5, 6])])
+    d.close()
+    assert logged("title 1: cells 1-2 left out at the start")
+    folder = two_angles(tmp_path / "b")
+    install_log(lib.AV_LOG_INFO)
+    d = Disc.folder(folder)
+    titles_from(d.d, [("A1", 1, 1, [1, 2, 3], [2, 1])])
+    d.close()
+    assert logged("title 1: angle 2 added")
+    assert logged("title 1: angle 1 is the main angle (the angle block's first cell); the navigation plays")

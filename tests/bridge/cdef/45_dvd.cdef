@@ -69,6 +69,7 @@ int tb_dvd_nav_trace(DVDDisc *d, int title, unsigned opts, int max_steps,
 typedef struct {
     char      name[16];
     uint8_t   title, pgc;
+    uint8_t   angles[10];
     int       nb_cells;
     uint8_t  *cells;
 } dvd_nav_cells_t;

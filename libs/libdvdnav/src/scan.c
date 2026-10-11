@@ -151,6 +151,8 @@ typedef struct {
   scan_seq_t *seq;
   uint64_t    key;
   uint8_t     title, pgc;
+  uint8_t     angles[10];               /* the angles (from 1) played in angle blocks, in order; 0 ends */
+  int         nr;                       /* recordings made before it */
 } scan_rec_t;
 
 struct dvdnav_scan_s {
@@ -183,6 +185,7 @@ struct dvdnav_scan_s {
   uint32_t        seq_start;            /* playback time the sequence started (0: not yet) */
   uint8_t        *cells;
   int             nb_cells, alloc_cells;
+  uint8_t         cur_angles[10];       /* of the cells collected: scan_rec_t angles */
   scan_pending_t *pending;
   int             nb_pending, alloc_pending;
   scan_visited_t *visited;
@@ -603,6 +606,7 @@ static int flush( dvdnav_scan_t *s, uint64_t key )
   s->seq_start = 0;
   if( !n ) {
     s->cur_title = 0;
+    memset( s->cur_angles, 0, sizeof(s->cur_angles) );
     return 0;
   }
   for( int i = 0; i < n; i++ ) {
@@ -665,9 +669,11 @@ static int flush( dvdnav_scan_t *s, uint64_t key )
   }
   if( (ret = grow( (void **)&s->recs, &s->alloc_recs, s->nb_recs, sizeof(*s->recs) )) < 0 )
     return ret;
-  s->recs[s->nb_recs++] = (scan_rec_t){ q, key, (uint8_t)s->cur_title, (uint8_t)s->cur_pgc };
+  s->recs[s->nb_recs] = (scan_rec_t){ q, key, (uint8_t)s->cur_title, (uint8_t)s->cur_pgc, { 0 }, s->nb_recs };
+  memcpy( s->recs[s->nb_recs++].angles, s->cur_angles, sizeof(s->cur_angles) );
   s->cur_title = 0;
   s->nb_cells  = 0;
+  memset( s->cur_angles, 0, sizeof(s->cur_angles) );
   return 0;
 }
 
@@ -735,8 +741,20 @@ static int same_hli( const scan_pci_t *h, const scan_pci_t *x )
                     h->btn_se_e_ptm == x->btn_se_e_ptm);
 }
 
+/* Angle a (from 1) added to list l (0 ends) when not in it. */
+static void add_angle( uint8_t l[10], unsigned a )
+{
+  int i = 0;
+  while( i < 9 && l[i] && l[i] != a )
+    i++;
+  if( i < 9 && !l[i] && a <= 9 )
+    l[i] = a;
+}
+
 /* The cells a cell change into cell c of a title's program chain adds:
- * c, or its whole angle block. */
+ * c, or its whole angle block. In an angle block the navigator entered the
+ * cell of the angle the angle register (SPRM 3) selects (the block's first
+ * cell when the register selects none of its cells): that angle is noted. */
 static int add_title_cells( dvdnav_scan_t *s, unsigned title, unsigned pgcn, unsigned c )
 {
   unsigned vtsn, ttn, uop, lo = c, hi = c;
@@ -762,6 +780,7 @@ static int add_title_cells( dvdnav_scan_t *s, unsigned title, unsigned pgcn, uns
           if( g >> 6 == 3 ) {
             lo = first + 1;
             hi = last + 1;
+            add_angle( s->cur_angles, c - lo + 1 );
             break;
           }
           if( (g & 0x30) != 0x10 || (g >> 6) - 1 > 1 || last + 1 >= p->nr_of_cells )
@@ -803,6 +822,7 @@ static int walk( dvdnav_scan_t *s )
     s->cur_title = 0;
     s->cur_pgc   = 0;
     s->nb_cells  = 0;
+    memset( s->cur_angles, 0, sizeof(s->cur_angles) );
     log_key( s, "\n\n\nRP: ", key );
     if( (ret = nav_run( s, st.nav, &ev )) < 0 )
       goto fail;
@@ -1077,7 +1097,9 @@ static int rec_cmp( const void *pa, const void *pb )
     return a->seq->len > b->seq->len ? -1 : 1;
   if( a->key == b->key ) {
     int c = memcmp( a->seq->c, b->seq->c, a->seq->len );
-    return (c > 0) - (c < 0);
+    if( c )
+      return (c > 0) - (c < 0);
+    return a->nr < b->nr ? -1 : a->nr > b->nr;   /* the same cells (in other angles): the one played first */
   }
   da = depth( sort_scan, a->key );
   db = depth( sort_scan, b->key );
@@ -1095,13 +1117,18 @@ static int results( dvdnav_scan_t *s, dvdnav_scan_results_t *out )
   /* sorted (a stable merge order is not needed: equal elements are equal) */
   sort_scan = s;
   qsort( s->recs, s->nb_recs, sizeof(*s->recs), rec_cmp );
-  /* the first recording of each title / program chain; (0, 0) none */
+  /* the first recording of each title / program chain (with the angles every
+   * recording of it played, in their order); (0, 0) none */
   for( int i = 0; i < s->nb_recs; i++ ) {
     scan_rec_t *r = &s->recs[i];
     uint64_t k = r->key & 0x00ffffffffffffffULL;
     int lo = 0, hi = nb_keys;
-    if( r->title == gt && r->pgc == gp )
+    if( r->title == gt && r->pgc == gp ) {
+      if( n && s->recs[n - 1].title == gt && s->recs[n - 1].pgc == gp )
+        for( int a = 0; a < 9 && r->angles[a]; a++ )
+          add_angle( s->recs[n - 1].angles, r->angles[a] );
       continue;
+    }
     gt = r->title;
     gp = r->pgc;
     s->recs[n++] = *r;
@@ -1142,6 +1169,7 @@ static int results( dvdnav_scan_t *s, dvdnav_scan_results_t *out )
     snprintf( p, o->name + sizeof(o->name) - p, "%u", K_X(r->key) + 1 );
     o->title    = r->title;
     o->pgc      = r->pgc;
+    memcpy( o->angles, r->angles, sizeof(o->angles) );
     o->nb_cells = r->seq->len;
     if( !(o->cells = malloc( MAX( r->seq->len, 1 ) )) ) {
       ret = E_NOMEM;

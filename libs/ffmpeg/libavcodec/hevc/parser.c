@@ -787,7 +787,7 @@ static int disc_parse(AVCodecParserContext *s, AVCodecContext *avctx,
     ret = ff_parser_disc_cut(s, avctx, &disc_rule, &p->disc, poutbuf, poutbuf_size, buf, buf_size);
     if (*poutbuf_size && !s->disc_status) {
         if (st->no_unit)
-            s->disc_status = 1;
+            s->disc_status = PARSER_DISC_SKIP;
         else if ((r = disc_picture(s, avctx, *poutbuf, *poutbuf_size)) < 0)
             s->disc_status = r;
     }

@@ -36,8 +36,8 @@ static const Setting registry[] = {
       "is used. Empty: every .cfg file in the folder keydb next to the program (made on the first start), "
       "in name order.", 0, SET_AT_OPEN },
     { "titles", "min_length", SET_INT, "0", 0, 86400, NULL,
-      "Titles shorter than this (seconds) are not ripped with demux all: a DVD or HD DVD lists them as not "
-      "selected (a title number still rips them), a Blu-ray leaves them out of its title list. 0: every title.",
+      "Titles shorter than this (seconds) are left out of the title list (each one said in the log), so the "
+      "title numbers have no gaps. 0: every title.",
       0, SET_AT_OPEN },
     { "output", "folder", SET_TEXT, "", 0, 0, NULL,
       "The main output folder: a disc's files go into a folder of the disc's name in it (its image's or "

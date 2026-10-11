@@ -814,6 +814,16 @@ fail:
   return NULL;
 }
 
+int DVDTitleVOBSectorPlace_rec( const dvd_vob_reader_t *v, uint32_t sector, char file[16], int64_t *offset )
+{
+  if( !v ) {
+    file[0] = '\0';
+    *offset = -1;
+    return 0;
+  }
+  return sector_place( v, sector, file, offset );
+}
+
 uint32_t DVDTitleVOBSectors_rec( const dvd_vob_reader_t *v )
 {
   if( !v )

@@ -99,6 +99,13 @@ static int read_block(AVFormatContext *s, int k, uint32_t block, uint8_t *buf)
     return ff_dvd_segment_read_vobs(&c->disc, c->title, c->vobs, k, block, buf, &c->ended);
 }
 
+/* Where block of segment k lies: the VOB file and the byte offset there. */
+static int block_place(AVFormatContext *s, int k, uint32_t block, char *file, int size, int64_t *offset)
+{
+    DVDDemuxContext *c = ff_disc_part(s);
+    return ff_dvd_segment_place(c->title, c->vobs, k, block, file, size, offset);
+}
+
 /* The damaged ranges as libdvdread names them: the one the latest read
  * ended; flush: the one being read ends too. */
 static int damage(AVFormatContext *s, int k, int flush, DiscDamage *out)
@@ -374,7 +381,9 @@ static void remove_title(AVFormatContext *s, int i)
 }
 
 /* The disc info's title: length (the cells' playback times), size (the
- * title VOB sectors it plays), angle, whether selected, the program chain
+ * title VOB sectors it plays), angle (with the main angle and its title, the
+ * order the disc plays the angles in, the cells all angles play), whether
+ * selected, the program chain
  * and the navigation's recording it comes from, its segments' cells (as its
  * "files"), its chapters. */
 static int title_info(AVFormatContext *s, int i, DiscTitleInfo *dt)
@@ -385,7 +394,19 @@ static int title_info(AVFormatContext *s, int i, DiscTitleInfo *dt)
 
     dt->duration = (int64_t)t->declared * AV_TIME_BASE;
     dt->angle    = t->nr_of_angles > 1 ? t->angle + 1 : 0;
-    dt->selected = !t->short_title;
+    dt->selected = dt->angle <= 1;          /* an angle other than the main one: not ripped with all */
+    if (dt->angle) {
+        dt->main_angle   = t->main_angle;
+        dt->main_title   = -1;
+        dt->shared_cells = t->shared_cells;
+        for (int j = 0; j < c->titles.nb_titles; j++) {
+            const dvd_title_t *o = c->titles.titles[j];
+            if (o->title == t->title && o->pgcn == t->pgcn && o->angle + 1 == t->main_angle)
+                dt->main_title = j;
+        }
+        if (t->scan)
+            memcpy(dt->angle_order, t->scan->angles, sizeof(dt->angle_order));
+    }
     if (t->scan)
         snprintf(source, sizeof(c->sources[i]), "VTS_%02d program chain %d (navigation %s), cells", t->vtsn,
                  t->pgcn + 1, t->scan->name);
@@ -451,6 +472,7 @@ static int open_title(AVFormatContext *s, int i, int part, int *second_view)
         .clip_name     = clip_name,
         .clip_blocks   = clip_blocks,
         .read_block    = read_block,
+        .block_place   = block_place,
         .damage        = damage,
         .clip_start    = clip_start,
         .clip_start_name = "its first VOBU's start time (navigation pack)",

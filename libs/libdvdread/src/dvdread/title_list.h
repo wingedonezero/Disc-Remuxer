@@ -60,9 +60,10 @@ extern "C" {
  * chapters: DVDTitleSegments_rec(), DVDChapterPlaces_rec() (chapters that
  * cannot be placed are dropped; a first one that cannot be placed is put at
  * the start when the next one is not there). An angle block gives one more
- * title per further angle (at most 8). A title of a program chain whose
- * playback time or declared length is shorter than the minimum length is
- * listed as short.
+ * title per further angle (at most 8); the main angle is angle 1 (the angle
+ * block's first cell); the order the navigation plays the angles in is said. A title of a program chain whose
+ * playback time (tested before the title is built) or declared length (after)
+ * is shorter than the minimum length is left out (said).
  *
  * Its streams: audio, those the program chain's audio_control lists in its
  * order, then the title set's others; sub-pictures, those subp_control
@@ -80,11 +81,15 @@ extern "C" {
 
 /** A recording of the navigation scan: the cells (from 1) the navigation
  *  played in title (title table number, low 8 bits) / program chain pgc, and
- *  the name of the path that played them. */
+ *  the name of the path that played them; the angles (the angle register's,
+ *  SPRM 3) the navigation played in its angle blocks, in the order played
+ *  (this recording's, then those of the other recordings of the title /
+ *  program chain). */
 typedef struct
 {
   char     name[16];
   uint8_t  title, pgc;
+  uint8_t  angles[10];                /* from 1; 0 ends (none: no angle block played) */
   int      nb_cells;
   uint8_t *cells;
 } dvd_nav_cells_t;
@@ -114,6 +119,7 @@ typedef struct
   int                    title;       /* the title table entry, from 0 */
   uint8_t                pb_ty, vtsn, vts_ttn;
   uint8_t                nr_of_angles, angle;   /* angle from 0 */
+  uint8_t                main_angle;  /* from 1: the main angle, angle 1 (the angle block's first cell) */
   int                    pgcn;        /* its program chain's search pointer index, from 0 */
   const dvd_nav_cells_t *scan;        /* the navigation's cells of this title / program chain, NULL none */
   dvd_title_chapter_t   *chapters;
@@ -124,9 +130,10 @@ typedef struct
   uint32_t               measured;    /* seconds: the cells' VOBUs' presentation times */
   dvd_title_segments_t   segs;        /* its segments (DVDTitleSegments_rec()) */
   char                 **cell_maps;   /* per segment its cell runs as text: "1-3", "(1-3,5)" */
+  char                  *shared_cells;   /* a title with angles: its cells all angles play (outside the angle
+                                            blocks) as text, "1, 2"; NULL none */
   int                    built;
   int                    nav_invalid; /* places with invalid navigation found */
-  int                    short_title; /* shorter than the minimum length: listed, not selected */
   dvd_stream_ref_t       audio[8];    /* in the program chain's audio_control order, then the title set's others */
   int                    nb_audio;
   uint8_t                audio_listed;   /* the stream numbers audio_control lists (bit per stream) */

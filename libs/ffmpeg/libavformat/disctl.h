@@ -282,6 +282,21 @@ int ff_disctl_frames_open(DRFrames **frames, void *logctx, enum AVCodecID codec,
 /** One payload; time in ticks or AV_NOPTS_VALUE. */
 int ff_disctl_frames_write(DRFrames *c, const uint8_t *data, int size, int64_t time);
 
+/** Where a block of the segment lies, for the log: the place in words into
+ *  buf ("sector at VTS_03_1.VOB byte 349859840, 12288 bytes into the
+ *  title"); 0, or < 0 when not known. */
+typedef int (*DRPlaceCb)(void *opaque, int seg, int64_t block, char *buf, int size);
+
+/** How the track's left-out bytes are told: label (e.g. "Track 1"), the
+ *  part being read in words (e.g. "title", "segment 2"), segment seg and
+ *  where its blocks lie (place may be NULL). Every run of bytes left out is
+ *  said, with what it is, where it lies and what is done with it. */
+void ff_disctl_frames_set_report(DRFrames *c, const char *label, const char *part, int seg, DRPlaceCb place,
+                                 void *opaque);
+
+/** A payload that comes from block (of the segment, from 0; -1 not known). */
+int ff_disctl_frames_write_at(DRFrames *c, const uint8_t *data, int size, int64_t time, int64_t block);
+
 /** The end of the segment: the units still buffered in the parser. */
 int ff_disctl_frames_flush(DRFrames *c);
 
@@ -884,6 +899,8 @@ typedef struct DRTitleConfig {
     int64_t            *open_marks;/**< the marks again when some are positions (DRJoinConfig.open_marks) */
     DREventCb           event; void *event_opaque;   /**< every event (also logged at debug level) */
     const char         *cc_helper; /**< the caption converter program (for a DR_KIND_CAPTION track) */
+    int                 nb_segments; /**< the segments the title is read in (0: not known) */
+    DRPlaceCb           place; void *place_opaque;   /**< where a segment's block lies (NULL: not told) */
 } DRTitleConfig;
 
 typedef struct DRTitle DRTitle;
@@ -898,6 +915,10 @@ int  ff_disctl_title_segment(DRTitle *t);
  *  AV_NOPTS_VALUE; tail = read from the last 64 MiB of the segment's source.
  *  LPCM payloads start with their audio frame header. */
 int  ff_disctl_title_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time);
+/** The same, for a payload from block (of the segment, from 0; -1 not
+ *  known): bytes of it that are left out are said with their place. */
+int  ff_disctl_title_payload_at(DRTitle *t, int track, const uint8_t *data, int size, int64_t time,
+                                int64_t block);
 /** The end of the title: every stage finishes. */
 int  ff_disctl_title_finish(DRTitle *t);
 /** The next output frame (taken over by the caller): 0, AVERROR(EAGAIN)

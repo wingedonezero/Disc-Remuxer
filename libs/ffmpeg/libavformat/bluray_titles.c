@@ -937,7 +937,7 @@ static int add_title(Ctx *c, BlurayTitle *t, int nangles, int angle, int check)
     }
     for (int i = 0; i < d->nb_titles; i++)
         if (title_equal(&d->titles[i], t)) {
-            av_log(c->log, AV_LOG_VERBOSE, "Blu-ray: %s equals title %s: left out\n", t->name, d->titles[i].name);
+            av_log(c->log, AV_LOG_INFO, "Blu-ray: %s equals title %s: left out\n", t->name, d->titles[i].name);
             title_free(t);
             return 0;
         }
@@ -945,7 +945,8 @@ static int add_title(Ctx *c, BlurayTitle *t, int nangles, int angle, int check)
         for (int k = 0; k < t->segs[i].nb_items; k++) {
             const BlurayClip *cl = t->segs[i].items[k].clip;
             if (!cl || (cl->program.nb_streams && cl->program.streams[0].coding_type == CODING_MVC)) {
-                av_log(c->log, AV_LOG_VERBOSE, "Blu-ray: %s cannot be a title: left out\n", t->name);
+                av_log(c->log, AV_LOG_INFO, "Blu-ray: %s cannot be a title (an item's clip starts with a dependent-view "
+                       "stream): left out\n", t->name);
                 title_free(t);
                 return 0;
             }
@@ -1307,7 +1308,7 @@ static int playlist_titles(Ctx *c, BlurayPlaylist *pl)
             title_free(&t);
             if (ret < 0)
                 goto end;
-            av_log(c->log, AV_LOG_DEBUG, "Blu-ray: playlist %05u part %d: segments cannot be built\n",
+            av_log(c->log, AV_LOG_INFO, "Blu-ray: playlist %05u part %d: its segments cannot be built: left out\n",
                    pl->number, part);
             continue;
         }
@@ -1336,7 +1337,7 @@ static int playlist_titles(Ctx *c, BlurayPlaylist *pl)
             if ((ret = part_segments(c->log, d, pl, part, a, &p, 1)) < 0)
                 goto end;
             if (!ret) {
-                av_log(c->log, AV_LOG_DEBUG, "Blu-ray: playlist %05u part %d angle %d cannot be read\n",
+                av_log(c->log, AV_LOG_WARNING, "Blu-ray: playlist %05u part %d angle %d cannot be read: left out\n",
                        pl->number, part, a + 1);
                 continue;
             }
@@ -1344,7 +1345,7 @@ static int playlist_titles(Ctx *c, BlurayPlaylist *pl)
                 title_free(&ta);
                 if (ret < 0)
                     goto end;
-                av_log(c->log, AV_LOG_VERBOSE, "Blu-ray: angle %d of playlist %05u cannot be read\n", a + 1,
+                av_log(c->log, AV_LOG_WARNING, "Blu-ray: angle %d of playlist %05u cannot be read: left out\n", a + 1,
                        pl->number);
                 continue;
             }
@@ -1620,7 +1621,7 @@ static int recorded_title(Ctx *c, const BlurayPlaylist *avchd, const BlurayPlayl
     }
     if ((ret = build_segments(c->log, c->d, &t, run)) <= 0) {
         title_free(&t);
-        av_log(c->log, AV_LOG_DEBUG, "Blu-ray: playlist %05u: segments cannot be built\n", src->number);
+        av_log(c->log, AV_LOG_INFO, "Blu-ray: playlist %05u: its segments cannot be built: left out\n", src->number);
         return ret;
     }
     if ((ret = set_pids_from_clip(&t, run->v[0].clip)) < 0) {
@@ -1822,7 +1823,8 @@ static int clip_titles(Ctx *c)
                 ok = ret;
             }
         if (!ok) {
-            av_log(c->log, AV_LOG_DEBUG, "Blu-ray: clip %05u: segments cannot be built\n", cl->number);
+            av_log(c->log, AV_LOG_INFO, "Blu-ray: clip %05u: its segments cannot be built: no title of its own\n",
+                   cl->number);
             title_free(&t);
             continue;
         }
@@ -1907,7 +1909,8 @@ int ff_bluray_titles_build(void *log, BlurayDisc *d, int min_length)
         if ((ret = merge_items(&c, pl)) < 0)
             goto end;
         if (!ret)
-            av_log(log, AV_LOG_DEBUG, "Blu-ray: playlist %05u: an item cannot be resolved\n", pl->number);
+            av_log(log, AV_LOG_INFO, "Blu-ray: playlist %05u: an item cannot be resolved (its clip is missing or "
+                   "cannot be used)\n", pl->number);
     }
     /* 2. playlist titles */
     if (d->bdav) {
@@ -1930,7 +1933,7 @@ restart:
     for (int i = 0; i < d->nb_titles; i++)
         for (int j = 0; j < d->nb_titles; j++)
             if (i != j && title_equal(&d->titles[i], &d->titles[j])) {
-                av_log(log, AV_LOG_VERBOSE, "Blu-ray: title %s equals title %s: left out\n", d->titles[j].name,
+                av_log(log, AV_LOG_INFO, "Blu-ray: title %s equals title %s: left out\n", d->titles[j].name,
                        d->titles[i].name);
                 title_free(&d->titles[j]);
                 memmove(&d->titles[j], &d->titles[j + 1], (d->nb_titles - j - 1) * sizeof(*d->titles));

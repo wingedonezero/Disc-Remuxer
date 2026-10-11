@@ -286,7 +286,6 @@ typedef struct HDDVDTitle {
     uint64_t          duration;     /**< 90 kHz: the EVOBs' end - start times added up */
     uint64_t          size;         /**< bytes: the clips' sizes added up */
     int               from_playlist;/**< 1: a playlist title, 0: an EVOB no playlist title uses */
-    int               not_selected; /**< 1: shorter than the minimum length */
     HDDVDTrack       *tracks;       /**< video, audio, sub-pictures (ff_hddvd_tracks_build) */
     int               nb_tracks;
     int               segment;      /**< the clip the tracks come from */

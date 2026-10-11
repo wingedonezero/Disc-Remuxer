@@ -112,7 +112,8 @@ const char *codec_label(enum AVCodecID id, int profile)
     case AV_CODEC_ID_EAC3:         return "DDplus";
     case AV_CODEC_ID_TRUEHD:       return profile == AV_PROFILE_TRUEHD_ATMOS ? "TrueHD Atmos" : "TrueHD";
     case AV_CODEC_ID_MLP:          return "MLP";
-    case AV_CODEC_ID_DTS:          return profile == AV_PROFILE_DTS_HD_MA ? "DTS-HD MA" :
+    case AV_CODEC_ID_DTS:          return profile == AV_PROFILE_DTS_HD_MA || profile == AV_PROFILE_DTS_HD_MA_X ||
+                                          profile == AV_PROFILE_DTS_HD_MA_X_IMAX ? "DTS-HD MA" :
                                           profile == AV_PROFILE_DTS_HD_HRA ? "DTS-HD HR" : "DTS";
     case AV_CODEC_ID_MP1:
     case AV_CODEC_ID_MP2:
@@ -651,31 +652,37 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     EsOut *out = NULL;
     AVPacket *pkt = NULL;
     char dir[4096], prefix[4200], dur[32], js[4300], who[64], base[512], jpart[32] = "";
-    int ret;
+    int ret, errors0, warnings0;
 
     memset(res, 0, sizeof(*res));
+    /* the title's warnings: every warning line from here to its last line */
+    log_counts(&errors0, &warnings0);
     /* "Title #8", or "Title #8 part 2/7" for a part of a title */
     if (job->part >= 0) {
         snprintf(who, sizeof(who), "Title #%d part %d/%d", job->title, job->part + 1, job->nb_parts);
         snprintf(jpart, sizeof(jpart), ",\"part\":%d", job->part + 1);
     } else
         snprintf(who, sizeof(who), "Title #%d", job->title);
+    /* the heading first: what opening the title says belongs under it */
+    info = disc_info(ctx);
+    tname = info && job->title < info->nb_titles ? info->titles[job->title].name : NULL;
+    {
+        const DiscTitleInfo *ti = info && job->title < info->nb_titles ? &info->titles[job->title] : NULL;
+        int64_t d = !ti ? 0 : job->part >= 0 && job->part < ti->nb_parts ? ti->parts[job->part].duration : ti->duration;
+        hms(dur, sizeof(dur), d > 0 ? d / (double)AV_TIME_BASE : 0);
+    }
+    log_step("=== Title %d/%d: %s %s (%s) ===", job->ordinal, job->count, who + 6, tname ? tname : "", dur);
     if ((ret = disc_title_open(ctx, job->title, job->part, job->second_view, job->keep)) < 0) {
-        log_step("=== Title %d/%d: %s ===", job->ordinal, job->count, who + 6);
         log_msg(MSG_TITLE_OPEN_FAILED, LOG_ERROR, "%s cannot be opened: %s", who, av_err2str(ret));
         res->failed = 1;
         return ret;
     }
-    info = disc_info(ctx);
-    tname = info && job->title < info->nb_titles ? info->titles[job->title].name : NULL;
     title_name(setting_text("output.file_name_template"), tname, NULL, NULL, job->title, base, sizeof(base));
     /* a part's files: the title's name + _p<n>, in the title's folder */
     if (job->part >= 0)
         snprintf(res->name, sizeof(res->name), "%.500s_p%d", base, job->part + 1);
     else
         snprintf(res->name, sizeof(res->name), "%s", base);
-    hms(dur, sizeof(dur), ctx->duration > 0 ? ctx->duration / (double)AV_TIME_BASE : 0);
-    log_step("=== Title %d/%d: %s %s (%s) ===", job->ordinal, job->count, who + 6, tname ? tname : "", dur);
     log_json("title_start", "\"title\":%d%s,\"name\":%s,\"ordinal\":%d,\"count\":%d", job->title, jpart,
              json_str(js, sizeof(js), res->name), job->ordinal, job->count);
 
@@ -893,7 +900,6 @@ end:
             }
             if (o->opened)
                 log_text(LOG_DETAIL, "      %s", o->name);
-            res->warnings += warn + (!o->opened && !empty_cc && !o->no_forced);
             log_json("track", "\"title\":%d%s,\"index\":%d,\"codec\":%s,\"language\":%s,\"layout\":%s,"
                      "\"frames\":%"PRId64",\"warnings\":%"PRId64",\"delay_ms\":%"PRId64",\"file\":%s%s", job->title,
                      jpart, track_no(st), json_str(jc, sizeof(jc), stream_label(st, o->opened ? o->profile : st->codecpar->profile)),
@@ -907,18 +913,20 @@ end:
         if (unchecked)
             log_text(LOG_WARNING, "Stream details: %d video / audio track%s not checked (no decoder)", unchecked,
                      unchecked == 1 ? "" : "s");
-        res->warnings += unchecked;
-        /* blocks the disc's own check found damaged (each a warning above) */
-        res->warnings += meta_int(ctx->metadata, "damaged");
         /* damaged data the reader left out (each range a warning above) */
         res->damaged_ranges = meta_int(ctx->metadata, "damaged_ranges");
         res->damaged_bytes  = meta_int(ctx->metadata, "damaged_bytes");
-        res->warnings      += res->damaged_ranges;
         {
             const AVDictionaryEntry *dm = av_dict_get(ctx->metadata, "damage", NULL, 0);
             snprintf(res->damage, sizeof(res->damage), "%s", dm ? dm->value : "");
         }
         log_msg(MSG_CHAPTERS, LOG_DETAIL, "Chapters: %u", ctx->nb_chapters);
+        /* the warning lines the title gave, as the run's summary counts them */
+        {
+            int errors1, warnings1;
+            log_counts(&errors1, &warnings1);
+            res->warnings = warnings1 - warnings0;
+        }
         /* what was written, for the title's last line */
         for (unsigned i = 0; i < ctx->nb_streams; i++)
             written += out[i].opened ? out[i].st.bytes : 0;
@@ -931,7 +939,6 @@ end:
         } else if (untested) {
             /* written: the untested paths are said in the log ("[untested on
              * real discs]"), a warning each */
-            res->warnings += untested;
             log_msg(MSG_UNTESTED, LOG_WARNING, "%s: done with %"PRId64" warning%s, %"PRId64" of them feature(s) no "
                     "real disc has tested yet (see the log's \"[untested on real discs]\" lines) %s", who,
                     res->warnings, res->warnings == 1 ? "" : "s", untested, made);

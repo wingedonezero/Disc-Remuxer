@@ -14,6 +14,7 @@
 
 #include <libavformat/avformat.h>
 #include <libavformat/discinfo.h>
+#include <libavutil/avstring.h>
 #include <libavutil/avutil.h>
 #include <libavutil/bprint.h>
 
@@ -151,9 +152,33 @@ const char *engine_track_extension(const DiscStreamInfo *k)
 
 /* One title's line (and, with detail, its files and streams) plus its JSON
  * record. */
+/* A title's angle for the detail line: "; angle 3 (main); the disc plays
+ * angles 3, 1, 2 in that order; cell 1 shared by all angles" or "; angle 1,
+ * main is angle 3 (#18)". */
+static void angle_text(const DiscTitleInfo *t, char *buf, size_t size)
+{
+    snprintf(buf, size, "; angle %d", t->angle);
+    if (t->main_angle == t->angle) {
+        av_strlcat(buf, " (main)", size);
+        if (t->angle_order[0] && t->angle_order[1]) {
+            av_strlcat(buf, "; the disc plays angles ", size);
+            for (int k = 0; k < 9 && t->angle_order[k]; k++)
+                av_strlcatf(buf, size, "%s%d", k ? ", " : "", t->angle_order[k]);
+            av_strlcat(buf, " in that order", size);
+        }
+    } else if (t->main_angle) {
+        av_strlcatf(buf, size, ", main is angle %d", t->main_angle);
+        if (t->main_title >= 0)
+            av_strlcatf(buf, size, " (#%d)", t->main_title);
+    }
+    if (t->shared_cells)
+        av_strlcatf(buf, size, "; cell%s %s shared by all angles", strchr(t->shared_cells, ',') ? "s" : "",
+                    t->shared_cells);
+}
+
 static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *keep)
 {
-    char dur[32], size[32], files[2048] = "", js[512], jl[16], extra[160] = "", pt[24] = "";
+    char dur[32], size[32], files[2048] = "", js[512], jl[16], extra[512] = "", pt[64] = "";
     AVBPrint streams, parts;
     int nv = 0, na = 0, ns = 0;
 
@@ -211,6 +236,9 @@ static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *ke
     }
     if (t->nb_parts)
         snprintf(pt, sizeof(pt), ", %d parts", t->nb_parts);
+    if (t->angle)
+        snprintf(pt + strlen(pt), sizeof(pt) - strlen(pt), ", angle %d%s", t->angle,
+                 t->angle == t->main_angle ? " (main)" : "");
     log_text(LOG_INFO, "  #%-2d %-40s %9s  %-6s %d audio, %d subtitle%s, %d chapter%s%s", t->index,
              t->name ? t->name : "", dur,
              nv ? codec_label(t->streams[0].codec, 0) : "-", na, ns, ns == 1 ? "" : "s",
@@ -219,13 +247,13 @@ static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *ke
         char list[1024] = "";
         for (int i = 0; i < t->nb_files; i++)
             snprintf(list + strlen(list), sizeof(list) - strlen(list), "%s%s", i ? ", " : "", t->files[i]);
-        char from[64] = "";
+        char from[64] = "", ang[256] = "";
         if (t->source)
             snprintf(from, sizeof(from), "from %s%s", t->source, t->nb_files ? ": " : "");
         if (t->angle)
-            snprintf(from + strlen(from), sizeof(from) - strlen(from), "angle %d, ", t->angle);
-        log_text(LOG_INFO, "       %s, %s%s%s%s%s", size, from, list, t->language[0] ? ", language " : "",
-                 t->language, t->selected ? "" : ", not selected (shorter than the minimum length)");
+            angle_text(t, ang, sizeof(ang));
+        log_text(LOG_INFO, "       %s, %s%s%s%s%s%s", size, from, list, ang, t->language[0] ? ", language " : "",
+                 t->language, t->selected ? "" : ", not selected (not the main angle: name it to rip it)");
         for (int i = 0; i < t->nb_streams; i++) {
             const DiscStreamInfo *k = &t->streams[i];
             char line[512];
@@ -247,8 +275,26 @@ static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *ke
         char jsrc[96];
         snprintf(extra, sizeof(extra), ",\"source\":%s", json_str(jsrc, sizeof(jsrc), t->source));
     }
-    if (t->angle)
+    if (t->angle) {
         snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), ",\"angle\":%d", t->angle);
+        if (t->main_angle) {
+            char mt[24] = "null";
+            if (t->main_title >= 0)
+                snprintf(mt, sizeof(mt), "%d", t->main_title);
+            snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), ",\"main_angle\":%d,\"main_title\":%s",
+                     t->main_angle, mt);
+        }
+        if (t->angle_order[0] && t->angle_order[1])
+            for (int k = 0; k < 9 && t->angle_order[k]; k++)
+                snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "%s%d%s",
+                         k ? "," : ",\"angle_order\":[", t->angle_order[k],
+                         k == 8 || !t->angle_order[k + 1] ? "]" : "");
+        if (t->shared_cells) {
+            char jsc[128];
+            snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), ",\"shared_cells\":%s",
+                     json_str(jsc, sizeof(jsc), t->shared_cells));
+        }
+    }
     /* parts: the part number (from 1) as --split names its files, where it starts in the title */
     av_bprint_init(&parts, 0, AV_BPRINT_SIZE_UNLIMITED);
     for (int p = 0; p < t->nb_parts; p++) {
@@ -398,6 +444,9 @@ void engine_disc_overview(const EngineDisc *e, int detail)
             d->nb_titles, d->nb_titles == 1 ? "" : "s");
     if (d->name)
         log_msg(MSG_SOURCE, LOG_INFO, "Disc name: %s", d->name);
+    /* what the format part tells more of the disc (region, protection, checks, ...) */
+    for (int p = 0; p < d->nb_props; p++)
+        log_msg(MSG_SOURCE, LOG_INFO, "Disc %s: %s", d->props[p].name, d->props[p].value);
     jname[0] = 0;
     if (d->name)
         snprintf(jname, sizeof(jname), ",\"name\":%s", json_str(js4, sizeof(js4), d->name));
@@ -418,8 +467,8 @@ void engine_disc_overview(const EngineDisc *e, int detail)
 }
 
 /* "all" | "3" | "1,3-5" into a 0/1 list of d's titles; all with
- * only_selected: the titles not shorter than the minimum length (each one
- * left out said); returns the count selected, or -1 (logged). */
+ * only_selected: the selected titles (an angle other than the main one is
+ * not; each one left out said); returns the count selected, or -1 (logged). */
 static int parse_titles(const char *spec, const DiscInfo *d, int only_selected, char *sel)
 {
     int count = 0, nb_titles = d->nb_titles;
@@ -431,8 +480,8 @@ static int parse_titles(const char *spec, const DiscInfo *d, int only_selected, 
             sel[t] = !only_selected || d->titles[t].selected;
             count += sel[t];
             if (!sel[t])
-                log_msg(MSG_TITLE_SELECTION, LOG_INFO, "Title #%d is shorter than the minimum length: not ripped "
-                        "with all (name it to rip it)", t);
+                log_msg(MSG_TITLE_SELECTION, LOG_INFO, "Title #%d is angle %d, not the main angle %d: not ripped "
+                        "with all (name it to rip it)", t, d->titles[t].angle, d->titles[t].main_angle);
         }
         return count;
     }
