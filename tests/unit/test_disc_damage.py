@@ -87,3 +87,33 @@ def test_a_range_says_where_the_title_passes_it_and_about_how_much_video_is_miss
     assert all(abs(x - (gops[48] - gops[40]) * 1001 / 30000) < 0.15 for x in about[:8]), about
     # VOBU 70's two ranges: the same place, later
     assert at[8] == at[9] and at[8] > at[0], at
+
+
+def test_a_title_without_damage_after_one_with_damage_reports_none(tmp_path):
+    # the disc is opened once for every title: title 1 plays the damaged
+    # cell, title 2 a clean stretch after the damage (VOBUs 72-90); title 2
+    # must not report title 1's ranges
+    pics = pictures(M2V)
+    timed = [(a, b, disp, typ, BASE + disp * 3003) for a, b, disp, typ in pics]
+    frames = [AC3[i:i + 768] for i in range(0, len(AC3), 768)]
+    n = (len(pics) * 3003) // 2880
+    audio = [(frames[k % len(frames)], BASE + k * 2880) for k in range(n)]
+    sectors, navs = dvd.mux_vobus(M2V, timed, 0, audio, BASE - 3003)
+    total = len(sectors)
+    ctl = bytes([0x80, 0]) + bytes(14)
+    p1 = Pgc(cells=[cell(0, total - 1, len(pics) * 1001 // 30000, last_vobu=navs[-1].lbn)], audio_control=ctl)
+    p2 = Pgc(cells=[cell(navs[72].lbn, navs[91].lbn - 1, 10, last_vobu=navs[90].lbn, cell_nr=2)], audio_control=ctl)
+    folder = build(tmp_path, [p1, p2], [[(1, 1)], [(2, 1)]], navs, total, video_attr=bytes([0x40, 0]),
+                   audio_attrs=[ac3(b"en")])
+    holes = [(navs[k].lbn + 1, navs[k + 1].lbn - 1) for k in range(40, 48)]    # every NAV pack kept
+    for k, sec in enumerate(sectors):
+        put(folder, k, bytes(S) if any(a <= k <= b for a, b in holes) else sec)
+    p = subprocess.run([*PROGRAM, "--set", "titles.min_length=0", "demux", str(folder), "all", str(tmp_path / "out")],
+                       capture_output=True, text=True)
+    log = p.stdout + p.stderr
+    done = re.findall(r"^Title #(\d+): done(.*)$", log, re.M)
+    assert len(done) == 2, log
+    assert "damaged data" in done[0][1], log
+    assert "damaged data" not in done[1][1], log
+    assert re.findall(r"^  Title #(\d+): VTS_01_1\.VOB", log, re.M) and \
+        set(re.findall(r"^  Title #(\d+): VTS_01_1\.VOB", log, re.M)) == {done[0][0]}, log

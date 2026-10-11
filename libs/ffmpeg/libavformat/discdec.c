@@ -636,7 +636,12 @@ void disc_title_close(AVFormatContext *s)
         av_freep(&s->chapters[s->nb_chapters]);
     }
     av_freep(&s->chapters);
+    /* the title's own results (the next title sets its own) */
     av_dict_set(&s->metadata, "untested", NULL, 0);
+    av_dict_set(&s->metadata, "damaged", NULL, 0);
+    av_dict_set(&s->metadata, "damaged_ranges", NULL, 0);
+    av_dict_set(&s->metadata, "damaged_bytes", NULL, 0);
+    av_dict_set(&s->metadata, "damage", NULL, 0);
     s->duration = AV_NOPTS_VALUE;
 }
 
