@@ -668,7 +668,7 @@ static int title_init( titles_t *T, dvd_title_t *t, int idx, unsigned vtsn, cons
   memcpy( t->chapters, ch, nb_ch * sizeof(*ch) );
   t->nb_chapters = nb_ch;
   t->scan = scan_find( T, idx + 1, p->number + 1 );
-  t->main_angle = t->scan && t->scan->angles[0] ? t->scan->angles[0] : 1;
+  t->main_angle = 1;                  /* the angle block's first cell (the reference's way) */
   if( !h )
     return 0;
   if( rb16( h + VTS_AUDIO_COUNT ) > MAX_AUDIO ) {
@@ -709,24 +709,25 @@ static int fake_length( const dvd_title_t *t )
   return !t->declared || (diff > FAKE_SECONDS && diff * 100 / t->declared > FAKE_PERCENT);
 }
 
-/* Which of the program chain's angles a player plays, and the order the
- * navigation played them in when it played several. */
+/* The program chain's main angle (angle 1, the angle block's first cell)
+ * and the angles the navigation plays, in its order. */
 static void main_angle_note( titles_t *T, const dvd_title_t *t )
 {
   char order[64] = "";
-  int n = 0;
+  int n = 0, over = 0;
 
-  for( ; t->scan && n < 9 && t->scan->angles[n]; n++ )
+  for( ; t->scan && n < 9 && t->scan->angles[n]; n++ ) {
     snprintf( order + strlen( order ), sizeof(order) - strlen( order ), "%s%d", n ? ", " : "", t->scan->angles[n] );
-  if( t->main_angle > t->nr_of_angles )
-    note( T, DVD_NOTE_WARN, "title %s: the navigation plays angle %d, the title has %d angles", t->name,
-          t->main_angle, t->nr_of_angles );
-  else if( n > 1 )
-    note( T, DVD_NOTE_INFO, "title %s: angle %d is the main angle (the navigation plays it first); it plays "
-          "angles %s in that order", t->name, t->main_angle, order );
+    over |= t->scan->angles[n] > t->nr_of_angles;
+  }
+  if( over )
+    note( T, DVD_NOTE_WARN, "title %s: the navigation plays angle(s) %s, the title has %d angles", t->name, order,
+          t->nr_of_angles );
+  if( n > 1 || (n == 1 && t->scan->angles[0] != 1) )
+    note( T, DVD_NOTE_INFO, "title %s: angle 1 is the main angle (the angle block's first cell); the navigation "
+          "plays angle(s) %s in that order", t->name, order );
   else
-    note( T, DVD_NOTE_INFO, "title %s: angle %d is the main angle (%s)", t->name, t->main_angle,
-          n ? "the navigation plays it" : "players start on angle 1" );
+    note( T, DVD_NOTE_INFO, "title %s: angle 1 is the main angle (the angle block's first cell)", t->name );
 }
 
 /* The titles of one program chain of title table entry idx: the first
@@ -752,8 +753,16 @@ static int add_pgc_titles( titles_t *T, int idx, unsigned vtsn, const pgc_rec_t 
     title_skip( T, vtsn, p );
     goto drop;
   }
-  if( bcd_seconds( p->playback_time ) < (uint32_t)T->o->min_length )
-    t->short_title = 1;
+  /* shorter than the minimum length: left out (by the program chain's own
+   * length before the title is built, by the title's after) */
+  if( bcd_seconds( p->playback_time ) < (uint32_t)T->o->min_length ) {
+    hms( d1, sizeof(d1), bcd_seconds( p->playback_time ) );
+    note( T, DVD_NOTE_INFO, "title %s left out: its program chain lasts %s, less than the minimum length of %d s",
+          t->name, d1, T->o->min_length );
+    title_skip( T, vtsn, p );
+    ret = 0;
+    goto drop;
+  }
   if( (ret = build_title( T, t )) <= 0 ) {
     if( !ret )
       note( T, DVD_NOTE_INFO, "title %s (VTS %u PGC %d) left out: navigation error", t->name, vtsn, p->number + 1 );
@@ -776,6 +785,13 @@ static int add_pgc_titles( titles_t *T, int idx, unsigned vtsn, const pgc_rec_t 
     goto drop;
   }
   hms( d1, sizeof(d1), t->declared );
+  if( t->declared < (uint32_t)T->o->min_length ) {
+    note( T, DVD_NOTE_INFO, "title %s left out: it lasts %s, less than the minimum length of %d s", t->name, d1,
+          T->o->min_length );
+    title_skip( T, vtsn, p );
+    ret = 0;
+    goto drop;
+  }
   if( fake_length( t ) ) {
     hms( d2, sizeof(d2), t->measured );
     note( T, DVD_NOTE_INFO, "title %s left out: its declared length is %s, its real length %s (a fake title)",
@@ -784,10 +800,7 @@ static int add_pgc_titles( titles_t *T, int idx, unsigned vtsn, const pgc_rec_t 
     ret = 0;
     goto drop;
   }
-  if( t->declared < (uint32_t)T->o->min_length )
-    t->short_title = 1;
-  note( T, DVD_NOTE_DETAIL, "title %s added (%d cell(s), %s)%s", t->name, t->nb_cells, d1,
-        t->short_title ? ", shorter than the minimum length" : "" );
+  note( T, DVD_NOTE_DETAIL, "title %s added (%d cell(s), %s)", t->name, t->nb_cells, d1 );
   if( (ret = list_add( T->out, t )) < 0 )
     goto drop;
   if( t->nr_of_angles > 1 )
@@ -806,7 +819,6 @@ static int add_pgc_titles( titles_t *T, int idx, unsigned vtsn, const pgc_rec_t 
       DVDFreeTitle_rec( ta );
       return 0;
     }
-    ta->short_title = t->short_title;
     if( list_add( T->out, ta ) < 0 ) {
       DVDFreeTitle_rec( ta );
       return -1;

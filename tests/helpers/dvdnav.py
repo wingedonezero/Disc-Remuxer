@@ -181,7 +181,7 @@ def titles(disc, cell_mode=0, cell_check=0, min_length=0):
     (return value, the scan's return value, [dict per title of
     ff_dvd_titles_dump(): name, ttn, vts, pgc, angle, main (titles with
     angles: the main angle), cells, chapters,
-    length, real, segments, size, map, scan, short])."""
+    length, real, segments, size, map, scan])."""
     dump = ffi.new("char **")
     scan_ret = ffi.new("int *")
     ret = lib.tb_dvd_titles(disc, cell_mode, cell_check, min_length, scan_ret, dump)
@@ -194,7 +194,6 @@ def _dump(dump):
         for line in ffi.string(dump[0]).decode().splitlines():
             w = line.split(" ")
             t = dict(zip(w[2::2], w[3::2]))
-            t["short"] = line.endswith(" short")
             out.append(t)
         lib.av_free(dump[0])
     return out

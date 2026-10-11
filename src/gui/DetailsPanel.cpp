@@ -267,7 +267,7 @@ void DetailsPanel::showTitle(const DiscTitleInfo *t, const uint8_t *keep)
     h.row("Language", languageText(t->language));
     h.row("Output", QString("%1/%1_<track>_…  (as parts: %1_p1/%1_p1_<track>_…, one folder per part)")
                         .arg(QString::fromUtf8(name)));
-    h.row("Minimum length", t->selected ? "long enough" : "shorter: not ripped with all");
+    h.row("Ripped with all", t->selected ? "yes" : "no: not the main angle (tick it to rip it)");
     for (int p = 0; p < t->nb_props; p++)
         h.row(QString::fromUtf8(t->props[p].name), QString::fromUtf8(t->props[p].value));
     if (t->nb_parts) {

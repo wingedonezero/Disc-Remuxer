@@ -93,7 +93,7 @@ char *ff_dvd_titles_dump(const dvd_title_list_t *l)
             av_bprintf(&bp, ",A%u.%u", t->audio[k].stream, t->audio[k].attr);
         for (int k = 0; k < t->nb_subp; k++)
             av_bprintf(&bp, ",S%u.%u", t->subp[k].stream, t->subp[k].attr);
-        av_bprintf(&bp, "%s\n", t->short_title ? " short" : "");
+        av_bprintf(&bp, "\n");
     }
     if (av_bprint_finalize(&bp, &s) < 0)
         return NULL;

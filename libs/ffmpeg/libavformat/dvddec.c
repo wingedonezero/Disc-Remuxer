@@ -394,7 +394,7 @@ static int title_info(AVFormatContext *s, int i, DiscTitleInfo *dt)
 
     dt->duration = (int64_t)t->declared * AV_TIME_BASE;
     dt->angle    = t->nr_of_angles > 1 ? t->angle + 1 : 0;
-    dt->selected = !t->short_title;
+    dt->selected = dt->angle <= 1;          /* an angle other than the main one: not ripped with all */
     if (dt->angle) {
         dt->main_angle   = t->main_angle;
         dt->main_title   = -1;

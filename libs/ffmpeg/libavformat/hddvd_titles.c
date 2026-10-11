@@ -545,9 +545,9 @@ static int finish_title(Planner *p, HDDVDTitle *t, int min_length)
         return AVERROR(ENOMEM);
     secs = t->duration / 90000;
     if (secs < (uint64_t)min_length) {
-        t->not_selected = 1;
-        av_log(p->log, AV_LOG_VERBOSE, "Title %s lasts %"PRIu64" s, less than the minimum length of %d s: "
-               "it is not selected\n", t->name, secs, min_length);
+        av_log(p->log, AV_LOG_INFO, "Title %s lasts %"PRIu64":%02"PRIu64":%02"PRIu64", less than the minimum "
+               "length of %d s: left out\n", t->name, secs / 3600, secs / 60 % 60, secs % 60, min_length);
+        return 1;                                   /* left out */
     }
     return 0;
 }
@@ -613,6 +613,10 @@ static int title_from_candidate(Planner *p, const Candidate *c, int min_length)
         err = ret;
         goto fail;
     }
+    if (ret) {
+        av_free(t.marks);
+        goto drop;
+    }
     return add_title(p, &t);
 drop:
     av_free(t.clips);
@@ -623,9 +627,8 @@ fail:
     return err;
 }
 
-/* A listed title plays clip. Short titles count: they are listed (not
- * selected) where the reference drops them, and a title of the clip's own
- * would be as short, dropped by it too, so it would only list it twice. */
+/* A listed title plays clip (titles shorter than the minimum length are
+ * not listed). */
 static int plays(const HDDVDTitlePlan *plan, const HDDVDClip *clip)
 {
     for (int i = 0; i < plan->nb_titles; i++) {
@@ -635,14 +638,6 @@ static int plays(const HDDVDTitlePlan *plan, const HDDVDClip *clip)
                 return 1;
     }
     return 0;
-}
-
-static int nb_selected(const HDDVDTitlePlan *plan)
-{
-    int n = 0;
-    for (int i = 0; i < plan->nb_titles; i++)
-        n += !plan->titles[i].not_selected;
-    return n;
 }
 
 int ff_hddvd_titles_plan(void *logctx, DiscIOFS *fs, const HDDVDVTI *vti, HDDVDXpl *const *xpls,
@@ -680,7 +675,7 @@ int ff_hddvd_titles_plan(void *logctx, DiscIOFS *fs, const HDDVDVTI *vti, HDDVDX
             goto end;
 
     /* EVOBs no title plays */
-    for (int x = 0; x < HDDVD_VTI_MAX_EVOBS && nb_selected(p.plan); x++) {
+    for (int x = 0; x < HDDVD_VTI_MAX_EVOBS && p.plan->nb_titles; x++) {
         const HDDVDEvob *e = vti->evobs[x];
         HDDVDTitle t = { 0 };
         HDDVDClip *clip;
@@ -701,9 +696,14 @@ int ff_hddvd_titles_plan(void *logctx, DiscIOFS *fs, const HDDVDVTI *vti, HDDVDX
             ret = AVERROR(ENOMEM);
             goto end;
         }
-        if ((ret = finish_title(&p, &t, min_length)) < 0 || (ret = add_title(&p, &t)) < 0) {
+        if ((ret = finish_title(&p, &t, min_length)) < 0 || (!ret && (ret = add_title(&p, &t)) < 0)) {
             av_free(t.clips);
             goto end;
+        }
+        if (ret) {                                  /* shorter than the minimum length */
+            av_free(t.clips);
+            ret = 0;
+            continue;
         }
         av_log(logctx, AV_LOG_VERBOSE, "EVOB %s is played by no playlist title: title %s of its own\n",
                e->name, t.name);
@@ -712,7 +712,7 @@ int ff_hddvd_titles_plan(void *logctx, DiscIOFS *fs, const HDDVDVTI *vti, HDDVDX
         const HDDVDTitle *t = &p.plan->titles[i];
         av_log(logctx, AV_LOG_VERBOSE, "Title %d: %s, %d EVOB(s), %d chapter(s), %"PRIu64" s, %"PRIu64" bytes%s\n",
                i, t->name, t->nb_clips, t->nb_marks, t->duration / 90000, t->size,
-               t->not_selected ? ", not selected" : "");
+               "");
     }
 end:
     for (int i = 0; i < p.nb_cands; i++)
@@ -763,7 +763,7 @@ char *ff_hddvd_titles_dump(const HDDVDTitlePlan *plan)
     for (int i = 0; i < plan->nb_titles; i++) {
         const HDDVDTitle *t = &plan->titles[i];
         av_bprintf(&bp, "title %d|%s|%s|%s|%d|%"PRIu64"|%"PRIu64"|%"PRIu64"|%s|%d|", i, t->name,
-                   t->lang ? t->lang : "(null)", t->from_playlist ? "playlist" : "evob", !t->not_selected,
+                   t->lang ? t->lang : "(null)", t->from_playlist ? "playlist" : "evob", 1,
                    t->duration, t->duration / 90000, t->size, t->clips[0]->evob->name, t->nb_clips);
         for (int k = 0; k < t->nb_clips; k++)
             av_bprintf(&bp, "%s%s", k ? "," : "", t->clips[k]->evob->base);

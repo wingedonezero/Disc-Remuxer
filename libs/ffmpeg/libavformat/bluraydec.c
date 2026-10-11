@@ -341,9 +341,16 @@ static int title_info(AVFormatContext *s, int i, DiscTitleInfo *dt)
     dt->name     = t->title_name ? t->title_name : b->name;
     dt->source   = t->name;
     dt->angle    = t->angle;
+    if (dt->angle) {                        /* angle 1 the main one; the others not ripped with all */
+        dt->main_angle = 1;
+        dt->main_title = -1;
+        for (int j = 0; j < b->nb_titles; j++)
+            if (!strcmp(b->titles[j].name, t->name) && b->titles[j].angle == 1)
+                dt->main_title = j;
+    }
     dt->duration = av_rescale(ff_bluray_title_duration(t), AV_TIME_BASE, 45000);
     dt->size     = ff_bluray_title_size(t);
-    dt->selected = 1;
+    dt->selected = dt->angle <= 1;
     av_strlcpy(dt->language, b->name_lang, sizeof(dt->language));
     if ((t->alt_name && ff_disc_title_add_prop(dt, "Other name", "%s", t->alt_name) < 0) ||
         (t->year && ff_disc_title_add_prop(dt, "Recorded", "%04d-%02d-%02d %02d:%02d:%02d", t->year, t->month,

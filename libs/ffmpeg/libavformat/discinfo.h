@@ -118,7 +118,7 @@ typedef struct DiscTitleInfo {
     char             language[4];    /**< the title's language (ISO 639-2), "" when none */
     int64_t          duration;       /**< AV_TIME_BASE, as the disc records it */
     int64_t          size;           /**< bytes of the files it plays */
-    int              selected;       /**< 0: listed only (shorter than the minimum length) */
+    int              selected;       /**< 0: not ripped with "all" (an angle other than the main one) */
     int              nb_files;
     const char     **files;          /**< the disc's files it plays, in order (e.g. "DEL01.EVO") */
     int              nb_chapters;

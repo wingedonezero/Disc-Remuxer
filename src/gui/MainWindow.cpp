@@ -398,7 +398,7 @@ void MainWindow::showTitleChecks(Job &job, int t)
 
     updating = true;
     title->setCheckState(C_NAME, on ? Qt::Checked : Qt::Unchecked);
-    QString state = ti->selected ? "" : "shorter than the minimum length";
+    QString state = ti->selected ? "" : "not the main angle";
     if (job.split[t])
         state = QString("written as %1 parts").arg(ti->nb_parts);
     title->setText(C_STATUS, state);
@@ -440,7 +440,7 @@ static void chapterRow(QTreeWidgetItem *it, quint64 job, int t)
 
 // The disc's titles under its row, each with its chapters and its tracks (a
 // track taken out of another one under it: a core, forced subtitles, a 3-D
-// second view): titles shorter than the minimum length unchecked; track 0
+// second view): angles other than the main one unchecked; track 0
 // (the video, with a Dolby Vision layer) always ripped.
 void MainWindow::fillDisc(Job &job)
 {

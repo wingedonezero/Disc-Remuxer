@@ -253,7 +253,7 @@ static int title_info(AVFormatContext *s, int i, DiscTitleInfo *dt)
     dt->name     = t->name && *t->name ? t->name : NULL;
     dt->duration = av_rescale(t->duration, AV_TIME_BASE, 90000);
     dt->size     = t->size;
-    dt->selected = !t->not_selected;
+    dt->selected = 1;
     if (t->lang)
         av_strlcpy(dt->language, t->lang, sizeof(dt->language));
     if (ff_disc_title_add_prop(dt, "From", "%s", t->from_playlist ? "a title of the playlist" :

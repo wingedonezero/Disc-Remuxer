@@ -253,7 +253,7 @@ static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *ke
         if (t->angle)
             angle_text(t, ang, sizeof(ang));
         log_text(LOG_INFO, "       %s, %s%s%s%s%s%s", size, from, list, ang, t->language[0] ? ", language " : "",
-                 t->language, t->selected ? "" : ", not selected (shorter than the minimum length)");
+                 t->language, t->selected ? "" : ", not selected (not the main angle: name it to rip it)");
         for (int i = 0; i < t->nb_streams; i++) {
             const DiscStreamInfo *k = &t->streams[i];
             char line[512];
@@ -467,8 +467,8 @@ void engine_disc_overview(const EngineDisc *e, int detail)
 }
 
 /* "all" | "3" | "1,3-5" into a 0/1 list of d's titles; all with
- * only_selected: the titles not shorter than the minimum length (each one
- * left out said); returns the count selected, or -1 (logged). */
+ * only_selected: the selected titles (an angle other than the main one is
+ * not; each one left out said); returns the count selected, or -1 (logged). */
 static int parse_titles(const char *spec, const DiscInfo *d, int only_selected, char *sel)
 {
     int count = 0, nb_titles = d->nb_titles;
@@ -480,8 +480,8 @@ static int parse_titles(const char *spec, const DiscInfo *d, int only_selected, 
             sel[t] = !only_selected || d->titles[t].selected;
             count += sel[t];
             if (!sel[t])
-                log_msg(MSG_TITLE_SELECTION, LOG_INFO, "Title #%d is shorter than the minimum length: not ripped "
-                        "with all (name it to rip it)", t);
+                log_msg(MSG_TITLE_SELECTION, LOG_INFO, "Title #%d is angle %d, not the main angle %d: not ripped "
+                        "with all (name it to rip it)", t, d->titles[t].angle, d->titles[t].main_angle);
         }
         return count;
     }

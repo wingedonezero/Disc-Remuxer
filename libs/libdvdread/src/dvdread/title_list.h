@@ -60,11 +60,10 @@ extern "C" {
  * chapters: DVDTitleSegments_rec(), DVDChapterPlaces_rec() (chapters that
  * cannot be placed are dropped; a first one that cannot be placed is put at
  * the start when the next one is not there). An angle block gives one more
- * title per further angle (at most 8); the main angle is the one the
- * navigation played first in the program chain (its scan recording), else
- * angle 1 (the angle register's start value). A title of a program chain whose
- * playback time or declared length is shorter than the minimum length is
- * listed as short.
+ * title per further angle (at most 8); the main angle is angle 1 (the angle
+ * block's first cell); the order the navigation plays the angles in is said. A title of a program chain whose
+ * playback time (tested before the title is built) or declared length (after)
+ * is shorter than the minimum length is left out (said).
  *
  * Its streams: audio, those the program chain's audio_control lists in its
  * order, then the title set's others; sub-pictures, those subp_control
@@ -120,8 +119,7 @@ typedef struct
   int                    title;       /* the title table entry, from 0 */
   uint8_t                pb_ty, vtsn, vts_ttn;
   uint8_t                nr_of_angles, angle;   /* angle from 0 */
-  uint8_t                main_angle;  /* from 1: the angle a player plays (the navigation's, else angle 1, the
-                                         angle register's start value); may be one beyond nr_of_angles */
+  uint8_t                main_angle;  /* from 1: the main angle, angle 1 (the angle block's first cell) */
   int                    pgcn;        /* its program chain's search pointer index, from 0 */
   const dvd_nav_cells_t *scan;        /* the navigation's cells of this title / program chain, NULL none */
   dvd_title_chapter_t   *chapters;
@@ -136,7 +134,6 @@ typedef struct
                                             blocks) as text, "1, 2"; NULL none */
   int                    built;
   int                    nav_invalid; /* places with invalid navigation found */
-  int                    short_title; /* shorter than the minimum length: listed, not selected */
   dvd_stream_ref_t       audio[8];    /* in the program chain's audio_control order, then the title set's others */
   int                    nb_audio;
   uint8_t                audio_listed;   /* the stream numbers audio_control lists (bit per stream) */
