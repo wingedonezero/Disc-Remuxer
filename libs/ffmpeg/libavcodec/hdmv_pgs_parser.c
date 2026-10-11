@@ -114,7 +114,7 @@ static int hdmv_pgs_parse(AVCodecParserContext *s, AVCodecContext *avctx,
     if (s->flags & PARSER_FLAG_DISC) {
         int ret = ff_parser_disc_cut(s, avctx, &disc_rule, &pc->disc, poutbuf, poutbuf_size, buf, buf_size);
         if (*poutbuf_size && !s->disc_status && ((PGSDiscCut *)pc->disc.state)->no_unit)
-            s->disc_status = 1;
+            s->disc_status = PARSER_DISC_SKIP;
         return ret;
     }
     *poutbuf      = buf;

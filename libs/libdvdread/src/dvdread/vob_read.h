@@ -107,6 +107,13 @@ DVDREAD_API dvd_vob_reader_t *DVDOpenTitleVOBs_rec( ifo_handle_t *ifo, int title
 /** The title VOBs' length in whole sectors. */
 DVDREAD_API uint32_t DVDTitleVOBSectors_rec( const dvd_vob_reader_t * );
 
+/** The VOB file holding title VOB sector (name into file, 16 bytes) and the
+ *  byte offset of the sector there (a folder's files one after the other,
+ *  an image's files by the pieces they lie in): 1, or 0 when not known
+ *  (file "", *offset -1). */
+DVDREAD_API int DVDTitleVOBSectorPlace_rec( const dvd_vob_reader_t *, uint32_t sector, char file[16],
+                                            int64_t *offset );
+
 /**
  * Reads title VOB sector into buf (2048 bytes, descrambled): 1 the sector
  * is usable, 0 it is damaged and left out, -1 it cannot be read (past the

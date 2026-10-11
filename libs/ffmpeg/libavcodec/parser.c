@@ -251,7 +251,7 @@ int ff_parser_disc_cut(AVCodecParserContext *s, void *logctx, const FFDiscCutRul
         return buf_size;                    /* the unit goes on in the bytes to come */
     } else if (!r) {
         k = dc->len;
-        s->disc_status = 1;
+        s->disc_status = PARSER_DISC_END;   /* the unit is not finished when the stream ends */
     } else {
         int at = rule->resync(dc->win + 1, dc->len - 1);
         if (at >= 0)
@@ -260,7 +260,7 @@ int ff_parser_disc_cut(AVCodecParserContext *s, void *logctx, const FFDiscCutRul
             k = dc->len;
         else
             return buf_size;                /* a unit may start in the bytes to come */
-        s->disc_status = 1;
+        s->disc_status = at >= 0 ? PARSER_DISC_SKIP : PARSER_DISC_NO_START;
     }
 
     av_fast_padded_malloc(&dc->out, &dc->out_cap, k);
@@ -336,12 +336,15 @@ int ff_parser_disc_frames(AVCodecParserContext *s, void *ctx, const FFDiscFrameR
         memcpy(dc->win + dc->len, buf, buf_size);
         dc->len += buf_size;
         if (rule->limit - old < buf_size) {        /* too many bytes without a frame */
+            int started = df->synced;               /* a frame start whose frame never ends: refused */
             df->synced = 0;
-            return disc_give(s, dc, dc->len, old, 1, poutbuf, poutbuf_size);
+            return disc_give(s, dc, dc->len, old, started ? PARSER_DISC_REFUSED : PARSER_DISC_NO_START, poutbuf,
+                             poutbuf_size);
         }
     } else if (old) {                               /* the end: the kept bytes are no frame */
+        int started = df->synced;                   /* they begin with a frame start: a frame not finished */
         df->synced = 0;
-        return disc_give(s, dc, old, old, 1, poutbuf, poutbuf_size);
+        return disc_give(s, dc, old, old, started ? PARSER_DISC_END : PARSER_DISC_NO_START, poutbuf, poutbuf_size);
     }
     if (!dc->len)
         return 0;
@@ -353,10 +356,10 @@ int ff_parser_disc_frames(AVCodecParserContext *s, void *ctx, const FFDiscFrameR
             if (k == -2)
                 return buf_size;
             if (k == -1)
-                k = dc->len;
-            else if (!k)
+                return disc_give(s, dc, dc->len, old, PARSER_DISC_NO_START, poutbuf, poutbuf_size);
+            if (!k)
                 k = 1;
-            return disc_give(s, dc, k, old, 1, poutbuf, poutbuf_size);
+            return disc_give(s, dc, k, old, PARSER_DISC_SKIP, poutbuf, poutbuf_size);
         }
         if (r == 1)
             df->synced = 1;
@@ -365,7 +368,8 @@ int ff_parser_disc_frames(AVCodecParserContext *s, void *ctx, const FFDiscFrameR
     if (k <= 0 || k > dc->len)
         return buf_size;                            /* the frame goes on in the bytes to come */
     df->synced = 0;
-    return disc_give(s, dc, k, old, rule->check(ctx, dc->win, k) == 1 ? 0 : 1, poutbuf, poutbuf_size);
+    return disc_give(s, dc, k, old, rule->check(ctx, dc->win, k) == 1 ? 0 : PARSER_DISC_REFUSED, poutbuf,
+                     poutbuf_size);
 }
 
 void ff_parser_disc_cut_close(FFDiscCut *dc)

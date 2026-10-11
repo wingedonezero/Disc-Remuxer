@@ -88,6 +88,11 @@ typedef struct DRFramesStats {
 typedef struct DRFrames DRFrames;
 int ff_disctl_frames_open(DRFrames **frames, void *logctx, int codec, DRUnitCb cb, void *opaque);
 int ff_disctl_frames_write(DRFrames *c, const uint8_t *data, int size, int64_t time);
+typedef int (*DRPlaceCb)(void *opaque, int seg, int64_t block, char *buf, int size);
+void ff_disctl_frames_set_report(DRFrames *c, const char *label, const char *part, int seg, DRPlaceCb place,
+                                 void *opaque);
+int ff_disctl_frames_write_at(DRFrames *c, const uint8_t *data, int size, int64_t time, int64_t block);
+extern "Python" int tb_py_place(void *opaque, int seg, int64_t block, char *buf, int size);
 int ff_disctl_frames_flush(DRFrames *c);
 void ff_disctl_frames_stats(const DRFrames *c, DRFramesStats *stats);
 void ff_disctl_frames_take_any(DRFrames *c);
@@ -401,6 +406,9 @@ typedef struct DRTitleConfig {
     DREventCb           event;
     void               *event_opaque;
     const char         *cc_helper;
+    int                 nb_segments;
+    DRPlaceCb           place;
+    void               *place_opaque;
 } DRTitleConfig;
 
 typedef struct DRTitle DRTitle;

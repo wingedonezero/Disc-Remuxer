@@ -599,6 +599,7 @@ typedef struct FillerProbe {
 } FillerProbe;
 
 static int feed_key(const DiscTsFeed *f, int pid, uint16_t key);
+static int block_words(void *opaque, int seg, int64_t block, char *buf, int size);
 
 static int filler_read(void *opaque, uint8_t *buf, int size)
 {
@@ -849,6 +850,8 @@ int ff_disc_title_reader_open(AVFormatContext *s, const DiscTitleSource *src)
             .cc_helper = d->opt_cc_helper && *d->opt_cc_helper ? d->opt_cc_helper :
                          ff_disctl_ccx_default(helper, sizeof(helper)),
             .open_marks = src->chapter_clips ? r->chapter_plan.marks : NULL,
+            .nb_segments = r->last_clip - r->first_clip + 1,
+            .place = block_words, .place_opaque = s,
         };
         if ((ret = ff_disctl_title_open(&r->rip, s, &cfg)) < 0)
             return ret;
@@ -900,6 +903,33 @@ static void pair_check(AVFormatContext *s, int i, int j, int64_t pts, const AVPa
     r->pair_pts[i] = pts;
 }
 
+/* Where block of the title's segment seg lies, in words: the file and the
+ * byte offset there (when the format part tells them), and how far into the
+ * title (or the segment) it is. */
+static int block_words(void *opaque, int seg, int64_t block, char *buf, int size)
+{
+    AVFormatContext *s = opaque;
+    DiscTitleReader *r = reader_of(s);
+    const DiscTitleSource *src = r->src;
+    const char *unit = src->ts ? "unit" : "sector";
+    int clip = r->first_clip + seg;
+    char file[64], part[32] = "the title";
+    int64_t off;
+
+    if (clip > r->last_clip || block < 0)
+        return AVERROR(EINVAL);
+    if (r->last_clip > r->first_clip)
+        snprintf(part, sizeof(part), "segment %d", seg + 1);
+    if (src->block_place && block <= UINT32_MAX &&
+        src->block_place(s, clip, (uint32_t)block, file, sizeof(file), &off) >= 0)
+        snprintf(buf, size, "in the %s at %s byte %"PRId64", byte %"PRId64" of %s", unit, file, off,
+                 block * r->bs, part);
+    else
+        snprintf(buf, size, "in the %s at byte %"PRId64" of %s %s", unit, block * r->bs, src->clip_kind,
+                 src->clip_name(s, clip));
+    return 0;
+}
+
 /* A payload of the clip being read to every track it feeds (a DTS-HD
  * stream also feeds the DTS track taken out of it): its PES time with the
  * clip's wrap reference, in ticks. */
@@ -909,6 +939,8 @@ static int feed(AVFormatContext *s, const AVPacket *pkt)
     const DiscTitleSource *src = r->src;
     const AVStream *sub = r->ps.ctx->streams[pkt->stream_index];
     int64_t time = AV_NOPTS_VALUE;
+    /* the clip's block the payload is read from (blocks left out before it counted) */
+    int64_t block = pkt->pos >= 0 ? (pkt->pos + (int64_t)r->skipped * r->bs) / r->bs : -1;
     int n = 0, ret;
 
     if (pkt->pts != AV_NOPTS_VALUE)
@@ -940,7 +972,7 @@ static int feed(AVFormatContext *s, const AVPacket *pkt)
                 return ret;
             r->next_pos++;
         }
-        if ((ret = ff_disctl_title_payload(r->rip, i, pkt->data, pkt->size, time)) < 0)
+        if ((ret = ff_disctl_title_payload_at(r->rip, i, pkt->data, pkt->size, time, block)) < 0)
             return ret;
         n++;
     }

@@ -99,6 +99,13 @@ static int read_block(AVFormatContext *s, int k, uint32_t block, uint8_t *buf)
     return ff_dvd_segment_read_vobs(&c->disc, c->title, c->vobs, k, block, buf, &c->ended);
 }
 
+/* Where block of segment k lies: the VOB file and the byte offset there. */
+static int block_place(AVFormatContext *s, int k, uint32_t block, char *file, int size, int64_t *offset)
+{
+    DVDDemuxContext *c = ff_disc_part(s);
+    return ff_dvd_segment_place(c->title, c->vobs, k, block, file, size, offset);
+}
+
 /* The damaged ranges as libdvdread names them: the one the latest read
  * ended; flush: the one being read ends too. */
 static int damage(AVFormatContext *s, int k, int flush, DiscDamage *out)
@@ -465,6 +472,7 @@ static int open_title(AVFormatContext *s, int i, int part, int *second_view)
         .clip_name     = clip_name,
         .clip_blocks   = clip_blocks,
         .read_block    = read_block,
+        .block_place   = block_place,
         .damage        = damage,
         .clip_start    = clip_start,
         .clip_start_name = "its first VOBU's start time (navigation pack)",

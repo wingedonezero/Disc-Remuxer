@@ -30,6 +30,17 @@ def tb_py_unit(opaque, unit):
 
 
 @extern
+def tb_py_place(opaque, seg, block, buf, size):
+    """A block's place in words: the callable gives a str (or None)."""
+    text = ffi.from_handle(opaque)(seg, block)
+    if text is None:
+        return -1
+    data = text.encode()[:size - 1] + b"\0"
+    ffi.memmove(buf, data, len(data))
+    return 0
+
+
+@extern
 def tb_py_frame(opaque, frame):
     return ffi.from_handle(opaque)(frame)
 

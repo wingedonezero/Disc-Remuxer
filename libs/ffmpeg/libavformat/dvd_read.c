@@ -102,6 +102,19 @@ int ff_dvd_segment_read_vobs(DVDDisc *d, const dvd_title_t *t, dvd_vob_reader_t 
     return ret < 0 ? ret : ff_dvd_title_vob_read(d, t->vtsn, vr, sector, buf, ended);
 }
 
+int ff_dvd_segment_place(const dvd_title_t *t, const dvd_vob_reader_t *vr, int seg, uint32_t block, char *file,
+                         int size, int64_t *offset)
+{
+    char name[16];
+    uint32_t sector;
+
+    if (segment_sector(&t->segs.segments[seg], block, &sector) < 0 ||
+        !DVDTitleVOBSectorPlace_rec(vr, sector, name, offset))
+        return AVERROR(EINVAL);
+    snprintf(file, size, "%s", name);
+    return 0;
+}
+
 int ff_dvd_segment_view(const dvd_title_t *t, dvd_vob_reader_t *vr, int seg)
 {
     const dvd_segment_t *g = &t->segs.segments[seg];

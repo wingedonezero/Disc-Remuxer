@@ -2635,6 +2635,14 @@ typedef struct AVCodecParserContext {
 /// stream), as for a stream whose kind is still to be found or that carries
 /// an extension
 #define PARSER_FLAG_DISC_ANY                  0x4000
+/// disc_status: bytes before the next frame start (skipped to it)
+#define PARSER_DISC_SKIP                      1
+/// disc_status: a frame that fails its check
+#define PARSER_DISC_REFUSED                   2
+/// disc_status: bytes in which no frame starts (given up)
+#define PARSER_DISC_NO_START                  3
+/// disc_status: at the end, the start of a frame the stream does not finish
+#define PARSER_DISC_END                       4
 
     int64_t offset;      ///< byte offset from starting packet start
     int64_t cur_frame_end[AV_PARSER_PTS_NB];
@@ -2757,9 +2765,9 @@ typedef struct AVCodecParserContext {
     /**
      * Disc mode (PARSER_FLAG_DISC), set by a parser that cuts with disc rules
      * after each call: 0 the chunk given out is a frame (or nothing was given
-     * out), 1 the chunk given out is bytes that are no frame (damaged or cut
-     * stream: to be left out), < 0 the stream cannot be cut there (an AVERROR;
-     * the parser logged why).
+     * out), > 0 the chunk given out is bytes that are no frame (to be left
+     * out), what they are: PARSER_DISC_SKIP, _REFUSED, _NO_START, _END; < 0
+     * the stream cannot be cut there (an AVERROR; the parser logged why).
      */
     int disc_status;
 

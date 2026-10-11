@@ -1449,6 +1449,20 @@ static int seg_frame(void *opaque, DRFrame *f)
     return ff_disctl_join_push(k->title->join, k->index, f);
 }
 
+/* How a track's left-out bytes are told: "Track 1", the part read. */
+static void frames_report(DRTitle *t, DRFrames *f, int track)
+{
+    char label[32], part[32];
+    int seg = t->segments - 1;
+
+    snprintf(label, sizeof(label), "Track %d", track);
+    if (t->cfg.nb_segments > 1)
+        snprintf(part, sizeof(part), "segment %d", seg + 1);
+    else
+        snprintf(part, sizeof(part), "title");
+    ff_disctl_frames_set_report(f, label, part, seg, t->cfg.place, t->cfg.place_opaque);
+}
+
 static int seg_open(DRTitle *t)
 {
     int ret;
@@ -1471,6 +1485,7 @@ static int seg_open(DRTitle *t)
         if (k->cfg.kind == DR_KIND_LAYER && k->cfg.codec == AV_CODEC_ID_HEVC) {
             if ((ret = ff_disctl_frames_open(&k->cut, t->log, AV_CODEC_ID_HEVC, layer_unit, k)) < 0)
                 return ret;
+            frames_report(t, k->cut, i);
             continue;
         }
         if (k->cfg.kind == DR_KIND_LAYER) {
@@ -1504,6 +1519,7 @@ static int seg_open(DRTitle *t)
             return ret;
         if ((ret = ff_disctl_frames_open(&k->cut, t->log, k->cfg.codec, unit, stage)) < 0)
             return ret;
+        frames_report(t, k->cut, i);
         if (k->cfg.codec == AV_CODEC_ID_PCM_DVD || k->cfg.codec == AV_CODEC_ID_PCM_BLURAY) {
             k->lpcm.bd = k->cfg.codec == AV_CODEC_ID_PCM_BLURAY;
             ff_disctl_audio_set_state(k->audio, &k->lpcm);
@@ -1660,7 +1676,7 @@ static int title_segment(DRTitle *t)
     return seg_open(t);
 }
 
-static int title_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time)
+static int title_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time, int64_t block)
 {
     Track *k;
     int ret;
@@ -1672,7 +1688,7 @@ static int title_payload(DRTitle *t, int track, const uint8_t *data, int size, i
         return AVERROR(EINVAL);          /* its data comes from the video */
     if (k->cfg.kind == DR_KIND_LAYER && k->cfg.codec == AV_CODEC_ID_HEVC) {
         k->bytes += size;
-        return ff_disctl_frames_write(k->cut, data, size, time);
+        return ff_disctl_frames_write_at(k->cut, data, size, time, block);
     }
     if (k->cfg.kind == DR_KIND_LAYER)
         return layer_payload(t, k, data, size, time);
@@ -1691,7 +1707,7 @@ static int title_payload(DRTitle *t, int track, const uint8_t *data, int size, i
         size -= h;
     }
     k->bytes += size;
-    return ff_disctl_frames_write(k->cut, data, size, time);
+    return ff_disctl_frames_write_at(k->cut, data, size, time, block);
 }
 
 /* The second layer's result at the title's end: what was taken out, and
@@ -1857,7 +1873,12 @@ int ff_disctl_title_segment(DRTitle *t)
 
 int ff_disctl_title_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time)
 {
-    return t->error ? t->error : sticky(t, title_payload(t, track, data, size, time));
+    return ff_disctl_title_payload_at(t, track, data, size, time, -1);
+}
+
+int ff_disctl_title_payload_at(DRTitle *t, int track, const uint8_t *data, int size, int64_t time, int64_t block)
+{
+    return t->error ? t->error : sticky(t, title_payload(t, track, data, size, time, block));
 }
 
 int ff_disctl_title_chapter_position(DRTitle *t)
