@@ -25,6 +25,7 @@
 #include "libavformat/disctl.h"
 #include "libavformat/dvd_internal.h"
 #include "libavformat/hddvd_internal.h"
+#include "libavformat/mpeg.h"
 
 #include <dvdcss/dvdcss.h>
 #include <dvdread/dvd_udf.h>

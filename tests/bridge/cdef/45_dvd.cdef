@@ -118,3 +118,28 @@ int tb_dvd_segment_dump(DVDDisc *d, int cell_mode, int t, int seg, const char *p
 
 /* libdvdcss (our addition): one block descrambled with a title key */
 void dvdcss_descramble(const unsigned char *p_key, void *p_block);
+
+/* the packets of a sector: libdvdread's reader for its stream probe
+ * (vob_read.h) and the demuxer's (libavformat/mpeg.h), compared */
+typedef struct {
+    int         at;
+    int         len;
+    int         key;
+    int         payload;
+    int         first_au;
+    int         extra;
+    const char *why;
+} dvd_pack_packet_t;
+int DVDPackPacket_rec(const uint8_t *sector, int *off, dvd_pack_packet_t *p);
+
+typedef struct MpegPsDiscPacket {
+    int         len;
+    int         key;
+    int         payload;
+    int         first_au;
+    int         extra;
+    int         at;
+    const char *why;
+    ...;
+} MpegPsDiscPacket;
+int ff_mpegps_disc_packet(const uint8_t *s, int *off, MpegPsDiscPacket *p, int lpcm5);
