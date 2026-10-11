@@ -136,9 +136,6 @@ typedef struct DVDIfo {
                                              such title sets are kept on the disc by absolute sector); 0 */
     int          entered_by_navigation; /**< the navigation played one of its cells (title or menu) */
 
-    /* the title list (dvd_titles.c) */
-    int          suspicious;            /**< 0 not decided, 1 its titles are left out, 2 they are not */
-
 } DVDIfo;
 
 /** A finding of libdvdread / libdvdnav about the disc's data (their

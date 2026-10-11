@@ -115,6 +115,7 @@ typedef struct
 
 typedef struct
 {
+  dvd_reader_t  *ctx;                   /* the reader it was read with */
   int            nr_of_title_sets;
   uint8_t       *tt_srpt;               /* TT_SRPT as recorded (at most 101 entries) */
   uint32_t       tt_srpt_size;

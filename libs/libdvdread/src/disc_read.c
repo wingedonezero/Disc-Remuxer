@@ -534,6 +534,7 @@ dvd_disc_rec_t *DVDOpenDisc_rec( dvd_reader_t *ctx )
 
   if( !ctx || !(d = calloc( 1, sizeof(*d) )) )
     return NULL;
+  d->ctx = ctx;
   vmg = &d->ifos[0];
 
   /* the VMG */

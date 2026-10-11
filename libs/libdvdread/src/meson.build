@@ -16,6 +16,7 @@ dvdread_src = files(
     'vob_read.c',
     'disc_read.c',
     'stream_probe.c',
+    'title_list.c',
 )
 
 # Platform-specific filesystem implementation
