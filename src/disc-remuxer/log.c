@@ -176,8 +176,17 @@ static int seen_before(const char *text)
     return 0;
 }
 
+static int ffmpeg_detail;
+
+void log_ffmpeg_detail(int on)
+{
+    ffmpeg_detail = on;
+}
+
 static enum LogLevel from_av(int level)
 {
+    if (ffmpeg_detail && level > AV_LOG_ERROR)
+        return LOG_DETAIL;
     return level <= AV_LOG_ERROR ? LOG_ERROR : level <= AV_LOG_WARNING ? LOG_WARNING :
            level <= AV_LOG_INFO ? LOG_INFO : LOG_DETAIL;
 }

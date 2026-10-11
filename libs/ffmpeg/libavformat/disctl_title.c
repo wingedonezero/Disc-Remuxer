@@ -361,8 +361,14 @@ static void event_text(DRTitle *t, const DREvent *e)
                hms(a, 32, e->pos), e->skew, e->count);
         break;
     case DR_EV_SEQ_END_INSIDE:
-        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: an end of sequence code with pictures after it in the same "
-               "segment\n", k, hms(a, 32, e->pos));
+        if (e->dur) {
+            /* a sequence change: no warning */
+            av_log(t->log, AV_LOG_INFO, "Track %d at %s: an end of sequence code, then a new sequence (its sequence "
+                   "header) in the same segment: kept as it is\n", k, hms(a, 32, e->pos));
+            return;
+        }
+        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: an end of sequence code with pictures after it in the "
+               "same segment and no new sequence header\n", k, hms(a, 32, e->pos));
         break;
     case DR_EV_PICTURES:
         av_log(t->log, AV_LOG_WARNING, "Track %d: segment %"PRId64": %"PRId64" picture(s) read but not given out\n",
@@ -1321,6 +1327,7 @@ static void join_segment_end(DRTitle *t, const DRVideo *video)
     c->total.stuffing       += vs.stuffing;
     c->total.seq_end        += vs.seq_end;
     c->total.seq_end_inside += vs.seq_end_inside;
+    c->total.seq_new        += vs.seq_new;
     c->total.scan_known     += vs.scan_known;
     c->total.progressive    += vs.progressive;
     c->total.tff            += vs.tff;
@@ -1347,27 +1354,31 @@ static void title_summary(DRTitle *t)
     const DRVideoStats *v = &c->total;
     char a[32], b[32];
 
-    av_log(t->log, AV_LOG_INFO, "Title check: %d segment(s); their first key frames: %"PRId64" clean, %"PRId64
+    /* the title checks: a line in the log when one fails (a warning) or
+     * needs a look, the passing ones as detail lines */
+    av_log(t->log, c->start_issues || c->not_key || c->repeats ? AV_LOG_INFO : AV_LOG_VERBOSE,
+           "Title check: %d segment(s); their first key frames: %"PRId64" clean, %"PRId64
            " open, %"PRId64" broken link%s; %s\n", t->segments, c->starts[DR_START_CLEAN], c->starts[DR_START_OPEN],
            c->starts[DR_START_BROKEN], c->starts[DR_START_UNKNOWN] ?
            strf(a, sizeof(a), ", %"PRId64" not known", c->starts[DR_START_UNKNOWN]) : "",
            c->start_issues || c->not_key || c->repeats ? "see the warnings above" :
            "no picture at a segment's start needs one before it, none repeated at a join");
-    av_log(t->log, c->pictures_off ? AV_LOG_WARNING : AV_LOG_INFO, "Title check: video: %"PRId64" pictures read, %"
+    av_log(t->log, c->pictures_off ? AV_LOG_WARNING : AV_LOG_VERBOSE, "Title check: video: %"PRId64" pictures read, %"
            PRId64" given out%s\n", v->pictures, v->out, c->pictures_off ? " (see the warnings above)" : "");
-    av_log(t->log, AV_LOG_INFO, "Title check: taken out of the video: %"PRId64" zero stuffing bytes, %"PRId64
+    av_log(t->log, AV_LOG_VERBOSE, "Title check: taken out of the video: %"PRId64" zero stuffing bytes, %"PRId64
            " user data units (%"PRId64" bytes: captions go to the caption track), %"PRId64" units that are no "
            "picture (%"PRId64" bytes)\n", v->stuffing, v->side, v->side_bytes, v->other, v->other_bytes);
     if (v->scan_known)
-        av_log(t->log, AV_LOG_INFO, "Title check: video scan as the pictures state it (kept as it is): %"PRId64
+        av_log(t->log, AV_LOG_VERBOSE, "Title check: video scan as the pictures state it (kept as it is): %"PRId64
                " progressive, %"PRId64" interlaced; top field first %"PRId64", repeat first field %"PRId64"%s\n",
                v->progressive, v->scan_known - v->progressive, v->tff, v->rff, v->scan_known < v->out ?
                strf(b, sizeof(b), "; %"PRId64" not read", v->out - v->scan_known) : "");
     else
-        av_log(t->log, AV_LOG_INFO, "Title check: video scan: not read for this codec (kept as it is)\n");
+        av_log(t->log, AV_LOG_VERBOSE, "Title check: video scan: not read for this codec (kept as it is)\n");
     if (v->seq_end)
-        av_log(t->log, AV_LOG_INFO, "Title check: video: %"PRId64" end of sequence code(s), %"PRId64" with pictures "
-               "after them in their segment (kept as they are)\n", v->seq_end, v->seq_end_inside);
+        av_log(t->log, AV_LOG_VERBOSE, "Title check: video: %"PRId64" end of sequence code(s), %"PRId64" with pictures "
+               "after them in their segment, %"PRId64" of those followed by a new sequence (kept as they are)\n",
+               v->seq_end, v->seq_end_inside, v->seq_new);
     for (int i = 0; i < t->cfg.nb_tracks; i++) {
         Track *k = &t->t[i];
         DRVerifyStats st;
@@ -1378,13 +1389,13 @@ static void title_summary(DRTitle *t)
         ff_disctl_verify_stats(k->verify, &st);
         issues = st.bad_units + st.crc_errors + st.order_errors + st.holes + (k->cfg.kind == DR_KIND_VIDEO) *
                  st.overlaps;
-        av_log(t->log, issues ? AV_LOG_WARNING : AV_LOG_INFO, "Title check: track %d (%s): %"PRId64" frames; %"
+        av_log(t->log, issues ? AV_LOG_WARNING : AV_LOG_VERBOSE, "Title check: track %d (%s): %"PRId64" frames; %"
                PRId64" units that do not parse, %"PRId64" checksum failures, %"PRId64" order errors, %"PRId64
                " holes%s%s\n", i, avcodec_get_name(k->cfg.codec), st.frames - st.markers, st.bad_units,
                st.crc_errors, st.order_errors, st.holes, st.unchecked ? " (units of this codec are not checked)" : "",
                issues ? "" : ": PASS");
         if (k->cfg.kind == DR_KIND_AUDIO && st.frames > st.markers)
-            av_log(t->log, st.sync_segments ? AV_LOG_WARNING : AV_LOG_INFO, "Title check: track %d: as a stream "
+            av_log(t->log, st.sync_segments ? AV_LOG_WARNING : AV_LOG_VERBOSE, "Title check: track %d: as a stream "
                    "file (start delay %s ms) the audio is %s %s ms of its time on the disc%s%s\n", i,
                    msec(a, 32, st.delay, 1), st.sync_segments ? "off by up to" : "within",
                    msec(b, 32, FFABS(st.es_err_max), 0), st.sync_segments ?

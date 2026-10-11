@@ -47,10 +47,17 @@ static const Setting registry[] = {
       "How a title's output files are named. {NAME1} the title's name, {CMNT1} its comment, {DT} its "
       "date, {N2} its number with two digits; {prefix:VAR} writes the prefix only after other text. "
       "Empty: {NAME1}{-:CMNT1}{-:DT}{title:+DFLT}{_t:N2}.", 0, SET_AT_RIP },
+    { "output", "video_language", SET_TEXT, "market", 0, 0, NULL,
+      "The language given to a title's video, which the disc formats never name: market (the disc's market "
+      "language: a Blu-ray's disc library files, a DVD's menus, an HD DVD's title set; when there is none, "
+      "eng), or an ISO 639 code (eng, fra, jpn, ...) for every disc. Shown in the title list and written into "
+      "the video file's name. Empty: none (und).",
+      0, SET_AT_OPEN },
     { "output", "split_joined_titles", SET_BOOL, "false", 0, 0, NULL,
       "A title that plays whole stream files back to back (the episodes of a series one after another in one "
-      "Blu-ray title) is written as parts, one per file: <name>_p1, _p2, ..., each from its own start with its "
-      "own chapters and its audio as the file holds it. Off: such a title is one timeline (the audio's overlaps "
+      "Blu-ray title) is written as parts, one per file: <name>_p1, _p2, ..., each as a title of its own (in a folder "
+      "of its name, as every title), from its own start with its own chapters and its audio as the "
+      "file holds it. Off: such a title is one timeline (the audio's overlaps "
       "at the joins are evened out by dropping whole frames). The demux option --split <titles> turns it on "
       "for chosen titles of one run.", 0, SET_AT_RIP },
     { "bluray", "second_view", SET_BOOL, "false", 0, 0, NULL,
@@ -83,6 +90,8 @@ static const Setting registry[] = {
     { "gui", "panes", SET_LIST, "", 0, 0, NULL, "Kept by the GUI: the sizes of the window's panes.", 1, SET_IN_GUI },
     { "gui", "last_folder", SET_TEXT, "", 0, 0, NULL,
       "Kept by the GUI: the folder discs were last added from.", 1, SET_IN_GUI },
+    { "gui", "show_detail_lines", SET_BOOL, "false", 0, 0, NULL,
+      "Kept by the GUI: the log shows its detail lines too.", 1, SET_IN_GUI },
 };
 #define NB_SETTINGS (int)(sizeof(registry) / sizeof(registry[0]))
 

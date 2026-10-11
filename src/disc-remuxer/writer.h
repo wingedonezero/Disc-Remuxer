@@ -29,7 +29,7 @@ typedef struct TitleJob {
     const uint8_t *keep;       /* the title's tracks to rip (disc_title_open()), NULL every track */
     int         ordinal, count;/* this is title <ordinal> of <count> selected */
     const char *out_dir;
-    int         sub_folder;    /* the title's files in a folder of its name */
+    int         sub_folder;    /* the files in a folder of their name: the title's, a part's <title>_p<n> */
 } TitleJob;
 
 typedef struct TitleOutcome {
@@ -38,6 +38,10 @@ typedef struct TitleOutcome {
     int64_t warnings;          /* warnings about its tracks */
     char    name[512];         /* the name its files take */
 } TitleOutcome;
+
+/* A size in GB / MB of 1024^3 / 1024^2 bytes, one decimal, cut off (not
+ * rounded), into buf; returns buf. */
+const char *size_text(char *buf, size_t size, int64_t bytes);
 
 /* Writes one title's stream files and chapters (logged as a step of its
  * own); part >= 0: only that part of the title (one of the stream files a

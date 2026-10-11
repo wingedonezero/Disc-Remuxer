@@ -181,6 +181,9 @@ int ff_bluray_seg_read(BluraySegReader *u, int64_t pos, uint8_t *buf)
                    av_err2str(ret), clip->stream_path, off);
             return ret;
         }
+        /* the disc's content hashes are of the bytes as they are on it */
+        if (u->hash && (ret = ff_bluray_hash_unit(u->log, u->hash, clip->number, off, buf)) < 0)
+            return ret;
         return ff_bluray_aacs_unit(u->log, u->aacs, clip, buf);
     }
     return AVERROR_EOF;

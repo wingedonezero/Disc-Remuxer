@@ -48,8 +48,8 @@ def of_kind(events, kind):
 
 def title(*streams):
     """A video-only title: one segment per stream, each timed from its own
-    clock. The outputs and the events."""
-    outs, events, _, _ = run(VIDEO_ONLY, False, [video(BASE, s) for s in streams])
+    clock. The outputs (with their bytes) and the events."""
+    outs, events, _, _ = run(VIDEO_ONLY, False, [video(BASE, s) for s in streams], video_data=True)
     return outs, events
 
 
@@ -106,13 +106,46 @@ def test_equal_skipped_pictures_at_a_join_are_no_repeat():
     assert not of_kind(events, lib.DR_EV_JOIN_REPEAT)
 
 
-def test_an_end_of_sequence_code_with_pictures_after_it_is_reported_and_kept():
+EOS = b"\0\0\1\xb7"
+
+
+def video_bytes(outs):
+    return b"".join(o.data for o in outs if o.track == 0)
+
+
+def test_an_end_of_sequence_code_then_a_new_sequence_is_a_sequence_change_kept_as_it_is():
+    # the stream puts a sequence header in front of every GOP: after the
+    # end of sequence code a new sequence starts (ISO/IEC 13818-2 6.2.1)
     g = gop_starts(M2V)
-    s = M2V[:g[2]] + b"\0\0\1\xb7" + M2V[g[2]:g[4]]
-    _, events = title(s)
-    assert len(of_kind(events, lib.DR_EV_SEQ_END_INSIDE)) == 1
+    s = M2V[:g[2]] + EOS + M2V[g[2]:g[4]]
+    outs, events = title(s)
+    found = of_kind(events, lib.DR_EV_SEQ_END_INSIDE)
+    assert len(found) == 1 and found[0]["dur"] == 1, "a sequence change, not a fault"
+    assert video_bytes(outs) == s, "kept as it is"
     _, st = run_video(lambda d, k: pes(d), s)
-    assert st.seq_end == 1 and st.seq_end_inside == 1
+    assert st.seq_end == 1 and st.seq_end_inside == 1 and st.seq_new == 1
+
+
+def test_an_end_of_sequence_code_with_pictures_and_no_new_sequence_header_after_it_is_a_finding():
+    g = gop_starts(M2V)
+    p = M2V.find(b"\0\0\1\0", M2V.find(b"\0\0\1\0", g[2]) + 4)   # the GOP's second picture
+    s = M2V[:p] + EOS + M2V[p:g[4]]
+    _, events = title(s)
+    found = of_kind(events, lib.DR_EV_SEQ_END_INSIDE)
+    assert len(found) == 1 and found[0]["dur"] == 0
+    _, st = run_video(lambda d, k: pes(d), s)
+    assert st.seq_end_inside == 1 and st.seq_new == 0
+
+
+def test_zero_stuffing_after_an_end_of_sequence_code_leaves_the_video():
+    # the zeros before the next start code's two: a run of zero bytes after
+    # a 4-byte end of sequence code, as after an 8-byte GOP header
+    g = gop_starts(M2V)
+    s = M2V[:g[2]] + EOS + bytes(4) + M2V[g[2]:g[4]]
+    outs, _ = title(s)
+    assert video_bytes(outs) == M2V[:g[2]] + EOS + M2V[g[2]:g[4]]
+    _, st = run_video(lambda d, k: pes(d), s)
+    assert st.stuffing == 4
 
 
 def test_an_end_of_sequence_code_at_the_end_is_no_finding():

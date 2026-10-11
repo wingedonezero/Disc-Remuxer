@@ -137,6 +137,11 @@ const DRAudioHeader *ff_disctl_audio_header(const DRAudio *a)
     return &a->hdr;
 }
 
+int ff_disctl_audio_waiting(const DRAudio *a)
+{
+    return a->nb_wait;
+}
+
 int ff_disctl_audio_flags(const DRAudio *a)
 {
     return a->flags;

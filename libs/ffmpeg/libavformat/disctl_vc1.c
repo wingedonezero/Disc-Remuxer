@@ -162,7 +162,7 @@ static int picture_vc1(DRVideo *v, const DRFrame *f, DRPicture *pic)
     Vc1State *s = ff_disctl_video_priv(v);
     const uint8_t *p = f->data;
     int n = f->size, i = 0, frame = -1, has_seq = 0, has_entry = 0, field2 = 0, user_data = 0, other = 0;
-    int broken = 0, closed = 0, seq_end = 0;
+    int broken = 0, closed = 0, seq_end = 0, seq_start = 0;
 
     while ((i = next_sc(p, n, i)) >= 0) {
         int code = p[i + 3], e = next_sc(p, n, i + 4);
@@ -170,6 +170,7 @@ static int picture_vc1(DRVideo *v, const DRFrame *f, DRPicture *pic)
             e = n;
         if (code == SC_SEQ) {
             has_seq = 1;
+            seq_start |= frame < 0;
             sequence(v, s, p + i + 4, p + e);
         } else if (code == SC_ENTRY) {
             has_entry = 1;
@@ -189,7 +190,8 @@ static int picture_vc1(DRVideo *v, const DRFrame *f, DRPicture *pic)
             seq_end = 1;
         i += 4;
     }
-    pic->seq_end = seq_end;
+    pic->seq_end   = seq_end;
+    pic->seq_start = seq_start;
     if (frame < 0) {
         pic->type = DR_PIC_OTHER;
         if (!other) {

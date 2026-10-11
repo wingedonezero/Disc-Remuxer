@@ -214,6 +214,8 @@ static int disc_name(void *log, BlurayDisc *d, const char *pref)
     ret = 0;
     for (int i = 0; i < m.nb; i++) {
         name_lang(m.names[i], l);
+        if (d->nb_meta_lang < FF_ARRAY_ELEMS(d->meta_lang))
+            av_strlcpy(d->meta_lang[d->nb_meta_lang++], l, sizeof(d->meta_lang[0]));
         if (!eng && strlen(l) >= 2 && same_lang(l, "eng"))
             eng = m.names[i];
         if (!chosen && same_lang(pref, l))

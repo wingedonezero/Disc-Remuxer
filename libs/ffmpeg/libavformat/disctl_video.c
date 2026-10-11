@@ -49,6 +49,7 @@ typedef struct VUnit {
     int      start;                 /* key frame: DRStart */
     int      scan;                  /* DR_SCAN_* */
     int      seq_end;               /* carries an end of sequence code */
+    int      seq_start;             /* starts a sequence (a sequence header before its picture) */
     int64_t  seq;                   /* the unit's number in the segment */
 } VUnit;
 
@@ -594,10 +595,13 @@ static int assign(DRVideo *v, int n, int no_check)
                          u.start == DR_START_OPEN   ? DR_F_START_OPEN   : 0;
         } else if (u.type == DR_PIC_B)
             u.f.flags |= DR_F_DISCARD;
-        /* an end of sequence code with a picture after it in the segment */
+        /* an end of sequence code with a picture after it in the segment:
+         * a sequence change when that picture starts a new sequence with
+         * its sequence header (ISO/IEC 13818-2 6.2.1, SMPTE 421M Annex E) */
         if (v->end_time != AV_NOPTS_VALUE) {
             v->st.seq_end_inside++;
-            event(v, DR_EV_SEQ_END_INSIDE, v->end_time, 0, 1);
+            v->st.seq_new += !!u.seq_start;
+            event(v, DR_EV_SEQ_END_INSIDE, v->end_time, !!u.seq_start, 1);
             v->end_time = AV_NOPTS_VALUE;
         }
         if (u.seq_end) {
@@ -1000,7 +1004,8 @@ int ff_disctl_video_unit(void *opaque, const DRUnit *du)
     u.key     = pic.key;
     u.start   = pic.start;
     u.scan    = pic.scan;
-    u.seq_end = pic.seq_end;
+    u.seq_end   = pic.seq_end;
+    u.seq_start = pic.seq_start;
     if (is_pic(u.type) && u.fields <= 0) {
         av_log(v->log, AV_LOG_ERROR, "Title timeline: video: a picture without a duration\n");
         ff_disctl_frame_unref(&u.f);

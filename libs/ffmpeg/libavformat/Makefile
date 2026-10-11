@@ -271,7 +271,7 @@ OBJS-$(CONFIG_HASH_MUXER)                += hashenc.o
 OBJS-$(CONFIG_HCA_DEMUXER)               += hca.o
 OBJS-$(CONFIG_HCOM_DEMUXER)              += hcom.o pcm.o
 OBJS-$(CONFIG_DISC_DEMUXER)              += discdec.o discpass.o disctitle.o hddvddec.o dvddec.o dvd_disc.o dvd_ifo.o dvd_nav.o dvd_scan.o dvd_vobu.o dvd_titles.o dvd_read.o dvd_streams.o \
-                                            bluraydec.o bluray_aacs.o bluray_disc.o bluray_titles.o bluray_tracks.o bluray_probe.o bluray_files.o bluray_mpls.o bluray_rpls.o bluray_clpi.o bluray_index.o bluray_meta.o hddvd_vti.o hddvd_xpl.o \
+                                            bluraydec.o bluray_aacs.o bluray_hash.o bluray_disc.o bluray_titles.o bluray_tracks.o bluray_probe.o bluray_files.o bluray_mpls.o bluray_rpls.o bluray_clpi.o bluray_index.o bluray_meta.o hddvd_vti.o hddvd_xpl.o \
                                             disctl_frames.o disctl_codecs.o disctl_audio.o disctl_mlp.o disctl_junction.o disctl_join.o disctl_video.o disctl_mpv.o disctl_vc1.o disctl_h264.o disctl_hevc.o disctl_pgs.o disctl_spu.o disctl_cc.o disctl_ccx.o disctl_chapters.o disctl_verify.o disctl_lpcm.o disctl_pcm.o disctl_title.o \
                                             hddvd_titles.o hddvd_aacs.o hddvd_tracks.o disclang.o avlanguage.o \
                                             discio_read.o discio_fs.o discio_iso9660.o discio_folder.o \

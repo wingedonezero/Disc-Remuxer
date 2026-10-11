@@ -1,7 +1,11 @@
 /*
  * disc-remuxer: the stream files of a title (see writer.h). Each track's
- * packets back to back in a file named <name>_<NN>_<lang>_<codec>
- * [_<channel layout>][ DELAY <ms>ms].<ext>; PCM as RIFF WAVE; sub-pictures
+ * packets back to back in a file named <name>_<NN>_[<lang>]_<codec>
+ * [_<channel layout>][ (forced)][ (commentary)][ (visually impaired)]
+ * [ DELAY <ms>ms].<ext> (the language between brackets and the words in
+ * parentheses as the MKVToolNix GUI reads a file name: it splits it at
+ * [ ] ( ) { } . + - = #, and finds the delay as "delay <number>");
+ * PCM as RIFF WAVE; sub-pictures
  * as a VobSub pair (.sub packs + .idx); the chapters as Matroska XML.
  */
 
@@ -338,13 +342,14 @@ static int vobsub_write(EsOut *o, const AVStream *st, const AVPacket *pkt)
     return vobsub_unit(o, pkt->data, pkt->size, pts);
 }
 
-/* Chooses the stream's file name and opens it: <prefix>_<NN>_<lang>_<codec>
- * [_<channel layout>][ DELAY <ms>ms].<ext>; audio carries its start delay
- * (its first time against the title start, which is the video's). */
+/* Chooses the stream's file name and opens it: <prefix>_<NN>_[<lang>]_<codec>
+ * [_<channel layout>][ (forced)][ (commentary)][ (visually impaired)]
+ * [ DELAY <ms>ms].<ext>; audio carries its start delay (its first time
+ * against the title start, which is the video's). */
 static int es_open(const AVFormatContext *ctx, const AVStream *st, EsOut *o, const char *prefix, int64_t first)
 {
     const AVCodecParameters *par = st->codecpar;
-    char layout[64] = "", delay[32] = "";
+    char layout[64] = "", delay[32] = "", roles[64] = "";
     int audio = par->codec_type == AVMEDIA_TYPE_AUDIO;
     int profile = o->avctx ? o->avctx->profile : par->profile;
 
@@ -378,8 +383,11 @@ static int es_open(const AVFormatContext *ctx, const AVStream *st, EsOut *o, con
         o->st.delay_ms = av_rescale_q_rnd(first, st->time_base, (AVRational){ 1, 1000 }, AV_ROUND_NEAR_INF);
         snprintf(delay, sizeof(delay), " DELAY %"PRId64"ms", o->st.delay_ms);
     }
-    if (!(o->name = av_asprintf("%s_%02d_%s_%s%s%s.%s", prefix, track_no(st), *o->st.lang ? o->st.lang : "und",
-                                stream_label(st, profile), layout, delay,
+    snprintf(roles, sizeof(roles), "%s%s%s", st->disposition & AV_DISPOSITION_FORCED ? " (forced)" : "",
+             st->disposition & AV_DISPOSITION_COMMENT ? " (commentary)" : "",
+             st->disposition & AV_DISPOSITION_VISUAL_IMPAIRED ? " (visually impaired)" : "");
+    if (!(o->name = av_asprintf("%s_%02d_[%s]_%s%s%s%s.%s", prefix, track_no(st), *o->st.lang ? o->st.lang : "und",
+                                stream_label(st, profile), layout, roles, delay,
                                 second ? "mvc" : es_extension(par->codec_id))))
         return AVERROR(ENOMEM);
     o->st.file = o->name;
@@ -537,6 +545,7 @@ int open_disc(const char *format, const char *source, AVFormatContext **ctx)
     av_dict_set_int(&opts, "prefer_iso_for_old_udf102", setting_bool("read.prefer_iso_for_old_udf102"), 0);
     av_dict_set(&opts, "dvd_cell_mode", setting_text("dvd.cell_mode"), 0);
     av_dict_set(&opts, "dvd_cell_check", setting_text("dvd.cell_check"), 0);
+    av_dict_set(&opts, "video_language", setting_text("output.video_language"), 0);
     av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
     key_files(&bp);
     if (bp.len)
@@ -583,7 +592,8 @@ static void subtitle_detail(const AVStream *st, int opened, char *json, size_t s
         int64_t blocks = meta_int(st->metadata, "cc_blocks"), cues = meta_int(st->metadata, "cues");
         int64_t lost = meta_int(st->metadata, "cc_lost");
         char jp[256], jl[96] = "";
-        log_text(LOG_INFO, "      %s; %"PRId64" caption blocks -> %"PRId64" cues%s", cap->value, blocks, cues,
+        log_text(blocks && !cues ? LOG_INFO : LOG_DETAIL, "      %s; %"PRId64" caption blocks -> %"PRId64" cues%s",
+                 cap->value, blocks, cues,
                  blocks && !cues ? " (the caption data carries no caption text)" : "");
         if (lost) {
             log_text(LOG_INFO, "      %"PRId64" caption(s) still shown at the end of a segment left out", lost);
@@ -612,10 +622,19 @@ static void subtitle_detail(const AVStream *st, int opened, char *json, size_t s
     if (av_dict_get(st->metadata, "forced_objects", NULL, 0))
         av_bprintf(&b, "; %"PRId64" forced object%s", meta_int(st->metadata, "forced_objects"),
                    meta_int(st->metadata, "forced_objects") == 1 ? "" : "s");
-    log_text(outside ? LOG_WARNING : LOG_INFO, "      %s", b.str);
+    log_text(outside ? LOG_WARNING : LOG_DETAIL, "      %s", b.str);
     av_bprint_finalize(&b, NULL);
     snprintf(json, size, ",\"picture\":%s,\"width\":%d,\"height\":%d,\"no_stop\":%"PRId64",\"outside\":%"PRId64,
              json_str(jp, sizeof(jp), pic ? pic->value : ""), w, h, no_stop, outside);
+}
+
+const char *size_text(char *buf, size_t size, int64_t bytes)
+{
+    int gb = bytes >= (1LL << 30);
+    int64_t tenths = bytes * 10 / (gb ? 1LL << 30 : 1LL << 20);
+
+    snprintf(buf, size, "%"PRId64".%d %s", tenths / 10, (int)(tenths % 10), gb ? "GB" : "MB");
+    return buf;
 }
 
 static void hms(char *buf, size_t size, double s)
@@ -660,7 +679,8 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     log_json("title_start", "\"title\":%d%s,\"name\":%s,\"ordinal\":%d,\"count\":%d", job->title, jpart,
              json_str(js, sizeof(js), res->name), job->ordinal, job->count);
 
-    snprintf(dir, sizeof(dir), "%s%s%s", job->out_dir, job->sub_folder ? "/" : "", job->sub_folder ? base : "");
+    /* a part is written as a title of its own: its own folder, like every title's */
+    snprintf(dir, sizeof(dir), "%s%s%s", job->out_dir, job->sub_folder ? "/" : "", job->sub_folder ? res->name : "");
     if (mkdir(dir, 0777) < 0 && errno != EEXIST) {
         ret = AVERROR(errno);
         log_msg(MSG_FOLDER_FAILED, LOG_ERROR, "The folder %s cannot be created: %s", dir, strerror(errno));
@@ -821,6 +841,8 @@ end:
     } else {
         int64_t untested = meta_int(ctx->metadata, "untested");
         int checked = 0, check_failed = 0, unchecked = 0;
+        int64_t written = 0;
+        char made[96], sz[32];
 
         for (unsigned i = 0; i < ctx->nb_streams; i++) {
             enum AVMediaType t = ctx->streams[i]->codecpar->codec_type;
@@ -871,7 +893,7 @@ end:
             }
             if (o->opened)
                 log_text(LOG_DETAIL, "      %s", o->name);
-            res->warnings += warn;
+            res->warnings += warn + (!o->opened && !empty_cc && !o->no_forced);
             log_json("track", "\"title\":%d%s,\"index\":%d,\"codec\":%s,\"language\":%s,\"layout\":%s,"
                      "\"frames\":%"PRId64",\"warnings\":%"PRId64",\"delay_ms\":%"PRId64",\"file\":%s%s", job->title,
                      jpart, track_no(st), json_str(jc, sizeof(jc), stream_label(st, o->opened ? o->profile : st->codecpar->profile)),
@@ -879,14 +901,21 @@ end:
                      o->st.delay_ms, json_str(jf, sizeof(jf), o->opened ? o->name : ""), extra);
         }
         if (checked)
-            log_text(check_failed ? LOG_ERROR : LOG_OK, "Stream details (read back from the files): %d of %d "
+            log_text(check_failed ? LOG_ERROR : LOG_DETAIL, "Stream details (read back from the files): %d of %d "
                      "video / audio track%s match the disc streams%s", checked - check_failed, checked,
                      checked == 1 ? "" : "s", check_failed ? "" : ": PASS");
         if (unchecked)
             log_text(LOG_WARNING, "Stream details: %d video / audio track%s not checked (no decoder)", unchecked,
                      unchecked == 1 ? "" : "s");
         res->warnings += unchecked;
-        log_msg(MSG_CHAPTERS, LOG_INFO, "Chapters: %u", ctx->nb_chapters);
+        /* blocks the disc's own check found damaged (each a warning above) */
+        res->warnings += meta_int(ctx->metadata, "damaged");
+        log_msg(MSG_CHAPTERS, LOG_DETAIL, "Chapters: %u", ctx->nb_chapters);
+        /* what was written, for the title's last line */
+        for (unsigned i = 0; i < ctx->nb_streams; i++)
+            written += out[i].opened ? out[i].st.bytes : 0;
+        snprintf(made, sizeof(made), "(%u chapter%s, %s)", ctx->nb_chapters, ctx->nb_chapters == 1 ? "" : "s",
+                 size_text(sz, sizeof(sz), written));
         if (check_failed) {
             log_msg(MSG_DETAILS_DIFFER, LOG_ERROR, "%s: its files are written, but %d of them do not keep "
                     "the disc stream's details (see above)", who, check_failed);
@@ -896,13 +925,13 @@ end:
              * real discs]"), a warning each */
             res->warnings += untested;
             log_msg(MSG_UNTESTED, LOG_WARNING, "%s: done with %"PRId64" warning%s, %"PRId64" of them feature(s) no "
-                    "real disc has tested yet (see the log's \"[untested on real discs]\" lines)", who,
-                    res->warnings, res->warnings == 1 ? "" : "s", untested);
+                    "real disc has tested yet (see the log's \"[untested on real discs]\" lines) %s", who,
+                    res->warnings, res->warnings == 1 ? "" : "s", untested, made);
         } else if (res->warnings) {
-            log_msg(MSG_TITLE_DONE, LOG_INFO, "%s: done with %"PRId64" warning%s", who, res->warnings,
-                    res->warnings == 1 ? "" : "s");
+            log_msg(MSG_TITLE_DONE, LOG_INFO, "%s: done with %"PRId64" warning%s (see above) %s", who, res->warnings,
+                    res->warnings == 1 ? "" : "s", made);
         } else {
-            log_msg(MSG_TITLE_DONE, LOG_OK, "%s: done", who);
+            log_msg(MSG_TITLE_DONE, LOG_OK, "%s: done, all checks passed %s", who, made);
         }
     }
     log_json("title_result", "\"title\":%d%s,\"status\":\"%s\",\"warnings\":%"PRId64",\"folder\":%s", job->title, jpart,

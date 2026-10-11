@@ -1,6 +1,5 @@
 #include "DetailsPanel.h"
 
-#include <QHeaderView>
 #include <QLocale>
 
 extern "C" {
@@ -14,8 +13,7 @@ QString hms(int64_t us)
     return QString("%1:%2:%3").arg(t / 3600).arg(t / 60 % 60, 2, 10, QChar('0')).arg(t % 60, 2, 10, QChar('0'));
 }
 
-// h:mm:ss.mmm (a chapter's start: the disc's time, to the millisecond)
-static QString hmsMs(int64_t us)
+QString hmsMs(int64_t us)
 {
     int64_t ms = (us + 500) / 1000;
     return QString("%1:%2:%3.%4").arg(ms / 3600000).arg(ms / 60000 % 60, 2, 10, QChar('0'))
@@ -48,21 +46,31 @@ QString kindText(const DiscStreamInfo *k)
     }
 }
 
-DetailsPanel::DetailsPanel(QWidget *parent) : QTreeWidget(parent)
+DetailsPanel::DetailsPanel(QWidget *parent) : QTextBrowser(parent)
 {
-    setHeaderLabels({ "Property", "Value" });
-    header()->setSectionResizeMode(0, QHeaderView::Interactive);
-    header()->setSectionResizeMode(1, QHeaderView::Interactive);
-    header()->setStretchLastSection(true);
-    setColumnWidth(0, 210);
+    setLineWrapMode(QTextEdit::WidgetWidth);
+    setOpenLinks(false);
 }
 
-static QTreeWidgetItem *row(QTreeWidgetItem *parent, const QString &name, const QString &value)
-{
-    auto *it = new QTreeWidgetItem(parent, { name, value });
-    it->setToolTip(1, value);
-    return it;
-}
+// The panel's text: a heading per block, "Name: value" lines that wrap at
+// the panel's width (a deeper level indented).
+struct Html {
+    QString s;
+    void head(const QString &h)
+    {
+        s += QString("<p style=\"margin-top:10px; margin-bottom:3px\"><b><u>%1</u></b></p>").arg(h.toHtmlEscaped());
+    }
+    void sub(const QString &h, int level = 1)
+    {
+        s += QString("<p style=\"margin-top:6px; margin-bottom:1px; margin-left:%1px\"><b>%2</b></p>")
+                 .arg(level * 14).arg(h.toHtmlEscaped());
+    }
+    void row(const QString &name, const QString &value, int level = 0)
+    {
+        s += QString("<p style=\"margin:0px; margin-left:%1px\"><span style=\"color:#808080\">%2:</span> "
+                     "%3</p>").arg(level * 14).arg(name.toHtmlEscaped(), value.toHtmlEscaped());
+    }
+};
 
 static QString bytesText(int64_t bytes)
 {
@@ -72,35 +80,40 @@ static QString bytesText(int64_t bytes)
 
 void DetailsPanel::showDisc(const QString &source, const DiscInfo *d)
 {
-    clear();
-    auto *top = new QTreeWidgetItem(this, { "Disc", d->label ? QString::fromUtf8(d->label) : QString() });
-    row(top, "Source", source);
-    row(top, "Type", QString::fromUtf8(d->kind));
+    Html h;
+
+    h.head("Disc information");
+    h.row("Source", source);
+    h.row("Type", QString::fromUtf8(d->kind));
     if (d->label)
-        row(top, "Volume name", QString::fromUtf8(d->label));
+        h.row("Volume name", QString::fromUtf8(d->label));
     if (d->name)
-        row(top, "Name", QString::fromUtf8(d->name));
+        h.row("Name", QString::fromUtf8(d->name));
     QString fs = d->filesystem ? QString::fromUtf8(d->filesystem) : "?";
     if (d->udf_revision)
         fs += QString(" %1.%2").arg(d->udf_revision >> 8, 0, 16).arg(d->udf_revision & 0xff, 2, 16, QChar('0'));
-    row(top, "File system", fs);
-    row(top, "Encrypted", d->encrypted ? "yes" : "no");
-    row(top, "Titles found", QString::number(d->nb_titles));
-    // the format part's own details; "Protection: X" ones in a group of their own
-    QTreeWidgetItem *protection = nullptr;
+    h.row("File system", fs);
+    h.row("Encrypted", d->encrypted ? "yes" : "no");
+    h.row("Titles found", QString::number(d->nb_titles));
+    // the format part's own details; "Protection: X" ones in a block of their own
+    bool protection = false;
     for (int p = 0; p < d->nb_props; p++) {
         QString name = QString::fromUtf8(d->props[p].name), v = QString::fromUtf8(d->props[p].value);
         if (name.contains("language"))
             v = languageText(d->props[p].value);
-        if (name.startsWith("Protection: ")) {
-            if (!protection)
-                protection = row(top, "Protection", "");
-            row(protection, name.mid(12), v);
-        } else {
-            row(top, name, v);
-        }
+        if (!name.startsWith("Protection: "))
+            h.row(name, v);
     }
-    expandAll();
+    for (int p = 0; p < d->nb_props; p++) {
+        QString name = QString::fromUtf8(d->props[p].name);
+        if (!name.startsWith("Protection: "))
+            continue;
+        if (!protection)
+            h.head("Protection");
+        protection = true;
+        h.row(name.mid(12), QString::fromUtf8(d->props[p].value));
+    }
+    setHtml(h.s);
 }
 
 // what a track's file is made of
@@ -117,63 +130,65 @@ static QString conversionText(const DiscStreamInfo *k)
     }
 }
 
-void DetailsPanel::addTrack(QTreeWidgetItem *parent, const DiscTitleInfo *t, int i, const uint8_t *keep, bool open)
+static void addTrack(Html &h, const DiscTitleInfo *t, int i, const uint8_t *keep, int level)
 {
     const DiscStreamInfo *k = &t->streams[i];
     char codec[96], rest[512], buf[96];
     const char *mkv = disc_mkv_codec_id(k);
 
     engine_track_parts(t, i, codec, sizeof(codec), rest, sizeof(rest));
-    QString summary = QString("%1 %2%3").arg(QString::fromUtf8(k->language[0] ? k->language : "")).arg(codec)
-                          .arg(QString::fromUtf8(rest));
-    auto *tr = row(parent, QString("Track #%1").arg(i), summary.trimmed());
-    row(tr, "Kind", kindText(k));
-    row(tr, "Codec (full)", QString::fromUtf8(codec));
-    row(tr, "Codec (short)", QString::fromUtf8(codec_short(k)));
+    h.sub(QString("Track #%1: %2 %3%4").arg(i).arg(kindText(k), QString::fromUtf8(codec), QString::fromUtf8(rest))
+              .trimmed(), level);
+    level++;
+    h.row("Kind", kindText(k), level);
+    h.row("Codec (full)", QString::fromUtf8(codec), level);
+    h.row("Codec (short)", QString::fromUtf8(codec_short(k)), level);
     if (mkv)
-        row(tr, "Codec ID", QString::fromUtf8(mkv));
+        h.row("Codec ID", QString::fromUtf8(mkv), level);
     if (*codec_profile_level(k, buf, sizeof(buf)))
-        row(tr, "Profile", QString::fromUtf8(buf));
-    row(tr, "Language", languageText(k->language));
+        h.row("Profile", QString::fromUtf8(buf), level);
+    h.row("Language", languageText(k->language), level);
     if (*audio_name(k, buf, sizeof(buf)))
-        row(tr, "Name", QString::fromUtf8(buf));
+        h.row("Name", QString::fromUtf8(buf), level);
     // TrueHD / MLP: variable; the peak rate their header states reads far too low on real discs (LOOK INTO
     // AGAIN LATER), so none is shown. DTS-HD: the rate is its DTS core's.
     if (k->codec == AV_CODEC_ID_TRUEHD || k->codec == AV_CODEC_ID_MLP)
-        row(tr, "Bit rate", "variable (lossless)");
+        h.row("Bit rate", "variable (lossless)", level);
     else if (k->bit_rate && *bit_rate_text(k->bit_rate, buf, sizeof(buf)))
-        row(tr, "Bit rate", QString::fromUtf8(buf) + (k->codec == AV_CODEC_ID_DTS && k->inner_track >= 0 ?
-                                                      " (its DTS core's)" : ""));
+        h.row("Bit rate", QString::fromUtf8(buf) + (k->codec == AV_CODEC_ID_DTS && k->inner_track >= 0 ?
+                                                    " (its DTS core's)" : ""), level);
     if (k->type == AVMEDIA_TYPE_VIDEO) {
         if (k->width)
-            row(tr, "Video size", QString("%1x%2").arg(k->width).arg(k->height));
+            h.row("Video size", QString("%1x%2").arg(k->width).arg(k->height), level);
         if (k->aspect.num > 0 && *aspect_text(k, buf, sizeof(buf)))
-            row(tr, "Aspect ratio", QString::fromUtf8(buf));
+            h.row("Aspect ratio", QString::fromUtf8(buf), level);
         if (k->frame_rate.num > 0 && *frame_rate_text(k, buf, sizeof(buf)))
-            row(tr, "Frame rate", QString::fromUtf8(buf));
+            h.row("Frame rate", QString::fromUtf8(buf), level);
         if (k->hdr[0])
-            row(tr, "HDR", QString::fromUtf8(k->hdr) + (k->dolby_vision[0] ? " (the base layer), with Dolby Vision" : ""));
+            h.row("HDR", QString::fromUtf8(k->hdr) + (k->dolby_vision[0] ? " (the base layer), with Dolby Vision" : ""),
+                  level);
         if (k->dolby_vision[0])
-            row(tr, "Dolby Vision", QString::fromUtf8(k->dolby_vision));
+            h.row("Dolby Vision", QString::fromUtf8(k->dolby_vision), level);
         if (k->colour[0])
-            row(tr, "Colour", QString::fromUtf8(k->colour));
+            h.row("Colour", QString::fromUtf8(k->colour), level);
         if (k->mastering[0])
-            row(tr, "Mastering display", QString::fromUtf8(k->mastering));
+            h.row("Mastering display", QString::fromUtf8(k->mastering), level);
         if (k->max_cll || k->max_fall)
-            row(tr, "Content light level", QString("MaxCLL %1, MaxFALL %2 cd/m2").arg(k->max_cll).arg(k->max_fall));
+            h.row("Content light level", QString("MaxCLL %1, MaxFALL %2 cd/m2").arg(k->max_cll).arg(k->max_fall),
+                  level);
     }
     if (k->type == AVMEDIA_TYPE_AUDIO) {
         if (k->channels)
-            row(tr, "Channels", QString::number(k->channels));
+            h.row("Channels", QString::number(k->channels), level);
         if (k->layout && *layout_text(k, buf, sizeof(buf)))
-            row(tr, "Channel layout", QString::fromUtf8(buf));
+            h.row("Channel layout", QString::fromUtf8(buf), level);
         if (k->sample_rate)
-            row(tr, "Sample rate", QString("%1 Hz").arg(k->sample_rate));
+            h.row("Sample rate", QString("%1 Hz").arg(k->sample_rate), level);
         if (k->bits)
-            row(tr, "Sample size", QString("%1 bits").arg(k->bits));
+            h.row("Sample size", QString("%1 bits").arg(k->bits), level);
     }
     if (k->type == AVMEDIA_TYPE_SUBTITLE && k->width)
-        row(tr, "Canvas", QString("%1x%2").arg(k->width).arg(k->height));
+        h.row("Canvas", QString("%1x%2").arg(k->width).arg(k->height), level);
     // what the disc says of it and how it is linked to other tracks
     QStringList flags;
     static const struct { int bit; const char *word; } roles[] = {
@@ -197,81 +212,91 @@ void DetailsPanel::addTrack(QTreeWidgetItem *parent, const DiscTitleInfo *t, int
     if (k->offset_sequence >= 0)
         flags << QString("3-D offset sequence %1").arg(k->offset_sequence);
     if (!flags.isEmpty())
-        row(tr, "Flags", flags.join("; "));
-    row(tr, "Output", QString(".%1: %2").arg(QString::fromUtf8(engine_track_extension(k)), conversionText(k)));
-    row(tr, "Ripped", i == 0 ? "yes (the video is always ripped)" : keep[i] ? "yes" : "no (unchecked)");
-    tr->setExpanded(open);
+        h.row("Flags", flags.join("; "), level);
+    h.row("Output", QString(".%1: %2").arg(QString::fromUtf8(engine_track_extension(k)), conversionText(k)), level);
+    h.row("Ripped", i == 0 ? "yes (the video is always ripped)" : keep[i] ? "yes" : "no (unchecked)", level);
+}
+
+static void chapterList(Html &h, const DiscTitleInfo *t)
+{
+    // the disc's chapter marks; a rip starts each chapter at the first video frame from its mark (the
+    // chapters file written then has those times)
+    h.head(QString("Chapters (%1, as the disc marks them)").arg(t->nb_chapters));
+    for (int i = 0; i < t->nb_chapters; i++)
+        h.row(QString("Chapter %1").arg(i + 1),
+              hmsMs(t->chapters[i].start) + (t->chapters[i].name ? "  " + QString::fromUtf8(t->chapters[i].name) : ""));
 }
 
 void DetailsPanel::showTitle(const DiscTitleInfo *t, const uint8_t *keep)
 {
     char name[512];
+    Html h;
 
-    clear();
     engine_title_file_name(t, name, sizeof(name));
-    auto *top = new QTreeWidgetItem(this, { "Title", QString("#%1").arg(t->index) });
+    h.head(QString("Title information: #%1").arg(t->index));
     if (t->name)
-        row(top, "Name", QString::fromUtf8(t->name));
-    row(top, "Duration", hms(t->duration));
-    row(top, "Size", bytesText(t->size));
-    row(top, "Chapters", QString::number(t->nb_chapters));
+        h.row("Name", QString::fromUtf8(t->name));
+    h.row("Duration", hms(t->duration));
+    h.row("Size", bytesText(t->size));
+    h.row("Chapters", QString::number(t->nb_chapters));
     if (t->source)
-        row(top, "Source", QString::fromUtf8(t->source));
+        h.row("Source", QString::fromUtf8(t->source));
     if (t->nb_files) {
         QStringList files;
         for (int i = 0; i < t->nb_files; i++)
             files << QString::fromUtf8(t->files[i]);
-        auto *seg = row(top, "Segments", QString::number(t->nb_files));
-        row(seg, "Map", files.join(","));
-        seg->setExpanded(true);
+        h.row("Segments", QString::number(t->nb_files));
+        h.row("Segment map", files.join(", "));
     }
     if (t->angle)
-        row(top, "Angle", QString::number(t->angle));
-    row(top, "Language", languageText(t->language));
-    row(top, "Output file name", QString("%1_<track>_…  (in a folder %1 when more than one title is ripped)")
-                                     .arg(QString::fromUtf8(name)));
-    row(top, "Minimum length", t->selected ? "long enough" : "shorter: not ripped with all");
+        h.row("Angle", QString::number(t->angle));
+    h.row("Language", languageText(t->language));
+    h.row("Output", QString("%1/%1_<track>_…  (as parts: %1_p1/%1_p1_<track>_…, one folder per part)")
+                        .arg(QString::fromUtf8(name)));
+    h.row("Minimum length", t->selected ? "long enough" : "shorter: not ripped with all");
     for (int p = 0; p < t->nb_props; p++)
-        row(top, QString::fromUtf8(t->props[p].name), QString::fromUtf8(t->props[p].value));
+        h.row(QString::fromUtf8(t->props[p].name), QString::fromUtf8(t->props[p].value));
     if (t->nb_parts) {
-        auto *parts = row(top, "Parts", QString::number(t->nb_parts));
+        h.head(QString("Parts (%1)").arg(t->nb_parts));
         for (int p = 0; p < t->nb_parts; p++) {
             const DiscPartInfo *q = &t->parts[p];
             QString files;
             for (int f = 0; f < q->nb_files; f++)
                 files += (f ? ", " : "") + QString::fromUtf8(t->files[q->first_file + f]);
-            row(parts, QString::number(p + 1), QString("at %1, %2, %3, %4 chapter(s)").arg(hmsMs(q->start))
-                                                   .arg(hms(q->duration)).arg(files).arg(q->nb_chapters));
+            h.row(QString("Part %1").arg(p + 1), QString("at %1, %2, %3, %4 chapter(s)").arg(hmsMs(q->start))
+                                                     .arg(hms(q->duration)).arg(files).arg(q->nb_chapters));
         }
     }
-    // the disc's chapter marks; a rip starts each chapter at the first video frame from its mark (the
-    // chapters file written then has those times)
-    auto *chapters = row(top, "Chapter list", QString("%1 (as the disc marks them)").arg(t->nb_chapters));
-    for (int i = 0; i < t->nb_chapters; i++)
-        row(chapters, QString::number(i + 1),
-            hmsMs(t->chapters[i].start) + (t->chapters[i].name ? "  " + QString::fromUtf8(t->chapters[i].name) : ""));
-    top->setExpanded(true);
-
     // the tracks by kind, as makemkvcon groups them
     for (enum AVMediaType type : { AVMEDIA_TYPE_VIDEO, AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_SUBTITLE }) {
-        QTreeWidgetItem *group = nullptr;
+        bool any = false;
         for (int i = 0; i < t->nb_streams; i++) {
             if (t->streams[i].type != type)
                 continue;
-            if (!group) {
-                group = new QTreeWidgetItem(this, { type == AVMEDIA_TYPE_VIDEO ? "Video" :
-                                                    type == AVMEDIA_TYPE_AUDIO ? "Audio" : "Subtitles", "" });
-                group->setExpanded(true);
-            }
-            addTrack(group, t, i, keep, false);
+            if (!any)
+                h.head(type == AVMEDIA_TYPE_VIDEO ? "Video" : type == AVMEDIA_TYPE_AUDIO ? "Audio" : "Subtitles");
+            any = true;
+            addTrack(h, t, i, keep, 0);
         }
     }
+    chapterList(h, t);
+    setHtml(h.s);
 }
 
 void DetailsPanel::showTrack(const DiscTitleInfo *t, int i, const uint8_t *keep)
 {
-    clear();
-    auto *top = new QTreeWidgetItem(this, { "Title", QString("#%1").arg(t->index) });
-    addTrack(top, t, i, keep, true);
-    top->setExpanded(true);
+    Html h;
+
+    h.head(QString("Track information (title #%1)").arg(t->index));
+    addTrack(h, t, i, keep, 0);
+    setHtml(h.s);
+}
+
+void DetailsPanel::showChapters(const DiscTitleInfo *t)
+{
+    Html h;
+
+    h.head(QString("Title #%1%2").arg(t->index).arg(t->name ? ": " + QString::fromUtf8(t->name) : QString()));
+    chapterList(h, t);
+    setHtml(h.s);
 }

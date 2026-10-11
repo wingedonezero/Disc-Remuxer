@@ -10,6 +10,7 @@
 
 extern "C" {
 #include "log.h"
+#include "settings.h"
 }
 
 Console::Console(QWidget *parent) : QWidget(parent)
@@ -30,7 +31,13 @@ Console::Console(QWidget *parent) : QWidget(parent)
     bar->addWidget(clearButton);
     layout->addLayout(bar);
     layout->addWidget(view);
-    connect(details, &QCheckBox::toggled, this, &Console::refill);
+    // kept in the settings file (saved with the window's sizes)
+    details->setChecked(setting_bool("gui.show_detail_lines"));
+    connect(details, &QCheckBox::toggled, this, [this](bool on) {
+        char err[256];
+        settings_store("gui.show_detail_lines", on ? "true" : "false", err, sizeof(err));
+        refill();
+    });
     connect(clearButton, &QPushButton::clicked, this, &Console::clear);
 }
 

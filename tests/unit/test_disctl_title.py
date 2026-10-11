@@ -62,9 +62,10 @@ def interleave(a, b):
     return sorted(a + b, key=lambda p: p.order)
 
 
-def run(tracks, lpcm_hd, segments, spu=None, cc_helper=None):
+def run(tracks, lpcm_hd, segments, spu=None, cc_helper=None, video_data=False):
     """(outputs, events, duration, review); spu: a list that gets track 1's
-    sub-picture result (no stop time, outside the canvas)."""
+    sub-picture result (no stop time, outside the canvas); video_data: the
+    video's outputs keep their bytes too."""
     events = []
     outs = []
     vmax = [-(1 << 63)]
@@ -84,7 +85,7 @@ def run(tracks, lpcm_hd, segments, spu=None, cc_helper=None):
             if r != 0:
                 return r
             outs.append(Out(k[0], f.time, f.dur, f.flags, vmax[0],
-                            bytes(ffi.buffer(f.data, f.size)) if k[0] and f.size else b""))
+                            bytes(ffi.buffer(f.data, f.size)) if (k[0] or video_data) and f.size else b""))
             if k[0] == 0:
                 vmax[0] = max(vmax[0], f.time)
             lib.ff_disctl_frame_unref(f)

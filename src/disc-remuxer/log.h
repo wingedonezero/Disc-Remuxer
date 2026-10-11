@@ -42,6 +42,11 @@ void log_progress(int title, double done);
  * through json_str). */
 void log_json(const char *type, const char *fields, ...) __attribute__((format(printf, 2, 3)));
 
+/* While on, FFmpeg's own lines below error level are detail lines: what it
+ * says while the written files are read back (the end check) is about
+ * reading those files, not about the disc. */
+void log_ffmpeg_detail(int on);
+
 /* Errors and warnings logged since the counters were reset (for summaries). */
 void log_counts(int *errors, int *warnings);
 void log_reset_counts(void);

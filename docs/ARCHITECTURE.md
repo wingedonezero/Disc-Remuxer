@@ -183,8 +183,12 @@ every library under it are linked into both as before.
 `disc-remuxer-gui` links the engine like the command line and uses the same
 settings file; its own values are the settings group `gui` (the window's
 sizes are kept there, not shown in the settings menu). `MainWindow` (menus;
-the queue: each disc's titles and tracks with check boxes, an unchecked
-title's tracks greyed with their choice kept, the video always ripped;
+the queue: columns Type, Description, Size, Status, Progress; each disc's
+titles with check boxes, each title's chapters and tracks under it (a track
+taken out of another one, a core, forced subtitles or a 3-D second view,
+under that track), an unchecked title's tracks greyed with their choice
+kept, the video always ripped; the details of the selected row as wrapping
+text, `DetailsPanel`;
 the run: discs one after another, progress, Stop; the output folder
 `<output.folder>/<added folder>/<folders>/<disc name>` with
 `gui.keep_folder_structure`; a menu per row: parts, output folder, log,

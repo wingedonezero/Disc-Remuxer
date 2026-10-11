@@ -120,6 +120,10 @@ typedef struct DiscTitleSource {
      *  check. */
     int64_t     (*clip_start)(AVFormatContext *s, int clip);
     const char  *clip_start_name;   /**< for the log: "the playlist's IN time" */
+    /** The disc's own check of the stream data read (Blu-ray: its AACS
+     *  content hashes), at the title's end: logged; returns the damaged
+     *  units found (each logged as a warning). NULL: none. */
+    int64_t     (*integrity)(AVFormatContext *s);
 
     int          ts;                /**< Blu-ray stream data (6144-byte units, MPEG-TS) */
     const int   *pids;              /**< ts: the PIDs read */
@@ -212,6 +216,11 @@ typedef struct DiscContext {
     int               opt_dvd_cell_mode;  /**< DVD: a title's cells (DVD_CELL_MODE_*) */
     int               opt_dvd_cell_check; /**< DVD: the VOBUs a full cell check reads (DVD_CELL_CHECK_*) */
     char             *opt_cc_helper;    /**< the caption converter program (NULL: the one next to the program) */
+    char             *opt_video_language; /**< the language of video tracks the disc names none for: an ISO
+                                             639 code, "market" (the disc's market language, else eng),
+                                             NULL / "": none */
+    char              market[4];        /**< the disc's market language (its format part, at load), "" none */
+    const char       *market_from;      /**< where it comes from (for the disc info) */
     char            **opt_keydb;
     unsigned          nb_opt_keydb;
     int64_t           progress;         /**< exported: how far the title is read (1/10000) */
@@ -259,6 +268,13 @@ int ff_disc_title_add_file(DiscTitleInfo *t, const char *name);
  *  string that lives until close), the value formatted; < 0: out of
  *  memory. */
 int ff_disc_title_add_prop(DiscTitleInfo *t, const char *name, const char *fmt, ...) av_printf_format(3, 4);
+/** The disc's market language (DiscContext.market) from the languages its
+ *  format names for the disc itself (Blu-ray: its disc library files; DVD:
+ *  its menus; HD DVD: its title sets' default language), ISO 639 codes:
+ *  one language: that one; several: the first as the disc lists them
+ *  (ordered), else (an unordered list) English when it is among them, else
+ *  the first. from: where they come from (for the disc info). */
+void ff_disc_set_market(AVFormatContext *s, const char (*codes)[4], int n, int ordered, const char *from);
 /** A property of the disc (DiscInfo.props), as ff_disc_title_add_prop(). */
 int ff_disc_add_prop(AVFormatContext *s, const char *name, const char *fmt, ...) av_printf_format(3, 4);
 /** A stream as ff_disc_title_add_stream() starts it: zeroed, no linked

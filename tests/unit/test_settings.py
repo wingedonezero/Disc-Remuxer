@@ -52,7 +52,8 @@ def test_every_setting_is_read_by_the_program():
         users = [p.name for p, text in sources.items() if f'"{group}.{key}"' in text]
         assert users, f"{group}.{key} is in the settings file but nothing reads it"
         if use == "SET_IN_GUI":
-            assert all(p in ("MainWindow.cpp", "PrefsDialog.cpp") for p in users), (group, key, users)
+            gui = {p.name for p in (SRC / "gui").glob("*.cpp")}
+            assert all(p in gui for p in users), (group, key, users)
         else:
             assert any(not p.endswith(".cpp") for p in users), f"{group}.{key}: the engine does not read it"
 

@@ -224,8 +224,12 @@ static int track_stream(AVFormatContext *s, const DiscTrack *k, int index, const
     avpriv_set_pts_info(st, 64, 1, DR_TICKS_PER_SECOND);
     if (k->info.from_track >= 0)
         st->disposition |= AV_DISPOSITION_DEPENDENT;
-    if (k->info.forced)
+    if (k->info.forced || (k->info.roles & DISC_ROLE_FORCED))
         st->disposition |= AV_DISPOSITION_FORCED;
+    if (k->info.roles & (DISC_ROLE_COMMENTARY | DISC_ROLE_ALT_COMMENTARY))
+        st->disposition |= AV_DISPOSITION_COMMENT;
+    if (k->info.roles & DISC_ROLE_VISUALLY_IMPAIRED)
+        st->disposition |= AV_DISPOSITION_VISUAL_IMPAIRED;
     if ((k->line21 && (ret = av_dict_set(&st->metadata, "line21", k->line21, 0)) < 0) ||
         (k->info.language[0] && (ret = av_dict_set(&st->metadata, "language", k->info.language, 0)) < 0) ||
         (ret = av_dict_set_int(&st->metadata, "disc_track", index, 0)) < 0 ||
@@ -424,6 +428,26 @@ static int disc_close(AVFormatContext *s)
 
 #define MAX_TITLE_TRACKS 256
 
+/* A title's video tracks the disc names no language for (no disc format
+ * does for video) get the video_language option's: a code, or "market"
+ * (the disc's market language, else English). */
+static void video_language(AVFormatContext *s, const char *name, DiscTrack *tr, int nb)
+{
+    DiscContext *d = s->priv_data;
+    const char *lang = d->opt_video_language;
+
+    if (!lang || !*lang)
+        return;
+    if (!strcmp(lang, "market"))
+        lang = d->market[0] ? d->market : "eng";
+    for (int j = 0; j < nb; j++)
+        if (tr[j].info.type == AVMEDIA_TYPE_VIDEO && !tr[j].info.language[0]) {
+            av_strlcpy(tr[j].info.language, lang, sizeof(tr[j].info.language));
+            av_log(s, AV_LOG_DEBUG, "Title %s: video track %d: the disc names no language: %s (the "
+                   "video_language option)\n", name ? name : "?", j, tr[j].info.language);
+        }
+}
+
 /* Every title's probe (the format's own), its tracks and the stream pass
  * over its largest segment (discpass.c: duplicates, details for the title
  * list, data). A title whose pass fails is left out, said in the log (the
@@ -469,6 +493,7 @@ static int titles_pass(AVFormatContext *s)
             i--;
             continue;
         }
+        video_language(s, name, tr, nb);
         if (nb && !(d->title_tracks[i] = av_memdup(tr, nb * sizeof(*tr)))) {
             av_free(tr);
             return AVERROR(ENOMEM);
@@ -547,6 +572,16 @@ static int disc_read_header(AVFormatContext *s)
         if ((ret = ff_discio_mount_image(d->image, &opts, &d->fs)) < 0)
             return ret;
     }
+    if (d->opt_video_language && *d->opt_video_language && strcmp(d->opt_video_language, "market")) {
+        const char *code = ff_disc_lang_code(d->opt_video_language);
+        if (!code || strlen(code) != 3) {
+            av_log(s, AV_LOG_ERROR, "video_language '%s' is no ISO 639 language code\n", d->opt_video_language);
+            return AVERROR(EINVAL);
+        }
+        av_free(d->opt_video_language);
+        if (!(d->opt_video_language = av_strdup(code)))
+            return AVERROR(ENOMEM);
+    }
     kind = ff_discio_disc_format(d->fs);
     if (kind == DISCIO_DISC_NONE && !d->image && dvd_flat_folder(d->fs, s->url)) {
         kind = DISCIO_DISC_DVD;
@@ -572,7 +607,10 @@ static int disc_read_header(AVFormatContext *s)
     d->info.udf_revision = d->fs->udf_revision;
     if (!(d->part = av_mallocz(d->fmt->priv_size)))
         return AVERROR(ENOMEM);
-    if ((ret = d->fmt->load(s)) < 0 || (ret = titles_pass(s)) < 0 ||
+    if ((ret = d->fmt->load(s)) < 0 ||
+        (ret = d->market[0] ? ff_disc_add_prop(s, "Market language", "%s (%s)", d->market, d->market_from) :
+                              ff_disc_add_prop(s, "Market language", "none named")) < 0 ||
+        (ret = titles_pass(s)) < 0 ||
         (d->fmt->disc_done && (ret = d->fmt->disc_done(s)) < 0) || (ret = titles_info(s)) < 0)
         return ret;
     if (d->opt_title < 0)               /* only the disc info, no title opened */
@@ -632,6 +670,28 @@ int disc_title_open(AVFormatContext *s, int title, int part, int second_view, co
     return ret;
 }
 
+void ff_disc_set_market(AVFormatContext *s, const char (*codes)[4], int n, int ordered, const char *from)
+{
+    DiscContext *d = s->priv_data;
+    const char *first = NULL;
+    int several = 0, eng = 0;
+
+    for (int i = 0; i < n; i++) {
+        const char *c = ff_disc_lang_code(codes[i]);
+        if (!c || !strcmp(c, "und"))
+            continue;
+        if (!first)
+            first = c;
+        else if (strcmp(first, c))
+            several = 1;
+        eng |= !strcmp(c, "eng");
+    }
+    if (!first)
+        return;
+    av_strlcpy(d->market, several && !ordered && eng ? "eng" : first, sizeof(d->market));
+    d->market_from = from;
+}
+
 const char *disc_language(const char *code)
 {
     return ff_disc_lang_code(code);
@@ -687,6 +747,7 @@ static const AVOption disc_options[] = {
         {"spread",      "50 VOBUs evenly spread",                          0, AV_OPT_TYPE_CONST, { .i64=1 }, 0, 0, AV_OPT_FLAG_DECODING_PARAM, .unit = "dvd_cell_check" },
         {"random",      "50 VOBUs at random (a different choice each run)", 0, AV_OPT_TYPE_CONST, { .i64=2 }, 0, 0, AV_OPT_FLAG_DECODING_PARAM, .unit = "dvd_cell_check" },
     {"cc_helper",       "the caption converter program (CCExtractor) for DVD caption tracks; default: the one next to the running program", OFFSET(opt_cc_helper), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, AV_OPT_FLAG_DECODING_PARAM },
+    {"video_language",  "the language of video tracks the disc names none for: an ISO 639 code, or market (the disc's market language, else eng); the disc formats name none for video; empty: none", OFFSET(opt_video_language), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, AV_OPT_FLAG_DECODING_PARAM },
     {"keydb",           "AACS key files (KEYDB.cfg), read in this order",          OFFSET(opt_keydb),          AV_OPT_TYPE_STRING | AV_OPT_TYPE_FLAG_ARRAY, { .arr = NULL }, 0, 0, AV_OPT_FLAG_DECODING_PARAM },
     {"read_attempts",   "read attempts per request on the disc",                    OFFSET(opt_read_attempts),  AV_OPT_TYPE_INT,    { .i64=DISCIO_DEFAULT_ATTEMPTS }, 1, 100, AV_OPT_FLAG_DECODING_PARAM },
     {"prefer_iso_for_old_udf102", "disc images: a UDF 1.02 file system recorded before 2006 is read through ISO 9660 when that holds a valid DVD-Video structure", OFFSET(opt_prefer_iso), AV_OPT_TYPE_BOOL, { .i64=1 }, 0, 1, AV_OPT_FLAG_DECODING_PARAM },

@@ -224,7 +224,7 @@ def test_info_lists_a_dvd_title_s_tracks(tmp_path):
     put(folder, 2, video())             # and the video (a title without video data is left out)
     ts, _ = info(folder)
     got = [(k["kind"], k["codec"], k["language"], k["width"], k["height"], k["roles"]) for k in ts[0]["tracks"]]
-    assert got == [("video", "Mpeg2", "", None, None, []), ("audio", "DD", "chi", None, None, ["commentary"]),
+    assert got == [("video", "Mpeg2", "eng", None, None, []), ("audio", "DD", "chi", None, None, ["commentary"]),
                    ("subtitle", "VobSub", "eng", 720, 480, ["forced"])]
 
 
@@ -312,8 +312,10 @@ def test_the_cell_check_passes_a_whole_cell(tmp_path):
 
 # ---- the program ----
 
-def info(path, *sets):
-    args = [*PROGRAM, "--json"] + [a for x in sets for a in ("--set", x)] + ["info", str(path)]
+def info(path, *sets, detail=False):
+    """detail: the log's detail lines too (-v)."""
+    args = [*PROGRAM, "--json"] + (["-v"] if detail else []) + [a for x in sets for a in ("--set", x)] + \
+        ["info", str(path)]
     out = subprocess.run(args, capture_output=True, text=True)
     lines = [json.loads(line) for line in out.stdout.splitlines() if line.startswith("{")]
     return [x for x in lines if x.get("type") == "title"], lines

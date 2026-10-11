@@ -56,15 +56,6 @@ static void hms(char *buf, size_t size, int64_t us)
  * progress as an option). */
 #define DISC_FORMAT "disc"
 
-/* A size in GB / MB of 1024^3 / 1024^2 bytes, one decimal, cut off (not rounded). */
-static void size_text(char *buf, size_t size, int64_t bytes)
-{
-    int gb = bytes >= (1LL << 30);
-    int64_t tenths = bytes * 10 / (gb ? 1LL << 30 : 1LL << 20);
-
-    snprintf(buf, size, "%"PRId64".%d %s", tenths / 10, (int)(tenths % 10), gb ? "GB" : "MB");
-}
-
 /* A linked stream's index for JSON, or null (-1: none). */
 static const char *json_index(char *buf, size_t size, int v)
 {
@@ -605,7 +596,8 @@ static int run_titles(EngineDisc *e, const char *sel, const char *split, const c
         ++ordinal;
         for (int p = parts ? 0 : -1; p < parts && !engine_cancelled(); p++) {
             /* the second view: read when one of its tracks is selected */
-            TitleJob job = { e->ctx, t, p, parts, 1, e->keeps[t], ordinal, count, out_dir, count > 1 };
+            /* stream files: every title, and each part as a title of its own, in a folder of its name */
+            TitleJob job = { e->ctx, t, p, parts, 1, e->keeps[t], ordinal, count, out_dir, 1 };
             TitleOutcome res;
             demux_title(&job, &res);
             /* a title stopped as asked is not written, not failed */
