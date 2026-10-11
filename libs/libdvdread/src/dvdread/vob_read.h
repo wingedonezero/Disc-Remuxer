@@ -328,6 +328,31 @@ DVDREAD_API int DVDIlvuWalk_rec( dvd_vob_reader_t *, uint32_t from, uint32_t to 
  */
 DVDREAD_API int DVDPgcRejected_rec( dvd_vob_reader_t *, int pgcn, int shared );
 
+/* ---- a title's cell list ---- */
+
+/** The cell of angle (from 0; the title has angles) of the angle block
+ *  starting at cell (a cell in no block: itself); -1 when the block is
+ *  broken (reported). */
+DVDREAD_API int DVDAngleCell_rec( dvd_vob_reader_t *, int pgcn, int cell, int angle, int angles );
+
+/** Cells first..last of the chain, one per angle block (its cell of angle),
+ *  into cells (room for the chain's cells), *nb of them: 1 done, 0 an angle
+ *  block is broken (the cells before it given). */
+DVDREAD_API int DVDCellList_rec( dvd_vob_reader_t *, int pgcn, int first, int last, int angle, int angles,
+                                 int *cells, int *nb );
+
+/**
+ * CellWalk: the cells of the chain the navigation played (played: their
+ * numbers from 1, in playing order) as one run of consecutive cells. Runs
+ * at the start, then at the end, without a cell accepted (quick check) and
+ * 5 seconds are dropped, then the shorter end run while two remain (a tie
+ * keeps the first); the run left is the cell list (DVDCellList_rec(), its
+ * first and last cell index in *first / *last). 1 done, 0 not possible
+ * (nothing played, a run outside the chain, a broken angle block).
+ */
+DVDREAD_API int DVDCellWalk_rec( dvd_vob_reader_t *, int pgcn, const uint8_t *played, int nb_played, int angle,
+                                 int angles, int *cells, int *nb, int *first, int *last );
+
 /** Closes the title VOBs; a damaged range still open is reported. */
 DVDREAD_API void DVDCloseTitleVOBs_rec( dvd_vob_reader_t * );
 

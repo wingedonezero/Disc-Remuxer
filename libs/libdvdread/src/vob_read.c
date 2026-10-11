@@ -1855,6 +1855,163 @@ int DVDPgcRejected_rec( dvd_vob_reader_t *v, int pgcn, int ov )
   return -1;
 }
 
+/* ---- a title's cell list ---- */
+
+#define BLOCK_TYPE(f)   ((f) >> 4 & 3)
+
+int DVDAngleCell_rec( dvd_vob_reader_t *v, int pgcn, int i, int angle, int angles )
+{
+  const pgc_rec_t *p = pgc_of( v, pgcn );
+  uint8_t f;
+  int k = i;
+
+  if( !p || i < 0 || i >= p->nr_of_cells )
+    return -1;
+  f = CELL_FLAGS( &p->cells[i] );
+  if( !BLOCK_TYPE( f ) )
+    return i;
+  if( BLOCK_TYPE( f ) != 1 || BLOCK_MODE( f ) != 1 )
+    Log3( v->ctx, "VTS_%02d program chain %d cell %d: an angle cell that does not start an angle block", v->title,
+          pgcn + 1, i + 1 );
+  for( ;; ) {
+    uint8_t g = CELL_FLAGS( &p->cells[k] );
+    if( BLOCK_MODE( g ) == 3 ) {
+      int size = k - i + 1, pick = angle < size - 1 ? angle : size - 1;
+      if( size != angles )
+        Log1( v->ctx, "VTS_%02d program chain %d: the angle block at cell %d has %d cells, the title %d angles",
+              v->title, pgcn + 1, i + 1, size, angles );
+      return i + pick < p->nr_of_cells ? i + pick : -1;
+    }
+    if( BLOCK_TYPE( g ) != 1 ) {
+      Log1( v->ctx, "VTS_%02d program chain %d: broken angle block around cell %d", v->title, pgcn + 1, k + 1 );
+      return -1;
+    }
+    if( k + 1 >= p->nr_of_cells )
+      break;
+    k++;
+  }
+  Log1( v->ctx, "VTS_%02d program chain %d: broken angle block around cell %d", v->title, pgcn + 1, i + 1 );
+  return -1;
+}
+
+/* The cell after cell i (after its whole angle block), -1 when none. */
+static int next_cell( dvd_vob_reader_t *v, const pgc_rec_t *p, int pgcn, int i )
+{
+  int k = i;
+
+  if( !BLOCK_TYPE( CELL_FLAGS( &p->cells[i] ) ) )
+    return i + 1 < p->nr_of_cells ? i + 1 : -1;
+  for( ;; ) {
+    uint8_t g = CELL_FLAGS( &p->cells[k] );
+    if( BLOCK_MODE( g ) == 3 )
+      return k + 1 < p->nr_of_cells ? k + 1 : -1;
+    if( BLOCK_TYPE( g ) != 1 ) {
+      Log1( v->ctx, "VTS_%02d program chain %d: broken angle block around cell %d", v->title, pgcn + 1, k + 1 );
+      return -1;
+    }
+    if( k + 1 >= p->nr_of_cells )
+      break;
+    k++;
+  }
+  Log1( v->ctx, "VTS_%02d program chain %d: broken angle block around cell %d", v->title, pgcn + 1, i + 1 );
+  return -1;
+}
+
+int DVDCellList_rec( dvd_vob_reader_t *v, int pgcn, int first, int last, int angle, int angles, int *cells, int *nb )
+{
+  const pgc_rec_t *p = pgc_of( v, pgcn );
+  int c = first;
+
+  *nb = 0;
+  if( !p )
+    return 0;
+  for( ;; ) {
+    int e;
+    if( c > last )
+      return 1;
+    if( (e = DVDAngleCell_rec( v, pgcn, c, angle, angles )) < 0 )
+      return 0;
+    cells[(*nb)++] = e;
+    if( (c = next_cell( v, p, pgcn, e )) < 0 )
+      return 1;
+  }
+}
+
+typedef struct { uint8_t first, last; } cell_run_t;
+
+/* A run kept at an end: one of its cells accepted (quick check) and 5
+ * seconds (stopping at both); -1 when its cells are not the chain's. */
+static int run_good( dvd_vob_reader_t *v, const pgc_rec_t *p, int pgcn, cell_run_t r )
+{
+  int all_rejected = 1;
+  uint32_t sum = 0;
+
+  if( (unsigned)(r.first - 1) >= p->nr_of_cells || (unsigned)(r.last - 1) >= p->nr_of_cells )
+    return -1;
+  for( int x = r.first - 1;; x++ ) {
+    if( !DVDCellRejected_rec( v, pgcn, x, 1, -1 ) )
+      all_rejected = 0;
+    sum += bcd_seconds( p->cells[x].playback_time );
+    if( x == r.last - 1 || (!all_rejected && sum >= 5) )
+      break;
+  }
+  return !all_rejected && sum > 4;
+}
+
+static uint32_t run_seconds( const pgc_rec_t *p, cell_run_t r )
+{
+  uint32_t sum = 0;
+  for( int x = r.first - 1; x <= r.last - 1; x++ )
+    sum += bcd_seconds( p->cells[x].playback_time );
+  return sum;
+}
+
+int DVDCellWalk_rec( dvd_vob_reader_t *v, int pgcn, const uint8_t *played, int nb_played, int angle, int angles,
+                     int *cells, int *nb, int *first, int *last )
+{
+  const pgc_rec_t *p = pgc_of( v, pgcn );
+  cell_run_t *runs;
+  int n = 0, ret;
+
+  *nb = 0;
+  if( !p )
+    return 0;
+  if( !nb_played ) {
+    Log3( v->ctx, "VTS_%02d program chain %d: the navigation played no cell", v->title, pgcn + 1 );
+    return 0;
+  }
+  if( !(runs = malloc( nb_played * sizeof(*runs) )) )
+    return -1;
+  for( int k = 0; k < nb_played; k++ ) {
+    uint8_t c = played[k];
+    if( n && runs[n - 1].last + 1 == c )
+      runs[n - 1].last = c;
+    else
+      runs[n++] = (cell_run_t){ c, c };
+  }
+  /* the start, then the end: runs without an accepted cell or 5 seconds */
+  while( n > 1 && run_good( v, p, pgcn, runs[0] ) <= 0 )
+    memmove( runs, runs + 1, --n * sizeof(*runs) );
+  while( n > 1 && run_good( v, p, pgcn, runs[n - 1] ) <= 0 )
+    n--;
+  /* the longer end */
+  while( n > 1 ) {
+    if( run_seconds( p, runs[0] ) < run_seconds( p, runs[n - 1] ) )
+      memmove( runs, runs + 1, --n * sizeof(*runs) );
+    else
+      n--;
+  }
+  if( (unsigned)(runs[0].first - 1) < p->nr_of_cells && (unsigned)(runs[0].last - 1) < p->nr_of_cells ) {
+    *first = runs[0].first - 1;
+    *last  = runs[0].last - 1;
+    ret = DVDCellList_rec( v, pgcn, *first, *last, angle, angles, cells, nb );
+  } else {
+    ret = 0;
+  }
+  free( runs );
+  return ret;
+}
+
 void DVDCloseTitleVOBs_rec( dvd_vob_reader_t *v )
 {
   if( !v )
