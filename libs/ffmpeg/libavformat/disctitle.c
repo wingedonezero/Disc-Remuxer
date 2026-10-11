@@ -28,6 +28,7 @@
  */
 
 #define _GNU_SOURCE                     /* memmem */
+#include <stdarg.h>
 #include <string.h>
 
 #include "libavutil/bprint.h"
@@ -52,6 +53,7 @@
 #define TS_PACKET       192
 #define PTS_REF_SECTORS 2000              /* the PTS wrap reference is looked for in the first sectors */
 #define PTS_REF_BACK    27000000LL        /* and lies 300 s (90 kHz) before the first video time */
+#define DAMAGE_REPORTS  100               /* damaged ranges said one by one in a title; the rest as detail lines */
 
 /* ---- a clip through FFmpeg's demuxer ---- */
 
@@ -141,6 +143,17 @@ void ff_disc_demux_close(DiscDemux *dm)
 
 /* ---- the title reader ---- */
 
+/* Blocks left out as not usable, one after the other in a clip and of one
+ * kind (every byte zero, or else no MPEG pack): a damaged range. */
+typedef struct DamageRange {
+    int      clip;
+    uint32_t first, last;           /* blocks of the clip */
+    int      zeros;                 /* every byte of its blocks is zero */
+    int      place;                 /* the title timeline's place at its start, -1 none */
+    int64_t  disc_before, disc_after; /* the latest video time on the disc before it, the first after it
+                                         (ticks, the clip's clock), AV_NOPTS_VALUE: none */
+} DamageRange;
+
 struct DiscTitleReader {
     const DiscTitleSource *src;
 
@@ -175,6 +188,11 @@ struct DiscTitleReader {
     /* what was read: blocks left out as not usable, and the packets of
      * streams that feed no track (per stream id: their count and bytes) */
     int64_t        unusable;
+    DamageRange   *damage;          /**< the damaged ranges, in reading order */
+    int            nb_damage, damage_cap;
+    int            damage_open;     /**< the last block read was left out: the last range may grow */
+    int            damage_wait;     /**< the ranges from this one on wait for the video time after them */
+    int64_t        vlast;           /**< the latest video time read in the clip (ticks), AV_NOPTS_VALUE: none */
     struct { int id; int64_t packets, bytes; } unused[32];
     int            nb_unused;
     int64_t        unused_other;    /**< packets of further streams (the table is full) */
@@ -215,6 +233,40 @@ static DiscTitleReader *reader_of(AVFormatContext *s)
     return ((DiscContext *)s->priv_data)->reader;
 }
 
+/* Block b of the clip being read, in buf, is not usable: it starts a damaged
+ * range or makes the last one longer (the block after it, of the same kind). */
+static int damaged(AVFormatContext *s, uint32_t b, const uint8_t *buf)
+{
+    DiscTitleReader *r = reader_of(s);
+    DamageRange *g = r->nb_damage ? &r->damage[r->nb_damage - 1] : NULL;
+    int zeros = 1, place;
+
+    for (int i = 0; i < r->bs && zeros; i++)
+        zeros = !buf[i];
+    av_log(s, AV_LOG_DEBUG, "%s %s: block %"PRIu32" is not usable (%s): left out\n", r->src->clip_kind,
+           r->src->clip_name(s, r->clip), b, zeros ? "every byte zero" : "no MPEG pack");
+    if (r->damage_open && g && g->clip == r->clip && g->last + 1 == b && g->zeros == zeros) {
+        g->last = b;
+        return 0;
+    }
+    /* a new range; its place on the title timeline: the next picture (none
+     * while the clip's packets wait for their time reference) */
+    place = -1;
+    if (r->pts_ref >= 0 && (place = ff_disctl_title_place(r->rip)) < 0)
+        return place;
+    if (r->nb_damage == r->damage_cap) {
+        int cap = r->damage_cap ? 2 * r->damage_cap : 16;
+        DamageRange *d = av_realloc_array(r->damage, cap, sizeof(*d));
+        if (!d)
+            return AVERROR(ENOMEM);
+        r->damage     = d;
+        r->damage_cap = cap;
+    }
+    r->damage[r->nb_damage++] = (DamageRange){ r->clip, b, b, zeros, place, r->vlast, AV_NOPTS_VALUE };
+    r->damage_open = 1;
+    return 0;
+}
+
 /* The next block of the clip being read; EOF at the clip's end. */
 static int ps_read(void *opaque, uint8_t *buf, int buf_size)
 {
@@ -240,12 +292,13 @@ static int ps_read(void *opaque, uint8_t *buf, int buf_size)
         if (r->blocks_total)
             ((DiscContext *)s->priv_data)->progress = r->blocks_done * 10000 / r->blocks_total;
         if (!ret) {
-            av_log(s, AV_LOG_WARNING, "%s %s: block %"PRIu32" is not usable: left out\n", src->clip_kind,
-                   src->clip_name(s, r->clip), b);
+            if ((ret = damaged(s, b, buf)) < 0)
+                return ret;
             r->skipped++;
             r->unusable++;
             continue;
         }
+        r->damage_open = 0;
         return r->bs;
     }
     r->clip_done = 1;
@@ -335,6 +388,9 @@ static int clip_start(AVFormatContext *s, int k)
     r->nb_blocks   = src->clip_blocks(s, k);
     r->clip_done   = 0;
     r->skipped     = 0;
+    r->damage_open = 0;
+    r->damage_wait = r->nb_damage;
+    r->vlast       = AV_NOPTS_VALUE;
     r->pts_ref     = -1;
     r->last_sector = -1;
     held_free(r);
@@ -367,6 +423,7 @@ void ff_disc_title_reader_close(DiscTitleReader **reader)
     av_freep(&r->pos_clip);
     av_freep(&r->pos_off);
     av_freep(&r->clip_at);
+    av_freep(&r->damage);
     av_packet_free(&r->in);
     ff_disctl_title_close(&r->rip);
     ff_disctl_chapter_plan_free(&r->chapter_plan);
@@ -787,6 +844,12 @@ static int feed(AVFormatContext *s, const AVPacket *pkt)
 
     if (pkt->pts != AV_NOPTS_VALUE)
         time = (pkt->pts < r->pts_ref ? pkt->pts + (1LL << 33) : pkt->pts) * DR_TICKS_PER_PTS;
+    /* video times around damaged ranges (program streams) */
+    if (!src->ts && sub->id == s->streams[0]->id && time != AV_NOPTS_VALUE) {
+        for (; r->damage_wait < r->nb_damage; r->damage_wait++)
+            r->damage[r->damage_wait].disc_after = time;
+        r->vlast = r->vlast == AV_NOPTS_VALUE ? time : FFMAX(r->vlast, time);
+    }
     /* TS: every track of the title (a merged second layer has no stream of
      * its own); program streams: the streams */
     for (int i = 0; i < (src->ts ? src->nb_tracks : s->nb_streams); i++) {
@@ -1008,6 +1071,102 @@ static int lpcm_params(AVFormatContext *s, int k)
     return 0;
 }
 
+/* A time on the title timeline as h:mm:ss.mmm (truncated). */
+static const char *hms(char *buf, int size, int64_t t)
+{
+    int64_t ms = t < 0 ? 0 : t / (DR_TICKS_PER_SECOND / 1000);
+
+    snprintf(buf, size, "%d:%02d:%02d.%03d", (int)(ms / 3600000), (int)(ms / 60000 % 60), (int)(ms / 1000 % 60),
+             (int)(ms % 1000));
+    return buf;
+}
+
+/* A formatted piece of a log line into buf. */
+static const char *strf_s(char *buf, int size, const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    vsnprintf(buf, size, fmt, ap);
+    va_end(ap);
+    return buf;
+}
+
+/* Bytes as MB of 1024^2 bytes, one decimal, cut off (as the caller's sizes). */
+static double mb(int64_t bytes)
+{
+    return (double)(bytes * 10 / 1048576) / 10;
+}
+
+/* The damaged ranges of the title, one line each (where they lie on the
+ * disc, what they are, where the title passes them), for the caller too:
+ * metadata damaged_ranges, damaged_bytes and damage (the lines). */
+static int report_damage(AVFormatContext *s)
+{
+    DiscTitleReader *r = reader_of(s);
+    const DiscTitleSource *src = r->src;
+    const char *unit = r->bs == DISC_BLOCK ? "sector" : "unit";
+    int64_t bytes = 0;
+    AVBPrint all;
+    int ret = 0;
+
+    if (!r->nb_damage)
+        return 0;
+    av_bprint_init(&all, 0, AV_BPRINT_SIZE_UNLIMITED);
+    for (int i = 0; i < r->nb_damage; i++) {
+        const DamageRange *g = &r->damage[i];
+        int64_t n = (int64_t)g->last - g->first + 1, off0, off1, at;
+        char file0[64] = "", file1[64] = "", where[192], when[96] = "", a[32];
+        int level = i < DAMAGE_REPORTS ? AV_LOG_WARNING : AV_LOG_VERBOSE;
+
+        bytes += n * r->bs;
+        /* where: the files holding its first and last block */
+        if (src->block_place && src->block_place(s, g->clip, g->first, file0, sizeof(file0), &off0) >= 0 &&
+            src->block_place(s, g->clip, g->last, file1, sizeof(file1), &off1) >= 0) {
+            if (!strcmp(file0, file1))
+                snprintf(where, sizeof(where), "%s %.1f-%.1f MB", file0, mb(off0),
+                         mb(off1 + r->bs));
+            else
+                snprintf(where, sizeof(where), "%s %.1f MB to %s %.1f MB", file0, mb(off0), file1,
+                         mb(off1 + r->bs));
+        } else {
+            off0 = off1 = -1;
+            snprintf(where, sizeof(where), "%s %s blocks %"PRIu32"-%"PRIu32, src->clip_kind,
+                     src->clip_name(s, g->clip), g->first, g->last);
+        }
+        /* when: where the title's pictures before it end; how far the
+         * disc's video times jump over it (about the video missing) */
+        if (g->place >= 0 && ff_disctl_title_place_time(r->rip, g->place, &at) >= 0) {
+            int64_t jump = g->disc_before != AV_NOPTS_VALUE && g->disc_after != AV_NOPTS_VALUE ?
+                           g->disc_after - g->disc_before : 0;
+            snprintf(when, sizeof(when), "; at %s of the title%s", hms(a, sizeof(a), at),
+                     jump >= DR_TICKS_PER_SECOND / 10 ? strf_s((char[40]){ 0 }, 40, ", about %.1f s of video",
+                                                             jump / (double)DR_TICKS_PER_SECOND) : "");
+        }
+        av_log(s, level, "Damaged: %s (%"PRId64" %s%s, %.1f MB): %s, left out%s\n", where, n, unit,
+               n == 1 ? "" : "s", mb(n * r->bs), g->zeros ? "every byte is zero" : "no MPEG data",
+               when);
+        if (off0 >= 0)
+            av_log(s, AV_LOG_VERBOSE, "Damaged: %s %s blocks %"PRIu32"-%"PRIu32" = %s byte %"PRId64" to %s byte %"
+                   PRId64"\n", src->clip_kind, src->clip_name(s, g->clip), g->first, g->last, file0, off0, file1,
+                   off1 + r->bs - 1);
+        av_bprintf(&all, "%s%s (%"PRId64" %s%s, %.1f MB): %s%s", i ? "\n" : "", where, n, unit, n == 1 ? "" : "s",
+                   mb(n * r->bs), g->zeros ? "every byte is zero" : "no MPEG data", when);
+    }
+    if (r->nb_damage > DAMAGE_REPORTS)
+        av_log(s, AV_LOG_WARNING, "Damaged: %d more range(s), in the detail lines\n", r->nb_damage - DAMAGE_REPORTS);
+    if (!av_bprint_is_complete(&all))
+        ret = AVERROR(ENOMEM);
+    if (ret >= 0)
+        ret = av_dict_set_int(&s->metadata, "damaged_ranges", r->nb_damage, 0);
+    if (ret >= 0)
+        ret = av_dict_set_int(&s->metadata, "damaged_bytes", bytes, 0);
+    if (ret >= 0)
+        ret = av_dict_set(&s->metadata, "damage", all.str, 0);
+    av_bprint_finalize(&all, NULL);
+    return ret;
+}
+
 /* What the title gives the caller at its end: chapters, the untested
  * features met, the caption data taken out of the video, each track's
  * result. */
@@ -1020,7 +1179,7 @@ static int title_end(AVFormatContext *s)
     int64_t review = ff_disctl_title_review(r->rip) + d->untested;
     int ret;
 
-    if ((ret = set_chapters(s)) < 0)
+    if ((ret = set_chapters(s)) < 0 || (ret = report_damage(s)) < 0)
         return ret;
     /* the disc's own check of what was read */
     if (r->src->integrity) {

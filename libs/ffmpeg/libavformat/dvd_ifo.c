@@ -686,6 +686,48 @@ static int load(DVDDisc *d, DVDIfo *f)
     return 0;
 }
 
+int ff_dvd_title_vob_place(DVDDisc *d, DVDIfo *f, uint32_t sector, char *file, int size, int64_t *offset)
+{
+    int64_t pos = (int64_t)sector * DVD_SECTOR, at;
+
+    if (d->folder) {
+        /* the title VOB files one after the other */
+        for (int i = 0; i < f->nb_title_vobs; i++) {
+            if (pos < f->title_vobs[i]->size) {
+                snprintf(file, size, "VTS_%02d_%d.VOB", f->index, i + 1);
+                *offset = pos;
+                return 0;
+            }
+            pos -= f->title_vobs[i]->size;
+        }
+        return AVERROR(EINVAL);
+    }
+    /* an image: the title VOBs are read from the IFO header's place on
+     * (ff_dvd_vob_read()); the VOB file whose extents hold that sector */
+    if (!ff_dvd_header32(f, DVD_TT_SRPT))
+        return AVERROR(EINVAL);
+    at = f->ifo_sector + ff_dvd_header32(f, DVD_TT_SRPT) + sector;
+    for (int part = 1; part <= 9; part++) {
+        DiscIOFile *v = NULL;
+        int64_t before = 0;
+        if (open_set_file(d, f->index, part, "VOB", &v) < 0)
+            break;
+        for (int e = 0; e < v->nb_extents; e++) {
+            const DiscIOExtent *x = &v->extents[e];
+            if (x->sector != DISCIO_SECTOR_NOT_RECORDED && at >= x->sector && at < x->sector + x->count &&
+                before + (at - x->sector) * DVD_SECTOR < v->size) {
+                snprintf(file, size, "VTS_%02d_%d.VOB", f->index, part);
+                *offset = before + (at - x->sector) * DVD_SECTOR;
+                ff_discio_file_free(&v);
+                return 0;
+            }
+            before += x->count * DVD_SECTOR;
+        }
+        ff_discio_file_free(&v);
+    }
+    return AVERROR(EINVAL);
+}
+
 int ff_dvd_ifo_load(DVDDisc *d, int index, DVDIfo **out)
 {
     DVDIfo *f = av_mallocz(sizeof(*f));

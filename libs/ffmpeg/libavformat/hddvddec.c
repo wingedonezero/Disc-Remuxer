@@ -85,6 +85,12 @@ static int read_block(AVFormatContext *s, int k, uint32_t block, uint8_t *buf)
     return ff_hddvd_clip_block(s, c->aacs, c->fs, c->title->clips[k], block, buf);
 }
 
+static int block_place(AVFormatContext *s, int k, uint32_t block, char *file, int size, int64_t *offset)
+{
+    HDDVDDemuxContext *c = ff_disc_part(s);
+    return ff_hddvd_clip_place(c->title->clips[k], block, file, size, offset);
+}
+
 /* Where the disc starts clip k: its EVOB's presentation start (VTI), 90 kHz. */
 static int64_t clip_start(AVFormatContext *s, int k)
 {
@@ -290,6 +296,7 @@ static int open_title(AVFormatContext *s, int i, int part, int *second_view)
         .clip_name     = clip_name,
         .clip_blocks   = clip_blocks,
         .read_block    = read_block,
+        .block_place   = block_place,
         .clip_start    = clip_start,
         .clip_start_name = "its EVOB's start time (VTI)",
         .lpcm_header   = 5,

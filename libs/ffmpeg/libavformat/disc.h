@@ -114,6 +114,11 @@ typedef struct DiscTitleSource {
     /** Block of the clip into buf (decrypted): 1 read, 0 not usable (left
      *  out), < 0 cannot be read (the rest of the clip is not read). */
     int         (*read_block)(AVFormatContext *s, int clip, uint32_t block, uint8_t *buf);
+    /** Where block of the clip lies on the disc, for the log: the file
+     *  (name into file, room for size) and the byte offset in it; < 0 not
+     *  known. NULL: none. */
+    int         (*block_place)(AVFormatContext *s, int clip, uint32_t block, char *file, int size,
+                               int64_t *offset);
     /** Where the disc's own structure starts the clip: its first presentation
      *  time (90 kHz, on the clip's clock), checked against the first picture
      *  read from it; AV_NOPTS_VALUE when the structure gives none. NULL: no

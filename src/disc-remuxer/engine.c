@@ -570,12 +570,15 @@ static int run_titles(EngineDisc *e, const char *sel, const char *split, const c
 {
     const DiscInfo *di = e->info;
     int nb = di->nb_titles, count = 0, ordinal = 0, failed = 0, done = 0, errors, warnings;
+    int64_t damaged = 0, damaged_bytes = 0;
     char *spl = calloc(nb ? nb : 1, 1);
+    AVBPrint damage;                    /* every title's damaged ranges, for the summary */
 
     if (!spl) {
         log_close_files();
         return 1;
     }
+    av_bprint_init(&damage, 0, AV_BPRINT_SIZE_UNLIMITED);
     for (int t = 0; t < nb; t++) {
         count += !!sel[t];
         spl[t] = split && split[t];
@@ -600,6 +603,21 @@ static int run_titles(EngineDisc *e, const char *sel, const char *split, const c
             TitleJob job = { e->ctx, t, p, parts, 1, e->keeps[t], ordinal, count, out_dir, 1 };
             TitleOutcome res;
             demux_title(&job, &res);
+            if (res.damaged_ranges) {
+                /* each range under the title's (part's) number */
+                const char *line = res.damage;
+                damaged       += res.damaged_ranges;
+                damaged_bytes += res.damaged_bytes;
+                while (*line) {
+                    const char *nl = strchr(line, '\n');
+                    int len = nl ? (int)(nl - line) : (int)strlen(line);
+                    if (p >= 0)
+                        av_bprintf(&damage, "\n  Title #%d part %d: %.*s", t, p + 1, len, line);
+                    else
+                        av_bprintf(&damage, "\n  Title #%d: %.*s", t, len, line);
+                    line += len + !!nl;
+                }
+            }
             /* a title stopped as asked is not written, not failed */
             part_stopped += res.stopped;
             part_failed  += res.failed && !res.stopped;
@@ -617,6 +635,12 @@ static int run_titles(EngineDisc *e, const char *sel, const char *split, const c
     log_msg(MSG_SUMMARY, failed ? LOG_ERROR : warnings ? LOG_INFO : LOG_OK,
             "%d title%s written, %d failed; %d warning%s, %d error%s", done, done == 1 ? "" : "s", failed, warnings,
             warnings == 1 ? "" : "s", errors, errors == 1 ? "" : "s");
+    if (damaged) {
+        char dz[32];
+        log_msg(MSG_SUMMARY, LOG_INFO, "Damaged data left out: %"PRId64" range%s (%s)%s", damaged,
+                damaged == 1 ? "" : "s", size_text(dz, sizeof(dz), damaged_bytes), damage.str);
+    }
+    av_bprint_finalize(&damage, NULL);
     log_msg(MSG_LOG_FILE, LOG_INFO, "Log: %s", logp);
     {
         char jl[PATH_MAX + 700];

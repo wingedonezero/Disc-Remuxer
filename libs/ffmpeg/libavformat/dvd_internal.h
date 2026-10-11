@@ -199,6 +199,10 @@ typedef struct DVDDisc {
  *  it: < 0 when it cannot be used (the caller keeps a placeholder for a
  *  title set). */
 int  ff_dvd_ifo_load(DVDDisc *d, int index, DVDIfo **out);
+/** Where sector of title set f's title VOBs lies, for the log: the VOB
+ *  file's name (VTS_nn_k.VOB) and the byte offset in it; < 0 when no title
+ *  VOB file holds it. */
+int  ff_dvd_title_vob_place(DVDDisc *d, DVDIfo *f, uint32_t sector, char *file, int size, int64_t *offset);
 void ff_dvd_ifo_free(DVDIfo **ifo);
 /** Bytes of the IFO from sector on: from the whole-IFO read when there is
  *  one, else per 2048-byte piece from the IFO, the BUP when that fails. */
@@ -407,6 +411,9 @@ int      ff_dvd_title_vob_sector(DVDDisc *d, DVDIfo *f, uint32_t sector, uint8_t
 uint32_t ff_dvd_segment_blocks(const DVDSegment *g);
 /** Sector block of segment seg of title t, as ff_dvd_title_vob_sector(). */
 int      ff_dvd_segment_read(DVDDisc *d, const DVDTitle *t, int seg, uint32_t block, uint8_t *buf);
+/** Where block of segment seg of title t lies, as ff_dvd_title_vob_place(). */
+int      ff_dvd_segment_place(DVDDisc *d, const DVDTitle *t, int seg, uint32_t block, char *file, int size,
+                              int64_t *offset);
 
 /* ---- dvd_streams.c ---- */
 /** The probe of title t's streams (its largest segment read from the

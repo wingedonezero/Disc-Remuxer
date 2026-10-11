@@ -910,6 +910,14 @@ end:
         res->warnings += unchecked;
         /* blocks the disc's own check found damaged (each a warning above) */
         res->warnings += meta_int(ctx->metadata, "damaged");
+        /* damaged data the reader left out (each range a warning above) */
+        res->damaged_ranges = meta_int(ctx->metadata, "damaged_ranges");
+        res->damaged_bytes  = meta_int(ctx->metadata, "damaged_bytes");
+        res->warnings      += res->damaged_ranges;
+        {
+            const AVDictionaryEntry *dm = av_dict_get(ctx->metadata, "damage", NULL, 0);
+            snprintf(res->damage, sizeof(res->damage), "%s", dm ? dm->value : "");
+        }
         log_msg(MSG_CHAPTERS, LOG_DETAIL, "Chapters: %u", ctx->nb_chapters);
         /* what was written, for the title's last line */
         for (unsigned i = 0; i < ctx->nb_streams; i++)
@@ -927,6 +935,11 @@ end:
             log_msg(MSG_UNTESTED, LOG_WARNING, "%s: done with %"PRId64" warning%s, %"PRId64" of them feature(s) no "
                     "real disc has tested yet (see the log's \"[untested on real discs]\" lines) %s", who,
                     res->warnings, res->warnings == 1 ? "" : "s", untested, made);
+        } else if (res->damaged_ranges) {
+            char dz[32];
+            log_msg(MSG_TITLE_DONE, LOG_INFO, "%s: done with %"PRId64" warning%s (see above), %"PRId64" of them "
+                    "damaged data (%s left out) %s", who, res->warnings, res->warnings == 1 ? "" : "s",
+                    res->damaged_ranges, size_text(dz, sizeof(dz), res->damaged_bytes), made);
         } else if (res->warnings) {
             log_msg(MSG_TITLE_DONE, LOG_INFO, "%s: done with %"PRId64" warning%s (see above) %s", who, res->warnings,
                     res->warnings == 1 ? "" : "s", made);
@@ -934,8 +947,10 @@ end:
             log_msg(MSG_TITLE_DONE, LOG_OK, "%s: done, all checks passed %s", who, made);
         }
     }
-    log_json("title_result", "\"title\":%d%s,\"status\":\"%s\",\"warnings\":%"PRId64",\"folder\":%s", job->title, jpart,
-             res->stopped ? "stopped" : res->failed ? "failed" : "ok", res->warnings, json_str(js, sizeof(js), dir));
+    log_json("title_result", "\"title\":%d%s,\"status\":\"%s\",\"warnings\":%"PRId64",\"damaged_ranges\":%"PRId64
+             ",\"damaged_bytes\":%"PRId64",\"folder\":%s", job->title, jpart,
+             res->stopped ? "stopped" : res->failed ? "failed" : "ok", res->warnings, res->damaged_ranges,
+             res->damaged_bytes, json_str(js, sizeof(js), dir));
     for (unsigned i = 0; ctx && out && i < ctx->nb_streams; i++) {
         EsOut *o = &out[i];
         for (int k = 0; k < o->nb_hold; k++)

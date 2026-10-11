@@ -54,6 +54,8 @@ typedef struct Track {
     int64_t       bytes;         /* payload bytes given to the frame step */
     int64_t      *posq;          /* video: chapter positions reached (bytes given by then), oldest first */
     int           nb_posq, posq_cap;
+    int64_t      *placeq;        /* video: places reached (bytes given by then), oldest first */
+    int           nb_placeq, placeq_cap;
 
     /* the output side */
     DRAudioHeader header;        /* audio: the stream values of its first segment that gave them */
@@ -163,6 +165,9 @@ struct DRTitle {
     int           segments;
     int64_t       vmax;          /* highest video time handed on, INT64_MIN before the first */
     int64_t       vend;          /* end of the video (highest time + duration) */
+    int64_t       vpic_end;      /* end of the pictures handed on (markers left aside), INT64_MIN before */
+    int64_t      *places;        /* per place: the end of the pictures before it */
+    int           nb_places, places_cap, places_timed;
     int           video_done;
     int           finished;
     int64_t       review;        /* untested features met (audio reviews) */
@@ -1171,6 +1176,12 @@ static int joined(void *opaque, int track, DRFrame *f)
     seg_event_dispatch(t, 0);
     switch (k->cfg.kind) {
     case DR_KIND_VIDEO:
+        /* the places this picture marks: the pictures before it end there */
+        if ((f->flags & DR_F_PLACE) && f->time != AV_NOPTS_VALUE)
+            for (int n = 0; n < f->ctr && t->places_timed < t->nb_places; n++)
+                t->places[t->places_timed++] = t->vpic_end == INT64_MIN ? f->time : t->vpic_end;
+        if (f->time != AV_NOPTS_VALUE && f->size && !(f->flags & DR_F_MARKER))
+            t->vpic_end = t->vpic_end == INT64_MIN ? f->time + f->dur : FFMAX(t->vpic_end, f->time + f->dur);
         if (f->time != AV_NOPTS_VALUE) {
             t->vmax = FFMAX(t->vmax, f->time);
             t->vend = FFMAX(t->vend, f->time + f->dur);
@@ -1417,6 +1428,15 @@ static int seg_frame(void *opaque, DRFrame *f)
         f->flags |= DR_F_POSITION;
         memmove(k->posq, k->posq + 1, --k->nb_posq * sizeof(*k->posq));
     }
+    /* places: the first picture with bytes from their position on */
+    if (k->nb_placeq && f->size && !(f->flags & DR_F_MARKER) && f->pos >= k->placeq[0]) {
+        int n = 0;
+        while (n < k->nb_placeq && f->pos >= k->placeq[n])
+            n++;
+        f->flags |= DR_F_PLACE;
+        f->ctr    = n;
+        memmove(k->placeq, k->placeq + n, (k->nb_placeq -= n) * sizeof(*k->placeq));
+    }
     if (!k->index && f->size)
         join_frame(k->title, f);
     if (k->audio && !k->have_header) {
@@ -1444,6 +1464,8 @@ static int seg_open(DRTitle *t)
                    "before: the next video frame starts them [untested on real discs]\n", k->nb_posq);
         for (int q = 0; q < k->nb_posq; q++)
             k->posq[q] = 0;
+        for (int q = 0; q < k->nb_placeq; q++)  /* places at the end of the segment before: its next picture */
+            k->placeq[q] = 0;
         if (k->cfg.kind == DR_KIND_CAPTION)
             continue;                    /* fed by the video's side units */
         if (k->cfg.kind == DR_KIND_LAYER && k->cfg.codec == AV_CODEC_ID_HEVC) {
@@ -1569,6 +1591,7 @@ int ff_disctl_title_open(DRTitle **tp, void *logctx, const DRTitleConfig *cfg)
     t->cfg.cc_helper = t->cc_helper;
     t->vmax = INT64_MIN;
     t->vend = 0;
+    t->vpic_end = INT64_MIN;
     t->cc_track = -1;
     t->layer = -1;
     if (!(t->t = av_calloc(cfg->nb_tracks, sizeof(*t->t))) ||
@@ -1855,6 +1878,40 @@ int ff_disctl_title_chapter_position(DRTitle *t)
     return 0;
 }
 
+int ff_disctl_title_place(DRTitle *t)
+{
+    Track *k = &t->t[0];
+
+    if (t->error)
+        return t->error;
+    if (k->nb_placeq == k->placeq_cap) {
+        int cap = k->placeq_cap ? 2 * k->placeq_cap : 8;
+        int64_t *q = av_realloc_array(k->placeq, cap, sizeof(*q));
+        if (!q)
+            return AVERROR(ENOMEM);
+        k->placeq     = q;
+        k->placeq_cap = cap;
+    }
+    if (t->nb_places == t->places_cap) {
+        int cap = t->places_cap ? 2 * t->places_cap : 8;
+        void *p = av_realloc_array(t->places, cap, sizeof(*t->places));
+        if (!p)
+            return AVERROR(ENOMEM);
+        t->places     = p;
+        t->places_cap = cap;
+    }
+    k->placeq[k->nb_placeq++] = k->bytes;
+    return t->nb_places++;
+}
+
+int ff_disctl_title_place_time(const DRTitle *t, int p, int64_t *time)
+{
+    if (p < 0 || p >= t->places_timed)
+        return AVERROR(EINVAL);
+    *time = t->places[p];
+    return 0;
+}
+
 int ff_disctl_title_finish(DRTitle *t)
 {
     return t->error ? t->error : sticky(t, title_finish(t));
@@ -1971,6 +2028,7 @@ void ff_disctl_title_close(DRTitle **tp)
             av_free(k->acc);
             av_free(k->rec);
             av_free(k->posq);
+            av_free(k->placeq);
         }
     }
     for (int i = 0; i < t->q_n; i++)
@@ -1980,6 +2038,7 @@ void ff_disctl_title_close(DRTitle **tp)
         ff_disctl_frame_unref(&t->bq[t->bq_head + i].f);
     av_free(t->bq);
     av_free(t->pend);
+    av_free(t->places);
     av_free(t->ev_count);
     ff_disctl_join_close(&t->join);
     av_free(t->t);

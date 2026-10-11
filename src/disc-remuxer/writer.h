@@ -36,6 +36,9 @@ typedef struct TitleOutcome {
     int     failed;            /* no usable output (or untested features met) */
     int     stopped;           /* stopped on request (engine_cancel()): its files are not complete */
     int64_t warnings;          /* warnings about its tracks */
+    int64_t damaged_ranges;    /* damaged data left out: its ranges (each a warning) and bytes */
+    int64_t damaged_bytes;
+    char    damage[4096];      /* the ranges, one per line (cut at the end when longer) */
     char    name[512];         /* the name its files take */
 } TitleOutcome;
 
