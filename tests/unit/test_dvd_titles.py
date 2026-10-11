@@ -130,6 +130,17 @@ def test_an_angle_block_of_another_size_than_the_title_s_angles_is_told_by_libdv
     assert logged("libdvdread: VTS_01 program chain 1: the angle block at cell 2 has 2 cells, the title 3 angles")
 
 
+def test_more_than_100_vobus_read_one_by_one_are_told_as_a_complex_multiplex(tmp_path):
+    # an angle block of two cells of 121 one-sector VOBUs: angle blocks are
+    # read VOBU by VOBU
+    first = flags.ANGLE_BLOCK | flags.FIRST_IN_BLOCK
+    last = flags.ANGLE_BLOCK | flags.LAST_IN_BLOCK
+    p = Pgc(cells=[c(0, 120, 1, 4, flags=first), c(121, 241, 1, 4, flags=last)])
+    folder = build(tmp_path, [p], [[(1, 1)]], vobus(0, 120, 1) + vobus(121, 241, 1), 242, angles=[2])
+    run(folder, [("A1", 1, 1, [1, 2])])
+    assert logged("title 1: 1 cells and 121 VOBUs are read one by one (a complex multiplex); this takes a while")
+
+
 def test_a_program_chain_failing_the_check_without_the_navigation_s_cells_is_left_out(tmp_path):
     # title 1 plays chain 1, then chain 2: four cells without playback time
     # (reason 3); the navigation recorded chain 1 only

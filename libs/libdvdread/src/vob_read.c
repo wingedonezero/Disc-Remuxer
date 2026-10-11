@@ -2330,6 +2330,357 @@ int DVDCellTrim_rec( dvd_vob_reader_t *v, int pgcn, int nb_chapters, int first_c
   return ret ? ret : trim_runs( &T, nb_chapters, first_cell, middle_cell );
 }
 
+/* ---- a title's segments and chapter places ---- */
+
+static int grow_array( void **p, int *alloc, int n, size_t elem )
+{
+  void *q;
+  if( n < *alloc )
+    return 0;
+  if( !(q = realloc( *p, (size_t)(*alloc = *alloc ? 2 * *alloc : 16) * elem )) )
+    return -1;
+  *p = q;
+  return 0;
+}
+
+static int add_extent( dvd_segment_t *g, uint32_t sector, uint32_t count )
+{
+  uint32_t logical = g->nb_extents ? g->extents[g->nb_extents - 1].logical + g->extents[g->nb_extents - 1].count : 0;
+  if( grow_array( (void **)&g->extents, &g->alloc_extents, g->nb_extents, sizeof(*g->extents) ) < 0 )
+    return -1;
+  g->extents[g->nb_extents++] = (dvd_extent_t){ logical, sector, count };
+  return 0;
+}
+
+static int add_segment( dvd_title_segments_t *o )
+{
+  if( grow_array( (void **)&o->segments, &o->alloc_segments, o->nb_segments, sizeof(*o->segments) ) < 0 )
+    return -1;
+  memset( &o->segments[o->nb_segments++], 0, sizeof(*o->segments) );
+  return 0;
+}
+
+static int add_cell_to_runs( dvd_segment_t *g, int cell )
+{
+  unsigned c = cell + 1;
+
+  if( g->nb_runs ) {
+    uint16_t *r = g->runs[g->nb_runs - 1];
+    if( c >= r[0] && c <= r[1] )
+      return 0;
+    if( r[1] + 1u == c ) {
+      r[1]++;
+      return 0;
+    }
+  }
+  if( grow_array( (void **)&g->runs, &g->alloc_runs, g->nb_runs, sizeof(*g->runs) ) < 0 )
+    return -1;
+  g->runs[g->nb_runs][0] = g->runs[g->nb_runs][1] = (uint16_t)c;
+  g->nb_runs++;
+  return 0;
+}
+
+/* The start of the VOBU holding the segment's last sector. */
+static uint32_t segment_last_vobu( dvd_vob_reader_t *v, int pgcn, const dvd_segment_t *g )
+{
+  dvd_reader_t *ctx = v->ctx;
+  const dvd_extent_t *e = &g->extents[g->nb_extents - 1];
+  const cell_rec_t *c = cell_of( v, pgcn, g->last_cell );
+  uint32_t x = e->sector + e->count - 1;
+
+  if( !ctx->vob_css[v->title].map_distrusted ) {
+    int at = map_lower( ctx, v->title, x );
+    if( at < ctx->vob_css[v->title].nb_map && at )
+      return ctx->vob_css[v->title].map[at - 1];
+  }
+  if( c->first_sector <= x && x <= c->last_sector ) {
+    uint32_t s = x > c->last_vobu_start_sector ? c->last_vobu_start_sector : c->first_sector, n, l;
+    for( ;; ) {
+      if( !DVDCellNextVobu_rec( v, pgcn, g->last_cell, s, &n, &l ) )
+        break;
+      if( x < n )
+        return s;
+      s = n;
+    }
+  }
+  Log3( ctx, "VTS_%02d program chain %d: the last VOBU of a segment is not found (sector %" PRIu32 ")", v->title,
+        pgcn + 1, x );
+  return c->last_vobu_start_sector;
+}
+
+/* The presentation start / end of the VOBU at s (recorded, else read). */
+static int vobu_times( dvd_vob_reader_t *v, uint32_t s, uint32_t *sp, uint32_t *ep )
+{
+  const dvd_vobu_rec_t *r = DVDFindVobu_rec( v, s, NULL );
+  dvd_vobu_nav_t n;
+  uint32_t next, len;
+
+  if( r ) {
+    if( r->next == DVD_VOBU_NO_NAV )
+      return 0;
+    *sp = r->vobu_s_ptm;
+    *ep = r->vobu_e_ptm;
+    return 1;
+  }
+  if( !DVDReadVobuNav_rec( v, s, &n ) )
+    return 0;
+  *sp = n.vobu_s_ptm;
+  *ep = n.vobu_e_ptm;
+  DVDRegisterVobu_rec( v, &n, s, 1, &next, &len );
+  return 1;
+}
+
+/* From the segment's first VOBU's start to the end of the VOBU at s (90 kHz). */
+static int segment_time( dvd_vob_reader_t *v, const dvd_segment_t *g, uint32_t s, int64_t *time )
+{
+  uint32_t s1, e1, s2, e2;
+
+  *time = 0;
+  if( !g->nb_extents || g->extents[0].sector == s )
+    return 1;
+  if( !vobu_times( v, g->extents[0].sector, &s1, &e1 ) ) {
+    Log3( v->ctx, "VTS_%02d: no navigation pack at sector %" PRIu32, v->title, g->extents[0].sector );
+    return 0;
+  }
+  if( !vobu_times( v, s, &s2, &e2 ) ) {
+    Log3( v->ctx, "VTS_%02d: no navigation pack at sector %" PRIu32, v->title, s );
+    return 0;
+  }
+  if( e1 < s1 || s2 < e1 || e2 < s2 )
+    return 0;
+  *time = e2 - s1;
+  return 1;
+}
+
+/* A VOBU of the cell that needs reading one by one (angle blocks,
+ * interleaved cells, a cell's last VOBU). */
+static int vobu_needs_scan( dvd_vob_reader_t *v, int pgcn, int cell, uint32_t s )
+{
+  const cell_rec_t *c = cell_of( v, pgcn, cell );
+  uint32_t n;
+
+  if( s < c->last_vobu_start_sector && !(CELL_FLAGS( c ) & 0xf4) ) {
+    if( CELL_FLAGS( c ) & 1 )
+      return !(DVDVobuMapTrusted_rec( v->ctx, v->title ) && DVDCellSeamlessAngleOk_rec( v, pgcn, cell ) &&
+               DVDNextVobu_rec( v, s, &n ));
+    DVDNextVobu_rec( v, s, &n );
+    return 0;
+  }
+  return 1;
+}
+
+/* The navigation is invalid inside a cell: where (the segments' spans so
+ * far), recorded. 0, < 0 the segments' times are broken. */
+static int nav_invalid( dvd_vob_reader_t *v, int pgcn, dvd_title_segments_t *o )
+{
+  uint64_t pos = 0;
+
+  for( int k = 0; k < o->nb_segments; k++ ) {
+    const dvd_segment_t *g = &o->segments[k];
+    uint32_t last, s1, e1, s2, e2;
+    if( !g->nb_extents || g->extents[0].sector == (last = segment_last_vobu( v, pgcn, g )) )
+      continue;
+    if( !vobu_times( v, g->extents[0].sector, &s1, &e1 ) || !vobu_times( v, last, &s2, &e2 ) ||
+        s1 > e1 || e1 > s2 || s2 > e2 ) {
+      Log3( v->ctx, "VTS_%02d program chain %d: segment %d: presentation times out of order", v->title, pgcn + 1,
+            k + 1 );
+      return -1;
+    }
+    pos += e2 - s1;
+  }
+  if( grow_array( (void **)&o->nav_invalid, &o->alloc_nav_invalid, o->nb_nav_invalid, sizeof(*o->nav_invalid) ) < 0 )
+    return -2;
+  o->nav_invalid[o->nb_nav_invalid++] = (uint32_t)(pos / 90000);
+  return 0;
+}
+
+void DVDFreeTitleSegments_rec( dvd_title_segments_t *o )
+{
+  if( !o )
+    return;
+  for( int k = 0; k < o->nb_segments; k++ ) {
+    free( o->segments[k].extents );
+    free( o->segments[k].runs );
+  }
+  free( o->segments );
+  free( o->nav_invalid );
+  memset( o, 0, sizeof(*o) );
+}
+
+int DVDTitleSegments_rec( dvd_vob_reader_t *v, int pgcn, const int *cells, int nb_cells, dvd_title_segments_t *o )
+{
+  dvd_reader_t *ctx = v->ctx;
+  const pgc_rec_t *p = pgc_of( v, pgcn );
+
+  memset( o, 0, sizeof(*o) );
+  if( !p )
+    return 0;
+  for( int i = 0; i < nb_cells; i++ ) {
+    const cell_rec_t *c = &p->cells[cells[i]];
+    uint32_t s = c->first_sector, n;
+    if( s < c->last_vobu_start_sector && !(CELL_FLAGS( c ) & 0xf4) ) {
+      if( !(CELL_FLAGS( c ) & 1) ) {
+        DVDNextVobu_rec( v, s, &n );
+        continue;
+      }
+      if( DVDVobuMapTrusted_rec( ctx, v->title ) && DVDCellSeamlessAngleOk_rec( v, pgcn, cells[i] ) &&
+          DVDNextVobu_rec( v, s, &n ) )
+        continue;
+    }
+    if( s >= v->blocks )
+      goto outside;
+    o->cells_to_scan++;
+    for( ;; ) {
+      o->vobus_to_scan += vobu_needs_scan( v, pgcn, cells[i], s );
+      if( s == c->last_vobu_start_sector || s > c->last_sector )
+        break;
+      if( !DVDNextVobu_rec( v, s, &n ) ) {
+        DVDNextVobu_rec( v, s, &n );
+        Log3( ctx, "VTS_%02d program chain %d: no VOBU after sector %" PRIu32, v->title, pgcn + 1, s );
+        return 0;
+      }
+      s = n;
+      if( s >= v->blocks )
+        goto outside;
+    }
+  }
+  o->counted = 1;
+
+  for( int i = 0; i < nb_cells; i++ ) {
+    int ci = cells[i];
+    const cell_rec_t *c = &p->cells[ci];
+    uint8_t fl = CELL_FLAGS( c );
+    int ns = !!(fl & 2), new_seg = ns, il = 0;
+    uint32_t s = c->first_sector, next = 0;
+
+    if( i ) {
+      int pi = cells[i - 1];
+      if( ci <= pi ) {
+        new_seg = 1;
+      } else {
+        for( int k = pi + 1; k < ci; k++ )
+          if( !BLOCK_TYPE( CELL_FLAGS( &p->cells[k] ) ) && (CELL_FLAGS( &p->cells[k] ) & 2) )
+            ns = 1;
+        new_seg = ns;
+      }
+    }
+    if( fl & 4 ) {
+      if( (BLOCK_TYPE( fl ) == 0 && BLOCK_MODE( fl ) == 0) || (BLOCK_TYPE( fl ) == 1 && BLOCK_MODE( fl ) >= 1) )
+        il = DVDIlvuWalk_rec( v, c->first_sector, c->last_sector + 1 );
+      else
+        Log3( ctx, "VTS_%02d program chain %d: interleaved cell %d outside an angle block", v->title, pgcn + 1,
+              ci + 1 );
+    }
+    while( next != DVD_VOBU_END && s < c->last_sector ) {
+      dvd_segment_t *g;
+      uint32_t len = 0;
+      int done = 0;
+      if( s >= v->blocks )
+        goto outside;
+      vobu_needs_scan( v, pgcn, ci, s );
+      if( il ) {
+        const dvd_vobu_rec_t *e = DVDFindVobu_rec( v, s, NULL );
+        if( e && !ctx->vob_css[v->title].map_distrusted ) {
+          uint32_t len0 = e->ilvu_ea + 1, target = s + len0, n2, l2;
+          int at = map_lower( ctx, v->title, target );
+          if( at < ctx->vob_css[v->title].nb_map && ctx->vob_css[v->title].map[at] == target && at ) {
+            uint32_t q = ctx->vob_css[v->title].map[at - 1];
+            if( DVDCellNavNextVobu_rec( v, pgcn, ci, q, &n2, &l2 ) && q + l2 == target ) {
+              next = n2;
+              len  = len0;
+              done = 1;
+            }
+          }
+        }
+      }
+      if( !done && !DVDCellNextVobu_rec( v, pgcn, ci, s, &next, &len ) )
+        return 0;
+      if( !o->nb_segments || new_seg ) {
+        if( add_segment( o ) < 0 || add_extent( &o->segments[o->nb_segments - 1], s, len ) < 0 )
+          return -1;
+      } else {
+        dvd_extent_t *e;
+        g = &o->segments[o->nb_segments - 1];
+        e = &g->extents[g->nb_extents - 1];
+        if( e->sector + e->count == s )
+          e->count += len;
+        else if( add_extent( g, s, len ) < 0 )
+          return -1;
+      }
+      g = &o->segments[o->nb_segments - 1];
+      g->last_cell = ci;
+      if( add_cell_to_runs( g, ci ) < 0 )
+        return -1;
+      if( next == DVD_VOBU_END ) {
+        int r;
+        next = s + len;
+        if( next < c->last_sector && (r = nav_invalid( v, pgcn, o )) < 0 )
+          return r == -2 ? -1 : 0;
+      }
+      new_seg = 0;
+      s = next;
+    }
+  }
+  for( int k = 0; k < o->nb_segments; k++ ) {
+    dvd_segment_t *g = &o->segments[k];
+    if( g->nb_extents )
+      g->size = (int64_t)(g->extents[g->nb_extents - 1].logical + g->extents[g->nb_extents - 1].count) * SECTOR;
+  }
+  return 1;
+outside:
+  Log3( ctx, "VTS_%02d program chain %d: a VOBU outside the title VOBs", v->title, pgcn + 1 );
+  return 0;
+}
+
+void DVDChapterPlaces_rec( dvd_vob_reader_t *v, int pgcn, const dvd_title_segments_t *o, dvd_chapter_place_t *ch,
+                           int nb )
+{
+  const pgc_rec_t *p = pgc_of( v, pgcn );
+  const dvd_chapter_place_t *prev = NULL;
+
+  for( int k = 0; k < nb; k++ ) {
+    dvd_chapter_place_t *c = &ch[k];
+    uint32_t x;
+    int seg = -1;
+    int64_t off = 0, tm;
+    c->segment = -1;
+    if( c->cell < 0 || !p || c->cell >= p->nr_of_cells )
+      continue;
+    x = p->cells[c->cell].first_sector;
+    for( int g = 0; g < o->nb_segments && seg < 0; g++ ) {
+      const dvd_segment_t *sg = &o->segments[g];
+      int64_t before = 0;
+      for( int e = 0; e < sg->nb_extents; e++ ) {
+        const dvd_extent_t *ex = &sg->extents[e];
+        if( ex->sector <= x && x < ex->sector + ex->count ) {
+          seg = g;
+          off = (before + x - ex->sector) * SECTOR;
+          break;
+        }
+        before += ex->count;
+      }
+    }
+    if( seg < 0 )
+      continue;
+    if( prev && (seg < prev->segment || (seg == prev->segment && off <= prev->offset)) )
+      continue;
+    c->segment = seg;
+    c->offset  = off;
+    c->time    = 0;
+    for( int g = 0; g < seg; g++ ) {
+      if( !segment_time( v, &o->segments[g], segment_last_vobu( v, pgcn, &o->segments[g] ), &tm ) )
+        Log3( v->ctx, "VTS_%02d program chain %d: segment %d has no length", v->title, pgcn + 1, g + 1 );
+      else
+        c->time += tm;
+    }
+    if( !segment_time( v, &o->segments[seg], x, &tm ) )
+      Log3( v->ctx, "VTS_%02d program chain %d: chapter %d has no time", v->title, pgcn + 1, k + 1 );
+    else
+      c->time += tm;
+    prev = c;
+  }
+}
+
 void DVDCloseTitleVOBs_rec( dvd_vob_reader_t *v )
 {
   if( !v )

@@ -381,6 +381,73 @@ typedef struct
 DVDREAD_API int DVDCellTrim_rec( dvd_vob_reader_t *, int pgcn, int nb_chapters, int first_cell, int middle_cell,
                                  int angle, int angles, int *cells, int *nb, dvd_cell_trim_t *result );
 
+/* ---- a title's segments and chapter places ---- */
+
+/** An extent of title VOB sectors: count sectors from sector, at logical
+ *  (the segment's own sector count before it). */
+typedef struct
+{
+  uint32_t logical, sector, count;
+} dvd_extent_t;
+
+/** A run of a title on one timeline: its extents in playing order, the
+ *  cell of its last VOBU, its cells as runs of consecutive cells (from 1),
+ *  its size in bytes. */
+typedef struct
+{
+  dvd_extent_t *extents;
+  int           nb_extents, alloc_extents;
+  int           last_cell;
+  uint16_t    (*runs)[2];
+  int           nb_runs, alloc_runs;
+  int64_t       size;
+} dvd_segment_t;
+
+/** A title's segments and what was found building them. */
+typedef struct
+{
+  dvd_segment_t *segments;
+  int            nb_segments, alloc_segments;
+  int            counted;             /* the VOBUs to read one by one were counted: */
+  unsigned       cells_to_scan, vobus_to_scan;
+  uint32_t      *nav_invalid;         /* seconds from the title's start where the navigation is invalid inside a
+                                         cell (a VOBU says the cell ends early), in the order found */
+  int            nb_nav_invalid, alloc_nav_invalid;
+} dvd_title_segments_t;
+
+/**
+ * The cells' VOBUs (cells: the title's cell list, indexes in the chain) as
+ * extents of the title VOBs, in segments: a new segment at a cell that
+ * starts a new timeline (stc_discontinuity; also when a cell skipped between
+ * two of the list does, outside a block, or the list goes back); contiguous
+ * VOBUs merged; interleaved cells walked unit by unit (the VOBU address map
+ * gives a unit's last VOBU). First the VOBUs that must be read one by one
+ * (angle blocks, interleaved cells, a cell's last VOBU) are counted. 1 done,
+ * 0 failed (a VOBU outside the title VOBs or not found, presentation times
+ * out of order where the navigation is invalid; what was found so far is
+ * kept), -1 no memory. Free with DVDFreeTitleSegments_rec().
+ */
+DVDREAD_API int DVDTitleSegments_rec( dvd_vob_reader_t *, int pgcn, const int *cells, int nb_cells,
+                                      dvd_title_segments_t *out );
+DVDREAD_API void DVDFreeTitleSegments_rec( dvd_title_segments_t * );
+
+/** A chapter: its program's entry cell (in; -1 none) and where it is in the
+ *  segments (out; segment -1: not placed): the byte offset in the segment
+ *  and its time (90 kHz) from the title's start to the end of its cell's
+ *  first VOBU. */
+typedef struct
+{
+  int     cell;
+  int     segment;
+  int64_t offset;
+  int64_t time;
+} dvd_chapter_place_t;
+
+/** The chapters' places in the segments (a chapter before the previous one
+ *  placed is not placed). */
+DVDREAD_API void DVDChapterPlaces_rec( dvd_vob_reader_t *, int pgcn, const dvd_title_segments_t *segs,
+                                       dvd_chapter_place_t *chapters, int nb );
+
 /** Closes the title VOBs; a damaged range still open is reported. */
 DVDREAD_API void DVDCloseTitleVOBs_rec( dvd_vob_reader_t * );
 
