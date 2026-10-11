@@ -182,5 +182,7 @@ def test_a_duplicate_of_a_program_chain_libdvdread_cannot_read_is_left_out(tmp_p
     d = Disc.folder(folder)
     res, ev = trace_disc(d.d, 1)
     assert cells(ev) == [(1, 1)] and stopped(res, ev)
+    # libdvdread reports it (the DVD part logs the disc's reports)
+    lib.ff_dvd_reports_log(d.d)
     assert any("duplicate of PGC 2" in line for line in LOG)
     d.close()

@@ -456,6 +456,9 @@ static int dvd_load(AVFormatContext *s)
     if ((ret = ff_dvd_disc_open(s, d->fs, d->dvd_flat ? "" : "/VIDEO_TS", folder, folder ? NULL : d->fs->label,
                                 &c->disc)) < 0)
         return ret;
+    /* every information file through libdvdread once: what it finds */
+    ff_dvd_ifo_check(&c->disc);
+    ff_dvd_reports_log(&c->disc);
     if (av_log_get_level() >= AV_LOG_DEBUG) {
         AVBPrint bp;
         av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
@@ -473,6 +476,8 @@ static int dvd_load(AVFormatContext *s)
     if ((o.cell_mode != DVD_CELL_MODE_TRIM && ff_dvd_scan(&c->disc, NULL, NULL, &c->scan) == AVERROR(ENOMEM)) ||
         (ret = ff_dvd_titles_build(&c->disc, &c->scan, &o, &c->titles)) < 0)
         return ret < 0 ? ret : AVERROR(ENOMEM);
+    /* what the navigation found */
+    ff_dvd_reports_log(&c->disc);
     if (av_log_get_level() >= AV_LOG_DEBUG && (dump = ff_dvd_titles_dump(&c->titles))) {
         debug_lines(s, "DVD titles:", dump);
         av_free(dump);
@@ -491,6 +496,14 @@ static int disc_done(AVFormatContext *s)
     for (int i = 1; i < c->disc.nb_ifos; i++)
         css |= c->disc.ifos[i] && c->disc.ifos[i]->css_state != 0;
     d->info.encrypted = css;
+    {
+        int harmless, breaks, ret;
+        ff_dvd_reports_count(&c->disc, &harmless, &breaks);
+        if ((ret = !harmless && !breaks ? ff_disc_add_prop(s, "IFO and navigation check", "passed") :
+                   ff_disc_add_prop(s, "IFO and navigation check", "%d finding(s) that break the DVD-Video rules, "
+                                    "%d harmless", breaks, harmless)) < 0)
+            return ret;
+    }
     return ff_disc_add_prop(s, "Protection: CSS", "%s", css ? "yes" :
                             "no (no scrambled sector in what was read)");
 }

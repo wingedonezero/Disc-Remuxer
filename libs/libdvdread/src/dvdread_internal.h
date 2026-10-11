@@ -56,6 +56,9 @@ struct dvd_reader_s
     uint64_t ifoBUPflags[2];
 };
 
+/* The read position of a file (bytes from its start). */
+int64_t DVDFileTell_( dvd_file_t *dvd_file );
+
 struct ifo_handle_private_s
 {
     ifo_handle_t handle;
@@ -63,6 +66,11 @@ struct ifo_handle_private_s
     dvd_file_t *file;
     /* References taken with ifoAddRef() on top of the opener's own one */
     unsigned int extra_refs;
+    /* For reports: the file read ("VTS_01_0.IFO") and where the bytes of
+     * its latest reads lie in it, so a field's byte offset can be told */
+    char name[16];
+    struct { const uint8_t *data; size_t size; int64_t pos; } span[32];
+    unsigned int nb_span;
 };
 
 enum TagIdentifier {

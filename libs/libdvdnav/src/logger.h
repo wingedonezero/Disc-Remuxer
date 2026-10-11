@@ -22,6 +22,16 @@
 DVDNAV_API void dvdnav_log( void *priv, const dvdnav_logger_cb *logcb,
                  dvdnav_logger_level_t level, const char *fmt, ... );
 
+/* A finding about the disc's data (dvd_report_t) with a formatted text and
+ * the sector it was found at (-1: none): to the reporter when there is one
+ * (then also logged at the debug level), else logged at its level. */
+DVDNAV_API void dvdnav_report( void *priv, const dvdnav_logger_cb *logcb,
+                               dvd_report_level_t level, int64_t sector,
+                               const char *fmt, ... );
+
+#define REPORT(ctx, level, sector, ...) \
+  dvdnav_report(ctx->priv, &ctx->logcb, level, sector, __VA_ARGS__)
+
 #define LOG(ctx, level, ...) \
   dvdnav_log(ctx->priv, &ctx->logcb, level, __VA_ARGS__)
 #define Log0(ctx, ...) LOG(ctx, DVDNAV_LOGGER_LEVEL_ERROR, __VA_ARGS__)

@@ -1821,6 +1821,11 @@ int32_t DVDFileSeek( dvd_file_t *dvd_file, int32_t offset )
   return offset;
 }
 
+int64_t DVDFileTell_( dvd_file_t *dvd_file )
+{
+  return dvd_file ? (int64_t) dvd_file->seek_pos : -1;
+}
+
 int DVDFileSeekForce(dvd_file_t *dvd_file, int offset, int force_size)
 {
   dvd_reader_t *ctx = dvd_file->ctx;

@@ -256,7 +256,7 @@ int get_ID(vm_t *vm, int id) {
   /* Relies on state to get the correct pgcit. */
   pgcit = get_PGCIT(vm);
   if(pgcit == NULL) {
-    Log1(vm, "PGCIT null!");
+    REPORT(vm, DVD_REPORT_WARN, -1, "no program chain table for the current domain");
     return 0;
   }
 #ifdef TRACE
@@ -308,7 +308,7 @@ int get_PGCN(vm_t *vm) {
       pgcN++;
     }
   }
-  Log0(vm, "get_PGCN failed. Was trying to find pgcN in domain %d",
+  REPORT(vm, DVD_REPORT_WARN, -1, "the current program chain is not in its domain's table (domain %d)",
          (vm->state).domain);
   return 0; /*  error */
 }
@@ -317,7 +317,7 @@ const pgcit_t* get_MENU_PGCIT(vm_t *vm, ifo_handle_t *h, uint16_t lang) {
   int i;
 
   if(h == NULL || h->pgci_ut == NULL) {
-    Log0(vm, "*** pgci_ut handle is NULL ***");
+    REPORT(vm, DVD_REPORT_WARN, -1, "no menu table (PGCI_UT)");
     return NULL; /*  error? */
   }
 
@@ -326,10 +326,16 @@ const pgcit_t* get_MENU_PGCIT(vm_t *vm, ifo_handle_t *h, uint16_t lang) {
         && h->pgci_ut->lu[i].lang_code != lang)
     i++;
   if(i == h->pgci_ut->nr_of_lus) {
-    Log1(vm, "Language '%c%c' not found, using '%c%c' instead",
-            (char)(lang >> 8), (char)(lang & 0xff),
-             (char)(h->pgci_ut->lu[0].lang_code >> 8),
-            (char)(h->pgci_ut->lu[0].lang_code & 0xff));
+    /* menus in other languages only are normal; a first unit whose code is
+     * no language code (ISO 639: two lower-case letters) is a finding */
+    uint16_t first = h->pgci_ut->lu[0].lang_code;
+    if((first >> 8) >= 'a' && (first >> 8) <= 'z' && (first & 0xff) >= 'a' && (first & 0xff) <= 'z')
+      Log2(vm, "Menus: no language unit for '%c%c': the first one ('%c%c') is used",
+           (char)(lang >> 8), (char)(lang & 0xff), (char)(first >> 8), (char)(first & 0xff));
+    else
+      REPORT(vm, DVD_REPORT_INFO, -1, "menus: the first language unit's code is no language code "
+             "(bytes %02x %02x): it is used for '%c%c', which has no unit",
+             (unsigned)(first >> 8), (unsigned)(first & 0xff), (char)(lang >> 8), (char)(lang & 0xff));
     char *buffer = malloc(3 * h->pgci_ut->nr_of_lus + 1);
     if(buffer)
     {

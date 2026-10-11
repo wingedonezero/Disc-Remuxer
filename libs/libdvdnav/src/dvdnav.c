@@ -359,7 +359,7 @@ int64_t dvdnav_convert_time(const dvd_time_t *time) {
  * Most of the code in here is copied from xine's MPEG demuxer
  * so any bugs which are found in that should be corrected here also.
  */
-static int32_t dvdnav_decode_packet(dvdnav_t *this, uint8_t *p,
+static int32_t dvdnav_decode_packet(dvdnav_t *this, uint8_t *p, uint32_t sector,
                                     dsi_t *nav_dsi, pci_t *nav_pci) {
   int32_t        bMpeg1 = 0;
   uint32_t       nHeaderLen;
@@ -386,7 +386,8 @@ static int32_t dvdnav_decode_packet(dvdnav_t *this, uint8_t *p,
 
   /* we should now have a PES packet here */
   if (p[0] || p[1] || (p[2] != 1)) {
-    Log1(this, "demux error! %02x %02x %02x (should be 0x000001)",p[0],p[1],p[2]);
+    REPORT(this, DVD_REPORT_WARN, sector, "sector %u: no PES packet where the navigation packet must be "
+           "(start code %02x %02x %02x, should be 00 00 01)", sector, p[0], p[1], p[2]);
     return 0;
   }
 
@@ -406,7 +407,7 @@ static int32_t dvdnav_decode_packet(dvdnav_t *this, uint8_t *p,
 #endif
 
     if(p[0] == 0x00) {
-      navRead_PCI(nav_pci, p+1);
+      navRead_PCI_ctx(vm_get_dvd_reader(this->vm), nav_pci, p+1);
     }
 
     p += nPacketLen;
@@ -415,7 +416,7 @@ static int32_t dvdnav_decode_packet(dvdnav_t *this, uint8_t *p,
     if(p[6] == 0x01) {
       nPacketLen = p[4] << 8 | p[5];
       p += 6;
-      navRead_DSI(nav_dsi, p+1);
+      navRead_DSI_ctx(vm_get_dvd_reader(this->vm), nav_dsi, p+1);
     }
     return 1;
   }
@@ -467,15 +468,16 @@ static int dvdnav_check_vobu(dvdnav_t *this, uint32_t sector) {
   dsi_t dsi;
 
   if(dvdnav_read_cache_block(this->cache, sector, 1, &buf) <= 0) {
-    Log1(this, "Error reading NAV packet at sector %u.", sector);
+    REPORT(this, DVD_REPORT_ERROR, sector, "sector %u: the navigation packet cannot be read", sector);
     return 0;
   }
   /* A NAV packet without a PCI part leaves the PCI untouched: start from a
    * sector number no real packet carries, so that case fails the check. */
   memset(&pci, 0xff, sizeof(pci));
   memset(&dsi, 0, sizeof(dsi));
-  if(!dvdnav_decode_packet(this, buf, &dsi, &pci)) {
-    Log1(this, "Expected NAV packet but none found at sector %u.", sector);
+  if(!dvdnav_decode_packet(this, buf, sector, &dsi, &pci)) {
+    REPORT(this, DVD_REPORT_WARN, sector, "sector %u: no navigation packet where a VOBU must start: not followed",
+           sector);
     if(buf != data)
       dvdnav_free_cache_block(this, buf);
     return 0;
@@ -483,8 +485,8 @@ static int dvdnav_check_vobu(dvdnav_t *this, uint32_t sector) {
   if(buf != data)
     dvdnav_free_cache_block(this, buf);
   if(pci.pci_gi.nv_pck_lbn != sector) {
-    Log2(this, "Fake NAV packet at sector %u (it names sector %u), not followed.",
-         sector, pci.pci_gi.nv_pck_lbn);
+    REPORT(this, DVD_REPORT_WARN, sector, "sector %u: a navigation packet naming sector %u: not followed",
+           sector, pci.pci_gi.nv_pck_lbn);
     return 0;
   }
   return 1;
@@ -726,12 +728,15 @@ dvdnav_status_t dvdnav_get_next_cache_block(dvdnav_t *this, uint8_t **buf,
         block = this->position_next.cell_start + this->position_next.block;
         result = dvdnav_read_cache_block(this->cache, block, 1, buf);
         if(result <= 0) {
+          REPORT(this, DVD_REPORT_ERROR, block, "sector %d: the navigation packet cannot be read: playback stops", block);
           printerr("Error reading NAV packet.");
           pthread_mutex_unlock(&this->vm_lock);
           return DVDNAV_STATUS_ERR;
         }
         /* Decode nav into pci and dsi. Then get next VOBU info. */
-        if(!dvdnav_decode_packet(this, *buf, &this->dsi, &this->pci)) {
+        if(!dvdnav_decode_packet(this, *buf, block, &this->dsi, &this->pci)) {
+          REPORT(this, DVD_REPORT_ERROR, block, "sector %d: no navigation packet where a VOBU must start: "
+                 "playback stops", block);
           printerr("Expected NAV packet but none found.");
           pthread_mutex_unlock(&this->vm_lock);
           return DVDNAV_STATUS_ERR;
@@ -1030,12 +1035,18 @@ dvdnav_status_t dvdnav_get_next_cache_block(dvdnav_t *this, uint8_t **buf,
     result = dvdnav_read_cache_block(this->cache, this->vobu.vobu_start + this->vobu.vobu_next, 1, buf);
 
     if(result <= 0) {
+      REPORT(this, DVD_REPORT_ERROR, this->vobu.vobu_start + this->vobu.vobu_next,
+             "sector %d: the navigation packet cannot be read: playback stops",
+             this->vobu.vobu_start + this->vobu.vobu_next);
       printerr("Error reading NAV packet.");
       pthread_mutex_unlock(&this->vm_lock);
       return DVDNAV_STATUS_ERR;
     }
     /* Decode nav into pci and dsi. Then get next VOBU info. */
-    if(!dvdnav_decode_packet(this, *buf, &this->dsi, &this->pci)) {
+    if(!dvdnav_decode_packet(this, *buf, this->vobu.vobu_start + this->vobu.vobu_next, &this->dsi, &this->pci)) {
+      REPORT(this, DVD_REPORT_ERROR, this->vobu.vobu_start + this->vobu.vobu_next,
+             "sector %d: no navigation packet where a VOBU must start: playback stops",
+             this->vobu.vobu_start + this->vobu.vobu_next);
       printerr("Expected NAV packet but none found.");
       pthread_mutex_unlock(&this->vm_lock);
       return DVDNAV_STATUS_ERR;
@@ -1087,6 +1098,8 @@ dvdnav_status_t dvdnav_get_next_cache_block(dvdnav_t *this, uint8_t **buf,
   this->vobu.blockN++;
   result = dvdnav_read_cache_block(this->cache, this->vobu.vobu_start + this->vobu.blockN, 1, buf);
   if(result <= 0) {
+    REPORT(this, DVD_REPORT_ERROR, this->vobu.vobu_start + this->vobu.blockN,
+           "sector %d cannot be read: playback stops", this->vobu.vobu_start + this->vobu.blockN);
     printerr("Error reading from DVD.");
     pthread_mutex_unlock(&this->vm_lock);
     return DVDNAV_STATUS_ERR;

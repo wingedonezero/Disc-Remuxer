@@ -24,6 +24,16 @@
 DVDREAD_API void DVDReadLog( void *priv, const dvd_logger_cb *logcb,
                  dvd_logger_level_t level, const char *fmt, ... );
 
+/* A finding (dvd_reader.h, dvd_report_t) to the reporter when there is one
+ * (then also logged at the debug level), else logged at its level. */
+DVDREAD_API void DVDReadReport( void *priv, const dvd_logger_cb *logcb,
+                                const dvd_report_t *report );
+/* A finding with just a formatted text (and where it was found). */
+DVDREAD_API void DVDReadReportf( void *priv, const dvd_logger_cb *logcb,
+                                 dvd_report_level_t level, const char *file,
+                                 const char *table, int64_t sector,
+                                 const char *fmt, ... );
+
 #define LOG(ctx, level, ...) \
   DVDReadLog(ctx->priv, &ctx->logcb, level, __VA_ARGS__)
 #define Log0(ctx, ...) LOG(ctx, DVD_LOGGER_LEVEL_ERROR, __VA_ARGS__)

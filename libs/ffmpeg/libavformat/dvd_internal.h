@@ -178,6 +178,19 @@ typedef struct DVDText {
     int           nb_nodes;
 } DVDText;
 
+/** A finding of libdvdread / libdvdnav about the disc's data (their
+ *  dvd_report_t), kept once. */
+typedef struct DVDReport {
+    int          level;                 /**< dvd_report_level_t: info (harmless), warning, error */
+    char         file[16];              /**< "VTS_01_0.IFO", "": not a file's data (navigation) */
+    char         table[24];
+    char        *text;
+    int64_t      offset;                /**< byte offset in the file, -1 */
+    int64_t      sector;                /**< VOB sector, -1 */
+    uint8_t      bytes[16];             /**< the field's bytes (at most 16) */
+    int          nb_bytes;
+} DVDReport;
+
 typedef struct DVDDisc {
     void        *log;
     DiscIOFS    *fs;
@@ -192,6 +205,9 @@ typedef struct DVDDisc {
     DVDVobuRecs  vobus;                 /**< VOBU records of title sets with a title_vob_base */
     char        *volume_name;           /**< the volume label, else the provider identifier */
     char        *text_name;             /**< the disc's name in its text data, NULL when none */
+    DVDReport   *reports;               /**< what libdvdread / libdvdnav found, each once */
+    int          nb_reports, reports_cap;
+    int          reports_said;          /**< the reports logged so far */
 } DVDDisc;
 
 /* ---- dvd_ifo.c ---- */
@@ -235,6 +251,14 @@ typedef struct DVDNavHooks {
  *  from the disc layer). hooks may be NULL. The disc must outlive the
  *  navigator (dvdnav_close). */
 int  ff_dvd_nav_open(DVDDisc *d, const DVDNavHooks *hooks, struct dvdnav_s **out);
+/** The IFO check: every information file read once by libdvdread (all its
+ *  tables), what it finds kept as reports of the disc. */
+void ff_dvd_ifo_check(DVDDisc *d);
+/** The reports not logged yet: the findings that break a rule as warnings,
+ *  the harmless ones as detail lines, one summary line per file. */
+void ff_dvd_reports_log(DVDDisc *d);
+/** Counts of the reports: harmless ones and rule breaks. */
+void ff_dvd_reports_count(const DVDDisc *d, int *harmless, int *breaks);
 
 /** Read sector of a title set's title VOBs (menu 0) or menu VOB through
  *  the disc layer, as the navigator reads it. */
