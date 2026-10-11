@@ -364,11 +364,16 @@ static int64_t file_size( dvd_reader_t *ctx, const char *name )
 static int load_ifo( dvd_reader_t *ctx, int index, dvd_ifo_rec_t *f )
 {
   uint8_t header[HEADER_SIZE];
+  const uint8_t *cache;
   char name[16];
   uint32_t pgcit;
+  int cache_size;
 
   if( !(f->ifo = ifoOpen_rec( ctx, index )) || !ifoRead_rec_bytes( f->ifo, 0, header, sizeof(header) ) )
     return -1;
+  memcpy( f->header, header, sizeof(f->header) );
+  ifoGet_rec_state( f->ifo, &f->bup_only, &cache, &cache_size );
+  f->whole = cache != NULL;
   if( is_image( ctx ) ) {
     int64_t bup;
     snprintf( name, sizeof(name), index ? "VTS_%02d_0.IFO" : "VIDEO_TS.IFO", index );

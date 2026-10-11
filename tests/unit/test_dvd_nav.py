@@ -6,7 +6,7 @@ folder's files (title VOB files joined as bytes) or the image's sectors the
 IFO header gives. A title then plays as when libdvdread opens the folder
 itself."""
 
-from helpers import LOG, install_log, lib, logged
+from helpers import ffi, LOG, install_log, lib, logged
 from helpers.dvdnav import Pgc, build, cell, cells, dvd, navs, stopped, trace, trace_disc, vobus
 from synth.image import Img, iso
 from test_dvd_disc import Disc
@@ -107,7 +107,7 @@ def test_a_title_set_that_could_not_be_loaded_has_no_files(tmp_path):
         b[:12] = b"NOTADVDVIDEO"
         p.write_bytes(b)
     d = Disc.folder(folder)
-    assert d.ifo(1).failed
+    assert d.ifo(1).ifo == ffi.NULL
     res, ev = trace_disc(d.d, 1)
     assert cells(ev) == [], "no title set to play"
     d.close()

@@ -27,7 +27,7 @@ class Reading:
     """A reading of title set 1's title VOBs of its own."""
 
     def __init__(self, d, vts_=1):
-        self.d, self.f = d, d.ifo(vts_)
+        self.d, self.f = d, vts_
         self.vr = lib.ff_dvd_title_vobs_open(d.d, self.f)
         assert self.vr != ffi.NULL
 
@@ -123,8 +123,8 @@ def test_the_title_set_s_own_reading_says_its_ranges_but_keeps_them_out_of_the_f
     before = findings(d)
     install_log(lib.AV_LOG_DEBUG)
     buf = ffi.new("uint8_t[]", S)
-    assert lib.ff_dvd_title_vob_sector(d.d, d.ifo(1), 1, buf) == 0
-    assert lib.ff_dvd_title_vob_sector(d.d, d.ifo(1), 2, buf) == 1
+    assert lib.ff_dvd_title_vob_sector(d.d, 1, 1, buf) == 0
+    assert lib.ff_dvd_title_vob_sector(d.d, 1, 2, buf) == 1
     assert logged("DVD: VTS_01_1.VOB: title VOB sectors 1-1 (VTS_01_1.VOB bytes 2048-4095): every byte is "
                   "zero: left out")
     assert findings(d) == before
@@ -137,7 +137,7 @@ def test_a_title_set_s_css_key_is_one_for_all_its_readings_and_a_missing_one_fai
     install_log(lib.AV_LOG_DEBUG)
     buf = ffi.new("uint8_t[]", S)
     # the title set's own reading finds the key ...
-    assert lib.ff_dvd_title_vob_sector(d.d, d.ifo(1), 1, buf) == 1 and css(d) == (1, KEY)
+    assert lib.ff_dvd_title_vob_sector(d.d, 1, 1, buf) == 1 and css(d) == (1, KEY)
     assert logged("DVD: VTS_01: sector 1 is scrambled: looking for the CSS title key")
     assert logged("DVD: VTS_01: CSS title key found")
     # ... and a reading of its own uses it: not looked for again, descrambled
@@ -187,7 +187,7 @@ def test_the_ifo_header_s_place_is_kept_when_it_starts_with_the_vob_s_first_nav_
                   "its first sector is a VOB's first navigation pack")
     r = Reading(d)
     buf = ffi.new("uint8_t[]", S)
-    assert lib.ff_dvd_title_vob_read(d.d, d.ifo(1), r.vr, 0, buf, ffi.NULL) == 1
+    assert lib.ff_dvd_title_vob_read(d.d, 1, r.vr, 0, buf, ffi.NULL) == 1
     assert bytes(ffi.buffer(buf, S)) == real[:S]
     r.close()
     d.close()
@@ -275,7 +275,7 @@ def test_a_sector_that_cannot_be_read_where_the_title_vobs_start_is_read_through
     assert r.read(12)[0] < 0, "no file view for this segment yet"
     assert use_view(r, [(0, 16)]) == 1
     buf = ffi.new("uint8_t[]", S)
-    assert lib.ff_dvd_title_vob_read(d.d, d.ifo(1), r.vr, 12, buf, ffi.NULL) == 1
+    assert lib.ff_dvd_title_vob_read(d.d, 1, r.vr, 12, buf, ffi.NULL) == 1
     assert bytes(ffi.buffer(buf, S)) == marked(12)
     assert logged("VTS_01: title VOB sector 12 cannot be read where the title VOBs start: read through the VOB files")
     r.close()
@@ -335,26 +335,26 @@ def test_a_nav_pack_read_for_the_title_list_goes_through_libdvdread_s_checks(tmp
     vob.write_bytes(bytes(data))
     d = Disc.folder(path)
     before = findings(d)
-    n = ffi.new("DVDNav *")
+    n = ffi.new("dvd_vobu_nav_t *")
     install_log(lib.AV_LOG_VERBOSE)
-    assert lib.ff_dvd_nav_read(d.d, d.ifo(1), 0, n) == 1
+    assert lib.ff_dvd_nav_read(d.d, 1, 0, n) == 1
     assert n.vobu_ea == 5 and n.next_vobu & 0x3fffffff == 0x3fffffff   # 6 sectors, the end of the cell
     assert findings(d) == (before[0] + 1, before[1])
     assert logged("navigation packet at sector 0: pci->pci_gi.zero1 == 0 does not hold: kept"), "said when found"
     lib.ff_dvd_reports_log(d.d)
     assert logged("1 harmless finding(s)"), "and counted in the summary"
     # no NAV pack: recorded, not read again
-    assert lib.ff_dvd_nav_read(d.d, d.ifo(1), 1, n) == 0
+    assert lib.ff_dvd_nav_read(d.d, 1, 1, n) == 0
     d.close()
 
 
 def test_a_sector_missing_from_the_vobu_address_map_is_said_as_an_ifo_finding(tmp_path):
     d = Disc.folder(folder_with(tmp_path, [plain()]))
-    assert lib.ff_dvd_map_trusted(d.d, d.ifo(1))
+    assert lib.ff_dvd_map_trusted(d.d, 1)
     install_log(lib.AV_LOG_WARNING)
-    assert lib.ff_dvd_vobu_start_check(d.d, d.ifo(1), 0) == 1, "on the map"
-    assert lib.ff_dvd_vobu_start_check(d.d, d.ifo(1), 1) == 0, "off the map, and no NAV pack there"
-    assert not lib.ff_dvd_map_trusted(d.d, d.ifo(1))
+    assert lib.ff_dvd_vobu_start_check(d.d, 1, 0) == 1, "on the map"
+    assert lib.ff_dvd_vobu_start_check(d.d, 1, 1) == 0, "off the map, and no NAV pack there"
+    assert not lib.ff_dvd_map_trusted(d.d, 1)
     assert logged("IFO check: VTS_01_0.IFO VTS_VOBU_ADMAP: title VOB sector 1 starts no VOBU of the VOBU address map: "
                   "its VOBU starts are not trusted (the VOBs must be scanned)")
     d.close()
@@ -378,7 +378,7 @@ def test_menu_vobs_start_where_the_vob_s_first_nav_pack_is_when_header_and_file_
     install_log(lib.AV_LOG_WARNING)
     d = Disc.image(im)
     assert d.ret == 0
-    assert d.ifo(1).menu_vob_base == where["VTS_01_0.VOB"] and d.ifo(1).title_vob_base == where["VTS_01_1.VOB"]
+    assert d.ifo(1).menu_vob_start == where["VTS_01_0.VOB"] and d.ifo(1).title_vob_start == where["VTS_01_1.VOB"]
     assert logged(f"IFO check: VTS_01_0.IFO VTSI_MAT at byte 0xc0 (bytes 00 00 00 {where['VTS_01_0.VOB'] - 3 - at:02x}): "
                   f"the IFO header puts the menu VOBs at sector {where['VTS_01_0.VOB'] - 3} (vtsm_vobs "
                   f"{where['VTS_01_0.VOB'] - 3 - at}), the file system's VTS_01_0.VOB is at sector "

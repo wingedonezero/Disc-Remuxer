@@ -95,6 +95,9 @@ typedef struct
 typedef struct
 {
   ifo_handle_t      *ifo;               /* ifoOpen_rec(); NULL: not read, the disc goes on without it */
+  uint8_t            header[0x400];     /* its VMGI_MAT / VTSI_MAT as read (the chosen copy's bytes) */
+  int                bup_only;          /* the IFO's signature is wrong: only its BUP is read */
+  int                whole;             /* the whole IFO was read once (else its tables piece by piece) */
   int64_t            ifo_sector;        /* image: the IFO's place; 0 in a folder */
   int64_t            bup_sector;        /* image: the BUP's place (the IFO's when the BUP is not one piece) */
   uint32_t           title_vob_sectors; /* the title VOBs' length (the VMG: its menu VOB's); image: by the

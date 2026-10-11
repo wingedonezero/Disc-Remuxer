@@ -104,7 +104,8 @@ class Disc:
         return cls(vol.fs, 0, label=ffi.string(vol.fs.label), keep=(img, vol))
 
     def ifo(self, n):
-        return self.d.ifos[n]
+        """Information file n (0: the VMG) as libdvdread read it (dvd_ifo_rec_t)."""
+        return self.d.rec.ifos[n]
 
     def name(self):
         return ffi.string(self.d.volume_name).decode()
@@ -129,12 +130,12 @@ def test_a_disc_folder_is_read_and_named_by_its_provider_identifier(tmp_path):
     install_log(lib.AV_LOG_WARNING)
     d = Disc.folder(folder(tmp_path, m=vmg(provider=b"KANGAROO_JACK")))
     assert d.ret == 0
-    assert d.d.nb_ifos == 2 and d.d.nr_of_title_sets == 1
-    assert not d.ifo(0).failed and not d.ifo(1).failed
-    assert d.ifo(1).cache != ffi.NULL, "the whole IFO read once"
-    assert d.ifo(1).nb_pgcs == 1 and d.ifo(1).nb_vobu_map == 1
+    assert d.d.rec.nr_of_title_sets == 1
+    assert d.ifo(0).ifo != ffi.NULL and d.ifo(1).ifo != ffi.NULL
+    assert d.ifo(1).whole, "the whole IFO read once"
+    assert d.ifo(1).pgcit.nr_of_pgcs == 1 and d.ifo(1).nb_vobu_map == 1
     assert d.name() == "KANGAROO_JACK"
-    assert d.d.text_name == ffi.NULL
+    assert d.d.rec.text_name == ffi.NULL
     assert warnings() == [], "a consistent disc: no warning"
     d.close()
 
@@ -147,7 +148,7 @@ def test_a_wrong_ifo_signature_reads_the_bup(tmp_path):
     ifo.write_bytes(b)
     install_log(lib.AV_LOG_WARNING)
     d = Disc.folder(path)
-    assert d.ret == 0 and not d.ifo(1).failed and d.ifo(1).bup_only
+    assert d.ret == 0 and d.ifo(1).ifo != ffi.NULL and d.ifo(1).bup_only
     # libdvdread's report
     assert logged("IFO check: VTS_01_0.IFO at byte 0x0: the IFO does not start with DVDVIDEO-VTS: its BUP is read "
                   "instead")
@@ -164,7 +165,7 @@ def test_a_title_set_whose_ifo_and_bup_are_both_wrong_stays_a_placeholder(tmp_pa
     install_log(lib.AV_LOG_WARNING)
     d = Disc.folder(path)
     assert d.ret == 0, "the disc goes on without the title set"
-    assert d.ifo(1).failed
+    assert d.ifo(1).ifo == ffi.NULL
     assert logged("neither the IFO nor the BUP starts with DVDVIDEO-VTS")
     assert logged("title set 1 cannot be read: the disc is read without it")
     d.close()
@@ -189,7 +190,7 @@ def test_a_missing_ifo_is_read_from_its_bup(tmp_path):
     (path / "VIDEO_TS" / "VTS_01_0.IFO").unlink()
     install_log(lib.AV_LOG_WARNING)
     d = Disc.folder(path)
-    assert d.ret == 0 and not d.ifo(1).failed
+    assert d.ret == 0 and d.ifo(1).ifo != ffi.NULL
     assert logged("IFO check: VTS_01_0.IFO: the IFO is missing: its BUP is read as the IFO")
     d.close()
 
@@ -199,7 +200,7 @@ def test_a_missing_bup_lets_the_ifo_stand_in(tmp_path):
     (path / "VIDEO_TS" / "VTS_01_0.BUP").unlink()
     install_log(lib.AV_LOG_WARNING)
     d = Disc.folder(path)
-    assert d.ret == 0 and not d.ifo(1).failed
+    assert d.ret == 0 and d.ifo(1).ifo != ffi.NULL
     assert logged("IFO check: VTS_01_0.IFO: the BUP is missing: the IFO stands in for it")
     d.close()
 
@@ -211,9 +212,9 @@ def test_title_vobs_that_cannot_be_opened_are_said_with_why(tmp_path):
     (path / "VIDEO_TS" / "VTS_01_1.VOB").unlink()
     install_log(lib.AV_LOG_WARNING)
     d = Disc.folder(path)
-    assert d.ret == 0 and not d.ifo(1).failed
-    assert lib.ff_dvd_own_reading(d.d, d.ifo(1)) == ffi.NULL
-    assert lib.ff_dvd_title_vobs_open(d.d, d.ifo(1)) == ffi.NULL
+    assert d.ret == 0 and d.ifo(1).ifo != ffi.NULL
+    assert lib.ff_dvd_own_reading(d.d, 1) == ffi.NULL
+    assert lib.ff_dvd_title_vobs_open(d.d, 1) == ffi.NULL
     assert logged("IFO check: VTS_01_0.IFO: title set 1: its title VOBs cannot be opened: VTS_01_1.VOB is missing")
     d.close()
 
@@ -272,7 +273,7 @@ def test_more_than_99_title_sets_refuse_the_disc(tmp_path):
 def test_a_cell_off_the_vobu_address_map_makes_it_untrusted(tmp_path):
     install_log(lib.AV_LOG_WARNING)
     d = Disc.folder(folder(tmp_path, v=vts(vobus=[1])))
-    assert d.ret == 0 and not lib.ff_dvd_map_trusted(d.d, d.ifo(1))
+    assert d.ret == 0 and not lib.ff_dvd_map_trusted(d.d, 1)
     assert logged("program chain 1 cell 1: sector 0 is no VOBU start of the VOBU address map")
     d.close()
 
@@ -288,7 +289,7 @@ def test_a_program_chain_with_more_than_128_commands_is_left_out(tmp_path):
     pgcs = [Pgc(cells=[Cell.new(0, 0, 9, 1)], pre=[bytes(8)] * 129), Pgc(cells=[Cell.new(0, 0, 9, 1)])]
     install_log(lib.AV_LOG_WARNING)
     d = Disc.folder(folder(tmp_path, v=vts(pgcs=pgcs)))
-    assert d.ret == 0 and d.ifo(1).nb_pgcs == 2
+    assert d.ret == 0 and d.ifo(1).pgcit.nr_of_pgcs == 2
     assert logged("program chain 1 has 129 commands (more than 128): it is left out")
     d.close()
 
@@ -302,7 +303,7 @@ def test_a_program_chain_starting_where_another_starts_is_left_out(tmp_path):
     dvd.write_disc(path, vmg(), [(ifo, dvd.title_vobs(10, [dvd.nav(0, 10, None)]))])
     install_log(lib.AV_LOG_VERBOSE)
     d = Disc.folder(path)
-    assert d.ret == 0 and d.ifo(1).pgc_same_as[1] == 0
+    assert d.ret == 0 and d.ifo(1).pgcit.same_as[1] == 0
     assert logged("program chain 2 starts where program chain 1 does: it is left out")
     d.close()
 
@@ -333,7 +334,7 @@ def test_a_program_chain_starting_outside_the_table_is_left_out_and_reported_wit
         patch.at = pgcit + 0x14
     install_log(lib.AV_LOG_VERBOSE)
     d = Disc.folder(two_pgc_disc(tmp_path, patch))
-    assert d.ret == 0 and d.ifo(1).nb_pgcs == 2 and d.ifo(1).pgcs[1] == ffi.NULL
+    assert d.ret == 0 and d.ifo(1).pgcit.nr_of_pgcs == 2 and d.ifo(1).pgcit.pgcs[1] == ffi.NULL
     assert logged(f"IFO check: VTS_01_0.IFO VTS_PGCIT at byte {patch.at:#x}: program chain 2 starts outside "
                   "VTS_PGCIT")
     d.close()
@@ -346,7 +347,7 @@ def test_a_program_chain_whose_command_table_runs_past_the_table_is_left_out(tmp
         ifo[pgcit + second + 0xe4:pgcit + second + 0xe6] = struct.pack(">H", ct)
     install_log(lib.AV_LOG_VERBOSE)
     d = Disc.folder(two_pgc_disc(tmp_path, patch))
-    assert d.ret == 0 and d.ifo(1).pgcs[0] != ffi.NULL and d.ifo(1).pgcs[1] == ffi.NULL
+    assert d.ret == 0 and d.ifo(1).pgcit.pgcs[0] != ffi.NULL and d.ifo(1).pgcit.pgcs[1] == ffi.NULL
     assert logged("program chain 2 runs past the end of VTS_PGCIT: it is left out")
     d.close()
 
@@ -359,7 +360,7 @@ def test_fields_past_the_table_read_as_0_and_the_program_chain_stays(tmp_path):
         ifo[pgcit + second + pm:pgcit + second + pm + 1] = b"\x07"   # in the file, but not read
     install_log(lib.AV_LOG_VERBOSE)
     d = Disc.folder(two_pgc_disc(tmp_path, patch))
-    p = d.ifo(1).pgcs[1]
+    p = d.ifo(1).pgcit.pgcs[1]
     assert d.ret == 0 and p != ffi.NULL and p.nr_of_programs == 1 and p.program_map[0] == 0
     assert logged("program chain 2: fields past the table's end are read as 0")
     d.close()
@@ -372,7 +373,7 @@ def test_a_cell_table_pointer_of_0_reads_the_cells_from_the_program_chain_s_star
         patch.first = struct.unpack(">I", ifo[pgcit + second + 8:pgcit + second + 12])[0]
     install_log(lib.AV_LOG_VERBOSE)
     d = Disc.folder(two_pgc_disc(tmp_path, patch))
-    p = d.ifo(1).pgcs[1]
+    p = d.ifo(1).pgcit.pgcs[1]
     assert d.ret == 0 and p != ffi.NULL and p.cells[0].first_sector == patch.first
     assert logged("program chain 2 has 1 cell(s) but its cell playback table pointer is 0: they are read from the "
                   "program chain's start")
@@ -388,7 +389,7 @@ def test_an_unreadable_menu_vobu_map_leaves_the_title_set_s_vobu_starts_untruste
     dvd.write_disc(path, vmg(), [(ifo, dvd.title_vobs(10, [dvd.nav(0, 10, None)]))])
     install_log(lib.AV_LOG_VERBOSE)
     d = Disc.folder(path)
-    assert d.ret == 0 and not d.ifo(1).failed and not lib.ff_dvd_map_trusted(d.d, d.ifo(1))
+    assert d.ret == 0 and d.ifo(1).ifo != ffi.NULL and not lib.ff_dvd_map_trusted(d.d, 1)
     assert logged("IFO check: VTS_01_0.IFO VTSM_VOBU_ADMAP: the VOBU address map at sector 32767 cannot be read: its "
                   "VOBU starts are not trusted")
     assert logged(f"IFO check: VTS_01_0.IFO VTSM_VOBU_ADMAP at byte {0x7fff * S:#x}: VTSM_VOBU_ADMAP at sector 32767 "
@@ -400,7 +401,7 @@ def test_the_text_data_names_the_disc(tmp_path):
     install_log(lib.AV_LOG_WARNING)
     d = Disc.folder(folder(tmp_path, m=vmg(text=txtdt([(0x38, b"Other"), (0x30, b"DVD Demystified 2.0")]))))
     assert d.ret == 0
-    assert ffi.string(d.d.text_name) == b"DVD Demystified 2.0", "item 0x30 first"
+    assert ffi.string(d.d.rec.text_name) == b"DVD Demystified 2.0", "item 0x30 first"
     assert warnings() == []
     d.close()
 
@@ -409,7 +410,7 @@ def test_text_bytes_outside_0x20_to_0x7a_are_dropped_and_logged(tmp_path):
     # a choice of the reading, not a fault of the disc: a harmless finding
     install_log(lib.AV_LOG_VERBOSE)
     d = Disc.folder(folder(tmp_path, m=vmg(text=txtdt([(0x30, b"Caf\xe9 {1}")]))))
-    assert ffi.string(d.d.text_name) == b"Caf 1"
+    assert ffi.string(d.d.rec.text_name) == b"Caf 1"
     assert logged('IFO check: VIDEO_TS.IFO TXTDT_MGI: text data item 0x30: 3 byte(s) outside 0x20-0x7A dropped '
                   '(kept: "Caf 1")')
     assert logged("VIDEO_TS.IFO: 1 harmless finding(s)")
@@ -419,7 +420,7 @@ def test_text_bytes_outside_0x20_to_0x7a_are_dropped_and_logged(tmp_path):
 def test_text_data_in_another_character_set_is_not_used(tmp_path):
     install_log(lib.AV_LOG_VERBOSE)
     d = Disc.folder(folder(tmp_path, m=vmg(text=txtdt([(0x30, b"Name")], charset=0x02))))
-    assert d.ret == 0 and d.d.text_name == ffi.NULL
+    assert d.ret == 0 and d.d.rec.text_name == ffi.NULL
     assert logged("IFO check: VIDEO_TS.IFO TXTDT_MGI: text data in character set 0x02 is not read")
     d.close()
 
@@ -465,7 +466,7 @@ def test_an_image_is_named_by_its_label_and_finds_its_title_vobs():
     f = d.ifo(1)
     assert f.ifo_sector == where["VTS_01_0.IFO"] and f.bup_sector == where["VTS_01_0.BUP"]
     assert f.title_vob_start == where["VTS_01_1.VOB"], "IFO position + vtstt_vobs, the file system agreeing"
-    assert f.title_vob_blocks == 10
+    assert f.title_vob_sectors == 10
     assert warnings() == []
     d.close()
 
@@ -475,13 +476,13 @@ def test_an_unreadable_ifo_piece_is_read_from_the_bup():
     im, _ = image(files, bad=["VTS_01_0.IFO+0"])
     install_log(lib.AV_LOG_WARNING)
     d = Disc.image(im)
-    assert d.ret == 0 and not d.ifo(1).failed
+    assert d.ret == 0 and d.ifo(1).ifo != ffi.NULL
     assert logged("IFO check: VTS_01_0.IFO at byte 0x0: IFO bytes 0-1023 read from the BUP")
     # the whole IFO: the first try (IFO, whole) fails, the second (BUP, one
     # sector) reads, and the copy that read is kept
     assert logged("reading the whole IFO") and logged("from the IFO failed") and logged("try 1 of 16")
     assert not logged("try 2 of 16")
-    assert d.ifo(1).cache != ffi.NULL
+    assert d.ifo(1).whole
     d.close()
 
 
@@ -490,7 +491,7 @@ def test_an_ifo_table_unreadable_in_both_copies_leaves_the_title_set_out():
     im, _ = image(files, bad=["VTS_01_0.IFO+1", "VTS_01_0.BUP+1"])
     install_log(lib.AV_LOG_WARNING)
     d = Disc.image(im)
-    assert d.ret == 0 and d.ifo(1).failed
+    assert d.ret == 0 and d.ifo(1).ifo == ffi.NULL
     assert logged("try 16 of 16"), "16 tries, alternating"
     assert logged("cannot be read: its tables are read piece by piece")
     assert logged("IFO check: VTS_01_0.IFO: title set 1 cannot be read: the disc is read without it"), \
@@ -504,7 +505,7 @@ def test_an_image_without_a_bup_reads_the_ifo_alone():
     install_log(lib.AV_LOG_WARNING)
     d = Disc.image(im)
     f = d.ifo(1)
-    assert d.ret == 0 and not f.failed and f.bup_sector == f.ifo_sector
+    assert d.ret == 0 and f.ifo != ffi.NULL and f.bup_sector == f.ifo_sector
     assert logged("IFO check: VTS_01_0.IFO: the BUP is missing: the IFO stands in for it")
     d.close()
 
@@ -515,7 +516,7 @@ def test_an_image_without_an_ifo_does_not_read_its_bup():
     im, _ = image([f for f in files if f[0] != "VTS_01_0.IFO"])
     install_log(lib.AV_LOG_WARNING)
     d = Disc.image(im)
-    assert d.ret == 0 and d.ifo(1).failed
+    assert d.ret == 0 and d.ifo(1).ifo == ffi.NULL
     assert logged("IFO check: VTS_01_0.IFO: the IFO cannot be opened")
     assert logged("IFO check: VTS_01_0.IFO: title set 1 cannot be read: the disc is read without it")
     d.close()
@@ -540,7 +541,7 @@ def test_title_vobs_the_header_and_the_file_system_disagree_on_start_where_the_v
     install_log(lib.AV_LOG_WARNING)
     d = Disc.image(im)
     vob, header = where["VTS_01_1.VOB"], where["VTS_01_1.VOB"] - 3
-    assert d.ret == 0 and d.ifo(1).title_vob_start == d.ifo(1).title_vob_base == vob
+    assert d.ret == 0 and d.ifo(1).title_vob_start == vob
     assert logged(f"IFO check: VTS_01_0.IFO VTSI_MAT at byte 0xc4 (bytes 00 00 00 {header - where['VTS_01_0.IFO']:02x}): "
                   f"the IFO header puts the title VOBs at sector {header} (vtstt_vobs {header - where['VTS_01_0.IFO']}), "
                   f"the file system's VTS_01_1.VOB is at sector {vob}: they are read from the file system's: its first "

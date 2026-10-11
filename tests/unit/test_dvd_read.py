@@ -106,13 +106,13 @@ def css(d, vts_=1):
     """Title set vts_'s CSS title key as libdvdread keeps it: (state, key);
     state 1 found, 0 not looked for, -1 none."""
     key = ffi.new("uint8_t[]", 5)
-    state = lib.ff_dvd_css_state(d.d, d.ifo(vts_), key)
+    state = lib.ff_dvd_css_state(d.d, vts_, key)
     return state, bytes(ffi.buffer(key, 5)) if state == 1 else None
 
 
 def read(d, sector, vts_=1):
     buf = ffi.new("uint8_t[]", S)
-    ret = lib.ff_dvd_title_vob_sector(d.d, d.ifo(vts_), sector, buf)
+    ret = lib.ff_dvd_title_vob_sector(d.d, vts_, sector, buf)
     return ret, bytes(ffi.buffer(buf, S))
 
 
@@ -208,7 +208,7 @@ def test_a_title_set_inside_another_ones_title_vobs_takes_its_key():
     d = Disc.image(im)
     assert d.ret == 0
     f1, f2 = d.ifo(1), d.ifo(2)
-    assert f1.title_vob_base == f2.title_vob_base == vob_at
+    assert f1.title_vob_start == f2.title_vob_start == vob_at
     assert read(d, 1, 1)[0] == 1 and css(d, 1)[0] == 1
     install_log(lib.AV_LOG_DEBUG)
     ret, got = read(d, 1, 2)
@@ -225,15 +225,15 @@ def test_corpus_scrambled_disc_every_title_set_key_found_and_checked():
     install_log(lib.AV_LOG_DEBUG)
     found = 0
     buf = ffi.new("uint8_t[]", S)
-    for i in range(1, d.d.nb_ifos):
-        f = d.d.ifos[i]
-        if f == ffi.NULL or f.failed:
+    for i in range(1, d.d.rec.nr_of_title_sets + 1):
+        f = d.d.rec.ifos[i]
+        if f.ifo == ffi.NULL:
             continue
-        for s in range(min(f.title_vob_blocks, 20000)):
-            assert lib.ff_dvd_title_vob_sector(d.d, f, s, buf) >= 0, (i, s)
-            if lib.ff_dvd_css_state(d.d, f, ffi.NULL):
+        for s in range(min(f.title_vob_sectors, 20000)):
+            assert lib.ff_dvd_title_vob_sector(d.d, i, s, buf) >= 0, (i, s)
+            if lib.ff_dvd_css_state(d.d, i, ffi.NULL):
                 break
-        state = lib.ff_dvd_css_state(d.d, f, ffi.NULL)
+        state = lib.ff_dvd_css_state(d.d, i, ffi.NULL)
         assert state in (0, 1), i
         found += state == 1
     assert found and not logged("is wrong")

@@ -1,47 +1,55 @@
-/* libavformat/dvd_internal.h: the DVD-Video disc structure. */
+/* libdvdread (dvdread/ifo_types.h, disc_read.h): the disc's structure as
+ * libdvdread reads it; libavformat/dvd_internal.h: the DVD part's disc. */
 
-typedef struct DVDCell {
+typedef struct {
     uint32_t     first_sector;
     uint32_t     last_vobu_start_sector;
     uint32_t     last_sector;
     ...;
-} DVDCell;
+} cell_rec_t;
 
-typedef struct DVDPgc {
+typedef struct {
     uint8_t      nr_of_programs;
     uint8_t      nr_of_cells;
     uint8_t     *program_map;
-    DVDCell     *cells;
+    cell_rec_t  *cells;
     ...;
-} DVDPgc;
+} pgc_rec_t;
 
-typedef struct DVDIfo {
-    int          index;
-    int          failed;
+typedef struct {
+    int          nr_of_pgcs;
+    pgc_rec_t  **pgcs;
+    int         *same_as;
+} pgcit_rec_t;
+
+typedef ... ifo_handle_t;
+
+typedef struct {
+    ifo_handle_t *ifo;
     int          bup_only;
-    const uint8_t *cache;
-    int          cache_size;
+    int          whole;
     int64_t      ifo_sector;
     int64_t      bup_sector;
-    uint32_t     title_vob_blocks;
-    uint32_t     title_vob_start;
+    uint32_t     title_vob_sectors;
+    int64_t      menu_vob_start;
+    int64_t      title_vob_start;
     int          no_pgcit;
-    int          map_untrusted_at_load;
-    DVDPgc     **pgcs;
-    int         *pgc_same_as;
-    int          nb_pgcs;
+    const pgcit_rec_t *pgcit;
     int          nb_vobu_map;
-    uint32_t     menu_vob_base;
-    uint32_t     title_vob_base;
+    int          map_trusted;
     ...;
-} DVDIfo;
+} dvd_ifo_rec_t;
+
+typedef struct {
+    int          nr_of_title_sets;
+    char        *text_name;
+    dvd_ifo_rec_t ifos[100];
+    ...;
+} dvd_disc_rec_t;
 
 typedef struct DVDDisc {
-    DVDIfo     **ifos;
-    int          nb_ifos;
-    int          nr_of_title_sets;
     char        *volume_name;
-    char        *text_name;
+    dvd_disc_rec_t *rec;
     ...;
 } DVDDisc;
 
@@ -102,21 +110,20 @@ void DVDCloseTitleVOBs_rec(dvd_vob_reader_t *v);
 /* libavformat/dvd_read.c: a title VOB sector through the checks (a reading
  * of its own: its damaged ranges given back); through the bridge: a title's
  * segment read through the checks */
-dvd_vob_reader_t *ff_dvd_title_vobs_open(DVDDisc *d, DVDIfo *f);
-dvd_vob_reader_t *ff_dvd_own_reading(DVDDisc *d, DVDIfo *f);
-int ff_dvd_title_vob_read(DVDDisc *d, DVDIfo *f, dvd_vob_reader_t *vr, uint32_t sector, uint8_t *buf,
+dvd_vob_reader_t *ff_dvd_title_vobs_open(DVDDisc *d, int vts);
+dvd_vob_reader_t *ff_dvd_own_reading(DVDDisc *d, int vts);
+int ff_dvd_title_vob_read(DVDDisc *d, int vts, dvd_vob_reader_t *vr, uint32_t sector, uint8_t *buf,
                           dvd_vob_damage_t *ended);
-int ff_dvd_title_vob_sector(DVDDisc *d, DVDIfo *f, uint32_t sector, uint8_t *buf);
-int ff_dvd_css_state(DVDDisc *d, const DVDIfo *f, uint8_t *key);
-int ff_dvd_map_trusted(const DVDDisc *d, const DVDIfo *f);
+int ff_dvd_title_vob_sector(DVDDisc *d, int vts, uint32_t sector, uint8_t *buf);
+int ff_dvd_css_state(DVDDisc *d, int vts, uint8_t *key);
+int ff_dvd_map_trusted(const DVDDisc *d, int vts);
 /* VOBUs on libdvdread's records (dvd_read.c, vob_read.h) */
 typedef struct {
     uint32_t vobu_s_ptm, vobu_e_ptm, vobu_ea, ilvu_ea, next_vobu;
     uint16_t category;
 } dvd_vobu_nav_t;
-typedef dvd_vobu_nav_t DVDNav;
-int ff_dvd_nav_read(DVDDisc *d, DVDIfo *f, uint32_t sector, DVDNav *n);
-int ff_dvd_vobu_start_check(DVDDisc *d, DVDIfo *f, uint32_t sector);
+int ff_dvd_nav_read(DVDDisc *d, int vts, uint32_t sector, dvd_vobu_nav_t *n);
+int ff_dvd_vobu_start_check(DVDDisc *d, int vts, uint32_t sector);
 int tb_dvd_segment_dump(DVDDisc *d, int cell_mode, int t, int seg, const char *path, int64_t *nread, int64_t *left);
 
 /* libdvdcss (our addition): one block descrambled with a title key */

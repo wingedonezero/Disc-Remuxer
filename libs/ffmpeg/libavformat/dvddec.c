@@ -1,14 +1,16 @@
 /*
- * DVD-Video: the format part of the disc layer (disc.h). It reads the
- * disc's structure (dvd_disc.c: the VMG, the title table, the text data
- * and every title set's IFO with its checks) and describes the disc: its
- * label is the volume label (a folder: the VMG's provider identifier), its
- * name the text data's when it has one; its title list (dvd_titles.c) with
- * each title's tracks after its probe (dvd_streams.c: captions, audio
- * streams without data) and the disc layer's stream pass (discpass.c:
- * duplicates, details, data). An opened
- * title is read by the disc layer's title reader: its segments one after
- * another, each sector through dvd_read.c (the sector check, CSS).
+ * DVD-Video: the format part of the disc layer (disc.h). The DVD engine
+ * (libdvdread, libdvdnav) reads and checks the disc, plays its navigation,
+ * builds its title list and probes each title's streams, and says what it
+ * finds in the program's log; this part asks for it (dvd_disc.c,
+ * dvd_scan.c, dvd_titles.c) and describes the disc from the engine's own
+ * structures: its label is the volume label (a folder: the VMG's provider
+ * identifier), its name the text data's when it has one; its titles with
+ * their tracks (from the title sets' attributes, after the probe) and the
+ * disc layer's stream pass (discpass.c: duplicates, details, data). An
+ * opened title is read by the disc layer's title reader: its segments one
+ * after another, each sector through libdvdread (dvd_read.c: the sector
+ * check, CSS).
  *
  * This file is part of FFmpeg.
  *
@@ -214,7 +216,7 @@ static int title_tracks(AVFormatContext *s, const dvd_title_t *t, DiscTrack *out
                                               AV_CODEC_ID_NONE };
     static const int id_base[8] = { 0x80, 0, 0x1c0, 0x1c0, 0xa0, 0, 0x88, 0 };
     DVDDisc *disc = &((DVDDemuxContext *)ff_disc_part(s))->disc;
-    const uint8_t *h = disc->ifos[t->vtsn]->header;
+    const uint8_t *h = ff_dvd_set(disc, t->vtsn)->header;
     int n = 0;
     DiscStreamInfo *k;
 
@@ -428,7 +430,7 @@ static int open_title(AVFormatContext *s, int i, int part, int *second_view)
     c->title = t;
     memset(&c->ended, 0, sizeof(c->ended));
     c->view_seg = -1;
-    if (!(c->vobs = ff_dvd_title_vobs_open(&c->disc, c->disc.ifos[t->vtsn])))
+    if (!(c->vobs = ff_dvd_title_vobs_open(&c->disc, t->vtsn)))
         return AVERROR(EIO);
     if (!(c->chapter_times = av_calloc(FFMAX(t->nb_chapters, 1), sizeof(*c->chapter_times))) ||
         !(c->chapter_clips = av_calloc(FFMAX(t->nb_chapters, 1), sizeof(*c->chapter_clips))) ||
@@ -469,13 +471,13 @@ static void menu_languages(AVFormatContext *s, DVDDisc *disc)
     char codes[32][4];
     int n = 0;
 
-    for (int i = 0; i < disc->nb_ifos && !n; i++) {
-        DVDIfo *f = disc->ifos[i];
+    for (int i = 0; i < ff_dvd_nb_sets(disc) && !n; i++) {
+        const dvd_ifo_rec_t *f = ff_dvd_set(disc, i);
         uint8_t p[DVD_SECTOR];
         uint32_t sector;
 
-        if (!f || f->failed || !(sector = ff_dvd_header32(f, i ? 0xD0 : 0xC8)) ||
-            ff_dvd_ifo_read(disc, f, sector, p, sizeof(p)) < 0)
+        if (!f || !(sector = ff_dvd_header32(f, i ? 0xD0 : 0xC8)) ||
+            ff_dvd_ifo_read(disc, i, sector, p, sizeof(p)) < 0)
             continue;
         for (int k = 0; k < FFMIN(AV_RB16(p), 32) && 8 + 8 * k + 2 <= DVD_SECTOR; k++) {
             const uint8_t *lu = p + 8 + 8 * k;
@@ -510,7 +512,7 @@ static int dvd_load(AVFormatContext *s)
         av_bprint_finalize(&bp, NULL);
     }
     d->info.label = c->disc.volume_name;
-    d->info.name  = c->disc.text_name;
+    d->info.name  = c->disc.rec->text_name;
     menu_languages(s, &c->disc);
 
     /* the titles: the navigation played (not for trimmed cells), then the
@@ -532,11 +534,11 @@ static int dvd_load(AVFormatContext *s)
  * not for that region (1-8). */
 static int add_region(AVFormatContext *s, DVDDisc *disc)
 {
-    const DVDIfo *vmg = disc->nb_ifos ? disc->ifos[0] : NULL;
+    const dvd_ifo_rec_t *vmg = ff_dvd_set(disc, 0);
     unsigned mask;
     char list[32] = "";
 
-    if (!vmg || vmg->failed)
+    if (!vmg)
         return 0;
     mask = ff_dvd_header32(vmg, DVD_VMG_CATEGORY) >> 16 & 0xff;
     if (!mask)
@@ -557,8 +559,8 @@ static int disc_done(AVFormatContext *s)
     DVDDemuxContext *c = ff_disc_part(s);
     int css = 0, ret;
 
-    for (int i = 1; i < c->disc.nb_ifos; i++)
-        css |= c->disc.ifos[i] && ff_dvd_css_state(&c->disc, c->disc.ifos[i], NULL) != 0;
+    for (int i = 1; i < ff_dvd_nb_sets(&c->disc); i++)
+        css |= ff_dvd_css_state(&c->disc, i, NULL) != 0;
     d->info.encrypted = css;
     {
         int harmless, breaks;

@@ -55,14 +55,14 @@ int ff_dvd_titles_build(DVDDisc *d, const dvdnav_scan_results_t *scan, const DVD
 
 int ff_dvd_cell_check(DVDDisc *d, int vts, int pgcn, int cell, int mode)
 {
-    DVDIfo *f = vts > 0 && vts < d->nb_ifos ? d->ifos[vts] : NULL;
-    DVDPgc *p = f && !f->failed && pgcn > 0 && pgcn <= f->nb_pgcs ? f->pgcs[pgcn - 1] : NULL;
+    const dvd_ifo_rec_t *f = vts > 0 ? ff_dvd_set(d, vts) : NULL;
+    const pgc_rec_t *p = f && f->pgcit && pgcn > 0 && pgcn <= f->pgcit->nr_of_pgcs ? f->pgcit->pgcs[pgcn - 1] : NULL;
     dvd_vob_reader_t *vr;
 
     if (!p || cell < 1 || cell > p->nr_of_cells)
         return AVERROR(EINVAL);
     DVDSetCellCheck_rec(d->reader, (dvd_cell_check_t)mode, av_get_random_seed());
-    vr = ff_dvd_own_reading(d, f);
+    vr = ff_dvd_own_reading(d, vts);
     return !vr || DVDCellCheckFailed_rec(vr, p->number, cell - 1);
 }
 

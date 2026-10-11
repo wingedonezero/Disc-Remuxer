@@ -35,35 +35,34 @@
 
 #include "dvd_internal.h"
 
-dvd_vob_reader_t *ff_dvd_title_vobs_open(DVDDisc *d, DVDIfo *f)
+dvd_vob_reader_t *ff_dvd_title_vobs_open(DVDDisc *d, int vts)
 {
-    dvd_vob_reader_t *vr;
+    const dvd_ifo_rec_t *f = ff_dvd_set(d, vts);
 
-    if (ff_dvd_reader_open(d) < 0)
+    if (ff_dvd_reader_open(d) < 0 || !f)
         return NULL;
-    vr = DVDOpenTitleVOBs_rec(f->rec, f->index);  /* when they cannot be opened, libdvdread says why */
-    return vr;
+    return DVDOpenTitleVOBs_rec(f->ifo, vts);   /* when they cannot be opened, libdvdread says why */
 }
 
-int ff_dvd_title_vob_read(DVDDisc *d, DVDIfo *f, dvd_vob_reader_t *vr, uint32_t sector, uint8_t *buf,
+int ff_dvd_title_vob_read(DVDDisc *d, int vts, dvd_vob_reader_t *vr, uint32_t sector, uint8_t *buf,
                           dvd_vob_damage_t *ended)
 {
     int ret;
 
-    if (!vr && !(vr = ff_dvd_own_reading(d, f)))
+    if (!vr && !(vr = ff_dvd_own_reading(d, vts)))
         return AVERROR(EINVAL);
     ret = DVDReadTitleVOBSector_rec(vr, sector, buf, ended);
     return ret == -2 ? AVERROR_INVALIDDATA : ret < 0 ? AVERROR(EIO) : ret;
 }
 
-int ff_dvd_css_state(DVDDisc *d, const DVDIfo *f, uint8_t *key)
+int ff_dvd_css_state(DVDDisc *d, int vts, uint8_t *key)
 {
-    return d->reader ? DVDTitleVOBKey_rec(d->reader, f->index, key) : 0;
+    return d->reader ? DVDTitleVOBKey_rec(d->reader, vts, key) : 0;
 }
 
-int ff_dvd_title_vob_sector(DVDDisc *d, DVDIfo *f, uint32_t sector, uint8_t *buf)
+int ff_dvd_title_vob_sector(DVDDisc *d, int vts, uint32_t sector, uint8_t *buf)
 {
-    return ff_dvd_title_vob_read(d, f, NULL, sector, buf, NULL);
+    return ff_dvd_title_vob_read(d, vts, NULL, sector, buf, NULL);
 }
 
 uint32_t ff_dvd_segment_blocks(const dvd_segment_t *g)
@@ -100,7 +99,7 @@ int ff_dvd_segment_read_vobs(DVDDisc *d, const dvd_title_t *t, dvd_vob_reader_t 
 
     if (ended)
         memset(ended, 0, sizeof(*ended));
-    return ret < 0 ? ret : ff_dvd_title_vob_read(d, d->ifos[t->vtsn], vr, sector, buf, ended);
+    return ret < 0 ? ret : ff_dvd_title_vob_read(d, t->vtsn, vr, sector, buf, ended);
 }
 
 int ff_dvd_segment_view(const dvd_title_t *t, dvd_vob_reader_t *vr, int seg)
@@ -127,75 +126,27 @@ int ff_dvd_segment_read(DVDDisc *d, const dvd_title_t *t, int seg, uint32_t bloc
     return ff_dvd_segment_read_vobs(d, t, NULL, seg, block, buf, NULL);
 }
 
-/* ---- VOBUs: libdvdread's records on f's own reading ---- */
+/* ---- VOBUs: libdvdread's records on the title set's own reading ---- */
 
-dvd_vob_reader_t *ff_dvd_own_reading(DVDDisc *d, DVDIfo *f)
+dvd_vob_reader_t *ff_dvd_own_reading(DVDDisc *d, int vts)
 {
-    /* when they cannot be opened libdvdread says why (a report) */
-    return DVDDiscTitleVOBs_rec(d->rec, f->index);
+    /* when they cannot be opened libdvdread says why */
+    return DVDDiscTitleVOBs_rec(d->rec, vts);
 }
 
-int ff_dvd_is_nav_pack(const uint8_t *b)
+int ff_dvd_nav_read(DVDDisc *d, int vts, uint32_t sector, dvd_vobu_nav_t *n)
 {
-    return DVDIsNavPack_rec(b);
-}
-
-int ff_dvd_nav_read(DVDDisc *d, DVDIfo *f, uint32_t sector, DVDNav *n)
-{
-    dvd_vob_reader_t *vr = ff_dvd_own_reading(d, f);
+    dvd_vob_reader_t *vr = ff_dvd_own_reading(d, vts);
     return vr ? DVDReadVobuNav_rec(vr, sector, n) : 0;
 }
 
-int ff_dvd_vobu_note(DVDDisc *d, DVDIfo *f, uint32_t sector, const uint8_t *b)
+int ff_dvd_map_trusted(const DVDDisc *d, int vts)
 {
-    dvd_vob_reader_t *vr = ff_dvd_own_reading(d, f);
-    return vr && DVDNoteVobuSector_rec(vr, sector, b) < 0 ? AVERROR(ENOMEM) : 0;
+    return DVDVobuMapTrusted_rec(d->reader, vts);
 }
 
-int ff_dvd_vobu_register(DVDDisc *d, DVDIfo *f, const DVDNav *n, uint32_t sector, int allow_self,
-                         uint32_t *next, uint32_t *len)
+int ff_dvd_vobu_start_check(DVDDisc *d, int vts, uint32_t sector)
 {
-    dvd_vob_reader_t *vr = ff_dvd_own_reading(d, f);
-    return vr ? DVDRegisterVobu_rec(vr, n, sector, allow_self, next, len) : 0;
-}
-
-int ff_dvd_vobu_mark_bad(DVDDisc *d, DVDIfo *f, uint32_t sector)
-{
-    dvd_vob_reader_t *vr = ff_dvd_own_reading(d, f);
-    return vr && DVDMarkVobuBad_rec(vr, sector) < 0 ? AVERROR(ENOMEM) : 0;
-}
-
-const DVDVobuRec *ff_dvd_vobu_find(DVDDisc *d, DVDIfo *f, uint32_t sector, int64_t *next_key)
-{
-    dvd_vob_reader_t *vr = ff_dvd_own_reading(d, f);
-
-    if (!vr) {
-        if (next_key)
-            *next_key = -1;
-        return NULL;
-    }
-    return DVDFindVobu_rec(vr, sector, next_key);
-}
-
-int ff_dvd_map_trusted(const DVDDisc *d, const DVDIfo *f)
-{
-    return DVDVobuMapTrusted_rec(d->reader, f->index);
-}
-
-int ff_dvd_vobu_start_check(DVDDisc *d, DVDIfo *f, uint32_t sector)
-{
-    dvd_vob_reader_t *vr = ff_dvd_own_reading(d, f);
+    dvd_vob_reader_t *vr = ff_dvd_own_reading(d, vts);
     return vr ? DVDVobuStart_rec(vr, sector) : 0;
-}
-
-int ff_dvd_vobu_next(DVDDisc *d, DVDIfo *f, uint32_t sector, uint32_t *next)
-{
-    dvd_vob_reader_t *vr = ff_dvd_own_reading(d, f);
-    return vr ? DVDNextVobu_rec(vr, sector, next) : 0;
-}
-
-int ff_dvd_vobu_bad(DVDDisc *d, DVDIfo *f, uint32_t sector)
-{
-    dvd_vob_reader_t *vr = ff_dvd_own_reading(d, f);
-    return vr ? DVDVobuBad_rec(vr, sector) : 1;
 }
