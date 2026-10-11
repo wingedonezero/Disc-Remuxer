@@ -40,7 +40,7 @@ $(DVDCSS_INC)/config.h: mk/dvd.mk $(DVDCSS_SRC)/dvdcss/version.h.in
 DVDREAD_SRC := $(LIBS)/libdvdread/src
 DVDREAD_INC := $(BUILD)/dvdread/include
 DVDREAD_FILES := bitreader.c dvd_input.c dvd_reader.c dvd_udf.c ifo_print.c ifo_read.c logger.c md5.c \
-                 nav_print.c nav_read.c file/file_posix.c
+                 nav_print.c nav_read.c vob_read.c file/file_posix.c
 DVDREAD_CFLAGS := -std=c11 -D_DEFAULT_SOURCE -D_LARGEFILE64_SOURCE -I$(DVDREAD_INC) -I$(LIBS)/libdvdread \
                   -I$(DVDREAD_SRC) -I$(DVDREAD_SRC)/dvdread -I$(DVDCSS_INC) -I$(DVDCSS_SRC)
 $(eval $(call c_library,dvdread,$(DVDREAD_SRC),$(DVDREAD_FILES),$(DVDREAD_CFLAGS)))

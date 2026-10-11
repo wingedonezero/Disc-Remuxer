@@ -247,7 +247,7 @@ def test_more_than_99_title_sets_refuse_the_disc(tmp_path):
 def test_a_cell_off_the_vobu_address_map_makes_it_untrusted(tmp_path):
     install_log(lib.AV_LOG_WARNING)
     d = Disc.folder(folder(tmp_path, v=vts(vobus=[1])))
-    assert d.ret == 0 and d.ifo(1).vobu_map_distrusted
+    assert d.ret == 0 and not lib.ff_dvd_map_trusted(d.d, d.ifo(1))
     assert logged("program chain 1 cell 1: sector 0 is no VOBU start of the VOBU address map")
     d.close()
 
@@ -363,7 +363,7 @@ def test_an_unreadable_menu_vobu_map_leaves_the_title_set_s_vobu_starts_untruste
     dvd.write_disc(path, vmg(), [(ifo, dvd.title_vobs(10, [dvd.nav(0, 10, None)]))])
     install_log(lib.AV_LOG_VERBOSE)
     d = Disc.folder(path)
-    assert d.ret == 0 and not d.ifo(1).failed and d.ifo(1).vobu_map_distrusted
+    assert d.ret == 0 and not d.ifo(1).failed and not lib.ff_dvd_map_trusted(d.d, d.ifo(1))
     assert logged("VTS_01: the VOBU address map at sector 32767 cannot be read: its VOBU starts are not trusted")
     assert logged(f"IFO check: VTS_01_0.IFO VTSM_VOBU_ADMAP at byte {0x7fff * S:#x}: VTSM_VOBU_ADMAP at sector 32767 "
                   "cannot be read")
@@ -479,13 +479,19 @@ def test_the_bup_position_of_an_image_comes_from_the_file_system():
     d.close()
 
 
-def test_title_vobs_the_header_and_the_file_system_disagree_on_are_decided_later():
+def test_title_vobs_the_header_and_the_file_system_disagree_on_start_where_the_vob_s_first_nav_pack_is():
+    # the IFO header puts them 3 sectors early (zeros there); the file
+    # system's VTS_01_1.VOB starts with its first navigation pack
     files, ifo = disc_files()
     im, where = image(files, gaps={"VTS_01_1.VOB": 3})
     install_log(lib.AV_LOG_WARNING)
     d = Disc.image(im)
-    assert d.ret == 0 and d.ifo(1).title_vob_start == 0
-    assert logged(f"the file system at {where['VTS_01_1.VOB']}: decided when they are read")
+    vob, header = where["VTS_01_1.VOB"], where["VTS_01_1.VOB"] - 3
+    assert d.ret == 0 and d.ifo(1).title_vob_start == d.ifo(1).title_vob_base == vob
+    assert logged(f"IFO check: VTS_01_0.IFO VTSI_MAT at byte 0xc4 (bytes 00 00 00 {header - where['VTS_01_0.IFO']:02x}): "
+                  f"the IFO header puts the title VOBs at sector {header} (vtstt_vobs {header - where['VTS_01_0.IFO']}), "
+                  f"the file system's VTS_01_1.VOB is at sector {vob}: they are read from the file system's: its first "
+                  "sector is a VOB's first navigation pack")
     d.close()
 
 

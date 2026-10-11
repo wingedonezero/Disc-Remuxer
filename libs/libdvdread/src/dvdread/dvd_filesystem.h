@@ -87,6 +87,16 @@ struct dvd_reader_filesystem_s
     ssize_t (*file_read) (void *file, char *buf, size_t size);
     off64_t (*file_seek) (void *file, off64_t offset, int whence);
     int     (*file_close)(void *file);
+    /* optional (NULL: none): the whole disc image as one file, read with
+     * file_read / file_seek / file_close; NULL when the disc is no image
+     * (a folder) */
+    void   *(*image_open)(dvd_reader_filesystem_h *fs);
+    /* optional (NULL: none): where a file's pieces lie on the disc image, in
+     * file order: up to max (first sector, sectors) pairs into pieces (may
+     * be NULL with max 0); returns how many pieces the file has, < 0 when
+     * not known (a folder's file). A piece not recorded on the image has
+     * first sector -1. */
+    int     (*file_pieces)(dvd_reader_filesystem_h *fs, const char *path, int64_t (*pieces)[2], int max);
 };
 
 #endif /* DVDREAD_FILESYSTEM_H_ */

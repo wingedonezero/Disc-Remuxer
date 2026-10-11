@@ -54,6 +54,34 @@ struct dvd_reader_s
     /* Set 100 flags for BUP fallback, most signifiant left
        [0] for upper remaining VTS, [1] for the first Main + 63 VTS */
     uint64_t ifoBUPflags[2];
+    /* the title sets' title VOBs (vob_read.c), per title set: the CSS title
+     * key (state 0 not looked for, 1 found, -1 none); on an image where
+     * they start (placed: decided; start 0: no title VOBs, a folder) and
+     * their length by the IFO (up to its BUP) */
+    struct {
+      int      state;
+      uint8_t  key[5];
+      uint32_t blocks;
+      int      placed;
+      int64_t  start;
+      /* its menu VOBs' start on an image (index 0: the video manager's) */
+      int      menu_placed;
+      int64_t  menu_start;
+      /* its VOBU address map, and its VOBU records when it keeps them alone */
+      uint32_t *map;
+      int      nb_map;
+      int      map_distrusted;
+      struct dvd_vobu_store_s { struct dvd_vobu_rec_s *recs; int nb, alloc; } vobus;
+      /* its program chain table (ifoRead_VTS_PGCIT_rec()) and per cell what
+       * was found once (seamless angle checked / its result) */
+      pgcit_rec_t *pgcit;
+      uint8_t    **cell_state;
+    } vob_css[100];
+    /* the full cell check: which VOBUs it reads, and the random sample's state */
+    int      cell_check;
+    uint64_t cell_rng;
+    /* the VOBU records of title sets at a known place of an image */
+    struct dvd_vobu_store_s vobus;
 };
 
 /* The read position of a file (bytes from its start). */
@@ -61,6 +89,10 @@ int64_t DVDFileTell_( dvd_file_t *dvd_file );
 /* A file of the disc ("/VIDEO_TS/VTS_01_0.IFO") through the application's
  * file system (DVDOpenFiles()): its size and place; < 0 when there is none. */
 int DVDStatFile_( dvd_reader_t *ctx, const char *filename, dvdstat_t *st );
+/* The application file system's path of a file of the disc
+ * ("/VIDEO_TS/VTS_01_1.VOB"), into full_path (PATH_MAX + 1 bytes); < 0 when
+ * there is no such file. */
+int DVDFindFile_( dvd_reader_t *ctx, const char *filename, char *full_path );
 
 struct ifo_handle_private_s
 {

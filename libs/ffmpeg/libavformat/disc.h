@@ -97,6 +97,19 @@ typedef struct DiscPassSource {
 
 typedef struct DiscPassCache DiscPassCache;
 
+/** A damaged range as the disc's own reader names it (DiscTitleSource.damage). */
+typedef struct DiscDamage {
+    int       kind;                     /**< DISC_DAMAGE_* */
+    uint32_t  blocks;                   /**< its blocks: the last ones of the clip left out before it was given */
+    char      file[32], last_file[32];  /**< the files of its first and last block ("": not known) */
+    int64_t   offset, last_offset;      /**< the byte offsets there (-1: not known) */
+} DiscDamage;
+
+enum {
+    DISC_DAMAGE_ZERO = 1,               /**< every byte is zero */
+    DISC_DAMAGE_NO_MPEG,                /**< no MPEG pack with a packet */
+};
+
 /** What the title reader needs of the opened title; the format part fills
  *  DiscContext.src in its open (the arrays and strings stay its own until
  *  its close). Track i is stream i; track 0 is the video. Program-stream
@@ -119,6 +132,12 @@ typedef struct DiscTitleSource {
      *  known. NULL: none. */
     int         (*block_place)(AVFormatContext *s, int clip, uint32_t block, char *file, int size,
                                int64_t *offset);
+    /** The disc's own reader names the damaged ranges (DVD: libdvdread):
+     *  the range the latest read_block of the clip ended (flush: the clip's
+     *  reading ends, the range being read ends too) into *out; 1 one given,
+     *  0 none. NULL: the title reader finds the ranges itself (blocks left
+     *  out one after the other and of one kind, block_place). */
+    int         (*damage)(AVFormatContext *s, int clip, int flush, DiscDamage *out);
     /** Where the disc's own structure starts the clip: its first presentation
      *  time (90 kHz, on the clip's clock), checked against the first picture
      *  read from it; AV_NOPTS_VALUE when the structure gives none. NULL: no

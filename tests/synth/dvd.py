@@ -138,19 +138,18 @@ def vts_ifo(v):
         pgcit += pgc_bytes(p)
     be32(pgcit, 4, len(pgcit) - 1)
 
-    # VTS_C_ADT: one entry per cell of the first PGC that names it (VOB id 1)
-    cells = []
+    # VTS_C_ADT: one entry per cell id (VOB id, cell id as the program chains
+    # write them), from the first cell that names it
+    cells = {}
     for p in v.pgcs:
         for k, c in enumerate(p.cells):
-            ident = k + 1
-            if not any(i == ident and f == c.first_sector for i, f, _ in cells):
-                cells.append((ident, c.first_sector, c.last_sector))
+            cells.setdefault((c.vob_id_nr, c.cell_nr or k + 1), (c.first_sector, c.last_sector))
     cadt = bytearray(8 + 12 * len(cells))
-    be16(cadt, 0, 1)
+    be16(cadt, 0, max((vob for vob, _ in cells), default=0))
     be32(cadt, 4, len(cadt) - 1)
-    for k, (ident, first, last) in enumerate(cells):
+    for k, ((vob, ident), (first, last)) in enumerate(sorted(cells.items())):
         e = 8 + 12 * k
-        be16(cadt, e, 1)
+        be16(cadt, e, vob)
         cadt[e + 2] = ident
         be32(cadt, e + 4, first)
         be32(cadt, e + 8, last)
@@ -356,12 +355,28 @@ def title_vobs(n, navs):
     return d
 
 
+def copy_attributes(vmg, ifos):
+    """VIDEO_TS.IFO with each title set's category and attributes (VTSI_MAT
+    0x22, 0x100..0x315) copied into its VMG_VTS_ATRT entry, as on a disc."""
+    vmg = bytearray(vmg)
+    at = struct.unpack_from(">I", vmg, 0xd0)[0] * S
+    if not at:
+        return bytes(vmg)
+    for k, ifo in enumerate(ifos):
+        off = at + struct.unpack_from(">I", vmg, at + 8 + 4 * k)[0]
+        vmg[off + 4:off + 8] = ifo[0x22:0x26]
+        vmg[off + 8:off + 8 + 0x216] = ifo[0x100:0x316]
+    return bytes(vmg)
+
+
 def write_disc(folder, vmg, title_sets):
     """Writes a disc folder: VIDEO_TS/VIDEO_TS.IFO (+ .BUP) and per title set
-    VTS_nn_0.IFO (+ .BUP) and VTS_nn_1.VOB. title_sets: [(ifo, vob)]."""
+    VTS_nn_0.IFO (+ .BUP) and VTS_nn_1.VOB. title_sets: [(ifo, vob)]; the
+    title sets' attributes are copied into VIDEO_TS.IFO's VMG_VTS_ATRT."""
     v = folder / "VIDEO_TS"
     shutil.rmtree(folder, ignore_errors=True)
     v.mkdir(parents=True)
+    vmg = copy_attributes(vmg, [bytes(ifo) for ifo, _ in title_sets])
     (v / "VIDEO_TS.IFO").write_bytes(vmg)
     (v / "VIDEO_TS.BUP").write_bytes(vmg)
     for k, (ifo, vob) in enumerate(title_sets):

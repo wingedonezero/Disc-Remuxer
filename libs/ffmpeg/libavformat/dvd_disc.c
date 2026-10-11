@@ -45,6 +45,7 @@
 
 #include <dvdread/dvd_reader.h>
 #include <dvdread/ifo_read.h>
+#include <dvdread/vob_read.h>
 
 #include "libavutil/avstring.h"
 #include "libavutil/error.h"
@@ -391,6 +392,11 @@ int ff_dvd_disc_open(void *log, DiscIOFS *fs, const char *dir, int folder, const
             av_log(log, AV_LOG_WARNING, "DVD: title set %d cannot be read: the disc is read without it\n", i);
         }
     }
+    /* the video manager's copy of each title set's attributes against the
+     * title set's own (libdvdread) */
+    for (int i = 1; i < d->nb_ifos && d->ifos[0] && d->ifos[0]->rec; i++)
+        if (d->ifos[i] && !d->ifos[i]->failed && d->ifos[i]->rec)
+            ifoCheckVtsAttributes_rec(d->ifos[0]->rec, d->ifos[i]->rec, i);
     /* every information file through libdvdread once more, all its tables
      * and checks; what libdvdread found, logged */
     ff_dvd_ifo_check(d);
@@ -401,11 +407,16 @@ int ff_dvd_disc_open(void *log, DiscIOFS *fs, const char *dir, int folder, const
 void ff_dvd_disc_free(DVDDisc *d)
 {
     /* libdvdread's handles, then libdvdread (its callbacks read the IFOs below) */
-    for (int i = 0; i < d->nb_ifos; i++)
+    for (int i = 0; i < d->nb_ifos; i++) {
+        if (d->ifos[i] && d->ifos[i]->vobs) {
+            DVDCloseTitleVOBs_rec(d->ifos[i]->vobs);
+            d->ifos[i]->vobs = NULL;
+        }
         if (d->ifos[i] && d->ifos[i]->rec) {
             ifoClose(d->ifos[i]->rec);
             d->ifos[i]->rec = NULL;
         }
+    }
     if (d->reader)
         DVDClose(d->reader);
     d->reader = NULL;
@@ -415,7 +426,6 @@ void ff_dvd_disc_free(DVDDisc *d)
     d->nb_ifos = 0;
     ff_dvd_table_free(&d->tt_srpt);
     av_freep(&d->title_set_start);
-    ff_dvd_vobu_recs_free(&d->vobus);
     text_free(&d->text);
     av_freep(&d->volume_name);
     av_freep(&d->text_name);
@@ -452,7 +462,7 @@ void ff_dvd_disc_dump(const DVDDisc *d, AVBPrint *bp)
             av_bprintf(bp, ", IFO at %"PRId64", BUP at %"PRId64", title VOBs at %"PRIu32, f->ifo_sector,
                        f->bup_sector, f->title_vob_start);
         av_bprintf(bp, ", %d program chain(s), %d VOBU start(s)%s%s\n", f->nb_pgcs, f->nb_vobu_map,
-                   f->vobu_map_distrusted ? ", VOBU map not trusted" : "", f->no_pgcit ? ", no VTS_PGCIT" : "");
+                   !ff_dvd_map_trusted(d, f) ? ", VOBU map not trusted" : "", f->no_pgcit ? ", no VTS_PGCIT" : "");
         for (int p = 0; p < f->nb_pgcs; p++) {
             const DVDPgc *g = f->pgcs[p];
             if (!g) {

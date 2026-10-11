@@ -68,7 +68,9 @@ def build(tmp_path, pgcs, ptts, navs, vob_sectors, first_play=True, angles=None,
     angles (default 1); vts: more Vts fields (video_attr, audio_attrs,
     subp_attrs)."""
     home = len(pgcs) + 1
-    pgcs = list(pgcs) + [Pgc(cells=[Cell.new(vob_sectors, vob_sectors, vob_sectors, 0)])]
+    stub_vob = max((c.vob_id_nr for p in pgcs for c in p.cells), default=0) + 1     # a VOB of its own
+    pgcs = list(pgcs) + [Pgc(cells=[dataclasses.replace(Cell.new(vob_sectors, vob_sectors, vob_sectors, 0),
+                                                       vob_id_nr=stub_vob, cell_nr=1)])]
     ptts = list(ptts) + [[(home, 1)]]
     navs = list(navs) + [dvd.nav(vob_sectors, 1, None)]
     v = Vts(pgcs=pgcs, ptts=ptts, vobus=sorted(n.lbn for n in navs), vob_sectors=vob_sectors + 1, **vts)

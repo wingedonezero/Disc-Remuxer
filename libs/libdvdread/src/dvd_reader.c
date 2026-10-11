@@ -860,6 +860,17 @@ dvd_reader_t *DVDOpenFiles( void *priv, const dvd_logger_cb *logcb,
 void DVDClose( dvd_reader_t *dvd )
 {
   if( dvd ) {
+    for( int t = 0; t < 100; t++ ) {
+      free( dvd->vob_css[t].map );
+      free( dvd->vob_css[t].vobus.recs );
+      if( dvd->vob_css[t].pgcit ) {
+        for( int p = 0; p < dvd->vob_css[t].pgcit->nr_of_pgcs; p++ )
+          free( dvd->vob_css[t].cell_state ? dvd->vob_css[t].cell_state[p] : NULL );
+        free( dvd->vob_css[t].cell_state );
+        ifoFree_VTS_PGCIT_rec( &dvd->vob_css[t].pgcit );
+      }
+    }
+    free( dvd->vobus.recs );
     if( dvd->rd ) {
       if( dvd->rd->dev ) dvdinput_close( dvd->rd->dev );
       if( dvd->rd->path_root ) free( dvd->rd->path_root );
@@ -1829,6 +1840,11 @@ int DVDStatFile_( dvd_reader_t *ctx, const char *filename, dvdstat_t *st )
     return -1;
   st->sector = -1;
   return ctx->fs->stat( ctx->fs, full_path, st );
+}
+
+int DVDFindFile_( dvd_reader_t *ctx, const char *filename, char *full_path )
+{
+  return ctx && ctx->fs && findDVDFile( ctx, filename, full_path ) ? 0 : -1;
 }
 
 int64_t DVDFileTell_( dvd_file_t *dvd_file )

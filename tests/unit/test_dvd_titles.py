@@ -120,6 +120,27 @@ def test_an_angle_block_gives_a_title_per_angle(tmp_path):
     assert logged("title 1: angle 2 added")
 
 
+def test_an_angle_block_of_another_size_than_the_title_s_angles_is_told_by_libdvdread(tmp_path):
+    first = flags.ANGLE_BLOCK | flags.FIRST_IN_BLOCK
+    last = flags.ANGLE_BLOCK | flags.LAST_IN_BLOCK
+    p = Pgc(cells=[c(0, 9, 5, 1), c(10, 19, 5, 1, flags=first), c(20, 29, 5, 1, flags=last)])
+    navs = vobus(0, 9, 5) + vobus(10, 19, 5) + vobus(20, 29, 5)
+    folder = build(tmp_path, [p], [[(1, 1)]], navs, 30, angles=[3])
+    run(folder, [("A1", 1, 1, [1, 2])])
+    assert logged("libdvdread: VTS_01 program chain 1: the angle block at cell 2 has 2 cells, the title 3 angles")
+
+
+def test_more_than_100_vobus_read_one_by_one_are_told_as_a_complex_multiplex(tmp_path):
+    # an angle block of two cells of 121 one-sector VOBUs: angle blocks are
+    # read VOBU by VOBU
+    first = flags.ANGLE_BLOCK | flags.FIRST_IN_BLOCK
+    last = flags.ANGLE_BLOCK | flags.LAST_IN_BLOCK
+    p = Pgc(cells=[c(0, 120, 1, 4, flags=first), c(121, 241, 1, 4, flags=last)])
+    folder = build(tmp_path, [p], [[(1, 1)]], vobus(0, 120, 1) + vobus(121, 241, 1), 242, angles=[2])
+    run(folder, [("A1", 1, 1, [1, 2])])
+    assert logged("title 1: 1 cells and 121 VOBUs are read one by one (a complex multiplex); this takes a while")
+
+
 def test_a_program_chain_failing_the_check_without_the_navigation_s_cells_is_left_out(tmp_path):
     # title 1 plays chain 1, then chain 2: four cells without playback time
     # (reason 3); the navigation recorded chain 1 only
@@ -130,6 +151,18 @@ def test_a_program_chain_failing_the_check_without_the_navigation_s_cells_is_lef
     ts = run(folder, [("A1", 1, 1, [1])])
     assert [t["name"] for t in ts] == ["1"]
     assert logged("title 1: program chain 2 left out: it fails the program chain check (reason 3)")
+
+
+def test_a_program_chain_with_a_broken_program_map_fails_the_check(tmp_path):
+    # chain 2's program map: entries out of order (reason 6), then one past
+    # its cells (reason 5); the navigation recorded chain 1 only
+    for programs, reason in (([2, 1], 6), ([1, 3], 5)):
+        pgcs = [Pgc(cells=[c(0, 9, 5, 1)]), Pgc(cells=[c(10, 14, 5, 1), c(15, 19, 5, 1)], programs=programs)]
+        navs = vobus(0, 9, 5) + vobus(10, 14, 5) + vobus(15, 19, 5)
+        folder = build(tmp_path, pgcs, [[(1, 1), (2, 1)]], navs, 20)
+        ts = run(folder, [("A1", 1, 1, [1])])
+        assert [t["name"] for t in ts] == ["1"], programs
+        assert logged(f"title 1: program chain 2 left out: it fails the program chain check (reason {reason})")
 
 
 def test_a_chapter_before_the_previous_one_is_dropped(tmp_path):
@@ -258,6 +291,17 @@ def test_trim_drops_rejected_cells_at_both_ends(tmp_path):
     assert t["map"] == "2-3"
 
 
+def test_trim_leaves_out_a_run_far_shorter_than_the_chain_s_declared_length(tmp_path):
+    # 5 chapters (a program per cell), cells of 1 s in disc order: 5 s
+    # against the 10 s the chain declares -> fake cells make up 50 %
+    cells = [c(60 * k, 60 * k + 59, 30, 1) for k in range(5)]
+    navs = [n for k in range(5) for n in vobus(60 * k, 60 * k + 59, 30)]
+    p = Pgc(cells=cells, programs=[1, 2, 3, 4, 5], playback_time=bytes([0, 0, 0x10, 0]))
+    folder = build(tmp_path, [p], [[(1, k + 1) for k in range(5)]], navs, 300)
+    run(folder, [], cell_mode=TRIM)
+    assert logged("title 1: fake cells make up 50% of it: its cells are left out")
+
+
 def test_walk_trim_lists_a_title_the_navigation_did_not_reach(tmp_path):
     pgcs = [Pgc(cells=[c(0, 9, 5, 1)]), Pgc(cells=[c(10, 19, 5, 1)])]
     folder = build(tmp_path, pgcs, [[(1, 1)], [(2, 1)]], vobus(0, 9, 5) + vobus(10, 19, 5), 20)
@@ -308,6 +352,14 @@ def test_a_broken_first_vobu_fails_the_cell_check_in_every_mode(tmp_path):
 def test_the_cell_check_passes_a_whole_cell(tmp_path):
     folder = one_long_cell(tmp_path, [])
     assert [check(folder, m) for m in (ALL, SPREAD, RANDOM)] == [0, 0, 0]
+
+
+def test_libdvdread_runs_the_cell_check_and_says_which_vobus_it_read(tmp_path):
+    folder = one_long_cell(tmp_path, [])
+    for mode, what in ((ALL, "all read"), (SPREAD, "50 evenly spread"), (RANDOM, "50 at random")):
+        install_log(lib.AV_LOG_DEBUG)
+        assert check(folder, mode) == 0
+        assert logged(f"libdvdread: cell check, VTS_01 program chain 1 cell 1 (69 VOBUs, {what}): passed"), what
 
 
 # ---- the program ----

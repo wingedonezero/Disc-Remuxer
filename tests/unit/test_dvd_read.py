@@ -1,6 +1,6 @@
-"""libavformat/dvd_read.c: a title set's title VOB sectors read through the
-checks (step D3, part a): a sector that is no MPEG-2 pack with a packet is
-left out; a scrambled packet of the video, private stream 1 or MPEG audio
+"""libavformat/dvd_read.c on libdvdread's title VOB reading (vob_read.h): a
+title set's title VOB sectors read through the checks: a sector that is no
+MPEG-2 pack with a packet is left out; a scrambled packet of the video, private stream 1 or MPEG audio
 is descrambled with the title set's CSS title key, found by libdvdcss (no
 drive: cracked from the sectors) when the first scrambled sector is read and
 checked on an AC-3 frame's CRC or an MPEG-2 sequence header's extension; a
@@ -102,6 +102,14 @@ def folder_with(tmp_path, sectors, v=None):
     return path
 
 
+def css(d, vts_=1):
+    """Title set vts_'s CSS title key as libdvdread keeps it: (state, key);
+    state 1 found, 0 not looked for, -1 none."""
+    key = ffi.new("uint8_t[]", 5)
+    state = lib.ff_dvd_css_state(d.d, d.ifo(vts_), key)
+    return state, bytes(ffi.buffer(key, 5)) if state == 1 else None
+
+
 def read(d, sector, vts_=1):
     buf = ffi.new("uint8_t[]", S)
     ret = lib.ff_dvd_title_vob_sector(d.d, d.ifo(vts_), sector, buf)
@@ -124,7 +132,7 @@ def test_a_scrambled_title_set_gets_its_key_cracked_and_checked_on_an_ac3_frame(
     want = bytearray(plain[0])
     want[20] &= 0xcf                            # the scrambling bits cleared
     assert got == bytes(want)
-    assert bytes(d.ifo(1).css_key) == KEY and d.ifo(1).css_state == 1
+    assert css(d) == (1, KEY)
     assert logged("VTS_01: sector 1 is scrambled: looking for the CSS title key")
     assert logged("VTS_01: the CSS title key is right on sector 1 (an AC-3 frame's CRC)")
     assert logged("VTS_01: CSS title key found")
@@ -150,7 +158,7 @@ def test_a_key_the_check_finds_wrong_leaves_the_scrambled_sectors_unreadable(tmp
     d = Disc.folder(folder_with(tmp_path, [css_scramble(KEY, ac3_pack(good_crc=False))]))
     install_log(lib.AV_LOG_DEBUG)
     ret, _ = read(d, 1)
-    assert ret < 0 and d.ifo(1).css_state == -1
+    assert ret < 0 and css(d) == (-1, None)
     assert logged("the CSS title key is wrong on sector 1 (an AC-3 frame's CRC)")
     install_log(lib.AV_LOG_DEBUG)
     assert read(d, 1)[0] < 0 and not logged("looking for"), "not looked for again"
@@ -169,9 +177,14 @@ def test_sectors_that_are_no_pack_are_left_out_and_others_used_as_they_are(tmp_p
     assert read(d, 1) == (1, bytes(plain))
     assert read(d, 2) == (1, bytes(padding))
     assert read(d, 3)[0] == 0 and read(d, 5)[0] == 0      # MPEG-1 pack; a zero sector
-    assert logged("VTS_01: title VOB sector 3 is no MPEG-2 pack with a packet: left out")
-    assert d.ifo(1).css_state == 0, "no scrambled sector read"
+    # libdvdread says each damaged range once, when it ends (reading sector 5
+    # ends sector 3's; closing ends sector 5's)
+    assert logged("VTS_01_1.VOB: title VOB sectors 3-3 (VTS_01_1.VOB bytes 6144-8191): no MPEG-2 pack with a "
+                  "packet: left out")
+    assert not logged("title VOB sectors 5-5")
+    assert css(d) == (0, None), "no scrambled sector read"
     d.close()
+    assert logged("VTS_01_1.VOB: title VOB sectors 5-5 (VTS_01_1.VOB bytes 10240-12287): every byte is zero: left out")
 
 
 def test_a_title_set_inside_another_ones_title_vobs_takes_its_key():
@@ -196,11 +209,11 @@ def test_a_title_set_inside_another_ones_title_vobs_takes_its_key():
     assert d.ret == 0
     f1, f2 = d.ifo(1), d.ifo(2)
     assert f1.title_vob_base == f2.title_vob_base == vob_at
-    assert read(d, 1, 1)[0] == 1 and f1.css_state == 1
+    assert read(d, 1, 1)[0] == 1 and css(d, 1)[0] == 1
     install_log(lib.AV_LOG_DEBUG)
     ret, got = read(d, 1, 2)
     assert ret == 1 and got[CLEAR:] == bytes(ac3_pack()[CLEAR:])
-    assert bytes(f2.css_key) == KEY
+    assert css(d, 2) == (1, KEY)
     assert logged("VTS_02: CSS title key taken from VTS_01 (its title VOBs hold these)")
     d.close()
 
@@ -218,9 +231,10 @@ def test_corpus_scrambled_disc_every_title_set_key_found_and_checked():
             continue
         for s in range(min(f.title_vob_blocks, 20000)):
             assert lib.ff_dvd_title_vob_sector(d.d, f, s, buf) >= 0, (i, s)
-            if f.css_state:
+            if lib.ff_dvd_css_state(d.d, f, ffi.NULL):
                 break
-        assert f.css_state in (0, 1), i
-        found += f.css_state == 1
+        state = lib.ff_dvd_css_state(d.d, f, ffi.NULL)
+        assert state in (0, 1), i
+        found += state == 1
     assert found and not logged("is wrong")
     d.close()

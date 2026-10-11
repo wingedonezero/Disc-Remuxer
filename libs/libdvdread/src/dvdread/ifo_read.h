@@ -169,6 +169,19 @@ DVDREAD_API int ifoRead_VTS_PGCIT_rec(ifo_handle_t *, pgcit_rec_t **);
  * ifoClose().
  */
 DVDREAD_API ifo_handle_t *ifoOpen_rec(dvd_reader_t *, int title);
+/**
+ * Consistency checks between tables (ifoOpen_rec() handles), each finding a
+ * warning report; they return how many they found:
+ * ifoCheckCellAddresses_rec(): every program chain cell of the title set
+ * (pgcit: ifoRead_VTS_PGCIT_rec()) is in its cell address table (VTS_C_ADT,
+ * by VOB id and cell id), its first sector the first piece's start and its
+ * last sector the last piece's end;
+ * ifoCheckVtsAttributes_rec(): the video manager's copy of title set
+ * title's category and attributes (VMG_VTS_ATRT) equals the title set's own
+ * (VTSI_MAT vts_category, bytes 0x100..0x315).
+ */
+DVDREAD_API int ifoCheckCellAddresses_rec(ifo_handle_t *, const pgcit_rec_t *pgcit);
+DVDREAD_API int ifoCheckVtsAttributes_rec(ifo_handle_t *vmg, ifo_handle_t *vts, int title);
 /** Bytes of an information file as ifoOpen_rec() chose them; 1, 0 when
  *  they cannot be read (reported). */
 DVDREAD_API int ifoRead_rec_bytes(ifo_handle_t *, int64_t pos, uint8_t *buf, size_t len);

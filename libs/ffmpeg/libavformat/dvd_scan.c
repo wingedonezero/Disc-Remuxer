@@ -330,16 +330,8 @@ static int vob_read(void *opaque, int set, int menu, uint32_t sector, const uint
         av_log(s->d->log, AV_LOG_DEBUG, "DVD: %s %d: sector %"PRIu32" is no NAV pack\n",
                menu ? "menu VOB" : "title VOBs", set, sector);
     }
-    if (!menu && set) {
-        if (ff_dvd_is_nav_pack(b)) {
-            DVDNav n;
-            uint32_t next, len;
-            ff_dvd_nav_parse(&n, b);
-            ff_dvd_vobu_register(s->d, f, &n, sector, 1, &next, &len);
-        } else if ((ret = ff_dvd_vobu_mark_bad(s->d, f, sector)) < 0) {
-            return ret;
-        }
-    }
+    if (!menu && set && (ret = ff_dvd_vobu_note(s->d, f, sector, b)) < 0)
+        return ret;
     return 0;
 }
 

@@ -89,9 +89,7 @@ static int open_file(DVDDisc *d, const char *name, DiscIOFile **out)
     return d->fs->ops->open_file(d->fs, path, out);
 }
 
-/* A file of the set by its extension ("IFO", "BUP", "VOB"; part: the
- * title VOB number, 0 for the IFO / BUP / menu VOB). */
-static int open_set_file(DVDDisc *d, int index, int part, const char *ext, DiscIOFile **out)
+int ff_dvd_set_file(DVDDisc *d, int index, int part, const char *ext, DiscIOFile **out)
 {
     char name[32];
     if (index)
@@ -127,7 +125,7 @@ static int64_t one_piece(DVDDisc *d, int index, int part, const char *ext, const
 {
     DiscIOFile *f = NULL;
     int64_t sector = 0;
-    int ret = open_set_file(d, index, part, ext, &f);
+    int ret = ff_dvd_set_file(d, index, part, ext, &f);
 
     if (ret >= 0 && f->nb_extents == 1 && !f->data && f->extents[0].sector != DISCIO_SECTOR_NOT_RECORDED)
         sector = f->extents[0].sector;
@@ -145,7 +143,7 @@ static int open_image_files(DVDDisc *d, DVDIfo *f)
     int ret;
 
     ifo_name(f, name, sizeof(name));
-    if ((ret = open_set_file(d, f->index, 0, "IFO", &ifo)) < 0) {
+    if ((ret = ff_dvd_set_file(d, f->index, 0, "IFO", &ifo)) < 0) {
         av_log(d->log, AV_LOG_WARNING, "DVD: %s.IFO cannot be opened: %s\n", name, av_err2str(ret));
         return ret;
     }
@@ -174,19 +172,19 @@ static int open_folder_files(DVDDisc *d, DVDIfo *f)
     int ret;
 
     ifo_name(f, name, sizeof(name));
-    if ((ret = open_set_file(d, f->index, 0, "IFO", &f->copy[0])) < 0) {
-        if ((ret = open_set_file(d, f->index, 0, "BUP", &f->copy[0])) < 0) {
+    if ((ret = ff_dvd_set_file(d, f->index, 0, "IFO", &f->copy[0])) < 0) {
+        if ((ret = ff_dvd_set_file(d, f->index, 0, "BUP", &f->copy[0])) < 0) {
             av_log(d->log, AV_LOG_WARNING, "DVD: neither %s.IFO nor %s.BUP can be opened\n", name, name);
             return ret;
         }
         av_log(d->log, AV_LOG_WARNING, "DVD: %s.IFO is missing: its BUP is read as the IFO\n", name);
     }
     f->ifo_bytes = f->copy[0]->size;
-    if (open_set_file(d, f->index, 0, "VOB", &f->menu_vob) >= 0)
+    if (ff_dvd_set_file(d, f->index, 0, "VOB", &f->menu_vob) >= 0)
         f->menu_vob_bytes = f->menu_vob->size;
     for (int part = f->index ? 1 : 0; part <= (f->index ? 9 : 0); part++) {
         DiscIOFile *v = NULL;
-        if (open_set_file(d, f->index, part, "VOB", &v) < 0)
+        if (ff_dvd_set_file(d, f->index, part, "VOB", &v) < 0)
             break;
         if ((ret = av_dynarray_add_nofree(&f->title_vobs, &f->nb_title_vobs, v)) < 0) {
             ff_discio_file_free(&v);
@@ -194,8 +192,8 @@ static int open_folder_files(DVDDisc *d, DVDIfo *f)
         }
         f->title_vob_bytes += v->size;
     }
-    if ((ret = open_set_file(d, f->index, 0, "BUP", &f->copy[1])) < 0) {
-        if ((ret = open_set_file(d, f->index, 0, "IFO", &f->copy[1])) < 0)
+    if ((ret = ff_dvd_set_file(d, f->index, 0, "BUP", &f->copy[1])) < 0) {
+        if ((ret = ff_dvd_set_file(d, f->index, 0, "IFO", &f->copy[1])) < 0)
             return ret;
         av_log(d->log, AV_LOG_WARNING, "DVD: %s.BUP is missing: the IFO stands in for it\n", name);
     }
@@ -243,7 +241,7 @@ static int load_vobu_map(DVDDisc *d, DVDIfo *f, ifo_handle_t *h, uint32_t sector
     if (!ifoRead_VOBU_ADMAP_rec(h, sector, table, &starts, &n)) {
         av_log(d->log, AV_LOG_WARNING, "DVD: %s: the VOBU address map at sector %"PRIu32" cannot be read: its "
                "VOBU starts are not trusted\n", name, sector);
-        f->vobu_map_distrusted = 1;
+        f->map_untrusted_at_load = 1;
         return 0;
     }
     av_freep(map);
@@ -309,6 +307,8 @@ static DVDPgc *pgc_of(const pgc_rec_t *r)
         cl->last_sector            = rc->last_sector;
         cl->vob_id_nr              = rc->vob_id_nr;
         cl->cell_nr                = rc->cell_nr;
+        cl->pgcn                   = r->number;
+        cl->index                  = c;
     }
     return p;
 }
@@ -333,7 +333,7 @@ static void check_cells(DVDDisc *d, DVDIfo *f)
                 av_log(d->log, AV_LOG_WARNING, "DVD: %s: program chain %d cell %d: sector %"PRIu32" is no VOBU "
                        "start of the VOBU address map: its VOBU starts are not trusted (the VOBs must be "
                        "scanned)\n", name, i + 1, c + 1, miss);
-                f->vobu_map_distrusted = 1;
+                f->map_untrusted_at_load = 1;
                 return;
             }
         }
@@ -363,6 +363,9 @@ static int load(DVDDisc *d, DVDIfo *f)
         f->title_vob_blocks = (uint32_t)(f->bup_sector - f->ifo_sector) - ff_dvd_header32(f, DVD_TT_SRPT);
     /* the VOBU address maps: through libdvdread (ff_dvd_ifo_tables()) */
 
+    /* where the menu VOBs start: libdvdread decides (vob_read.h) */
+    if (!d->folder)
+        f->menu_vob_base = (uint32_t)DVDMenuVOBStart_rec(f->rec, f->index);
     if (!f->index)
         return 0;
 
@@ -375,60 +378,12 @@ static int load(DVDDisc *d, DVDIfo *f)
     /* the program chain and chapter tables: through libdvdread once every
      * IFO is loaded (ff_dvd_ifo_tables()) */
     if (!d->folder) {
-        /* the title VOBs from the IFO header, when the file system agrees
-         * (or has no single piece for them) */
-        uint32_t start = ff_dvd_header32(f, DVD_TT_SRPT) + (uint32_t)f->ifo_sector;
-        if (ff_dvd_header32(f, DVD_TT_SRPT))
-            f->title_vob_base = start;  /* the title VOB stream the navigation reads (dvd_nav.c) */
-        if (!f->title_vob_sector || f->title_vob_sector == start)
-            f->title_vob_start = start;
-        else
-            av_log(d->log, AV_LOG_WARNING, "DVD: %s: the IFO header puts the title VOBs at sector %"PRIu32", the "
-                   "file system at %"PRId64": decided when they are read\n", name, start, f->title_vob_sector);
+        /* where the title VOBs start: libdvdread decides (the IFO header's
+         * place or the file system's, see vob_read.h); the title VOB stream
+         * the navigation reads too (dvd_nav.c) */
+        f->title_vob_start = f->title_vob_base = (uint32_t)DVDTitleVOBStart_rec(f->rec, f->index);
     }
     return 0;
-}
-
-int ff_dvd_title_vob_place(DVDDisc *d, DVDIfo *f, uint32_t sector, char *file, int size, int64_t *offset)
-{
-    int64_t pos = (int64_t)sector * DVD_SECTOR, at;
-
-    if (d->folder) {
-        /* the title VOB files one after the other */
-        for (int i = 0; i < f->nb_title_vobs; i++) {
-            if (pos < f->title_vobs[i]->size) {
-                snprintf(file, size, "VTS_%02d_%d.VOB", f->index, i + 1);
-                *offset = pos;
-                return 0;
-            }
-            pos -= f->title_vobs[i]->size;
-        }
-        return AVERROR(EINVAL);
-    }
-    /* an image: the title VOBs are read from the IFO header's place on
-     * (ff_dvd_vob_read()); the VOB file whose extents hold that sector */
-    if (!ff_dvd_header32(f, DVD_TT_SRPT))
-        return AVERROR(EINVAL);
-    at = f->ifo_sector + ff_dvd_header32(f, DVD_TT_SRPT) + sector;
-    for (int part = 1; part <= 9; part++) {
-        DiscIOFile *v = NULL;
-        int64_t before = 0;
-        if (open_set_file(d, f->index, part, "VOB", &v) < 0)
-            break;
-        for (int e = 0; e < v->nb_extents; e++) {
-            const DiscIOExtent *x = &v->extents[e];
-            if (x->sector != DISCIO_SECTOR_NOT_RECORDED && at >= x->sector && at < x->sector + x->count &&
-                before + (at - x->sector) * DVD_SECTOR < v->size) {
-                snprintf(file, size, "VTS_%02d_%d.VOB", f->index, part);
-                *offset = before + (at - x->sector) * DVD_SECTOR;
-                ff_discio_file_free(&v);
-                return 0;
-            }
-            before += x->count * DVD_SECTOR;
-        }
-        ff_discio_file_free(&v);
-    }
-    return AVERROR(EINVAL);
 }
 
 int ff_dvd_ifo_raw_table(DVDDisc *d, DVDIfo *f, uint32_t sector, int last_byte_at, const char *table,
@@ -500,6 +455,14 @@ int ff_dvd_ifo_tables(DVDDisc *d, DVDIfo *f)
             goto end;
         }
     }
+    /* the table itself to libdvdread, which walks and checks the cells (and
+     * checks them against the cell address table) */
+    if (DVDKeepPGCIT_rec(d->reader, f->index, rec) < 0) {
+        ret = AVERROR(ENOMEM);
+        goto end;
+    }
+    ifoCheckCellAddresses_rec(h, rec);
+    rec = NULL;
     /* the chapter table as recorded (the title list reads it) */
     if (!ifoRead_table_rec(h, h->vtsi_mat->vts_ptt_srpt, 4, "VTS_PTT_SRPT", &ptt, &ptt_size)) {
         av_log(d->log, AV_LOG_ERROR, "DVD: %s: its chapter table (VTS_PTT_SRPT) cannot be read\n", name);
@@ -519,10 +482,29 @@ int ff_dvd_ifo_tables(DVDDisc *d, DVDIfo *f)
         check_cells(d, f);
     ret = 0;
 end:
+    /* the VOBU address map and whether it is trusted, to libdvdread (which
+     * answers the VOBU questions from here on) */
+    if (ret >= 0 && f->index && DVDSetVobuMap_rec(d->reader, f->index, f->vobu_map, f->nb_vobu_map,
+                                                 !f->map_untrusted_at_load) < 0)
+        ret = AVERROR(ENOMEM);
     av_free(menu_map);
     free(ptt);
     ifoFree_VTS_PGCIT_rec(&rec);
     return ret;
+}
+
+int ff_dvd_map_find(const DVDIfo *f, uint32_t sector, int *exact)
+{
+    int lo = 0, hi = f->nb_vobu_map;
+    while (lo < hi) {
+        int mid = (lo + hi) / 2;
+        if (f->vobu_map[mid] < sector)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    *exact = lo < f->nb_vobu_map && f->vobu_map[lo] == sector;
+    return lo;
 }
 
 int ff_dvd_ifo_load(DVDDisc *d, int index, DVDIfo **out)
@@ -568,6 +550,5 @@ void ff_dvd_ifo_free(DVDIfo **pf)
     av_freep(&f->pgc_same_as);
     ff_dvd_table_free(&f->ptt_srpt);
     av_freep(&f->vobu_map);
-    ff_dvd_vobu_recs_free(&f->vobus);
     av_freep(pf);
 }
