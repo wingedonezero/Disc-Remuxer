@@ -573,20 +573,20 @@ static int title_from_candidate(Planner *p, const Candidate *c, int min_length)
         HDDVDClip *clip;
 
         if (strlen(s) > 0xff || !dot || dot - s + 1 > 0xfd) {
-            av_log(p->log, AV_LOG_VERBOSE, "Playlist title with clip \"%s\": not a time map name; title left out\n", s);
+            av_log(p->log, AV_LOG_INFO, "Playlist title with clip \"%s\": not a time map name; title left out\n", s);
             goto drop;
         }
         for (int x = 0; x < HDDVD_VTI_MAX_EVOBS && !e; x++)
             if (p->vti->evobs[x] && !av_strncasecmp(p->vti->evobs[x]->name, s, dot - s + 1))
                 e = p->vti->evobs[x];
         if (!e) {
-            av_log(p->log, AV_LOG_VERBOSE, "Playlist title with clip \"%s\": no such EVOB; title left out\n", s);
+            av_log(p->log, AV_LOG_INFO, "Playlist title with clip \"%s\": no such EVOB; title left out\n", s);
             goto drop;
         }
         if (!(clip = clip_of(p, e, &err))) {
             if (err < 0)
                 goto fail;
-            av_log(p->log, AV_LOG_VERBOSE, "Playlist title with clip \"%s\": the EVOB cannot be used; title left out\n", s);
+            av_log(p->log, AV_LOG_INFO, "Playlist title with clip \"%s\": the EVOB cannot be used; title left out\n", s);
             goto drop;
         }
         if (av_dynarray_add_nofree(&t.clips, &t.nb_clips, clip) < 0) {
@@ -705,7 +705,7 @@ int ff_hddvd_titles_plan(void *logctx, DiscIOFS *fs, const HDDVDVTI *vti, HDDVDX
             ret = 0;
             continue;
         }
-        av_log(logctx, AV_LOG_VERBOSE, "EVOB %s is played by no playlist title: title %s of its own\n",
+        av_log(logctx, AV_LOG_INFO, "EVOB %s is played by no playlist title: title %s of its own\n",
                e->name, t.name);
     }
     for (int i = 0; i < p.plan->nb_titles; i++) {

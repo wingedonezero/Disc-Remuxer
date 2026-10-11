@@ -950,8 +950,11 @@ static int add_title( titles_t *T, int idx )
           idx + 1 );
     return 0;
   }
-  if( vtsn > (unsigned)T->disc->nr_of_title_sets )
+  if( vtsn > (unsigned)T->disc->nr_of_title_sets ) {
+    note( T, DVD_NOTE_INFO, "title %d left out: its title set VTS_%02u is beyond the disc's %d title sets", idx + 1,
+          vtsn, T->disc->nr_of_title_sets );
     return 0;
+  }
   if( !T->disc->ifos[vtsn].ifo ) {
     note( T, DVD_NOTE_INFO, "title %d left out: its title set (VTS_%02u) could not be read", idx + 1, vtsn );
     return 0;
@@ -979,8 +982,11 @@ static int add_title( titles_t *T, int idx )
     unsigned pgcn = pgcns[k];
     const pgc_rec_t *p = pgc_of( T, vtsn, pgcn );
     int ns = 0, why;
-    if( !p )
+    if( !p ) {
+      note( T, DVD_NOTE_INFO, "title %d: program chain %u left out: VTS_%02u has no such program chain (or it cannot "
+            "be read)", idx + 1, pgcn, vtsn );
       continue;
+    }
     why = pgc_rejected( T, vtsn, p );
     if( why >= 0 && !scan_find( T, idx + 1, pgcn ) ) {
       note( T, DVD_NOTE_INFO, "title %d: program chain %u left out: it fails the program chain check (reason %d)",
