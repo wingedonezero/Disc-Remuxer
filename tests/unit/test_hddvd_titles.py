@@ -273,18 +273,18 @@ def test_the_language_is_the_title_sets_default_as_an_iso_639_2_code_when_known(
         assert d.startswith(f"title 0|A|{want}|"), f"{attr}: {d}"
 
 
-def test_titles_shorter_than_the_minimum_are_not_selected_and_do_not_count_as_playing():
+def test_titles_shorter_than_the_minimum_are_not_selected_and_still_play_their_evobs():
     # the only title is short: not selected, and no EVOB gets a title of its own
     im = disc([evob("A.EVO", 1, 5), evob("E.EVO", 2, 50)],
               playlist("", f"<Title>{clip('A.MAP', T, T, False)}</Title>"), files(["A.EVO", "E.EVO"]))
     assert titles(ok(im, 10)) == ["title 0|A||playlist|0|450000|5|2048|A.EVO|1|A|0"]
-    # with a selected title, the short title's EVOB is played by no selected title
+    # with a selected title: the short title is listed (not selected) and plays its EVOB, which gets no
+    # second title (the reference drops the short title, then a title of the EVOB's own as just as short)
     body = f"<Title>{clip('A.MAP', T, T, False)}</Title><Title>{clip('B.MAP', T, T, False)}</Title>"
     im = disc([evob("A.EVO", 1, 5), evob("B.EVO", 2, 50)], playlist("", body), files(["A.EVO", "B.EVO"]))
     assert titles(ok(im, 10)) == [
         "title 0|B||playlist|1|4500000|50|2048|B.EVO|1|B|0",
         "title 1|A||playlist|0|450000|5|2048|A.EVO|1|A|0",
-        "title 2|A|(null)|evob|0|450000|5|2048|A.EVO|1|A|0",
     ]
 
 

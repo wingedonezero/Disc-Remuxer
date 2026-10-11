@@ -112,7 +112,8 @@ const char *codec_label(enum AVCodecID id, int profile)
     case AV_CODEC_ID_EAC3:         return "DDplus";
     case AV_CODEC_ID_TRUEHD:       return profile == AV_PROFILE_TRUEHD_ATMOS ? "TrueHD Atmos" : "TrueHD";
     case AV_CODEC_ID_MLP:          return "MLP";
-    case AV_CODEC_ID_DTS:          return profile == AV_PROFILE_DTS_HD_MA ? "DTS-HD MA" :
+    case AV_CODEC_ID_DTS:          return profile == AV_PROFILE_DTS_HD_MA || profile == AV_PROFILE_DTS_HD_MA_X ||
+                                          profile == AV_PROFILE_DTS_HD_MA_X_IMAX ? "DTS-HD MA" :
                                           profile == AV_PROFILE_DTS_HD_HRA ? "DTS-HD HR" : "DTS";
     case AV_CODEC_ID_MP1:
     case AV_CODEC_ID_MP2:

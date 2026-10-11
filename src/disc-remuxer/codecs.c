@@ -19,6 +19,8 @@ const char *codec_short(const DiscStreamInfo *k)
         return "TrueHD";
     if (k->codec == AV_CODEC_ID_DTS && k->profile == AV_PROFILE_DTS_EXPRESS)
         return "DTS Express";
+    if (k->codec == AV_CODEC_ID_H264 && k->second_view)
+        return "Mpeg4-MVC-3D";          /* a 3-D title's second view (MVC) */
     return codec_label(k->codec, k->profile);
 }
 

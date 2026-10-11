@@ -623,12 +623,13 @@ fail:
     return err;
 }
 
+/* A listed title plays clip. Short titles count: they are listed (not
+ * selected) where the reference drops them, and a title of the clip's own
+ * would be as short, dropped by it too, so it would only list it twice. */
 static int plays(const HDDVDTitlePlan *plan, const HDDVDClip *clip)
 {
     for (int i = 0; i < plan->nb_titles; i++) {
         const HDDVDTitle *t = &plan->titles[i];
-        if (t->not_selected)
-            continue;
         for (int k = 0; k < t->nb_clips; k++)
             if (t->clips[k] == clip)
                 return 1;
