@@ -1126,7 +1126,7 @@ static int results( dvdnav_scan_t *s, dvdnav_scan_results_t *out )
   }
   for( int i = 0; i < n; i++ ) {
     const scan_rec_t *r = &s->recs[i];
-    dvdnav_scan_result_t *o = &out->results[i];
+    dvd_nav_cells_t *o = &out->results[i];
     uint64_t k = r->key & 0x00ffffffffffffffULL;
     unsigned idx = nb_keys;
     char *p = o->name;

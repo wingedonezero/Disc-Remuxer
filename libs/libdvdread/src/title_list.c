@@ -34,7 +34,7 @@
 #include "logger.h"
 
 /* the list's lines: what a user should see, details, warnings, debug lines */
-enum { DVD_NOTE_INFO, DVD_NOTE_DETAIL, DVD_NOTE_WARN, DVD_NOTE_DEBUG };
+enum { DVD_NOTE_INFO, DVD_NOTE_DETAIL, DVD_NOTE_WARN, DVD_NOTE_DEBUG, DVD_NOTE_ERROR };
 
 #define HEADER_SIZE         0x400
 #define SUSPICIOUS_PGCS     80          /* program chains of a suspicious title set (more than) */
@@ -43,6 +43,7 @@ enum { DVD_NOTE_INFO, DVD_NOTE_DETAIL, DVD_NOTE_WARN, DVD_NOTE_DEBUG };
 #define MAX_SUBP            32          /* VTSI_MAT subpicture streams */
 #define VTS_VIDEO_ATTR      0x200       /* VTSI_MAT vts_video_attr */
 #define VTS_AUDIO_COUNT     0x202       /* VTSI_MAT nr_of_vts_audio_streams */
+#define VTS_AUDIO_ATTR      0x204       /* VTSI_MAT vts_audio_attr[8] */
 #define VTS_SUBP_COUNT      0x254       /* VTSI_MAT nr_of_vts_subp_streams */
 #define FAKE_SECONDS        300         /* a fake's real length differs by more than this ... */
 #define FAKE_PERCENT        30          /* ... and more than this much of its declared length */
@@ -69,7 +70,7 @@ typedef struct {
 static void note( titles_t *T, int level, const char *fmt, ... )
 {
   static const dvd_logger_level_t levels[] = { DVD_LOGGER_LEVEL_NOTICE, DVD_LOGGER_LEVEL_INFO, DVD_LOGGER_LEVEL_WARN,
-                                               DVD_LOGGER_LEVEL_DEBUG };
+                                               DVD_LOGGER_LEVEL_DEBUG, DVD_LOGGER_LEVEL_ERROR };
   dvd_reader_t *ctx = T->disc->ctx;
   char text[512];
   va_list va;
@@ -1010,4 +1011,81 @@ end:
   for( int i = 0; i < 100; i++ )
     free( T.headers[i] );
   return ret < 0 ? -1 : 0;
+}
+
+/* ---- the stream probe of a title ---- */
+
+int DVDTitleStreams_rec( dvd_disc_rec_t *disc, dvd_title_t *t )
+{
+  dvd_title_options_t none = { 0 };
+  titles_t T = { disc, NULL, 0, &none, NULL };
+  dvd_probe_audio_t audio[8] = { { 0 } };
+  const dvd_segment_t *g;
+  const uint8_t *h;
+  dvd_vob_reader_t *vr;
+  uint32_t failed = 0;
+  int64_t best = -1;
+  int seg = 0, captions = 0, ret, n = t->nb_audio < 8 ? t->nb_audio : 8;
+
+  t->audio_dropped = 0;
+  t->captions = 0;
+  if( !t->segs.nb_segments )
+    return 1;
+  for( int k = 0; k < t->segs.nb_segments; k++ )
+    if( t->segs.segments[k].size > best ) {
+      best = t->segs.segments[k].size;
+      seg = k;
+    }
+  g = &t->segs.segments[seg];
+  if( !(h = header( &T, t->vtsn )) ) {
+    ret = -2;
+    goto end;
+  }
+  for( int i = 0; i < n; i++ ) {
+    audio[i].stream = t->audio[i].stream;
+    audio[i].coding = h[VTS_AUDIO_ATTR + 8 * t->audio[i].attr] >> 5;
+    audio[i].listed = t->audio_listed >> i & 1;
+  }
+  if( !(vr = reading( &T, t->vtsn )) )
+    ret = -2;
+  else
+    ret = DVDProbeTitleStreams_rec( vr, g->extents, g->nb_extents, audio, n, &captions, &failed );
+  if( ret < -1 ) {
+    note( &T, DVD_NOTE_ERROR, "title %s: sector %" PRIu32 " of segment %d cannot be read: the title's streams "
+          "cannot be found", t->name, failed, seg + 1 );
+    goto end;
+  }
+  if( ret < 0 )
+    goto end;
+  if( (t->captions = captions) )
+    note( &T, DVD_NOTE_DETAIL, "title %s: closed captions in the video: a caption track", t->name );
+  for( int i = 0; i < n; i++ ) {
+    int s = t->audio[i].stream, listed = audio[i].listed;
+
+    if( audio[i].result == DVD_PROBE_UNKNOWN ) {
+      note( &T, DVD_NOTE_WARN, "title %s: audio stream %d has coding mode %d, which is not known: left out", t->name,
+            s, audio[i].coding );
+      t->audio_dropped |= 1 << i;
+      continue;
+    }
+    if( audio[i].result == DVD_PROBE_FOUND )
+      continue;
+    if( listed != (t->audio_listed >> s & 1) )
+      note( &T, DVD_NOTE_DEBUG, "title %s: audio stream %d is audio track %d: whether audio_control lists it is taken "
+            "from track %d's place (%s), not from the stream number (%s)", t->name, s, i, i,
+            listed ? "listed" : "not listed", listed ? "not listed" : "listed" );
+    if( audio[i].result == DVD_PROBE_NOT_LISTED ) {
+      note( &T, DVD_NOTE_INFO, "title %s: audio stream %d has no data in the first 48 MiB and the program chain does "
+            "not list it: left out", t->name, s );
+      t->audio_dropped |= 1 << i;
+    } else if( audio[i].result == DVD_PROBE_EMPTY ) {
+      note( &T, DVD_NOTE_WARN, "title %s: audio stream %d (track %d) looks empty (no data in the first 200 MiB, the "
+            "100 MiB from the middle and the last 100 MiB of segment %d): left out", t->name, s, i, seg + 1 );
+      t->audio_dropped |= 1 << i;
+    }
+  }
+  ret = 1;
+end:
+  free( T.headers[t->vtsn] );
+  return ret;
 }

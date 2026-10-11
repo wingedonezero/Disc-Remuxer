@@ -66,20 +66,20 @@ int ff_dvd_title_vob_sector(DVDDisc *d, DVDIfo *f, uint32_t sector, uint8_t *buf
     return ff_dvd_title_vob_read(d, f, NULL, sector, buf, NULL);
 }
 
-uint32_t ff_dvd_segment_blocks(const DVDSegment *g)
+uint32_t ff_dvd_segment_blocks(const dvd_segment_t *g)
 {
-    const DVDExtent *e = g->nb_extents ? &g->extents[g->nb_extents - 1] : NULL;
+    const dvd_extent_t *e = g->nb_extents ? &g->extents[g->nb_extents - 1] : NULL;
     return e ? e->logical + e->count : 0;
 }
 
 /* The title VOB sector of a segment's block; < 0 when none holds it. */
-static int segment_sector(const DVDSegment *g, uint32_t block, uint32_t *sector)
+static int segment_sector(const dvd_segment_t *g, uint32_t block, uint32_t *sector)
 {
     int lo = 0, hi = g->nb_extents - 1;
 
     while (lo <= hi) {                  /* the extent holding block (the extents follow each other) */
         int mid = (lo + hi) / 2;
-        const DVDExtent *e = &g->extents[mid];
+        const dvd_extent_t *e = &g->extents[mid];
         if (block < e->logical)
             hi = mid - 1;
         else if (block >= e->logical + e->count)
@@ -92,20 +92,20 @@ static int segment_sector(const DVDSegment *g, uint32_t block, uint32_t *sector)
     return AVERROR(EINVAL);
 }
 
-int ff_dvd_segment_read_vobs(DVDDisc *d, const DVDTitle *t, dvd_vob_reader_t *vr, int seg, uint32_t block,
+int ff_dvd_segment_read_vobs(DVDDisc *d, const dvd_title_t *t, dvd_vob_reader_t *vr, int seg, uint32_t block,
                              uint8_t *buf, dvd_vob_damage_t *ended)
 {
     uint32_t sector;
-    int ret = segment_sector(&t->segments[seg], block, &sector);
+    int ret = segment_sector(&t->segs.segments[seg], block, &sector);
 
     if (ended)
         memset(ended, 0, sizeof(*ended));
-    return ret < 0 ? ret : ff_dvd_title_vob_read(d, t->vts, vr, sector, buf, ended);
+    return ret < 0 ? ret : ff_dvd_title_vob_read(d, d->ifos[t->vtsn], vr, sector, buf, ended);
 }
 
-int ff_dvd_segment_view(const DVDTitle *t, dvd_vob_reader_t *vr, int seg)
+int ff_dvd_segment_view(const dvd_title_t *t, dvd_vob_reader_t *vr, int seg)
 {
-    const DVDSegment *g = &t->segments[seg];
+    const dvd_segment_t *g = &t->segs.segments[seg];
     uint32_t *sectors = av_malloc_array(FFMAX(g->nb_extents, 1), sizeof(*sectors));
     uint32_t *counts  = av_malloc_array(FFMAX(g->nb_extents, 1), sizeof(*counts));
     int ret = AVERROR(ENOMEM);
@@ -122,7 +122,7 @@ int ff_dvd_segment_view(const DVDTitle *t, dvd_vob_reader_t *vr, int seg)
     return ret;
 }
 
-int ff_dvd_segment_read(DVDDisc *d, const DVDTitle *t, int seg, uint32_t block, uint8_t *buf)
+int ff_dvd_segment_read(DVDDisc *d, const dvd_title_t *t, int seg, uint32_t block, uint8_t *buf)
 {
     return ff_dvd_segment_read_vobs(d, t, NULL, seg, block, buf, NULL);
 }

@@ -29,6 +29,7 @@
 #include "libavutil/bprint.h"
 
 #include <dvdnav/dvdnav.h>
+#include <dvdnav/scan.h>
 #include <dvdread/disc_read.h>
 #include <dvdread/ifo_types.h>
 #include <dvdread/vob_read.h>
@@ -135,7 +136,6 @@ typedef struct DVDIfo {
     /* the navigation scan (dvd_scan.c) */
     uint32_t     title_vob_base;        /**< image: the title VOBs' absolute first sector (VOBU records of all
                                              such title sets are kept on the disc by absolute sector); 0 */
-    int          entered_by_navigation; /**< the navigation played one of its cells (title or menu) */
 
 } DVDIfo;
 
@@ -268,105 +268,28 @@ int  ff_dvd_vobu_next(DVDDisc *d, DVDIfo *f, uint32_t sector, uint32_t *next);
 int  ff_dvd_vobu_bad(DVDDisc *d, DVDIfo *f, uint32_t sector);
 
 /* ---- dvd_scan.c ---- */
-/** One result of the navigation scan: the cells the navigation played in
- *  title (TT_SRPT number, low 8 bits) / program chain pgc (low 8 bits),
- *  and the name of the path that played them ("A1", "B2", ...). */
-typedef struct DVDScanResult {
-    char      name[16];
-    uint8_t   title, pgc;
-    int       nb_cells;
-    uint8_t  *cells;
-} DVDScanResult;
-
-typedef struct DVDScan {
-    DVDScanResult *results;             /**< sorted by title, then pgc */
-    int            nb_results;
-} DVDScan;
-
 /** The navigation scan: the disc played from its start and every title,
  *  every reachable menu button pressed, per region the disc allows, and
  *  the cells played per title / program chain recorded. trace (may be
  *  NULL) receives every navigator command, event, sector read and path
  *  line. < 0 when the scan failed (no results: the titles keep the order
- *  of the title table). VOBU records and DVDIfo.entered_by_navigation are
- *  left on the disc. */
-int  ff_dvd_scan(DVDDisc *d, void (*trace)(void *opaque, const char *line), void *opaque, DVDScan *out);
-void ff_dvd_scan_free(DVDScan *s);
+ *  of the title table). The results are libdvdnav's
+ *  (dvdnav_scan_free_results()); the VOBU records are left on the disc. */
+int  ff_dvd_scan(DVDDisc *d, void (*trace)(void *opaque, const char *line), void *opaque, dvdnav_scan_results_t *out);
 
-/* ---- dvd_titles.c ---- */
-/** A piece of the title VOBs: count sectors from sector (relative to the
- *  title VOBs), at logical in its segment. */
-typedef struct DVDExtent {
-    uint32_t logical, sector, count;
-} DVDExtent;
-
-/** A run of a title on one timeline: its extents, in playing order. */
-typedef struct DVDSegment {
-    DVDExtent *extents;
-    int        nb_extents, alloc_extents;
-    int        last_cell;               /**< the cell of the last VOBU added */
-    uint16_t (*runs)[2];                /**< runs of consecutive cells (1-based first, last) */
-    int        nb_runs, alloc_runs;
-    int64_t    size;                    /**< bytes */
-    char      *cell_map;                /**< the cell runs as text: "1-3", "(1-3,5)" */
-} DVDSegment;
-
-#define DVD_CHAPTER_NONE (-1)
-
-typedef struct DVDChapter {
-    uint16_t pgcn, pgn;                 /**< the PTT entry */
-    int      cell;                      /**< its program's entry cell (index in the program chain), -1 none */
-    int      segment;                   /**< DVD_CHAPTER_NONE: not placed */
-    int64_t  offset;                    /**< bytes in the segment */
-    int64_t  time;                      /**< 90 kHz: from the title's start to the end of its first VOBU */
-} DVDChapter;
-
-/** A title's audio or sub-picture stream: its stream number and the title
- *  set's attributes it is described by (VTSI_MAT vts_audio_attr /
- *  vts_subp_attr index). */
-typedef struct DVDStreamRef {
-    uint8_t stream, attr;
-} DVDStreamRef;
+/* ---- dvd_titles.c: the title list is libdvdread's (dvdread/title_list.h:
+ * dvd_title_list_t, dvd_title_t, its segments dvd_segment_t, chapters
+ * dvd_title_chapter_t, streams dvd_stream_ref_t) ---- */
 
 #define DVD_VTS_VIDEO_ATTR  0x200       /* VTSI_MAT vts_video_attr (2 bytes) */
 #define DVD_VTS_AUDIO_ATTR  0x204       /* VTSI_MAT vts_audio_attr[8] (8 bytes each) */
 #define DVD_VTS_SUBP_ATTR   0x256       /* VTSI_MAT vts_subp_attr[32] (6 bytes each) */
 
-typedef struct DVDTitle {
-    char           name[24];            /**< the title table entry ("4"), with its program chain ("4/1") */
-    int            title;               /**< the title table entry, from 0 */
-    uint8_t        pb_ty, vtsn, vts_ttn;
-    uint8_t        nr_of_angles, angle; /**< angle from 0 */
-    DVDIfo        *vts;
-    DVDPgc        *pgc;
-    const DVDScanResult *scan;          /**< the navigation's cells of this title / program chain, NULL none */
-    DVDChapter    *chapters;
-    int            nb_chapters;
-    int           *cells;               /**< the cells played, indexes in the program chain */
-    int            nb_cells, alloc_cells;
-    uint32_t       declared;            /**< seconds: the cells' playback times */
-    uint32_t       measured;            /**< seconds: the cells' VOBUs' presentation times */
-    DVDSegment    *segments;
-    int            nb_segments, alloc_segments;
-    int            built;
-    int            nav_invalid;         /**< places with invalid navigation found */
-    int            short_title;         /**< shorter than the minimum length: listed, not selected */
-    char           source[96];          /**< what the title is made from, for the disc info */
-    DVDStreamRef   audio[8];            /**< in the program chain's audio_control order, then the title set's
-                                             other audio streams */
-    int            nb_audio;
-    uint8_t        audio_listed;        /**< the stream numbers audio_control lists (bit per stream) */
-    uint8_t        audio_dropped;       /**< audio[] entries the stream pass left out (bit per entry) */
-    int            captions;            /**< the stream pass found closed captions in the video */
-    DVDStreamRef   subp[33];            /**< in the program chain's subp_control order */
-    int            nb_subp;
-    uint16_t       subp_width, subp_height; /**< the sub-pictures' canvas */
-} DVDTitle;
-
-typedef struct DVDTitleList {
-    DVDTitle **titles;
-    int        nb_titles;
-} DVDTitleList;
+/** Title t's program chain. */
+static inline const pgc_rec_t *ff_dvd_title_pgc(const DVDDisc *d, const dvd_title_t *t)
+{
+    return d->rec->ifos[t->vtsn].pgcit->pgcs[t->pgcn];
+}
 
 enum { DVD_CELL_MODE_AUTO, DVD_CELL_MODE_WALK, DVD_CELL_MODE_TRIM, DVD_CELL_MODE_WALK_TRIM };
 enum { DVD_CELL_CHECK_ALL, DVD_CELL_CHECK_SPREAD, DVD_CELL_CHECK_RANDOM };
@@ -378,16 +301,15 @@ typedef struct DVDTitleOptions {
 } DVDTitleOptions;
 
 /** The title list from the disc's structure and the navigation scan (a
- *  failed scan: no results). */
-int   ff_dvd_titles_build(DVDDisc *d, const DVDScan *scan, const DVDTitleOptions *o, DVDTitleList *out);
-void  ff_dvd_titles_free(DVDTitleList *l);
-void  ff_dvd_title_free(DVDTitle **t);
+ *  failed scan: no results), libdvdread's (DVDFreeTitleList_rec()). */
+int   ff_dvd_titles_build(DVDDisc *d, const dvdnav_scan_results_t *scan, const DVDTitleOptions *o,
+                          dvd_title_list_t *out);
 /** The full cell check of cell (1-based) of program chain pgcn of title
  *  set vts, with mode (DVD_CELL_CHECK_*): 1 failed, 0 passed, < 0 no such
  *  cell. */
 int   ff_dvd_cell_check(DVDDisc *d, int vts, int pgcn, int cell, int mode);
 /** One line per title (tests, debug log); av_free() it. */
-char *ff_dvd_titles_dump(const DVDTitleList *l);
+char *ff_dvd_titles_dump(const dvd_title_list_t *l);
 
 /* ---- dvd_read.c ---- */
 /** A reading of title set f's title VOBs of its own (libdvdread's, with its
@@ -408,22 +330,15 @@ int      ff_dvd_css_state(DVDDisc *d, const DVDIfo *f, uint8_t *key);
 /** ff_dvd_title_vob_read() on f's own reading. */
 int      ff_dvd_title_vob_sector(DVDDisc *d, DVDIfo *f, uint32_t sector, uint8_t *buf);
 /** The sectors of a segment. */
-uint32_t ff_dvd_segment_blocks(const DVDSegment *g);
+uint32_t ff_dvd_segment_blocks(const dvd_segment_t *g);
 /** Sector block of segment seg of title t, as ff_dvd_title_vob_read(). */
-int      ff_dvd_segment_read_vobs(DVDDisc *d, const DVDTitle *t, dvd_vob_reader_t *vr, int seg, uint32_t block,
+int      ff_dvd_segment_read_vobs(DVDDisc *d, const dvd_title_t *t, dvd_vob_reader_t *vr, int seg, uint32_t block,
                                   uint8_t *buf, dvd_vob_damage_t *ended);
 /** The file view (vob_read.h) of reading vr for segment seg of title t, read
  *  next: 1 used when a read fails, 0 not, < 0 an error. */
-int      ff_dvd_segment_view(const DVDTitle *t, dvd_vob_reader_t *vr, int seg);
+int      ff_dvd_segment_view(const dvd_title_t *t, dvd_vob_reader_t *vr, int seg);
 /** Sector block of segment seg of title t, as ff_dvd_title_vob_sector(). */
-int      ff_dvd_segment_read(DVDDisc *d, const DVDTitle *t, int seg, uint32_t block, uint8_t *buf);
-
-/* ---- dvd_streams.c ---- */
-/** The probe of title t's streams (its largest segment read from the
- *  start): closed captions (t->captions) and the audio streams without
- *  data (t->audio_dropped). < 0: a sector cannot be read, the title cannot
- *  be used. The disc layer's stream pass follows (discpass.c). */
-int ff_dvd_title_streams(DVDDisc *d, DVDTitle *t);
+int      ff_dvd_segment_read(DVDDisc *d, const dvd_title_t *t, int seg, uint32_t block, uint8_t *buf);
 
 /* ---- dvd_disc.c ---- */
 /** The disc's structure as libdvdread reads and checks it (DVDOpenDisc_rec():

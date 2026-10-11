@@ -5,8 +5,8 @@
  * reachable menu button pressed, the cells each path plays recorded per
  * title and program chain, named and ordered). Here the navigator is opened
  * on the disc layer (dvd_nav.c), every VOB sector it reads is handed to the
- * scan (its lines go into the log as the navigators' do) and its results
- * are copied for the title list. A failed scan leaves no results: the titles keep the order of the
+ * scan (its lines go into the log as the navigators' do); its results go to
+ * the title list as they are. A failed scan leaves no results: the titles keep the order of the
  * title table.
  *
  * This file is part of FFmpeg.
@@ -46,10 +46,9 @@ static int scan_sector(void *opaque, int set, int menu, uint32_t sector, const u
     return dvdnav_scan_sector(opaque, set, menu, sector, data) < 0 ? AVERROR(EINVAL) : 0;
 }
 
-int ff_dvd_scan(DVDDisc *d, void (*trace)(void *opaque, const char *line), void *opaque, DVDScan *out)
+int ff_dvd_scan(DVDDisc *d, void (*trace)(void *opaque, const char *line), void *opaque, dvdnav_scan_results_t *out)
 {
     dvdnav_logger_cb logcb;
-    dvdnav_scan_results_t r = { 0 };
     dvdnav_scan_t *s;
     dvdnav_t *nav;
     int ret;
@@ -58,41 +57,12 @@ int ff_dvd_scan(DVDDisc *d, void (*trace)(void *opaque, const char *line), void 
     if (ff_dvd_nav_logger(d, &logcb) < 0 || !(s = dvdnav_scan_new(d->rec, d, &logcb, trace, opaque)))
         return AVERROR(ENOMEM);
     if ((ret = ff_dvd_nav_open(d, &(DVDNavHooks){ s, scan_sector }, &nav)) >= 0) {
-        ret = dvdnav_scan_run(s, nav, &r);
+        ret = dvdnav_scan_run(s, nav, out);
         ret = ret == -2 ? AVERROR(ENOMEM) : ret < 0 ? AVERROR_EXTERNAL : 0;
-        for (int i = 0; i < d->nb_ifos && i < FF_ARRAY_ELEMS(r.entered); i++)
-            if (d->ifos[i] && r.entered[i])
-                d->ifos[i]->entered_by_navigation = 1;
     }
-    if (ret >= 0 && !(out->results = av_calloc(FFMAX(r.nb_results, 1), sizeof(*out->results))))
-        ret = AVERROR(ENOMEM);
-    for (int i = 0; ret >= 0 && i < r.nb_results; i++) {
-        const dvdnav_scan_result_t *a = &r.results[i];
-        DVDScanResult *o = &out->results[i];
-        memcpy(o->name, a->name, sizeof(o->name));
-        o->title    = a->title;
-        o->pgc      = a->pgc;
-        o->nb_cells = a->nb_cells;
-        if (!(o->cells = av_memdup(a->cells, FFMAX(a->nb_cells, 1)))) {
-            ret = AVERROR(ENOMEM);
-            break;
-        }
-        out->nb_results++;
-    }
-    if (ret < 0) {
-        ff_dvd_scan_free(out);
+    if (ret < 0)
         av_log(d->log, AV_LOG_WARNING, "DVD: the navigation scan failed: the titles keep the order of the title "
                "table\n");
-    }
-    dvdnav_scan_free_results(&r);
     dvdnav_scan_close(s);
     return ret;
-}
-
-void ff_dvd_scan_free(DVDScan *s)
-{
-    for (int i = 0; i < s->nb_results; i++)
-        av_freep(&s->results[i].cells);
-    av_freep(&s->results);
-    s->nb_results = 0;
 }

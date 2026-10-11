@@ -133,6 +133,9 @@ typedef struct
   dvd_stream_ref_t       subp[33];    /* in the program chain's subp_control order */
   int                    nb_subp;
   uint16_t               subp_width, subp_height;   /* the sub-pictures' canvas */
+  /* the stream probe's (DVDTitleStreams_rec()) */
+  int                    captions;    /* closed captions in the video */
+  uint8_t                audio_dropped;  /* audio[] entries left out (bit per entry) */
 } dvd_title_t;
 
 typedef struct
@@ -159,6 +162,20 @@ typedef struct
 DVDREAD_API int DVDTitleList_rec( dvd_disc_rec_t *, const dvd_nav_cells_t *scan, int nb_scan,
                                   const dvd_title_options_t *, dvd_title_list_t *out );
 DVDREAD_API void DVDFreeTitle_rec( dvd_title_t * );
+
+/**
+ * The stream probe of title t (DVDProbeTitleStreams_rec() on its largest
+ * segment, the first of the largest, on its title set's own reading): its
+ * captions and the audio streams it leaves out (t->captions,
+ * t->audio_dropped), each audio stream by its stream number, its attributes'
+ * coding mode and whether audio_control lists it by its place in the title's
+ * audio list (audio_control's streams come first). Left out: an unknown
+ * coding mode, no data in the first 48 MiB when not listed, no data in any
+ * zone the probe reads when listed. What it finds is said in the log. 1 done,
+ * -1 no memory, -2 a sector cannot be read, -3 it is scrambled without a
+ * title key (said; the title cannot be used).
+ */
+DVDREAD_API int DVDTitleStreams_rec( dvd_disc_rec_t *, dvd_title_t *t );
 DVDREAD_API void DVDFreeTitleList_rec( dvd_title_list_t * );
 
 #ifdef __cplusplus

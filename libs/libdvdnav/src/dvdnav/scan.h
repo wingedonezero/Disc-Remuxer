@@ -23,6 +23,7 @@
 
 #include <dvdnav/dvdnav.h>
 #include <dvdread/disc_read.h>
+#include <dvdread/title_list.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -79,20 +80,12 @@ extern "C" {
  */
 typedef struct dvdnav_scan_s dvdnav_scan_t;
 
-/** One recording: the cells (from 1) the navigation played in title (title
- *  table number, low 8 bits) / program chain pgc (low 8 bits), and the name
- *  of the path that played them. */
+/** The recordings in libdvdread's form (dvd_nav_cells_t, title_list.h:
+ *  the cells the navigation played in a title / program chain and the name
+ *  of the path that played them), handed to DVDTitleList_rec() as they are. */
 typedef struct
 {
-  char     name[16];
-  uint8_t  title, pgc;
-  int      nb_cells;
-  uint8_t *cells;
-} dvdnav_scan_result_t;
-
-typedef struct
-{
-  dvdnav_scan_result_t *results;          /* sorted by title, then pgc */
+  dvd_nav_cells_t      *results;          /* sorted by title, then pgc */
   int                   nb_results;
   uint8_t               entered[100];     /* per title set: the navigation played one of its cells (also
                                              when the scan failed) */
