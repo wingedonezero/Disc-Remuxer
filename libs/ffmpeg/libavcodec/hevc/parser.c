@@ -57,6 +57,8 @@ typedef struct HEVCParserContext {
     /* disc mode (PARSER_FLAG_DISC) */
     FFDiscCut disc;
     int disc_said;                          ///< the untested notes already logged (bits)
+    uint8_t disc_ps[128];                   ///< pic_struct history (the latest 128 pictures)
+    int disc_ps_n, disc_ps_start;
 } HEVCParserContext;
 
 static int hevc_parse_slice_header(AVCodecParserContext *s, H2645NAL *nal,
@@ -344,10 +346,14 @@ static int hevc_find_frame_end(AVCodecParserContext *s, const uint8_t *buf,
  * 5 / 6 -> 3, 7 -> 4, 8 -> 6 field periods (H.265 Table E.7). pic_struct is
  * the picture timing SEI's (in front of the picture) when
  * frame_field_info_present_flag is set (without VUI: inferred from the
- * profile's source flags, E.3.1), else 0; a missing SEI: 0 (logged). Ultra
- * HD Blu-ray video is progressive: a stream of field pictures
- * (field_seq_flag, pic_struct 1, 2, 9-12) is not a Blu-ray stream and
- * cannot be cut.
+ * profile's source flags, E.3.1), else 0; a missing SEI: 0 (logged), but in
+ * a stream coded as fields (field_seq_flag) it is guessed from the pictures
+ * before as for H.264 (all of the last 9 or more alike: that value; an
+ * A, B, A, B alternation over 11 or more: B), or the stream cannot be cut.
+ * A field picture (pic_struct 1 / 2) lasts one field period. Ultra HD
+ * Blu-ray video is progressive, so field coding is a stream the discs do not
+ * have: it is cut as the reference program cuts it, and said (untested);
+ * pic_struct 9-12 (fields paired with another picture) cannot be cut.
  */
 
 enum { DISC_PREFIX, DISC_SLICES, DISC_SUFFIX };
@@ -674,13 +680,35 @@ end:
 }
 
 /* The values of the frame just cut. */
+/* pic_struct guessed from the pictures before: < 0 none. */
+static int disc_guess_ps(const HEVCParserContext *p)
+{
+    int n = p->disc_ps_n, l[128];
+
+    if (n >= 9) {
+        int v = p->disc_ps[p->disc_ps_start], k;
+        for (k = 1; k < n && p->disc_ps[(p->disc_ps_start + k) & 127] == v; k++)
+            ;
+        if (k == n)
+            return v;
+    }
+    if (n <= 10)
+        return -1;
+    for (int k = 0; k < n; k++)             /* the newest first */
+        l[k] = p->disc_ps[(p->disc_ps_start + n - 1 - k) & 127];
+    for (int k = 2; k != (n & ~1); k += 2)
+        if (l[k] != l[0] || l[k + 1] != l[1])
+            return -1;
+    return l[1];
+}
+
 static int disc_picture(AVCodecParserContext *s, AVCodecContext *avctx, const uint8_t *buf, int size)
 {
     static const uint8_t fields[9] = { 2, 1, 1, 2, 2, 3, 3, 4, 6 };
     HEVCParserContext *p = s->priv_data;
     const HEVCPPS *pps = NULL;
     const HEVCSPS *sps;
-    int ps = -1, recovery = 0, num = 0, den = 0, ffi, pps_id = -1;
+    int ps = -1, recovery = 0, num = 0, den = 0, ffi, pps_id = -1, field_coded;
 
     /* the SEI in front of the picture; its first slice segment's PPS */
     for (int i = 0; i + 4 < size; i++) {
@@ -714,12 +742,13 @@ static int disc_picture(AVCodecParserContext *s, AVCodecContext *avctx, const ui
         return AVERROR_INVALIDDATA;
     }
     s->key_frame = s->key_frame > 0 || recovery;
-    /* Ultra HD Blu-ray video is progressive: a stream of field pictures is
-     * none of it (and is not read) */
-    if (sps->vui_present && sps->vui.field_seq_flag) {
-        av_log(avctx, AV_LOG_ERROR, "Title timeline: HEVC: a stream of field pictures (field_seq_flag): not a "
-               "Blu-ray HEVC stream (Ultra HD Blu-ray video is progressive)\n");
-        return AVERROR_INVALIDDATA;
+    /* a stream coded as fields: Ultra HD Blu-ray video is progressive */
+    field_coded = sps->vui_present && sps->vui.field_seq_flag;
+    if (field_coded && !(p->disc_said & 8)) {
+        p->disc_said |= 8;
+        av_log(avctx, AV_LOG_WARNING, "Title timeline: HEVC: a stream coded as fields (field_seq_flag; Ultra HD "
+               "Blu-ray video is progressive): each field picture lasts one field period [untested on real "
+               "discs]\n");
     }
     if (!sps->vui_present && !(p->disc_said & 1)) {
         p->disc_said |= 1;
@@ -732,6 +761,19 @@ static int disc_picture(AVCodecParserContext *s, AVCodecContext *avctx, const ui
           sps->ptl.general_ptl.progressive_source_flag && sps->ptl.general_ptl.interlaced_source_flag;
     if (!ffi) {
         ps = 0;
+    } else if (ps < 0 && field_coded) {
+        /* the reference program's way: guessed from the pictures before */
+        if ((ps = disc_guess_ps(p)) < 0) {
+            av_log(avctx, AV_LOG_ERROR, "Title timeline: HEVC: a field picture without its pic_struct, and none "
+                   "can be guessed from the pictures before\n");
+            return AVERROR_INVALIDDATA;
+        }
+        if (!(p->disc_said & 16)) {
+            p->disc_said |= 16;
+            av_log(avctx, AV_LOG_WARNING, "Title timeline: HEVC: a picture of a field stream without its "
+                   "picture timing SEI: pic_struct %d taken from the pictures before [untested on real discs]\n",
+                   ps);
+        }
     } else if (ps < 0) {
         if (!(p->disc_said & 2)) {
             p->disc_said |= 2;
@@ -741,12 +783,23 @@ static int disc_picture(AVCodecParserContext *s, AVCodecContext *avctx, const ui
         }
         ps = 0;
     }
-    if (ps == 1 || ps == 2 || ps > 8) {
-        av_log(avctx, AV_LOG_ERROR, "Title timeline: HEVC: pic_struct %d (%s): not a Blu-ray HEVC stream (Ultra HD "
-               "Blu-ray video is progressive)\n", ps, ps <= 12 ? "a field picture" : "a reserved value");
+    if (ps > 8) {
+        av_log(avctx, AV_LOG_ERROR, "Title timeline: HEVC: pic_struct %d (%s): the stream cannot be cut\n", ps,
+               ps <= 12 ? "a field paired with the picture before or after" : "a reserved value");
         return AVERROR_INVALIDDATA;
     }
-    if (ps && !(p->disc_said & 4)) {
+    /* checks only (H.265 D.3.3): a field's pic_struct on a frame, a frame's on a field */
+    if ((ps == 1 || ps == 2) != field_coded && !(p->disc_said & 32)) {
+        p->disc_said |= 32;
+        av_log(avctx, AV_LOG_WARNING, "Title timeline: HEVC: pic_struct %d on a %s (field_seq_flag %d): timed as "
+               "pic_struct says\n", ps, field_coded ? "field picture" : "frame", field_coded);
+    }
+    if (p->disc_ps_n == 128) {
+        p->disc_ps_start = (p->disc_ps_start + 1) & 127;
+        p->disc_ps_n--;
+    }
+    p->disc_ps[(p->disc_ps_start + p->disc_ps_n++) & 127] = ps;
+    if (ps >= 3 && !(p->disc_said & 4)) {
         p->disc_said |= 4;
         av_log(avctx, AV_LOG_WARNING, "Title timeline: HEVC: pictures with pic_struct %d (a frame shown as fields "
                "or repeated) [untested on real discs]\n", ps);
@@ -761,8 +814,11 @@ static int disc_picture(AVCodecParserContext *s, AVCodecContext *avctx, const ui
         den = sps->vps->vps_time_scale;
     }
     avctx->framerate = (AVRational){ 0, 1 };
+    /* a tick is a picture period: in a stream coded as fields, a field's
+     * (H.265 E.3.1), so a frame is two of them */
     if (num > 0 && den > 0)
-        av_reduce(&avctx->framerate.num, &avctx->framerate.den, den, num, 1 << 30);
+        av_reduce(&avctx->framerate.num, &avctx->framerate.den, den, (int64_t)num * (field_coded ? 2 : 1),
+                  1 << 30);
     return 0;
 }
 

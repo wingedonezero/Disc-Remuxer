@@ -7,7 +7,7 @@ rules (disctl_hevc.c) take out end, filler and reserved units, units of
 another layer and zero stuffing and keep every other NAL unit (delimiters
 too) as on the disc. Streams built bit by bit here (synth/hevc.py)."""
 
-from helpers import AV_NOPTS_VALUE, ffi, lib
+from helpers import AV_NOPTS_VALUE, LOG, ffi, install_log, lib
 from helpers.disctl import Handles, codec_id, events_into, fn
 from synth import hevc as H
 
@@ -287,14 +287,34 @@ def test_the_vps_timing_gives_the_rate_when_the_vui_has_none():
     assert (st.num, st.den) == (30000, 1001)
 
 
-def test_a_stream_of_field_pictures_is_no_blu_ray_stream_and_stops_the_track():
-    # Ultra HD Blu-ray video is progressive
-    units = stream(gops=1, sps=H.sps(field_seq=True), pic_struct=1)
-    _, _, ret = run([(u, t) for u, t, _ in units])
+def test_a_stream_of_field_pictures_is_cut_as_the_reference_program_cuts_it():
+    # Ultra HD Blu-ray video is progressive, but a field stream is ripped:
+    # each field picture lasts one field period, and that is said
+    units = stream(gops=2, sps=H.sps(field_seq=True, timing=(1001, 48000)), pic_struct=1)
+    install_log()
+    s, _, ret = run([(u, BASE + d * FIELD) for u, _, d in units])
+    assert ret == 0
+    # the video stage pairs field pictures into frames, as for H.264 and MPEG-2
+    assert b"".join(o[0] for o in s.out) == b"".join(u for u, _, _ in units), "every picture, in order"
+    assert sum(o[2] for o in s.out) == len(units) * FIELD, "one field period each"
+    assert any("coded as fields" in line and "[untested on real discs]" in line for line in LOG)
+
+
+def test_a_field_picture_without_its_timing_sei_takes_the_pic_struct_of_the_pictures_before():
+    head = stream(gops=1, sps=H.sps(field_seq=True, timing=(1001, 48000)), pic_struct=2)
+    tail = [(u, t, d + N) for u, t, d in gop(1, sps=H.sps(field_seq=True, timing=(1001, 48000)), timing_sei=False)]
+    install_log()
+    s, _, ret = run([(u, BASE + d * FIELD) for u, _, d in head + tail])
+    assert ret == 0
+    assert sum(o[2] for o in s.out) == len(head + tail) * FIELD, "pic_struct 2 guessed: one field each"
+    assert any("taken from the pictures before" in line for line in LOG)
+    # nothing before to guess from: the stream cannot be cut (the reference program fails too)
+    _, _, ret = run([(u, t) for u, t, _ in stream(gops=1, sps=H.sps(field_seq=True, timing=(1001, 48000)), timing_sei=False)])
     assert ret < 0
 
 
-def test_a_field_pic_struct_in_a_frame_stream_stops_the_track():
+def test_a_field_paired_with_another_picture_stops_the_track():
+    # pic_struct 9-12 (the reference program refuses them too)
     units = stream(gops=1, pic_struct=9)
     _, _, ret = run([(u, t) for u, t, _ in units])
     assert ret < 0
