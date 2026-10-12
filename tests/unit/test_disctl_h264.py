@@ -212,6 +212,20 @@ def repair_units(nslices):
     return units
 
 
+def test_four_slices_that_agree_on_their_numbers_need_no_repair_and_say_nothing():
+    units = []
+    for i in range(24):
+        kind = H.SLICE_I if i % 12 == 0 else H.SLICE_P
+        au = H.aud() + (H.sps() + H.pps() + H.sei([H.pic_timing(0)]) if i % 12 == 0 else b"")
+        for m in range(4):
+            au += H.slice_(kind, i % 16, (2 * i) % 64, idr=i % 12 == 0, first_mb=m * 2040, idr_id=i // 12 % 2)
+        units.append((au, BASE + i * 2 * FIELD))
+    install_log()
+    s, _, ret = run(units)
+    assert ret == 0 and [o[0] for o in s.out] == [u for u, _ in units]
+    assert not any("taken as one picture" in line for line in LOG)
+
+
 def test_four_slices_that_disagree_on_their_numbers_before_a_delimiter_are_one_picture():
     # the reference program's repair: exactly 3 slices after the first, then a delimiter
     units = repair_units(4)

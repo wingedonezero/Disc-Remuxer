@@ -797,11 +797,12 @@ static int disc_end(H264DiscCut *st, int end, int no_unit)
 }
 
 /* The repair after a picture's first slice (unit j is the first unit after
- * it): 1 the next units are the slices it takes in (st->forced set), 0 not,
+ * it): 1 the next units are the slices it takes in (st->forced set), 0 not
+ * (also when they agree on their numbers: the picture is whole without it),
  * -1 more bytes are needed to tell. */
 static int disc_repair(H264ParseContext *p, H264DiscCut *st, const uint8_t *buf, int avail, int final, int j)
 {
-    int idx[DISC_REPAIR_SLICES], n = 0;
+    int idx[DISC_REPAIR_SLICES], n = 0, differ = 0;
 
     for (int i = j; i < st->nb_nal && n < DISC_REPAIR_SLICES; i++) {
         if (disc_hidden(st->nal[i].type))
@@ -821,7 +822,10 @@ static int disc_repair(H264ParseContext *p, H264DiscCut *st, const uint8_t *buf,
         if ((u->type != H264_NAL_SLICE && u->type != H264_NAL_IDR_SLICE) ||
             disc_slice(p, buf + u->sc + 3, end - u->sc - 3, &h) != 1 || !disc_same_but_numbers(&h, &st->first))
             return 0;
+        differ |= !disc_same(&h, &st->first);
     }
+    if (!differ)
+        return 0;
     st->forced = idx[DISC_REPAIR_SLICES - 2];
     return 1;
 }
