@@ -238,3 +238,60 @@ def test_a_title_without_back_to_back_files_has_no_parts(tmp_path):
     pl = bd.mpls([part_item("00001"), part_item("00002", 6)], marks=[(1, 0, S + 45000)])
     ts = titles(disc(tmp_path, [1, 2], {1: pl}))
     assert parts(ts[0]) == []
+
+
+# ---- the title list's decisions in the standard log (info level) ----
+
+def said(tmp_path, clips, playlists):
+    from helpers import LOG, install_log
+    install_log(lib.AV_LOG_INFO)
+    dump(disc(tmp_path, clips, playlists), min_length=0)
+    return "\n".join(LOG)
+
+
+def test_title_list_decisions_are_said(tmp_path):
+    log = said(tmp_path, [1], {1: bd.mpls([part_item("00001")])})
+    assert ("Blu-ray: 1 playlist(s) under 1 min are each one piece of a clip with at most one chapter: no playlist "
+            "titles; their clips are listed as titles of their own instead: 00001") in log, log
+
+
+def test_joins_merges_trims_and_runs_are_said(tmp_path):
+    log = said(tmp_path, [1, 2], {1: bd.mpls([Item("00001", S, E), Item("00002", S, E, connection=1)])})
+    assert ("Blu-ray: playlist 00001: items 0-1 are whole clips with matching streams: kept as one title across "
+            "their non-seamless breaks") in log, log
+    log = said(tmp_path / "m", [1], {1: bd.mpls([Item("00001", S, S + 40000), Item("00001", S + 40100, E,
+                                                                                    connection=1)])})
+    assert ("Blu-ray: playlist 00001: items 0 and 1 play one stretch of clip 00001 (the second goes on where the "
+            "first ends): merged into one item") in log, log
+    items = [part_item("00001")] + [part_item(c, 5) for c in ("00002", "00001", "00002", "00001", "00002")]
+    log = said(tmp_path / "t", [1, 2], {1: bd.mpls(items)})
+    assert "Blu-ray: playlist 00001 part 0: its last 4 item(s) (2-5) repeat the ones before them: left out" in log, log
+    items = [part_item("00002")] + [part_item("00001", 5)] * 8 + [part_item("00003", 5)]
+    log = said(tmp_path / "r", [1, 2, 3], {1: bd.mpls(items)})
+    assert ("Blu-ray: playlist 00001 part 0: items 1-8 play the same piece of clip 00001 8 times: only the first "
+            "and the last two are read") in log, log
+
+
+def test_items_that_play_part_of_their_stc_sequence_are_said(tmp_path):
+    pl = bd.mpls([part_item("00001"), part_item("00002", 6)])
+    log = said(tmp_path, [1, 2], {1: pl})
+    assert ("Blu-ray: title 00001.mpls: 2 of its items play only part of their clip's STC sequence (2.000 s before "
+            "their IN times, 0.000 s after their OUT times): the title holds that too (whole STC sequences are read, "
+            "the reference program's way; LOOK INTO AGAIN LATER)") in log, log
+
+
+def test_a_part_starting_with_another_connection_condition_is_said(tmp_path):
+    pl = bd.mpls([part_item("00001", 5), part_item("00002", 6)])
+    log = said(tmp_path, [1, 2], {1: pl})
+    assert ("Blu-ray: playlist 00001 part 0: item 0, its first, has connection condition 5: taken as 1 (a part "
+            "starts on its own)") in log, log
+
+
+def test_clip_information_corrections_are_said(tmp_path):
+    clips = {1: bd.clpi(stcs=((32, 0x1001, S, E),))}
+    pl = bd.mpls([part_item("00001"), part_item("00001", 5)], marks=[(1, 0, S + 1000), (1, 0, S + 2000)])
+    from helpers import LOG, install_log
+    install_log(lib.AV_LOG_INFO)
+    dump(build(tmp_path, bd.bdmv(clips, {1: pl})), min_length=0)
+    log = "\n".join(LOG)
+    assert ("00001.clpi: its first STC sequence starts at source packet 32: taken as 0 (the clip's start)") in log, log

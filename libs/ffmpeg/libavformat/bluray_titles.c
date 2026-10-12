@@ -52,6 +52,7 @@
 #include <string.h>
 
 #include "libavutil/avstring.h"
+#include "libavutil/bprint.h"
 #include "libavutil/common.h"
 #include "libavutil/intreadwrite.h"
 #include "libavutil/log.h"
@@ -151,6 +152,10 @@ typedef struct Ctx {
     uint32_t   *clipset;      /* clips a title should be made for (sorted, unique) */
     int         nb_clipset;
     int         avchd_warned;
+    /* playlist parts that are one piece of one clip: said once the title
+     * list is done */
+    struct OneClip { uint32_t pl, clip, len; int part; } *one;
+    int         nb_one;
 } Ctx;
 
 static int clipset_add(Ctx *c, uint32_t id)
@@ -585,8 +590,9 @@ static int64_t interleaved_length(void *log, DiscIOFS *fs, BlurayClip *a, Bluray
             c->interleave = a->stream_size == (int64_t)a->packets * 192 &&
                             c->stream_size == (int64_t)c->packets * 192 ? 2 : 1;
         if (c->interleave == 1) {
-            av_log(log, AV_LOG_DEBUG, "Blu-ray: clips %05u and %05u cannot be read interleaved\n", a->number,
-                   c->number);
+            av_log(log, AV_LOG_WARNING, "Blu-ray: clips %05u and %05u (a 3-D base view and its second view) cannot "
+                   "be read as 3-D (their extents do not interleave on the disc, nor are both stream files whole): "
+                   "a title with them reads only the base view\n", a->number, c->number);
             return 0;
         }
     }
@@ -1076,8 +1082,8 @@ static int part_segments(void *log, BlurayDisc *d, BlurayPlaylist *pl, int part,
             L++;
     }
     if (pl->items[s].connection != 1) {
-        av_log(log, AV_LOG_DEBUG, "Blu-ray: playlist %05u item %d: connection %d at a part start\n", pl->number, s,
-               pl->items[s].connection);
+        av_log(log, AV_LOG_INFO, "Blu-ray: playlist %05u part %d: item %d, its first, has connection condition %d: "
+               "taken as 1 (a part starts on its own)\n", pl->number, part, s, pl->items[s].connection);
         pl->items[s].connection = 1;
     }
     /* repeated blocks at the end of the part */
@@ -1114,6 +1120,9 @@ static int part_segments(void *log, BlurayDisc *d, BlurayPlaylist *pl, int part,
             if (!best)
                 break;
         }
+        if (!angle)
+            av_log(log, AV_LOG_INFO, "Blu-ray: playlist %05u part %d: its last %d item(s) (%d-%d) repeat the ones "
+                   "before them: left out\n", pl->number, part, best, s + L - best, s + L - 1);
         L -= best;
         if (L <= 1)
             break;
@@ -1162,8 +1171,13 @@ static int part_segments(void *log, BlurayDisc *d, BlurayPlaylist *pl, int part,
             int r = 1;
             while (r < L - k && same_item(&pl->items[idx + r], it))
                 r++;
-            if (r >= 7)
+            if (r >= 7) {
+                if (!angle)
+                    av_log(log, AV_LOG_INFO, "Blu-ray: playlist %05u part %d: items %d-%d play the same piece of clip "
+                           "%05u %d times: only the first and the last two are read\n", pl->number, part, idx,
+                           idx + r - 1, rec.clip->number, r);
                 k += r - 3;
+            }
         }
         total += dur;
     }
@@ -1293,6 +1307,16 @@ static int playlist_titles(Ctx *c, BlurayPlaylist *pl)
             continue;
         if (p.recs.n == 1 && p.nb_marks <= 1 && !p.recs.v[0].dep) {
             /* one clip without chapters: no title of the playlist, its clip may get one */
+            {
+                struct OneClip *v = av_realloc_array(c->one, c->nb_one + 1, sizeof(*v));
+                if (!v) {
+                    ret = AVERROR(ENOMEM);
+                    goto end;
+                }
+                c->one = v;
+                v[c->nb_one++] = (struct OneClip){ pl->number, p.recs.v[0].clip->number,
+                                                   p.recs.v[0].stc->end - p.recs.v[0].stc->start, part };
+            }
             if ((ret = clipset_add(c, p.recs.v[0].clip->number)) < 0)
                 goto end;
             continue;
@@ -1300,8 +1324,8 @@ static int playlist_titles(Ctx *c, BlurayPlaylist *pl)
         if ((ret = common_pids(c->log, p.items, p.nb_items, &pids)) < 0)
             goto end;
         if (!ret || !pids.n) {
-            av_log(c->log, AV_LOG_DEBUG, "Blu-ray: playlist %05u part %d: no streams all its items have\n",
-                   pl->number, part);
+            av_log(c->log, AV_LOG_INFO, "Blu-ray: playlist %05u part %d: no stream that all its items have: left "
+                   "out\n", pl->number, part);
             continue;
         }
         if ((ret = build_segments(c->log, d, &t, &p.recs)) <= 0) {
@@ -1322,6 +1346,32 @@ static int playlist_titles(Ctx *c, BlurayPlaylist *pl)
         if (part)
             snprintf(name + 10, sizeof(name) - 10, "(%u)", part);
         av_strlcpy(t.name, name, sizeof(t.name));
+        /* items that play only part of their STC sequence: the title reads
+         * whole sequences (the reference program's way), so it holds more
+         * than the playlist plays. LOOK INTO AGAIN LATER */
+        {
+            int nb = 0;
+            uint64_t before = 0, after = 0;
+            for (int k = 0; k < p.nb_items && k < p.recs.n; k++) {
+                const BlurayPlayItem *it = p.items[k];
+                const BlurayStc *st = p.recs.v[k].stc;
+                int part_only = 0;
+                if (it->in_time > st->start) {
+                    before += it->in_time - st->start;
+                    part_only = 1;
+                }
+                if (it->out_time < st->end) {
+                    after += st->end - it->out_time;
+                    part_only = 1;
+                }
+                nb += part_only;
+            }
+            if (nb)
+                av_log(c->log, AV_LOG_WARNING, "Blu-ray: title %s: %d of its items play only part of their clip's "
+                       "STC sequence (%.3f s before their IN times, %.3f s after their OUT times): the title holds "
+                       "that too (whole STC sequences are read, the reference program's way; LOOK INTO AGAIN "
+                       "LATER)\n", name, nb, before / 45000.0, after / 45000.0);
+        }
         n = p.nangles;
         {
             Recs recs = p.recs;     /* the clips of this title, for the PIDs used */
@@ -1762,7 +1812,9 @@ static int merge_items(Ctx *c, BlurayPlaylist *pl)
             int ret;
             if ((ret = clipset_add(c, A.clip->number)) < 0)
                 return ret;
-            av_log(c->log, AV_LOG_DEBUG, "Blu-ray: playlist %05u: items %d and %d merged\n", pl->number, i - 1, i);
+            av_log(c->log, AV_LOG_INFO, "Blu-ray: playlist %05u: items %d and %d play one stretch of clip %05u "
+                   "(the second goes on where the first ends): merged into one item\n", pl->number, i - 1, i,
+                   A.clip->number);
             prev->out_time = iOUT;
             for (int m = 0; m < pl->nb_marks; m++)
                 if (pl->marks[m].play_item >= i)
@@ -1796,6 +1848,24 @@ static int merge_items(Ctx *c, BlurayPlaylist *pl)
         }
         if (ok)
             I->connection = CC_JOINED;
+    }
+    /* said once per playlist: the runs of items kept together */
+    {
+        char runs[256] = "";
+        int len = 0, first = -1;
+        for (int i = 1; i <= pl->nb_items; i++) {
+            int joined = i < pl->nb_items && pl->items[i].connection == CC_JOINED;
+            if (joined && first < 0)
+                first = i - 1;
+            if (!joined && first >= 0) {
+                len += snprintf(runs + len, sizeof(runs) - FFMIN(len, sizeof(runs)), "%s%d-%d", len ? ", " : "",
+                                first, i - 1);
+                first = -1;
+            }
+        }
+        if (len)
+            av_log(c->log, AV_LOG_INFO, "Blu-ray: playlist %05u: items %s are whole clips with matching streams: kept "
+                   "as one title across their non-seamless breaks\n", pl->number, runs);
     }
     return 1;
 }
@@ -1895,6 +1965,73 @@ void ff_bluray_title_remove(BlurayDisc *d, int i)
     d->nb_titles--;
 }
 
+/* The playlist parts that are one piece of one clip with at most one
+ * chapter (the reference program makes no playlist title of them; the clip
+ * gets a title of its own): those of a minute or more one line each, the
+ * shorter ones in one line; whether the clip has a title now. On a disc
+ * with BD-J titles the reference program first asks the disc's navigation
+ * which playlists it plays (those keep their title): not done here. */
+static int one_clips_said(Ctx *c)
+{
+    BlurayDisc *d = c->d;
+    AVBPrint shorts, untitled;
+    int nb_short = 0, nb_untitled = 0;
+
+    if (!c->nb_one)
+        return 0;
+    if (d->has_index) {
+        int n = d->index.first_play.object_type == 2 || d->index.top_menu.object_type == 2;
+        for (int i = 0; i < d->index.nb_titles; i++)
+            n |= d->index.titles[i].object_type == 2;
+        if (n)
+            av_log(c->log, AV_LOG_INFO, "Blu-ray: the disc has BD-J titles: its navigation, which can keep a "
+                   "playlist of one clip piece as a title of its own, is not read (LOOK INTO AGAIN LATER)\n");
+    }
+    /* in playlist order */
+    for (int i = 1; i < c->nb_one; i++)
+        for (int j = i; j > 0 && (c->one[j - 1].pl > c->one[j].pl ||
+                                  (c->one[j - 1].pl == c->one[j].pl && c->one[j - 1].part > c->one[j].part)); j--) {
+            struct OneClip t = c->one[j];
+            c->one[j] = c->one[j - 1];
+            c->one[j - 1] = t;
+        }
+    av_bprint_init(&shorts, 0, AV_BPRINT_SIZE_UNLIMITED);
+    av_bprint_init(&untitled, 0, AV_BPRINT_SIZE_UNLIMITED);
+    for (int i = 0; i < c->nb_one; i++) {
+        const struct OneClip *o = &c->one[i];
+        char clip[16], name[16];
+        int titled = 0;
+
+        snprintf(clip, sizeof(clip), "%05u.m2ts", o->clip);
+        for (int t = 0; t < d->nb_titles && !titled; t++)
+            titled = !strncmp(d->titles[t].name, clip, 5) && d->titles[t].name[5] == '.' &&
+                     strlen(d->titles[t].name) == 10;     /* "NNNNN.m2ts" / "NNNNN.fmts": the clip's own title */
+        snprintf(name, sizeof(name), o->part ? "%05u(%d)" : "%05u", o->pl, o->part);
+        if (o->len >= 60 * 45000) {
+            if (titled)
+                av_log(c->log, AV_LOG_INFO, "Blu-ray: playlist %s is one piece of clip %05u (%u:%02u, at most one "
+                       "chapter): no playlist title; the clip is listed as its own title instead (%s)\n", name,
+                       o->clip, o->len / 45000 / 60, o->len / 45000 % 60, clip);
+            else
+                av_log(c->log, AV_LOG_INFO, "Blu-ray: playlist %s is one piece of clip %05u (%u:%02u, at most one "
+                       "chapter): no playlist title; its clip has no title of its own either (equal to another "
+                       "title, or no movie clip)\n", name, o->clip, o->len / 45000 / 60, o->len / 45000 % 60);
+            continue;
+        }
+        av_bprintf(&shorts, "%s%s", nb_short++ ? ", " : "", name);
+        if (!titled)
+            av_bprintf(&untitled, "%s%05u", nb_untitled++ ? ", " : "", o->clip);
+    }
+    if (nb_short)
+        av_log(c->log, AV_LOG_INFO, "Blu-ray: %d playlist(s) under 1 min are each one piece of a clip with at most one "
+               "chapter: no playlist titles; their clips are listed as titles of their own instead%s%s%s: %s\n",
+               nb_short, nb_untitled ? " (but clips " : "", nb_untitled ? untitled.str : "",
+               nb_untitled ? ", equal to another title or no movie clips)" : "", shorts.str);
+    av_bprint_finalize(&shorts, NULL);
+    av_bprint_finalize(&untitled, NULL);
+    return 0;
+}
+
 int ff_bluray_titles_build(void *log, BlurayDisc *d, int min_length)
 {
     Ctx c = { .log = log, .d = d, .min_length = min_length };
@@ -1942,6 +2079,7 @@ restart:
                 goto restart;
             }
 done:
+    one_clips_said(&c);
     av_log(log, AV_LOG_VERBOSE, "Blu-ray: %d titles\n", d->nb_titles);
     ret = 0;
 end:
@@ -1950,5 +2088,6 @@ end:
     av_free(c.used.pids);
     av_free(c.used.clip);
     av_free(c.clipset);
+    av_free(c.one);
     return ret;
 }

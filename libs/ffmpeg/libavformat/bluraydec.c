@@ -589,8 +589,9 @@ static int open_title(AVFormatContext *s, int i, int part, int *second_view_read
         /* 3-D: the base view's stream files alone (the second view is not
          * read in this step) */
         if (t->segs[k].interleaved)
-            av_log(s, AV_LOG_VERBOSE, "Blu-ray: title %s: segment %s is 3-D: its base view is read\n", t->name,
-                   t->segs[k].desc);
+            av_log(s, AV_LOG_INFO, "Blu-ray: title %s: segment %s is 3-D: %s\n", t->name, t->segs[k].desc,
+                   c->both ? "both views are read" : "its base view is read (the second view with option "
+                   "second_view)");
         if (size % BLURAY_UNIT)
             av_log(s, AV_LOG_WARNING, "Blu-ray: segment %s: its last %"PRId64" bytes are no whole unit and are not "
                    "read [untested on real discs]\n", t->segs[k].path, size % BLURAY_UNIT);
