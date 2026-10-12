@@ -70,7 +70,8 @@ def test_zero_source_packets_are_skipped_and_unreadable_ts_packets_left_out():
     src = bd.source_packets([pk[0]]) + bytes(192) + bd.source_packets([bytes(bad)])
     ret, out = ts_read(src, [A])
     assert [len(d) for _, d, _, _ in out] == [184 - 14]
-    assert logged("PID 0x1100: a TS packet at byte 384 cannot be read")
+    assert logged("TS: bytes 192-383: 1 source packets of zeros: left out")
+    assert logged("TS: bytes 384-575: 1 source packets that cannot be read (transport_error_indicator set): left out")
 
 
 def test_a_pes_header_without_payload_bytes_gives_its_time_to_the_next_piece():
@@ -100,7 +101,9 @@ def test_what_cannot_be_read_is_dropped_until_the_next_pes_start():
     good = bd.ts_packets(A, bd.pes(0xbd, b"g" * 20, pts=3), cc=1)
     ret, out = ts_read(bd.source_packets([junk] + good), [A])
     assert out == [(sid(A, 0xbd), b"g" * 20, 3, 192)]
-    assert logged("PID 0x1100: no PES start code: its data is dropped until its next PES start")
+    assert logged("PID 0x1100: a PES packet without its start code: its data is dropped until its next PES start")
+    assert logged("TS: PID 0x1100: a PES packet without its start code at byte 0: 184 bytes left out until the next "
+                  "PES start")
 
 
 def test_small_pes_packets_in_one_ts_packet_all_come_out():

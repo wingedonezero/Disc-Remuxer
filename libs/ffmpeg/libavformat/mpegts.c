@@ -207,8 +207,12 @@ struct MpegTSContext {
     unsigned nb_disc_pids;
     int *disc_dialog_pids;
     unsigned nb_disc_dialog_pids;
+    int disc_gaps;
     struct DiscTsPid *disc_pid[NB_PID_MAX];
     PacketList disc_queue;
+    MpegTSDiscGap *gaps;          /* stretches left out that have ended, from gaps_head on */
+    int gaps_head, nb_gaps, gaps_cap;
+    MpegTSDiscGap run;            /* the run of bad / zero source packets being read (kind 0: none) */
 };
 
 #define MPEGTS_OPTIONS \
@@ -246,6 +250,9 @@ static const AVOption options[] = {
     {"disc_dialog_pids", "disc mode: PIDs of text subtitles (HDMV TextST): a PES packet without a PTS that starts "
      "with a dialog presentation segment takes that dialog's start time", offsetof(MpegTSContext, disc_dialog_pids),
      AV_OPT_TYPE_INT | AV_OPT_TYPE_FLAG_ARRAY, {.arr = NULL}, 0, 0x1fff, AV_OPT_FLAG_DECODING_PARAM },
+    {"disc_gaps", "disc mode: the stretches left out (TS packets that cannot be read, zeros, PES data dropped) are "
+     "kept for the caller (ff_mpegts_disc_gap()) instead of logged", offsetof(MpegTSContext, disc_gaps),
+     AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
     { NULL },
 };
 
@@ -3799,12 +3806,15 @@ static int mpegts_read_close(AVFormatContext *s)
  * (private_stream_2): a PES packet without one whose first piece starts
  * with a dialog presentation segment (type 0x82, at least 8 bytes there, a
  * segment length above 8) takes the dialog's start PTS (its 33 bits as
- * recorded). */
+ * recorded). What is left out is kept as stretches of the stream file
+ * (MpegTSDiscGap): a run of TS packets that cannot be read for one reason,
+ * a run of all-zero source packets, a PID's data from a PES packet that
+ * cannot be read to its next PES start (said when that start comes) - for
+ * the caller (option disc_gaps), else logged. */
 
 #define DISC_SRC_PACKET  192
 #define DISC_HDR_MAX     0x2f0
 #define DISC_UNBOUNDED   0x7ffffff0u
-#define DISC_ERRORS_MAX  1000
 
 enum { DISC_HEADER = 1, DISC_BODY = 2, DISC_DROP = 3 };
 
@@ -3815,8 +3825,9 @@ typedef struct DiscTsPid {
     uint32_t remaining;           /* bytes of the running PES body still to come, DISC_UNBOUNDED none */
     int      stream;              /* the stream of the running PES body */
     int64_t  pts;                 /* the running PES packet's PTS, until a piece of it is given out */
-    unsigned errors;              /* TS header errors */
     int      dialog;              /* a text subtitle PID (disc_dialog_pids) */
+    const char *drop_why;         /* DISC_DROP: why, and where it began and the payload bytes left out */
+    int64_t  drop_pos, drop_bytes;
 } DiscTsPid;
 
 typedef struct DiscPes {
@@ -3924,16 +3935,129 @@ static int disc_emit(AVFormatContext *s, DiscTsPid *d, const uint8_t *data, unsi
     return ret;
 }
 
-static void disc_drop(AVFormatContext *s, DiscTsPid *d, int pid, int why)
+/* A stretch left out that has ended: kept for the caller, or logged. */
+static int gap_put(AVFormatContext *s, const MpegTSDiscGap *g)
 {
-    static const char *const whys[] = { "a PES header does not fit", "no PES start code",
-                                        "a PES header cannot be read", "a PES packet shorter than its header", "",
-                                        "a PES body longer than its packet" };
-    av_log(s, AV_LOG_WARNING, "TS: PID 0x%04x: %s: its data is dropped until its next PES start\n", pid,
-           why >= 0 && why < FF_ARRAY_ELEMS(whys) ? whys[why] : "?");
-    d->remaining = DISC_UNBOUNDED;
-    d->buffered  = 0;
-    d->state     = DISC_DROP;
+    MpegTSContext *ts = s->priv_data;
+
+    if (!ts->disc_gaps) {
+        if (g->kind == MPEGTS_DISC_GAP_PES)
+            av_log(s, AV_LOG_DEBUG, "TS: PID 0x%04x: %s at byte %"PRId64": %"PRId64" bytes left out until %s\n",
+                   g->pid, g->why, g->pos, g->bytes, g->to_end ? "the stream's end" : "the next PES start");
+        else
+            av_log(s, AV_LOG_DEBUG, "TS: bytes %"PRId64"-%"PRId64": %"PRId64" source packets %s%s%s: left out\n",
+                   g->pos, g->end - 1, g->packets, g->kind == MPEGTS_DISC_GAP_ZERO ? "of zeros" :
+                   "that cannot be read (", g->kind == MPEGTS_DISC_GAP_ZERO ? "" : g->why,
+                   g->kind == MPEGTS_DISC_GAP_ZERO ? "" : ")");
+        return 0;
+    }
+    if (ts->gaps_head && ts->gaps_head == ts->nb_gaps)
+        ts->gaps_head = ts->nb_gaps = 0;
+    if (ts->nb_gaps == ts->gaps_cap) {
+        int cap = ts->gaps_cap ? 2 * ts->gaps_cap : 16;
+        MpegTSDiscGap *q = av_realloc_array(ts->gaps, cap, sizeof(*q));
+        if (!q)
+            return AVERROR(ENOMEM);
+        ts->gaps     = q;
+        ts->gaps_cap = cap;
+    }
+    ts->gaps[ts->nb_gaps++] = *g;
+    return 0;
+}
+
+/* The run of bad / zero source packets ends. */
+static int run_end(AVFormatContext *s)
+{
+    MpegTSContext *ts = s->priv_data;
+    int ret = 0;
+
+    if (ts->run.kind)
+        ret = gap_put(s, &ts->run);
+    ts->run.kind = 0;
+    return ret;
+}
+
+/* A bad (why) or zero (why NULL) source packet at pos: the run grows or a
+ * new one starts. */
+static int run_add(AVFormatContext *s, int kind, const char *why, int64_t pos)
+{
+    MpegTSContext *ts = s->priv_data;
+    int ret;
+
+    if (ts->run.kind == kind && ts->run.why == why && ts->run.end == pos) {
+        ts->run.end += DISC_SRC_PACKET;
+        ts->run.packets++;
+        return 0;
+    }
+    if ((ret = run_end(s)) < 0)
+        return ret;
+    ts->run = (MpegTSDiscGap){ .kind = kind, .pid = -1, .pos = pos, .end = pos + DISC_SRC_PACKET, .packets = 1,
+                               .why = why };
+    return 0;
+}
+
+/* The PID's data is dropped from the TS packet at pos until its next PES
+ * start; bytes: its payload bytes left out already. */
+static void disc_drop(AVFormatContext *s, DiscTsPid *d, int pid, int why, int64_t pos, unsigned bytes)
+{
+    static const char *const whys[] = { "a PES header that does not fit", "a PES packet without its start code",
+                                        "a PES header that cannot be read", "a PES packet shorter than its header",
+                                        "", "a PES body longer than its packet" };
+    MpegTSContext *ts = s->priv_data;
+    const char *w = why >= 0 && why < FF_ARRAY_ELEMS(whys) ? whys[why] : "?";
+
+    if (!ts->disc_gaps)
+        av_log(s, AV_LOG_WARNING, "TS: PID 0x%04x: %s: its data is dropped until its next PES start\n", pid, w);
+    d->drop_why   = w;
+    d->drop_pos   = pos;
+    d->drop_bytes = bytes;
+    d->remaining  = DISC_UNBOUNDED;
+    d->buffered   = 0;
+    d->state      = DISC_DROP;
+}
+
+/* A PID's drop ends at the TS packet at end (to_end: the stream's end). */
+static int drop_end(AVFormatContext *s, DiscTsPid *d, int pid, int64_t end, int to_end)
+{
+    MpegTSDiscGap g = { .kind = MPEGTS_DISC_GAP_PES, .pid = pid, .pos = d->drop_pos, .end = end,
+                        .bytes = d->drop_bytes, .why = d->drop_why, .to_end = to_end };
+
+    if (!d->drop_why)
+        return 0;
+    d->drop_why = NULL;
+    return gap_put(s, &g);
+}
+
+/* The stream has ended: the stretches still open end with it. */
+static int gaps_flush(AVFormatContext *s)
+{
+    MpegTSContext *ts = s->priv_data;
+    int64_t end = avio_tell(s->pb);
+    int ret;
+
+    if ((ret = run_end(s)) < 0)
+        return ret;
+    for (unsigned i = 0; i < ts->nb_disc_pids; i++) {
+        DiscTsPid *d = ts->disc_pid[ts->disc_pids[i]];
+        if (d && (ret = drop_end(s, d, ts->disc_pids[i], end, 1)) < 0)
+            return ret;
+    }
+    return 0;
+}
+
+int ff_mpegts_disc_gap(AVFormatContext *s, int flush, MpegTSDiscGap *gap)
+{
+    MpegTSContext *ts = s->priv_data;
+    int ret;
+
+    if (!ts->disc)
+        return 0;
+    if (flush && (ret = gaps_flush(s)) < 0)
+        return ret;
+    if (ts->gaps_head == ts->nb_gaps)
+        return 0;
+    *gap = ts->gaps[ts->gaps_head++];
+    return 1;
 }
 
 /* The collected PES header bytes: payloads given out as far as they go. */
@@ -3947,7 +4071,7 @@ static int disc_headers(AVFormatContext *s, DiscTsPid *d, int pid, int64_t pos)
         if (d->buffered < 6)
             return 0;
         if (d->hdr[0] || d->hdr[1] || d->hdr[2] != 1) {
-            disc_drop(s, d, pid, 1);
+            disc_drop(s, d, pid, 1, pos, d->buffered);
             return 0;
         }
         if ((d->hdr[3] & 0xfe) == 0xbe)
@@ -3959,11 +4083,11 @@ static int disc_headers(AVFormatContext *s, DiscTsPid *d, int pid, int64_t pos)
         if (d->buffered < hlen)
             return 0;
         if (!disc_pes(d->hdr, d->buffered, &pes)) {
-            disc_drop(s, d, pid, 2);
+            disc_drop(s, d, pid, 2, pos, d->buffered);
             return 0;
         }
         if (pes.total && pes.total - 1 < pes.off) {
-            disc_drop(s, d, pid, 3);
+            disc_drop(s, d, pid, 3, pos, d->buffered);
             return 0;
         }
         if (pes.off > d->buffered)
@@ -4011,26 +4135,20 @@ static int disc_ts_packet(AVFormatContext *s, const uint8_t *p, int64_t pos)
     const uint8_t *pl;
     DiscTsPid *d;
 
-    if (p[0] != 0x47 || (p[1] & 0x80))
-        pid = -1;
-    else
-        pid = (p[1] & 0x1f) << 8 | p[2];
-    if (pid >= 0 && (p[3] & 0x20)) {
+    if (p[0] != 0x47)
+        return run_add(s, MPEGTS_DISC_GAP_BAD, "no sync byte", pos);
+    if (p[1] & 0x80)
+        return run_add(s, MPEGTS_DISC_GAP_BAD, "transport_error_indicator set", pos);
+    pid = (p[1] & 0x1f) << 8 | p[2];
+    if (p[3] & 0x20) {
         if (p[4] >= 0xb8)
-            pid = -2;
-        else
-            off = p[4] + 5;
+            return run_add(s, MPEGTS_DISC_GAP_BAD, "an adaptation field longer than the packet", pos);
+        off = p[4] + 5;
     }
-    if (pid < 0) {
-        /* counted against every PID read */
-        for (unsigned i = 0; i < ts->nb_disc_pids; i++) {
-            DiscTsPid *e = ts->disc_pid[ts->disc_pids[i]];
-            if (e && ++e->errors <= DISC_ERRORS_MAX)
-                av_log(s, e->errors == DISC_ERRORS_MAX ? AV_LOG_WARNING : AV_LOG_DEBUG,
-                       "TS: PID 0x%04x: a TS packet at byte %"PRId64" cannot be read%s\n", ts->disc_pids[i], pos,
-                       e->errors == DISC_ERRORS_MAX ? " (1000 such packets: no more are logged)" : "");
-        }
-        return 0;
+    {
+        int ret = run_end(s);
+        if (ret < 0)
+            return ret;
     }
     if (!(d = ts->disc_pid[pid]))
         return 0;
@@ -4043,8 +4161,17 @@ static int disc_ts_packet(AVFormatContext *s, const uint8_t *p, int64_t pos)
             av_log(s, AV_LOG_DEBUG, "TS: PID 0x%04x: a PES start without a start code: taken as a continuation\n",
                    pid);
         } else {
-            if (d->remaining != DISC_UNBOUNDED && d->state != DISC_HEADER)
-                av_log(s, AV_LOG_WARNING, "TS: PID 0x%04x: a PES packet cut short at byte %"PRId64"\n", pid, pos);
+            int ret;
+            if (d->remaining != DISC_UNBOUNDED && d->state != DISC_HEADER) {
+                MpegTSDiscGap g = { .kind = MPEGTS_DISC_GAP_CUT, .pid = pid, .pos = pos, .end = pos,
+                                    .bytes = d->remaining };
+                if (!((MpegTSContext *)s->priv_data)->disc_gaps)
+                    av_log(s, AV_LOG_WARNING, "TS: PID 0x%04x: a PES packet cut short at byte %"PRId64"\n", pid, pos);
+                else if ((ret = gap_put(s, &g)) < 0)
+                    return ret;
+            }
+            if (d->state == DISC_DROP && (ret = drop_end(s, d, pid, pos, 0)) < 0)
+                return ret;
             d->remaining = 0;
             d->buffered  = 0;
             d->state     = DISC_HEADER;
@@ -4053,12 +4180,13 @@ static int disc_ts_packet(AVFormatContext *s, const uint8_t *p, int64_t pos)
     }
     if (d->state == DISC_BODY || d->state == DISC_DROP) {
         if (d->state == DISC_BODY && d->remaining != DISC_UNBOUNDED && len > d->remaining) {
-            disc_drop(s, d, pid, 5);
+            disc_drop(s, d, pid, 5, pos, len);
             return 0;
         }
         if (d->remaining == DISC_UNBOUNDED) {
             if (d->state == DISC_BODY)
                 return disc_emit(s, d, pl, len, pos);
+            d->drop_bytes += len;
             return 0;
         }
         if (len > d->remaining) {
@@ -4084,7 +4212,7 @@ static int disc_ts_packet(AVFormatContext *s, const uint8_t *p, int64_t pos)
     }
 collect:
     if (len > DISC_HDR_MAX - d->buffered) {
-        disc_drop(s, d, pid, 0);
+        disc_drop(s, d, pid, 0, pos, d->buffered + len);
         return 0;
     }
     memcpy(d->hdr + d->buffered, pl, len);
@@ -4126,12 +4254,20 @@ static int disc_read_packet(AVFormatContext *s, AVPacket *pkt)
     while (!ts->disc_queue.head) {
         int64_t pos = avio_tell(s->pb);
         int ret = avio_read(s->pb, buf, DISC_SRC_PACKET), zero = 1;
-        if (ret != DISC_SRC_PACKET)
+        if (ret != DISC_SRC_PACKET) {
+            int err;
+            /* the stretches still open: said here (or kept for the caller's flush) */
+            if (!ts->disc_gaps && (err = gaps_flush(s)) < 0)
+                return err;
             return ret < 0 ? ret : AVERROR_EOF;
+        }
         for (int i = 0; i < DISC_SRC_PACKET && zero; i++)
             zero = !buf[i];
-        if (zero)
+        if (zero) {
+            if ((ret = run_add(s, MPEGTS_DISC_GAP_ZERO, NULL, pos)) < 0)
+                return ret;
             continue;
+        }
         if ((ret = disc_ts_packet(s, buf + 4, pos)) < 0)
             return ret;
     }
@@ -4143,6 +4279,7 @@ static void disc_free(MpegTSContext *ts)
     for (unsigned i = 0; i < NB_PID_MAX; i++)
         av_freep(&ts->disc_pid[i]);
     ff_packet_list_free(&ts->disc_queue);
+    av_freep(&ts->gaps);
     if (ts->disc)
         av_packet_free(&ts->pkt);
 }

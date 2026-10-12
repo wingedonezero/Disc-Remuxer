@@ -82,6 +82,29 @@ static int64_t clip_start(AVFormatContext *s, int k)
     return 2 * (int64_t)(it->item ? it->item->in_time : it->stc->start);
 }
 
+/* Where unit block of segment k lies: its clip's stream file and the byte
+ * offset there (items one after another); not known (< 0) in an item read
+ * with both views interleaved. */
+static int block_place(AVFormatContext *s, int k, uint32_t block, char *file, int size, int64_t *offset)
+{
+    BlurayDemuxContext *c = ff_disc_part(s);
+    const BluraySegment *seg = &c->title->segs[c->seg0 + k];
+    int64_t pos = (int64_t)block * BLURAY_UNIT;
+
+    if (c->both && seg->interleaved)
+        return AVERROR(ENOSYS);
+    for (int i = 0; i < seg->nb_items; i++) {
+        const BluraySegItem *it = &seg->items[i];
+        if (pos < it->length) {
+            snprintf(file, size, "%05u.%s", it->clip->number, it->clip->stream_type == 2 ? "fmts" : "m2ts");
+            *offset = it->start + pos;
+            return 0;
+        }
+        pos -= it->length;
+    }
+    return AVERROR(EINVAL);
+}
+
 static int read_block(AVFormatContext *s, int k, uint32_t block, uint8_t *buf)
 {
     BlurayDemuxContext *c = ff_disc_part(s);
@@ -594,6 +617,7 @@ static int open_title(AVFormatContext *s, int i, int part, int *second_view_read
         .clip_name     = clip_name,
         .clip_blocks   = clip_blocks,
         .read_block    = read_block,
+        .block_place   = block_place,
         .clip_start    = clip_start,
         .clip_start_name = "the start time the playlist gives it (IN time)",
         .integrity     = integrity,

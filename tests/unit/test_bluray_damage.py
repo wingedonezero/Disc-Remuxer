@@ -1,0 +1,90 @@
+"""Damaged Blu-ray stream data in the standard log (libavformat/mpegts.c
+disc mode, option disc_gaps; disctitle.c gaps_said; bluraydec.c
+block_place): each stretch of a stream file left out is one warning with
+the file and its bytes - a run of TS packets that cannot be read (one
+reason), a run of all-zero source packets, a PID's data from a PES packet
+that cannot be read to its next PES start - and the title's damage summary
+counts them. A disc built byte by byte (tests/synth/bluray.py)."""
+
+import json
+import subprocess
+
+from helpers import DATA, PROGRAM
+from synth import bluray as bd
+from synth.bluray import Item, Stream
+
+M2V = (DATA / "testsrc_1200.m2v").read_bytes()
+S, E = 27000000, 27000000 + 45000 * 4
+V = 0x1011
+
+
+def disc(tmp_path, damage):
+    """The video clip with damage(packets) applied to its TS packets."""
+    packets = []
+    for i, c in enumerate(M2V[k:k + 60000] for k in range(0, len(M2V), 60000)):
+        packets += bd.ts_packets(V, bd.pes(0xe0, c, pts=2 * S + 3003 * i))
+    data = damage(packets)
+    clips = {1: bd.clpi(packets=len(data) // 192, stcs=((0, 0x1001, S, E),), streams=((V, 0x02, b"\x31"),))}
+    item = Item("00001", S, E, videos=[Stream(V, 0x02, b"\x31")])
+    files = bd.bdmv(clips, {1: bd.mpls([item], marks=((1, 0, S), (1, 0, S + 90000)))})
+    files["BDMV/STREAM/00001.m2ts"] = data
+    return bd.write(tmp_path / "disc", files)
+
+
+def rip(tmp_path, disc_dir):
+    p = subprocess.run([*PROGRAM, "--json", "demux", str(disc_dir), "0", str(tmp_path / "out")],
+                       capture_output=True, text=True)
+    recs = [json.loads(l) for l in p.stdout.splitlines() if l.startswith("{")]
+    texts = [r.get("text", "") for r in recs if r.get("type") == "message"]
+    result = [r for r in recs if r.get("type") == "title_result"]
+    return texts, result[0] if result else None
+
+
+def units(src_packets):
+    """Source packets (192 bytes each, already with their header) padded to whole units."""
+    out = b"".join(src_packets)
+    n = len(src_packets)
+    while n % 32:
+        out += bd.be32(n * 0x10) + bd.ts_packet(0x1fff, bytes(184))
+        n += 1
+    return out
+
+
+def test_zero_and_unreadable_packets_are_each_one_line_with_their_bytes(tmp_path):
+    def damage(packets):
+        src = [bd.be32(i * 0x10) + p for i, p in enumerate(packets)]
+        # source packets 100-139 zeroed, 140-141 without a sync byte, 142 with the transport error bit
+        for k in range(100, 140):
+            src[k] = bytes(192)
+        for k in (140, 141):
+            src[k] = src[k][:4] + b"\x00" + src[k][5:]
+        src[142] = src[142][:5] + bytes([src[142][5] | 0x80]) + src[142][6:]
+        return units(src)
+    texts, result = rip(tmp_path, disc(tmp_path, damage))
+    assert result and result["status"] != "failed", texts
+    log = "\n".join(texts)
+    assert ("Segment /BDMV/STREAM/00001.m2ts: 7680 bytes of zeros at bytes 19200-26879 (1.25 units): skipped "
+            "(blank or unreadable sectors)") in log, log
+    assert ("Segment /BDMV/STREAM/00001.m2ts: 2 transport packets at bytes 26880-27263 cannot be read (no sync "
+            "byte): their data is left out") in log, log
+    assert ("Segment /BDMV/STREAM/00001.m2ts: 1 transport packets at bytes 27264-27455 cannot be read "
+            "(transport_error_indicator set): their data is left out") in log, log
+    assert "Damaged: 3 stretches of the stream files left out" in log, log
+    assert result["damaged_ranges"] == 3 and result["damaged_bytes"] == 7680 + 3 * 192, result
+
+
+def test_a_pes_packet_that_cannot_be_read_drops_its_pid_to_the_next_pes_start(tmp_path):
+    def damage(packets):
+        # a PES start without its start code after the first PES packet (327 TS packets of 60000 bytes)
+        k = next(i for i in range(1, len(packets)) if packets[i][1] & 0x40)
+        junk = bd.ts_packet(V, b"\x00\x00\x02" + bytes(181), pusi=True)
+        return bd.source_units(packets[:k] + [junk] + packets[k:])
+    texts, result = rip(tmp_path, disc(tmp_path, damage))
+    log = "\n".join(texts)
+    assert result and result["status"] != "failed", log
+    lines = [t for t in texts if t.startswith("Segment") and "a PES packet without its start code" in t]
+    assert len(lines) == 1, log
+    assert lines[0].startswith("Segment /BDMV/STREAM/00001.m2ts: PID 0x1011 (track 0): a PES packet without its "
+                               "start code at byte "), lines
+    assert ": 184 bytes left out until the next PES start at byte " in lines[0], lines
+    assert result["damaged_ranges"] == 1 and result["damaged_bytes"] == 184, result
