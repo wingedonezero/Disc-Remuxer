@@ -9,7 +9,7 @@ cross-check tool's output it can be compared with another reader by hand
 
 import pytest
 
-from helpers import ffi, lib
+from helpers import ffi, install_log, lib, logged
 from synth import bluray as bd
 from synth.bluray import Item, Stream, SubPath, be16, be32
 
@@ -60,6 +60,17 @@ def test_a_disc_with_its_clips_playlists_index_and_id(tmp_path):
     assert "    subitem 0 clip 00002 codec M2TS in 0 out 45000 sync_item 0 sync_pts 0" in t
     assert lines(t, "  mark") == ["  mark 0 type 1 item 0 time 0 pid 0xffff duration 0",
                                   "  mark 1 type 1 item 1 time 1000 pid 0xffff duration 0"]
+
+
+def test_bd_plus_is_said_in_the_standard_log(tmp_path):
+    install_log(lib.AV_LOG_WARNING)
+    t = dump(build(tmp_path / "plain", bd.bdmv()))
+    assert head(t).startswith("disc BDMV name")
+    assert not logged("BD+")
+    t = dump(build(tmp_path / "bdplus", bd.bdmv(extra={"BDSVM/00000.svm": b"BDSVM_PK"})))
+    assert head(t).startswith("disc BDMV BD+ name")
+    assert logged("Blu-ray: the disc uses BD+ (/BDSVM/00000.svm), which is not supported: unless this copy "
+                  "was made with BD+ removed, parts of the video may be damaged")
 
 
 def test_without_clip_information_the_disc_cannot_be_read(tmp_path):

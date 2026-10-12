@@ -310,6 +310,12 @@ int ff_bluray_disc_open(void *log, DiscIOFS *fs, const char *path, const char *l
         mount_card(log, d, path);
     av_log(log, AV_LOG_VERBOSE, "Blu-ray: a %s disc%s\n", d->bdav ? "BDAV (recordable)" : "BDMV",
            d->bdplus ? " with BD+" : "");
+    /* BD+ repairs parts of the stream files that the disc carries damaged on
+     * purpose; a decrypted copy may already be repaired and still keep the
+     * BD+ files, which cannot be told from the files themselves. */
+    if (d->bdplus)
+        av_log(log, AV_LOG_WARNING, "Blu-ray: the disc uses BD+ (/BDSVM/00000.svm), which is not supported: "
+               "unless this copy was made with BD+ removed, parts of the video may be damaged\n");
 
     if ((ret = disc_name(log, d, lang)) < 0)
         return ret;
