@@ -618,7 +618,7 @@ static int run_begin(const char *source, const char *out_dir, char *logp, size_t
 static int run_titles(EngineDisc *e, const char *sel, const char *split, const char *out_dir, const char *logp)
 {
     const DiscInfo *di = e->info;
-    int nb = di->nb_titles, count = 0, ordinal = 0, failed = 0, done = 0, errors, warnings;
+    int nb = di->nb_titles, count = 0, ordinal = 0, failed = 0, done = 0, disk_full = 0, errors, warnings;
     int64_t damaged = 0, damaged_bytes = 0;
     char *spl = calloc(nb ? nb : 1, 1);
     AVBPrint damage;                    /* every title's damaged ranges, for the summary */
@@ -670,9 +670,15 @@ static int run_titles(EngineDisc *e, const char *sel, const char *split, const c
             /* a title stopped as asked is not written, not failed */
             part_stopped += res.stopped;
             part_failed  += res.failed && !res.stopped;
+            disk_full    |= res.disk_full;
+            if (disk_full)
+                break;
         }
         failed += !!part_failed;
         done   += !part_failed && !part_stopped;
+        /* a full disk: every title after it would fail the same way */
+        if (disk_full)
+            break;
     }
     free(spl);
 
@@ -681,6 +687,9 @@ static int run_titles(EngineDisc *e, const char *sel, const char *split, const c
     if (engine_cancelled())
         log_msg(MSG_SUMMARY, LOG_WARNING, "Stopped as asked: %d of %d title%s not written", count - done,
                 count, count == 1 ? "" : "s");
+    if (disk_full)
+        log_msg(MSG_DISK_FULL, LOG_ERROR, "Stopped: the disk is full; %d of %d title%s not written (%d after the "
+                "one that failed not tried)", count - done, count, count == 1 ? "" : "s", count - ordinal);
     log_msg(MSG_SUMMARY, failed ? LOG_ERROR : warnings ? LOG_INFO : LOG_OK,
             "%d title%s written, %d failed; %d warning%s, %d error%s", done, done == 1 ? "" : "s", failed, warnings,
             warnings == 1 ? "" : "s", errors, errors == 1 ? "" : "s");

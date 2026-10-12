@@ -127,6 +127,8 @@ def run(codec, payloads, marker=None, flags=0):
     assert lib.ff_disctl_frames_open(c, ffi.NULL, cid, fn("ff_disctl_audio_unit"), a[0]) == 0
     if flags & lib.DR_AUDIO_EXTENDED:
         lib.ff_disctl_frames_take_any(c[0])
+    if flags & lib.DR_AUDIO_DVD:
+        lib.ff_disctl_frames_dvd(c[0])
     for data, time in payloads:
         assert lib.ff_disctl_frames_write(c[0], bytes(data), len(data),
                                            AV_NOPTS_VALUE if time is None else time) == 0

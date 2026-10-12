@@ -92,6 +92,8 @@ typedef struct Track {
     int64_t       layer_dropped[32];  /* NAL units taken out, per type */
     int64_t       layer_stuffing;
     int64_t       layer_alone;   /* pictures without a master video frame (left out) */
+    int64_t       stray_n;       /* the run of such pictures being counted, and its first one's disc time */
+    int64_t       stray_src;
     DRHevcDropped el_dropped;    /* HEVC second layer: what its clean-up took out */
     /* HEVC: a frame with an end of sequence / end of bitstream unit, waiting
      * for the next picture (ff_disctl_hevc_seq_end) */
@@ -184,6 +186,8 @@ struct DRTitle {
     LayerKey     *bq;            /* master video frames waiting for their layer picture */
     int           bq_head, bq_n, bq_cap;
     int64_t       layer_missing; /* master video frames without a layer picture */
+    int64_t       gap_n;         /* the run of such frames being counted (a gap), and its first one's time */
+    int64_t       gap_time;
     int           layer_hevc;    /* the second layer is HEVC (a Dolby Vision enhancement layer) */
     int           layer_merged;  /* its pictures go into the master frames (DR_LAYER_MERGED) */
 };
@@ -844,9 +848,10 @@ static int seg_frame(void *opaque, DRFrame *f);
  * order; a picture belongs to the master frame with the same time from the
  * disc (within LAYER_TOLERANCE) and leaves with that frame's time, duration
  * and key flag. A picture without a master frame is left out; a master frame
- * without a picture is counted (the layer's stream would miss a picture). */
+ * without a picture is written without it (the reference program's way; the
+ * layer's stream misses that picture). Each run of either is one warning. */
 
-#define LAYER_TOLERANCE (DR_TICKS_PER_SECOND / 1000)
+#define LAYER_TOLERANCE (DR_TICKS_PER_SECOND / 10000)   /* 0.1 ms, the video grid's threshold */
 #define LAYER_WINDOW    64              /* pictures looked at for a master frame's partner */
 
 static int layer_key(DRTitle *t, DRFrame *f)
@@ -894,12 +899,49 @@ static int layer_add(Track *k, DRFrame *f)
     return 0;
 }
 
+/* A run of second-layer pictures without a video frame of their time:
+ * one warning when it ends. */
+static void layer_stray_flush(Track *k)
+{
+    if (!k->stray_n)
+        return;
+    av_log(k->title->log, AV_LOG_WARNING, "Title timeline: track %d: %"PRId64" %s picture%s from the disc time %.3f ms "
+           "on %s no video frame of %s time: left out\n", k->index, k->stray_n,
+           k->title->layer_hevc ? "Dolby Vision enhancement" : "second-view", k->stray_n == 1 ? "" : "s",
+           k->stray_src / (double)(DR_TICKS_PER_SECOND / 1000), k->stray_n == 1 ? "has" : "have",
+           k->stray_n == 1 ? "its" : "their");
+    k->warnings++;
+    k->stray_n = 0;
+}
+
+/* A run of video frames without their second-layer picture (a gap): one
+ * warning when it ends. They go on without it, as the reference program
+ * writes them. */
+static void layer_gap_flush(DRTitle *t)
+{
+    if (!t->gap_n)
+        return;
+    if (t->layer_hevc)
+        av_log(t->log, AV_LOG_WARNING, "Title timeline: at %s: %"PRId64" video frame%s without %s Dolby Vision "
+               "enhancement picture: written without it (no Dolby Vision metadata for %s)\n",
+               hms((char[32]){ 0 }, 32, t->gap_time), t->gap_n, t->gap_n == 1 ? "" : "s",
+               t->gap_n == 1 ? "its" : "their", t->gap_n == 1 ? "it" : "them");
+    else
+        av_log(t->log, AV_LOG_WARNING, "Title timeline: at %s: %"PRId64" video frame%s without %s second-view "
+               "picture: written without it (the second view's stream misses %s from here on, it is out of step "
+               "with the video after this) [untested on real discs]\n",
+               hms((char[32]){ 0 }, 32, t->gap_time), t->gap_n, t->gap_n == 1 ? "" : "s",
+               t->gap_n == 1 ? "its" : "their", t->gap_n == 1 ? "it" : "them");
+    t->t[0].warnings++;
+    t->gap_n = 0;
+}
+
 static void layer_drop_head(Track *k)
 {
     DRFrame *f = &k->lq[k->lq_head];
-    if (k->layer_alone++ < (k->title->layer_hevc ? 10 : 1))
-        av_log(k->title->log, AV_LOG_WARNING, "Title timeline: track %d: a second-layer picture at %"PRId64" ticks "
-               "has no video frame of its time: left out\n", k->index, f->src);
+    if (!k->stray_n++)
+        k->stray_src = f->src;
+    k->layer_alone++;
     ff_disctl_frame_unref(f);
     k->lq_head++;
     if (!--k->lq_n)
@@ -911,17 +953,11 @@ static int layer_miss_head(DRTitle *t)
     LayerKey *b = &t->bq[t->bq_head];
     int ret = 0;
 
-    if (t->layer_hevc) {
-        /* Dolby Vision: the base frame goes on without its enhancement
-         * picture, so without its metadata (the RPU travels in the
-         * enhancement layer) */
-        if (t->layer_missing++ < 10)
-            av_log(t->log, AV_LOG_WARNING, "Title timeline: the video frame at %s has no Dolby Vision enhancement "
-                   "picture: it goes on without (no Dolby Vision metadata for it)\n",
-                   hms((char[32]){ 0 }, 32, b->time));
-    } else if (!t->layer_missing++)
-        av_log(t->log, AV_LOG_ERROR, "Title timeline: the video frame at %"PRId64" ticks has no second-layer "
-               "picture\n", b->src);
+    /* the base frame goes on without its picture (Dolby Vision: without its
+     * metadata, the RPU travels in the enhancement layer) */
+    t->layer_missing++;
+    if (!t->gap_n++)
+        t->gap_time = b->time;
     if (t->layer_merged) {
         DRFrame f = b->f;
         memset(&b->f, 0, sizeof(b->f));
@@ -982,8 +1018,10 @@ static int layer_match(DRTitle *t, int final)
                 return ret;
             continue;
         }
+        layer_gap_flush(t);                 /* a gap before this frame ends */
         while (m-- > 0)
             layer_drop_head(k);
+        layer_stray_flush(k);
         {
             DRFrame f = k->lq[k->lq_head];
             k->lq_head++;
@@ -1015,6 +1053,10 @@ static int layer_match(DRTitle *t, int final)
     }
     while (final && k->lq_n)
         layer_drop_head(k);
+    if (final) {
+        layer_gap_flush(t);
+        layer_stray_flush(k);
+    }
     return 0;
 }
 
@@ -1526,6 +1568,8 @@ static int seg_open(DRTitle *t)
         }
         if (k->cfg.kind == DR_KIND_AUDIO && (k->cfg.audio_flags & DR_AUDIO_EXTENDED))
             ff_disctl_frames_take_any(k->cut);
+        if (k->cfg.kind == DR_KIND_AUDIO && (k->cfg.audio_flags & DR_AUDIO_DVD))
+            ff_disctl_frames_dvd(k->cut);
         if (k->cfg.kind == DR_KIND_VIDEO)
             ff_disctl_video_set_side(k->video, cc_side, t);
     }
@@ -1717,47 +1761,36 @@ static int layer_report(DRTitle *t)
     static const char *const names[32] = { [10] = "ends of sequence", [11] = "ends of stream",
                                            [12] = "filler data units" };
     Track *k = &t->t[t->layer];
+    const char *what = t->layer_hevc ? "Dolby Vision enhancement" : "second-view";
 
     if (t->layer_hevc) {
-        /* Dolby Vision: a mismatch costs frames their metadata, the video
-         * itself is whole */
         ff_disctl_hevc_dropped_log(&k->el_dropped, "Dolby Vision enhancement layer");
-        if (k->layer_alone) {
-            av_log(t->log, AV_LOG_WARNING, "Title timeline: %"PRId64" Dolby Vision enhancement pictures without a "
-                   "video frame of their time were left out\n", k->layer_alone);
-            k->warnings++;
+    } else {
+        for (int n = 0; n < 32; n++) {
+            if (!k->layer_dropped[n])
+                continue;
+            if (names[n])
+                av_log(t->log, AV_LOG_INFO, "Title timeline: track %d: %"PRId64" %s taken out of the second "
+                       "layer\n", t->layer, k->layer_dropped[n], names[n]);
+            else
+                av_log(t->log, AV_LOG_WARNING, "Title timeline: track %d: %"PRId64" NAL units of type %d (they "
+                       "start no unit) taken out of the second layer [untested on real discs]\n", t->layer,
+                       k->layer_dropped[n], n);
         }
-        if (t->layer_missing) {
-            av_log(t->log, AV_LOG_WARNING, "Title timeline: %"PRId64" video frames have no Dolby Vision enhancement "
-                   "picture: they play without Dolby Vision metadata\n", t->layer_missing);
-            t->t[0].warnings++;
-        }
-        return 0;
+        if (k->layer_stuffing)
+            av_log(t->log, AV_LOG_INFO, "Title timeline: track %d: %"PRId64" zero stuffing bytes taken out of the "
+                   "second layer\n", t->layer, k->layer_stuffing);
     }
-
-    for (int n = 0; n < 32; n++) {
-        if (!k->layer_dropped[n])
-            continue;
-        if (names[n])
-            av_log(t->log, AV_LOG_VERBOSE, "Title timeline: track %d: %"PRId64" %s taken out of the second layer\n",
-                   t->layer, k->layer_dropped[n], names[n]);
-        else
-            av_log(t->log, AV_LOG_WARNING, "Title timeline: track %d: %"PRId64" NAL units of type %d (they start no "
-                   "unit) taken out of the second layer [untested on real discs]\n", t->layer, k->layer_dropped[n], n);
-    }
-    if (k->layer_stuffing)
-        av_log(t->log, AV_LOG_VERBOSE, "Title timeline: track %d: %"PRId64" zero stuffing bytes taken out\n",
-               t->layer, k->layer_stuffing);
-    if (k->layer_alone) {
-        av_log(t->log, AV_LOG_WARNING, "Title timeline: track %d: %"PRId64" second-layer pictures without a video "
-               "frame of their time left out\n", t->layer, k->layer_alone);
-        k->warnings++;
-    }
-    if (t->layer_missing) {
-        av_log(t->log, AV_LOG_ERROR, "Title timeline: %"PRId64" video frames have no second-layer picture: the "
-               "second layer's stream would miss pictures\n", t->layer_missing);
-        return AVERROR_INVALIDDATA;
-    }
+    /* each gap and each run of stray pictures was a warning of its own:
+     * the totals */
+    if (k->layer_alone)
+        av_log(t->log, AV_LOG_INFO, "Title timeline: track %d: %"PRId64" %s picture%s in all without a video frame "
+               "of %s time, left out\n", t->layer, k->layer_alone, what, k->layer_alone == 1 ? "" : "s",
+               k->layer_alone == 1 ? "its" : "their");
+    if (t->layer_missing)
+        av_log(t->log, AV_LOG_INFO, "Title timeline: %"PRId64" video frame%s in all without %s %s picture, written "
+               "without it\n", t->layer_missing, t->layer_missing == 1 ? "" : "s",
+               t->layer_missing == 1 ? "its" : "their", what);
     return 0;
 }
 

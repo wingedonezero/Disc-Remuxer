@@ -166,6 +166,7 @@ typedef struct EsOut {
     int           probe_late;       /* LPCM: the probe opens with the first packet (the stream's format is
                                        the converted PCM's from then on) */
     int           checked;          /* the end check ran: 1 pass, -1 fail, 0 not run */
+    int           write_err;        /* a write to its file failed: why (errno), for the title's failure line */
     char          problems[1024];   /* its findings */
 } EsOut;
 
@@ -193,6 +194,31 @@ static void end_check(const AVStream *st, EsOut *o)
     o->checked = n ? -1 : 1;
     if (!n)
         snprintf(o->problems, sizeof(o->problems), "%d fields", disc.n);
+}
+
+/* A write to o's file failed: the reason (errno) kept, so the title's
+ * failure names the file and why (a full disk stops the rip). */
+static int write_failed(EsOut *o)
+{
+    o->write_err = errno ? errno : EIO;
+    return AVERROR(o->write_err);
+}
+
+/* Closes a stream file: a write that failed before (fputs, fprintf and
+ * buffered writes report only here) or the close itself counts. */
+static int out_close(EsOut *o, FILE **f)
+{
+    int bad = ferror(*f), err = bad ? errno : 0;
+
+    if (fclose(*f) && !bad) {
+        bad = 1;
+        err = errno;
+    }
+    *f = NULL;
+    if (!bad)
+        return 0;
+    o->write_err = err ? err : EIO;
+    return AVERROR(o->write_err);
 }
 
 static void put_le(FILE *f, uint64_t v, int n)
@@ -258,7 +284,15 @@ static int write_chapters(const AVFormatContext *ctx, const char *path)
         fprintf(f, "</ChapterString>\n      </ChapterDisplay>\n    </ChapterAtom>\n");
     }
     fprintf(f, "  </EditionEntry>\n</Chapters>\n");
-    return fclose(f) ? AVERROR(errno) : 0;
+    {
+        /* a write that failed before (reported only here) or the close */
+        int bad = ferror(f), err = bad ? errno : 0;
+        if (fclose(f) && !bad) {
+            bad = 1;
+            err = errno;
+        }
+        return bad ? AVERROR(err ? err : EIO) : 0;
+    }
 }
 
 /* ---- VobSub (.sub: the sub-picture units in MPEG-2 program stream packs
@@ -321,7 +355,7 @@ static int vobsub_unit(EsOut *o, const uint8_t *data, int size, int64_t pts)
             AV_WB16(pk + i + 4, PACK - i - 6);
         }
         if (fwrite(pk, 1, PACK, o->f) != PACK)
-            return AVERROR(EIO);
+            return write_failed(o);
         o->sub_pos += PACK;
         data  += n;
         size  -= n;
@@ -442,7 +476,7 @@ static int srt_write(EsOut *o, const AVStream *st, const AVPacket *pkt)
     srt_time(o->f, end);
     fputc('\n', o->f);
     if (fwrite(pkt->data, 1, pkt->size, o->f) != (size_t)pkt->size || fputs("\n\n", o->f) < 0)
-        return AVERROR(EIO);
+        return write_failed(o);
     o->st.bytes += pkt->size;
     return 0;
 }
@@ -463,7 +497,7 @@ static int sup_write(EsOut *o, const AVStream *st, const AVPacket *pkt)
             return AVERROR_INVALIDDATA;
         AV_WB32(h + 2, pts);
         if (fwrite(h, 1, sizeof(h), o->f) != sizeof(h) || fwrite(pkt->data + off, 1, len, o->f) != (size_t)len)
-            return AVERROR(EIO);
+            return write_failed(o);
         o->st.bytes += sizeof(h) + len;
         off += len;
     }
@@ -475,7 +509,7 @@ static int es_write(EsOut *o, const AVPacket *pkt)
     if (o->idx)
         return AVERROR_BUG;   /* sub-pictures go through vobsub_write() */
     if (fwrite(pkt->data, 1, pkt->size, o->f) != (size_t)pkt->size)
-        return AVERROR(EIO);
+        return write_failed(o);
     o->st.bytes += pkt->size;
     return 0;
 }
@@ -652,7 +686,8 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     EsOut *out = NULL;
     AVPacket *pkt = NULL;
     char dir[4096], prefix[4200], dur[32], js[4300], who[64], base[512], jpart[32] = "";
-    int ret, errors0, warnings0;
+    char *chap = NULL;          /* the chapter file, and why it could not be written */
+    int ret, r, chap_err = 0, errors0, warnings0;
 
     memset(res, 0, sizeof(*res));
     /* the title's warnings: every warning line from here to its last line */
@@ -809,9 +844,10 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     for (unsigned i = 0; ret >= 0 && i < ctx->nb_streams; i++)
         ret = es_flush_hold(ctx, ctx->streams[i], &out[i], prefix);
     if (ret >= 0) {
-        char *chap = av_asprintf("%s_chapters.xml", prefix);
-        ret = chap ? write_chapters(ctx, chap) : AVERROR(ENOMEM);
-        av_free(chap);
+        if (!(chap = av_asprintf("%s_chapters.xml", prefix)))
+            ret = AVERROR(ENOMEM);
+        else if ((ret = write_chapters(ctx, chap)) < 0 && ret != AVERROR(ENOMEM))
+            chap_err = AVUNERROR(ret);
     }
 
 end:
@@ -823,11 +859,10 @@ end:
             else
                 ret = AVERROR(errno);
         }
-        if (o->f && fclose(o->f) && ret >= 0)
-            ret = AVERROR(errno);
-        if (o->idx && fclose(o->idx) && ret >= 0)
-            ret = AVERROR(errno);
-        o->f = NULL;
+        if (o->f && (r = out_close(o, &o->f)) < 0 && ret >= 0)
+            ret = r;
+        if (o->idx && (r = out_close(o, &o->idx)) < 0 && ret >= 0)
+            ret = r;
         /* a forced-only subtitle track that shows nothing is empty: no file
          * (as an MKV leaves such a track out) */
         if (ret >= 0 && o->opened && (ctx->streams[i]->disposition & AV_DISPOSITION_FORCED) &&
@@ -843,7 +878,24 @@ end:
         log_msg(MSG_TITLE_FAILED, LOG_WARNING, "%s stopped as asked: its files are not complete", who);
         res->failed = 1;
     } else if (ret < 0) {
-        log_msg(MSG_TITLE_FAILED, LOG_ERROR, "%s failed: %s", who, av_err2str(ret));
+        /* a file that could not be written: which one and why */
+        const char *wfile = chap_err ? chap : NULL;
+        int werr = chap_err;
+        for (unsigned i = 0; !werr && ctx && out && i < ctx->nb_streams; i++)
+            if (out[i].write_err) {
+                werr  = out[i].write_err;
+                wfile = out[i].name;
+            }
+        if (werr == ENOSPC || werr == EDQUOT) {
+            log_msg(MSG_DISK_FULL, LOG_ERROR, "%s failed: the disk is full (no space left writing %s)", who,
+                    wfile ? wfile : "its files");
+            res->disk_full = 1;
+        } else if (werr) {
+            log_msg(MSG_TITLE_FAILED, LOG_ERROR, "%s failed: %s cannot be written: %s", who,
+                    wfile ? wfile : "a file", strerror(werr));
+        } else {
+            log_msg(MSG_TITLE_FAILED, LOG_ERROR, "%s failed: %s", who, av_err2str(ret));
+        }
         res->failed = 1;
     } else {
         int64_t untested = meta_int(ctx->metadata, "untested");
@@ -969,6 +1021,7 @@ end:
         av_free(o->name);
     }
     av_free(out);
+    av_free(chap);
     av_packet_free(&pkt);
     disc_title_close(ctx);
     return ret;

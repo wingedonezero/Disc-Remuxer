@@ -621,6 +621,11 @@ fail:
  * the search.
  * A picture whose first slice has a slice_type of 10 or more, or no
  * parameter sets yet, is left out with the units in front of it (no frame).
+ * The reference program's repair of slices that disagree on frame_num /
+ * pic_order_cnt_lsb: when the first slice of a picture is followed by
+ * exactly 3 more slices that match it but for those two fields, and then a
+ * delimiter (units the reader does not see not counted), the 4 slices are
+ * one picture.
  * A data partition where a picture starts: the stream cannot be cut.
  *
  * Each frame then gives its picture type (its first slice), key_frame (an
@@ -665,7 +670,11 @@ typedef struct H264DiscCut {
     int suffix[DISC_SUFFIX_MAX + 1];    ///< the units the trailing-unit search went over
     int nb_suffix, suffix_k;
     int no_unit;            ///< the chunk given out is no frame
+    int look;               ///< the slices after the first one still to be checked for the repair
+    int forced;             ///< the last NAL unit the repair puts into the picture (-1 none)
 } H264DiscCut;
+
+#define DISC_REPAIR_SLICES 4    ///< slices of a picture the repair takes together
 
 static int disc_hidden(int t)
 {
@@ -762,6 +771,13 @@ static int disc_slice(H264ParseContext *p, const uint8_t *nal, int size, H264Dis
     return get_bits_left(&gb) >= 0;
 }
 
+/* The same picture but for frame_num and pic_order_cnt_lsb (the repair). */
+static int disc_same_but_numbers(const H264DiscSlice *a, const H264DiscSlice *b)
+{
+    return a->pps_id == b->pps_id && a->field == b->field && (!a->field || a->bottom == b->bottom) &&
+           a->idr == b->idr && (!a->idr || a->idr_id == b->idr_id);
+}
+
 static int disc_same(const H264DiscSlice *a, const H264DiscSlice *b)
 {
     return a->pps_id == b->pps_id && a->frame_num == b->frame_num && a->poc_lsb == b->poc_lsb &&
@@ -775,7 +791,43 @@ static int disc_end(H264DiscCut *st, int end, int no_unit)
     st->nb_nal = st->scan = st->done = st->nb_suffix = st->suffix_k = 0;
     st->phase   = DISC_PREFIX;
     st->no_unit = no_unit;
+    st->look    = 0;
+    st->forced  = -1;
     return end;
+}
+
+/* The repair after a picture's first slice (unit j is the first unit after
+ * it): 1 the next units are the slices it takes in (st->forced set), 0 not
+ * (also when they agree on their numbers: the picture is whole without it),
+ * -1 more bytes are needed to tell. */
+static int disc_repair(H264ParseContext *p, H264DiscCut *st, const uint8_t *buf, int avail, int final, int j)
+{
+    int idx[DISC_REPAIR_SLICES], n = 0, differ = 0;
+
+    for (int i = j; i < st->nb_nal && n < DISC_REPAIR_SLICES; i++) {
+        if (disc_hidden(st->nal[i].type))
+            continue;
+        if (i + 1 >= st->nb_nal && !final)
+            return -1;                      /* this unit is not complete yet */
+        idx[n++] = i;
+    }
+    if (n < DISC_REPAIR_SLICES)
+        return final ? 0 : -1;
+    if (st->nal[idx[DISC_REPAIR_SLICES - 1]].type != H264_NAL_AUD)
+        return 0;
+    for (int k = 0; k < DISC_REPAIR_SLICES - 1; k++) {
+        const H264DiscNal *u = &st->nal[idx[k]];
+        int end = idx[k] + 1 < st->nb_nal ? st->nal[idx[k] + 1].zr : avail;
+        H264DiscSlice h;
+        if ((u->type != H264_NAL_SLICE && u->type != H264_NAL_IDR_SLICE) ||
+            disc_slice(p, buf + u->sc + 3, end - u->sc - 3, &h) != 1 || !disc_same_but_numbers(&h, &st->first))
+            return 0;
+        differ |= !disc_same(&h, &st->first);
+    }
+    if (!differ)
+        return 0;
+    st->forced = idx[DISC_REPAIR_SLICES - 2];
+    return 1;
 }
 
 static int disc_fail(H264DiscCut *st, void *log, int type)
@@ -847,6 +899,7 @@ static int disc_unit_size(void *log, const uint8_t *buf, int avail, int final, v
                 }
                 st->first = h;
                 st->phase = DISC_SLICES;
+                st->look  = 1;
             } else if (t == H264_NAL_SPS || t == H264_NAL_PPS) {
                 if (!complete)
                     return 0;
@@ -857,6 +910,19 @@ static int disc_unit_size(void *log, const uint8_t *buf, int avail, int final, v
             continue;
         }
         if (st->phase == DISC_SLICES) {
+            if (st->look) {
+                if ((ret = disc_repair(p, st, buf, avail, final, j)) < 0)
+                    return 0;
+                st->look = 0;
+                if (ret)
+                    av_log(log, AV_LOG_WARNING, "Title timeline: H.264: a picture's %d slices disagree on frame_num / "
+                           "pic_order_cnt_lsb, a delimiter after them: taken as one picture (the reference "
+                           "program's repair) [untested on real discs]\n", DISC_REPAIR_SLICES);
+            }
+            if (j <= st->forced) {
+                st->done++;
+                continue;
+            }
             if (t == H264_NAL_DPB || t == H264_NAL_DPC) {
                 st->done++;
                 continue;
@@ -1024,11 +1090,14 @@ static int disc_parse(AVCodecParserContext *s, AVCodecContext *avctx,
     H264DiscCut *st;
     int ret, r;
 
-    if (!p->disc.state && !(p->disc.state = av_mallocz(sizeof(H264DiscCut)))) {
-        s->disc_status = AVERROR(ENOMEM);
-        *poutbuf       = NULL;
-        *poutbuf_size  = 0;
-        return 0;
+    if (!p->disc.state) {
+        if (!(p->disc.state = av_mallocz(sizeof(H264DiscCut)))) {
+            s->disc_status = AVERROR(ENOMEM);
+            *poutbuf       = NULL;
+            *poutbuf_size  = 0;
+            return 0;
+        }
+        ((H264DiscCut *)p->disc.state)->forced = -1;
     }
     st          = p->disc.state;
     st->p       = p;

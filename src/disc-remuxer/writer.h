@@ -35,6 +35,7 @@ typedef struct TitleJob {
 typedef struct TitleOutcome {
     int     failed;            /* no usable output (or untested features met) */
     int     stopped;           /* stopped on request (engine_cancel()): its files are not complete */
+    int     disk_full;         /* failed because the disk is full: the titles after it would fail too */
     int64_t warnings;          /* warnings about its tracks */
     int64_t damaged_ranges;    /* damaged data left out: its ranges (each a warning) and bytes */
     int64_t damaged_bytes;

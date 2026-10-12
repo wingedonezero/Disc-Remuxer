@@ -157,6 +157,12 @@ void ff_disctl_frames_take_any(DRFrames *c)
         c->parser->flags |= PARSER_FLAG_DISC_ANY;
 }
 
+void ff_disctl_frames_dvd(DRFrames *c)
+{
+    if (c->parser)
+        c->parser->flags |= PARSER_FLAG_DISC_DVD;
+}
+
 void ff_disctl_frames_set_pcm_format(DRFrames *c, int channels, int bits, int samples_per_frame)
 {
     c->avctx->ch_layout.nb_channels = channels;
@@ -351,7 +357,7 @@ static int unit_take(DRFrames *c, const uint8_t *data, int size, int64_t off)
     int rate    = c->parser && !c->codec->disc_parser ? c->avctx->sample_rate : 0;
     int64_t time = AV_NOPTS_VALUE;
     DRPicture pic;
-    int unit, a;
+    int unit, a, ret;
 
     unit = !c->codec->check || c->codec->check(data, size);
     if (!unit && other_kind(c, data, size)) {
@@ -382,8 +388,16 @@ static int unit_take(DRFrames *c, const uint8_t *data, int size, int64_t off)
         c->st.timed++;
     if (c->codec->parser_picture)
         parser_picture(c, &pic);
-    return c->cb(c->opaque, &(DRUnit){ data, size, time, off, samples, rate,
-                                       c->codec->parser_picture ? &pic : NULL });
+    ret = c->cb(c->opaque, &(DRUnit){ data, size, time, off, samples, rate,
+                                      c->codec->parser_picture ? &pic : NULL });
+    if (ret < 0 && ret != AVERROR(ENOMEM) && ret != AVERROR(EAGAIN)) {
+        /* the stage said why (the line before): here where it is */
+        char where[256];
+        place_of(c, off, where, sizeof(where));
+        av_log(c->log, AV_LOG_ERROR, "%s: the unit at stream offset %"PRId64" of the %s%s%s stops the track\n",
+               c->label, off, c->part, where[0] ? " " : "", where);
+    }
+    return ret;
 }
 
 /* The bytes up to stream offset end are given out. */

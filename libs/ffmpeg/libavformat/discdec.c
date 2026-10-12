@@ -314,7 +314,8 @@ int ff_disc_open_tracks(AVFormatContext *s, const char *title, const DiscTrack *
         t->kind        = view ? DR_KIND_LAYER : k->kind;
         t->sub_flags   = k->info.forced ? DR_SUB_FORCED_ONLY : 0;
         t->audio_flags = (k->info.from_track >= 0 ? DR_AUDIO_EXTRACTED : 0) |
-                         (k->info.from_track >= 0 || k->info.inner_track >= 0 ? DR_AUDIO_EXTENDED : 0);
+                         (k->info.from_track >= 0 || k->info.inner_track >= 0 ? DR_AUDIO_EXTENDED : 0) |
+                         (d->fmt->kind == DISCIO_DISC_DVD ? DR_AUDIO_DVD : 0);
         if (k->kind == DR_KIND_SUBTITLE) {
             t->width  = k->info.width;
             t->height = k->info.height;

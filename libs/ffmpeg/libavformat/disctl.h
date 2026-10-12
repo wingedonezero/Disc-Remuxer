@@ -306,6 +306,10 @@ void ff_disctl_frames_stats(const DRFrames *c, DRFramesStats *stats);
  *  variant of the codec (PARSER_FLAG_DISC_ANY). */
 void ff_disctl_frames_take_any(DRFrames *c);
 
+/** The track is a DVD-Video disc's: its parser follows the DVD's frame
+ *  rules (PARSER_FLAG_DISC_DVD). */
+void ff_disctl_frames_dvd(DRFrames *c);
+
 /** Linear PCM: the frame format for FFmpeg's parser (from the packets'
  *  audio frame headers): channels, coded bits per sample, samples per
  *  frame. */
@@ -315,6 +319,7 @@ void ff_disctl_frames_close(DRFrames **frames);
 
 /* ---- Stage 2, audio: units timed within one segment (disctl_audio.c) ---- */
 
+#define DR_AUDIO_DVD       0x0004  /**< the track is a DVD-Video disc's (its frame rules: the DVD's) */
 #define DR_AUDIO_EXTENDED  0x0002  /**< the stream carries an extension (DTS-HD): its frames are found
                                         with the extension's rules (the track whose stream it is, and
                                         the one taken out of it) */

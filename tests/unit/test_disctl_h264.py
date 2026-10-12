@@ -6,7 +6,7 @@ periods (pic_struct); the H.264 rules (disctl_h264.c) take out filler, end
 units and zero stuffing and keep every other NAL unit (delimiters too) as on
 the disc. Streams built bit by bit here (synth/h264.py)."""
 
-from helpers import AV_NOPTS_VALUE, ffi, lib
+from helpers import AV_NOPTS_VALUE, LOG, ffi, install_log, lib
 from helpers.disctl import Handles, codec_id, events_into, fn
 from synth import h264 as H
 
@@ -196,6 +196,55 @@ def test_slices_of_one_picture_stay_together_and_a_new_frame_num_starts_a_pictur
     assert ret == 0
     assert len(s.out) == len(units)
     assert [o[0] for o in s.out] == [u for u, _ in units]
+
+
+def repair_units(nslices):
+    """Pictures of nslices slices, the slices after the first with other
+    frame_num / pic_order_cnt_lsb values, a delimiter in front of each."""
+    units = []
+    for i in range(48):
+        kind = H.SLICE_I if i % 12 == 0 else H.SLICE_P
+        au = H.aud() + (H.sps() + H.pps() + H.sei([H.pic_timing(0)]) if i % 12 == 0 else b"")
+        for m in range(nslices):
+            au += H.slice_(kind, (i + 3 * m) % 16, (2 * i + 6 * m) % 64, idr=i % 12 == 0, first_mb=m * 2040,
+                           idr_id=i // 12 % 2)
+        units.append((au, BASE + i * 2 * FIELD))
+    return units
+
+
+def test_four_slices_that_agree_on_their_numbers_need_no_repair_and_say_nothing():
+    units = []
+    for i in range(24):
+        kind = H.SLICE_I if i % 12 == 0 else H.SLICE_P
+        au = H.aud() + (H.sps() + H.pps() + H.sei([H.pic_timing(0)]) if i % 12 == 0 else b"")
+        for m in range(4):
+            au += H.slice_(kind, i % 16, (2 * i) % 64, idr=i % 12 == 0, first_mb=m * 2040, idr_id=i // 12 % 2)
+        units.append((au, BASE + i * 2 * FIELD))
+    install_log()
+    s, _, ret = run(units)
+    assert ret == 0 and [o[0] for o in s.out] == [u for u, _ in units]
+    assert not any("taken as one picture" in line for line in LOG)
+
+
+def test_four_slices_that_disagree_on_their_numbers_before_a_delimiter_are_one_picture():
+    # the reference program's repair: exactly 3 slices after the first, then a delimiter
+    units = repair_units(4)
+    install_log()
+    s, _, ret = run(units)
+    assert ret == 0
+    assert [o[0] for o in s.out[:47]] == [u for u, _ in units[:47]], "one frame per access unit"
+    # the last one has no delimiter after it: its slices go by their numbers
+    assert len(s.out) == 47 + 4
+    assert sum("taken as one picture" in line and "[untested on real discs]" in line for line in LOG) == 47
+    # five such slices: the first is a picture of its own (the 4th unit after
+    # it is no delimiter), the 4 after it are the repair's (the rule applies
+    # to each picture as it starts); the last access unit has no delimiter
+    # after it: 5 pictures
+    install_log()
+    s, _, ret = run(repair_units(5))
+    pictures = [o for o in s.out if o[0]]       # not the grid's placeholders (two pictures share a PES time here)
+    assert ret == 0 and len(pictures) == 47 * 2 + 5
+    assert sum("taken as one picture" in line for line in LOG) == 47
 
 
 def test_slice_extensions_after_the_slices_go_with_the_picture_and_sei_with_the_next():

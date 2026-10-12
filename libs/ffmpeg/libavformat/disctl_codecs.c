@@ -312,10 +312,12 @@ static int mpa_header(const uint8_t *d, int size, MPADecodeHeader *h)
 {
     uint32_t head;
 
+    memset(h, 0, sizeof(*h));                   /* a free-format frame sets no frame_size */
     if (size < 4)
         return -1;
     head = AV_RB32(d);
-    if (ff_mpa_check_header(head) < 0 || avpriv_mpegaudio_decode_header(h, head) != 0)
+    /* 1: a free-format frame (its size not in the header; the parser found it) */
+    if (ff_mpa_check_header(head) < 0 || avpriv_mpegaudio_decode_header(h, head) < 0)
         return -1;
     return 0;
 }
@@ -677,15 +679,15 @@ static const DRCodec codecs[] = {
     { .id = AV_CODEC_ID_PCM_BLURAY, .name = "pcm_bluray", .audio = &audio_lpcm,
       .disc_parser = 1, .bits_coded = 1 },
     { .id = AV_CODEC_ID_MP1, .name = "mp1", .check = check_mpa, .audio = &audio_mpa,
-      .verify = verify_mpa },
+      .verify = verify_mpa, .disc_parser = 1 },
     { .id = AV_CODEC_ID_MP2, .name = "mp2", .check = check_mpa, .audio = &audio_mpa,
-      .verify = verify_mpa },
+      .verify = verify_mpa, .disc_parser = 1 },
     { .id = AV_CODEC_ID_MP3, .name = "mp3", .check = check_mpa, .audio = &audio_mpa,
-      .verify = verify_mpa },
+      .verify = verify_mpa, .disc_parser = 1 },
     { .id = AV_CODEC_ID_AAC, .name = "aac", .check = check_adts, .audio = &audio_adts,
-      .verify = verify_adts },
+      .verify = verify_adts, .disc_parser = 1 },
     { .id = AV_CODEC_ID_AAC_LATM, .name = "aac_latm", .check = loas, .audio = &audio_latm,
-      .verify = verify_latm },
+      .verify = verify_latm, .disc_parser = 1 },
     { .id = AV_CODEC_ID_DVD_SUBTITLE, .name = "dvd_subtitle",
       .check = ff_disctl_spu_check, .disc_parser = 1,
       .verify = ff_disctl_spu_verify, .info_without_data = 1 },
