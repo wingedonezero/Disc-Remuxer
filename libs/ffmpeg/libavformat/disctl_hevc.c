@@ -241,7 +241,13 @@ static int split_hevc(DRVideo *v, DRFrame *f)
         return 0;                       /* no NAL unit: picture() leaves it out */
     if (!(buf = av_buffer_alloc(f->size + AV_INPUT_BUFFER_PADDING_SIZE)))
         return AVERROR(ENOMEM);
-    out = ff_disctl_hevc_clean(f->data, f->size, buf->data, &s->dropped, &changed, &seq_end);
+    {
+        int64_t filler = s->dropped.units[38], stuffing = s->dropped.stuffing;
+        out = ff_disctl_hevc_clean(f->data, f->size, buf->data, &s->dropped, &changed, &seq_end);
+        /* said in the title's summary */
+        ff_disctl_video_removed(v, DR_REMOVED_FILLER, s->dropped.units[38] - filler);
+        ff_disctl_video_stuffing(v, s->dropped.stuffing - stuffing);
+    }
     if (seq_end)
         f->flags |= DR_F_SEQ_END;
     if (!changed || out == f->size) {
@@ -277,11 +283,15 @@ static int picture_hevc(DRVideo *v, const DRFrame *f, DRPicture *pic)
     return 0;
 }
 
+/* Filler and stuffing are said in the title's summary; the rest here. */
 static void close_hevc(void *priv)
 {
     const HEVCState *s = priv;
+    DRHevcDropped d = s->dropped;
 
-    ff_disctl_hevc_dropped_log(&s->dropped, "HEVC");
+    d.units[38] = 0;
+    d.stuffing  = 0;
+    ff_disctl_hevc_dropped_log(&d, "HEVC");
 }
 
 const DRVideoRules ff_disctl_video_hevc = {

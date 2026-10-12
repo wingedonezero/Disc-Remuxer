@@ -271,6 +271,7 @@ typedef struct DRVideoStats {
     int64_t side_bytes;
     int64_t other, other_bytes;
     int64_t stuffing;
+    int64_t removed[3];
     int64_t seq_end;
     int64_t seq_end_inside;
     int64_t seq_new;

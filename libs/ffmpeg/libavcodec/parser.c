@@ -172,6 +172,7 @@ int av_parser_parse2(AVCodecParserContext *s, AVCodecContext *avctx,
          * which belongs to the first frame starting in that packet. */
         ff_fetch_timestamp(s, s->next_frame_offset - s->cur_offset, 0, 0);
     }
+    s->disc_note = NULL;
     /* WARNING: the returned index can be negative */
     index = ffcodecparser(s->parser)->parse(s, avctx, (const uint8_t **) poutbuf,
                                             poutbuf_size, buf, buf_size);

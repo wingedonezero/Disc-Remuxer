@@ -621,6 +621,7 @@ typedef struct DRVideoStats {
     int64_t side_bytes;        /**< and their bytes */
     int64_t other, other_bytes;/**< units that are no picture, left out */
     int64_t stuffing;          /**< zero stuffing bytes a codec rule took out (ff_disctl_video_stuffing) */
+    int64_t removed[3];        /**< units a codec rule took out (ff_disctl_video_removed): DR_REMOVED_* */
     int64_t seq_end;           /**< units with an end of sequence code */
     int64_t seq_end_inside;    /**< of them before the segment's last picture (DR_EV_SEQ_END_INSIDE) */
     int64_t seq_new;           /**< of those: followed by a new sequence (its sequence header) */
@@ -653,6 +654,10 @@ void ff_disctl_video_set_side(DRVideo *v, DRFrameCb cb, void *opaque);
 /** Zero stuffing bytes a codec rule took out of the unit being read (for
  *  the statistics). */
 void ff_disctl_video_stuffing(DRVideo *v, int64_t bytes);
+/** Units a codec rule took out of the unit being read, of kind
+ *  DR_REMOVED_* (for the statistics and the title's summary). */
+enum { DR_REMOVED_SEQ_END, DR_REMOVED_STREAM_END, DR_REMOVED_FILLER };
+void ff_disctl_video_removed(DRVideo *v, int kind, int64_t n);
 /** The grid point nearest to a time t (ticks, the segment's own clock):
  *  *out = that point, or AV_NOPTS_VALUE when t is more than 0.1 ms before
  *  the grid base. AVERROR(EAGAIN) while the grid is not known yet. */

@@ -61,7 +61,8 @@ def nal(t, rbsp, ref_idc=3, sc=b"\0\0\0\1"):
 
 
 def sps(sps_id=0, log2_frame_num=4, poc_type=0, log2_poc_lsb=6, frame_mbs_only=1, timing=(1001, 48000),
-        hrd=True, pic_struct=True, mbs=(120, 68), crop_bottom=4, aspect_ratio_idc=None, sc=b"\0\0\0\1"):
+        hrd=True, pic_struct=True, mbs=(120, 68), crop_bottom=4, aspect_ratio_idc=None, sc=b"\0\0\0\1",
+        fixed_frame_rate=1):
     """A High profile SPS, 1920 x 1080 (mbs: macroblocks across and down,
     crop_bottom: frame_crop_bottom_offset), with a VUI (aspect_ratio_idc,
     timing info, NAL HRD parameters, pic_struct_present_flag)."""
@@ -87,7 +88,7 @@ def sps(sps_id=0, log2_frame_num=4, poc_type=0, log2_poc_lsb=6, frame_mbs_only=1
         b.u(1, 1).u(aspect_ratio_idc, 8)
     b.u(0, 1).u(0, 1).u(0, 1)                    # overscan, video signal, chroma loc
     if timing:
-        b.u(1, 1).u(timing[0], 32).u(timing[1], 32).u(1, 1)
+        b.u(1, 1).u(timing[0], 32).u(timing[1], 32).u(fixed_frame_rate, 1)
     else:
         b.u(0, 1)
     if hrd:

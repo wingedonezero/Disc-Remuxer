@@ -970,6 +970,12 @@ void ff_disctl_video_set_side(DRVideo *v, DRFrameCb cb, void *opaque)
     v->side_opaque = opaque;
 }
 
+void ff_disctl_video_removed(DRVideo *v, int kind, int64_t n)
+{
+    if (kind >= 0 && kind < FF_ARRAY_ELEMS(v->st.removed))
+        v->st.removed[kind] += n;
+}
+
 void ff_disctl_video_stuffing(DRVideo *v, int64_t bytes)
 {
     v->st.stuffing += bytes;

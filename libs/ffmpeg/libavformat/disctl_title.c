@@ -230,6 +230,12 @@ static const char *const event_names[] = {
     [DR_EV_PCM_SILENCE]          = "pcm_silence",
     [DR_EV_PCM_SKIP]             = "pcm_skip",
     [DR_EV_PCM_TIMECODE]         = "pcm_timecode",
+    [DR_EV_JOIN_START]           = "join_start",
+    [DR_EV_JOIN_NOT_KEY]         = "join_not_key",
+    [DR_EV_JOIN_REPEAT]          = "join_repeat",
+    [DR_EV_SEQ_END_INSIDE]       = "seq_end_inside",
+    [DR_EV_PICTURES]             = "pictures",
+    [DR_EV_SYNC]                 = "sync",
     [DR_EV_AUDIO_COPY]           = "audio_copy",
     [DR_EV_AUDIO_COPY_LONG]      = "audio_copy_long",
     [DR_EV_SAMPLE_JOIN]          = "sample_join",
@@ -1522,6 +1528,8 @@ static void join_segment_end(DRTitle *t, const DRVideo *video)
     c->total.other          += vs.other;
     c->total.other_bytes    += vs.other_bytes;
     c->total.stuffing       += vs.stuffing;
+    for (int i = 0; i < FF_ARRAY_ELEMS(vs.removed); i++)
+        c->total.removed[i] += vs.removed[i];
     c->total.seq_end        += vs.seq_end;
     c->total.seq_end_inside += vs.seq_end_inside;
     c->total.seq_new        += vs.seq_new;
@@ -1562,9 +1570,30 @@ static void title_summary(DRTitle *t)
            "no picture at a segment's start needs one before it, none repeated at a join");
     av_log(t->log, c->pictures_off ? AV_LOG_WARNING : AV_LOG_VERBOSE, "Title check: video: %"PRId64" pictures read, %"
            PRId64" given out%s\n", v->pictures, v->out, c->pictures_off ? " (see the warnings above)" : "");
-    av_log(t->log, AV_LOG_VERBOSE, "Title check: taken out of the video: %"PRId64" zero stuffing bytes, %"PRId64
-           " user data units (%"PRId64" bytes: captions go to the caption track), %"PRId64" units that are no "
-           "picture (%"PRId64" bytes)\n", v->stuffing, v->side, v->side_bytes, v->other, v->other_bytes);
+    /* what the codec rules took out of the video: one line (in the standard
+     * log when anything was), naming only what was */
+    {
+        static const char *const what[] = { "end(s) of sequence", "end(s) of stream", "filler data unit(s)" };
+        char line[512] = "";
+        int len = 0;
+        for (int i = 0; i < 3; i++)
+            if (v->removed[i])
+                len += snprintf(line + len, sizeof(line) - FFMIN(len, sizeof(line)), "%s%"PRId64" %s",
+                                len ? ", " : "", v->removed[i], what[i]);
+        if (v->stuffing)
+            len += snprintf(line + len, sizeof(line) - FFMIN(len, sizeof(line)), "%s%"PRId64" zero stuffing bytes",
+                            len ? ", " : "", v->stuffing);
+        if (len)
+            len += snprintf(line + len, sizeof(line) - FFMIN(len, sizeof(line)), " (none of them changes a picture)");
+        if (v->side)
+            len += snprintf(line + len, sizeof(line) - FFMIN(len, sizeof(line)), "%s%"PRId64" user data units (%"
+                            PRId64" bytes: captions go to the caption track)", len ? ", " : "", v->side, v->side_bytes);
+        if (v->other)
+            len += snprintf(line + len, sizeof(line) - FFMIN(len, sizeof(line)), "%s%"PRId64" units that are no "
+                            "picture (%"PRId64" bytes)", len ? ", " : "", v->other, v->other_bytes);
+        av_log(t->log, len ? AV_LOG_INFO : AV_LOG_VERBOSE, "Title check: track 0: taken out of the video: %s\n",
+               len ? line : "nothing");
+    }
     if (v->scan_known)
         av_log(t->log, AV_LOG_VERBOSE, "Title check: video scan as the pictures state it (kept as it is): %"PRId64
                " progressive, %"PRId64" interlaced; top field first %"PRId64", repeat first field %"PRId64"%s\n",

@@ -75,6 +75,10 @@ typedef struct H264ParseContext {
     int disc_reset;                         ///< the picture just parsed has memory_management_control_operation 5
     int disc_order_base, disc_order_max;    ///< display order: added to the POC since the last reset / the highest
     int64_t disc_resets;                    ///< pictures with memory_management_control_operation 5 so far
+    int64_t disc_guessed;                   ///< frames whose pic_struct was guessed
+    int64_t disc_ps_field;                  ///< pic_struct that does not fit field_pic_flag (H.264 Table D-1)
+    int64_t disc_ps_fixed;                  ///< pic_struct 7 / 8 without fixed_frame_rate_flag (H.264 D.2.3)
+    char disc_note[256];                    ///< the note of the chunk given out (AVCodecParserContext.disc_note)
 } H264ParseContext;
 
 static int find_start_code(const uint8_t *buf, int buf_size,
@@ -670,6 +674,7 @@ typedef struct H264DiscCut {
     int suffix[DISC_SUFFIX_MAX + 1];    ///< the units the trailing-unit search went over
     int nb_suffix, suffix_k;
     int no_unit;            ///< the chunk given out is no frame
+    const char *why;        ///< and why (NULL: not said)
     int look;               ///< the slices after the first one still to be checked for the repair
     int forced;             ///< the last NAL unit the repair puts into the picture (-1 none)
 } H264DiscCut;
@@ -892,10 +897,13 @@ static int disc_unit_size(void *log, const uint8_t *buf, int avail, int final, v
                 if (!complete)
                     return 0;
                 if ((ret = disc_slice(p, nal, size, &h)) != 1) {
-                    av_log(log, AV_LOG_DEBUG, "Title timeline: H.264: a picture %s: left out with the units in "
-                           "front of it\n", ret == 2 ? "with a slice_type of 10 or more" :
-                           "without its parameter sets");
-                    return disc_end(st, end, 1);
+                    int slice_type = ret == 2;
+                    ret = disc_end(st, end, 1);
+                    st->why = slice_type ? "an H.264 picture with a slice_type of 10 or more (no slice type of "
+                                         "H.264 7.4.3): left out with the units in front of it" :
+                                         "an H.264 picture without its parameter sets (its SPS / PPS not "
+                                         "seen): left out with the units in front of it";
+                    return ret;
                 }
                 st->first = h;
                 st->phase = DISC_SLICES;
@@ -1054,8 +1062,24 @@ static int disc_picture(AVCodecParserContext *s, AVCodecContext *avctx, const ui
     if (!sps->nal_hrd_parameters_present_flag && !sps->vcl_hrd_parameters_present_flag &&
         !sps->pic_struct_present_flag)
         ps = 0;
-    else if (sps->pic_struct_present_flag && p->sei.picture_timing.present)
+    else if (sps->pic_struct_present_flag && p->sei.picture_timing.present) {
+        int field = p->picture_structure != PICT_FRAME;
         ps = p->sei.picture_timing.pic_struct;
+        /* checks of H.264 Table D-1 and D.2.3 (said for the first one, then
+         * counted; the stream is kept as it is) */
+        if ((field && ps != 1 && ps != 2) || (!field && (ps == 1 || ps == 2))) {
+            if (!p->disc_ps_field++) {
+                snprintf(p->disc_note, sizeof(p->disc_note), "pic_struct %d on a %s picture (H.264 Table D-1: a field "
+                         "takes 1 or 2, a frame the others): timed as the pic_struct says (the first one; all are "
+                         "counted)", ps, field ? "field" : "frame");
+                s->disc_note = p->disc_note;
+            }
+        } else if ((ps == 7 || ps == 8) && !sps->fixed_frame_rate_flag && !p->disc_ps_fixed++) {
+            snprintf(p->disc_note, sizeof(p->disc_note), "pic_struct %d (frame doubling / tripling) without "
+                     "fixed_frame_rate_flag (H.264 D.2.3): timed as it says (the first one; all are counted)", ps);
+            s->disc_note = p->disc_note;
+        }
+    }
     else if (sps->frame_mbs_only_flag)
         ps = 0;
     else if (p->picture_structure != PICT_FRAME)
@@ -1064,9 +1088,11 @@ static int disc_picture(AVCodecParserContext *s, AVCodecContext *avctx, const ui
         av_log(avctx, AV_LOG_ERROR, "Title timeline: H.264: a frame of an interlaced stream without its "
                "pic_struct, and none can be guessed from the pictures before\n");
         return AVERROR_INVALIDDATA;
-    } else
-        av_log(avctx, AV_LOG_DEBUG, "Title timeline: H.264: a frame without its pic_struct: %d guessed from the "
-               "pictures before [untested on real discs]\n", ps);
+    } else if (!p->disc_guessed++) {
+        snprintf(p->disc_note, sizeof(p->disc_note), "a frame of an interlaced H.264 stream without its pic_struct: "
+                 "%d taken from the pictures before (the first one; all are counted) [untested on real discs]", ps);
+        s->disc_note = p->disc_note;
+    }
     if (ps < 0 || ps > 8) {
         av_log(avctx, AV_LOG_ERROR, "Title timeline: H.264: pic_struct %d\n", ps);
         return AVERROR_INVALIDDATA;
@@ -1102,11 +1128,14 @@ static int disc_parse(AVCodecParserContext *s, AVCodecContext *avctx,
     st          = p->disc.state;
     st->p       = p;
     st->no_unit = 0;
+    st->why     = NULL;
     s->disc_fields = 0;
     ret = ff_parser_disc_cut(s, avctx, &disc_rule, &p->disc, poutbuf, poutbuf_size, buf, buf_size);
     if (*poutbuf_size && !s->disc_status) {
-        if (st->no_unit)
+        if (st->no_unit) {
             s->disc_status = PARSER_DISC_SKIP;
+            s->disc_note   = st->why;
+        }
         else if ((r = disc_picture(s, avctx, *poutbuf, *poutbuf_size)) < 0)
             s->disc_status = r;
     }
@@ -1205,6 +1234,15 @@ static av_cold void h264_close(AVCodecParserContext *s)
     ParseContext *pc = &p->pc;
 
     av_freep(&pc->buffer);
+    if (p->disc_guessed)
+        av_log(NULL, AV_LOG_INFO, "Title timeline: H.264: %"PRId64" frame(s) without their pic_struct: taken from "
+               "the pictures before them [untested on real discs]\n", p->disc_guessed);
+    if (p->disc_ps_field)
+        av_log(NULL, AV_LOG_WARNING, "Title timeline: H.264: %"PRId64" picture(s) whose pic_struct does not fit "
+               "their field_pic_flag (H.264 Table D-1)\n", p->disc_ps_field);
+    if (p->disc_ps_fixed)
+        av_log(NULL, AV_LOG_WARNING, "Title timeline: H.264: %"PRId64" picture(s) with pic_struct 7 / 8 without "
+               "fixed_frame_rate_flag (H.264 D.2.3)\n", p->disc_ps_fixed);
     if (p->disc.state)
         av_freep(&((H264DiscCut *)p->disc.state)->nal);
     ff_parser_disc_cut_close(&p->disc);
