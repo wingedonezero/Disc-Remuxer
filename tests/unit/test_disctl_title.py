@@ -5,7 +5,7 @@ the video has been handed on past their time."""
 
 import dataclasses
 
-from helpers import DATA, DIST, ffi, lib
+from helpers import DATA, DIST, LOG, ffi, install_log, lib
 from helpers.disctl import Handles, codec_id, events_into, pictures, spu
 from test_helper import EDM, EOC, load, parity
 
@@ -454,21 +454,31 @@ def test_a_second_layer_picture_without_a_video_frame_is_left_out():
         "every video frame's picture, the stray one left out"
 
 
-def test_a_video_frame_without_its_second_layer_picture_fails_the_title():
+def test_a_video_frame_without_its_second_layer_picture_is_written_without_it():
+    # the reference program's way: the video goes on; each gap is one warning
     tracks = [[codec_id("mpeg2video"), lib.DR_KIND_VIDEO, 0], [codec_id("h264"), lib.DR_KIND_LAYER, 0]]
     v = video(BASE)
-    seg = interleave(v, [dataclasses.replace(p, track=1) for p in layer(BASE, skip={5})])
-    keep = Handles()
-    tr = ffi.new("DRTitleTrack[]", tracks)
-    cfg = ffi.new("DRTitleConfig *", {"nb_tracks": 2, "tracks": tr, "event": lib.tb_py_event,
-                                      "event_opaque": keep(events_into([]))})
-    t = ffi.new("DRTitle **")
-    assert lib.ff_disctl_title_open(t, ffi.NULL, cfg) == 0
-    assert lib.ff_disctl_title_segment(t[0]) == 0
-    for p in seg:
-        lib.ff_disctl_title_payload(t[0], p.track, p.data, len(p.data), p.time)
-    assert lib.ff_disctl_title_finish(t[0]) < 0, "the layer's stream would miss a picture"
-    lib.ff_disctl_title_close(t)
+    seg = interleave(v, [dataclasses.replace(p, track=1) for p in layer(BASE, skip={5, 6})])
+    install_log()
+    outs, _, _, _ = run(tracks, False, [seg])
+    vid, lay = by_track(outs, 0), by_track(outs, 1)
+    assert len(vid) == len(v) and len(lay) == len(v) - 2, "every video frame; the layer misses two pictures"
+    gaps = [line for line in LOG if line.startswith("Title timeline: at ") and "second-view picture" in line]
+    assert len(gaps) == 1 and "2 video frames" in gaps[0], "one warning for the gap of two frames"
+
+
+def test_a_second_layer_picture_pairs_within_a_tenth_of_a_millisecond():
+    # a picture 0.05 ms off its video frame's disc time belongs to it, one
+    # 0.2 ms off does not (the video grid's threshold)
+    tracks = [[codec_id("mpeg2video"), lib.DR_KIND_VIDEO, 0], [codec_id("h264"), lib.DR_KIND_LAYER, 0]]
+    v = video(BASE)
+    for off, paired in ((MS // 20, True), (MS // 5, False)):
+        pics = [dataclasses.replace(p, track=1) for p in layer(BASE)]
+        pics[3] = dataclasses.replace(pics[3], time=pics[3].time + off)
+        install_log()
+        outs, _, _, _ = run(tracks, False, [interleave(v, pics)])
+        assert (len(by_track(outs, 1)) == len(v)) == paired, off
+        assert any("second-view picture from the disc time" in line for line in LOG) != paired, off
 
 
 def test_a_second_layer_follows_the_video_into_the_next_segment():
