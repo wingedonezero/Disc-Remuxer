@@ -52,18 +52,6 @@
                                                  LOOK INTO AGAIN LATER with more discs */
 #define CHUNK           (1 << 20)
 
-static int has_bdj(const BlurayDisc *d)
-{
-    int n;
-
-    if (!d->has_index)
-        return 0;
-    n = d->index.first_play.object_type == 2 || d->index.top_menu.object_type == 2;
-    for (int i = 0; i < d->index.nb_titles; i++)
-        n |= d->index.titles[i].object_type == 2;
-    return n;
-}
-
 /* The clip a PlayItem plays (its Clip_Information_file_name), -1 not loaded. */
 static int clip_index(const BlurayDisc *d, const char *name)
 {
@@ -268,7 +256,7 @@ int ff_bluray_decoys_check(void *log, BlurayDisc *d)
     av_freep(&d->pl_check);
     av_freep(&d->pl_repeats);
     d->nb_fake = d->nb_real = d->fake_suspected = 0;
-    if (d->bdav || !has_bdj(d) || !d->nb_playlists)
+    if (d->bdav || !ff_bluray_has_bdj(d) || !d->nb_playlists)
         return 0;
     used          = av_calloc(FFMAX(d->nb_clips, 1), sizeof(*used));
     copy          = av_calloc(FFMAX(d->nb_clips, 1), sizeof(*copy));

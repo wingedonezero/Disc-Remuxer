@@ -434,6 +434,18 @@ int ff_bluray_disc_open(void *log, DiscIOFS *fs, const char *path, const char *l
     return 0;
 }
 
+int ff_bluray_has_bdj(const BlurayDisc *d)
+{
+    int n;
+
+    if (!d->has_index)
+        return 0;
+    n = d->index.first_play.object_type == 2 || d->index.top_menu.object_type == 2;
+    for (int i = 0; i < d->index.nb_titles; i++)
+        n |= d->index.titles[i].object_type == 2;
+    return n;
+}
+
 void ff_bluray_disc_free(BlurayDisc *d)
 {
     ff_bluray_titles_free(d);
@@ -448,6 +460,7 @@ void ff_bluray_disc_free(BlurayDisc *d)
     av_freep(&d->jars);
     av_freep(&d->pl_check);
     av_freep(&d->pl_repeats);
+    ff_bluray_menu_free(d);
     ff_bluray_index_free(&d->index);
     av_freep(&d->name);
     av_freep(&d->name_eng);
@@ -597,6 +610,13 @@ void ff_bluray_disc_dump(const BlurayDisc *d, AVBPrint *bp)
                 av_bprintf(bp, " clip %05u stc %d", tk->side_clip, tk->side_stc);
             av_bprintf(bp, "\n");
         }
+    }
+    /* the menu's project data */
+    if (d->menu_name) {
+        av_bprintf(bp, "menu '%s' named %d\n", d->menu_name, d->nb_menu_named);
+        for (int p = 0; p < d->nb_playlists; p++)
+            if (d->pl_menu_name[p])
+                av_bprintf(bp, "menu %05u '%s'\n", d->playlists[p].number, d->pl_menu_name[p]);
     }
     /* the fake playlist check */
     if (d->pl_check) {

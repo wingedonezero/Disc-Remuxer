@@ -306,6 +306,8 @@ static char *tb_bluray_dump(const char *path, const char *lang, int min_length, 
         return NULL;
     *err = ff_bluray_disc_open(NULL, fs, path, lang, &d);
     if (*err >= 0 && min_length >= 0)
+        *err = ff_bluray_menu_read(NULL, &d);
+    if (*err >= 0 && min_length >= 0)
         *err = ff_bluray_titles_build(NULL, &d, min_length);
     if (*err >= 0 && min_length >= 0)
         *err = ff_bluray_decoys_check(NULL, &d);

@@ -350,3 +350,47 @@ def ts_packets(pid, data, cc=0):
 def source_packets(packets):
     """TS packets as 192-byte source packets (no padding to whole units)."""
     return b"".join(be32(i * 0x10) + p for i, p in enumerate(packets))
+
+
+# ---- a BD-J menu framework's project data (BDMV/JAR/<dir>/bluray_project.bin) ----
+
+def _utf(s):
+    b = s.encode()
+    return be16(len(b)) + b
+
+
+def _i(v):
+    return struct.pack(">i", v)
+
+
+def _f(v):
+    return struct.pack(">f", v)
+
+
+def menu_project(name, discs, v2=False, version=None):
+    """discs: [(name, id (32 hex digits), [(playlist name, id, duration in s)])];
+    each playlist gets one item with one angle (a video, an audio and a
+    subtitle stream) and one mark. v2: the newer layout (tags, presentation,
+    still mode, dynamic range, forced flags); version: (major, minor, patch)
+    at the end (newer layout only)."""
+    def tag(s=""):
+        return _utf(s) if v2 else b""
+    out = _utf(name) + _i(len(discs))
+    for dname, did, pls in discs:
+        out += _utf(dname) + _utf(did) + _i(1) + _i(1) + _utf("Sound 1") + _i(len(pls))
+        for pname, pid, dur in pls:
+            out += _utf(pname) + tag("t") + _i(pid) + tag("p") + _f(23.976) + _f(dur) + _i(1)
+            out += tag("i") + _i(0) + _f(3600.0) + _f(3600.0 + dur) + (_i(0) if v2 else b"") + _i(1)
+            out += _i(1) + _utf("Video Stream 1") + tag("v") + _i(1) + _i(1) + _i(1920) + _i(1080) + _utf("AR_169")
+            out += tag("SDR")
+            out += _i(1) + _utf("Audio Stream 1") + tag("a") + _i(1) + _utf("eng") + tag("")
+            if v2:
+                out += _i(1) + _utf("PG 1") + _utf("g") + _i(1) + _utf("false") + _utf("false") + _utf("PG") \
+                    + _utf("eng") + _utf("")
+            else:
+                out += _i(1) + _utf("PG 1") + _i(1) + _utf("PG") + _utf("eng")
+            out += _i(0) + _i(0)
+            out += _i(1) + _i(1) + _utf("entry-mark") + _f(3600.0)
+    if version:
+        out += b"".join(_i(v) for v in version)
+    return out

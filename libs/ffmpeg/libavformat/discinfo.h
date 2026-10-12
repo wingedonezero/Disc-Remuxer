@@ -137,6 +137,7 @@ typedef struct DiscTitleInfo {
     int              nb_props;
     DiscPropertyInfo *props;         /**< what the format part tells more of it, in its order */
     int              playlist_check; /**< enum DiscPlaylistCheck: marked only on a disc with fakes found */
+    const char      *menu_name;      /**< the name the disc's menu data gives it (e.g. "FPL_MainFeature"), NULL none */
 } DiscTitleInfo;
 
 /** The disc. */
@@ -153,6 +154,7 @@ typedef struct DiscInfo {
     DiscPropertyInfo *props;         /**< what the format part tells more of the disc, in its order */
     int              fake_playlists; /**< playlists found likely fake (titles marked), 0 none */
     int              fakes_suspected;/**< no known kind of fake found, but the disc looks like one with fakes */
+    const char      *menu_name;      /**< the project name in the disc's menu data, NULL none */
 } DiscInfo;
 
 /**
