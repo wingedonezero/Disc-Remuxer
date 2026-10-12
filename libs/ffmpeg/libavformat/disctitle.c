@@ -539,6 +539,15 @@ static int gaps_said(AVFormatContext *s, AVFormatContext *dm, int clip, int side
         int64_t bytes;
 
         flush = 0;                      /* the stretches still open ended with the first call */
+        if (g.kind == MPEGTS_DISC_GAP_PTS) {
+            /* nothing is left out: said, not counted */
+            gap_tracks(r->src, g.pid, side, tracks, sizeof(tracks));
+            gap_byte(s, clip, name, g.pos, where, sizeof(where));
+            av_log(s, AV_LOG_WARNING, "%s: PID 0x%04x (%s): the PES header at %s has a PTS whose marker bits are "
+                   "not set: read as having no time (the payload takes no time of its own)\n", name, g.pid, tracks,
+                   where);
+            continue;
+        }
         if (g.kind == MPEGTS_DISC_GAP_CUT) {
             /* its rest is missing (the stretch next to it says why): said, not counted again */
             gap_tracks(r->src, g.pid, side, tracks, sizeof(tracks));

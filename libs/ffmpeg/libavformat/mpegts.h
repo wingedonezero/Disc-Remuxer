@@ -329,7 +329,11 @@ typedef struct MpegTSDiscGap {
 /** MPEGTS_DISC_GAP_CUT: a PES packet whose next PES start comes before its
  *  end (pos: that start's packet; bytes: the bytes of it that did not come);
  *  nothing is left out, its rest is missing. */
-enum { MPEGTS_DISC_GAP_BAD = 1, MPEGTS_DISC_GAP_ZERO, MPEGTS_DISC_GAP_PES, MPEGTS_DISC_GAP_CUT };
+/** MPEGTS_DISC_GAP_PTS: a PES header (at pos) whose flags say it has a PTS
+ *  but whose marker bits are not set: read as having no time (nothing left
+ *  out). */
+enum { MPEGTS_DISC_GAP_BAD = 1, MPEGTS_DISC_GAP_ZERO, MPEGTS_DISC_GAP_PES, MPEGTS_DISC_GAP_CUT,
+       MPEGTS_DISC_GAP_PTS };
 
 /**
  * Disc mode with option disc_gaps: the oldest stretch left out that has

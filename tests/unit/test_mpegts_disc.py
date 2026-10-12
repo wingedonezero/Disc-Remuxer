@@ -122,6 +122,16 @@ def test_a_pes_packet_cut_short_by_the_next_pes_start():
     assert logged("PID 0x1100: a PES packet cut short")
 
 
+def test_a_pes_header_whose_pts_markers_are_not_set_gives_no_time_and_says_so():
+    install_log()
+    p = bytearray(bd.pes(0xbd, b"m" * 50, pts=12345))
+    p[9] &= 0xfe                               # the PTS's first marker bit
+    ret, out = ts_read(bd.source_packets(bd.ts_packets(A, bytes(p))), [A])
+    assert [(d, t) for _, d, t, _ in out] == [(b"m" * 50, NOPTS)]
+    assert logged("TS: PID 0x1100: a PES header at byte 0 has a PTS whose marker bits are not set: read as having "
+                  "no time")
+
+
 # ---- the corpus: an independent reading of the same stream files ----
 
 def reference_pes(path, max_bytes, pids):

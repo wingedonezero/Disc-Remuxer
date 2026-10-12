@@ -3835,6 +3835,7 @@ typedef struct DiscPes {
     unsigned off;                 /* payload start (header length) */
     unsigned total;               /* PES_packet_length + 6, 0 unbounded */
     int64_t  pts;                 /* AV_NOPTS_VALUE none */
+    int      bad_pts;             /* its flags say it has a PTS, its marker bits are not set */
 } DiscPes;
 
 /* A PES header (the disc reader's rules): 1 parsed, 0 not usable. */
@@ -3847,6 +3848,7 @@ static int disc_pes(const uint8_t *p, unsigned avail, DiscPes *o)
     sid      = p[3];
     o->key   = sid;
     o->pts   = AV_NOPTS_VALUE;
+    o->bad_pts = 0;
     o->total = AV_RB16(p + 4) ? AV_RB16(p + 4) + 6 : 0;
     if ((sid & 0xfe) == 0xbe) {
         o->off = 6;
@@ -3863,6 +3865,8 @@ static int disc_pes(const uint8_t *p, unsigned avail, DiscPes *o)
             return 0;
         if ((p[9] & 1) && (p[11] & 1) && (p[13] & 1))
             o->pts = ff_parse_pes_pts(p + 9);
+        else
+            o->bad_pts = 1;
     }
     if ((flags & 1) && !(flags & 0x3e)) {
         unsigned q = 9 + 5 * ((flags >> 7) & 1) + 5 * ((flags >> 6) & 1);
@@ -4098,6 +4102,14 @@ static int disc_headers(AVFormatContext *s, DiscTsPid *d, int pid, int64_t pos)
             return st;
         d->stream = st;
         d->pts    = pes.pts;
+        if (pes.bad_pts) {
+            MpegTSDiscGap g = { .kind = MPEGTS_DISC_GAP_PTS, .pid = pid, .pos = pos, .end = pos };
+            if (!((MpegTSContext *)s->priv_data)->disc_gaps)
+                av_log(s, AV_LOG_WARNING, "TS: PID 0x%04x: a PES header at byte %"PRId64" has a PTS whose marker "
+                       "bits are not set: read as having no time\n", pid, pos);
+            else if ((ret = gap_put(s, &g)) < 0)
+                return ret;
+        }
         if (d->dialog && d->pts == AV_NOPTS_VALUE && n >= 8 && d->hdr[pes.off] == 0x82 &&
             AV_RB16(d->hdr + pes.off + 1) > 8)
             d->pts = (int64_t)(d->hdr[pes.off + 3] & 1) << 32 | AV_RB32(d->hdr + pes.off + 4);
