@@ -446,6 +446,8 @@ void ff_bluray_disc_free(BlurayDisc *d)
     av_freep(&d->playlist_ids);
     av_freep(&d->bdjo);
     av_freep(&d->jars);
+    av_freep(&d->pl_check);
+    av_freep(&d->pl_repeats);
     ff_bluray_index_free(&d->index);
     av_freep(&d->name);
     av_freep(&d->name_eng);
@@ -595,5 +597,13 @@ void ff_bluray_disc_dump(const BlurayDisc *d, AVBPrint *bp)
                 av_bprintf(bp, " clip %05u stc %d", tk->side_clip, tk->side_stc);
             av_bprintf(bp, "\n");
         }
+    }
+    /* the fake playlist check */
+    if (d->pl_check) {
+        av_bprintf(bp, "fakes %d real %d suspected %d\n", d->nb_fake, d->nb_real, d->fake_suspected);
+        for (int p = 0; p < d->nb_playlists; p++)
+            if (d->pl_check[p])
+                av_bprintf(bp, "check %05u %s repeats %d\n", d->playlists[p].number,
+                           d->pl_check[p] == BLURAY_PL_FAKE ? "fake" : "real", d->pl_repeats[p]);
     }
 }
