@@ -1223,7 +1223,7 @@ static int part_segments(void *log, BlurayDisc *d, BlurayPlaylist *pl, int part,
                 continue;
             x->entry     = E;
             x->sync_pts  = si->sync_start_pts;
-            x->sync_item = si->in_time;
+            x->in_time   = si->in_time;
             out->nb_side++;
         }
     }
