@@ -2635,6 +2635,9 @@ typedef struct AVCodecParserContext {
 /// stream), as for a stream whose kind is still to be found or that carries
 /// an extension
 #define PARSER_FLAG_DISC_ANY                  0x4000
+/// Disc mode: the stream comes from a DVD-Video disc (rules only DVD streams
+/// follow, e.g. MPEG audio: Layer II at 48 kHz)
+#define PARSER_FLAG_DISC_DVD                  0x8000
 /// disc_status: bytes before the next frame start (skipped to it)
 #define PARSER_DISC_SKIP                      1
 /// disc_status: a frame that fails its check

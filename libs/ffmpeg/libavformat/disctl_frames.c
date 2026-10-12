@@ -157,6 +157,12 @@ void ff_disctl_frames_take_any(DRFrames *c)
         c->parser->flags |= PARSER_FLAG_DISC_ANY;
 }
 
+void ff_disctl_frames_dvd(DRFrames *c)
+{
+    if (c->parser)
+        c->parser->flags |= PARSER_FLAG_DISC_DVD;
+}
+
 void ff_disctl_frames_set_pcm_format(DRFrames *c, int channels, int bits, int samples_per_frame)
 {
     c->avctx->ch_layout.nb_channels = channels;

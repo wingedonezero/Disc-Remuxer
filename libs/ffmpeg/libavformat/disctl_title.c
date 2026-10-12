@@ -1568,6 +1568,8 @@ static int seg_open(DRTitle *t)
         }
         if (k->cfg.kind == DR_KIND_AUDIO && (k->cfg.audio_flags & DR_AUDIO_EXTENDED))
             ff_disctl_frames_take_any(k->cut);
+        if (k->cfg.kind == DR_KIND_AUDIO && (k->cfg.audio_flags & DR_AUDIO_DVD))
+            ff_disctl_frames_dvd(k->cut);
         if (k->cfg.kind == DR_KIND_VIDEO)
             ff_disctl_video_set_side(k->video, cc_side, t);
     }
