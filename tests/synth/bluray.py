@@ -70,13 +70,21 @@ class Item:
 
 @dataclasses.dataclass
 class SubPath:
+    """A SubPath: one SubPlayItem per clip, with its IN / OUT time, the
+    PlayItem it is synchronised with and the time on that PlayItem's clock
+    (sync_start_PTS_of_PlayItem), all 45 kHz."""
     type: int = 5
     clips: list = dataclasses.field(default_factory=lambda: ["00002"])
+    in_time: int = 0
+    out_time: int = 45000
+    sync_item: int = 0
+    sync_pts: int = 0
 
     def bytes(self):
         items = b""
         for c in self.clips:
-            it = c.encode() + b"M2TS" + bytes([0, 0, 0, 0x02, 0]) + be32(0) + be32(45000) + be16(0) + be32(0)
+            it = (c.encode() + b"M2TS" + bytes([0, 0, 0, 0x02, 0]) + be32(self.in_time) + be32(self.out_time) +
+                  be16(self.sync_item) + be32(self.sync_pts))
             items += be16(len(it)) + it
         b = bytes([0, self.type, 0, 0, 0, len(self.clips)]) + items
         return be32(len(b)) + b
@@ -308,6 +316,12 @@ def pes(stream_id, payload, ext=None, pts=None):
         hdr += bytes([0x01, 0x81, ext])          # PES_extension_flag_2, its field length 1, the extension
     body = bytes([0x80, flags, len(hdr)]) + hdr + payload
     return b"\x00\x00\x01" + bytes([stream_id]) + be16(len(body)) + body
+
+
+def pes_private2(payload):
+    """A PES packet of private_stream_2 (0xBF: no header fields, no PTS), as
+    text subtitles are carried."""
+    return b"\x00\x00\x01\xbf" + be16(len(payload)) + payload
 
 
 def source_units(packets):

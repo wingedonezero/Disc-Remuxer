@@ -75,6 +75,7 @@ typedef struct Part {
     uint32_t flags;
     char     lang[4];
     int      offset_seq;     /* 3-D subtitle: the offset sequence of the playlist's 3-D data */
+    uint8_t  char_code;      /* text subtitle: the character code of its text */
 } Part;
 
 typedef struct Desc {
@@ -185,6 +186,8 @@ static void describe(const BlurayClipStream *e, Desc *d)
         k->pid = e->pid;
         if (is_audio(k->code) || e->coding_type == 0x92)
             l = e->info + 1;
+        if (e->coding_type == 0x92)
+            k->char_code = e->info[0];
         else if (e->coding_type == 0x90)
             l = e->info;
         if (l && l[0])
@@ -367,6 +370,7 @@ static int add_track(BlurayTitle *t, const Part *k, int stream, uint32_t side_cl
     tk->offset_seq  = (k->flags & BLURAY_TRACK_3D_PLANE) ? k->offset_seq : -1;
     tk->side_clip   = side_clip;
     tk->side_stc    = side_stc;
+    tk->char_code   = k->char_code;
     tk->inner_track = -1;
     tk->from_track  = from_track;
     if (from_track >= 0)

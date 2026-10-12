@@ -205,6 +205,8 @@ struct MpegTSContext {
     int disc;
     int *disc_pids;
     unsigned nb_disc_pids;
+    int *disc_dialog_pids;
+    unsigned nb_disc_dialog_pids;
     struct DiscTsPid *disc_pid[NB_PID_MAX];
     PacketList disc_queue;
 };
@@ -240,6 +242,9 @@ static const AVOption options[] = {
      "PIDs in disc_pids as it arrives, one stream per PID and PES stream key", offsetof(MpegTSContext, disc),
      AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
     {"disc_pids", "disc mode: the PIDs read", offsetof(MpegTSContext, disc_pids),
+     AV_OPT_TYPE_INT | AV_OPT_TYPE_FLAG_ARRAY, {.arr = NULL}, 0, 0x1fff, AV_OPT_FLAG_DECODING_PARAM },
+    {"disc_dialog_pids", "disc mode: PIDs of text subtitles (HDMV TextST): a PES packet without a PTS that starts "
+     "with a dialog presentation segment takes that dialog's start time", offsetof(MpegTSContext, disc_dialog_pids),
      AV_OPT_TYPE_INT | AV_OPT_TYPE_FLAG_ARRAY, {.arr = NULL}, 0, 0x1fff, AV_OPT_FLAG_DECODING_PARAM },
     { NULL },
 };
@@ -3789,7 +3794,12 @@ static int mpegts_read_close(AVFormatContext *s)
  * 0xFD with its stream_id_extension: 0xFD | extension << 8): stream id =
  * PID | key << 16. The first piece with bytes of a PES packet carries its
  * PTS (33 bits as recorded, when its marker bits are set), the rest none;
- * pos is the byte of the source packet the piece is in. */
+ * pos is the byte of the source packet the piece is in. Text subtitles
+ * (HDMV TextST, disc_dialog_pids) come in PES packets without a PTS
+ * (private_stream_2): a PES packet without one whose first piece starts
+ * with a dialog presentation segment (type 0x82, at least 8 bytes there, a
+ * segment length above 8) takes the dialog's start PTS (its 33 bits as
+ * recorded). */
 
 #define DISC_SRC_PACKET  192
 #define DISC_HDR_MAX     0x2f0
@@ -3806,6 +3816,7 @@ typedef struct DiscTsPid {
     int      stream;              /* the stream of the running PES body */
     int64_t  pts;                 /* the running PES packet's PTS, until a piece of it is given out */
     unsigned errors;              /* TS header errors */
+    int      dialog;              /* a text subtitle PID (disc_dialog_pids) */
 } DiscTsPid;
 
 typedef struct DiscPes {
@@ -3963,6 +3974,9 @@ static int disc_headers(AVFormatContext *s, DiscTsPid *d, int pid, int64_t pos)
             return st;
         d->stream = st;
         d->pts    = pes.pts;
+        if (d->dialog && d->pts == AV_NOPTS_VALUE && n >= 8 && d->hdr[pes.off] == 0x82 &&
+            AV_RB16(d->hdr + pes.off + 1) > 8)
+            d->pts = (int64_t)(d->hdr[pes.off + 3] & 1) << 32 | AV_RB32(d->hdr + pes.off + 4);
         if ((ret = disc_emit(s, d, d->hdr + pes.off, n, pos)) < 0)
             return ret;
         if (!pes.total) {
@@ -4095,6 +4109,9 @@ static int disc_read_header(AVFormatContext *s)
             ts->disc_pid[pid]->pts       = AV_NOPTS_VALUE;
         }
     }
+    for (unsigned i = 0; i < ts->nb_disc_dialog_pids; i++)
+        if (ts->disc_pid[ts->disc_dialog_pids[i]])
+            ts->disc_pid[ts->disc_dialog_pids[i]]->dialog = 1;
     if (!(ts->pkt = av_packet_alloc()))
         return AVERROR(ENOMEM);
     s->ctx_flags |= AVFMTCTX_NOHEADER;

@@ -54,6 +54,8 @@ typedef struct BlurayDemuxContext {
     int                seg0;         /* its first segment read (a part of the title: not 0) */
     int                both;         /* 3-D: both views read (the second view is a track) */
     BluraySegReader    seg;          /* the segment being read (seg.s NULL: none) */
+    BluraySegReader    side;         /* the text subtitle clip being read */
+    char               side_name[224];
     BluraySegReader    pass;         /* the stream pass's segment */
     int64_t           *chapter_times;
 } BlurayDemuxContext;
@@ -97,6 +99,87 @@ static int read_block(AVFormatContext *s, int k, uint32_t block, uint8_t *buf)
     return ret == AVERROR_EOF ? AVERROR(EIO) : ret < 0 ? ret : 1;
 }
 
+/* ---- text subtitle clips (a clip of their own per stream) ---- */
+
+static const char *side_name(AVFormatContext *s, int k)
+{
+    BlurayDemuxContext *c = ff_disc_part(s);
+    snprintf(c->side_name, sizeof(c->side_name), "text subtitle clip %s", c->title->side[k].seg.path);
+    return c->side_name;
+}
+
+static uint32_t side_blocks(AVFormatContext *s, int k)
+{
+    BlurayDemuxContext *c = ff_disc_part(s);
+    return ff_bluray_seg_size(&c->title->side[k].seg) / BLURAY_UNIT;
+}
+
+static int side_read(AVFormatContext *s, int k, uint32_t block, uint8_t *buf)
+{
+    BlurayDemuxContext *c = ff_disc_part(s);
+    const BluraySegment *seg = &c->title->side[k].seg;
+    int ret;
+
+    if (c->side.s != seg) {
+        ff_bluray_seg_reader_close(&c->side);
+        ff_bluray_seg_reader_init(&c->side, s, ((DiscContext *)s->priv_data)->fs, c->aacs, seg);
+        c->side.hash = c->hash;
+    }
+    ret = ff_bluray_seg_read(&c->side, (int64_t)block * BLURAY_UNIT, buf);
+    return ret == AVERROR_EOF ? AVERROR(EIO) : ret < 0 ? ret : 1;
+}
+
+/* Where text subtitle clip k lies on the title (the reference program's
+ * rule): its SubPlayItem's IN time is where the PlayItem it is synchronised
+ * with is at its sync_start_PTS_of_PlayItem, so its clock lies IN time -
+ * sync start ahead of that PlayItem's clip's; the first segment of the
+ * title (in its order) that plays that clip must be the first one read,
+ * with that clip as its first item; else the clip's times are taken as the
+ * first segment's (offset 0: what the reference program does, said; LOOK
+ * INTO AGAIN LATER: the sync item's own segment would place them). The
+ * sync start before its clip's STC sequence, or the IN time before the
+ * text subtitle clip's, is said. */
+static int side_offset(AVFormatContext *s, int k, int first, int64_t *offset)
+{
+    BlurayDemuxContext *c = ff_disc_part(s);
+    const BlurayTitle *t = c->title;
+    const BluraySide *x = &t->side[k];
+    const char *name = side_name(s, k);
+    int r0 = c->seg0 + first, seg, item = -1;
+
+    *offset = 0;
+    for (seg = 0; seg < t->nb_segs && item < 0; seg++)
+        for (int i = 0; i < t->segs[seg].nb_items && item < 0; i++)
+            if (t->segs[seg].items[i].clip == x->sync_clip)
+                item = i;
+    seg--;
+    if (item < 0 || seg != r0 || item) {
+        if (item < 0)
+            av_log(s, AV_LOG_WARNING, "Blu-ray: title %s: %s is synchronised with clip %05u, which no segment of "
+                   "the title plays: its times are taken as the first segment's (the reference program's way) "
+                   "[untested on real discs]\n", t->name, name, x->sync_clip->number);
+        else
+            av_log(s, AV_LOG_WARNING, "Blu-ray: title %s: %s is synchronised with clip %05u, which is %s: its "
+                   "times are taken as the first segment's (the reference program's way; LOOK INTO AGAIN LATER) "
+                   "[untested on real discs]\n", t->name, name, x->sync_clip->number,
+                   seg != r0 ? "on another segment than the first one read" : "not the first item of its segment");
+        ((DiscContext *)s->priv_data)->untested++;
+        return 0;
+    }
+    if (x->sync_pts < x->sync_stc->start)
+        av_log(s, AV_LOG_WARNING, "Blu-ray: title %s: %s: its sync start %"PRIu32" (45 kHz) lies before the STC "
+               "sequence of clip %05u (%"PRIu32")\n", t->name, name, x->sync_pts, x->sync_clip->number,
+               x->sync_stc->start);
+    if (x->in_time < x->stc->start)
+        av_log(s, AV_LOG_WARNING, "Blu-ray: title %s: %s: its IN time %"PRIu32" (45 kHz) lies before its STC "
+               "sequence (%"PRIu32")\n", t->name, name, x->in_time, x->stc->start);
+    *offset = ((int64_t)x->in_time - x->sync_pts) * 24000;
+    av_log(s, AV_LOG_VERBOSE, "Blu-ray: title %s: %s: IN time %"PRIu32", synchronised with clip %05u at %"PRIu32
+           " (45 kHz): its clock lies %+.3f s ahead\n", t->name, name, x->in_time, x->sync_clip->number,
+           x->sync_pts, (double)*offset / DR_TICKS_PER_SECOND);
+    return 1;
+}
+
 static int has_dir(DiscIOFS *fs, const char *path)
 {
     return !fs->ops->find_dir(fs, path);
@@ -108,6 +191,7 @@ static void close_title(AVFormatContext *s)
 {
     BlurayDemuxContext *c = ff_disc_part(s);
     ff_bluray_seg_reader_close(&c->seg);
+    ff_bluray_seg_reader_close(&c->side);
     av_freep(&c->chapter_times);
     c->title = NULL;
     c->seg0  = 0;
@@ -187,17 +271,24 @@ static int second_view(const BlurayTrack *tk)
 }
 
 /* Why the title reader does not read a track (NULL: it reads it): a codec
- * the codec table does not have, a text subtitle from a clip of its own, a
- * video taken out of another one but the 3-D second view. */
+ * the codec table does not have, a video taken out of another one but the
+ * 3-D second view. */
 static const char *not_read(const BlurayTrack *tk)
 {
-    if (tk->flags & BLURAY_TRACK_SIDE)
-        return "a subtitle from a clip of its own";
     if (!ff_disctl_codec(tk->codec))
         return "its codec";
     if (tk->type == AVMEDIA_TYPE_VIDEO && tk->from_track >= 0 && !second_view(tk))
         return "a video taken out of another one";
     return NULL;
+}
+
+/* A text subtitle's character code by name (the Blu-ray stream coding
+ * information), NULL for one the format does not define. */
+static const char *char_code_name(int code)
+{
+    static const char *const names[] = { NULL, "UTF-8", "UTF-16BE", "Shift-JIS", "EUC-KR", "GB18030", "GB2312",
+                                         "Big5" };
+    return code > 0 && code < FF_ARRAY_ELEMS(names) ? names[code] : NULL;
 }
 
 /* Codecs the title reader reads that no real Blu-ray has had yet: read,
@@ -211,6 +302,7 @@ static const char *untested(const BlurayTrack *tk)
     case AV_CODEC_ID_MP1:
     case AV_CODEC_ID_MP2:
     case AV_CODEC_ID_MP3:      return "MPEG audio on a Blu-ray";
+    case AV_CODEC_ID_HDMV_TEXT_SUBTITLE: return "text subtitles (from a clip of their own) on a Blu-ray";
     default:                   return NULL;
     }
 }
@@ -242,9 +334,13 @@ static void title_tracks(const BlurayTitle *t, DiscTrack *out)
                     tk->type == AVMEDIA_TYPE_AUDIO ? DR_KIND_AUDIO : DR_KIND_SUBTITLE;
         o->stream = tk->stream;
         o->number = tk->stream;
-        if (tk->flags & BLURAY_TRACK_SIDE)
-            o->flags |= DISC_TRACK_SIDE;
         o->feed.pid     = second_view(tk) ? (int)tk->sel1 : tk->pid;
+        /* a text subtitle: its stream comes after the clip's streams, its
+         * clip of its own after the title's side clips before it */
+        if (tk->flags & BLURAY_TRACK_SIDE) {
+            o->flags    |= DISC_TRACK_SIDE;
+            o->feed.side = tk->stream - c0->program.nb_streams + 1;
+        }
         o->feed.nb_keys = ff_bluray_track_keys(tk, bdav, o->feed.key);
         if (second_view(tk))
             o->flags |= DISC_TRACK_SECOND_VIEW;
@@ -263,6 +359,10 @@ static void title_tracks(const BlurayTitle *t, DiscTrack *out)
             o->picture = (tk->flags & BLURAY_TRACK_FORCED) ?
                          "Blu-ray PGS display sets, forced subtitles only (each set shows only its forced objects, "
                          "as a player does with subtitles off)" : "Blu-ray PGS display sets";
+        if (tk->codec == AV_CODEC_ID_HDMV_TEXT_SUBTITLE)
+            o->picture = (tk->flags & BLURAY_TRACK_FORCED) ?
+                         "Blu-ray text subtitle dialogs, forced subtitles only (each dialog keeps only its forced "
+                         "regions, as a player does with subtitles off)" : "Blu-ray text subtitle dialogs";
         o->not_read = not_read(tk);
         o->untested = untested(tk);
     }
@@ -416,6 +516,20 @@ static int open_title(AVFormatContext *s, int i, int part, int *second_view_read
     uint64_t *marks;
 
     c->title = t;
+    /* text subtitles: their bytes stay as on the disc, the encoding of
+     * their text is said when it is not UTF-8 (the reference program says
+     * it does not support it) */
+    for (int k = 0; k < t->nb_tracks; k++) {
+        const BlurayTrack *tk = &t->tracks[k];
+        const char *name = char_code_name(tk->char_code);
+        if (tk->codec != AV_CODEC_ID_HDMV_TEXT_SUBTITLE || (tk->flags & BLURAY_TRACK_FORCED) || tk->char_code == 1)
+            continue;
+        av_log(s, AV_LOG_WARNING, "Blu-ray: title %s: track %d: text subtitles whose text is %s%s (character code "
+               "%d): kept as on the disc; a reader that takes it as UTF-8 shows it wrong [untested on real discs]\n",
+               t->name, k, name ? "in " : "in an encoding the format does not define", name ? name : "",
+               tk->char_code);
+        d->untested++;
+    }
     if (part >= 0) {
         int *first = av_calloc(t->nb_segs + 1, sizeof(*first)), nb_parts;
         if (!first)
@@ -486,6 +600,11 @@ static int open_title(AVFormatContext *s, int i, int part, int *second_view_read
         .ts            = 1,
         .chapter_times = c->chapter_times,
         .nb_chapters   = nb_marks,
+        .nb_sides      = t->nb_side,
+        .side_name     = side_name,
+        .side_blocks   = side_blocks,
+        .side_read     = side_read,
+        .side_offset   = side_offset,
     };
     *second_view_read = c->both;
     return 0;

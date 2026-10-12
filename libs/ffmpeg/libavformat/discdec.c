@@ -203,7 +203,8 @@ static void track_place(char *buf, size_t size, const DiscTrack *k, const DiscTs
     else if (f->nb_keys > 1)
         snprintf(buf, size, "PID 0x%04x, keys 0x%04x + 0x%04x", f->pid, f->key[0], f->key[1]);
     else
-        snprintf(buf, size, "PID 0x%04x, key 0x%04x%s", f->pid, f->key[0], f->key[0] ? "" : " (any)");
+        snprintf(buf, size, "PID 0x%04x, key 0x%04x%s%s", f->pid, f->key[0], f->key[0] ? "" : " (any)",
+                 f->side ? ", from a clip of its own" : "");
 }
 
 /* The stream of a track read: its id, codec, time base, dispositions, what
@@ -299,7 +300,8 @@ int ff_disc_open_tracks(AVFormatContext *s, const char *title, const DiscTrack *
         }
         if (ts) {
             d->feeds[n] = k->feed;
-            add_pid(d, k->feed.pid);
+            if (!k->feed.side)          /* a clip of its own: not read with the title's clips */
+                add_pid(d, k->feed.pid);
         }
         if ((ret = track_stream(s, k, i, &k->feed, ts, codec, second_view)) < 0)
             return ret;
@@ -312,7 +314,7 @@ int ff_disc_open_tracks(AVFormatContext *s, const char *title, const DiscTrack *
             layer = i;
         t->codec       = codec;
         t->kind        = view ? DR_KIND_LAYER : k->kind;
-        t->sub_flags   = k->info.forced ? DR_SUB_FORCED_ONLY : 0;
+        t->sub_flags   = (k->info.forced ? DR_SUB_FORCED_ONLY : 0) | (k->feed.side ? DR_SUB_SIDE : 0);
         t->audio_flags = (k->info.from_track >= 0 ? DR_AUDIO_EXTRACTED : 0) |
                          (k->info.from_track >= 0 || k->info.inner_track >= 0 ? DR_AUDIO_EXTENDED : 0) |
                          (d->fmt->kind == DISCIO_DISC_DVD ? DR_AUDIO_DVD : 0);
