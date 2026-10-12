@@ -112,7 +112,18 @@ static int split_h264(DRVideo *v, DRFrame *f)
         return 0;                       /* no NAL unit: picture() leaves it out */
     if (!(buf = av_buffer_alloc(f->size + AV_INPUT_BUFFER_PADDING_SIZE)))
         return AVERROR(ENOMEM);
-    out = ff_disctl_h264_clean(f->data, f->size, buf->data, s->dropped, &s->stuffing, &changed);
+    {
+        int64_t d[32] = { 0 }, stuffing = 0;
+        out = ff_disctl_h264_clean(f->data, f->size, buf->data, d, &stuffing, &changed);
+        for (int t = 0; t < 32; t++)
+            s->dropped[t] += d[t];
+        s->stuffing += stuffing;
+        /* said in the title's summary */
+        ff_disctl_video_stuffing(v, stuffing);
+        ff_disctl_video_removed(v, DR_REMOVED_SEQ_END, d[10]);
+        ff_disctl_video_removed(v, DR_REMOVED_STREAM_END, d[11]);
+        ff_disctl_video_removed(v, DR_REMOVED_FILLER, d[12]);
+    }
     if (!changed || out == f->size) {
         av_buffer_unref(&buf);
         return 0;
@@ -207,23 +218,16 @@ static int picture_h264(DRVideo *v, const DRFrame *f, DRPicture *pic)
     return 0;
 }
 
+/* The ends of sequence / stream, filler and stuffing are said in the
+ * title's summary (ff_disctl_video_removed); the other types here. */
 static void close_h264(void *priv)
 {
     const H264State *s = priv;
-    static const char *const names[32] = { [10] = "ends of sequence",
-                                           [11] = "ends of stream", [12] = "filler data units" };
 
     for (int t = 0; t < 32; t++)
-        if (s->dropped[t] && names[t])
-            av_log(NULL, AV_LOG_VERBOSE, "Title timeline: H.264: %"PRId64" %s taken out of the frames\n",
-                   s->dropped[t], names[t]);
-    for (int t = 0; t < 32; t++)
-        if (s->dropped[t] && !names[t])
+        if (s->dropped[t] && (t < 10 || t > 12))
             av_log(NULL, AV_LOG_WARNING, "Title timeline: H.264: %"PRId64" NAL units of type %d (they start no "
                    "unit) taken out of the frames [untested on real discs]\n", s->dropped[t], t);
-    if (s->stuffing)
-        av_log(NULL, AV_LOG_VERBOSE, "Title timeline: H.264: %"PRId64" zero stuffing bytes taken out\n",
-               s->stuffing);
 }
 
 const DRVideoRules ff_disctl_video_h264 = {

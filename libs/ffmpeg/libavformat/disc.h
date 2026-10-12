@@ -42,6 +42,7 @@ typedef struct DiscTsFeed {
     int      pid;
     uint16_t key[2];
     int      nb_keys;
+    int      side;          /**< 0: the title's clips; k + 1: side clip k (DiscTitleSource.nb_sides) */
 } DiscTsFeed;
 
 /** A track of a title as its format part describes it: one shape for every
@@ -166,6 +167,20 @@ typedef struct DiscTitleSource {
      *  records' times, for the tail check). */
     const int         *chapter_clips;
     const int64_t     *chapter_offsets;
+
+    /** ts: clips of their own (Blu-ray text subtitles), each read whole
+     *  before the title's clips; a track whose feed names one (feed.side)
+     *  takes its payloads from it. */
+    int          nb_sides;
+    const char *(*side_name)(AVFormatContext *s, int side);       /**< for the log: "text subtitle clip ..." */
+    uint32_t    (*side_blocks)(AVFormatContext *s, int side);
+    /** Block of the side clip into buf (decrypted): 1 read, 0 not usable
+     *  (left out), < 0 cannot be read (the rest of the clip is not read). */
+    int         (*side_read)(AVFormatContext *s, int side, uint32_t block, uint8_t *buf);
+    /** How far the side clip's clock lies ahead of the clock of the title's
+     *  clip first (the first clip read): *offset in ticks; 1 as the disc
+     *  says, 0 not placed that way (*offset 0; the format part says why). */
+    int         (*side_offset)(AVFormatContext *s, int side, int first, int64_t *offset);
 } DiscTitleSource;
 
 /** One disc format's part. */

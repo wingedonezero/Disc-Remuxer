@@ -6,7 +6,8 @@
  * parentheses as the MKVToolNix GUI reads a file name: it splits it at
  * [ ] ( ) { } . + - = #, and finds the delay as "delay <number>");
  * PCM as RIFF WAVE; sub-pictures
- * as a VobSub pair (.sub packs + .idx); the chapters as Matroska XML.
+ * as a VobSub pair (.sub packs + .idx); PGS as .sup; text subtitles as
+ * .textst (MKVToolNix's layout); the chapters as Matroska XML.
  */
 
 #include <dirent.h>
@@ -83,6 +84,7 @@ static const char *es_extension(enum AVCodecID id)
     case AV_CODEC_ID_PCM_S24LE:    return "wav";
     case AV_CODEC_ID_DVD_SUBTITLE: return "sub";
     case AV_CODEC_ID_HDMV_PGS_SUBTITLE: return "sup";
+    case AV_CODEC_ID_HDMV_TEXT_SUBTITLE: return "textst";
     case AV_CODEC_ID_SUBRIP:       return "srt";
     default:                       return "bin";
     }
@@ -150,6 +152,8 @@ typedef struct EsOut {
     char         *name;
     FILE         *f;
     FILE         *idx;              /* sub-pictures: the VobSub index next to the .sub */
+    int           textst;           /* text subtitles: the number of dialogs to fill in at the end */
+    int64_t       dialogs;          /* text subtitles: dialogs written */
     int           no_forced;        /* a forced-only track that showed nothing: its file removed */
     int64_t       sub_pos;          /* bytes written to the .sub */
     int64_t       cues;             /* captions: SRT cues written */
@@ -436,6 +440,18 @@ static int es_open(const AVFormatContext *ctx, const AVStream *st, EsOut *o, con
                      "valid bits) [untested on real discs]", track_no(st), par->bits_per_coded_sample,
                      par->bits_per_coded_sample);
     }
+    /* text subtitles: "TextST", the dialog style segment (the stream's
+     * header), the number of dialogs (filled in at the end) */
+    if (par->codec_id == AV_CODEC_ID_HDMV_TEXT_SUBTITLE) {
+        if (!par->extradata_size)
+            return AVERROR_BUG;         /* the title reader gives it with the first dialog */
+        if (fwrite("TextST", 1, 6, o->f) != 6 ||
+            fwrite(par->extradata, 1, par->extradata_size, o->f) != (size_t)par->extradata_size ||
+            fwrite("\0\0", 1, 2, o->f) != 2)
+            return write_failed(o);
+        o->textst    = 1;
+        o->st.bytes += 8 + par->extradata_size;
+    }
     if (par->codec_id == AV_CODEC_ID_DVD_SUBTITLE) {
         char *idx = av_strdup(o->name);
         if (!idx)
@@ -502,6 +518,36 @@ static int sup_write(EsOut *o, const AVStream *st, const AVPacket *pkt)
         off += len;
     }
     return off == pkt->size ? 0 : AVERROR_INVALIDDATA;
+}
+
+/* A text subtitle dialog as MKVToolNix writes it in a .textst file: the
+ * segment as on the disc with its start and end PTS (5 bytes each: the low
+ * bit of the first byte and 32 bits) set to its time on the title timeline
+ * (90 kHz) and that time plus its duration. */
+static void put_textst_pts(uint8_t *p, int64_t pts)
+{
+    p[0] = (p[0] & 0xfe) | ((pts >> 32) & 1);
+    AV_WB32(p + 1, (uint32_t)pts);
+}
+
+static int textst_write(EsOut *o, const AVStream *st, const AVPacket *pkt)
+{
+    int64_t start = av_rescale_q(pkt->pts, st->time_base, (AVRational){ 1, 90000 });
+    int64_t end   = start + av_rescale_q(pkt->duration, st->time_base, (AVRational){ 1, 90000 });
+    uint8_t *d;
+
+    if (pkt->size < 13 || !(d = av_memdup(pkt->data, pkt->size)))
+        return pkt->size < 13 ? AVERROR_INVALIDDATA : AVERROR(ENOMEM);
+    put_textst_pts(d + 3, start);
+    put_textst_pts(d + 8, end);
+    if (fwrite(d, 1, pkt->size, o->f) != (size_t)pkt->size) {
+        av_free(d);
+        return write_failed(o);
+    }
+    av_free(d);
+    o->st.bytes += pkt->size;
+    o->dialogs++;
+    return 0;
 }
 
 static int es_write(EsOut *o, const AVPacket *pkt)
@@ -834,7 +880,8 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         }
         ret = o->idx ? vobsub_write(o, st, pkt) :
               st->codecpar->codec_id == AV_CODEC_ID_SUBRIP ? srt_write(o, st, pkt) :
-              st->codecpar->codec_id == AV_CODEC_ID_HDMV_PGS_SUBTITLE ? sup_write(o, st, pkt) : es_write(o, pkt);
+              st->codecpar->codec_id == AV_CODEC_ID_HDMV_PGS_SUBTITLE ? sup_write(o, st, pkt) :
+              o->textst ? textst_write(o, st, pkt) : es_write(o, pkt);
         av_packet_unref(pkt);
         if (ret < 0)
             goto end;
@@ -858,6 +905,17 @@ end:
                 wav_header(o->f, ctx->streams[i]->codecpar, o->st.bytes);
             else
                 ret = AVERROR(errno);
+        }
+        /* text subtitles: the number of dialogs after the style segment */
+        if (o->f && o->textst && ret >= 0) {
+            uint8_t n[2];
+            if (o->dialogs > 0xffff)
+                log_text(LOG_WARNING, "Track %d: %"PRId64" text subtitle dialogs: the file's 16-bit count says %d",
+                         track_no(ctx->streams[i]), o->dialogs, (int)(o->dialogs & 0xffff));
+            AV_WB16(n, o->dialogs & 0xffff);
+            if (fseek(o->f, 6 + ctx->streams[i]->codecpar->extradata_size, SEEK_SET) ||
+                fwrite(n, 1, 2, o->f) != 2)
+                ret = write_failed(o);
         }
         if (o->f && (r = out_close(o, &o->f)) < 0 && ret >= 0)
             ret = r;

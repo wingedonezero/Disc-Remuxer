@@ -693,6 +693,10 @@ static const DRCodec codecs[] = {
       .verify = ff_disctl_spu_verify, .info_without_data = 1 },
     { .id = AV_CODEC_ID_HDMV_PGS_SUBTITLE, .name = "hdmv_pgs_subtitle",
       .check = ff_disctl_pgs_check, .disc_parser = 1, .verify = ff_disctl_pgs_verify, .info_without_data = 1 },
+    /* Blu-ray text subtitles: one segment per unit; a dialog takes the PES time */
+    { .id = AV_CODEC_ID_HDMV_TEXT_SUBTITLE, .name = "hdmv_text_subtitle", .anchor = ff_disctl_textst_anchor,
+      .check = ff_disctl_textst_check, .disc_parser = 1, .verify = ff_disctl_textst_verify,
+      .info_without_data = 1 },
     /* closed captions as text cues (made by the caption converter) */
     { .id = AV_CODEC_ID_SUBRIP, .name = "subrip", .info_without_data = 1 },
 };

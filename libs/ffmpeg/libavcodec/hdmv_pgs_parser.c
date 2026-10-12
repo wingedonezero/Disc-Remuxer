@@ -20,8 +20,8 @@
 
 /**
  * @file
- * HDMV presentation graphics parser. Outside disc mode the packets pass as
- * they come.
+ * HDMV presentation graphics parser, and the text subtitle (TextST) one.
+ * Outside disc mode the packets pass as they come.
  *
  * Disc mode (PARSER_FLAG_DISC): the stream is a run of segments, each a type
  * byte and a 16-bit length (type 0x81, a text subtitle dialog style, has 2
@@ -31,10 +31,16 @@
  * (0x80). What is no display set is left out (disc_status 1): a segment that
  * does not start one, a set that another start cuts short (the start stays
  * for the next set), a set the stream ends in.
+ *
+ * Text subtitles in disc mode: each segment is one unit (the dialog style
+ * segment with the 2 bytes after it); a dialog presentation segment that
+ * does not parse is refused (disc_status); bytes the stream ends in that
+ * are no whole segment are no unit.
  */
 
 #include "libavutil/intreadwrite.h"
 #include "avcodec.h"
+#include "hdmv_textst.h"
 #include "parser_internal.h"
 
 #define SEG_PCS 0x16
@@ -47,7 +53,8 @@ typedef struct PGSDiscCut {
 } PGSDiscCut;
 
 typedef struct HDMVPGSParseContext {
-    FFDiscCut disc;
+    FFDiscCut    disc;
+    FFDiscFrames text;              ///< text subtitles: the segments
 } HDMVPGSParseContext;
 
 static int disc_seg_size(const uint8_t *b, int avail)
@@ -105,12 +112,42 @@ static int disc_resync(const uint8_t *buf, int avail)
 
 static const FFDiscCutRule disc_rule = { disc_unit_size, disc_resync, sizeof(PGSDiscCut) };
 
+/* ---- text subtitles: one segment per unit ---- */
+
+static int text_sync(void *ctx, const uint8_t *buf, int avail)
+{
+    return 1;                       /* every segment starts where the one before ends */
+}
+
+static int text_size(void *ctx, const uint8_t *buf, int avail)
+{
+    int size = ff_hdmv_textst_segment_size(buf, avail);
+    return size < 0 ? 0 : size;
+}
+
+static int text_check(void *ctx, const uint8_t *buf, int size)
+{
+    HDMVTextstDialog d;
+
+    return buf[0] != HDMV_TEXTST_DPS || ff_hdmv_textst_dialog(buf, size, &d);
+}
+
+static int text_resync(void *ctx, const uint8_t *buf, int avail)
+{
+    return -1;
+}
+
+/* a segment is at most 3 + 65535 + 2 bytes */
+static const FFDiscFrameRule text_rule = { text_sync, text_size, text_check, text_resync, 0x20000 };
+
 static int hdmv_pgs_parse(AVCodecParserContext *s, AVCodecContext *avctx,
                           const uint8_t **poutbuf, int *poutbuf_size,
                           const uint8_t *buf, int buf_size)
 {
     HDMVPGSParseContext *pc = s->priv_data;
 
+    if ((s->flags & PARSER_FLAG_DISC) && avctx->codec_id == AV_CODEC_ID_HDMV_TEXT_SUBTITLE)
+        return ff_parser_disc_frames(s, NULL, &text_rule, &pc->text, poutbuf, poutbuf_size, buf, buf_size);
     if (s->flags & PARSER_FLAG_DISC) {
         int ret = ff_parser_disc_cut(s, avctx, &disc_rule, &pc->disc, poutbuf, poutbuf_size, buf, buf_size);
         if (*poutbuf_size && !s->disc_status && ((PGSDiscCut *)pc->disc.state)->no_unit)
@@ -127,10 +164,11 @@ static av_cold void hdmv_pgs_close(AVCodecParserContext *s)
     HDMVPGSParseContext *pc = s->priv_data;
 
     ff_parser_disc_cut_close(&pc->disc);
+    ff_parser_disc_cut_close(&pc->text.cut);
 }
 
 const FFCodecParser ff_hdmv_pgs_parser = {
-    PARSER_CODEC_LIST(AV_CODEC_ID_HDMV_PGS_SUBTITLE),
+    PARSER_CODEC_LIST(AV_CODEC_ID_HDMV_PGS_SUBTITLE, AV_CODEC_ID_HDMV_TEXT_SUBTITLE),
     .priv_data_size = sizeof(HDMVPGSParseContext),
     .parse          = hdmv_pgs_parse,
     .close          = hdmv_pgs_close,

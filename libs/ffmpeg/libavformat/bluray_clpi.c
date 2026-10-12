@@ -138,21 +138,25 @@ static void fix_sequences(void *log, const BlurayFile *f, BlurayClip *c)
     BlurayAtc *A0 = &c->atc[0];
 
     if (A0->stc[0].spn_stc_start) {
-        av_log(log, AV_LOG_DEBUG, "Blu-ray: %s: first STC start packet %u set to 0\n", f->path,
-               A0->stc[0].spn_stc_start);
+        av_log(log, AV_LOG_INFO, "Blu-ray: %s: its first STC sequence starts at source packet %u: taken as 0 (the "
+               "clip's start)\n", f->path, A0->stc[0].spn_stc_start);
         A0->stc[0].spn_stc_start = 0;
     }
     if (A0->offset_stc_id) {
-        av_log(log, AV_LOG_DEBUG, "Blu-ray: %s: first offset_STC_id %u set to 0\n", f->path, A0->offset_stc_id);
+        av_log(log, AV_LOG_INFO, "Blu-ray: %s: its first ATC sequence's offset_STC_id %u: taken as 0\n", f->path,
+               A0->offset_stc_id);
         A0->offset_stc_id = 0;
     }
     for (int k = 1; k < c->nb_atc; k++) {
         BlurayAtc *A = &c->atc[k];
-        if (A->spn_atc_start != A->stc[0].spn_stc_start) {
-            av_log(log, AV_LOG_DEBUG, "Blu-ray: %s: ATC sequence %d starts at packet %u, its first STC at %u\n",
-                   f->path, k, A->spn_atc_start, A->stc[0].spn_stc_start);
-            if (A->spn_atc_start < A->stc[0].spn_stc_start)
-                A->stc[0].spn_stc_start = A->spn_atc_start;
+        if (A->spn_atc_start < A->stc[0].spn_stc_start) {
+            av_log(log, AV_LOG_INFO, "Blu-ray: %s: ATC sequence %d starts at source packet %u, its first STC "
+                   "sequence at %u: moved to its ATC sequence's start\n", f->path, k, A->spn_atc_start,
+                   A->stc[0].spn_stc_start);
+            A->stc[0].spn_stc_start = A->spn_atc_start;
+        } else if (A->spn_atc_start > A->stc[0].spn_stc_start) {
+            av_log(log, AV_LOG_WARNING, "Blu-ray: %s: ATC sequence %d starts at source packet %u, after its first STC "
+                   "sequence (%u): kept as it is\n", f->path, k, A->spn_atc_start, A->stc[0].spn_stc_start);
         }
     }
     for (int k = 0; k < c->nb_atc; k++)

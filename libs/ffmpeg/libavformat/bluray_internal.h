@@ -375,7 +375,12 @@ typedef struct BluraySegment {
 typedef struct BlurayAACS BlurayAACS;   /**< bluray_aacs.c */
 typedef struct BlurayHash BlurayHash;   /**< bluray_hash.c */
 
-/** A text subtitle (TextST) stream of a title, read from its own clip. */
+/** A text subtitle (TextST) stream of a title, read from its own clip
+ *  (its SubPath's one SubPlayItem): the clip and its STC sequence, the
+ *  stream entry, the clip of the PlayItem it is synchronised with and that
+ *  clip's STC sequence, where on that PlayItem's clock it starts
+ *  (sync_start_PTS_of_PlayItem) and where on its own clock (the
+ *  SubPlayItem's IN_time), both 45 kHz. */
 typedef struct BluraySide {
     BlurayClip           *clip;
     const BlurayStc      *stc;
@@ -383,7 +388,7 @@ typedef struct BluraySide {
     BlurayClip           *sync_clip;
     const BlurayStc      *sync_stc;
     uint32_t              sync_pts;
-    uint16_t              sync_item;
+    uint32_t              in_time;
     BluraySegment         seg;
 } BluraySide;
 
@@ -402,6 +407,8 @@ typedef struct BlurayTrack {
     int              inner_track;   /**< the track taken out of it, -1 none */
     int              offset_seq;    /**< 3-D subtitle: offset sequence id, -1 none */
     uint32_t         side_clip;     /**< text subtitle from its own clip: the clip number */
+    uint8_t          char_code;     /**< text subtitle: the character code of its text (1 UTF-8, 2 UTF-16BE,
+                                         3 Shift-JIS, 4 EUC-KR, 5 GB18030, 6 GB2312, 7 Big5) */
     int              side_stc;      /**< and the STC sequence (index over the clip's ATC sequences) */
 } BlurayTrack;
 

@@ -410,10 +410,24 @@ static void window_consume(DRFrames *c, int64_t end)
     c->win_pos  = end;
 }
 
-/* Bytes that are no unit (the parser's disc_status, PARSER_DISC_*). */
-static void not_a_unit(DRFrames *c, int k, int status)
+/* Bytes that are no unit (the parser's disc_status, PARSER_DISC_*); the
+ * parser's note says why when it tells. */
+static void not_a_unit(DRFrames *c, int k, int status, const char *note)
 {
-    int what = status == PARSER_DISC_REFUSED  ? LEFT_REFUSED  :
+    int what;
+
+    if (note) {
+        char where[256], at[272] = "";
+        place_of(c, c->win_pos, where, sizeof(where));
+        if (where[0])
+            snprintf(at, sizeof(at), " (%s)", where);
+        av_log(c->log, AV_LOG_WARNING, "%s: %d bytes at stream offset %"PRId64"%s: %s\n", c->label, k, c->win_pos,
+               at, note);
+        c->st.skipped++;
+        c->st.skipped_bytes += k;
+        return;
+    }
+    what = status == PARSER_DISC_REFUSED  ? LEFT_REFUSED  :
                status == PARSER_DISC_NO_START ? LEFT_NO_START :
                status == PARSER_DISC_END      ? LEFT_END      :
                !c->win_pos                    ? LEFT_START    : LEFT_SKIP;
@@ -435,9 +449,18 @@ static int unit_out(DRFrames *c, const uint8_t *data, int size)
         return AVERROR_BUG;
     }
     if (c->codec->disc_parser && c->parser->disc_status > 0) {
-        not_a_unit(c, size, c->parser->disc_status);
+        not_a_unit(c, size, c->parser->disc_status, c->parser->disc_note);
         window_consume(c, off + size);
         return 0;
+    }
+    /* what the parser found about the frame, said with its place */
+    if (c->codec->disc_parser && c->parser->disc_note) {
+        char where[256], at[272] = "";
+        place_of(c, off, where, sizeof(where));
+        if (where[0])
+            snprintf(at, sizeof(at), " (%s)", where);
+        av_log(c->log, AV_LOG_WARNING, "%s: the frame at stream offset %"PRId64"%s: %s\n", c->label, off, at,
+               c->parser->disc_note);
     }
     window_consume(c, off + size);
     return unit_take(c, data, size, off);

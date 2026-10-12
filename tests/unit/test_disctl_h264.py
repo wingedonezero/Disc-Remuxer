@@ -60,7 +60,7 @@ def run(units, chunk=0):
 N = 10  # pictures of a GOP: I0 P3 B1 B2 P6 B4 B5 P9 B7 B8
 
 
-def gop(g, n=N, idr=True, extra_head=b"", pic_struct=0, recovery=True):
+def gop(g, n=N, idr=True, extra_head=b"", pic_struct=0, recovery=True, sps=None, field=None):
     """One GOP in decode order (I P B B P B B ...) as access units with
     their PES times and display positions: [(bytes, time, display)]."""
     out = []
@@ -74,14 +74,14 @@ def gop(g, n=N, idr=True, extra_head=b"", pic_struct=0, recovery=True):
     for i, (kind, disp) in enumerate(order):
         au = H.aud()
         if i == 0:
-            au += H.sps() + H.pps()
+            au += (sps or H.sps()) + H.pps()
             au += H.sei([H.pic_timing(pic_struct), H.recovery_point()] if not idr and recovery else
                         [H.pic_timing(pic_struct)])
         else:
             au += H.sei([H.pic_timing(pic_struct)])
         au += extra_head
         ref = kind != H.SLICE_B
-        au += H.slice_(kind, frame_num % 16, (2 * disp) % 64, idr=idr and i == 0, ref=ref)
+        au += H.slice_(kind, frame_num % 16, (2 * disp) % 64, idr=idr and i == 0, ref=ref, field=field)
         if ref:
             frame_num += 1
         out.append((au, BASE + (g * n + disp) * 2 * FIELD, g * n + disp))
@@ -163,9 +163,12 @@ def test_filler_end_units_and_zero_stuffing_are_taken_out():
         if i == len(units) - 1:
             u = u + H.end_of_seq()
         dirty.append((u, t))
-    s, _, ret = run(dirty)
+    s, st, ret = run(dirty)
     assert ret == 0
     assert len(s.out) == len(units)
+    # counted for the title's summary line
+    assert list(st.removed) == [1, 0, 1], list(st.removed)
+    assert st.stuffing == 4, "the trailing zero bytes"
     for o, (u, _, _) in zip(s.out, units):
         assert o[0] == without(u, set())
         assert 12 not in H.nal_types(o[0]) and 10 not in H.nal_types(o[0])
@@ -177,9 +180,12 @@ def test_a_picture_before_its_parameter_sets_is_left_out():
     # the stream starts with two pictures of a GOP whose SPS / PPS came before
     head = [(H.aud() + H.slice_(H.SLICE_P, 3, 10), BASE - 4 * FIELD), (H.aud() + H.slice_(H.SLICE_B, 4, 8, ref=False),
                                                                         BASE - 2 * FIELD)]
+    install_log()
     s, st, ret = run(head + [(u, t) for u, t, _ in units])
     assert ret == 0
     assert len(s.out) == len(units), "the two pictures without parameter sets are no frames"
+    assert any("an H.264 picture without its parameter sets (its SPS / PPS not seen): left out with the units in "
+               "front of it" in l for l in LOG), LOG
     assert s.out[0][0] == without(units[0][0], set())
 
 
@@ -305,3 +311,34 @@ def test_a_data_partition_where_a_picture_starts_stops_the_track():
     units.append((H.aud() + H.nal(2, b"\x88" * 30), units[-1][1] + 2 * FIELD))
     _, _, ret = run(units)
     assert ret < 0
+
+
+def test_an_interlaced_frame_without_its_pic_struct_takes_it_from_the_pictures_before_and_says_so():
+    units = stream(gops=2, pic_struct=3, sps=H.sps(frame_mbs_only=0), field=False)
+    k = 15                                       # after more than 9 frames with pic_struct 3
+    units[k] = (units[k][0].replace(H.sei([H.pic_timing(3)]), b""),) + units[k][1:]
+    install_log()
+    s, _, ret = run([(u, t) for u, t, _ in units])
+    assert ret == 0
+    assert all(o[2] == 2 * FIELD for o in s.out), "pic_struct 3: two fields"
+    notes = [l for l in LOG if "without its pic_struct: 3 taken from the pictures before" in l]
+    assert len(notes) == 1 and "[untested on real discs]" in notes[0], LOG
+    assert any("1 frame(s) without their pic_struct" in l for l in LOG), LOG
+
+
+def test_pic_struct_that_does_not_fit_the_picture_is_said_once_and_counted():
+    units = stream(gops=2, pic_struct=1)         # a field pic_struct on frame pictures
+    install_log()
+    s, _, ret = run([(u, t) for u, t, _ in units])
+    assert ret == 0
+    assert len([l for l in LOG if "pic_struct 1 on a frame picture (H.264 Table D-1" in l]) == 1, LOG
+    assert any("%d picture(s) whose pic_struct does not fit their field_pic_flag" % len(units) in l for l in LOG), LOG
+
+
+def test_frame_doubling_without_fixed_frame_rate_is_said_once_and_counted():
+    units = stream(gops=2, pic_struct=7, sps=H.sps(fixed_frame_rate=0))
+    install_log()
+    s, _, ret = run([(u, t) for u, t, _ in units])
+    assert ret == 0
+    assert len([l for l in LOG if "pic_struct 7 (frame doubling / tripling) without fixed_frame_rate_flag" in l]) == 1
+    assert any("%d picture(s) with pic_struct 7 / 8 without fixed_frame_rate_flag" % len(units) in l for l in LOG), LOG

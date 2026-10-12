@@ -101,6 +101,17 @@ typedef struct Track {
     int           seq_holding;
     int64_t       seq_removed;   /* end units taken out */
     int64_t       seq_kept;      /* end units kept */
+    /* a text subtitle track from a clip of its own (DR_SUB_SIDE): its stage
+     * (k->cut its frame step, for the whole clip), its clock's offset, and
+     * its frames waiting for the first segment's place and the video */
+    DRTextst     *textst;
+    char         *side_where;
+    int64_t       side_offset;
+    int           side_open, side_ended;
+    DRFrame      *sq;
+    int           sq_head, sq_n, sq_cap;
+    int64_t       side_early;    /* frames left out: before the title's start */
+    int64_t       side_late;     /* frames that start after the video's end (kept) */
 } Track;
 
 /* A master video frame given out while the title has a second layer: the
@@ -219,6 +230,12 @@ static const char *const event_names[] = {
     [DR_EV_PCM_SILENCE]          = "pcm_silence",
     [DR_EV_PCM_SKIP]             = "pcm_skip",
     [DR_EV_PCM_TIMECODE]         = "pcm_timecode",
+    [DR_EV_JOIN_START]           = "join_start",
+    [DR_EV_JOIN_NOT_KEY]         = "join_not_key",
+    [DR_EV_JOIN_REPEAT]          = "join_repeat",
+    [DR_EV_SEQ_END_INSIDE]       = "seq_end_inside",
+    [DR_EV_PICTURES]             = "pictures",
+    [DR_EV_SYNC]                 = "sync",
     [DR_EV_AUDIO_COPY]           = "audio_copy",
     [DR_EV_AUDIO_COPY_LONG]      = "audio_copy_long",
     [DR_EV_SAMPLE_JOIN]          = "sample_join",
@@ -603,15 +620,20 @@ static int audio_push(DRTitle *t, Track *k, DRFrame *f)
     return k->pcm ? ff_disctl_pcm_push(k->pcm, f) : ff_disctl_junction_push(k->junction, f);
 }
 
+static int side_release(DRTitle *t);
+
 /* Audio frames the video has passed (all of them once it has ended) go on. */
 static int release(DRTitle *t)
 {
+    int ret;
+
+    if ((ret = side_release(t)) < 0)
+        return ret;
     for (int i = 1; i < t->cfg.nb_tracks; i++) {
         Track *k = &t->t[i];
 
         while (k->nb_wait) {
             DRFrame f = k->wait[k->wait_head];
-            int ret;
 
             if (!t->video_done && f.time > t->vmax)
                 break;
@@ -702,6 +724,134 @@ static int spu_finish(DRTitle *t, Track *k)
     if ((ret = spu_held_out(t, k, t->vend)) < 0)
         return ret;
     return 0;
+}
+
+/* ---- text subtitles from a clip of their own (DR_SUB_SIDE) ----
+ * The clip is read on its own: its frames wait on its clock until the
+ * title's first segment is placed, then go out at their time - the clip's
+ * offset - that segment's start (where the reference places them); one
+ * that comes out before the title's start is left out (said); they leave
+ * as the video passes their time (the rest at the title's end; those that
+ * start after the video's end are kept and counted). */
+
+static int is_side(const Track *k)
+{
+    return k->cfg.kind == DR_KIND_SUBTITLE && (k->cfg.sub_flags & DR_SUB_SIDE);
+}
+
+static int side_frame(void *opaque, DRFrame *f)
+{
+    Track *k = opaque;
+
+    if (k->sq_head + k->sq_n == k->sq_cap) {
+        if (k->sq_head) {
+            memmove(k->sq, k->sq + k->sq_head, k->sq_n * sizeof(*k->sq));
+            k->sq_head = 0;
+        } else {
+            int cap = k->sq_cap ? 2 * k->sq_cap : 64;
+            DRFrame *q = av_realloc_array(k->sq, cap, sizeof(*q));
+            if (!q) {
+                ff_disctl_frame_unref(f);
+                return AVERROR(ENOMEM);
+            }
+            k->sq     = q;
+            k->sq_cap = cap;
+        }
+    }
+    k->sq[k->sq_head + k->sq_n++] = *f;
+    memset(f, 0, sizeof(*f));
+    return 0;
+}
+
+static int side_release(DRTitle *t)
+{
+    int64_t start0;
+    char b[32];
+    int ret;
+
+    if (ff_disctl_join_segment_start(t->join, 0, &start0) < 0)
+        return 0;
+    for (int i = 1; i < t->cfg.nb_tracks; i++) {
+        Track *k = &t->t[i];
+
+        if (!is_side(k))
+            continue;
+        while (k->sq_n) {
+            DRFrame f = k->sq[k->sq_head];
+            int64_t at = f.time - k->side_offset - start0;
+
+            if (at >= 0 && !t->video_done && at > t->vmax)
+                break;
+            k->sq_head++;
+            k->sq_n--;
+            if (at < 0) {
+                av_log(t->log, AV_LOG_WARNING, "Title timeline: TextST track %d: the dialog at stream offset %"PRId64
+                       " of %s starts %s before the title's start: left out\n", i, f.pos, k->side_where,
+                       hms(b, sizeof(b), -at));
+                k->side_early++;
+                k->warnings++;
+                ff_disctl_frame_unref(&f);
+                continue;
+            }
+            if (t->video_done && at >= t->vend)
+                k->side_late++;
+            f.time = f.src = at;
+            f.seg  = 0;
+            if ((ret = emit(t, k, &f)) < 0)
+                return ret;
+        }
+        if (!k->sq_n)
+            k->sq_head = 0;
+    }
+    return 0;
+}
+
+/* The end of the title: what the side tracks gave out and left out. */
+static void side_finish(DRTitle *t, Track *k)
+{
+    DRTextstStats st;
+    char b[32];
+
+    if (k->sq_n) {
+        av_log(t->log, AV_LOG_WARNING, "Title timeline: TextST track %d: %d dialogs left out: the title's first "
+               "segment has no place (no video)\n", k->index, k->sq_n);
+        k->warnings++;
+        for (int j = 0; j < k->sq_n; j++)
+            ff_disctl_frame_unref(&k->sq[k->sq_head + j]);
+        k->sq_n = k->sq_head = 0;
+    }
+    if (!k->textst)
+        return;
+    ff_disctl_textst_stats(k->textst, &st);
+    k->warnings += st.warnings;
+    av_log(t->log, AV_LOG_INFO, "Title timeline: TextST track %d: %"PRId64" of %"PRId64" dialogs of %s given out%s"
+           "\n", k->index, k->out, st.dialogs, k->side_where,
+           (k->cfg.sub_flags & DR_SUB_FORCED_ONLY) ? " (forced subtitles only)" : "");
+    if (k->cfg.sub_flags & DR_SUB_FORCED_ONLY)
+        av_log(t->log, AV_LOG_INFO, "Title timeline: TextST track %d: forced subtitles: %"PRId64" dialogs without a "
+               "forced region not shown, %"PRId64" regions without forced_on_flag taken out of the others, as a "
+               "player shows them with subtitles off [untested on real discs]\n", k->index, st.not_forced,
+               st.regions_cut);
+    /* the dialogs the style segment counts: those read and those the
+     * parser refused (segments that do not parse) */
+    if (ff_disctl_textst_style(k->textst, &(int){ 0 })) {
+        DRFramesStats fs;
+        ff_disctl_frames_stats(k->cut, &fs);
+        if (st.disc_count != st.dialogs + fs.skipped) {
+            av_log(t->log, AV_LOG_WARNING, "Title check: TextST track %d: the dialog style segment counts %d dialogs, "
+                   "%s has %"PRId64" (and %"PRId64" pieces that are no segment)\n", k->index, st.disc_count,
+                   k->side_where, st.dialogs, fs.skipped);
+            k->warnings++;
+        } else
+            av_log(t->log, AV_LOG_VERBOSE, "Title check: TextST track %d: %d dialogs, as the dialog style segment "
+                   "counts: checked\n", k->index, st.disc_count);
+    }
+    if (k->side_late) {
+        av_log(t->log, AV_LOG_WARNING, "Title timeline: TextST track %d: %"PRId64" dialogs start after the video's "
+               "end at %s: kept [untested on real discs]\n", k->index, k->side_late, hms(b, sizeof(b), t->vend));
+        k->warnings++;
+        t->review++;
+    }
 }
 
 /* ---- closed captions ----
@@ -1378,6 +1528,8 @@ static void join_segment_end(DRTitle *t, const DRVideo *video)
     c->total.other          += vs.other;
     c->total.other_bytes    += vs.other_bytes;
     c->total.stuffing       += vs.stuffing;
+    for (int i = 0; i < FF_ARRAY_ELEMS(vs.removed); i++)
+        c->total.removed[i] += vs.removed[i];
     c->total.seq_end        += vs.seq_end;
     c->total.seq_end_inside += vs.seq_end_inside;
     c->total.seq_new        += vs.seq_new;
@@ -1418,9 +1570,30 @@ static void title_summary(DRTitle *t)
            "no picture at a segment's start needs one before it, none repeated at a join");
     av_log(t->log, c->pictures_off ? AV_LOG_WARNING : AV_LOG_VERBOSE, "Title check: video: %"PRId64" pictures read, %"
            PRId64" given out%s\n", v->pictures, v->out, c->pictures_off ? " (see the warnings above)" : "");
-    av_log(t->log, AV_LOG_VERBOSE, "Title check: taken out of the video: %"PRId64" zero stuffing bytes, %"PRId64
-           " user data units (%"PRId64" bytes: captions go to the caption track), %"PRId64" units that are no "
-           "picture (%"PRId64" bytes)\n", v->stuffing, v->side, v->side_bytes, v->other, v->other_bytes);
+    /* what the codec rules took out of the video: one line (in the standard
+     * log when anything was), naming only what was */
+    {
+        static const char *const what[] = { "end(s) of sequence", "end(s) of stream", "filler data unit(s)" };
+        char line[512] = "";
+        int len = 0;
+        for (int i = 0; i < 3; i++)
+            if (v->removed[i])
+                len += snprintf(line + len, sizeof(line) - FFMIN(len, sizeof(line)), "%s%"PRId64" %s",
+                                len ? ", " : "", v->removed[i], what[i]);
+        if (v->stuffing)
+            len += snprintf(line + len, sizeof(line) - FFMIN(len, sizeof(line)), "%s%"PRId64" zero stuffing bytes",
+                            len ? ", " : "", v->stuffing);
+        if (len)
+            len += snprintf(line + len, sizeof(line) - FFMIN(len, sizeof(line)), " (none of them changes a picture)");
+        if (v->side)
+            len += snprintf(line + len, sizeof(line) - FFMIN(len, sizeof(line)), "%s%"PRId64" user data units (%"
+                            PRId64" bytes: captions go to the caption track)", len ? ", " : "", v->side, v->side_bytes);
+        if (v->other)
+            len += snprintf(line + len, sizeof(line) - FFMIN(len, sizeof(line)), "%s%"PRId64" units that are no "
+                            "picture (%"PRId64" bytes)", len ? ", " : "", v->other, v->other_bytes);
+        av_log(t->log, len ? AV_LOG_INFO : AV_LOG_VERBOSE, "Title check: track 0: taken out of the video: %s\n",
+               len ? line : "nothing");
+    }
     if (v->scan_known)
         av_log(t->log, AV_LOG_VERBOSE, "Title check: video scan as the pictures state it (kept as it is): %"PRId64
                " progressive, %"PRId64" interlaced; top field first %"PRId64", repeat first field %"PRId64"%s\n",
@@ -1522,8 +1695,8 @@ static int seg_open(DRTitle *t)
             k->posq[q] = 0;
         for (int q = 0; q < k->nb_placeq; q++)  /* places at the end of the segment before: its next picture */
             k->placeq[q] = 0;
-        if (k->cfg.kind == DR_KIND_CAPTION)
-            continue;                    /* fed by the video's side units */
+        if (k->cfg.kind == DR_KIND_CAPTION || is_side(k))
+            continue;                    /* fed by the video's side units / by a clip of its own */
         if (k->cfg.kind == DR_KIND_LAYER && k->cfg.codec == AV_CODEC_ID_HEVC) {
             if ((ret = ff_disctl_frames_open(&k->cut, t->log, AV_CODEC_ID_HEVC, layer_unit, k)) < 0)
                 return ret;
@@ -1580,6 +1753,8 @@ static void seg_close(DRTitle *t)
 {
     for (int i = t->cfg.nb_tracks - 1; i >= 0; i--) {
         Track *k = &t->t[i];
+        if (is_side(k))
+            continue;                    /* its frame step lasts the whole title */
         ff_disctl_frames_close(&k->cut);
         ff_disctl_spu_close(&k->spu);
         ff_disctl_audio_close(&k->audio);
@@ -1603,7 +1778,7 @@ static int seg_end(DRTitle *t)
         if (k->cfg.kind == DR_KIND_LAYER &&
             (ret = k->cfg.codec == AV_CODEC_ID_HEVC ? ff_disctl_frames_flush(k->cut) : layer_flush(k)) < 0)
             return ret;
-        if (k->cfg.kind == DR_KIND_CAPTION || k->cfg.kind == DR_KIND_LAYER)
+        if (k->cfg.kind == DR_KIND_CAPTION || k->cfg.kind == DR_KIND_LAYER || is_side(k))
             continue;
         if ((ret = ff_disctl_frames_flush(k->cut)) < 0)
             return ret;
@@ -1728,8 +1903,8 @@ static int title_payload(DRTitle *t, int track, const uint8_t *data, int size, i
     if (track < 0 || track >= t->cfg.nb_tracks || !t->segments || t->finished)
         return AVERROR(EINVAL);
     k = &t->t[track];
-    if (k->cfg.kind == DR_KIND_CAPTION)
-        return AVERROR(EINVAL);          /* its data comes from the video */
+    if (k->cfg.kind == DR_KIND_CAPTION || is_side(k))
+        return AVERROR(EINVAL);          /* its data comes from the video / a clip of its own */
     if (k->cfg.kind == DR_KIND_LAYER && k->cfg.codec == AV_CODEC_ID_HEVC) {
         k->bytes += size;
         return ff_disctl_frames_write_at(k->cut, data, size, time, block);
@@ -1839,6 +2014,8 @@ static int title_finish(DRTitle *t)
         }
         if ((ret = spu_finish(t, k)) < 0)
             return ret;
+        if (is_side(k))
+            side_finish(t, k);
         if (k->cfg.kind == DR_KIND_CAPTION && (ret = cc_finish(t, k)) < 0)
             return ret;
         if (k->extended)
@@ -1966,6 +2143,78 @@ int ff_disctl_title_place_time(const DRTitle *t, int p, int64_t *time)
     return 0;
 }
 
+static int side_open(DRTitle *t, int track, int64_t offset, const char *where)
+{
+    Track *k;
+    int ret;
+
+    if (track < 1 || track >= t->cfg.nb_tracks || !is_side(&t->t[track]) || t->t[track].side_open || t->finished)
+        return AVERROR(EINVAL);
+    k = &t->t[track];
+    k->side_open   = 1;
+    k->side_offset = offset;
+    if (!(k->side_where = av_strdup(where ? where : "its clip")))
+        return AVERROR(ENOMEM);
+    if ((ret = ff_disctl_textst_open(&k->textst, t->log, track, !!(k->cfg.sub_flags & DR_SUB_FORCED_ONLY),
+                                     k->side_where, side_frame, k)) < 0 ||
+        (ret = ff_disctl_frames_open(&k->cut, t->log, k->cfg.codec, ff_disctl_textst_unit, k->textst)) < 0)
+        return ret;
+    {
+        char label[32];
+        snprintf(label, sizeof(label), "Track %d", track);
+        ff_disctl_frames_set_report(k->cut, label, k->side_where, 0, NULL, NULL);
+    }
+    return 0;
+}
+
+static int side_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time)
+{
+    Track *k;
+
+    if (track < 1 || track >= t->cfg.nb_tracks || !t->t[track].side_open || t->t[track].side_ended)
+        return AVERROR(EINVAL);
+    k = &t->t[track];
+    k->bytes += size;
+    return ff_disctl_frames_write(k->cut, data, size, time);
+}
+
+static int side_end(DRTitle *t, int track)
+{
+    Track *k;
+    int ret;
+
+    if (track < 1 || track >= t->cfg.nb_tracks || !t->t[track].side_open || t->t[track].side_ended)
+        return AVERROR(EINVAL);
+    k = &t->t[track];
+    k->side_ended = 1;
+    if ((ret = ff_disctl_frames_flush(k->cut)) < 0)
+        return ret;
+    return side_release(t);
+}
+
+int ff_disctl_title_side_open(DRTitle *t, int track, int64_t offset, const char *where)
+{
+    return t->error ? t->error : sticky(t, side_open(t, track, offset, where));
+}
+
+int ff_disctl_title_side_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time)
+{
+    return t->error ? t->error : sticky(t, side_payload(t, track, data, size, time));
+}
+
+int ff_disctl_title_side_end(DRTitle *t, int track)
+{
+    return t->error ? t->error : sticky(t, side_end(t, track));
+}
+
+const uint8_t *ff_disctl_title_textst_style(const DRTitle *t, int track, int *size)
+{
+    *size = 0;
+    if (track < 0 || track >= t->cfg.nb_tracks)
+        return NULL;
+    return ff_disctl_textst_style(t->t[track].textst, size);
+}
+
 int ff_disctl_title_finish(DRTitle *t)
 {
     return t->error ? t->error : sticky(t, title_finish(t));
@@ -2083,6 +2332,13 @@ void ff_disctl_title_close(DRTitle **tp)
             av_free(k->rec);
             av_free(k->posq);
             av_free(k->placeq);
+            if (is_side(k))
+                ff_disctl_frames_close(&k->cut);
+            ff_disctl_textst_close(&k->textst);
+            for (int j = 0; j < k->sq_n; j++)
+                ff_disctl_frame_unref(&k->sq[k->sq_head + j]);
+            av_free(k->sq);
+            av_free(k->side_where);
         }
     }
     for (int i = 0; i < t->q_n; i++)

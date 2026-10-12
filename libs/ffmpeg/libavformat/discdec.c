@@ -203,7 +203,8 @@ static void track_place(char *buf, size_t size, const DiscTrack *k, const DiscTs
     else if (f->nb_keys > 1)
         snprintf(buf, size, "PID 0x%04x, keys 0x%04x + 0x%04x", f->pid, f->key[0], f->key[1]);
     else
-        snprintf(buf, size, "PID 0x%04x, key 0x%04x%s", f->pid, f->key[0], f->key[0] ? "" : " (any)");
+        snprintf(buf, size, "PID 0x%04x, key 0x%04x%s%s", f->pid, f->key[0], f->key[0] ? "" : " (any)",
+                 f->side ? ", from a clip of its own" : "");
 }
 
 /* The stream of a track read: its id, codec, time base, dispositions, what
@@ -299,7 +300,8 @@ int ff_disc_open_tracks(AVFormatContext *s, const char *title, const DiscTrack *
         }
         if (ts) {
             d->feeds[n] = k->feed;
-            add_pid(d, k->feed.pid);
+            if (!k->feed.side)          /* a clip of its own: not read with the title's clips */
+                add_pid(d, k->feed.pid);
         }
         if ((ret = track_stream(s, k, i, &k->feed, ts, codec, second_view)) < 0)
             return ret;
@@ -312,7 +314,7 @@ int ff_disc_open_tracks(AVFormatContext *s, const char *title, const DiscTrack *
             layer = i;
         t->codec       = codec;
         t->kind        = view ? DR_KIND_LAYER : k->kind;
-        t->sub_flags   = k->info.forced ? DR_SUB_FORCED_ONLY : 0;
+        t->sub_flags   = (k->info.forced ? DR_SUB_FORCED_ONLY : 0) | (k->feed.side ? DR_SUB_SIDE : 0);
         t->audio_flags = (k->info.from_track >= 0 ? DR_AUDIO_EXTRACTED : 0) |
                          (k->info.from_track >= 0 || k->info.inner_track >= 0 ? DR_AUDIO_EXTENDED : 0) |
                          (d->fmt->kind == DISCIO_DISC_DVD ? DR_AUDIO_DVD : 0);
@@ -351,7 +353,7 @@ int ff_disc_open_tracks(AVFormatContext *s, const char *title, const DiscTrack *
                 (ret = av_dict_set(&st->metadata, "dolby_vision", "EL", 0)) < 0)
                 return ret;
         }
-        av_log(s, AV_LOG_VERBOSE, "%s: track %d: its Dolby Vision enhancement layer, PID 0x%04x, key 0x%04x: %s\n",
+        av_log(s, AV_LOG_INFO, "%s: track %d: its Dolby Vision enhancement layer, PID 0x%04x, key 0x%04x: %s\n",
                fmt, layer, k->layer_feed.pid, k->layer_feed.key[0],
                d->opt_dolby_vision ? "a stream of its own" : "merged into the video's frames");
         n++;
@@ -432,13 +434,14 @@ static int disc_close(AVFormatContext *s)
 /* A title's video tracks the disc names no language for (no disc format
  * does for video) get the video_language option's: a code, or "market"
  * (the disc's market language, else English). */
-static void video_language(AVFormatContext *s, const char *name, DiscTrack *tr, int nb)
+static int video_language(AVFormatContext *s, const char *name, DiscTrack *tr, int nb)
 {
+    int given = 0;
     DiscContext *d = s->priv_data;
     const char *lang = d->opt_video_language;
 
     if (!lang || !*lang)
-        return;
+        return 0;
     if (!strcmp(lang, "market"))
         lang = d->market[0] ? d->market : "eng";
     for (int j = 0; j < nb; j++)
@@ -446,7 +449,9 @@ static void video_language(AVFormatContext *s, const char *name, DiscTrack *tr, 
             av_strlcpy(tr[j].info.language, lang, sizeof(tr[j].info.language));
             av_log(s, AV_LOG_DEBUG, "Title %s: video track %d: the disc names no language: %s (the "
                    "video_language option)\n", name ? name : "?", j, tr[j].info.language);
+            given++;
         }
+    return given;
 }
 
 /* Every title's probe (the format's own), its tracks and the stream pass
@@ -458,7 +463,7 @@ static int titles_pass(AVFormatContext *s)
     DiscContext *d = s->priv_data;
     const DiscFormat *f = d->fmt;
     const char *fmt = f->log_name;
-    int n = f->nb_titles(s), details = d->opt_details && d->opt_title < 0;
+    int n = f->nb_titles(s), details = d->opt_details && d->opt_title < 0, lang_given = 0;
     DiscTrack *tr;
 
     if (!(d->title_tracks = av_calloc(FFMAX(n, 1), sizeof(*d->title_tracks))) ||
@@ -494,7 +499,7 @@ static int titles_pass(AVFormatContext *s)
             i--;
             continue;
         }
-        video_language(s, name, tr, nb);
+        lang_given += video_language(s, name, tr, nb);
         if (nb && !(d->title_tracks[i] = av_memdup(tr, nb * sizeof(*tr)))) {
             av_free(tr);
             return AVERROR(ENOMEM);
@@ -502,6 +507,11 @@ static int titles_pass(AVFormatContext *s)
         d->nb_title_tracks[i] = nb;
     }
     av_free(tr);
+    /* said once for the disc (each title's in the detail log) */
+    if (lang_given)
+        av_log(s, AV_LOG_INFO, "%s: the disc names no language for the video of %d title(s): %s given (the "
+               "video_language setting)\n", fmt, lang_given, !strcmp(d->opt_video_language, "market") ?
+               (d->market[0] ? d->market : "eng") : d->opt_video_language);
     return 0;
 }
 

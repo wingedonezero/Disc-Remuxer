@@ -2775,6 +2775,14 @@ typedef struct AVCodecParserContext {
     int disc_status;
 
     /**
+     * Disc mode: what the parser has to say about the chunk given out by the
+     * last call (a static string; NULL: nothing), for the caller to say with
+     * the chunk's place: with disc_status > 0 why it is no frame, else a
+     * finding about the frame.
+     */
+    const char *disc_note;
+
+    /**
      * Disc mode, video parsers that time pictures by the disc reader's rules
      * (H.264): the duration of the frame given out in field periods (0: not
      * known). pict_type, key_frame (I pictures aside: a random access point

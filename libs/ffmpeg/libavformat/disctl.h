@@ -621,6 +621,7 @@ typedef struct DRVideoStats {
     int64_t side_bytes;        /**< and their bytes */
     int64_t other, other_bytes;/**< units that are no picture, left out */
     int64_t stuffing;          /**< zero stuffing bytes a codec rule took out (ff_disctl_video_stuffing) */
+    int64_t removed[3];        /**< units a codec rule took out (ff_disctl_video_removed): DR_REMOVED_* */
     int64_t seq_end;           /**< units with an end of sequence code */
     int64_t seq_end_inside;    /**< of them before the segment's last picture (DR_EV_SEQ_END_INSIDE) */
     int64_t seq_new;           /**< of those: followed by a new sequence (its sequence header) */
@@ -653,6 +654,10 @@ void ff_disctl_video_set_side(DRVideo *v, DRFrameCb cb, void *opaque);
 /** Zero stuffing bytes a codec rule took out of the unit being read (for
  *  the statistics). */
 void ff_disctl_video_stuffing(DRVideo *v, int64_t bytes);
+/** Units a codec rule took out of the unit being read, of kind
+ *  DR_REMOVED_* (for the statistics and the title's summary). */
+enum { DR_REMOVED_SEQ_END, DR_REMOVED_STREAM_END, DR_REMOVED_FILLER };
+void ff_disctl_video_removed(DRVideo *v, int kind, int64_t n);
 /** The grid point nearest to a time t (ticks, the segment's own clock):
  *  *out = that point, or AV_NOPTS_VALUE when t is more than 0.1 ms before
  *  the grid base. AVERROR(EAGAIN) while the grid is not known yet. */
@@ -660,6 +665,49 @@ int  ff_disctl_video_snap(const DRVideo *v, int64_t t, int64_t *out);
 void *ff_disctl_video_priv(DRVideo *v);
 void ff_disctl_video_stats(const DRVideo *v, DRVideoStats *st);
 void ff_disctl_video_close(DRVideo **v);
+
+/* ---- Stage 2, text subtitles (disctl_textst.c) ----
+ * Blu-ray text subtitles (HDMV TextST), read from a clip of their own: one
+ * segment per unit. The first unit must be the dialog style segment (the
+ * track's header, ff_disctl_textst_style(); without it the track gives
+ * nothing); each dialog presentation segment is a frame at its unit's time
+ * lasting its end minus its start (no video grid: they keep their own
+ * times). A forced-only track keeps the regions with forced_on_flag (a
+ * dialog without one is left out). Units left out are said (warnings). */
+
+typedef struct DRTextstStats {
+    int64_t units;             /**< units given */
+    int64_t dialogs;           /**< dialog presentation segments read (given out or not) */
+    int64_t forced;            /**< of them with a forced region */
+    int64_t out;               /**< frames given out */
+    int64_t left_out;          /**< units left out (no style segment first, another type, no time, ends early) */
+    int64_t not_forced;        /**< forced-only track: dialogs without a forced region (not shown) */
+    int64_t regions_cut;       /**< forced-only track: regions taken out of the dialogs given out */
+    int64_t warnings;
+    int     disc_count;        /**< the number of dialogs the disc gives after the style segment */
+} DRTextstStats;
+
+typedef struct DRTextst DRTextst;
+
+/** A text subtitle track's stage: where names its clip (for the log). */
+int  ff_disctl_textst_open(DRTextst **t, void *logctx, int track, int forced_only, const char *where,
+                           DRFrameCb cb, void *opaque);
+/** A DRUnitCb: opaque = the DRTextst. */
+int  ff_disctl_textst_unit(void *textst, const DRUnit *unit);
+/** The dialog style segment (NULL before it was read). */
+const uint8_t *ff_disctl_textst_style(const DRTextst *t, int *size);
+void ff_disctl_textst_stats(const DRTextst *t, DRTextstStats *st);
+void ff_disctl_textst_close(DRTextst **t);
+/** The codec table's rules: a dialog presentation segment takes the PES
+ *  time (offset 0), a style segment none (-1); a unit is one whole segment
+ *  of the two types; the output check (a dialog parses). */
+int  ff_disctl_textst_anchor(const uint8_t *data, int size);
+int  ff_disctl_textst_check(const uint8_t *data, int size);
+int  ff_disctl_textst_verify(const uint8_t *data, int size);
+/** A dialog presentation segment (size bytes) with only its forced regions
+ *  into out (room for size): its bytes, or AVERROR_INVALIDDATA; *kept: the
+ *  regions kept. */
+int  ff_disctl_textst_forced_only(const uint8_t *in, int size, uint8_t *out, int *kept);
 
 /* ---- Stage 2, sub-pictures: units on the video grid (disctl_spu.c) ----
  * DVD-Video / HD DVD sub-picture units. Each unit lasts until its stop
@@ -892,8 +940,13 @@ typedef struct DRTitleTrack {
 #define DR_LAYER_MERGED 0x0001
 
 /** A subtitle track of what a player shows with subtitles switched off:
- *  only the objects marked forced (PGS: object_forced_on_flag). */
+ *  only the objects marked forced (PGS: object_forced_on_flag; text
+ *  subtitles: the regions with forced_on_flag). */
 #define DR_SUB_FORCED_ONLY 0x0001
+/** A text subtitle track read from a clip of its own (Blu-ray TextST): its
+ *  payloads come through ff_disctl_title_side_*(), on that clip's clock, and
+ *  are placed with the title's first segment (no segments of its own). */
+#define DR_SUB_SIDE        0x0002
 
 typedef struct DRTitleConfig {
     int                 nb_tracks;
@@ -924,6 +977,18 @@ int  ff_disctl_title_payload(DRTitle *t, int track, const uint8_t *data, int siz
  *  known): bytes of it that are left out are said with their place. */
 int  ff_disctl_title_payload_at(DRTitle *t, int track, const uint8_t *data, int size, int64_t time,
                                 int64_t block);
+/** A DR_SUB_SIDE track's clip begins (before any segment or with them):
+ *  offset = the ticks its clock lies ahead of the clock of the title's
+ *  first segment (its frames go out at their time - offset - that
+ *  segment's start); where names the clip for the log. */
+int  ff_disctl_title_side_open(DRTitle *t, int track, int64_t offset, const char *where);
+/** A payload of a DR_SUB_SIDE track: time in ticks (its clip's clock) or
+ *  AV_NOPTS_VALUE. */
+int  ff_disctl_title_side_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time);
+/** The end of a DR_SUB_SIDE track's clip. */
+int  ff_disctl_title_side_end(DRTitle *t, int track);
+/** A text subtitle track's dialog style segment once read (else NULL). */
+const uint8_t *ff_disctl_title_textst_style(const DRTitle *t, int track, int *size);
 /** The end of the title: every stage finishes. */
 int  ff_disctl_title_finish(DRTitle *t);
 /** The next output frame (taken over by the caller): 0, AVERROR(EAGAIN)

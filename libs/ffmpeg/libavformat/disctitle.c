@@ -110,27 +110,38 @@ int ff_disc_ps_open(DiscDemux *dm, AVFormatContext *parent, int lpcm_header,
     return ret;
 }
 
-int ff_disc_ts_open(DiscDemux *dm, AVFormatContext *parent, const int *pids, int nb_pids,
-                    int (*read)(void *opaque, uint8_t *buf, int size), void *opaque)
+/* Source packets as the disc reader reads them; the PIDs read (dialog: they
+ * are text subtitles, whose PES packets without a PTS take their dialog's
+ * start); gaps: the stretches left out are kept for ff_mpegts_disc_gap(). */
+static int ts_open(DiscDemux *dm, AVFormatContext *parent, const int *pids, int nb_pids, int dialog, int gaps,
+                   int (*read)(void *opaque, uint8_t *buf, int size), void *opaque)
 {
     extern const FFInputFormat ff_mpegts_demuxer;
     AVDictionary *opts = NULL;
     AVBPrint bp;
     int ret;
 
-    /* source packets as the disc reader reads them; the PIDs read */
     av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
     for (int i = 0; i < nb_pids; i++)
         av_bprintf(&bp, "%s%d", i ? "," : "", pids[i]);
     if (!av_bprint_is_complete(&bp))
         ret = AVERROR(ENOMEM);
-    else if ((ret = av_dict_set(&opts, "disc", "1", 0)) >= 0 && nb_pids)
-        ret = av_dict_set(&opts, "disc_pids", bp.str, 0);
+    else if ((ret = av_dict_set(&opts, "disc", "1", 0)) >= 0 && nb_pids &&
+             (ret = av_dict_set(&opts, "disc_pids", bp.str, 0)) >= 0 && dialog)
+        ret = av_dict_set(&opts, "disc_dialog_pids", bp.str, 0);
+    if (ret >= 0 && gaps)
+        ret = av_dict_set(&opts, "disc_gaps", "1", 0);
     av_bprint_finalize(&bp, NULL);
     if (ret >= 0)
         ret = demux_open(dm, parent, &ff_mpegts_demuxer.p, TS_UNIT, &opts, read, opaque);
     av_dict_free(&opts);
     return ret;
+}
+
+int ff_disc_ts_open(DiscDemux *dm, AVFormatContext *parent, const int *pids, int nb_pids,
+                    int (*read)(void *opaque, uint8_t *buf, int size), void *opaque)
+{
+    return ts_open(dm, parent, pids, nb_pids, 0, 0, read, opaque);
 }
 
 void ff_disc_demux_close(DiscDemux *dm)
@@ -205,6 +216,9 @@ struct DiscTitleReader {
     MpegPsDiscStats ps_read;        /**< program streams: what the clips' demuxers read, summed */
     int64_t       *clip_at;         /**< per clip read: where the disc's structure starts it (ticks, its clock),
                                          AV_NOPTS_VALUE: not given */
+    char         **gap_lines;       /**< ts: the stretches of stream files left out, as said */
+    int            nb_gap_lines;
+    int64_t        gap_bytes;       /**< and their bytes */
 };
 
 
@@ -443,6 +457,155 @@ end:
     return ret;
 }
 
+/* ---- stretches of a Blu-ray stream file left out ----
+ * FFmpeg's MPEG-TS demuxer (disc mode, disc_gaps) keeps each stretch it
+ * leaves out: a run of TS packets that cannot be read (one reason), a run
+ * of all-zero source packets, a PID's data from a PES packet that cannot be
+ * read to its next PES start. Each is said (a warning) with where it lies:
+ * the stream file and its bytes (the format part's block_place), and
+ * counted as damaged data for the title's summary. */
+
+/* Byte pos of clip (the title's clips; -1 a side clip) as file + offset:
+ * 1 known, 0 not. */
+static int gap_place(AVFormatContext *s, int clip, int64_t pos, char *file, int size, int64_t *off)
+{
+    const DiscTitleSource *src = reader_of(s)->src;
+    uint32_t block = pos / TS_UNIT;
+
+    if (clip < 0 || !src->block_place || src->block_place(s, clip, block, file, size, off) < 0)
+        return 0;
+    *off += pos % TS_UNIT;
+    return 1;
+}
+
+/* Bytes [a, b] of the clip in words, into buf. */
+static void gap_bytes(AVFormatContext *s, int clip, const char *name, int64_t a, int64_t b, char *buf, int size)
+{
+    char f0[64], f1[64];
+    int64_t o0, o1;
+
+    if (!gap_place(s, clip, a, f0, sizeof(f0), &o0) || !gap_place(s, clip, b, f1, sizeof(f1), &o1))
+        snprintf(buf, size, "bytes %"PRId64"-%"PRId64, a, b);
+    else if (strcmp(f0, f1))
+        snprintf(buf, size, "bytes %"PRId64" of %s to %"PRId64" of %s", o0, f0, o1, f1);
+    else if (strlen(name) >= strlen(f0) && !strcmp(name + strlen(name) - strlen(f0), f0))
+        snprintf(buf, size, "bytes %"PRId64"-%"PRId64, o0, o1);
+    else
+        snprintf(buf, size, "bytes %"PRId64"-%"PRId64" of %s", o0, o1, f0);
+}
+
+/* Byte pos of the clip in words, into buf. */
+static void gap_byte(AVFormatContext *s, int clip, const char *name, int64_t pos, char *buf, int size)
+{
+    char f[64];
+    int64_t o;
+
+    if (!gap_place(s, clip, pos, f, sizeof(f), &o))
+        snprintf(buf, size, "byte %"PRId64, pos);
+    else if (strlen(name) >= strlen(f) && !strcmp(name + strlen(name) - strlen(f), f))
+        snprintf(buf, size, "byte %"PRId64, o);
+    else
+        snprintf(buf, size, "byte %"PRId64" of %s", o, f);
+}
+
+/* The tracks a PID feeds, in words ("track 2", "tracks 2, 3"). */
+static void gap_tracks(const DiscTitleSource *src, int pid, int side, char *buf, int size)
+{
+    int n = 0, len = 0;
+
+    buf[0] = 0;
+    for (int i = 0; i < src->nb_tracks && len < size; i++)
+        if (src->feeds[i].pid == pid && src->feeds[i].side == side)
+            len += snprintf(buf + len, size - len, "%s%d", n++ ? ", " : "", i);
+    if (!n)
+        snprintf(buf, size, "no track");
+    else {
+        char tmp[64];
+        snprintf(tmp, sizeof(tmp), "%s %s", n > 1 ? "tracks" : "track", buf);
+        snprintf(buf, size, "%s", tmp);
+    }
+}
+
+/* The stretches the demuxer dm has left out of clip (side: side clip k + 1,
+ * name its name), said and kept; flush: the clip's reading has ended. */
+static int gaps_said(AVFormatContext *s, AVFormatContext *dm, int clip, int side, const char *name, int flush)
+{
+    DiscTitleReader *r = reader_of(s);
+    MpegTSDiscGap g;
+    int ret;
+
+    while ((ret = ff_mpegts_disc_gap(dm, flush, &g)) > 0) {
+        char where[192], at[160], tracks[64], line[640];
+        int64_t bytes;
+
+        flush = 0;                      /* the stretches still open ended with the first call */
+        if (g.kind == MPEGTS_DISC_GAP_PTS) {
+            /* nothing is left out: said, not counted */
+            gap_tracks(r->src, g.pid, side, tracks, sizeof(tracks));
+            gap_byte(s, clip, name, g.pos, where, sizeof(where));
+            av_log(s, AV_LOG_WARNING, "%s: PID 0x%04x (%s): the PES header at %s has a PTS whose marker bits are "
+                   "not set: read as having no time (the payload takes no time of its own)\n", name, g.pid, tracks,
+                   where);
+            continue;
+        }
+        if (g.kind == MPEGTS_DISC_GAP_CUT) {
+            /* its rest is missing (the stretch next to it says why): said, not counted again */
+            gap_tracks(r->src, g.pid, side, tracks, sizeof(tracks));
+            gap_byte(s, clip, name, g.pos, where, sizeof(where));
+            av_log(s, AV_LOG_WARNING, "%s: PID 0x%04x (%s): a PES packet cut short by the next PES start at %s: "
+                   "its last %"PRId64" bytes are missing\n", name, g.pid, tracks, where, g.bytes);
+            continue;
+        }
+        if (g.kind == MPEGTS_DISC_GAP_PES) {
+            gap_tracks(r->src, g.pid, side, tracks, sizeof(tracks));
+            gap_byte(s, clip, name, g.pos, where, sizeof(where));
+            if (g.to_end)
+                snprintf(at, sizeof(at), "the end of the stream file");
+            else {
+                char b[96];
+                gap_byte(s, clip, name, g.end, b, sizeof(b));
+                snprintf(at, sizeof(at), "the next PES start at %s", b);
+            }
+            bytes = g.bytes;
+            snprintf(line, sizeof(line), "%s: PID 0x%04x (%s): %s at %s: %"PRId64" bytes left out until %s", name,
+                     g.pid, tracks, g.why, where, g.bytes, at);
+        } else {
+            gap_bytes(s, clip, name, g.pos, g.end - 1, where, sizeof(where));
+            bytes = g.end - g.pos;
+            if (g.kind == MPEGTS_DISC_GAP_BAD)
+                snprintf(line, sizeof(line), "%s: %"PRId64" transport packets at %s cannot be read (%s): their data "
+                         "is left out", name, g.packets, where, g.why);
+            else if (bytes % TS_UNIT)
+                snprintf(line, sizeof(line), "%s: %"PRId64" bytes of zeros at %s (%.2f units): skipped (blank or "
+                         "unreadable sectors)", name, bytes, where, bytes / (double)TS_UNIT);
+            else
+                snprintf(line, sizeof(line), "%s: %"PRId64" bytes of zeros at %s (%"PRId64" units): skipped (blank "
+                         "or unreadable sectors)", name, bytes, where, bytes / TS_UNIT);
+        }
+        av_log(s, AV_LOG_WARNING, "%s\n", line);
+        r->gap_bytes += bytes;
+        {
+            char *l = av_strdup(line);
+            if (!l || av_dynarray_add_nofree(&r->gap_lines, &r->nb_gap_lines, l) < 0) {
+                av_free(l);
+                return AVERROR(ENOMEM);
+            }
+        }
+    }
+    return ret;
+}
+
+/* The clip being read in words: "Segment /BDMV/STREAM/00001.m2ts". */
+static const char *clip_words(AVFormatContext *s, char *buf, int size)
+{
+    DiscTitleReader *r = reader_of(s);
+
+    snprintf(buf, size, "%s %s", r->src->clip_kind, r->src->clip_name(s, r->clip));
+    if (buf[0] >= 'a' && buf[0] <= 'z')
+        buf[0] += 'A' - 'a';
+    return buf;
+}
+
 /* Start reading clip k of the title (a segment of the title timeline): its
  * blocks, its PTS wrap reference (Blu-ray: found before the clip is read;
  * else still to be found). */
@@ -471,7 +634,7 @@ static int clip_start(AVFormatContext *s, int k)
     ff_disc_demux_close(&r->ps);
     if (src->ts) {
         if ((ret = ts_reference(s)) < 0 ||
-            (ret = ff_disc_ts_open(&r->ps, s, src->pids, src->nb_pids, ps_read, s)) < 0)
+            (ret = ts_open(&r->ps, s, src->pids, src->nb_pids, 0, 1, ps_read, s)) < 0)
             return ret;
     } else if ((ret = ff_disc_ps_open(&r->ps, s, src->lpcm_header, ps_read, s)) < 0)
         return ret;
@@ -493,6 +656,9 @@ void ff_disc_title_reader_close(DiscTitleReader **reader)
     av_freep(&r->pos_off);
     av_freep(&r->clip_at);
     av_freep(&r->damage);
+    for (int i = 0; i < r->nb_gap_lines; i++)
+        av_free(r->gap_lines[i]);
+    av_freep(&r->gap_lines);
     av_packet_free(&r->in);
     ff_disctl_title_close(&r->rip);
     ff_disctl_chapter_plan_free(&r->chapter_plan);
@@ -847,6 +1013,136 @@ static int filler_trim(AVFormatContext *s, DiscTitleReader *r, int64_t *skip)
     return 0;
 }
 
+/* ---- clips of their own (Blu-ray text subtitles) ----
+ * Each side clip a track takes is read whole before the title's clips,
+ * through FFmpeg's MPEG-TS demuxer in disc mode with its tracks' PIDs (a
+ * PES packet without a PTS that starts with a dialog takes the dialog's
+ * start). Its PTS wrap reference is the first time read in it, less 300 s
+ * (a time below it has wrapped). Its tracks get its payloads on its own
+ * clock; the format part tells how far that clock lies ahead of the first
+ * clip's. A unit that cannot be read ends the clip's reading (said). */
+
+typedef struct SideRead {
+    AVFormatContext *s;
+    int              side;
+    uint32_t         block, nb_blocks;
+    int64_t          left_out;          /* units not usable */
+} SideRead;
+
+static int side_unit(void *opaque, uint8_t *buf, int size)
+{
+    SideRead *sr = opaque;
+    const DiscTitleSource *src = reader_of(sr->s)->src;
+
+    if (size < TS_UNIT)
+        return AVERROR(EINVAL);
+    while (sr->block < sr->nb_blocks) {
+        uint32_t b = sr->block++;
+        int ret = src->side_read(sr->s, sr->side, b, buf);
+        if (ret < 0) {
+            av_log(sr->s, AV_LOG_WARNING, "%s: unit %"PRIu32" of %"PRIu32" cannot be read (%s): the rest of it is "
+                   "not read\n", src->side_name(sr->s, sr->side), b, sr->nb_blocks, av_err2str(ret));
+            sr->block = sr->nb_blocks;
+            break;
+        }
+        if (!ret) {
+            sr->left_out++;
+            continue;
+        }
+        return TS_UNIT;
+    }
+    return AVERROR_EOF;
+}
+
+static int read_side(AVFormatContext *s, int side)
+{
+    DiscTitleReader *r = reader_of(s);
+    const DiscTitleSource *src = r->src;
+    const char *name = src->side_name(s, side);
+    SideRead sr = { s, side, 0, src->side_blocks(s, side), 0 };
+    AVPacket **held = NULL, *pkt = NULL;
+    int nb_held = 0, pids[16], nb_pids = 0, ret;
+    int64_t offset = 0, ref = -1;
+    DiscDemux dm = { 0 };
+
+    for (int i = 0; i < src->nb_tracks; i++) {
+        int p = 0;
+        if (src->feeds[i].side != side + 1)
+            continue;
+        while (p < nb_pids && pids[p] != src->feeds[i].pid)
+            p++;
+        if (p == nb_pids && nb_pids < FF_ARRAY_ELEMS(pids))
+            pids[nb_pids++] = src->feeds[i].pid;
+    }
+    if (!nb_pids)
+        return 0;
+    src->side_offset(s, side, r->first_clip, &offset);
+    for (int i = 0; i < src->nb_tracks; i++)
+        if (src->feeds[i].side == side + 1 && (ret = ff_disctl_title_side_open(r->rip, i, offset, name)) < 0)
+            return ret;
+    av_log(s, AV_LOG_VERBOSE, "Reading %s: %"PRIu32" units\n", name, sr.nb_blocks);
+    if ((ret = ts_open(&dm, s, pids, nb_pids, 1, 1, side_unit, &sr)) < 0)
+        goto end;
+    if (!(pkt = av_packet_alloc())) {
+        ret = AVERROR(ENOMEM);
+        goto end;
+    }
+    /* the whole clip first: its wrap reference is its first time */
+    while ((ret = av_read_frame(dm.ctx, pkt)) >= 0) {
+        if (ref < 0 && pkt->pts != AV_NOPTS_VALUE) {
+            ref = pkt->pts >= PTS_REF_BACK ? pkt->pts - PTS_REF_BACK : pkt->pts + (1LL << 33) - PTS_REF_BACK;
+            av_log(s, AV_LOG_VERBOSE, "%s: first time %"PRId64" at byte %"PRId64": wrap reference %"PRId64"\n",
+                   name, pkt->pts, pkt->pos, ref);
+        }
+        if ((ret = av_dynarray_add_nofree(&held, &nb_held, pkt)) < 0)
+            goto end;
+        if (!(pkt = av_packet_alloc())) {
+            ret = AVERROR(ENOMEM);
+            goto end;
+        }
+    }
+    if (ret != AVERROR_EOF) {
+        av_log(s, AV_LOG_WARNING, "%s cannot be read to its end (%s): what was read is used\n", name,
+               av_err2str(ret));
+    }
+    if (sr.left_out)
+        av_log(s, AV_LOG_WARNING, "%s: %"PRId64" units not usable: left out\n", name, sr.left_out);
+    {
+        char words[256];
+        snprintf(words, sizeof(words), "%s", name);
+        if (words[0] >= 'a' && words[0] <= 'z')
+            words[0] += 'A' - 'a';
+        if ((ret = gaps_said(s, dm.ctx, -1, side + 1, words, 1)) < 0)
+            goto end;
+    }
+    if (ref < 0 && nb_held)
+        av_log(s, AV_LOG_WARNING, "%s: no time in it (no PES time, no dialog): its dialogs have none\n", name);
+    for (int h = 0; h < nb_held; h++) {
+        const AVPacket *p = held[h];
+        const AVStream *sub = dm.ctx->streams[p->stream_index];
+        int64_t time = p->pts == AV_NOPTS_VALUE || ref < 0 ? AV_NOPTS_VALUE :
+                       (p->pts < ref ? p->pts + (1LL << 33) : p->pts) * DR_TICKS_PER_PTS;
+        for (int i = 0; i < src->nb_tracks; i++) {
+            if (src->feeds[i].side != side + 1 ||
+                feed_key(&src->feeds[i], sub->id & 0xffff, (uint32_t)sub->id >> 16) < 0)
+                continue;
+            if ((ret = ff_disctl_title_side_payload(r->rip, i, p->data, p->size, time)) < 0)
+                goto end;
+        }
+    }
+    for (int i = 0; i < src->nb_tracks; i++)
+        if (src->feeds[i].side == side + 1 && (ret = ff_disctl_title_side_end(r->rip, i)) < 0)
+            goto end;
+    ret = 0;
+end:
+    for (int h = 0; h < nb_held; h++)
+        av_packet_free(&held[h]);
+    av_free(held);
+    av_packet_free(&pkt);
+    ff_disc_demux_close(&dm);
+    return ret;
+}
+
 int ff_disc_title_reader_open(AVFormatContext *s, const DiscTitleSource *src)
 {
     DiscContext *d = s->priv_data;
@@ -885,6 +1181,9 @@ int ff_disc_title_reader_open(AVFormatContext *s, const DiscTitleSource *src)
         return AVERROR(ENOMEM);
     for (int i = r->first_clip; i <= r->last_clip; i++)
         r->blocks_total += src->clip_blocks(s, i);
+    for (int k = 0; src->ts && k < src->nb_sides; k++)
+        if ((ret = read_side(s, k)) < 0)
+            return ret;
     return clip_start(s, r->first_clip);
 }
 
@@ -980,7 +1279,7 @@ static int feed(AVFormatContext *s, const AVPacket *pkt)
      * its own); program streams: the streams */
     for (int i = 0; i < (src->ts ? src->nb_tracks : s->nb_streams); i++) {
         if (src->ts) {
-            int j = feed_key(&src->feeds[i], sub->id & 0xffff, (uint32_t)sub->id >> 16);
+            int j = src->feeds[i].side ? -1 : feed_key(&src->feeds[i], sub->id & 0xffff, (uint32_t)sub->id >> 16);
             if (j < 0)
                 continue;
             if (src->feeds[i].nb_keys == 2)
@@ -1101,6 +1400,17 @@ static int read_input(AVFormatContext *s)
     int first, ret;
 
     ret = av_read_frame(r->ps.ctx, pkt);
+    /* Blu-ray: the stretches of the stream file left out so far (all of
+     * them at its end) */
+    if (src->ts) {
+        char name[256];
+        int err = gaps_said(s, r->ps.ctx, r->clip, 0, clip_words(s, name, sizeof(name)),
+                            ret == AVERROR_EOF && r->clip_done);
+        if (err < 0) {
+            av_packet_unref(pkt);
+            return err;
+        }
+    }
     if (ret == AVERROR_EOF && r->clip_done) {
         if (r->pts_ref < 0) {
             av_log(s, AV_LOG_ERROR, "%s %s: no video time in its first %d sectors: no time reference\n",
@@ -1197,6 +1507,24 @@ static int lpcm_params(AVFormatContext *s, int k)
     return 0;
 }
 
+/* A text subtitle stream's header (extradata): its dialog style segment
+ * (the Matroska codec private of S_HDMV/TEXTST), once read. */
+static int textst_header(AVFormatContext *s, int k)
+{
+    AVCodecParameters *par = s->streams[k]->codecpar;
+    const uint8_t *style;
+    int size;
+
+    if (par->codec_id != AV_CODEC_ID_HDMV_TEXT_SUBTITLE || par->extradata ||
+        !(style = ff_disctl_title_textst_style(reader_of(s)->rip, k, &size)))
+        return 0;
+    if (!(par->extradata = av_mallocz(size + AV_INPUT_BUFFER_PADDING_SIZE)))
+        return AVERROR(ENOMEM);
+    memcpy(par->extradata, style, size);
+    par->extradata_size = size;
+    return 0;
+}
+
 /* A time on the title timeline as h:mm:ss.mmm (truncated). */
 static const char *hms(char *buf, int size, int64_t t)
 {
@@ -1257,7 +1585,7 @@ static int report_damage(AVFormatContext *s)
     AVBPrint all;
     int ret = 0;
 
-    if (!r->nb_damage)
+    if (!r->nb_damage && !r->nb_gap_lines)
         return 0;
     av_bprint_init(&all, 0, AV_BPRINT_SIZE_UNLIMITED);
     for (int i = 0; i < r->nb_damage; i++) {
@@ -1301,10 +1629,18 @@ static int report_damage(AVFormatContext *s)
     }
     if (r->nb_damage > DAMAGE_REPORTS)
         av_log(s, AV_LOG_WARNING, "Damaged: %d more range(s), in the detail lines\n", r->nb_damage - DAMAGE_REPORTS);
+    /* Blu-ray: the stretches of stream files left out (each said when read) */
+    if (r->nb_gap_lines) {
+        av_log(s, AV_LOG_WARNING, "Damaged: %d stretch%s of the stream files left out, %.3f MB in all (see the "
+               "warnings above)\n", r->nb_gap_lines, r->nb_gap_lines == 1 ? "" : "es", mb(r->gap_bytes));
+        for (int i = 0; i < r->nb_gap_lines; i++)
+            av_bprintf(&all, "%s%s", r->nb_damage || i ? "\n" : "", r->gap_lines[i]);
+        bytes += r->gap_bytes;
+    }
     if (!av_bprint_is_complete(&all))
         ret = AVERROR(ENOMEM);
     if (ret >= 0)
-        ret = av_dict_set_int(&s->metadata, "damaged_ranges", r->nb_damage, 0);
+        ret = av_dict_set_int(&s->metadata, "damaged_ranges", r->nb_damage + r->nb_gap_lines, 0);
     if (ret >= 0)
         ret = av_dict_set_int(&s->metadata, "damaged_bytes", bytes, 0);
     if (ret >= 0)
@@ -1424,7 +1760,7 @@ int ff_disc_title_reader_packet(AVFormatContext *s, AVPacket *pkt)
                 ff_disctl_frame_unref(&f);
                 continue;
             }
-            if ((ret = lpcm_params(s, k)) < 0) {
+            if ((ret = lpcm_params(s, k)) < 0 || (ret = textst_header(s, k)) < 0) {
                 ff_disctl_frame_unref(&f);
                 return ret;
             }
