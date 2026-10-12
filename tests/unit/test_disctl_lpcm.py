@@ -244,7 +244,11 @@ def test_blu_ray_units_are_header_and_payload_through_the_parser():
 
 
 def test_a_blu_ray_unit_of_another_format_stops_the_track():
+    # the title fails, the log says why (the headers) and where (its stream offset)
     stream = bytes(bd(8, 3, 1, 1)) + bytes(8) + bytes(bd(4, 3, 1, 1)) + bytes(4)
+    install_log()
     p, outs, rets = run_bd(stream, [(0, len(stream), 0)])
     assert len(outs) == 1
     assert any(r < 0 for r in rets), "a payload size that changes is an error"
+    assert logged("the format changed")
+    assert logged("the unit at stream offset 12 of the")
