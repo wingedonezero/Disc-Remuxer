@@ -103,17 +103,17 @@ int ff_discio_source_open_file(void *logctx, const char *path, DiscIOSource **ou
     fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
         ret = DR_ERR(errno);
-        dr_io_log(logctx, DR_IO_LOG_ERROR, "Cannot open '%s': %s\n", path, dr_err_text(ret));
+        dr_vlog(logctx, DR_VLOG_ERROR, "Cannot open '%s': %s\n", path, dr_err_text(ret));
         return ret;
     }
     if (fstat(fd, &st) < 0) {
         ret = DR_ERR(errno);
-        dr_io_log(logctx, DR_IO_LOG_ERROR, "Cannot get the size of '%s': %s\n", path, dr_err_text(ret));
+        dr_vlog(logctx, DR_VLOG_ERROR, "Cannot get the size of '%s': %s\n", path, dr_err_text(ret));
         close(fd);
         return ret;
     }
     if (!S_ISREG(st.st_mode)) {
-        dr_io_log(logctx, DR_IO_LOG_ERROR, "Cannot open '%s': not a regular file\n", path);
+        dr_vlog(logctx, DR_VLOG_ERROR, "Cannot open '%s': not a regular file\n", path);
         close(fd);
         return DR_ERR(EINVAL);
     }
@@ -124,7 +124,7 @@ int ff_discio_source_open_file(void *logctx, const char *path, DiscIOSource **ou
     f->fd = fd;
     if (!(*out = ff_discio_source_new(logctx, path, st.st_size, &host_ops, f)))
         return DR_ERR(ENOMEM);
-    dr_io_log(logctx, DR_IO_LOG_DEBUG, "Opened '%s' (%"PRId64" bytes)\n", path, (int64_t)st.st_size);
+    dr_vlog(logctx, DR_VLOG_DEBUG, "Opened '%s' (%"PRId64" bytes)\n", path, (int64_t)st.st_size);
     return 0;
 }
 
@@ -135,14 +135,14 @@ int ff_discio_read_blocks(DiscIOSource *src, int64_t pos, uint8_t *buf, int len,
 {
     const int64_t bs = DISCIO_BLOCK_SIZE;
     const int64_t padded_end = (src->size + bs - 1) / bs * bs;
-    const int fail_level = quiet ? DR_IO_LOG_DEBUG : DR_IO_LOG_WARNING;
+    const int fail_level = quiet ? DR_VLOG_DEBUG : DR_VLOG_WARNING;
     int single_block = 0;
     int off = 0;
 
     if (attempts < 1)
         attempts = 1;
     if (pos < 0 || pos % bs || len < 0 || len % bs) {
-        dr_io_log(src->logctx, DR_IO_LOG_ERROR,
+        dr_vlog(src->logctx, DR_VLOG_ERROR,
                "Read of '%s' refused: offset %"PRId64" and length %d must be whole %d-byte blocks\n",
                src->name, pos, len, DISCIO_BLOCK_SIZE);
         return DR_ERR(EINVAL);
@@ -158,7 +158,7 @@ int ff_discio_read_blocks(DiscIOSource *src, int64_t pos, uint8_t *buf, int len,
 
             if (tries > 0 && !single_block) {
                 single_block = 1;
-                dr_io_log(src->logctx, DR_IO_LOG_DEBUG,
+                dr_vlog(src->logctx, DR_VLOG_DEBUG,
                        "Reading the rest of the request on '%s' one block at a time\n", src->name);
             }
             want = single_block ? DISCIO_BLOCK_SIZE : len - off;
@@ -166,14 +166,14 @@ int ff_discio_read_blocks(DiscIOSource *src, int64_t pos, uint8_t *buf, int len,
 
             if (got >= 0 && got % bs && pos + got == src->size && pos + want == padded_end) {
                 /* the last block of a source that is not a whole number of blocks */
-                dr_io_log(src->logctx, DR_IO_LOG_VERBOSE,
+                dr_vlog(src->logctx, DR_VLOG_VERBOSE,
                        "Padded %d bytes after the end of '%s' (%"PRId64" bytes, not a whole number "
                        "of blocks) with 0xFF\n", want - got, src->name, src->size);
                 memset(buf + off + got, 0xFF, want - got);
                 got = want;
             }
             if (got > want) {
-                dr_io_log(src->logctx, DR_IO_LOG_ERROR,
+                dr_vlog(src->logctx, DR_VLOG_ERROR,
                        "Read of '%s' at offset %"PRId64" returned %d bytes, more than the %d asked\n",
                        src->name, pos, got, want);
                 return DR_ERR_EXTERNAL;   /* the source broke its contract */
@@ -193,12 +193,12 @@ int ff_discio_read_blocks(DiscIOSource *src, int64_t pos, uint8_t *buf, int len,
 
             tries++;
             if (tries >= attempts) {
-                dr_io_log(src->logctx, quiet ? DR_IO_LOG_DEBUG : DR_IO_LOG_ERROR,
+                dr_vlog(src->logctx, quiet ? DR_VLOG_DEBUG : DR_VLOG_ERROR,
                        "Read of '%s' at offset %"PRId64" failed after %d attempt(s): %s\n",
                        src->name, pos, tries, reason);
                 return err;
             }
-            dr_io_log(src->logctx, fail_level,
+            dr_vlog(src->logctx, fail_level,
                    "Error reading '%s' at offset %"PRId64" (%d bytes): %s; retry %d of %d\n",
                    src->name, pos, want, reason, tries, attempts - 1);
         }

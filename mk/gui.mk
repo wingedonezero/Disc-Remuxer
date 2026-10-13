@@ -9,7 +9,7 @@ GUI_TYPE := Release
 else
 GUI_TYPE := Debug
 endif
-GUI_ARGS := -DCMAKE_BUILD_TYPE=$(GUI_TYPE) -DENGINE_LIB=$(ENGINE_LIB) -DIO_LIB=$(IO_LIB) -DMUX_LIB=$(MUX_LIB) -DBASE_LIB=$(BASE_LIB) \
+GUI_ARGS := -DCMAKE_BUILD_TYPE=$(GUI_TYPE) -DENGINE_LIB=$(ENGINE_LIB) -DIO_LIB=$(IO_LIB) -DMUX_LIB=$(MUX_LIB) -DPARSE_LIB=$(PARSE_LIB) -DBASE_LIB=$(BASE_LIB) \
             -DENGINE_INCLUDE=$(TOOL_SRC) -DSRC_INCLUDE=$(ROOT)/src \
             -DFFMPEG_PREFIX=$(FFMPEG) -DFFMPEG_PKGCONFIG=$(FFMPEG)/lib/pkgconfig:$(PC) \
             -DDISC_REMUXER_VERSION=$(TOOL_VERSION) -DCOV_LDFLAGS=$(COV_LDFLAGS)
@@ -20,7 +20,7 @@ $(GUI_DIR)/build/Makefile: $(GUI_DIR)/args $(GUI_SRC)/CMakeLists.txt
 	cd $(GUI_DIR)/build && cmake $(GUI_SRC) $(GUI_ARGS) >/dev/null
 	touch $@
 
-$(BUILD)/bin/disc-remuxer-gui: $(GUI_DIR)/build/Makefile $(ENGINE_LIB) $(IO_LIB) $(MUX_LIB) $(BASE_LIB) $(call src_files,$(GUI_SRC)) \
+$(BUILD)/bin/disc-remuxer-gui: $(GUI_DIR)/build/Makefile $(ENGINE_LIB) $(IO_LIB) $(MUX_LIB) $(PARSE_LIB) $(BASE_LIB) $(call src_files,$(GUI_SRC)) \
                                $(TOOL_SRC)/engine.h $(BUILD)/ffmpeg/.installed
 	$(MAKE) -C $(GUI_DIR)/build -j$(JOBS) disc-remuxer-gui
 	@mkdir -p $(BUILD)/bin

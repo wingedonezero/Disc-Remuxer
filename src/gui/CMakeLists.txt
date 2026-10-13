@@ -28,5 +28,5 @@ add_executable(disc-remuxer-gui
 target_include_directories(disc-remuxer-gui PRIVATE ${ENGINE_INCLUDE} ${SRC_INCLUDE} ${FFMPEG_PREFIX}/include)
 target_compile_definitions(disc-remuxer-gui PRIVATE DISC_REMUXER_VERSION="${DISC_REMUXER_VERSION}")
 target_compile_options(disc-remuxer-gui PRIVATE -Wall -Wextra -Wno-unused-parameter)
-target_link_libraries(disc-remuxer-gui PRIVATE Qt6::Widgets ${ENGINE_LIB} ${FF_STATIC_LDFLAGS} ${IO_LIB} ${MUX_LIB} ${BASE_LIB} pthread
+target_link_libraries(disc-remuxer-gui PRIVATE Qt6::Widgets ${ENGINE_LIB} ${FF_STATIC_LDFLAGS} ${IO_LIB} ${MUX_LIB} ${PARSE_LIB} ${BASE_LIB} pthread
                       ${COV_LDFLAGS})

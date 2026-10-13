@@ -37,35 +37,6 @@ typedef struct PCMBlurayParseContext {
     FFDiscCut disc;
 } PCMBlurayParseContext;
 
-/* Whether hdr states a format: channel assignment 1 (mono) or 3 to 11,
- * sampling frequency 1, 4 or 5 (48, 96, 192 kHz), bits per sample 1 to 3
- * (16, 20, 24). */
-static int known_format(const uint8_t *hdr)
-{
-    int ca = hdr[2] >> 4, fs = hdr[2] & 0x0F, bits = hdr[3] >> 6;
-
-    return (ca == 1 || (ca >= 3 && ca <= 11)) && (fs == 1 || fs == 4 || fs == 5) && bits;
-}
-
-static int disc_unit_size(void *logctx, const uint8_t *buf, int avail, int final, void *state)
-{
-    int size;
-
-    if (avail < 4)
-        return 0;
-    size = AV_RB16(buf);
-    if (!size || !known_format(buf))
-        return DISC_CUT_NONE;
-    return avail >= 4 + size ? 4 + size : 0;
-}
-
-/* No search for the next header: the bytes kept are given up. */
-static int disc_resync(const uint8_t *buf, int avail)
-{
-    return avail;
-}
-
-static const FFDiscCutRule disc_rule = { disc_unit_size, disc_resync, 0 };
 
 static int pcm_bluray_parse(AVCodecParserContext *s, AVCodecContext *avctx,
                             const uint8_t **poutbuf, int *poutbuf_size,
@@ -74,7 +45,7 @@ static int pcm_bluray_parse(AVCodecParserContext *s, AVCodecContext *avctx,
     PCMBlurayParseContext *pc = s->priv_data;
 
     if (s->flags & PARSER_FLAG_DISC)
-        return ff_parser_disc_cut(s, avctx, &disc_rule, &pc->disc, poutbuf, poutbuf_size, buf, buf_size);
+        return ff_parser_disc_cut(s, avctx, &dr_pcm_bluray_cut, &pc->disc, poutbuf, poutbuf_size, buf, buf_size);
     *poutbuf      = buf;
     *poutbuf_size = buf_size;
     return buf_size;

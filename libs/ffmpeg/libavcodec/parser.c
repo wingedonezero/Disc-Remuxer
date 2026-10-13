@@ -30,6 +30,7 @@
 
 #include "codec_desc.h"
 #include "parser.h"
+#include "base/err.h"
 #include "parser_internal.h"
 
 av_cold AVCodecParserContext *av_parser_init(enum AVCodecID codec_id)
@@ -243,7 +244,8 @@ int ff_parser_disc_cut(AVCodecParserContext *s, void *logctx, const FFDiscCutRul
     r = rule->unit_size(logctx, dc->win, dc->len, final, dc->state);
     if (r < 0 && r != DISC_CUT_NONE) {
         dc->len = old;
-        s->disc_status = r;
+        /* the rules (src/parse) speak base/err.h; here FFmpeg's values */
+        s->disc_status = r == DR_ERR_INVALID ? AVERROR_INVALIDDATA : r;
         return 0;
     }
     if (r > 0) {

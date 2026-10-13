@@ -163,7 +163,7 @@ int ff_discio_mount_folder(void *logctx, const char *path, int attempts, DiscIOF
 
     *out = NULL;
     if (!ff_discio_folder_is_dir(path)) {
-        dr_io_log(logctx, DR_IO_LOG_ERROR, "'%s' is not a folder\n", path);
+        dr_vlog(logctx, DR_VLOG_ERROR, "'%s' is not a folder\n", path);
         return DR_ERR(ENOTDIR);
     }
     if (!(fs = dr_mallocz(sizeof(*fs))) || !(f = fs->priv = dr_mallocz(sizeof(*f))) ||
@@ -180,6 +180,6 @@ int ff_discio_mount_folder(void *logctx, const char *path, int attempts, DiscIOF
     fs->ops           = &folder_ops;
     fs->src->attempts = attempts;
     *out = fs;
-    dr_io_log(logctx, DR_IO_LOG_VERBOSE, "'%s': a disc folder, read as host files\n", f->root);
+    dr_vlog(logctx, DR_VLOG_VERBOSE, "'%s': a disc folder, read as host files\n", f->root);
     return 0;
 }

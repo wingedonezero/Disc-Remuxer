@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "base/buf.h"
+#include "base/vlog.h"
 #include "io/discio.h"
 #include "base/err.h"
 #include "base/mem.h"
@@ -79,7 +80,7 @@ static void log_callback(void *avcl, int level, const char *fmt, va_list vl)
 
 /* Route FFmpeg's log (and the libraries' through it) to sink, up to
  * max_level. */
-static void tb_io_vlog(void *logctx, int level, const char *fmt, va_list vl)
+static void tb_module_vlog(void *logctx, int level, const char *fmt, va_list vl)
 {
     static const int map[] = { AV_LOG_ERROR, AV_LOG_WARNING, AV_LOG_INFO,
                                AV_LOG_VERBOSE, AV_LOG_DEBUG, AV_LOG_TRACE };
@@ -88,7 +89,7 @@ static void tb_io_vlog(void *logctx, int level, const char *fmt, va_list vl)
 
 static void tb_log_install(tb_log_sink sink, int max_level)
 {
-    dr_io_set_vlog(tb_io_vlog);
+    dr_vlog_set(tb_module_vlog);
     pthread_mutex_lock(&log_lock);
     log_sink = sink;
     log_max_level = max_level;

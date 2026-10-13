@@ -32,12 +32,12 @@
  * a 16-bit length and the region's text data.
  */
 
-#ifndef AVCODEC_HDMV_TEXTST_H
-#define AVCODEC_HDMV_TEXTST_H
+#ifndef DISC_PARSE_HDMV_TEXTST_H
+#define DISC_PARSE_HDMV_TEXTST_H
 
 #include <stdint.h>
 
-#include "libavutil/intreadwrite.h"
+#include "base/bytes.h"
 
 #define HDMV_TEXTST_DSS 0x81            /**< dialog style segment */
 #define HDMV_TEXTST_DPS 0x82            /**< dialog presentation segment */
@@ -61,7 +61,7 @@ static inline int ff_hdmv_textst_segment_size(const uint8_t *p, int avail)
 {
     if (avail < 3)
         return -1;
-    return AV_RB16(p + 1) + 3 + (p[0] == HDMV_TEXTST_DSS ? 2 : 0);
+    return dr_rb16(p + 1) + 3 + (p[0] == HDMV_TEXTST_DSS ? 2 : 0);
 }
 
 /** The dialog presentation segment at p (avail bytes): 1 it parses (*d
@@ -76,20 +76,20 @@ static inline int ff_hdmv_textst_dialog(const uint8_t *p, int avail, HDMVTextstD
         d->error = "no dialog presentation segment";
         return 0;
     }
-    size = AV_RB16(p + 1) + 3;
+    size = dr_rb16(p + 1) + 3;
     if (size < 15 || size > avail) {
         d->error = size < 15 ? "shorter than its fixed fields" : "longer than the bytes it comes in";
         return 0;
     }
     d->size  = size;
-    d->start = (int64_t)(p[3] & 1) << 32 | AV_RB32(p + 4);
-    d->end   = (int64_t)(p[8] & 1) << 32 | AV_RB32(p + 9);
+    d->start = (int64_t)(p[3] & 1) << 32 | dr_rb32(p + 4);
+    d->end   = (int64_t)(p[8] & 1) << 32 | dr_rb32(p + 9);
     if (p[13] & 0x80) {
         if (size < 16) {
             d->error = "its palette update has no length";
             return 0;
         }
-        off = AV_RB16(p + 14) + 16;
+        off = dr_rb16(p + 14) + 16;
         if (off >= size) {
             d->error = "its palette update runs to its end";
             return 0;
@@ -109,7 +109,7 @@ static inline int ff_hdmv_textst_dialog(const uint8_t *p, int avail, HDMVTextstD
             return 0;
         }
         d->region_at[r]   = i;
-        d->region_size[r] = 4 + AV_RB16(p + i + 2);
+        d->region_size[r] = 4 + dr_rb16(p + i + 2);
         d->forced        |= !!(p[i] & HDMV_TEXTST_FORCED_ON);
         i += d->region_size[r];
     }
@@ -120,4 +120,4 @@ static inline int ff_hdmv_textst_dialog(const uint8_t *p, int avail, HDMVTextstD
     return 1;
 }
 
-#endif /* AVCODEC_HDMV_TEXTST_H */
+#endif /* DISC_PARSE_HDMV_TEXTST_H */

@@ -64,7 +64,7 @@ int ff_discio_file_read_attempts(DiscIOFS *fs, const DiscIOFile *file, int64_t p
     int done = 0;
 
     if (pos < 0 || len < 0 || pos + len > file->size) {
-        dr_io_log(src->logctx, DR_IO_LOG_ERROR,
+        dr_vlog(src->logctx, DR_VLOG_ERROR,
                "Read of %d bytes at %"PRId64" runs past the end of a %"PRId64"-byte file on '%s'\n",
                len, pos, file->size, src->name);
         return DR_ERR(EINVAL);
@@ -97,7 +97,7 @@ int ff_discio_file_read_attempts(DiscIOFS *fs, const DiscIOFile *file, int64_t p
         ext_start += ext_bytes;
     }
     if (done < len) {
-        dr_io_log(src->logctx, DR_IO_LOG_ERROR,
+        dr_vlog(src->logctx, DR_VLOG_ERROR,
                "The extents of a %"PRId64"-byte file on '%s' end before byte %"PRId64"\n",
                file->size, src->name, pos + done);
         return DR_ERR_INVALID;
@@ -212,7 +212,7 @@ static int single_extent(DiscIOFS *fs, const char *path, DiscIOExtent *ext)
     if (ret == DR_ERR(ENOMEM))
         return ret;
     if (ret < 0) {
-        dr_io_log(fs->src->logctx, DR_IO_LOG_DEBUG, "DVD-Video check, %s: %s cannot be opened (%s)\n",
+        dr_vlog(fs->src->logctx, DR_VLOG_DEBUG, "DVD-Video check, %s: %s cannot be opened (%s)\n",
                fs->ops->name, path, dr_err_text(ret));
         return 0;
     }
@@ -220,7 +220,7 @@ static int single_extent(DiscIOFS *fs, const char *path, DiscIOExtent *ext)
     if (ret)
         *ext = f->extents[0];
     else
-        dr_io_log(fs->src->logctx, DR_IO_LOG_DEBUG, "DVD-Video check, %s: %s is %d extents, not one\n",
+        dr_vlog(fs->src->logctx, DR_VLOG_DEBUG, "DVD-Video check, %s: %s is %d extents, not one\n",
                fs->ops->name, path, f->nb_extents);
     ff_discio_file_free(&f);
     return ret;
@@ -230,7 +230,7 @@ static int single_extent(DiscIOFS *fs, const char *path, DiscIOExtent *ext)
 static int read_vmg_sector(DiscIOFS *fs, int64_t sector, uint8_t *buf)
 {
     if (sector == DISCIO_SECTOR_NOT_RECORDED) {
-        dr_io_log(fs->src->logctx, DR_IO_LOG_DEBUG, "DVD-Video check, %s: the IFO's first sector is not recorded\n",
+        dr_vlog(fs->src->logctx, DR_VLOG_DEBUG, "DVD-Video check, %s: the IFO's first sector is not recorded\n",
                fs->ops->name);
         return DR_ERR_INVALID;
     }
@@ -249,20 +249,20 @@ int ff_discio_dvd_video_check(DiscIOFS *fs)
     if ((ret = fs->ops->find_dir(fs, "/")) < 0) {
         if (ret == DR_ERR(ENOMEM))
             return ret;
-        dr_io_log(log, DR_IO_LOG_VERBOSE, "DVD-Video check, %s: no root directory (%s): fails\n", what, dr_err_text(ret));
+        dr_vlog(log, DR_VLOG_VERBOSE, "DVD-Video check, %s: no root directory (%s): fails\n", what, dr_err_text(ret));
         return 0;
     }
     if ((ret = fs->ops->find_dir(fs, "/VIDEO_TS")) < 0) {
         if (ret == DR_ERR(ENOMEM))
             return ret;
-        dr_io_log(log, DR_IO_LOG_VERBOSE, "DVD-Video check, %s: no VIDEO_TS directory (%s): passes, not a DVD-Video "
+        dr_vlog(log, DR_VLOG_VERBOSE, "DVD-Video check, %s: no VIDEO_TS directory (%s): passes, not a DVD-Video "
                "volume\n", what, dr_err_text(ret));
         return 1;
     }
     if ((ret = single_extent(fs, "/VIDEO_TS/VIDEO_TS.IFO", &ifo)) < 0)
         return ret;
     if (!ret || !ifo.count) {
-        dr_io_log(log, DR_IO_LOG_VERBOSE, "DVD-Video check, %s: VIDEO_TS.IFO is missing or not one non-empty extent: "
+        dr_vlog(log, DR_VLOG_VERBOSE, "DVD-Video check, %s: VIDEO_TS.IFO is missing or not one non-empty extent: "
                "fails\n", what);
         return 0;
     }
@@ -272,26 +272,26 @@ int ff_discio_dvd_video_check(DiscIOFS *fs)
         bup = ifo;   /* the BUP is only a second place to read the same sector */
     if (read_vmg_sector(fs, ifo.sector, sec) < 0) {
         if (bup.sector == ifo.sector) {
-            dr_io_log(log, DR_IO_LOG_VERBOSE, "DVD-Video check, %s: VIDEO_TS.IFO sector %"PRId64" unreadable and no "
+            dr_vlog(log, DR_VLOG_VERBOSE, "DVD-Video check, %s: VIDEO_TS.IFO sector %"PRId64" unreadable and no "
                    "separate VIDEO_TS.BUP: fails\n", what, ifo.sector);
             return 0;
         }
         if (read_vmg_sector(fs, bup.sector, sec) < 0) {
-            dr_io_log(log, DR_IO_LOG_VERBOSE, "DVD-Video check, %s: VIDEO_TS.IFO sector %"PRId64" and VIDEO_TS.BUP "
+            dr_vlog(log, DR_VLOG_VERBOSE, "DVD-Video check, %s: VIDEO_TS.IFO sector %"PRId64" and VIDEO_TS.BUP "
                    "sector %"PRId64" unreadable: fails\n", what, ifo.sector, bup.sector);
             return 0;
         }
-        dr_io_log(log, DR_IO_LOG_VERBOSE, "DVD-Video check, %s: VIDEO_TS.IFO sector %"PRId64" unreadable, VIDEO_TS.BUP "
+        dr_vlog(log, DR_VLOG_VERBOSE, "DVD-Video check, %s: VIDEO_TS.IFO sector %"PRId64" unreadable, VIDEO_TS.BUP "
                "sector %"PRId64" checked instead\n", what, ifo.sector, bup.sector);
     }
     if (memcmp(sec, "DVDVIDEO-VMG", 12)) {
-        dr_io_log(log, DR_IO_LOG_VERBOSE, "DVD-Video check, %s: the VMG sector does not start with DVDVIDEO-VMG: fails\n",
+        dr_vlog(log, DR_VLOG_VERBOSE, "DVD-Video check, %s: the VMG sector does not start with DVDVIDEO-VMG: fails\n",
                what);
         return 0;
     }
     nts = dr_rb16(sec + 0x3e);   /* vmg_nr_of_title_sets */
     if (nts < 1 || nts > 99) {
-        dr_io_log(log, DR_IO_LOG_VERBOSE, "DVD-Video check, %s: %d title sets (must be 1-99): fails\n", what, nts);
+        dr_vlog(log, DR_VLOG_VERBOSE, "DVD-Video check, %s: %d title sets (must be 1-99): fails\n", what, nts);
         return 0;
     }
     for (int i = 1; i <= nts; i++) {
@@ -302,12 +302,12 @@ int ff_discio_dvd_video_check(DiscIOFS *fs)
         if ((ret = single_extent(fs, path, &vts)) < 0)
             return ret;
         if (!ret || !vts.count) {
-            dr_io_log(log, DR_IO_LOG_VERBOSE, "DVD-Video check, %s: %s is missing or not one non-empty extent: fails\n",
+            dr_vlog(log, DR_VLOG_VERBOSE, "DVD-Video check, %s: %s is missing or not one non-empty extent: fails\n",
                    what, path + 10);
             return 0;
         }
     }
-    dr_io_log(log, DR_IO_LOG_VERBOSE, "DVD-Video check, %s: VIDEO_TS.IFO and %d title set IFO files found: passes\n",
+    dr_vlog(log, DR_VLOG_VERBOSE, "DVD-Video check, %s: VIDEO_TS.IFO and %d title set IFO files found: passes\n",
            what, nts);
     return 1;
 }
@@ -322,13 +322,13 @@ static int mount_without_udf(DiscIOSource *src, DiscIOFS **out)
     if ((ret = ff_discio_iso9660_mount(src, 0, &iso)) < 0) {
         if (ret == DR_ERR(ENOMEM))
             return ret;
-        dr_io_log(src->logctx, DR_IO_LOG_ERROR, "'%s' has neither a UDF nor an ISO 9660 file system\n", src->name);
+        dr_vlog(src->logctx, DR_VLOG_ERROR, "'%s' has neither a UDF nor an ISO 9660 file system\n", src->name);
         return DR_ERR_INVALID;
     }
     if ((ret = ff_discio_dvd_video_check(iso)) < 0)
         goto fail;
     if (ret) {
-        dr_io_log(src->logctx, DR_IO_LOG_VERBOSE, "Reading '%s' through ISO 9660; label '%s'\n", src->name, iso->label);
+        dr_vlog(src->logctx, DR_VLOG_VERBOSE, "Reading '%s' through ISO 9660; label '%s'\n", src->name, iso->label);
         *out = iso;
         return 0;
     }
@@ -338,7 +338,7 @@ static int mount_without_udf(DiscIOSource *src, DiscIOFS **out)
         if ((ret = ff_discio_dvd_video_check(jol)) < 0)
             goto fail;
         if (ret) {
-            dr_io_log(src->logctx, DR_IO_LOG_INFO, "Reading '%s' through Joliet (ISO 9660 fails the DVD-Video check); "
+            dr_vlog(src->logctx, DR_VLOG_INFO, "Reading '%s' through Joliet (ISO 9660 fails the DVD-Video check); "
                    "label '%s'\n", src->name, jol->label);
             ff_discio_fs_close(&iso);
             *out = jol;
@@ -346,7 +346,7 @@ static int mount_without_udf(DiscIOSource *src, DiscIOFS **out)
         }
         ff_discio_fs_close(&jol);
     }
-    dr_io_log(src->logctx, DR_IO_LOG_INFO, "Reading '%s' through ISO 9660 (no file system passes the DVD-Video check); "
+    dr_vlog(src->logctx, DR_VLOG_INFO, "Reading '%s' through ISO 9660 (no file system passes the DVD-Video check); "
            "label '%s'\n", src->name, iso->label);
     *out = iso;
     return 0;
@@ -374,35 +374,35 @@ int ff_discio_mount_image(DiscIOSource *src, const DiscIOImageOptions *opts, Dis
     if (ret == DR_ERR(ENOMEM))
         return ret;
     if (ret < 0) {
-        dr_io_log(src->logctx, DR_IO_LOG_VERBOSE, "'%s' has no readable UDF file system (%s); trying ISO 9660\n",
+        dr_vlog(src->logctx, DR_VLOG_VERBOSE, "'%s' has no readable UDF file system (%s); trying ISO 9660\n",
                src->name, dr_err_text(ret));
         return mount_without_udf(src, out);
     }
     ff_discio_label_copy(label, udf->label);
     if (strcmp(label, udf->label))
-        dr_io_log(src->logctx, DR_IO_LOG_WARNING, "UDF label '%s' of '%s' cut to '%s' (not valid UTF-8 after that)\n",
+        dr_vlog(src->logctx, DR_VLOG_WARNING, "UDF label '%s' of '%s' cut to '%s' (not valid UTF-8 after that)\n",
                udf->label, src->name, label);
     memcpy(udf->label, label, sizeof(label));
 
     if (udf->udf_revision != UDF_REVISION_102) {
-        dr_io_log(src->logctx, DR_IO_LOG_VERBOSE, "Reading '%s' through %s (UDF revision 0x%04x); label '%s'\n",
+        dr_vlog(src->logctx, DR_VLOG_VERBOSE, "Reading '%s' through %s (UDF revision 0x%04x); label '%s'\n",
                src->name, udf->ops->name, udf->udf_revision, udf->label);
         *out = udf;
         return 0;
     }
     year = dr_rl16(udf->udf_recording_time + 2);
     if (opts->prefer_iso_for_old_udf102 && year < UDF102_ISO_BEFORE) {
-        dr_io_log(src->logctx, DR_IO_LOG_INFO, "'%s' has a UDF 1.02 file system recorded in %d (before %d): ISO 9660 "
+        dr_vlog(src->logctx, DR_VLOG_INFO, "'%s' has a UDF 1.02 file system recorded in %d (before %d): ISO 9660 "
                "is preferred when it holds a valid DVD-Video structure\n", src->name, year, UDF102_ISO_BEFORE);
     } else if ((ret = ff_discio_dvd_video_check(udf)) < 0) {
         goto fail;
     } else if (ret) {
-        dr_io_log(src->logctx, DR_IO_LOG_VERBOSE, "Reading '%s' through %s (UDF 1.02 recorded in %d, DVD-Video check "
+        dr_vlog(src->logctx, DR_VLOG_VERBOSE, "Reading '%s' through %s (UDF 1.02 recorded in %d, DVD-Video check "
                "passed); label '%s'\n", src->name, udf->ops->name, year, udf->label);
         *out = udf;
         return 0;
     } else {
-        dr_io_log(src->logctx, DR_IO_LOG_INFO, "The UDF 1.02 file system of '%s' fails the DVD-Video check; trying "
+        dr_vlog(src->logctx, DR_VLOG_INFO, "The UDF 1.02 file system of '%s' fails the DVD-Video check; trying "
                "ISO 9660 and Joliet\n", src->name);
     }
 
@@ -418,7 +418,7 @@ int ff_discio_mount_image(DiscIOSource *src, const DiscIOImageOptions *opts, Dis
 
             memcpy(own, iso->label, sizeof(own));
             ff_discio_label_copy(iso->label, udf->label);
-            dr_io_log(src->logctx, DR_IO_LOG_INFO, "Reading '%s' through %s instead of UDF 1.02; label '%s' (%s label "
+            dr_vlog(src->logctx, DR_VLOG_INFO, "Reading '%s' through %s instead of UDF 1.02; label '%s' (%s label "
                    "'%s', UDF label '%s')\n", src->name, iso->ops->name, iso->label, iso->ops->name, own,
                    udf->label);
             ff_discio_fs_close(&udf);
@@ -427,7 +427,7 @@ int ff_discio_mount_image(DiscIOSource *src, const DiscIOImageOptions *opts, Dis
         }
         ff_discio_fs_close(&iso);
     }
-    dr_io_log(src->logctx, DR_IO_LOG_VERBOSE, "Neither ISO 9660 nor Joliet passes the DVD-Video check; reading '%s' through "
+    dr_vlog(src->logctx, DR_VLOG_VERBOSE, "Neither ISO 9660 nor Joliet passes the DVD-Video check; reading '%s' through "
            "%s without the check; label '%s'\n", src->name, udf->ops->name, udf->label);
     *out = udf;
     return 0;
@@ -444,7 +444,7 @@ static int has_file(DiscIOFS *fs, const char *path)
     int ret = fs->ops->open_file(fs, path, &f);
 
     ff_discio_file_free(&f);
-    dr_io_log(fs->src->logctx, DR_IO_LOG_DEBUG, "%s: %s\n", path, ret >= 0 ? "found" : dr_err_text(ret));
+    dr_vlog(fs->src->logctx, DR_VLOG_DEBUG, "%s: %s\n", path, ret >= 0 ? "found" : dr_err_text(ret));
     return ret >= 0;
 }
 
@@ -458,7 +458,7 @@ enum DiscIODiscFormat ff_discio_disc_format(DiscIOFS *fs)
     if (has_file(fs, "/HVDVD_TS/HVA00001.VTI") || has_file(fs, "/HDDVD_TS/HVA00001.VTI")) {
         if (has_file(fs, "/ADV_OBJ/DISCID.DAT"))
             return DISCIO_DISC_HDDVD;
-        dr_io_log(fs->src->logctx, DR_IO_LOG_DEBUG, "HD DVD title set found but no /ADV_OBJ/DISCID.DAT: not an HD DVD\n");
+        dr_vlog(fs->src->logctx, DR_VLOG_DEBUG, "HD DVD title set found but no /ADV_OBJ/DISCID.DAT: not an HD DVD\n");
     }
     if (has_file(fs, "/VIDEO_TS/VIDEO_TS.IFO"))
         return DISCIO_DISC_DVD;

@@ -31,7 +31,7 @@
 #include <string.h>
 
 #include "libavcodec/defs.h"
-#include "libavcodec/hdmv_textst.h"
+#include "parse/hdmv_textst.h"
 #include "libavutil/intreadwrite.h"
 #include "libavutil/log.h"
 #include "libavutil/mem.h"

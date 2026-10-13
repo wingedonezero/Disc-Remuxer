@@ -54,21 +54,13 @@ static inline const FFCodecParser *ffcodecparser(const AVCodecParser *parser)
 #define PARSER_CODEC_LIST(...) CHECK_FOR_TOO_MANY_IDS(__VA_ARGS__) \
     .p.codec_ids = { FIRST_SEVEN(__VA_ARGS__, TIMES_SEVEN(AV_CODEC_ID_NONE)) }
 
-/**
- * A disc cut rule (PARSER_FLAG_DISC): how a parser cuts a disc's stream.
- */
-typedef struct FFDiscCutRule {
-    /** Size of the unit at the start of buf (avail bytes; final: no more
-     *  bytes will come): > 0 its size, 0 more bytes needed, DISC_CUT_NONE no
-     *  unit starts there, another < 0 the stream cannot be cut (logged). */
-    int (*unit_size)(void *logctx, const uint8_t *buf, int avail, int final, void *state);
-    /** Where the next unit may start in buf (avail bytes), < 0 when not
-     *  within them. */
-    int (*resync)(const uint8_t *buf, int avail);
-    int state_size;                     /**< bytes of the rule's own state */
-} FFDiscCutRule;
+/* The disc cut and frame rules live in src/parse (parse/rules.h); the
+ * engines below run them under the av_parser_parse2() contract. */
+#include "parse/rules.h"
 
-#define DISC_CUT_NONE (-1)
+typedef DrCutRule   FFDiscCutRule;
+typedef DrFrameRule FFDiscFrameRule;
+#define DISC_CUT_NONE DR_CUT_NONE
 
 /** The bytes of a disc cut: kept, not yet given out. */
 typedef struct FFDiscCut {
@@ -92,23 +84,6 @@ typedef struct FFDiscCut {
 int ff_parser_disc_cut(AVCodecParserContext *s, void *logctx, const FFDiscCutRule *rule, FFDiscCut *dc,
                        const uint8_t **poutbuf, int *poutbuf_size, const uint8_t *buf, int buf_size);
 void ff_parser_disc_cut_close(FFDiscCut *dc);
-
-/**
- * A disc frame rule (PARSER_FLAG_DISC) in the disc reader's four steps, for
- * codecs whose frames are found by a sync word: sync (0 no frame starts
- * here, 1 one does, 2 too few bytes to tell), size (> 0 the frame's size,
- * <= 0 more bytes needed), check (1 the frame is valid), resync (bytes to
- * skip to the next frame start, -2 more bytes needed, -1 give the kept
- * bytes up), and limit: the bytes kept while looking for a frame (more
- * coming in: the kept bytes and the new ones are given up).
- */
-typedef struct FFDiscFrameRule {
-    int (*sync)(void *ctx, const uint8_t *buf, int avail);
-    int (*size)(void *ctx, const uint8_t *buf, int avail);
-    int (*check)(void *ctx, const uint8_t *buf, int size);
-    int (*resync)(void *ctx, const uint8_t *buf, int avail);
-    int limit;
-} FFDiscFrameRule;
 
 /** The state of a disc frame search: the kept bytes and the sync. */
 typedef struct FFDiscFrames {

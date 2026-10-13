@@ -284,7 +284,7 @@ static __attribute__((format(printf, 3, 4))) void udf_log(UDFLinux *sb, int leve
     va_start(ap, fmt);
     vsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
-    dr_io_log(sb->src->logctx, level, "UDF (Linux) on '%s': %s\n", sb->src->name, msg);
+    dr_vlog(sb->src->logctx, level, "UDF (Linux) on '%s': %s\n", sb->src->name, msg);
 }
 
 /* Records why an operation fails (for its final log line), logs it at debug
@@ -296,7 +296,7 @@ static __attribute__((format(printf, 3, 4))) int udf_fail(UDFLinux *sb, int code
     va_start(ap, fmt);
     vsnprintf(sb->why, sizeof(sb->why), fmt, ap);
     va_end(ap);
-    udf_log(sb, DR_IO_LOG_DEBUG, "%s", sb->why);
+    udf_log(sb, DR_VLOG_DEBUG, "%s", sb->why);
     return code;
 }
 
@@ -311,7 +311,7 @@ static int udf_corrupt(UDFLinux *sb, LbAddr loc, const char *why)
 /* a directory holds a broken entry */
 static int udf_dir_corrupt(UDFLinux *sb, const UDFInode *dir, const char *why)
 {
-    udf_log(sb, DR_IO_LOG_WARNING, "directory at block %"PRIu32": %s", dir->location.lbn, why);
+    udf_log(sb, DR_VLOG_WARNING, "directory at block %"PRIu32": %s", dir->location.lbn, why);
     return udf_fail(sb, DR_ERR_INVALID, "the directory at block %"PRIu32" holds a broken entry (%s)",
                     dir->location.lbn, why);
 }
@@ -443,7 +443,7 @@ static int udf_read_tagged(UDFLinux *sb, uint32_t block, uint32_t location, uint
         return -1;
 
     if ((ret = sb_bread(sb, block, bh)) < 0) {
-        udf_log(sb, DR_IO_LOG_DEBUG, "read failed, block=%"PRIu32", location=%"PRIu32" (%s)",
+        udf_log(sb, DR_VLOG_DEBUG, "read failed, block=%"PRIu32", location=%"PRIu32" (%s)",
                 block, location, dr_err_text(ret));
         return -1;
     }
@@ -451,7 +451,7 @@ static int udf_read_tagged(UDFLinux *sb, uint32_t block, uint32_t location, uint
     *ident = dr_rl16(bh);
 
     if (location != dr_rl32(bh + 12)) {
-        udf_log(sb, DR_IO_LOG_TRACE, "location mismatch block %"PRIu32", tag %"PRIu32" != %"PRIu32,
+        udf_log(sb, DR_VLOG_TRACE, "location mismatch block %"PRIu32", tag %"PRIu32" != %"PRIu32,
                 block, dr_rl32(bh + 12), location);
         return -1;
     }
@@ -459,7 +459,7 @@ static int udf_read_tagged(UDFLinux *sb, uint32_t block, uint32_t location, uint
     /* Verify the tag checksum */
     checksum = udf_tag_checksum(bh);
     if (checksum != bh[4]) {
-        udf_log(sb, DR_IO_LOG_DEBUG, "tag checksum failed, block %"PRIu32": 0x%02x != 0x%02x",
+        udf_log(sb, DR_VLOG_DEBUG, "tag checksum failed, block %"PRIu32": 0x%02x != 0x%02x",
                 block, checksum, bh[4]);
         return -1;
     }
@@ -467,20 +467,20 @@ static int udf_read_tagged(UDFLinux *sb, uint32_t block, uint32_t location, uint
     /* Verify the tag version */
     ver = dr_rl16(bh + 2);
     if (ver != 0x0002 && ver != 0x0003) {
-        udf_log(sb, DR_IO_LOG_DEBUG, "tag version 0x%04x != 0x0002 || 0x0003, block %"PRIu32, ver, block);
+        udf_log(sb, DR_VLOG_DEBUG, "tag version 0x%04x != 0x0002 || 0x0003, block %"PRIu32, ver, block);
         return -1;
     }
 
     /* Verify the descriptor CRC */
     crc_len = dr_rl16(bh + 10);
     if (crc_len + SIZEOF_TAG > sb->blocksize) {
-        udf_log(sb, DR_IO_LOG_DEBUG, "block %"PRIu32": CRC length %u exceeds block size", block, crc_len);
+        udf_log(sb, DR_VLOG_DEBUG, "block %"PRIu32": CRC length %u exceeds block size", block, crc_len);
         return -1;
     }
     if (dr_rl16(bh + 8) == crc_itu_t(0, bh + SIZEOF_TAG, crc_len))
         return 0;
 
-    udf_log(sb, DR_IO_LOG_DEBUG, "Crc failure block %"PRIu32": crc = %u, crclen = %u",
+    udf_log(sb, DR_VLOG_DEBUG, "Crc failure block %"PRIu32": crc = %u, crclen = %u",
             block, dr_rl16(bh + 8), crc_len);
     return -1;
 }
@@ -608,7 +608,7 @@ static int udf_current_aext(UDFLinux *sb, const UDFInode *inode, ExtentPosition 
         adsize = 16;
         break;
     default:
-        udf_log(sb, DR_IO_LOG_DEBUG, "alloc_type = %u unsupported", inode->alloc_type);
+        udf_log(sb, DR_VLOG_DEBUG, "alloc_type = %u unsupported", inode->alloc_type);
         return udf_corrupt(sb, inode->location, "unsupported allocation descriptor type");
     }
 
@@ -629,7 +629,7 @@ static int udf_current_aext(UDFLinux *sb, const UDFInode *inode, ExtentPosition 
     a->etype = raw_len >> 30;
 
     if (a->eloc.part >= sb->nb_partmaps) {
-        udf_log(sb, DR_IO_LOG_DEBUG, "invalid partition reference %u (partitions %d)",
+        udf_log(sb, DR_VLOG_DEBUG, "invalid partition reference %u (partitions %d)",
                 a->eloc.part, sb->nb_partmaps);
         return udf_corrupt(sb, inode->location, "invalid partition reference in an extent");
     }
@@ -655,7 +655,7 @@ static int udf_next_aext(UDFLinux *sb, const UDFInode *inode, ExtentPosition *ep
             return ret;
 
         if (++indirections > UDF_MAX_INDIR_EXTS) {
-            udf_log(sb, DR_IO_LOG_WARNING, "too many indirect extents in the inode at block %"PRIu32,
+            udf_log(sb, DR_VLOG_WARNING, "too many indirect extents in the inode at block %"PRIu32,
                     inode->location.lbn);
             return udf_corrupt(sb, inode->location, "too many indirect extents");
         }
@@ -669,7 +669,7 @@ static int udf_next_aext(UDFLinux *sb, const UDFInode *inode, ExtentPosition *ep
 
             for (int i = 0; i < epos->nb_visited; i++) {
                 if (epos->visited[i] == key) {
-                    udf_log(sb, DR_IO_LOG_WARNING, "the allocation extents of the inode at block %"PRIu32
+                    udf_log(sb, DR_VLOG_WARNING, "the allocation extents of the inode at block %"PRIu32
                             " come back to block %"PRIu32" of partition %u: a loop, the inode is unusable",
                             inode->location.lbn, a->eloc.lbn, a->eloc.part);
                     return udf_corrupt(sb, inode->location, "allocation extent chain loops");
@@ -693,7 +693,7 @@ static int udf_next_aext(UDFLinux *sb, const UDFInode *inode, ExtentPosition *ep
         if (!epos->bh && !(epos->bh = dr_malloc(sb->blocksize)))
             return DR_ERR(ENOMEM);
         if ((ret = sb_bread(sb, block, epos->bh)) < 0) {
-            udf_log(sb, DR_IO_LOG_DEBUG, "reading block %"PRIu32" failed!", block);
+            udf_log(sb, DR_VLOG_DEBUG, "reading block %"PRIu32" failed!", block);
             dr_freep(&epos->bh);
             return udf_fail(sb, ret, "reading the allocation extent at block %"PRIu32" failed", block);
         }
@@ -776,7 +776,7 @@ static uint32_t udf_get_pblock_virt15(UDFLinux *sb, uint32_t block, uint16_t par
         return UDF_BAD_BLOCK;
 
     if (block >= map->vat_num_entries) {
-        udf_log(sb, DR_IO_LOG_DEBUG, "Trying to access block beyond end of VAT (%"PRIu32" max %"PRIu32")",
+        udf_log(sb, DR_VLOG_DEBUG, "Trying to access block beyond end of VAT (%"PRIu32" max %"PRIu32")",
                 block, map->vat_num_entries);
         return UDF_BAD_BLOCK;
     }
@@ -803,14 +803,14 @@ static uint32_t udf_get_pblock_virt15(UDFLinux *sb, uint32_t block, uint16_t par
         }
 
         if (udf_bread(sb, vat, newblock, bh) <= 0) {
-            udf_log(sb, DR_IO_LOG_DEBUG, "get_pblock(UDF_VIRTUAL_MAP, %"PRIu32", %u) failed", block, partition);
+            udf_log(sb, DR_VLOG_DEBUG, "get_pblock(UDF_VIRTUAL_MAP, %"PRIu32", %u) failed", block, partition);
             return UDF_BAD_BLOCK;
         }
         loc = dr_rl32(bh + 4 * index);
     }
 
     if (vat->location.part == partition) {
-        udf_log(sb, DR_IO_LOG_DEBUG, "recursive call to udf_get_pblock!");
+        udf_log(sb, DR_VLOG_DEBUG, "recursive call to udf_get_pblock!");
         return UDF_BAD_BLOCK;
     }
 
@@ -880,7 +880,7 @@ static uint32_t udf_get_pblock_meta25(UDFLinux *sb, uint32_t block, uint16_t par
     uint32_t ret;
 
     if (sb->meta_depth) {
-        udf_log(sb, DR_IO_LOG_WARNING, "metadata partition %u is reached again while translating "
+        udf_log(sb, DR_VLOG_WARNING, "metadata partition %u is reached again while translating "
                 "through a metadata partition (block %"PRIu32"): a loop", partition, block);
         return UDF_BAD_BLOCK;
     }
@@ -902,7 +902,7 @@ static uint32_t udf_get_pblock_meta25_inner(UDFLinux *sb, uint32_t block, uint16
 
     retblk = udf_try_read_meta(sb, inode, block, partition, offset);
     if (retblk == UDF_BAD_BLOCK && map->metadata_fe) {
-        udf_log(sb, DR_IO_LOG_WARNING, "error reading from METADATA, trying to read from MIRROR");
+        udf_log(sb, DR_VLOG_WARNING, "error reading from METADATA, trying to read from MIRROR");
         if (!map->mirror_loaded) {
             map->mirror_fe = udf_find_metadata_inode_efe(sb, map->mirror_file_loc,
                                                          map->phys_partition_ref);
@@ -925,7 +925,7 @@ static uint32_t udf_get_pblock(UDFLinux *sb, uint32_t block, uint16_t partition,
     const PartMap *map;
 
     if (partition >= sb->nb_partmaps) {
-        udf_log(sb, DR_IO_LOG_DEBUG, "block=%"PRIu32", partition=%u, offset=%"PRIu32": invalid partition",
+        udf_log(sb, DR_VLOG_DEBUG, "block=%"PRIu32", partition=%u, offset=%"PRIu32": invalid partition",
                 block, partition, offset);
         return UDF_BAD_BLOCK;
     }
@@ -960,13 +960,13 @@ static int udf_read_inode(UDFLinux *sb, LbAddr iloc, int hidden_inode, UDFInode 
 
 reread:
     if (iloc.part >= sb->nb_partmaps) {
-        udf_log(sb, DR_IO_LOG_DEBUG, "partition reference: %u > logical volume partitions: %d",
+        udf_log(sb, DR_VLOG_DEBUG, "partition reference: %u > logical volume partitions: %d",
                 iloc.part, sb->nb_partmaps);
         return udf_corrupt(sb, iloc, "partition reference out of range");
     }
 
     if (iloc.lbn >= sb->partmaps[iloc.part].len) {
-        udf_log(sb, DR_IO_LOG_DEBUG, "block=%"PRIu32", partition=%u out of range", iloc.lbn, iloc.part);
+        udf_log(sb, DR_VLOG_DEBUG, "block=%"PRIu32", partition=%u out of range", iloc.lbn, iloc.part);
         return udf_corrupt(sb, iloc, "block out of range");
     }
 
@@ -974,7 +974,7 @@ reread:
         return udf_corrupt(sb, iloc, "file entry unreadable");
 
     if (ident != TAG_IDENT_FE && ident != TAG_IDENT_EFE && ident != TAG_IDENT_USE) {
-        udf_log(sb, DR_IO_LOG_DEBUG, "inode at block %"PRIu32" has tag %u", iloc.lbn, ident);
+        udf_log(sb, DR_VLOG_DEBUG, "inode at block %"PRIu32" has tag %u", iloc.lbn, ident);
         return udf_corrupt(sb, iloc, "not a file entry");
     }
 
@@ -989,20 +989,20 @@ reread:
             iloc.part = dr_rl16(ibh + 44);
             for (unsigned i = 0; i < nb_seen; i++) {
                 if (seen[i] == ((uint64_t)iloc.part << 32 | iloc.lbn)) {
-                    udf_log(sb, DR_IO_LOG_WARNING, "the indirect entries come back to block %"PRIu32
+                    udf_log(sb, DR_VLOG_WARNING, "the indirect entries come back to block %"PRIu32
                             " of partition %u: a loop", iloc.lbn, iloc.part);
                     return udf_corrupt(sb, iloc, "indirect entry chain loops");
                 }
             }
             if (++indirections > UDF_MAX_ICB_NESTING) {
-                udf_log(sb, DR_IO_LOG_WARNING, "too many ICBs in ICB hierarchy (max %d supported)",
+                udf_log(sb, DR_VLOG_WARNING, "too many ICBs in ICB hierarchy (max %d supported)",
                         UDF_MAX_ICB_NESTING);
                 return udf_corrupt(sb, iloc, "too many indirect entries");
             }
             goto reread;
         }
     } else if (strategy != 4) {
-        udf_log(sb, DR_IO_LOG_WARNING, "unsupported strategy type: %u", strategy);
+        udf_log(sb, DR_VLOG_WARNING, "unsupported strategy type: %u", strategy);
         return udf_corrupt(sb, iloc, "unsupported strategy type");
     }
 
@@ -1100,13 +1100,13 @@ reread:
     case ICBTAG_FILE_TYPE_SYMLINK:
         break;
     case ICBTAG_FILE_TYPE_MAIN:
-        udf_log(sb, DR_IO_LOG_DEBUG, "METADATA FILE-----");
+        udf_log(sb, DR_VLOG_DEBUG, "METADATA FILE-----");
         break;
     case ICBTAG_FILE_TYPE_MIRROR:
-        udf_log(sb, DR_IO_LOG_DEBUG, "METADATA MIRROR FILE-----");
+        udf_log(sb, DR_VLOG_DEBUG, "METADATA MIRROR FILE-----");
         break;
     case ICBTAG_FILE_TYPE_BITMAP:
-        udf_log(sb, DR_IO_LOG_DEBUG, "METADATA BITMAP FILE-----");
+        udf_log(sb, DR_VLOG_DEBUG, "METADATA BITMAP FILE-----");
         break;
     case ICBTAG_FILE_TYPE_BLOCK:
     case ICBTAG_FILE_TYPE_CHAR:
@@ -1117,7 +1117,7 @@ reread:
         }
         break;
     default:
-        udf_log(sb, DR_IO_LOG_WARNING, "inode at block %"PRIu32" has unknown file type %u",
+        udf_log(sb, DR_VLOG_WARNING, "inode at block %"PRIu32" has unknown file type %u",
                 iloc.lbn, inode->file_type);
         ret = udf_corrupt(sb, iloc, "unknown file type");
         goto out;
@@ -1162,11 +1162,11 @@ static UDFInode *udf_find_metadata_inode_efe(UDFLinux *sb, uint32_t meta_file_lo
     UDFInode *metadata_fe;
 
     if (udf_iget(sb, addr, 1, &metadata_fe) < 0) {
-        udf_log(sb, DR_IO_LOG_WARNING, "metadata inode efe not found");
+        udf_log(sb, DR_VLOG_WARNING, "metadata inode efe not found");
         return NULL;
     }
     if (metadata_fe->alloc_type != ICBTAG_FLAG_AD_SHORT) {
-        udf_log(sb, DR_IO_LOG_WARNING, "metadata inode efe does not have short allocation descriptors!");
+        udf_log(sb, DR_VLOG_WARNING, "metadata inode efe does not have short allocation descriptors!");
         udf_corrupt(sb, addr, "metadata file without short allocation descriptors");
         return NULL;
     }
@@ -1215,7 +1215,7 @@ static int udf_check_vsd(UDFLinux *sb)
     uint64_t sectorsize = DR_MAX(sb->blocksize, DISCIO_BLOCK_SIZE);
     int nsr = 0, read_any = 0;
 
-    udf_log(sb, DR_IO_LOG_DEBUG, "Starting at sector %u (%"PRIu32" byte sectors)",
+    udf_log(sb, DR_VLOG_DEBUG, "Starting at sector %u (%"PRIu32" byte sectors)",
             (unsigned)(sector >> sb->bits), sb->blocksize);
     for (; !nsr && sector < VSD_MAX_SECTOR_OFFSET; sector += sectorsize) {
         const uint8_t *vsd;
@@ -1261,9 +1261,9 @@ static void udf_verify_domain_identifier(UDFLinux *sb, const uint8_t *ident, con
     int protect   = ident[26] & 3;          /* domainFlags: hard / soft write protect */
 
     if (!compliant)
-        udf_log(sb, DR_IO_LOG_WARNING, "Not OSTA UDF compliant %s descriptor.", dname);
+        udf_log(sb, DR_VLOG_WARNING, "Not OSTA UDF compliant %s descriptor.", dname);
     else if (dirty)
-        udf_log(sb, DR_IO_LOG_WARNING, "Possibly not OSTA UDF compliant %s descriptor.", dname);
+        udf_log(sb, DR_VLOG_WARNING, "Possibly not OSTA UDF compliant %s descriptor.", dname);
     if (!compliant || dirty || protect)
         sb->rw_incompat = 1;
 }
@@ -1282,13 +1282,13 @@ static int udf_find_fileset(UDFLinux *sb, LbAddr fileset)
     if (ident != TAG_IDENT_FSD)
         return udf_fail(sb, DR_ERR_INVALID, "no file set descriptor at the file set location");
 
-    udf_log(sb, DR_IO_LOG_DEBUG, "Fileset at block=%"PRIu32", partition=%u", fileset.lbn, fileset.part);
+    udf_log(sb, DR_VLOG_DEBUG, "Fileset at block=%"PRIu32", partition=%u", fileset.lbn, fileset.part);
 
     sb->partition = fileset.part;
     udf_verify_domain_identifier(sb, bh + 416, "file set");
     sb->rootdir.lbn  = dr_rl32(bh + 404);   /* rootDirectoryICB.extLocation */
     sb->rootdir.part = dr_rl16(bh + 408);
-    udf_log(sb, DR_IO_LOG_DEBUG, "Rootdir at block=%"PRIu32", partition=%u", sb->rootdir.lbn, sb->rootdir.part);
+    udf_log(sb, DR_VLOG_DEBUG, "Rootdir at block=%"PRIu32", partition=%u", sb->rootdir.lbn, sb->rootdir.part);
     return 0;
 }
 
@@ -1308,7 +1308,7 @@ static int udf_load_pvoldesc(UDFLinux *sb, uint32_t block)
     if (ident != TAG_IDENT_PVD)
         return udf_fail(sb, DR_ERR_INVALID, "the primary volume descriptor at block %"PRIu32" is unreadable", block);
 
-    udf_log(sb, DR_IO_LOG_DEBUG, "recording time %04u/%02u/%02u %02u:%02u (%x)",
+    udf_log(sb, DR_VLOG_DEBUG, "recording time %04u/%02u/%02u %02u:%02u (%x)",
             dr_rl16(bh + 376 + 2), bh[376 + 4], bh[376 + 5], bh[376 + 6], bh[376 + 7], dr_rl16(bh + 376));
     if (!sb->pvd && !(sb->pvd = dr_malloc(sb->blocksize)))
         return DR_ERR(ENOMEM);
@@ -1326,18 +1326,18 @@ static int udf_load_metadata_files(UDFLinux *sb, int partition, int type1_index)
     map->phys_partition_ref = type1_index;
 
     /* metadata address */
-    udf_log(sb, DR_IO_LOG_DEBUG, "Metadata file location: block = %"PRIu32" part = %d",
+    udf_log(sb, DR_VLOG_DEBUG, "Metadata file location: block = %"PRIu32" part = %d",
             map->meta_file_loc, type1_index);
 
     fe = udf_find_metadata_inode_efe(sb, map->meta_file_loc, type1_index);
     if (!fe) {
         /* mirror file entry */
-        udf_log(sb, DR_IO_LOG_DEBUG, "Mirror metadata file location: block = %"PRIu32" part = %d",
+        udf_log(sb, DR_VLOG_DEBUG, "Mirror metadata file location: block = %"PRIu32" part = %d",
                 map->mirror_file_loc, type1_index);
 
         fe = udf_find_metadata_inode_efe(sb, map->mirror_file_loc, type1_index);
         if (!fe) {
-            udf_log(sb, DR_IO_LOG_WARNING, "Both metadata and mirror metadata inode efe can not found");
+            udf_log(sb, DR_VLOG_WARNING, "Both metadata and mirror metadata inode efe can not found");
             return udf_fail(sb, DR_ERR_INVALID, "neither the metadata file nor its mirror could be read");
         }
         map->mirror_fe = fe;
@@ -1352,14 +1352,14 @@ static int udf_load_metadata_files(UDFLinux *sb, int partition, int type1_index)
     if (map->bitmap_file_loc != 0xFFFFFFFF) {
         LbAddr addr = { map->bitmap_file_loc, type1_index };
 
-        udf_log(sb, DR_IO_LOG_DEBUG, "Bitmap file location: block = %"PRIu32" part = %d",
+        udf_log(sb, DR_VLOG_DEBUG, "Bitmap file location: block = %"PRIu32" part = %d",
                 addr.lbn, type1_index);
         if (udf_iget(sb, addr, 1, &fe) < 0)
-            udf_log(sb, DR_IO_LOG_WARNING,
+            udf_log(sb, DR_VLOG_WARNING,
                     "bitmap inode efe not found but it's ok since the disc is mounted read-only");
     }
 
-    udf_log(sb, DR_IO_LOG_DEBUG, "udf_load_metadata_files Ok");
+    udf_log(sb, DR_VLOG_DEBUG, "udf_load_metadata_files Ok");
     return 0;
 }
 
@@ -1410,14 +1410,14 @@ static int udf_fill_partdesc_info(UDFLinux *sb, const uint8_t *p, int p_index)
     uint32_t root = dr_rl32(p + 188);   /* partitionStartingLocation */
 
     if (root > UINT32_MAX - len) {
-        udf_log(sb, DR_IO_LOG_WARNING, "Partition %d has invalid location %"PRIu32" + %"PRIu32,
+        udf_log(sb, DR_VLOG_WARNING, "Partition %d has invalid location %"PRIu32" + %"PRIu32,
                 p_index, root, len);
         return udf_fail(sb, DR_ERR_INVALID, "partition %d has an invalid location", p_index);
     }
     map->len  = len;
     map->root = root;
 
-    udf_log(sb, DR_IO_LOG_DEBUG, "Partition (%d type %d) starts at physical %"PRIu32", block length %"PRIu32,
+    udf_log(sb, DR_VLOG_DEBUG, "Partition (%d type %d) starts at physical %"PRIu32", block length %"PRIu32,
             p_index, map->ptype, root, len);
 
     check_partition_desc(sb, p, map);
@@ -1436,7 +1436,7 @@ static int udf_fill_partdesc_info(UDFLinux *sb, const uint8_t *p, int p_index)
         int ret;
 
         if ((ret = udf_iget(sb, loc, 1, &inode)) < 0) {
-            udf_log(sb, DR_IO_LOG_DEBUG, "cannot load unallocSpaceTable (part %d)", p_index);
+            udf_log(sb, DR_VLOG_DEBUG, "cannot load unallocSpaceTable (part %d)", p_index);
             return ret;
         }
     }
@@ -1444,7 +1444,7 @@ static int udf_fill_partdesc_info(UDFLinux *sb, const uint8_t *p, int p_index)
     if (dr_rl32(p + 64)) {     /* unallocSpaceBitmap.extLength */
         /* Check whether math over bitmap won't overflow. */
         if (map->len > UINT32_MAX - (SIZEOF_SPACE_BITMAP << 3)) {
-            udf_log(sb, DR_IO_LOG_WARNING, "Partition %d is too long (%"PRIu32")", p_index, map->len);
+            udf_log(sb, DR_VLOG_WARNING, "Partition %d is too long (%"PRIu32")", p_index, map->len);
             return udf_fail(sb, DR_ERR_INVALID, "partition %d is too long", p_index);
         }
     }
@@ -1484,7 +1484,7 @@ static int udf_load_vat(UDFLinux *sb, int p_index, int type1_index)
 
     udf_find_vat_block(sb, p_index, type1_index, sb->last_block);
     if (!sb->vat_inode && sb->last_block != blocks - 1) {
-        udf_log(sb, DR_IO_LOG_INFO,
+        udf_log(sb, DR_VLOG_INFO,
                 "Failed to read VAT inode from the last recorded block (%"PRIu32"), retrying with the last block of the device (%"PRIu64").",
                 sb->last_block, blocks - 1);
         udf_find_vat_block(sb, p_index, type1_index, (uint32_t)(blocks - 1));
@@ -1495,7 +1495,7 @@ static int udf_load_vat(UDFLinux *sb, int p_index, int type1_index)
     if (map->ptype == PART_VIRTUAL15) {
         map->vat_start_offset = 0;
         if (vat->size < 36) {
-            udf_log(sb, DR_IO_LOG_WARNING, "Too short VAT inode size %"PRIu64, vat->size);
+            udf_log(sb, DR_VLOG_WARNING, "Too short VAT inode size %"PRIu64, vat->size);
             return udf_fail(sb, DR_ERR_INVALID, "the VAT could not be read");
         }
         map->vat_num_entries = (uint32_t)((vat->size - 36) >> 2);
@@ -1519,13 +1519,13 @@ static int udf_load_vat(UDFLinux *sb, int p_index, int type1_index)
 
         map->vat_start_offset = dr_rl16(vat20);   /* lengthHeader */
         if (map->vat_start_offset > vat->size) {
-            udf_log(sb, DR_IO_LOG_WARNING, "Corrupted VAT header length %"PRIu32" (VAT inode size %"PRIu64")",
+            udf_log(sb, DR_VLOG_WARNING, "Corrupted VAT header length %"PRIu32" (VAT inode size %"PRIu64")",
                     map->vat_start_offset, vat->size);
             return udf_fail(sb, DR_ERR_INVALID, "the VAT could not be read");
         }
         map->vat_num_entries = (uint32_t)((vat->size - map->vat_start_offset) >> 2);
     }
-    udf_log(sb, DR_IO_LOG_DEBUG, "VAT with %"PRIu32" entries", map->vat_num_entries);
+    udf_log(sb, DR_VLOG_DEBUG, "VAT with %"PRIu32" entries", map->vat_num_entries);
     return 0;
 }
 
@@ -1551,14 +1551,14 @@ static int udf_load_partdesc(UDFLinux *sb, uint32_t block)
     /* First scan for TYPE1 and SPARABLE partitions */
     for (i = 0; i < sb->nb_partmaps; i++) {
         const PartMap *map = &sb->partmaps[i];
-        udf_log(sb, DR_IO_LOG_TRACE, "Searching map: (%u == %u)", map->partition_num, partition_number);
+        udf_log(sb, DR_VLOG_TRACE, "Searching map: (%u == %u)", map->partition_num, partition_number);
         if (map->partition_num == partition_number &&
             (map->ptype == PART_TYPE1 || map->ptype == PART_SPARABLE))
             break;
     }
 
     if (i >= sb->nb_partmaps) {
-        udf_log(sb, DR_IO_LOG_DEBUG, "Partition (%u) not found in partition map", partition_number);
+        udf_log(sb, DR_VLOG_DEBUG, "Partition (%u) not found in partition map", partition_number);
         return 0;
     }
 
@@ -1586,7 +1586,7 @@ static int udf_load_partdesc(UDFLinux *sb, uint32_t block)
 
     if (sb->partmaps[i].ptype == PART_METADATA) {
         if ((ret = udf_load_metadata_files(sb, i, type1_idx)) < 0) {
-            udf_log(sb, DR_IO_LOG_WARNING, "error loading MetaData partition map %d", i);
+            udf_log(sb, DR_VLOG_WARNING, "error loading MetaData partition map %d", i);
             return ret;
         }
     } else {
@@ -1631,18 +1631,18 @@ static int udf_load_sparable_map(UDFLinux *sb, PartMap *map, const uint8_t *spm,
     map->ptype = PART_SPARABLE;
     packet_len = gpm_rl16(spm, len, 40);    /* packetLength */
     if (!packet_len || (packet_len & (packet_len - 1))) {
-        udf_log(sb, DR_IO_LOG_WARNING, "error loading logical volume descriptor: Invalid packet length %u",
+        udf_log(sb, DR_VLOG_WARNING, "error loading logical volume descriptor: Invalid packet length %u",
                 packet_len);
         return udf_fail(sb, DR_ERR_INVALID, "invalid sparing packet length %u", packet_len);
     }
     map->packet_len = packet_len;
     n = len > 42 ? spm[42] : 0;             /* numSparingTables */
     if (n > 4) {
-        udf_log(sb, DR_IO_LOG_WARNING, "error loading logical volume descriptor: Too many sparing tables (%u)", n);
+        udf_log(sb, DR_VLOG_WARNING, "error loading logical volume descriptor: Too many sparing tables (%u)", n);
         return udf_fail(sb, DR_ERR_INVALID, "too many sparing tables (%u)", n);
     }
     if (gpm_rl32(spm, len, 44) > sb->blocksize) {   /* sizeSparingTable */
-        udf_log(sb, DR_IO_LOG_WARNING, "error loading logical volume descriptor: Too big sparing table size (%"PRIu32")",
+        udf_log(sb, DR_VLOG_WARNING, "error loading logical volume descriptor: Too big sparing table size (%"PRIu32")",
                 gpm_rl32(spm, len, 44));
         return udf_fail(sb, DR_ERR_INVALID, "sparing table too big");
     }
@@ -1706,7 +1706,7 @@ static int udf_load_logicalvolint(UDFLinux *sb, uint32_t len, uint32_t loc)
                 return DR_ERR(ENOMEM);
             memcpy(sb->lvid, final_bh, sb->blocksize);
         } else {
-            udf_log(sb, DR_IO_LOG_WARNING, "Corrupted LVID (parts=%"PRIu32", impuselen=%"PRIu32"), ignoring.",
+            udf_log(sb, DR_VLOG_WARNING, "Corrupted LVID (parts=%"PRIu32", impuselen=%"PRIu32"), ignoring.",
                     dr_rl32(final_bh + 72), dr_rl32(final_bh + 76));
         }
 
@@ -1717,7 +1717,7 @@ static int udf_load_logicalvolint(UDFLinux *sb, uint32_t len, uint32_t loc)
         loc = dr_rl32(final_bh + 36);
     }
 
-    udf_log(sb, DR_IO_LOG_WARNING, "Too many LVID indirections (max %u), ignoring.", UDF_MAX_LVID_NESTING);
+    udf_log(sb, DR_VLOG_WARNING, "Too many LVID indirections (max %u), ignoring.", UDF_MAX_LVID_NESTING);
     dr_freep(&sb->lvid);
     return 0;
 }
@@ -1733,7 +1733,7 @@ static int udf_load_logicalvol(UDFLinux *sb, uint32_t block, LbAddr *fileset)
         return UDF_TRY_NEXT;
     table_len = dr_rl32(bh + 264);  /* mapTableLength */
     if (table_len > sb->blocksize - SIZEOF_LVD) {
-        udf_log(sb, DR_IO_LOG_WARNING, "error loading logical volume descriptor: Partition table too long (%u > %u)",
+        udf_log(sb, DR_VLOG_WARNING, "error loading logical volume descriptor: Partition table too long (%u > %u)",
                 table_len, (unsigned)(sb->blocksize - SIZEOF_LVD));
         return udf_fail(sb, DR_ERR_INVALID, "partition table too long (%u)", table_len);
     }
@@ -1742,7 +1742,7 @@ static int udf_load_logicalvol(UDFLinux *sb, uint32_t block, LbAddr *fileset)
 
     part_map_count = dr_rl32(bh + 268);  /* numPartitionMaps */
     if (part_map_count > table_len / SIZEOF_GPM1) {
-        udf_log(sb, DR_IO_LOG_WARNING, "error loading logical volume descriptor: Too many partition maps (%u > %u)",
+        udf_log(sb, DR_VLOG_WARNING, "error loading logical volume descriptor: Too many partition maps (%u > %u)",
                 part_map_count, table_len / SIZEOF_GPM1);
         return udf_fail(sb, DR_ERR_INVALID, "too many partition maps (%u)", part_map_count);
     }
@@ -1774,22 +1774,22 @@ static int udf_load_logicalvol(UDFLinux *sb, uint32_t block, LbAddr *fileset)
                 map->meta_file_loc   = gpm_rl32(gpm, glen, 40);
                 map->mirror_file_loc = gpm_rl32(gpm, glen, 44);
                 map->bitmap_file_loc = gpm_rl32(gpm, glen, 48);
-                udf_log(sb, DR_IO_LOG_DEBUG, "Metadata file loc=%"PRIu32", Mirror file loc=%"PRIu32", Bitmap file loc=%"PRIu32,
+                udf_log(sb, DR_VLOG_DEBUG, "Metadata file loc=%"PRIu32", Mirror file loc=%"PRIu32", Bitmap file loc=%"PRIu32,
                         map->meta_file_loc, map->mirror_file_loc, map->bitmap_file_loc);
             } else {
-                udf_log(sb, DR_IO_LOG_DEBUG, "Unknown ident in partition map %d", i);
+                udf_log(sb, DR_VLOG_DEBUG, "Unknown ident in partition map %d", i);
                 offset += map_len;
                 continue;
             }
             map->partition_num = gpm_rl16(gpm, glen, 38);
         }
-        udf_log(sb, DR_IO_LOG_DEBUG, "Partition (%d:%u) type %u", i, map->partition_num, type);
+        udf_log(sb, DR_VLOG_DEBUG, "Partition (%d:%u) type %u", i, map->partition_num, type);
         offset += map_len;
     }
 
     fileset->lbn  = dr_rl32(bh + 252);   /* logicalVolContentsUse: long_ad extLocation */
     fileset->part = dr_rl16(bh + 256);
-    udf_log(sb, DR_IO_LOG_DEBUG, "FileSet found in LogicalVolDesc at block=%"PRIu32", partition=%u",
+    udf_log(sb, DR_VLOG_DEBUG, "FileSet found in LogicalVolDesc at block=%"PRIu32", partition=%u",
             fileset->lbn, fileset->part);
 
     if (!sb->lvd && !(sb->lvd = dr_malloc(sb->blocksize)))
@@ -1857,7 +1857,7 @@ static int udf_process_sequence(UDFLinux *sb, uint32_t block, uint32_t lastblock
         switch (ident) {
         case TAG_IDENT_VDP: /* ISO 13346 3/10.3 */
             if (++indirections > UDF_MAX_TD_NESTING) {
-                udf_log(sb, DR_IO_LOG_WARNING, "too many Volume Descriptor Pointers (max %u supported)",
+                udf_log(sb, DR_VLOG_WARNING, "too many Volume Descriptor Pointers (max %u supported)",
                         UDF_MAX_TD_NESTING);
                 ret = udf_fail(sb, DR_ERR_INVALID, "too many volume descriptor pointers");
                 goto out;
@@ -1908,7 +1908,7 @@ static int udf_process_sequence(UDFLinux *sb, uint32_t block, uint32_t lastblock
      * in a suitable order
      */
     if (!pvd.block) {
-        udf_log(sb, DR_IO_LOG_WARNING, "Primary Volume Descriptor not found!");
+        udf_log(sb, DR_VLOG_WARNING, "Primary Volume Descriptor not found!");
         udf_fail(sb, DR_ERR_INVALID, "no primary volume descriptor");
         ret = UDF_TRY_NEXT;
         goto out;
@@ -1962,7 +1962,7 @@ static int udf_load_sequence(UDFLinux *sb, const uint8_t *anchor, LbAddr *filese
     ret = udf_process_sequence(sb, main_s, main_e, fileset);
     if (ret != UDF_TRY_NEXT)
         return ret;
-    udf_log(sb, DR_IO_LOG_WARNING, "main volume descriptor sequence unusable; reading the reserve sequence");
+    udf_log(sb, DR_VLOG_WARNING, "main volume descriptor sequence unusable; reading the reserve sequence");
     udf_sb_free_partitions(sb);
     ret = udf_process_sequence(sb, reserve_s, reserve_e, fileset);
     if (ret) {
@@ -1991,7 +1991,7 @@ static int udf_check_anchor_block(UDFLinux *sb, uint32_t block, LbAddr *fileset)
         return UDF_TRY_NEXT;
     if (ident != TAG_IDENT_AVDP)
         return UDF_TRY_NEXT;
-    udf_log(sb, DR_IO_LOG_DEBUG, "anchor volume descriptor pointer at block %"PRIu32, block);
+    udf_log(sb, DR_VLOG_DEBUG, "anchor volume descriptor pointer at block %"PRIu32, block);
     return udf_load_sequence(sb, bh, fileset);
 }
 
@@ -2068,18 +2068,18 @@ static int udf_load_vrs(UDFLinux *sb, LbAddr *fileset)
     /* Check that it is NSR02 compliant */
     nsr = udf_check_vsd(sb);
     if (!nsr) {
-        udf_log(sb, DR_IO_LOG_DEBUG, "No VRS found");
+        udf_log(sb, DR_VLOG_DEBUG, "No VRS found");
         return udf_fail(sb, DR_ERR_INVALID, "no volume recognition sequence (NSR02 / NSR03)");
     }
     if (nsr == -1)
-        udf_log(sb, DR_IO_LOG_DEBUG, "Failed to read sector at offset %d. Assuming open disc. Skipping validity check",
+        udf_log(sb, DR_VLOG_DEBUG, "Failed to read sector at offset %d. Assuming open disc. Skipping validity check",
                 VSD_FIRST_SECTOR_OFFSET);
     sb->last_block = udf_get_last_block(sb);
 
     /* Look for anchor block and load Volume Descriptor Sequence */
     ret = udf_scan_anchors(sb, &sb->last_block, fileset);
     if (ret == UDF_TRY_NEXT) {
-        udf_log(sb, DR_IO_LOG_DEBUG, "No anchor found");
+        udf_log(sb, DR_VLOG_DEBUG, "No anchor found");
         return udf_fail(sb, DR_ERR_INVALID, "no UDF anchor volume descriptor pointer found");
     }
     return ret;
@@ -2108,12 +2108,12 @@ static int udf_fill_super(UDFLinux *sb)
             break;
         if (ret == DR_ERR(ENOMEM))
             return ret;
-        udf_log(sb, DR_IO_LOG_DEBUG, "Scanning with blocksize %"PRIu32" failed: %s", sb->blocksize, sb->why);
+        udf_log(sb, DR_VLOG_DEBUG, "Scanning with blocksize %"PRIu32" failed: %s", sb->blocksize, sb->why);
     }
     if (ret < 0)
         return ret;
 
-    udf_log(sb, DR_IO_LOG_DEBUG, "Lastblock=%"PRIu32, sb->last_block);
+    udf_log(sb, DR_VLOG_DEBUG, "Lastblock=%"PRIu32, sb->last_block);
 
     if (sb->lvid) {
         /* logicalVolIntegrityDescImpUse after the two tables */
@@ -2124,23 +2124,23 @@ static int udf_fill_super(UDFLinux *sb)
             return udf_fail(sb, DR_ERR_INVALID, "integrity descriptor implementation use missing");
         min_read = dr_rl16(sb->lvid + at + 40);   /* minUDFReadRev */
         if (min_read > UDF_MAX_READ_VERSION) {
-            udf_log(sb, DR_IO_LOG_WARNING, "minUDFReadRev=%x (max is %x)", min_read, UDF_MAX_READ_VERSION);
+            udf_log(sb, DR_VLOG_WARNING, "minUDFReadRev=%x (max is %x)", min_read, UDF_MAX_READ_VERSION);
             return udf_fail(sb, DR_ERR_INVALID, "UDF read revision 0x%04x too new", min_read);
         }
     }
 
     if (!sb->nb_partmaps) {
-        udf_log(sb, DR_IO_LOG_WARNING, "No partition found (2)");
+        udf_log(sb, DR_VLOG_WARNING, "No partition found (2)");
         return udf_fail(sb, DR_ERR_INVALID, "no partition found");
     }
 
     if ((ret = udf_find_fileset(sb, fileset)) < 0) {
-        udf_log(sb, DR_IO_LOG_WARNING, "No fileset found");
+        udf_log(sb, DR_VLOG_WARNING, "No fileset found");
         return ret;
     }
 
     if ((ret = udf_iget(sb, sb->rootdir, 0, &root)) < 0) {
-        udf_log(sb, DR_IO_LOG_WARNING, "Error in udf_iget, block=%"PRIu32", partition=%u",
+        udf_log(sb, DR_VLOG_WARNING, "Error in udf_iget, block=%"PRIu32", partition=%u",
                 sb->rootdir.lbn, sb->rootdir.part);
         return ret;
     }
@@ -2312,7 +2312,7 @@ static int udf_name_from_CS0(UDFLinux *sb, uint8_t *str_o, int str_max_len,
     cmp_id = ocu[0];
     if (cmp_id != 8 && cmp_id != 16) {
         memset(str_o, 0, str_max_len);
-        udf_log(sb, DR_IO_LOG_DEBUG, "unknown compression code (%u)", cmp_id);
+        udf_log(sb, DR_VLOG_DEBUG, "unknown compression code (%u)", cmp_id);
         return -1;
     }
     u_ch = cmp_id >> 3;
@@ -2321,7 +2321,7 @@ static int udf_name_from_CS0(UDFLinux *sb, uint8_t *str_o, int str_max_len,
     ocu_len--;
 
     if (ocu_len % u_ch) {
-        udf_log(sb, DR_IO_LOG_DEBUG, "incorrect filename length (%d)", ocu_len + 1);
+        udf_log(sb, DR_VLOG_DEBUG, "incorrect filename length (%d)", ocu_len + 1);
         return -1;
     }
 
@@ -2406,7 +2406,7 @@ static int udf_dstrCS0toChar(UDFLinux *sb, uint8_t *utf_o, int o_len, const uint
     if (i_len > 0) {
         s_len = ocu_i[i_len - 1];
         if (s_len >= i_len) {
-            udf_log(sb, DR_IO_LOG_DEBUG, "incorrect dstring lengths (%d/%d), truncating", s_len, i_len);
+            udf_log(sb, DR_VLOG_DEBUG, "incorrect dstring lengths (%d/%d), truncating", s_len, i_len);
             s_len = i_len - 1;
             /* 2-byte encoding? Need to round properly... */
             if (ocu_i[0] == 16)
@@ -2936,7 +2936,7 @@ static int udf_linux_open_file(DiscIOFS *fs, const char *path, DiscIOFile **out)
     *out = NULL;
     sb->why[0] = 0;
     if ((ret = udf_walk(sb, path, &loc, &inode)) < 0) {
-        udf_log(sb, DR_IO_LOG_ERROR, "cannot open '%s': %s", path, sb->why);
+        udf_log(sb, DR_VLOG_ERROR, "cannot open '%s': %s", path, sb->why);
         return ret;
     }
     if (!ret || !inode_is_reg(inode))
@@ -2953,17 +2953,17 @@ static int udf_linux_open_file(DiscIOFS *fs, const char *path, DiscIOFile **out)
             return DR_ERR(ENOMEM);
         }
         memcpy(f->data, inode->data + inode->len_eattr, inode->size);
-        udf_log(sb, DR_IO_LOG_DEBUG, "'%s': %"PRIu64" bytes recorded in the file entry", path, inode->size);
+        udf_log(sb, DR_VLOG_DEBUG, "'%s': %"PRIu64" bytes recorded in the file entry", path, inode->size);
         *out = f;
         return 0;
     }
     if ((ret = udf_file_extents(sb, inode, f)) < 0) {
-        udf_log(sb, DR_IO_LOG_ERROR, "cannot map the blocks of '%s': %s", path,
+        udf_log(sb, DR_VLOG_ERROR, "cannot map the blocks of '%s': %s", path,
                 ret == DR_ERR(ENOMEM) ? "out of memory" : sb->why);
         ff_discio_file_free(&f);
         return ret;
     }
-    udf_log(sb, DR_IO_LOG_DEBUG, "'%s': %"PRIu64" bytes in %d extent(s)", path, inode->size, f->nb_extents);
+    udf_log(sb, DR_VLOG_DEBUG, "'%s': %"PRIu64" bytes in %d extent(s)", path, inode->size, f->nb_extents);
     *out = f;
     return 0;
 }
@@ -3013,7 +3013,7 @@ static int udf_linux_list_dir(DiscIOFS *fs, const char *path, DiscIODirCallback 
     return ret;
 
 fail:
-    udf_log(sb, DR_IO_LOG_ERROR, "cannot list '%s': %s", path, ret == DR_ERR(ENOMEM) ? "out of memory" : sb->why);
+    udf_log(sb, DR_VLOG_ERROR, "cannot list '%s': %s", path, ret == DR_ERR(ENOMEM) ? "out of memory" : sb->why);
     dr_free(items);
     dr_free(list);
     return ret;
@@ -3041,7 +3041,7 @@ static int udf_linux_find_dir(DiscIOFS *fs, const char *path)
 
     sb->why[0] = 0;
     if ((ret = udf_walk(sb, path, &loc, &dir)) < 0) {
-        udf_log(sb, DR_IO_LOG_DEBUG, "cannot find the directory '%s': %s", path, sb->why);
+        udf_log(sb, DR_VLOG_DEBUG, "cannot find the directory '%s': %s", path, sb->why);
         return ret;
     }
     return ret && inode_is_dir(dir) ? 0 : DR_ERR(ENOENT);
@@ -3077,7 +3077,7 @@ int ff_discio_udf_linux_mount(DiscIOSource *src, DiscIOFS **out)
     sb->sectors = src->size > 0 ? (uint64_t)src->size / DISCIO_BLOCK_SIZE : 0;
 
     if ((ret = udf_fill_super(sb)) < 0) {
-        udf_log(sb, DR_IO_LOG_VERBOSE, "no UDF volume mounted: %s",
+        udf_log(sb, DR_VLOG_VERBOSE, "no UDF volume mounted: %s",
                 ret == DR_ERR(ENOMEM) ? "out of memory" : sb->why);
         udf_linux_free(sb);
         dr_free(fs);
@@ -3103,7 +3103,7 @@ int ff_discio_udf_linux_mount(DiscIOSource *src, DiscIOFS **out)
     }
     memcpy(fs->udf_recording_time, sb->pvd + 376, 12);
 
-    udf_log(sb, DR_IO_LOG_VERBOSE, "UDF volume mounted: label '%s', UDF revision 0x%04x, recorded %u, block size %"PRIu32,
+    udf_log(sb, DR_VLOG_VERBOSE, "UDF volume mounted: label '%s', UDF revision 0x%04x, recorded %u, block size %"PRIu32,
             fs->label, fs->udf_revision, dr_rl16(fs->udf_recording_time + 2), sb->blocksize);
     *out = fs;
     return 0;

@@ -43,62 +43,6 @@ static int aac_sync(uint64_t state, int *need_next_header, int *new_frame_start)
     return size;
 }
 
-/* ---- Disc mode (PARSER_FLAG_DISC): the disc reader's ADTS frame rules ----
- * A frame starts with the ADTS sync (12 bits) and layer 0; the reference
- * program takes only the MPEG-2 ID, here the MPEG-4 ID counts the same (its
- * frames are reviewed by the title timeline). A frame is as long as its
- * frame_length. Where no frame starts, the next one is a header whose next
- * header (frame_length on) has the same ID, layer and protection and the
- * same first four bits of byte 2 (profile, the sampling frequency index's
- * high bits); with more than 0x20000 bytes and none, the kept bytes are
- * given up. */
-
-#define DISC_GIVE_UP 0x20000
-
-static int disc_adts(const uint8_t *b)
-{
-    return b[0] == 0xff && (b[1] & 0xf6) == 0xf0;
-}
-
-static int disc_sync(void *ctx, const uint8_t *b, int len)
-{
-    if (len < 2)
-        return 2;
-    return disc_adts(b);
-}
-
-static int disc_size(void *ctx, const uint8_t *b, int len)
-{
-    if (len < 7)
-        return -1;
-    if (!disc_adts(b))
-        return -2;
-    return (b[3] & 3) << 11 | b[4] << 3 | b[5] >> 5;
-}
-
-static int disc_check(void *ctx, const uint8_t *b, int len)
-{
-    return len >= 7;
-}
-
-static int disc_resync(void *ctx, const uint8_t *b, int len)
-{
-    if (len < 7)
-        return -2;
-    for (int pos = 0; pos < len - 7; pos++) {
-        int n;
-        if (!disc_adts(b + pos))
-            continue;
-        n = (b[pos + 3] & 3) << 11 | b[pos + 4] << 3 | b[pos + 5] >> 5;
-        if (len < pos + n + 7)
-            break;                          /* the next header is not there yet */
-        if (b[pos + n] == 0xff && b[pos + n + 1] == b[pos + 1] && (b[pos + 2] ^ b[pos + n + 2]) < 0x10)
-            return pos;
-    }
-    return len > DISC_GIVE_UP ? -1 : -2;
-}
-
-static const FFDiscFrameRule disc_rule = { disc_sync, disc_size, disc_check, disc_resync, DISC_GIVE_UP };
 
 static int aac_parse(AVCodecParserContext *s1, AVCodecContext *avctx, const uint8_t **poutbuf, int *poutbuf_size,
                      const uint8_t *buf, int buf_size)
@@ -106,7 +50,7 @@ static int aac_parse(AVCodecParserContext *s1, AVCodecContext *avctx, const uint
     AACAC3ParseContext *s = s1->priv_data;
 
     if (s1->flags & PARSER_FLAG_DISC)
-        return ff_parser_disc_frames(s1, s, &disc_rule, &s->disc, poutbuf, poutbuf_size, buf, buf_size);
+        return ff_parser_disc_frames(s1, s, &dr_adts_frames, &s->disc, poutbuf, poutbuf_size, buf, buf_size);
     return ff_aac_ac3_parse(s1, avctx, poutbuf, poutbuf_size, buf, buf_size);
 }
 

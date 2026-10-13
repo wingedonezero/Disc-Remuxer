@@ -188,7 +188,7 @@ static ISODir *dir_load(DiscIOFS *fs, uint32_t loc, uint32_t len)
     int ret;
 
     if (len < ISO_MIN_RECORD || len > ISO_MAX_DIR_LEN) {
-        dr_io_log(src->logctx, DR_IO_LOG_DEBUG,
+        dr_vlog(src->logctx, DR_VLOG_DEBUG,
                "%s on '%s': directory at sector %"PRIu32" has length %"PRIu32", outside 33 bytes - 1 MiB\n",
                fs->ops->name, src->name, loc, len);
         return NULL;
@@ -201,7 +201,7 @@ static ISODir *dir_load(DiscIOFS *fs, uint32_t loc, uint32_t len)
     d->len = len;
     if ((ret = ff_discio_read_bytes(src, (int64_t)loc * DISCIO_BLOCK_SIZE, d->buf, len,
                                     src->attempts, 0)) < 0) {
-        dr_io_log(src->logctx, DR_IO_LOG_DEBUG, "%s on '%s': directory at sector %"PRIu32" unreadable\n",
+        dr_vlog(src->logctx, DR_VLOG_DEBUG, "%s on '%s': directory at sector %"PRIu32" unreadable\n",
                fs->ops->name, src->name, loc);
         dir_free(d);
         return NULL;
@@ -232,7 +232,7 @@ static int dir_find(DiscIOFS *fs, const ISODir *dir, const char *name, int n)
 
         if (!rl) {
             if (off % DISCIO_BLOCK_SIZE == 0) {
-                dr_io_log(fs->src->logctx, DR_IO_LOG_DEBUG,
+                dr_vlog(fs->src->logctx, DR_VLOG_DEBUG,
                        "%s: zero record length at a sector start (offset %d) in the directory at sector %"PRIu32"\n",
                        fs->ops->name, off, dir->loc);
                 return -1;
@@ -241,7 +241,7 @@ static int dir_find(DiscIOFS *fs, const ISODir *dir, const char *name, int n)
             continue;
         }
         if (rl < ISO_MIN_RECORD || off + rl > len) {
-            dr_io_log(fs->src->logctx, DR_IO_LOG_DEBUG,
+            dr_vlog(fs->src->logctx, DR_VLOG_DEBUG,
                    "%s: bad record length %d at offset %d in the directory at sector %"PRIu32"\n",
                    fs->ops->name, rl, off, dir->loc);
             return -1;
@@ -321,7 +321,7 @@ static int iso_open_file(DiscIOFS *fs, const char *path, DiscIOFile **out)
         return DR_ERR(ENOENT);
     }
     if (flags != 1 && (flags & 1))
-        dr_io_log(fs->src->logctx, DR_IO_LOG_DEBUG, "%s: file '%s' is hidden and has other flags (0x%02x)\n",
+        dr_vlog(fs->src->logctx, DR_VLOG_DEBUG, "%s: file '%s' is hidden and has other flags (0x%02x)\n",
                fs->ops->name, path, flags);
     start = dr_rl32(dir->buf + off + 2);
     size  = dr_rl32(dir->buf + off + 10);
@@ -410,7 +410,7 @@ static int iso_list_dir(DiscIOFS *fs, const char *path, DiscIODirCallback cb, vo
         off += rl;
     }
     if (ret == DR_ERR_INVALID)
-        dr_io_log(fs->src->logctx, DR_IO_LOG_DEBUG, "%s: corrupt record in the directory at sector %"PRIu32"\n",
+        dr_vlog(fs->src->logctx, DR_VLOG_DEBUG, "%s: corrupt record in the directory at sector %"PRIu32"\n",
                fs->ops->name, dir->loc);
     dir_free(dir);
     return ret;
@@ -485,7 +485,7 @@ int ff_discio_iso9660_mount(DiscIOSource *src, int joliet, DiscIOFS **out)
     for (int s = 16; s < 128; s++) {
         if ((ret = ff_discio_read_blocks(src, (int64_t)s * DISCIO_BLOCK_SIZE, sec, sizeof(sec),
                                          src->attempts, 0)) < 0) {
-            dr_io_log(src->logctx, DR_IO_LOG_DEBUG, "%s on '%s': volume descriptor sector %d unreadable\n",
+            dr_vlog(src->logctx, DR_VLOG_DEBUG, "%s on '%s': volume descriptor sector %d unreadable\n",
                    what, src->name, s);
             if (pvd_found)
                 break;   /* a read failure after the primary descriptor keeps the volume */
@@ -496,17 +496,17 @@ int ff_discio_iso9660_mount(DiscIOSource *src, int joliet, DiscIOFS **out)
         if (sec[0] == 1 && !pvd_found) {
             memcpy(v->pvd, sec, sizeof(sec));
             if (memcmp(sec + 1, "CD001", 5)) {
-                dr_io_log(src->logctx, DR_IO_LOG_DEBUG, "%s on '%s': the primary volume descriptor has no CD001\n", what, src->name);
+                dr_vlog(src->logctx, DR_VLOG_DEBUG, "%s on '%s': the primary volume descriptor has no CD001\n", what, src->name);
                 ret = DR_ERR_INVALID;
                 goto fail;
             }
             if (dr_rl16(sec + 0x80) != DISCIO_BLOCK_SIZE) {
-                dr_io_log(src->logctx, DR_IO_LOG_DEBUG, "%s on '%s': logical block size is not 2048\n", what, src->name);
+                dr_vlog(src->logctx, DR_VLOG_DEBUG, "%s on '%s': logical block size is not 2048\n", what, src->name);
                 ret = DR_ERR_INVALID;
                 goto fail;
             }
             pvd_found = 1;
-            dr_io_log(src->logctx, DR_IO_LOG_DEBUG, "%s on '%s': primary volume descriptor at sector %d\n", what, src->name, s);
+            dr_vlog(src->logctx, DR_VLOG_DEBUG, "%s on '%s': primary volume descriptor at sector %d\n", what, src->name, s);
             if (!joliet)
                 pvd_label(sec + 0x28, fs->label);
             continue;
@@ -515,24 +515,24 @@ int ff_discio_iso9660_mount(DiscIOSource *src, int joliet, DiscIOFS **out)
             svd_found = 1;
             memcpy(v->svd, sec, sizeof(sec));
             if (memcmp(sec + 1, "CD001", 5) || dr_rl16(sec + 0x80) != DISCIO_BLOCK_SIZE) {
-                dr_io_log(src->logctx, DR_IO_LOG_DEBUG,
+                dr_vlog(src->logctx, DR_VLOG_DEBUG,
                        "%s on '%s': the supplementary volume descriptor has no CD001 or a block size other than 2048\n",
                        what, src->name);
                 ret = DR_ERR_INVALID;
                 goto fail;
             }
-            dr_io_log(src->logctx, DR_IO_LOG_DEBUG, "%s on '%s': supplementary volume descriptor at sector %d\n", what, src->name, s);
+            dr_vlog(src->logctx, DR_VLOG_DEBUG, "%s on '%s': supplementary volume descriptor at sector %d\n", what, src->name, s);
             if (joliet)
                 svd_label(sec + 0x28, fs->label);
         }
     }
     if (!pvd_found || (joliet && !svd_found)) {
-        dr_io_log(src->logctx, DR_IO_LOG_DEBUG, "%s on '%s': no %s volume descriptor in sectors 16-127\n",
+        dr_vlog(src->logctx, DR_VLOG_DEBUG, "%s on '%s': no %s volume descriptor in sectors 16-127\n",
                what, src->name, pvd_found ? "supplementary" : "primary");
         ret = DR_ERR_INVALID;
         goto fail;
     }
-    dr_io_log(src->logctx, DR_IO_LOG_VERBOSE, "%s file system on '%s': label '%s'\n", what, src->name, fs->label);
+    dr_vlog(src->logctx, DR_VLOG_VERBOSE, "%s file system on '%s': label '%s'\n", what, src->name, fs->label);
     *out = fs;
     return 0;
 
