@@ -480,6 +480,22 @@ static int title_info(AVFormatContext *s, int i, DiscTitleInfo *dt)
                                            t->day, t->hour, t->minute, t->second) < 0) ||
         (t->nb_side && ff_disc_title_add_prop(dt, "Side clips (text subtitles)", "%d", t->nb_side) < 0))
         return AVERROR(ENOMEM);
+    if (b->pl_menu_name && t->pl)
+        dt->menu_name = b->pl_menu_name[t->pl - b->playlists];
+    if (b->pl_check && t->pl) {
+        int p = t->pl - b->playlists;
+        if (b->pl_check[p] == BLURAY_PL_FAKE) {
+            dt->playlist_check = DISC_PLAYLIST_LIKELY_FAKE;
+            if (ff_disc_title_add_prop(dt, "Fake playlist check", "likely fake: %d item(s) play a copy of a clip "
+                                       "it played before", b->pl_repeats[p]) < 0)
+                return AVERROR(ENOMEM);
+        } else if (b->pl_check[p] == BLURAY_PL_REAL) {
+            dt->playlist_check = DISC_PLAYLIST_LIKELY_REAL;
+            if (ff_disc_title_add_prop(dt, "Fake playlist check", "likely real: no clip played twice, as long as "
+                                       "the fakes") < 0)
+                return AVERROR(ENOMEM);
+        }
+    }
     for (int k = 0; k < t->nb_segs; k++)
         for (int j = 0; j < t->segs[k].nb_items; j++) {
             const BluraySegItem *it = &t->segs[k].items[j];
@@ -667,8 +683,23 @@ static int bluray_load(AVFormatContext *s)
     if (c->aacs && (ret = ff_bluray_hash_open(s, d->fs, &c->hash)) < 0)
         return ret;
     b->keys = c->aacs;
-    if ((ret = ff_bluray_titles_build(s, b, d->opt_min_length)) < 0)
+    if ((ret = ff_bluray_menu_read(s, b)) < 0 ||
+        (ret = ff_bluray_titles_build(s, b, d->opt_min_length)) < 0)
         return ret;
+    d->info.menu_name = b->menu_name;
+    d->info.bdplus    = b->bdplus;
+    if ((ret = ff_bluray_decoys_check(s, b)) < 0)
+        return ret;
+    if (b->menu_name && ff_disc_add_prop(s, "Menu names", "%d playlists named by the menu's project data "
+                                         "(project '%s')", b->nb_menu_named, b->menu_name) < 0)
+        return AVERROR(ENOMEM);
+    d->info.fake_playlists  = b->nb_fake;
+    d->info.fakes_suspected = b->fake_suspected;
+    if ((b->nb_fake && ff_disc_add_prop(s, "Fake playlists", "%d likely fake, %d likely real (the titles are marked)",
+                                        b->nb_fake, b->nb_real) < 0) ||
+        (b->fake_suspected && ff_disc_add_prop(s, "Fake playlists", "possibly (many different long clip orders, "
+                                               "no known kind of fake)") < 0))
+        return AVERROR(ENOMEM);
     d->info.name      = b->name;
     ff_disc_set_market(s, (const char (*)[4])b->meta_lang, b->nb_meta_lang, 0, "its disc library files");
     if (ff_disc_add_prop(s, "Kind", "%s", b->parent_fs ? "AVCHD" : b->bdav ? "BDAV (recorded)" : "BDMV") < 0 ||

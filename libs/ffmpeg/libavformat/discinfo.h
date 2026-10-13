@@ -104,6 +104,13 @@ typedef struct DiscPropertyInfo {
     char            *value;          /**< e.g. "VTS_03, its title 2" */
 } DiscPropertyInfo;
 
+/** A title's mark from a disc's fake playlist check (DiscTitleInfo.playlist_check). */
+enum DiscPlaylistCheck {
+    DISC_PLAYLIST_NOT_MARKED = 0,   /**< no check, nothing found, or the title is neither */
+    DISC_PLAYLIST_LIKELY_FAKE,      /**< plays copies of one clip more than once (a fake hiding the main feature) */
+    DISC_PLAYLIST_LIKELY_REAL,      /**< on a disc with fakes: no clip played twice, as long as the fakes */
+};
+
 /** A title of the disc's title list. */
 typedef struct DiscTitleInfo {
     int              index;          /**< its number in the title list (the option title), from 0 */
@@ -129,6 +136,8 @@ typedef struct DiscTitleInfo {
     DiscPartInfo    *parts;
     int              nb_props;
     DiscPropertyInfo *props;         /**< what the format part tells more of it, in its order */
+    int              playlist_check; /**< enum DiscPlaylistCheck: marked only on a disc with fakes found */
+    const char      *menu_name;      /**< the name the disc's menu data gives it (e.g. "FPL_MainFeature"), NULL none */
 } DiscTitleInfo;
 
 /** The disc. */
@@ -143,6 +152,10 @@ typedef struct DiscInfo {
     DiscTitleInfo   *titles;
     int              nb_props;
     DiscPropertyInfo *props;         /**< what the format part tells more of the disc, in its order */
+    int              fake_playlists; /**< playlists found likely fake (titles marked), 0 none */
+    int              fakes_suspected;/**< no known kind of fake found, but the disc looks like one with fakes */
+    const char      *menu_name;      /**< the project name in the disc's menu data, NULL none */
+    int              bdplus;         /**< the disc uses BD+ (not supported: its video may be damaged) */
 } DiscInfo;
 
 /**

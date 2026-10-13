@@ -178,7 +178,7 @@ static void angle_text(const DiscTitleInfo *t, char *buf, size_t size)
 
 static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *keep)
 {
-    char dur[32], size[32], files[2048] = "", js[512], jl[16], extra[512] = "", pt[64] = "";
+    char dur[32], size[32], files[2048] = "", js[512], jl[16], extra[512] = "", pt[192] = "";
     AVBPrint streams, parts;
     int nv = 0, na = 0, ns = 0;
 
@@ -239,6 +239,8 @@ static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *ke
     if (t->angle)
         snprintf(pt + strlen(pt), sizeof(pt) - strlen(pt), ", angle %d%s", t->angle,
                  t->angle == t->main_angle ? " (main)" : "");
+    if (t->menu_name)
+        snprintf(pt + strlen(pt), sizeof(pt) - strlen(pt), ", menu name %s", t->menu_name);
     log_text(LOG_INFO, "  #%-2d %-40s %9s  %-6s %d audio, %d subtitle%s, %d chapter%s%s", t->index,
              t->name ? t->name : "", dur,
              nv ? codec_label(t->streams[0].codec, 0) : "-", na, ns, ns == 1 ? "" : "s",
@@ -274,6 +276,11 @@ static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *ke
     if (t->source) {
         char jsrc[96];
         snprintf(extra, sizeof(extra), ",\"source\":%s", json_str(jsrc, sizeof(jsrc), t->source));
+    }
+    if (t->menu_name) {
+        char jmn[300];
+        snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), ",\"menu_name\":%s",
+                 json_str(jmn, sizeof(jmn), t->menu_name));
     }
     if (t->angle) {
         snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), ",\"angle\":%d", t->angle);
@@ -444,12 +451,19 @@ void engine_disc_overview(const EngineDisc *e, int detail)
             d->nb_titles, d->nb_titles == 1 ? "" : "s");
     if (d->name)
         log_msg(MSG_SOURCE, LOG_INFO, "Disc name: %s", d->name);
+    if (d->menu_name)
+        log_msg(MSG_SOURCE, LOG_INFO, "Disc menu name: %s", d->menu_name);
     /* what the format part tells more of the disc (region, protection, checks, ...) */
     for (int p = 0; p < d->nb_props; p++)
         log_msg(MSG_SOURCE, LOG_INFO, "Disc %s: %s", d->props[p].name, d->props[p].value);
     jname[0] = 0;
     if (d->name)
         snprintf(jname, sizeof(jname), ",\"name\":%s", json_str(js4, sizeof(js4), d->name));
+    if (d->menu_name) {
+        char jmn[300];
+        snprintf(jname + strlen(jname), sizeof(jname) - strlen(jname), ",\"menu_name\":%s",
+                 json_str(jmn, sizeof(jmn), d->menu_name));
+    }
     /* what the format part tells more of the disc */
     for (int p = 0; p < d->nb_props; p++) {
         char jn[96], jv[192];

@@ -595,7 +595,52 @@ typedef struct BlurayDisc {
     uint8_t         disc_id[20];     /**< SHA-1 of the disc's Unit_Key file */
     int             has_disc_id;
     char            disc_id_from[96];/**< the file it is the digest of */
+    /* the fake playlist check (bluray_decoys.c) */
+    uint8_t        *pl_check;        /**< per playlist (in d->playlists' order): BLURAY_PL_*; NULL: not checked */
+    uint16_t       *pl_repeats;      /**< per playlist: items playing a copy of a clip already played */
+    int             nb_fake, nb_real;
+    int             fake_suspected;  /**< many long clip orders but no fake found: possibly fakes of another kind */
+    /* the BD-J menu's project data (bluray_menu.c) */
+    char           *menu_name;       /**< its project name, NULL: not read or not used */
+    char          **pl_menu_name;    /**< per playlist (in d->playlists' order): its menu name, or NULL */
+    int             nb_menu_named;
 } BlurayDisc;
+
+/* ---- a BD-J menu's project data (bluray_menu.c) ---- */
+
+/**
+ * Read the playlist names of a BD-J menu framework's project data
+ * (BDMV/JAR/<dir>/bluray_project.bin) when the disc has exactly one: the
+ * project name, and the disc's entry (by its disc ID, else the only one)
+ * with each playlist's name. Used only when every check passes (the file
+ * read to its last byte in a known layout, playlist numbers valid and named
+ * once, every named playlist that plays no clip twice as long as the data
+ * says); else a warning and nothing is set. Run before the title list: the
+ * named playlists are listed first and keep their titles.
+ * @return 0, AVERROR(ENOMEM)
+ */
+int  ff_bluray_menu_read(void *log, BlurayDisc *d);
+void ff_bluray_menu_free(BlurayDisc *d);
+
+/* ---- the fake playlist check (bluray_decoys.c) ---- */
+
+#define BLURAY_PL_NONE       0       /**< not marked */
+#define BLURAY_PL_FAKE       1       /**< likely fake: plays copies of one clip more than once */
+#define BLURAY_PL_REAL       2       /**< likely real: no copy played twice, as long as the fakes */
+
+/**
+ * On a disc with BD-J titles, find playlists made to hide the main feature
+ * among fakes: long playlists that play byte-identical copies of a clip
+ * (different stream files) more than once are likely fake; with fakes
+ * found, the long playlists without any repeat that are at least as long as
+ * the shortest fake are likely real. Without fakes, many different long
+ * clip orders are said as possibly fakes of another kind. Sets d->pl_check
+ * etc. and says the findings in the standard log; the title list is not
+ * changed.
+ * @return 0, < 0 error (out of memory; a stream file that cannot be read
+ *         is logged and left out of the comparison)
+ */
+int  ff_bluray_decoys_check(void *log, BlurayDisc *d);
 
 /* ---- AACS (bluray_aacs.c) ---- */
 
@@ -653,6 +698,8 @@ void ff_bluray_hash_free(BlurayHash **h);
  * @return 0, < 0 error (the disc cannot be read)
  */
 int  ff_bluray_disc_open(void *log, DiscIOFS *fs, const char *path, const char *lang, BlurayDisc *d);
+/** Whether index.bdmv has a BD-J object (First Playback, Top Menu or a title). */
+int  ff_bluray_has_bdj(const BlurayDisc *d);
 void ff_bluray_disc_free(BlurayDisc *d);
 /** The disc's structure as text, one line per clip, playlist, PlayItem,
  *  mark and stream (for the log and for comparisons with other readers). */

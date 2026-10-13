@@ -34,7 +34,9 @@
  *    repeated blocks at the end of a part and runs of 7 or more identical
  *    items are trimmed; a part of one clip without chapters becomes no
  *    title (its clip may get a title of its own); the title keeps the
- *    streams every item has;
+ *    streams every item has; the playlists a BD-J menu's project data names
+ *    (bluray_menu.c) go first, in listing order, and a part of one clip of
+ *    theirs keeps its title;
  *    BDAV playlists (and AVCHD playlists with maker data): titles for their
  *    seamless runs, else one for the whole playlist;
  * 3. one title per clip (application type 1) that no title uses with all
@@ -1283,8 +1285,9 @@ static int set_marks(BlurayTitle *t, const Part *p)
     return 0;
 }
 
-/* The titles of a BDMV playlist: one per part and angle. */
-static int playlist_titles(Ctx *c, BlurayPlaylist *pl)
+/* The titles of a BDMV playlist: one per part and angle. named: the menu's
+ * project data names it (a part of one clip keeps its title). */
+static int playlist_titles(Ctx *c, BlurayPlaylist *pl, int named)
 {
     BlurayDisc *d = c->d;
     int nparts = 1, ret = 0;
@@ -1305,7 +1308,7 @@ static int playlist_titles(Ctx *c, BlurayPlaylist *pl)
             goto end;
         if (!ret || !p.recs.n)
             continue;
-        if (p.recs.n == 1 && p.nb_marks <= 1 && !p.recs.v[0].dep) {
+        if (p.recs.n == 1 && p.nb_marks <= 1 && !p.recs.v[0].dep && !named) {
             /* one clip without chapters: no title of the playlist, its clip may get one */
             {
                 struct OneClip *v = av_realloc_array(c->one, c->nb_one + 1, sizeof(*v));
@@ -1979,14 +1982,9 @@ static int one_clips_said(Ctx *c)
 
     if (!c->nb_one)
         return 0;
-    if (d->has_index) {
-        int n = d->index.first_play.object_type == 2 || d->index.top_menu.object_type == 2;
-        for (int i = 0; i < d->index.nb_titles; i++)
-            n |= d->index.titles[i].object_type == 2;
-        if (n)
-            av_log(c->log, AV_LOG_INFO, "Blu-ray: the disc has BD-J titles: its navigation, which can keep a "
-                   "playlist of one clip piece as a title of its own, is not read (LOOK INTO AGAIN LATER)\n");
-    }
+    if (ff_bluray_has_bdj(d) && !d->pl_menu_name)
+        av_log(c->log, AV_LOG_INFO, "Blu-ray: the disc has BD-J titles: its navigation, which can keep a "
+               "playlist of one clip piece as a title of its own, is not read (LOOK INTO AGAIN LATER)\n");
     /* in playlist order */
     for (int i = 1; i < c->nb_one; i++)
         for (int j = i; j > 0 && (c->one[j - 1].pl > c->one[j].pl ||
@@ -2055,12 +2053,16 @@ int ff_bluray_titles_build(void *log, BlurayDisc *d, int min_length)
             if ((ret = recorded_titles(&c, NULL, &d->playlists[p])) < 0)
                 goto end;
     } else {
-        for (int p = 0; p < d->nb_playlists; p++) {
-            BlurayPlaylist *pl = &d->playlists[p];
-            ret = plex_entry(pl) ? recorded_titles(&c, pl, NULL) : playlist_titles(&c, pl);
-            if (ret < 0)
-                goto end;
-        }
+        /* the playlists the menu's project data names first, then the others */
+        for (int named = !!d->pl_menu_name; named >= 0; named--)
+            for (int p = 0; p < d->nb_playlists; p++) {
+                BlurayPlaylist *pl = &d->playlists[p];
+                if (d->pl_menu_name && !!d->pl_menu_name[p] != named)
+                    continue;
+                ret = plex_entry(pl) ? recorded_titles(&c, pl, NULL) : playlist_titles(&c, pl, named);
+                if (ret < 0)
+                    goto end;
+            }
     }
     /* 3. clip titles */
     if ((ret = clip_titles(&c)) < 0)
