@@ -1,4 +1,4 @@
-"""The settings are one system (src/disc-remuxer/settings.c): every setting of
+"""The settings are one system (src/base/settings.c): every setting of
 the registry is read by the program (the engine, or the GUI for its own),
 and every option of the disc reader (the disc demuxer, discdec.c) is set
 from a setting or is a choice of the run, so nothing the user may want to
@@ -9,7 +9,7 @@ import re
 from helpers import ROOT
 
 SRC = ROOT / "src"
-SETTINGS = (SRC / "disc-remuxer" / "settings.c").read_text()
+SETTINGS = (SRC / "base" / "settings.c").read_text()
 DISCDEC = (ROOT / "libs" / "ffmpeg" / "libavformat" / "discdec.c").read_text()
 WRITER = (SRC / "disc-remuxer" / "writer.c").read_text()
 

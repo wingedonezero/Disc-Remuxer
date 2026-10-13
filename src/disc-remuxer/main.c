@@ -19,7 +19,7 @@
 #include <libavutil/avutil.h>
 
 #include "engine.h"
-#include "settings.h"
+#include "base/settings.h"
 
 static void usage(FILE *f)
 {

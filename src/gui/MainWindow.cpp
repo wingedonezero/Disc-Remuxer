@@ -33,8 +33,8 @@
 extern "C" {
 #include <libavutil/avutil.h>
 #include "codecs.h"
-#include "log.h"
-#include "settings.h"
+#include "base/log.h"
+#include "base/settings.h"
 }
 
 enum Column { C_NAME, C_DESC, C_SIZE, C_STATUS, C_PROGRESS, C_COUNT };

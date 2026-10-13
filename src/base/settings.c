@@ -11,9 +11,9 @@
 
 #include "tomlc17.h"
 
-#include "log.h"
-#include "msg.h"
-#include "settings.h"
+#include "base/log.h"
+#include "base/msg.h"
+#include "base/settings.h"
 
 
 static const char *const udf_readers[]  = { "netbsd", "linux", NULL };

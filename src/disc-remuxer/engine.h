@@ -15,6 +15,8 @@
 
 #include <libavformat/discinfo.h>
 
+#include "base/log.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -23,25 +25,12 @@ extern "C" {
 #define DISC_REMUXER_VERSION "0.2.0"
 #endif
 
-/* Where the log goes besides the run's log files: NULL members print to the
- * terminal (text, or JSON records with json). level: LOG_* (log.h); code:
- * the message number (msg.h), 0 none; source: the library a line comes
- * from, NULL ours; heading: a step's heading. record: one JSON record. */
-typedef struct EngineSink {
-    void (*line)(void *opaque, int level, int code, const char *source, const char *text, int heading);
-    void (*progress)(void *opaque, int title, double done);
-    void (*record)(void *opaque, const char *json);
-    void  *opaque;
-} EngineSink;
-
 /* The log (json: JSON records on stdout; verbose 0-2), the settings
  * (config: the settings file, NULL the one next to the program; sets:
  * "group.key=value" for this run), the folders next to the program
  * (.config: key caches, key files). 0, 1 (settings unreadable), 2 (a bad
  * --set). */
 int  engine_init(const char *config, const char *const *sets, int nb_sets, int json, int verbose);
-/* Log lines, progress and records to sink (NULL: the terminal again). */
-void engine_set_sink(const EngineSink *sink);
 
 /* What the caller chose of the disc's tracks: --tracks values (select.h),
  * the 3-D titles whose second view is read (--second-view: "all", "1,3"). */

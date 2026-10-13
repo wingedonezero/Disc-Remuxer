@@ -9,8 +9,8 @@
 #include <QVBoxLayout>
 
 extern "C" {
-#include "log.h"
-#include "settings.h"
+#include "base/log.h"
+#include "base/settings.h"
 }
 
 Console::Console(QWidget *parent) : QWidget(parent)

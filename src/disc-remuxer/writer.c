@@ -31,12 +31,12 @@
 #include <libavutil/mem.h>
 #include <libavutil/opt.h>
 
-#include "log.h"
-#include "msg.h"
+#include "base/log.h"
+#include "base/msg.h"
 #include "names.h"
 #include "check.h"
 #include "engine.h"
-#include "settings.h"
+#include "base/settings.h"
 #include "writer.h"
 
 static int64_t meta_int(AVDictionary *m, const char *key)

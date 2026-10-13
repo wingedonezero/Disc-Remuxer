@@ -18,10 +18,11 @@
 #include <libavutil/avutil.h>
 #include <libavutil/bprint.h>
 
-#include "log.h"
-#include "msg.h"
+#include "base/log.h"
+#include "log_ffmpeg.h"
+#include "base/msg.h"
 #include "names.h"
-#include "settings.h"
+#include "base/settings.h"
 #include "codecs.h"
 #include "engine.h"
 #include "select.h"
@@ -806,6 +807,7 @@ int engine_check_choice(const EngineChoice *c)
 int engine_init(const char *config, const char *const *sets, int nb_sets, int json, int verbose)
 {
     log_init(json, verbose);
+    log_ffmpeg_install();
     if (settings_load(config) < 0)
         return 1;
     for (int k = 0; k < nb_sets; k++)

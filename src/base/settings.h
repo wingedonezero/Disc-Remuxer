@@ -7,8 +7,8 @@
  * is kept. --set group.key=value changes a setting for one run only.
  */
 
-#ifndef DISC_REMUXER_SETTINGS_H
-#define DISC_REMUXER_SETTINGS_H
+#ifndef DISC_BASE_SETTINGS_H
+#define DISC_BASE_SETTINGS_H
 
 #include <stdint.h>
 

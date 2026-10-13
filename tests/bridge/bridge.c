@@ -10,6 +10,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "base/buf.h"
+#include "base/err.h"
+#include "base/mem.h"
+
 #include "libavcodec/avcodec.h"
 #include "libavcodec/codec_desc.h"
 #include "libavformat/avformat.h"

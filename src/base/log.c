@@ -1,6 +1,9 @@
 /*
- * disc-remuxer: the log (see log.h).
+ * The log (see log.h). FFmpeg's lines reach it through the hook in
+ * src/disc-remuxer/log_ffmpeg.c (log_library_line()).
  */
+
+#define _GNU_SOURCE     /* vasprintf, asprintf (log_json) */
 
 #include <pthread.h>
 #include <stdarg.h>
@@ -11,10 +14,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <libavutil/log.h>
-
-#include "engine.h"
-#include "log.h"
+#include "base/log.h"
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static int  json_mode, verbose, color;
@@ -22,12 +22,6 @@ static FILE *log_file, *debug_file;
 static int  progress_shown;
 static int  n_errors, n_warnings;
 static EngineSink sink;            /* the caller's (a GUI's); members NULL: the terminal */
-
-/* FFmpeg's lines arrive in pieces; one is kept until its newline */
-static char pending[4096];
-static size_t pending_len;
-static int  pending_level;
-static const char *pending_source;
 
 static const char *const word[] = { "ERROR", "WARNING", "OK", "INFO", "DETAIL" };
 
@@ -176,66 +170,6 @@ static int seen_before(const char *text)
     return 0;
 }
 
-static int ffmpeg_detail;
-
-void log_ffmpeg_detail(int on)
-{
-    ffmpeg_detail = on;
-}
-
-static enum LogLevel from_av(int level)
-{
-    if (ffmpeg_detail && level > AV_LOG_ERROR)
-        return LOG_DETAIL;
-    return level <= AV_LOG_ERROR ? LOG_ERROR : level <= AV_LOG_WARNING ? LOG_WARNING :
-           level <= AV_LOG_INFO ? LOG_INFO : LOG_DETAIL;
-}
-
-/* FFmpeg's log callback: lines without FFmpeg's prefix, levels mapped;
- * TRACE lines only with -vv. */
-static void av_callback(void *avcl, int level, const char *fmt, va_list vl)
-{
-    char piece[4096];
-    int n;
-
-    if (level > AV_LOG_DEBUG && verbose < 2)
-        return;
-    if (level > AV_LOG_INFO && !debug_file && !verbose)
-        return;
-    n = vsnprintf(piece, sizeof(piece), fmt, vl);
-    if (n < 0)
-        return;
-    if (n >= (int)sizeof(piece))
-        n = sizeof(piece) - 1;
-
-    pthread_mutex_lock(&lock);
-    if (!pending_len) {
-        AVClass *c = avcl ? *(AVClass **)avcl : NULL;
-        pending_level  = level;
-        pending_source = c ? c->item_name(avcl) : "ffmpeg";
-    }
-    for (int i = 0; i < n; i++) {
-        if (piece[i] == '\n') {
-            pending[pending_len] = 0;
-            if (pending_len) {
-                enum LogLevel l = from_av(pending_level);
-                if ((l == LOG_WARNING || l == LOG_INFO) && seen_before(pending))
-                    l = LOG_DETAIL;
-                emit(l, 0, pending_source, pending, 0);
-            }
-            pending_len = 0;
-            if (i + 1 < n) {
-                AVClass *c = avcl ? *(AVClass **)avcl : NULL;
-                pending_level  = level;
-                pending_source = c ? c->item_name(avcl) : "ffmpeg";
-            }
-        } else if (pending_len < sizeof(pending) - 1) {
-            pending[pending_len++] = piece[i];
-        }
-    }
-    pthread_mutex_unlock(&lock);
-}
-
 void log_init(int json, int verbosity)
 {
     const char *nc = getenv("NO_COLOR");
@@ -243,8 +177,6 @@ void log_init(int json, int verbosity)
     json_mode = json;
     verbose   = verbosity;
     color     = !json && isatty(STDOUT_FILENO) && !(nc && *nc);
-    av_log_set_level(AV_LOG_TRACE);
-    av_log_set_callback(av_callback);
 }
 
 int log_open_files(const char *path, const char *debug_path)
@@ -371,6 +303,32 @@ void log_counts(int *errors, int *warnings)
 void log_reset_counts(void)
 {
     n_errors = n_warnings = 0;
+}
+
+void log_line(enum LogLevel level, int code, const char *source, const char *text, int heading)
+{
+    pthread_mutex_lock(&lock);
+    emit(level, code, source, text, heading);
+    pthread_mutex_unlock(&lock);
+}
+
+void log_library_line(enum LogLevel level, const char *source, const char *text)
+{
+    pthread_mutex_lock(&lock);
+    if ((level == LOG_WARNING || level == LOG_INFO) && seen_before(text))
+        level = LOG_DETAIL;
+    emit(level, 0, source, text, 0);
+    pthread_mutex_unlock(&lock);
+}
+
+int log_verbosity(void)
+{
+    return verbose;
+}
+
+int log_debug_file_open(void)
+{
+    return debug_file != NULL;
 }
 
 void engine_set_sink(const EngineSink *s)

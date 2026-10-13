@@ -5,8 +5,8 @@
  * libraries under it carry no number (code 0) and name their source.
  */
 
-#ifndef DISC_REMUXER_MSG_H
-#define DISC_REMUXER_MSG_H
+#ifndef DISC_BASE_MSG_H
+#define DISC_BASE_MSG_H
 
 enum {
     MSG_PROGRAM_START        = 1001,

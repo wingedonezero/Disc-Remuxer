@@ -18,7 +18,7 @@
 #include <QVBoxLayout>
 
 extern "C" {
-#include "settings.h"
+#include "base/settings.h"
 }
 
 static QString groupTitle(const QString &g)

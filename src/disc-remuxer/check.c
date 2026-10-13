@@ -15,7 +15,8 @@
 #include <libavutil/stereo3d.h>
 
 #include "check.h"
-#include "log.h"
+#include "base/log.h"
+#include "log_ffmpeg.h"
 
 #define PROBE_PACKETS 600   /* packets a decoder gets to give its first frame */
 

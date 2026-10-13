@@ -9,8 +9,8 @@
 
 #include <libavutil/avutil.h>
 
-#include "log.h"
-#include "msg.h"
+#include "base/log.h"
+#include "base/msg.h"
 #include "select.h"
 
 enum { W_ALL, W_VIDEO, W_AUDIO, W_SUBTITLE, W_FORCED, W_LANGUAGE, W_NUMBER };
