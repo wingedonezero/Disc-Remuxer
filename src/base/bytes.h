@@ -66,4 +66,11 @@ static inline void dr_wl64(uint8_t *p, uint64_t v)
     dr_wl32(p + 4, (uint32_t)(v >> 32));
 }
 
+/* The IEEE-754 single the 32 bits spell. */
+static inline float dr_int2float(uint32_t v)
+{
+    union { uint32_t i; float f; } u = { v };
+    return u.f;
+}
+
 #endif

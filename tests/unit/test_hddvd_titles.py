@@ -24,7 +24,7 @@ INVALIDDATA = -0x41444E49
 
 
 def lang(code):
-    r = lib.ff_disc_lang_code(code.encode())
+    r = lib.dr_disc_lang_code(code.encode())
     return None if r == ffi.NULL else ffi.string(r).decode()
 
 
@@ -40,7 +40,7 @@ def test_language_codes_follow_iso_639_with_three_extras():
 
 
 def lang_name(code):
-    r = lib.ff_disc_lang_name(code.encode())
+    r = lib.dr_disc_lang_name(code.encode())
     return None if r == ffi.NULL else ffi.string(r).decode()
 
 

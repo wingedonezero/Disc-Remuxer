@@ -60,7 +60,7 @@
 
 #include "avformat.h"
 #include "disc.h"
-#include "disclang.h"
+#include "disc/lang.h"
 #include "timeline/disctl.h"
 #include "hddvd_internal.h"
 #include "disc/clip_demux.h"
@@ -346,7 +346,7 @@ static int stream_lang(void *logctx, HDDVDXpl *const *xpls, int nb_xpls, const c
                     continue;
                 memcpy(code, lc, colon - lc);
                 if (code[0]) {
-                    const char *iso = ff_disc_lang_code(code);
+                    const char *iso = dr_disc_lang_code(code);
                     if (iso)
                         av_strlcpy(code, iso, sizeof(code));
                 }

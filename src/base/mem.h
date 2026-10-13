@@ -39,6 +39,16 @@ size_t dr_strlcat(char *dst, const char *src, size_t size);
  * failure, *out NULL. */
 int dr_asprintf(char **out, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
+/* Append item to the pointer array (pass the address of a T* array): the
+ * array grows (geometrically); 0, or DR_ERR_NOMEM with the array as it
+ * was. */
+int dr_array_add_ptr(void *array, int *nb, void *item);
+
+/* Append one element of elem_size bytes (copied from data) to the value
+ * array (pass the address of a T* array): the new element, NULL on
+ * failure with the array as it was. */
+void *dr_array_add(void *array, int *nb, size_t elem_size, const void *data);
+
 #ifdef __cplusplus
 }
 #endif

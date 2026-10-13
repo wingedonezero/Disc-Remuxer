@@ -45,7 +45,7 @@
 #include "disc.h"
 #include "discinfo.h"
 #include "io/discio.h"
-#include "disclang.h"
+#include "disc/lang.h"
 #include "timeline/disctl.h"
 #include "internal.h"
 #include "matroska.h"
@@ -584,7 +584,7 @@ static int disc_read_header(AVFormatContext *s)
             return ret;
     }
     if (d->opt_video_language && *d->opt_video_language && strcmp(d->opt_video_language, "market")) {
-        const char *code = ff_disc_lang_code(d->opt_video_language);
+        const char *code = dr_disc_lang_code(d->opt_video_language);
         if (!code || strlen(code) != 3) {
             av_log(s, AV_LOG_ERROR, "video_language '%s' is no ISO 639 language code\n", d->opt_video_language);
             return AVERROR(EINVAL);
@@ -693,7 +693,7 @@ void ff_disc_set_market(AVFormatContext *s, const char (*codes)[4], int n, int o
     int several = 0, eng = 0;
 
     for (int i = 0; i < n; i++) {
-        const char *c = ff_disc_lang_code(codes[i]);
+        const char *c = dr_disc_lang_code(codes[i]);
         if (!c || !strcmp(c, "und"))
             continue;
         if (!first)
@@ -710,12 +710,12 @@ void ff_disc_set_market(AVFormatContext *s, const char (*codes)[4], int n, int o
 
 const char *disc_language(const char *code)
 {
-    return ff_disc_lang_code(code);
+    return dr_disc_lang_code(code);
 }
 
 const char *disc_language_name(const char *code)
 {
-    return ff_disc_lang_name(code);
+    return dr_disc_lang_name(code);
 }
 
 const char *disc_mkv_codec_id(const DiscStreamInfo *k)

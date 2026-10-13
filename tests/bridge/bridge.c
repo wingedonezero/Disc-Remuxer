@@ -15,6 +15,9 @@
 #include "io/discio.h"
 #include "base/err.h"
 #include "base/mem.h"
+#include "base/crc32.h"
+#include "base/sha.h"
+#include "base/str.h"
 
 #include "libavcodec/avcodec.h"
 #include "libavcodec/codec_desc.h"
@@ -26,12 +29,12 @@
 #include "libavutil/mem.h"
 
 #include "libavformat/bluray_internal.h"
-#include "libavformat/disclang.h"
 #include "analyze/analyze.h"
 #include "timeline/disctl.h"
 #include "libavformat/dvd_internal.h"
 #include "libavformat/hddvd_internal.h"
 #include "disc/clip_demux.h"
+#include "disc/lang.h"
 
 #include <dvdcss/dvdcss.h>
 #include <dvdread/dvd_udf.h>

@@ -28,3 +28,26 @@ uint8_t *dr_buf_data(const DrBuf *b);
 size_t   dr_buf_size(const DrBuf *b);
 int      dr_buf_writable(const DrBuf *b);
 void     dr_buf_trim(DrBuf *b, size_t size);
+
+/* base/str.h: the growing text buffer; base/mem.h: the array appends. */
+typedef struct DrStr {
+    char   *str;
+    size_t  len;
+    size_t  cap;
+    int     failed;
+} DrStr;
+void  dr_str_init(DrStr *s);
+void  dr_str_catf(DrStr *s, const char *fmt, ...);
+int   dr_str_ok(const DrStr *s);
+char *dr_str_take(DrStr *s, int keep_empty);
+void  dr_str_free(DrStr *s);
+
+int   dr_array_add_ptr(void *array, int *nb, void *item);
+void *dr_array_add(void *array, int *nb, size_t elem_size, const void *data);
+
+/* base/sha.h, base/crc32.h */
+typedef struct DrSha { uint64_t len; uint32_t h[8]; uint8_t block[64]; int bits; } DrSha;
+void dr_sha_init(DrSha *s, int bits);
+void dr_sha_update(DrSha *s, const uint8_t *data, size_t len);
+void dr_sha_final(DrSha *s, uint8_t *out);
+uint32_t dr_crc32_mpeg(uint32_t crc, const uint8_t *data, size_t len);

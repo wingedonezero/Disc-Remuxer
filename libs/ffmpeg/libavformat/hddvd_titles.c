@@ -53,7 +53,7 @@
 
 #include "libavcodec/avcodec.h"
 
-#include "disclang.h"
+#include "disc/lang.h"
 #include "hddvd_internal.h"
 
 #define URI_PREFIX_LEN 25   /* "file:///dvddisc/HVDVD_TS/" */
@@ -606,7 +606,7 @@ static int title_from_candidate(Planner *p, const Candidate *c, int min_length)
         t.nb_marks = c->nb_marks;
     }
     if (c->lang) {
-        const char *code = ff_disc_lang_code(c->lang);
+        const char *code = dr_disc_lang_code(c->lang);
         t.lang = keep(p->plan, code ? code : c->lang);
     }
     if ((ret = finish_title(p, &t, min_length)) < 0) {

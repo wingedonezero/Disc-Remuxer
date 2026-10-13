@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "base/err.h"
 #include "base/mem.h"
 
 void *dr_malloc(size_t size)
@@ -103,4 +104,41 @@ int dr_asprintf(char **out, const char *fmt, ...)
     if (n < 0)
         *out = NULL;
     return n;
+}
+
+/* The arrays grow geometrically: the capacity is the next power of two
+ * above the count (at least 4), so a realloc happens only when the count
+ * reaches one. */
+static void *array_grow(void *array, int nb, size_t elem_size)
+{
+    void **arr = array;
+
+    if (nb >= 4 && (nb & (nb - 1)))
+        return *arr;                      /* inside the current capacity */
+    return dr_realloc_array(*arr, nb < 4 ? 4 : (size_t)nb * 2, elem_size);
+}
+
+int dr_array_add_ptr(void *array, int *nb, void *item)
+{
+    void ***arr = array;
+    void **p = array_grow(array, *nb, sizeof(void *));
+
+    if (!p)
+        return DR_ERR_NOMEM;
+    *arr = p;
+    p[(*nb)++] = item;
+    return 0;
+}
+
+void *dr_array_add(void *array, int *nb, size_t elem_size, const void *data)
+{
+    char **arr = array;
+    char *p = array_grow(array, *nb, elem_size);
+
+    if (!p)
+        return NULL;
+    *arr = p;
+    p += (size_t)(*nb)++ * elem_size;
+    memcpy(p, data, elem_size);
+    return p;
 }

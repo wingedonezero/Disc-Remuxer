@@ -68,7 +68,7 @@ def gui_language(name):
     ISO 639 code here; the GUI only knows the ones with a two-letter code)."""
     pieces = [p for p in re.split(SEPARATORS + "+", name) if p][:-1]
     for p in reversed(pieces):
-        r = lib.ff_disc_lang_code(p.encode())
+        r = lib.dr_disc_lang_code(p.encode())
         if r != ffi.NULL and ffi.string(r).decode() != "und":
             return ffi.string(r).decode()
     return None

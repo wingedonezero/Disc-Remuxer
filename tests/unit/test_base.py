@@ -123,3 +123,106 @@ def test_an_empty_buffer_works():
     assert lib.dr_buf_size(b[0]) == 0
     assert ffi.buffer(lib.dr_buf_data(b[0]), lib.DR_BUF_PADDING)[:] == bytes(lib.DR_BUF_PADDING)
     lib.dr_buf_unref(b)
+
+
+# ---- base/str.h: the growing text buffer ----
+
+def test_str_appends_formatted_pieces_into_one_string():
+    s = ffi.new("DrStr *")
+    lib.dr_str_init(s)
+    lib.dr_str_catf(s, b"%s", ffi.cast("char *", ffi.new("char[]", b"hello")))
+    lib.dr_str_catf(s, b", %d", ffi.cast("int", 42))
+    assert lib.dr_str_ok(s)
+    assert ffi.string(s.str) == b"hello, 42"
+    assert s.len == len(b"hello, 42")
+    lib.dr_str_free(s)
+
+
+def test_str_grows_past_its_first_buffer():
+    s = ffi.new("DrStr *")
+    lib.dr_str_init(s)
+    piece = b"x" * 100
+    for _ in range(10):
+        lib.dr_str_catf(s, b"%s", ffi.cast("char *", ffi.new("char[]", piece)))
+    assert lib.dr_str_ok(s)
+    assert ffi.string(s.str) == piece * 10
+    lib.dr_str_free(s)
+
+
+def test_str_take_hands_the_string_over_and_resets():
+    s = ffi.new("DrStr *")
+    lib.dr_str_init(s)
+    lib.dr_str_catf(s, b"kept")
+    p = lib.dr_str_take(s, 0)
+    assert ffi.string(p) == b"kept"
+    lib.dr_free(p)
+    assert s.len == 0 and ffi.string(s.str) == b""
+    assert lib.dr_str_take(s, 0) == ffi.NULL, "nothing appended: NULL"
+    q = lib.dr_str_take(s, 1)
+    assert ffi.string(q) == b"", "keep_empty: an empty string"
+    lib.dr_free(q)
+
+
+# ---- base/mem.h: the array appends ----
+
+def test_array_add_ptr_appends_and_keeps_order():
+    arr = ffi.new("char **[1]")
+    nb = ffi.new("int *")
+    keep = []
+    for i in range(10):
+        item = ffi.new("char[]", b"i%d" % i)
+        keep.append(item)
+        assert lib.dr_array_add_ptr(arr, nb, item) == 0
+    assert nb[0] == 10
+    for i in range(10):
+        assert ffi.string(arr[0][i]) == b"i%d" % i
+
+
+def test_array_add_copies_values():
+    arr = ffi.new("int *[1]")
+    nb = ffi.new("int *")
+    for i in range(9):
+        v = ffi.new("int *", i * 7)
+        assert lib.dr_array_add(arr, nb, ffi.sizeof("int"), v) != ffi.NULL
+    assert nb[0] == 9
+    assert [arr[0][i] for i in range(9)] == [i * 7 for i in range(9)]
+
+
+# ---- base/sha.h, base/crc32.h ----
+
+def _sha(bits, data):
+    s = ffi.new("DrSha *")
+    out = ffi.new("uint8_t[]", bits // 8)
+    lib.dr_sha_init(s, bits)
+    lib.dr_sha_update(s, data, len(data))
+    lib.dr_sha_final(s, out)
+    return bytes(ffi.buffer(out))
+
+
+def test_sha1_matches_the_fips_vectors():
+    assert _sha(160, b"abc").hex() == "a9993e364706816aba3e25717850c26c9cd0d89d"
+    assert _sha(160, b"").hex() == "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+    assert (_sha(160, b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq").hex()
+            == "84983e441c3bd26ebaae4aa1f95129e5e54670f1")
+
+
+def test_sha256_matches_the_fips_vectors():
+    assert _sha(256, b"abc").hex() == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    assert (_sha(256, b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq").hex()
+            == "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1")
+
+
+def test_sha_pads_across_block_boundaries():
+    # lengths around the 56/64-byte padding edges, against hashlib
+    import hashlib
+    for n in (55, 56, 57, 63, 64, 65, 119, 120, 128):
+        data = bytes(range(256))[:n] * 1
+        assert _sha(160, data) == hashlib.sha1(data).digest(), n
+        assert _sha(256, data) == hashlib.sha256(data).digest(), n
+
+
+def test_crc32_mpeg_vector_and_zero_on_appended_crc():
+    v = lib.dr_crc32_mpeg(0xFFFFFFFF, b"123456789", 9)
+    assert v == 0x0376E6E7
+    data = b"123456789" + v.to_bytes(4, "big")
+    assert lib.dr_crc32_mpeg(0xFFFFFFFF, data, len(data)) == 0

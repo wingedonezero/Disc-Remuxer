@@ -47,7 +47,7 @@
 #include "libavutil/mem.h"
 
 #include "bluray_internal.h"
-#include "disclang.h"
+#include "disc/lang.h"
 
 static int has_file(DiscIOFS *fs, const char *path)
 {
@@ -137,8 +137,8 @@ static int same_lang(const char *a, const char *b)
         return strlen(a) < 2 && strlen(b) < 2;
     if (!strcmp(a, b))
         return 1;
-    x = ff_disc_lang_code(a);
-    y = ff_disc_lang_code(b);
+    x = dr_disc_lang_code(a);
+    y = dr_disc_lang_code(b);
     return x && y && !strcmp(x, y);
 }
 
@@ -232,7 +232,7 @@ static int disc_name(void *log, BlurayDisc *d, const char *pref)
             const char *code;
             if (!lang[0])
                 name_lang(chosen, lang);
-            if (strlen(lang) <= 5 && (code = ff_disc_lang_code(lang)))
+            if (strlen(lang) <= 5 && (code = dr_disc_lang_code(lang)))
                 av_strlcpy(d->name_lang, code, sizeof(d->name_lang));
             d->name = name;
         }

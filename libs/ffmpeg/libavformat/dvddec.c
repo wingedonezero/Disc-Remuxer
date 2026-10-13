@@ -40,7 +40,7 @@
 
 #include "avformat.h"
 #include "disc.h"
-#include "disclang.h"
+#include "disc/lang.h"
 #include "timeline/disctl.h"
 #include "dvd_internal.h"
 #include "internal.h"
@@ -201,7 +201,7 @@ static int subp_roles(unsigned ext)
 static void attr_language(AVFormatContext *s, char lang[4], const uint8_t *b)
 {
     char code[3] = { b[0], b[1], 0 };
-    const char *iso = code[0] ? ff_disc_lang_code(code) : NULL;
+    const char *iso = code[0] ? dr_disc_lang_code(code) : NULL;
     if (iso)
         av_strlcpy(lang, iso, 4);
     else
