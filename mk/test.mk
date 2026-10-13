@@ -26,7 +26,7 @@ $(BRIDGE)/.built: $(VENV)/.installed $(BUILD)/ffmpeg/.installed $(ANALYZE_LIB) $
 	@mkdir -p $(BRIDGE)
 	BRIDGE_CFLAGS="$$(sed -n 's/^CPPFLAGS=//p' $(BUILD)/ffmpeg/build/ffbuild/config.mak) -DHAVE_AV_CONFIG_H -std=c17 \
 	  -I$(ROOT)/src -I$(FFMPEG_SRC) -I$(BUILD)/ffmpeg/build $$($(TOOL_PC) pkg-config --static --cflags $(BRIDGE_PKGS) dvdnav dvdread expat libaacs)" \
-	BRIDGE_LIBS="$(BRIDGE)/dvdnav_selftest.o $(ANALYZE_LIB) $$($(TOOL_PC) pkg-config --static --libs $(BRIDGE_PKGS)) $(DISC_LIB) $(TIMELINE_LIB) $(IO_LIB) $(MUX_LIB) $(PARSE_LIB) $(BASE_LIB) $$($(TOOL_PC) pkg-config --static --libs libaacs expat) -lpthread $(COV_LDFLAGS)" \
+	BRIDGE_LIBS="$(BRIDGE)/dvdnav_selftest.o $(ANALYZE_LIB) $$($(TOOL_PC) pkg-config --static --libs $(BRIDGE_PKGS)) $(DISC_LIB) $(TIMELINE_LIB) $(IO_LIB) $(MUX_LIB) $(PARSE_LIB) $(BASE_LIB) $$($(TOOL_PC) pkg-config --static --libs libaacs expat dvdnav) -lpthread $(COV_LDFLAGS)" \
 	$(PY) $(ROOT)/tests/bridge/build_bridge.py $(BRIDGE)
 	touch $@
 

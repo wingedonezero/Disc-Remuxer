@@ -26,7 +26,7 @@
 
 #include <stdint.h>
 
-#include "libavutil/bprint.h"
+#include "base/str.h"
 
 #include <dvdnav/dvdnav.h>
 #include <dvdnav/scan.h>
@@ -35,7 +35,7 @@
 #include <dvdread/vob_read.h>
 
 #include "io/discio.h"
-#include "discinfo.h"
+#include "disc/info.h"
 
 #define DVD_SECTOR          2048
 #define DVD_MAX_TITLE_SETS  99
@@ -186,7 +186,7 @@ int   ff_dvd_titles_build(DVDDisc *d, const dvdnav_scan_results_t *scan, const D
  *  set vts, with mode (DVD_CELL_CHECK_*): 1 failed, 0 passed, < 0 no such
  *  cell. */
 int   ff_dvd_cell_check(DVDDisc *d, int vts, int pgcn, int cell, int mode);
-/** One line per title (tests, debug log); av_free() it. */
+/** One line per title (tests, debug log); dr_free() it. */
 char *ff_dvd_titles_dump(const dvd_title_list_t *l);
 
 /* ---- dvd_read.c ---- */
@@ -196,7 +196,7 @@ char *ff_dvd_titles_dump(const dvd_title_list_t *l);
 dvd_vob_reader_t *ff_dvd_title_vobs_open(DVDDisc *d, int vts);
 /** Sector of title set vts's title VOBs, read, checked and CSS descrambled by
  *  libdvdread (see dvd_read.c): 1 read, 0 left out (damaged: no MPEG-2 pack
- *  with a packet), < 0 cannot be read (a read error; AVERROR_INVALIDDATA:
+ *  with a packet), < 0 cannot be read (a read error; DR_ERR_INVALID:
  *  scrambled without a title key). vr: a reading of its own (ff_dvd_title_vobs_open()),
  *  a damaged range that this read ends into *ended (may be NULL); NULL: the
  *  title set's own reading (its ranges are not given back). */
@@ -231,6 +231,6 @@ int      ff_dvd_segment_read(DVDDisc *d, const dvd_title_t *t, int seg, uint32_t
 int  ff_dvd_disc_open(void *log, DiscIOFS *fs, const char *dir, int folder, const char *label, DVDDisc *d);
 void ff_dvd_disc_free(DVDDisc *d);
 /** The structure as text (debug log). */
-void ff_dvd_disc_dump(const DVDDisc *d, AVBPrint *bp);
+void ff_dvd_disc_dump(const DVDDisc *d, DrStr *bp);
 
 #endif /* AVFORMAT_DVD_INTERNAL_H */

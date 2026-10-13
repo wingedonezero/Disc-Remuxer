@@ -33,11 +33,11 @@
 #include <dvdread/ifo_read.h>
 #include <dvdread/vob_read.h>
 
-#include "libavutil/avstring.h"
-#include "libavutil/error.h"
-#include "libavutil/intreadwrite.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
+#include "base/mem.h"
+#include "base/err.h"
+#include "base/bytes.h"
+#include "base/vlog.h"
+#include "base/mem.h"
 
 #include "dvd_internal.h"
 
@@ -57,22 +57,22 @@ int ff_dvd_disc_open(void *log, DiscIOFS *fs, const char *dir, int folder, const
         return ret;
     if (!(r = d->rec = DVDOpenDisc_rec(d->reader))) {
         ff_dvd_reports_log(d);
-        av_log(log, AV_LOG_ERROR, "DVD: the disc cannot be read as DVD-Video (see the IFO check above)\n");
-        return AVERROR_INVALIDDATA;
+        dr_vlog(log, DR_VLOG_ERROR, "DVD: the disc cannot be read as DVD-Video (see the IFO check above)\n");
+        return DR_ERR_INVALID;
     }
 
     /* its name: the volume label, else the provider identifier */
-    if (label && !(d->volume_name = av_strdup(label)))
-        return AVERROR(ENOMEM);
+    if (label && !(d->volume_name = dr_strdup(label)))
+        return DR_ERR(ENOMEM);
     if (!r->text) {
         DiscIOFile *f = NULL;
         if (fs->ops->open_file(fs, "/DVDROM/iTunesInfo.xml", &f) >= 0)
-            av_log(log, AV_LOG_WARNING, "DVD: /DVDROM/iTunesInfo.xml is present: the name in it is not read "
+            dr_vlog(log, DR_VLOG_WARNING, "DVD: /DVDROM/iTunesInfo.xml is present: the name in it is not read "
                    "[untested on real discs]\n");
         ff_discio_file_free(&f);
     }
-    if (!d->volume_name && !(d->volume_name = av_strndup(r->provider_id, 32)))
-        return AVERROR(ENOMEM);
+    if (!d->volume_name && !(d->volume_name = dr_strndup(r->provider_id, 32)))
+        return DR_ERR(ENOMEM);
 
     /* what libdvdread found, summed up */
     ff_dvd_reports_log(d);
@@ -93,60 +93,60 @@ void ff_dvd_disc_free(DVDDisc *d)
             ff_discio_file_free(&d->files[i][k].region);
             d->files[i][k].looked = 0;
         }
-    av_freep(&d->volume_name);
+    dr_freep(&d->volume_name);
     DVDFindingsFree(d->findings);
     d->findings = NULL;
 }
 
-static void dump_text(const dvd_text_node_t *n, int depth, AVBPrint *bp)
+static void dump_text(const dvd_text_node_t *n, int depth, DrStr *bp)
 {
-    av_bprintf(bp, "%*s  node kind 0x%02x at %u\n", 2 * depth, "", n->kind, n->offset);
+    dr_str_catf(bp, "%*s  node kind 0x%02x at %u\n", 2 * depth, "", n->kind, n->offset);
     for (int i = 0; i < n->nb_texts; i++)
-        av_bprintf(bp, "%*s    text 0x%02x \"%s\"\n", 2 * depth, "", n->text_kinds[i], n->texts[i]);
+        dr_str_catf(bp, "%*s    text 0x%02x \"%s\"\n", 2 * depth, "", n->text_kinds[i], n->texts[i]);
     for (int i = 0; i < n->nb_children; i++)
         dump_text(n->children[i], depth + 1, bp);
 }
 
-void ff_dvd_disc_dump(const DVDDisc *d, AVBPrint *bp)
+void ff_dvd_disc_dump(const DVDDisc *d, DrStr *bp)
 {
     const dvd_disc_rec_t *r = d->rec;
 
-    av_bprintf(bp, "volume name \"%s\", text name \"%s\", %d title set(s), %u title table entries\n",
+    dr_str_catf(bp, "volume name \"%s\", text name \"%s\", %d title set(s), %u title table entries\n",
                d->volume_name ? d->volume_name : "", r->text_name ? r->text_name : "", r->nr_of_title_sets,
-               r->tt_srpt && r->tt_srpt_size >= 2 ? AV_RB16(r->tt_srpt) : 0);
+               r->tt_srpt && r->tt_srpt_size >= 2 ? dr_rb16(r->tt_srpt) : 0);
     for (int i = 0; i < ff_dvd_nb_sets(d); i++) {
         const dvd_ifo_rec_t *f = ff_dvd_set(d, i);
         const pgcit_rec_t *t = f ? f->pgcit : NULL;
-        av_bprintf(bp, "%s%02d: %s", i ? "VTS_" : "VIDEO_TS ", i, !f ? "not read\n" : "");
+        dr_str_catf(bp, "%s%02d: %s", i ? "VTS_" : "VIDEO_TS ", i, !f ? "not read\n" : "");
         if (!f)
             continue;
-        av_bprintf(bp, "last sector %"PRIu32", IFO last sector %"PRIu32", %s%s, title VOBs %"PRIu32" sectors",
+        dr_str_catf(bp, "last sector %"PRIu32", IFO last sector %"PRIu32", %s%s, title VOBs %"PRIu32" sectors",
                    ff_dvd_header32(f, DVD_LAST_SECTOR), ff_dvd_header32(f, DVD_I_LAST_SECTOR),
                    f->whole ? "read whole" : "read in pieces", f->bup_only ? " (from the BUP)" : "",
                    f->title_vob_sectors);
         if (!d->folder)
-            av_bprintf(bp, ", IFO at %"PRId64", BUP at %"PRId64", title VOBs at %"PRIu32, f->ifo_sector,
+            dr_str_catf(bp, ", IFO at %"PRId64", BUP at %"PRId64", title VOBs at %"PRIu32, f->ifo_sector,
                        f->bup_sector, (uint32_t)f->title_vob_start);
-        av_bprintf(bp, ", %d program chain(s), %d VOBU start(s)%s%s\n", t ? t->nr_of_pgcs : 0, f->nb_vobu_map,
+        dr_str_catf(bp, ", %d program chain(s), %d VOBU start(s)%s%s\n", t ? t->nr_of_pgcs : 0, f->nb_vobu_map,
                    !ff_dvd_map_trusted(d, i) ? ", VOBU map not trusted" : "",
                    f->no_pgcit ? ", no VTS_PGCIT" : "");
         for (int p = 0; t && p < t->nr_of_pgcs; p++) {
             const pgc_rec_t *g = t->pgcs[p];
             if (!g) {
-                av_bprintf(bp, "  PGC %d: left out%s\n", p + 1, t->same_as[p] >= 0 ? " (same start as an "
+                dr_str_catf(bp, "  PGC %d: left out%s\n", p + 1, t->same_as[p] >= 0 ? " (same start as an "
                            "earlier one)" : "");
                 continue;
             }
-            av_bprintf(bp, "  PGC %d: %u program(s), %u cell(s), %u+%u+%u commands\n", p + 1, g->nr_of_programs,
+            dr_str_catf(bp, "  PGC %d: %u program(s), %u cell(s), %u+%u+%u commands\n", p + 1, g->nr_of_programs,
                        g->nr_of_cells, g->nr_of_pre, g->nr_of_post, g->nr_of_cell);
             for (int c = 0; c < g->nr_of_cells; c++)
-                av_bprintf(bp, "    cell %d: vob %u cell %u, sectors %"PRIu32"-%"PRIu32" (last VOBU %"PRIu32")\n",
+                dr_str_catf(bp, "    cell %d: vob %u cell %u, sectors %"PRIu32"-%"PRIu32" (last VOBU %"PRIu32")\n",
                            c + 1, g->cells[c].vob_id_nr, g->cells[c].cell_nr, g->cells[c].first_sector,
                            g->cells[c].last_sector, g->cells[c].last_vobu_start_sector);
         }
     }
     if (r->text) {
-        av_bprintf(bp, "text data, language \"%.3s\":\n", r->text->language);
+        dr_str_catf(bp, "text data, language \"%.3s\":\n", r->text->language);
         dump_text(r->text->root, 0, bp);
     }
 }

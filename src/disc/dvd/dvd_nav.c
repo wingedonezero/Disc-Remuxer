@@ -61,10 +61,11 @@
 #include <dvdread/dvd_reader.h>
 #include <dvdread/ifo_read.h>
 
-#include "libavutil/avstring.h"
-#include "libavutil/error.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
+#include "base/macros.h"
+#include "base/mem.h"
+#include "base/err.h"
+#include "base/vlog.h"
+#include "base/mem.h"
 
 #include "dvd_internal.h"
 
@@ -220,9 +221,9 @@ static int real_list_entry(void *opaque, const char *name, int is_dir)
 
     if (is_dir || real_slot(name, &set, &slot) < 0)
         return 0;
-    if (!(s = av_strdup(name)) || av_dynarray_add_nofree(&n->listing, &n->nb_listing, s) < 0) {
-        av_free(s);
-        return AVERROR(ENOMEM);
+    if (!(s = dr_strdup(name)) || dr_array_add_ptr(&n->listing, &n->nb_listing, s) < 0) {
+        dr_free(s);
+        return DR_ERR(ENOMEM);
     }
     return 0;
 }
@@ -233,7 +234,7 @@ static void real_list(NavFS *n)
         return;
     n->listed = 1;
     if (n->d->fs->ops->list_dir(n->d->fs, n->d->dir[0] ? n->d->dir : "/", real_list_entry, n) < 0)
-        av_log(n->d->log, AV_LOG_WARNING, "DVD: the VIDEO_TS folder cannot be listed\n");
+        dr_vlog(n->d->log, DR_VLOG_WARNING, "DVD: the VIDEO_TS folder cannot be listed\n");
 }
 
 /* ---- the navigator's view ---- */
@@ -322,7 +323,7 @@ static void *nav_dir_open(dvd_reader_filesystem_h *fs, const char *path)
     int depth = parse_path(path, &name);
     NavDir *dir;
 
-    if (depth < 0 || depth > 1 || !(dir = av_mallocz(sizeof(*dir))))
+    if (depth < 0 || depth > 1 || !(dir = dr_mallocz(sizeof(*dir))))
         return NULL;
     dir->n        = (NavFS *)fs;
     dir->video_ts = depth == 1;
@@ -372,7 +373,7 @@ static int nav_dir_read(void *p, dvd_dirent_t *entry)
 
 static void nav_dir_close(void *dir)
 {
-    av_free(dir);
+    dr_free(dir);
 }
 
 static void *nav_file_open(dvd_reader_filesystem_h *fs, const char *path)
@@ -386,7 +387,7 @@ static void *nav_file_open(dvd_reader_filesystem_h *fs, const char *path)
 
     if (parse_path(path, &name) != 2 || find_file(n, name, &s, &kind, &part, &real) < 0 ||
         (n->real && kind == FILE_MENU_VOB) ||   /* the disc reader reads no menu VOB (yet) */
-        !(file = av_mallocz(sizeof(*file))))
+        !(file = dr_mallocz(sizeof(*file))))
         return NULL;
     file->n    = n;
     file->s    = s;
@@ -426,11 +427,11 @@ static void *nav_image_open(dvd_reader_filesystem_h *fs)
     NavFile *file;
     DiscIOFile *f;
 
-    if (n->d->folder || !(file = av_mallocz(sizeof(*file))))
+    if (n->d->folder || !(file = dr_mallocz(sizeof(*file))))
         return NULL;
-    if (!(f = av_mallocz(sizeof(*f))) || !(f->extents = av_mallocz(sizeof(*f->extents)))) {
-        av_free(f);
-        av_free(file);
+    if (!(f = dr_mallocz(sizeof(*f))) || !(f->extents = dr_mallocz(sizeof(*f->extents)))) {
+        dr_free(f);
+        dr_free(file);
         return NULL;
     }
     f->nb_extents        = 1;
@@ -447,18 +448,18 @@ static void *nav_image_open(dvd_reader_filesystem_h *fs)
 static int read_ifo(NavFS *n, NavSet *s, int64_t pos, uint8_t *buf, int len)
 {
     const dvd_ifo_rec_t *f = ff_dvd_set(n->d, s->set);
-    int own = pos < s->ifo_bytes ? (int)FFMIN(len, s->ifo_bytes - pos) : 0;
+    int own = pos < s->ifo_bytes ? (int)DR_MIN(len, s->ifo_bytes - pos) : 0;
 
     if (own) {
         if (f->whole) {                 /* from the whole IFO libdvdread read */
             if (!ifoRead_rec_bytes(f->ifo, pos, buf, own))
-                return AVERROR_INVALIDDATA;
+                return DR_ERR_INVALID;
         } else {
             /* whole sectors through dvd_ifo.c, the part asked for copied out */
             uint8_t sector[DVD_SECTOR];
             for (int done = 0; done < own; ) {
                 int64_t at = pos + done;
-                int in = at % DVD_SECTOR, k = FFMIN(own - done, DVD_SECTOR - in), ret;
+                int in = at % DVD_SECTOR, k = DR_MIN(own - done, DVD_SECTOR - in), ret;
                 if ((ret = ff_dvd_ifo_read(n->d, s->set, at / DVD_SECTOR, sector, DVD_SECTOR)) < 0)
                     return ret;
                 memcpy(buf + done, sector + in, k);
@@ -471,7 +472,7 @@ static int read_ifo(NavFS *n, NavSet *s, int64_t pos, uint8_t *buf, int len)
         if (!s->zeros_logged) {
             char name[16];
             set_name(s->set, name, sizeof(name));
-            av_log(n->d->log, AV_LOG_WARNING, "DVD: navigation reads %s.IFO bytes %"PRId64"-%"PRId64" past its "
+            dr_vlog(n->d->log, DR_VLOG_WARNING, "DVD: navigation reads %s.IFO bytes %"PRId64"-%"PRId64" past its "
                    "%d bytes: zeros given [untested on real discs]\n", name, pos + own, pos + len - 1, s->ifo_bytes);
             s->zeros_logged = 1;
         }
@@ -488,14 +489,14 @@ static int read_joined(DVDDisc *d, const NavSet *s, int64_t pos, uint8_t *buf, i
             pos -= v->size;
             continue;
         }
-        int k = (int)FFMIN(len, v->size - pos), ret;
+        int k = (int)DR_MIN(len, v->size - pos), ret;
         if ((ret = ff_discio_file_read(d->fs, v, pos, buf, k)) < 0)
             return ret;
         buf += k;
         len -= k;
         pos  = 0;
     }
-    return len ? AVERROR(EINVAL) : 0;
+    return len ? DR_ERR(EINVAL) : 0;
 }
 
 static ssize_t nav_file_read(void *p, char *buf, size_t size)
@@ -508,7 +509,7 @@ static ssize_t nav_file_read(void *p, char *buf, size_t size)
 
     if (file->pos >= total)
         return 0;
-    len = (int)FFMIN((int64_t)FFMIN(size, INT_MAX / 2), total - file->pos);
+    len = (int)DR_MIN((int64_t)DR_MIN(size, INT_MAX / 2), total - file->pos);
     if (file->n->real) {                /* the real file (or the image); a read error stays one */
         DiscIOFile *f = file->kind == FILE_IMAGE ? file->image : file->real;
         ret = ff_discio_file_read(file->n->d->fs, f, file->pos, (uint8_t *)buf, len);
@@ -564,7 +565,7 @@ static int nav_file_close(void *p)
 {
     NavFile *file = p;
     ff_discio_file_free(&file->image);
-    av_free(file);
+    dr_free(file);
     return 0;
 }
 
@@ -577,9 +578,9 @@ static void nav_close(dvd_reader_filesystem_h *fs)
         ff_discio_file_free(&n->sets[i].title);
     }
     for (int i = 0; i < n->nb_listing; i++)
-        av_free(n->listing[i]);
-    av_free(n->listing);
-    av_free(n);
+        dr_free(n->listing[i]);
+    dr_free(n->listing);
+    dr_free(n);
 }
 
 /* ---- setting it up ---- */
@@ -594,10 +595,10 @@ static int image_part(DVDDisc *d, int64_t sector, int64_t count, DiscIOFile **ou
     *bytes = 0;
     if (sector <= 0 || count <= 0 || sector >= blocks)
         return 0;
-    count = FFMIN(count, blocks - sector);
-    if (!(f = av_mallocz(sizeof(*f))) || !(f->extents = av_mallocz(sizeof(*f->extents)))) {
-        av_free(f);
-        return AVERROR(ENOMEM);
+    count = DR_MIN(count, blocks - sector);
+    if (!(f = dr_mallocz(sizeof(*f))) || !(f->extents = dr_mallocz(sizeof(*f->extents)))) {
+        dr_free(f);
+        return DR_ERR(ENOMEM);
     }
     f->nb_extents        = 1;
     f->extents[0].sector = sector;
@@ -651,7 +652,7 @@ static int setup_set(DVDDisc *d, NavSet *s, int set)
  * share the levels INFO (details), ERROR, WARN, DEBUG and NOTICE. */
 static void lib_log(DVDDisc *d, int level, const char *fmt, va_list va)
 {
-    static const int levels[] = { AV_LOG_VERBOSE, AV_LOG_ERROR, AV_LOG_WARNING, AV_LOG_DEBUG, AV_LOG_INFO };
+    static const int levels[] = { DR_VLOG_VERBOSE, DR_VLOG_ERROR, DR_VLOG_WARNING, DR_VLOG_DEBUG, DR_VLOG_INFO };
     char line[1024];
     size_t n;
 
@@ -659,7 +660,7 @@ static void lib_log(DVDDisc *d, int level, const char *fmt, va_list va)
     n = strlen(line);
     if (n && line[n - 1] == '\n')
         line[n - 1] = 0;
-    av_log(d->log, levels[FFMIN((unsigned)level, 4)], "DVD: %s\n", line);
+    dr_vlog(d->log, levels[DR_MIN((unsigned)level, 4)], "DVD: %s\n", line);
 }
 
 static void nav_log(void *priv, dvdnav_logger_level_t level, const char *fmt, va_list va)
@@ -675,7 +676,7 @@ static void read_log(void *priv, dvd_logger_level_t level, const char *fmt, va_l
 static void findings_say(void *priv, dvd_logger_level_t level, const char *line)
 {
     DVDDisc *d = priv;
-    av_log(d->log, level == DVD_LOGGER_LEVEL_NOTICE ? AV_LOG_INFO : AV_LOG_VERBOSE, "DVD: %s\n", line);
+    dr_vlog(d->log, level == DVD_LOGGER_LEVEL_NOTICE ? DR_VLOG_INFO : DR_VLOG_VERBOSE, "DVD: %s\n", line);
 }
 
 void ff_dvd_reports_count(const DVDDisc *d, int *harmless, int *breaks)
@@ -692,7 +693,7 @@ void ff_dvd_reports_log(DVDDisc *d)
 static int findings_book(DVDDisc *d)
 {
     if (!d->findings && !(d->findings = DVDFindingsNew()))
-        return AVERROR(ENOMEM);
+        return DR_ERR(ENOMEM);
     return 0;
 }
 
@@ -711,8 +712,8 @@ static int nav_fs_new(DVDDisc *d, const DVDNavHooks *hooks, int real, NavFS **ou
     int ret;
 
     *out = NULL;
-    if (!(n = av_mallocz(sizeof(*n))))
-        return AVERROR(ENOMEM);
+    if (!(n = dr_mallocz(sizeof(*n))))
+        return DR_ERR(ENOMEM);
     n->d    = d;
     n->real = real;
     if (hooks)
@@ -734,7 +735,7 @@ static int nav_fs_new(DVDDisc *d, const DVDNavHooks *hooks, int real, NavFS **ou
 
 int ff_dvd_reader_open(DVDDisc *d)
 {
-    dvd_logger_cb logcb = { read_log, NULL };
+    dvd_logger_cb logcb = { read_log, NULL, NULL };
     NavFS *n;
     int ret;
 
@@ -745,9 +746,9 @@ int ff_dvd_reader_open(DVDDisc *d)
     logcb.findings = d->findings;
     /* the reader owns the callbacks once open */
     if (!(d->reader = DVDOpenFiles(d, &logcb, "/" NAV_ROOT, &n->fs))) {
-        av_log(d->log, AV_LOG_ERROR, "DVD: libdvdread cannot open the disc's information files\n");
+        dr_vlog(d->log, DR_VLOG_ERROR, "DVD: libdvdread cannot open the disc's information files\n");
         nav_close(&n->fs);
-        return AVERROR_EXTERNAL;
+        return DR_ERR_EXTERNAL;
     }
     return 0;
 }
@@ -763,9 +764,9 @@ int ff_dvd_nav_open(DVDDisc *d, const DVDNavHooks *hooks, dvdnav_t **out)
         return ret;
     /* the navigator owns the callbacks from here on, also on failure */
     if (dvdnav_open_files(out, d, &logcb, "/" NAV_ROOT, &n->fs) != DVDNAV_STATUS_OK) {
-        av_log(d->log, AV_LOG_ERROR, "DVD: the navigator cannot be opened on the disc\n");
+        dr_vlog(d->log, DR_VLOG_ERROR, "DVD: the navigator cannot be opened on the disc\n");
         *out = NULL;
-        return AVERROR_EXTERNAL;
+        return DR_ERR_EXTERNAL;
     }
     return 0;
 }

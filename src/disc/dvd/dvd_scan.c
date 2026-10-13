@@ -33,17 +33,17 @@
 #include <dvdnav/dvdnav.h>
 #include <dvdnav/scan.h>
 
-#include "libavutil/error.h"
-#include "libavutil/log.h"
-#include "libavutil/macros.h"
-#include "libavutil/mem.h"
+#include "base/err.h"
+#include "base/vlog.h"
+#include "base/macros.h"
+#include "base/mem.h"
 
 #include "dvd_internal.h"
 
 /* A VOB sector the navigator read, to the scan. */
 static int scan_sector(void *opaque, int set, int menu, uint32_t sector, const uint8_t *data)
 {
-    return dvdnav_scan_sector(opaque, set, menu, sector, data) < 0 ? AVERROR(EINVAL) : 0;
+    return dvdnav_scan_sector(opaque, set, menu, sector, data) < 0 ? DR_ERR(EINVAL) : 0;
 }
 
 int ff_dvd_scan(DVDDisc *d, void (*trace)(void *opaque, const char *line), void *opaque, dvdnav_scan_results_t *out)
@@ -55,13 +55,13 @@ int ff_dvd_scan(DVDDisc *d, void (*trace)(void *opaque, const char *line), void 
 
     memset(out, 0, sizeof(*out));
     if (ff_dvd_nav_logger(d, &logcb) < 0 || !(s = dvdnav_scan_new(d->rec, d, &logcb, trace, opaque)))
-        return AVERROR(ENOMEM);
+        return DR_ERR(ENOMEM);
     if ((ret = ff_dvd_nav_open(d, &(DVDNavHooks){ s, scan_sector }, &nav)) >= 0) {
         ret = dvdnav_scan_run(s, nav, out);
-        ret = ret == -2 ? AVERROR(ENOMEM) : ret < 0 ? AVERROR_EXTERNAL : 0;
+        ret = ret == -2 ? DR_ERR(ENOMEM) : ret < 0 ? DR_ERR_EXTERNAL : 0;
     }
     if (ret < 0)
-        av_log(d->log, AV_LOG_WARNING, "DVD: the navigation scan failed: the titles keep the order of the title "
+        dr_vlog(d->log, DR_VLOG_WARNING, "DVD: the navigation scan failed: the titles keep the order of the title "
                "table\n");
     dvdnav_scan_close(s);
     return ret;

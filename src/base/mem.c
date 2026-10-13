@@ -5,6 +5,7 @@
 #define _GNU_SOURCE     /* vasprintf */
 
 #include <stdarg.h>
+#include <time.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -91,6 +92,20 @@ size_t dr_strlcat(char *dst, const char *src, size_t size)
     if (used == size)
         return size + strlen(src);
     return used + dr_strlcpy(dst + used, src, size - used);
+}
+
+uint32_t dr_random_seed(void)
+{
+    uint32_t seed;
+    FILE *f = fopen("/dev/urandom", "re");
+
+    if (f) {
+        size_t n = fread(&seed, 1, sizeof(seed), f);
+        fclose(f);
+        if (n == sizeof(seed))
+            return seed;
+    }
+    return (uint32_t)time(NULL) ^ (uint32_t)clock();
 }
 
 size_t dr_strlcatf(char *dst, size_t size, const char *fmt, ...)

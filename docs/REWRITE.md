@@ -4,9 +4,9 @@ Updated 2026-10-13, on branch `claude/rewrite-untangle-1c24ca` (the rewrite
 branch; main still holds the pre-rewrite program and is the byte-compare
 reference). Inventory of what the old shape was made of: `docs/UNTANGLE.md`.
 
-Status: **steps 1–6 done**, step 7 under way: 7a (the clip demuxer) is in
-(part 3; one piece of 6 deferred: the log flip waits for step 7's own log
-contexts, 7e).
+Status: **steps 1–6 done**, step 7 under way: 7a (the clip demuxer) and 7b
+(the format parts out of FFmpeg, rows 258–263) are in; next 7d, the disc
+model (7c folded into it), then 7e, the deferred log flip.
 Tests at every commit: 735 passed, 15 skipped (the disc-marked ones without a
 disc). Every move so far is behavior-preserving by construction and by test;
 the real-disc byte-compare against a main build is still owed (user runs it
@@ -362,7 +362,9 @@ In five slices, one commit and one full test run each:
   (`disc/bluray/`, FFmpeg-free: base utilities, own SHA / CRC-32 / UTF-8
   read, libaacs + expat remain its libraries; errors as base values,
   translated once at the seams — `part_err()` in discdec). THE HD DVD PART followed
-  (row 262, same recipe); DVD follows.
+  (row 262) and THE DVD PART closed it (row 263) — all three format parts
+  live under `src/disc/`, and libavformat keeps only the disc layer
+  (discdec / discpass / disctitle) and the three thin adapters. 7b DONE.
 - **7c — `discpass.c` and `disclang.c` move** (the pass on
   mux/parse/analyze; language names from our own ISO-639 table, the
   `avlanguage.c` link dropped).

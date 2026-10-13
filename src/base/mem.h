@@ -8,6 +8,7 @@
 #define DISC_BASE_MEM_H
 
 #include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -29,6 +30,9 @@ void dr_freep(void *p);
 
 char *dr_strdup(const char *s);                 /* NULL in: NULL out */
 char *dr_strndup(const char *s, size_t n);      /* at most n bytes, 0-terminated */
+
+/* A random 32-bit seed (the kernel's entropy; the clock as a last resort). */
+uint32_t dr_random_seed(void);
 void *dr_memdup(const void *p, size_t size);
 
 /* The classic strlcpy/strlcat: always NUL-terminated when size > 0; the

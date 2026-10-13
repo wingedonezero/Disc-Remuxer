@@ -14,10 +14,11 @@ FFMPEG_ARGS := --prefix=$(FFMPEG) --enable-gpl --enable-libdvdnav --enable-libdv
   --extra-cflags=-I$(ROOT)/src \
   --extra-libs="$(DISC_LIB) $(TIMELINE_LIB) $(IO_LIB) $(MUX_LIB) $(PARSE_LIB) $(BASE_LIB) \
     -L$(BUILD)/aacs/install/lib -laacs -L$(BUILD)/gcrypt/install/lib -lgcrypt \
-    -L$(BUILD)/gpg-error/install/lib -lgpg-error -L$(BUILD)/expat -lexpat"
+    -L$(BUILD)/gpg-error/install/lib -lgpg-error -L$(BUILD)/expat -lexpat \
+    -L$(BUILD)/dvdnav -ldvdnav -L$(BUILD)/dvdread -ldvdread -L$(BUILD)/dvdcss -ldvdcss"
 # --extra-libs lands AFTER the libraries configure adds, so the format
-# parts' own needs (libaacs with its gcrypt chain, expat) are named again
-# behind libdisc-disc.a
+# parts' own needs (libaacs with its gcrypt chain, expat, the DVD
+# libraries) are named again behind libdisc-disc.a
 # the readers live in src/io (libdisc-io.a, on libdisc-base.a): the disc
 # demuxer inside libavformat calls them, so FFmpeg compiles with src/ on its
 # include path and links the two libraries

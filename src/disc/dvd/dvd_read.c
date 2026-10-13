@@ -28,10 +28,12 @@
 
 #include <string.h>
 
-#include "libavutil/error.h"
-#include "libavutil/log.h"
-#include "libavutil/macros.h"
-#include "libavutil/mem.h"
+#include "base/err.h"
+#include "base/vlog.h"
+#include <stdio.h>
+
+#include "base/macros.h"
+#include "base/mem.h"
 
 #include "dvd_internal.h"
 
@@ -50,9 +52,9 @@ int ff_dvd_title_vob_read(DVDDisc *d, int vts, dvd_vob_reader_t *vr, uint32_t se
     int ret;
 
     if (!vr && !(vr = ff_dvd_own_reading(d, vts)))
-        return AVERROR(EINVAL);
+        return DR_ERR(EINVAL);
     ret = DVDReadTitleVOBSector_rec(vr, sector, buf, ended);
-    return ret == -2 ? AVERROR_INVALIDDATA : ret < 0 ? AVERROR(EIO) : ret;
+    return ret == -2 ? DR_ERR_INVALID : ret < 0 ? DR_ERR(EIO) : ret;
 }
 
 int ff_dvd_css_state(DVDDisc *d, int vts, uint8_t *key)
@@ -88,7 +90,7 @@ static int segment_sector(const dvd_segment_t *g, uint32_t block, uint32_t *sect
             return 0;
         }
     }
-    return AVERROR(EINVAL);
+    return DR_ERR(EINVAL);
 }
 
 int ff_dvd_segment_read_vobs(DVDDisc *d, const dvd_title_t *t, dvd_vob_reader_t *vr, int seg, uint32_t block,
@@ -110,7 +112,7 @@ int ff_dvd_segment_place(const dvd_title_t *t, const dvd_vob_reader_t *vr, int s
 
     if (segment_sector(&t->segs.segments[seg], block, &sector) < 0 ||
         !DVDTitleVOBSectorPlace_rec(vr, sector, name, offset))
-        return AVERROR(EINVAL);
+        return DR_ERR(EINVAL);
     snprintf(file, size, "%s", name);
     return 0;
 }
@@ -118,9 +120,9 @@ int ff_dvd_segment_place(const dvd_title_t *t, const dvd_vob_reader_t *vr, int s
 int ff_dvd_segment_view(const dvd_title_t *t, dvd_vob_reader_t *vr, int seg)
 {
     const dvd_segment_t *g = &t->segs.segments[seg];
-    uint32_t *sectors = av_malloc_array(FFMAX(g->nb_extents, 1), sizeof(*sectors));
-    uint32_t *counts  = av_malloc_array(FFMAX(g->nb_extents, 1), sizeof(*counts));
-    int ret = AVERROR(ENOMEM);
+    uint32_t *sectors = dr_malloc_array(DR_MAX(g->nb_extents, 1), sizeof(*sectors));
+    uint32_t *counts  = dr_malloc_array(DR_MAX(g->nb_extents, 1), sizeof(*counts));
+    int ret = DR_ERR(ENOMEM);
 
     if (sectors && counts) {
         for (int i = 0; i < g->nb_extents; i++) {
@@ -129,8 +131,8 @@ int ff_dvd_segment_view(const dvd_title_t *t, dvd_vob_reader_t *vr, int seg)
         }
         ret = DVDUseTitleVOBView_rec(vr, sectors, counts, g->nb_extents);
     }
-    av_free(sectors);
-    av_free(counts);
+    dr_free(sectors);
+    dr_free(counts);
     return ret;
 }
 

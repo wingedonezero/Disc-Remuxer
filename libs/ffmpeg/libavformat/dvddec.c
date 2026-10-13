@@ -42,7 +42,8 @@
 #include "disc.h"
 #include "disc/lang.h"
 #include "timeline/disctl.h"
-#include "dvd_internal.h"
+#include "base/str.h"
+#include "disc/dvd/dvd_internal.h"
 #include "internal.h"
 
 
@@ -526,12 +527,12 @@ static int dvd_load(AVFormatContext *s)
                                 &c->disc)) < 0)
         return ret;
     if (av_log_get_level() >= AV_LOG_DEBUG) {
-        AVBPrint bp;
-        av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
+        DrStr bp;
+        dr_str_init(&bp);
         ff_dvd_disc_dump(&c->disc, &bp);
-        if (av_bprint_is_complete(&bp))
+        if (dr_str_ok(&bp))
             debug_lines(s, "DVD structure:", bp.str);
-        av_bprint_finalize(&bp, NULL);
+        dr_str_free(&bp);
     }
     d->info.label = c->disc.volume_name;
     d->info.name  = c->disc.rec->text_name;

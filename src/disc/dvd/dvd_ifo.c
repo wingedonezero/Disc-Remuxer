@@ -28,10 +28,11 @@
 #include <dvdread/dvd_reader.h>
 #include <dvdread/ifo_read.h>
 
-#include "libavutil/error.h"
-#include "libavutil/intreadwrite.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
+#include "base/err.h"
+#include "base/bytes.h"
+#include "base/vlog.h"
+#include "base/macros.h"
+#include "base/mem.h"
 
 #include "dvd_internal.h"
 
@@ -52,7 +53,7 @@ const DVDDiscFile *ff_dvd_disc_file(DVDDisc *d, int set, int slot)
         r->looked = 1;
         if (set)
             snprintf(path, sizeof(path), "%s/VTS_%02d_%d.%s", d->dir, set, slot < 3 ? 0 : slot - 2,
-                     ext[FFMIN(slot, 2)]);
+                     ext[DR_MIN(slot, 2)]);
         else
             snprintf(path, sizeof(path), "%s/VIDEO_TS.%s", d->dir, ext[slot]);
         if (d->fs->ops->open_file(d->fs, path, &r->file) < 0)
@@ -63,15 +64,15 @@ const DVDDiscFile *ff_dvd_disc_file(DVDDisc *d, int set, int slot)
             (at = r->file->extents[0].sector) != DISCIO_SECTOR_NOT_RECORDED) {
             int64_t blocks = (d->fs->src->size + DVD_SECTOR - 1) / DVD_SECTOR;
             DiscIOFile *g;
-            if (at < blocks && (g = av_mallocz(sizeof(*g)))) {
-                if ((g->extents = av_mallocz(sizeof(*g->extents)))) {
+            if (at < blocks && (g = dr_mallocz(sizeof(*g)))) {
+                if ((g->extents = dr_mallocz(sizeof(*g->extents)))) {
                     g->nb_extents        = 1;
                     g->extents[0].sector = at;
                     g->extents[0].count  = blocks - at;
                     g->size              = g->extents[0].count * DVD_SECTOR;
                     r->region = g;
                 } else {
-                    av_free(g);
+                    dr_free(g);
                 }
             }
         }
@@ -84,5 +85,5 @@ const DVDDiscFile *ff_dvd_disc_file(DVDDisc *d, int set, int slot)
 int ff_dvd_ifo_read(DVDDisc *d, int set, uint32_t sector, uint8_t *buf, int len)
 {
     const dvd_ifo_rec_t *f = ff_dvd_set(d, set);
-    return f && ifoRead_rec_bytes(f->ifo, (int64_t)sector * DVD_SECTOR, buf, len) ? 0 : AVERROR_INVALIDDATA;
+    return f && ifoRead_rec_bytes(f->ifo, (int64_t)sector * DVD_SECTOR, buf, len) ? 0 : DR_ERR_INVALID;
 }
