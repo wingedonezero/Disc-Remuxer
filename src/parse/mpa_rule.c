@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include "base/bytes.h"
+#include "base/err.h"
 
 #include "parse/bits.h"
 #include "parse/rules.h"
@@ -317,3 +318,20 @@ static int disc_resync(void *ctx, const uint8_t *b, int len)
 }
 
 const DrFrameRule dr_mpa_frames = { disc_sync, disc_size, disc_check, disc_resync, DISC_GIVE_UP };
+
+/* The timeline's header read: the fields it uses of a frame header, with
+ * the acceptance of the rules above. A frame lasts 384 samples (Layer I),
+ * 1152 (Layer II, or Layer III of MPEG-1), 576 (Layer III of MPEG-2 / 2.5);
+ * a free-format frame's size stays 0. */
+int dr_mpa_header(const uint8_t *b, int len, DrMpaHeader *h)
+{
+    DiscMpa m;
+
+    h->rate = h->samples = h->frame_size = 0;
+    if (len < 4 || !mpa_header(b, &m))
+        return DR_ERR_INVALID;
+    h->rate       = m.sample_rate;
+    h->samples    = m.layer == 1 ? 384 : m.layer == 2 || !m.lsf ? 1152 : 576;
+    h->frame_size = m.size;
+    return 0;
+}

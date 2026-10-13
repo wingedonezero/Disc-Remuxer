@@ -86,6 +86,55 @@ extern const DrFrameRule dr_mpa_frames;       /**< MPEG audio frames (ctx: DrMpa
  *  LFE give); AC-3: the syncinfo. 1 valid, 0 not. */
 int dr_ac3_stream_header(const uint8_t *buf, int size);
 
+/** An AC-3 / E-AC-3 syncframe's header (A/52 5.4.1, Annex E E.1.2), as far
+ *  as the timeline reads it. */
+typedef struct DrAc3Header {
+    int bitstream_id;
+    int frame_type;         /**< E-AC-3 strmtyp (0 independent, 1 dependent); an AC-3 frame reads as 2 */
+    int frame_size;         /**< bytes */
+    int rate;               /**< sample rate */
+    int blocks;             /**< audio blocks of 256 samples */
+} DrAc3Header;
+
+/** The header of the frame at buf: 0, or DR_ERR_INVALID when it is not one
+ *  the timeline takes (bad sync / sizes / rates; an E-AC-3 substream other
+ *  than 0; a dependent frame whose channel map names too many channels). */
+int dr_ac3_header(const uint8_t *buf, int size, DrAc3Header *h);
+
+/** The core of an AC-3 track's unit (frames already cut): an independent or
+ *  AC-3 frame first keeps that frame alone; a dependent frame first keeps
+ *  the frame after it when that one is independent (else nothing).
+ *  *off / *out_size: the kept bytes (0 kept is legal); DR_ERR_INVALID when
+ *  a header cannot be read. */
+int dr_eac3_core(const uint8_t *data, int size, int *off, int *out_size);
+
+/** A DTS core frame's header (ETSI TS 102 114 5.4), as far as the timeline
+ *  reads it. */
+typedef struct DrDcaHeader {
+    int rate;               /**< core sample rate */
+    int samples;            /**< PCM samples (blocks x 32) */
+    int frame_size;         /**< bytes */
+} DrDcaHeader;
+
+/** The header of the core frame at buf: 0, or DR_ERR_INVALID. */
+int dr_dca_core_header(const uint8_t *buf, int size, DrDcaHeader *h);
+
+/** The core of a DTS track's unit: a unit starting with a core frame is cut
+ *  to the core frame's size (the DTS-HD extension substream after it goes);
+ *  any other unit stays whole. Never fails. */
+int dr_dca_core(const uint8_t *data, int size, int *off, int *out_size);
+
+/** An MPEG audio frame's header (ISO/IEC 11172-3 2.4.1.3), as far as the
+ *  timeline reads it. */
+typedef struct DrMpaHeader {
+    int rate;               /**< sample rate */
+    int samples;            /**< samples per frame (384 / 1152 / 576) */
+    int frame_size;         /**< bytes; 0 for a free-format frame */
+} DrMpaHeader;
+
+/** The header of the frame at buf: 0, or DR_ERR_INVALID. */
+int dr_mpa_header(const uint8_t *buf, int size, DrMpaHeader *h);
+
 /** The first frame of a DTS stream as the disc reader takes it: 0 not a
  *  valid first frame, 1 a core frame alone, 2 a core frame with a valid
  *  extension substream after it (DTS-HD). */

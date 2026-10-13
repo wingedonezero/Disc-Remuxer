@@ -154,6 +154,9 @@ typedef struct DRAudioHeader {
 } DRAudioHeader;
 
 /* What the core needs to know about an audio codec. */
+/** A core filter (parse/rules.h): which bytes of a unit stay. */
+typedef int (*DRCoreFilter)(const uint8_t *data, int size, int *off, int *out_size);
+
 typedef struct DRAudioRules {
     /** The stream's values from a unit; < 0 when the unit gives none. The
      *  first unit that is a sync unit and gives them sets them for the
@@ -164,10 +167,10 @@ typedef struct DRAudioRules {
     /** The unit's duration in ticks; < 0 on failure. NULL: samples / rate
      *  of the header. */
     int  (*duration)(DRAudio *a, DRFrame *frame);
-    /** The FFmpeg bitstream filter each unit goes through after its
-     *  duration, for a track of these audio flags (e.g. eac3_core: an AC-3
-     *  frame without the E-AC-3 frames after it), NULL: none. */
-    const char *(*filter)(int flags);
+    /** The core filter each unit goes through after its duration, for a
+     *  track of these audio flags (e.g. dr_eac3_core: an AC-3 frame without
+     *  the E-AC-3 frames after it; parse/rules.h), NULL: none. */
+    DRCoreFilter (*filter)(int flags);
     /** Checks a unit for features that are implemented but not met on real
      *  discs yet (ff_disctl_audio_review). NULL: none. */
     void (*inspect)(DRAudio *a, const DRFrame *frame);

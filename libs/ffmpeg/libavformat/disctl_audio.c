@@ -22,7 +22,6 @@
 #include <string.h>
 
 #include "libavcodec/avcodec.h"
-#include "libavcodec/bsf.h"
 #include "libavutil/error.h"
 #include "libavutil/log.h"
 #include "libavutil/mem.h"
@@ -44,7 +43,7 @@ struct DRAudio {
 
     int64_t             expect;    /* end of the previous unit (continuity), 0 = none */
     unsigned            reviewed;  /* review kinds already reported */
-    AVBSFContext       *bsf;       /* the rules' filter for this track, NULL: none */
+    DRCoreFilter        core;      /* the rules' core filter for this track, NULL: none */
     void               *priv;      /* rule state */
     void               *state;     /* codec state owned by the caller */
     DRAudioStats        st;
@@ -81,32 +80,8 @@ int ff_disctl_audio_open(DRAudio **audio, void *logctx, enum AVCodecID codec, in
         av_free(a);
         return AVERROR(ENOMEM);
     }
-    if (a->rules->filter && a->rules->filter(flags)) {
-        const char *name = a->rules->filter(flags);
-        const AVBitStreamFilter *f = av_bsf_get_by_name(name);
-        int ret;
-
-        if (!f) {
-            av_log(logctx, AV_LOG_ERROR, "Title timeline: %s: FFmpeg has no bitstream filter %s\n", c->name, name);
-            ff_disctl_audio_close(&a);
-            return AVERROR_BSF_NOT_FOUND;
-        }
-        if ((ret = av_bsf_alloc(f, &a->bsf)) < 0) {
-            ff_disctl_audio_close(&a);
-            return ret;
-        }
-        /* the filter's input is the stream the units come from (an AC-3
-         * track's units come from FFmpeg's AC-3 / E-AC-3 parser: eac3_core
-         * takes E-AC-3) */
-        a->bsf->par_in->codec_type = AVMEDIA_TYPE_AUDIO;
-        a->bsf->par_in->codec_id   = f->codec_ids && f->codec_ids[0] != AV_CODEC_ID_NONE &&
-                                     f->codec_ids[0] != codec && f->codec_ids[1] == AV_CODEC_ID_NONE ?
-                                     f->codec_ids[0] : codec;
-        if ((ret = av_bsf_init(a->bsf)) < 0) {
-            ff_disctl_audio_close(&a);
-            return ret;
-        }
-    }
+    if (a->rules->filter)
+        a->core = a->rules->filter(flags);
     *audio    = a;
     return 0;
 }
@@ -123,7 +98,6 @@ void ff_disctl_audio_close(DRAudio **audio)
     if (a->priv && a->rules->close)
         a->rules->close(a->priv);
     av_freep(&a->priv);
-    av_bsf_free(&a->bsf);
     av_freep(audio);
 }
 
@@ -178,33 +152,22 @@ void ff_disctl_audio_review(DRAudio *a, unsigned kind, const char *what)
     av_log(a->log, AV_LOG_WARNING, "Title timeline: %s track: %s [untested on real discs]\n", a->codec->name, what);
 }
 
-/* A unit through the track's bitstream filter: one unit in, its final
- * bytes out (the same buffer). */
+/* A unit through the track's core filter: one unit in, its final bytes out
+ * (the same buffer). */
 static int filter(DRAudio *a, DRFrame *f)
 {
-    AVPacket *pkt = av_packet_alloc();
-    int ret;
+    int off, size, ret = a->core(f->data, f->size, &off, &size);
 
-    if (!pkt)
-        return AVERROR(ENOMEM);
-    if (!(pkt->buf = av_buffer_ref(f->buf))) {
-        av_packet_free(&pkt);
-        return AVERROR(ENOMEM);
+    if (ret < 0)
+        return AVERROR_INVALIDDATA;
+    if (size <= 0 || off < 0 || off + size > f->size) {
+        av_log(a->log, AV_LOG_ERROR, "Title timeline: %s: the core filter gave no bytes of the unit at stream "
+               "offset %"PRId64"\n", a->codec->name, f->pos);
+        return AVERROR_BUG;
     }
-    pkt->data = f->data;
-    pkt->size = f->size;
-    if ((ret = av_bsf_send_packet(a->bsf, pkt)) >= 0 && (ret = av_bsf_receive_packet(a->bsf, pkt)) >= 0) {
-        if (pkt->size <= 0 || pkt->data < f->buf->data || pkt->data + pkt->size > f->data + f->size) {
-            av_log(a->log, AV_LOG_ERROR, "Title timeline: %s: the %s filter gave no bytes of the unit at stream "
-                   "offset %"PRId64"\n", a->codec->name, a->bsf->filter->name, f->pos);
-            ret = AVERROR_BUG;
-        } else {
-            f->data = pkt->data;
-            f->size = pkt->size;
-        }
-    }
-    av_packet_free(&pkt);
-    return ret;
+    f->data += off;
+    f->size  = size;
+    return 0;
 }
 
 /* Duration, final bytes, continuity; then hand the frame on. */
@@ -224,7 +187,7 @@ static int unit_done(DRAudio *a, DRFrame *f)
             ff_disctl_frame_unref(f);
             return ret;
         }
-        if (a->bsf && (ret = filter(a, f)) < 0) {
+        if (a->core && (ret = filter(a, f)) < 0) {
             ff_disctl_frame_unref(f);
             return ret;
         }

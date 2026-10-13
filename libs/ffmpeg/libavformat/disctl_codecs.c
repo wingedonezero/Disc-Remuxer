@@ -21,14 +21,12 @@
 #include <stddef.h>
 #include <string.h>
 
-#include "libavcodec/ac3_parser_internal.h"
-#include "libavcodec/ac3defs.h"
-#include "libavcodec/dca.h"
-#include "libavcodec/mpegaudiodecheader.h"
 #include "libavcodec/avcodec.h"
-#include "libavutil/crc.h"
 #include "libavutil/frame.h"
 #include "libavutil/intreadwrite.h"
+
+#include "base/crc16.h"
+#include "parse/rules.h"
 
 #include "disctl.h"
 
@@ -106,40 +104,38 @@ static int anchor_hevc(const uint8_t *data, int size)
  * (the split the HD DVD track probe uses too). An AC-3 track keeps only AC-3
  * syncframes, an E-AC-3 track only E-AC-3 ones. */
 
-static int ac3_header(const uint8_t *data, int size, AC3HeaderInfo *h)
+static int ac3_header(const uint8_t *data, int size, DrAc3Header *h)
 {
-    AC3HeaderInfo *p = h;
-
     if (size < 7 || data[0] != 0x0B || data[1] != 0x77)
         return -1;
-    return avpriv_ac3_parse_header(&p, data, size) < 0 ? -1 : 0;
+    return dr_ac3_header(data, size, h) < 0 ? -1 : 0;
 }
 
-static int is_eac3(const AC3HeaderInfo *h)
+static int is_eac3(const DrAc3Header *h)
 {
     return h->bitstream_id >= 10 && h->bitstream_id <= 16;
 }
 
 static int check_ac3(const uint8_t *data, int size)
 {
-    AC3HeaderInfo h;
+    DrAc3Header h;
     return ac3_header(data, size, &h) >= 0 && !is_eac3(&h);
 }
 
 static int check_eac3(const uint8_t *data, int size)
 {
-    AC3HeaderInfo h;
+    DrAc3Header h;
     return ac3_header(data, size, &h) >= 0 && is_eac3(&h);
 }
 
 static int header_ac3(DRAudio *a, const DRFrame *f, DRAudioHeader *out)
 {
-    AC3HeaderInfo h;
+    DrAc3Header h;
 
     if (ac3_header(f->data, f->size, &h) < 0)
         return -1;
-    out->rate    = h.sample_rate;
-    out->samples = h.num_blocks * 256;
+    out->rate    = h.rate;
+    out->samples = h.blocks * 256;
     return 0;
 }
 
@@ -154,14 +150,14 @@ static int sync_always(const uint8_t *data, int size)
 static int duration_ac3(DRAudio *a, DRFrame *f)
 {
     const DRAudioHeader *s = ff_disctl_audio_header(a);
-    AC3HeaderInfo h;
+    DrAc3Header h;
 
-    if (ac3_header(f->data, f->size, &h) < 0 || !h.sample_rate)
+    if (ac3_header(f->data, f->size, &h) < 0 || !h.rate)
         return AVERROR_INVALIDDATA;
-    if (h.sample_rate != s->rate || h.num_blocks * 256 != s->samples)
+    if (h.rate != s->rate || h.blocks * 256 != s->samples)
         ff_disctl_audio_review(a, REVIEW_FRAME_LENGTH, "a frame's length or sample rate differs from the "
                                 "stream's first frame (timed by its own values)");
-    f->dur = (int64_t)((uint64_t)h.num_blocks * 256 * DR_TICKS_PER_SECOND / h.sample_rate);
+    f->dur = (int64_t)((uint64_t)h.blocks * 256 * DR_TICKS_PER_SECOND / h.rate);
     return 0;
 }
 
@@ -179,7 +175,7 @@ static void inspect_eac3(DRAudio *a, const DRFrame *f)
         int sub     = (f->data[off + 2] >> 3) & 7;
         int size    = ((((f->data[off + 2] & 7) << 8) | f->data[off + 3]) + 1) * 2;
 
-        if (strmtyp == EAC3_FRAME_TYPE_DEPENDENT)
+        if (strmtyp == 1)                   /* a dependent substream */
             ff_disctl_audio_review(a, REVIEW_DEPENDENT, "E-AC-3 dependent substream (extra channels, e.g. 7.1): "
                                     "kept in the same unit as its independent frame");
         else if (sub)
@@ -192,9 +188,9 @@ static void inspect_eac3(DRAudio *a, const DRFrame *f)
 /* An AC-3 track keeps each unit's AC-3 frame alone: the parser joins the
  * E-AC-3 frames after an AC-3 frame to it (they belong to the same time),
  * and FFmpeg's eac3_core filter takes them off. */
-static const char *filter_ac3(int flags)
+static DRCoreFilter filter_ac3(int flags)
 {
-    return "eac3_core";
+    return dr_eac3_core;
 }
 
 static const DRAudioRules audio_ac3 = {
@@ -217,9 +213,6 @@ static const DRAudioRules audio_eac3 = {
  * core frame and the extension substream after it in one unit (DTS-HD); a
  * stream of extension substreams only (DTS Express / LBR) has no core. */
 
-/* core sampling frequencies, SFREQ (Table 5-5) */
-static const int dts_rates[16] = { 0, 8000, 16000, 32000, 0, 0, 11025, 22050, 44100, 0, 0, 12000, 24000, 48000, 0, 0 };
-
 static int dts_core_sync(const uint8_t *d, int size)
 {
     return size >= 4 && AV_RB32(d) == 0x7FFE8001;
@@ -230,26 +223,26 @@ static int dts_exss_sync(const uint8_t *d, int size)
     return size >= 4 && AV_RB32(d) == 0x64582025;
 }
 
-static int dts_core(const uint8_t *d, int size, DCACoreFrameHeader *h)
+static int dts_core(const uint8_t *d, int size, DrDcaHeader *h)
 {
-    if (!dts_core_sync(d, size) || size < 16 || avpriv_dca_parse_core_frame_header(h, d, size) < 0)
+    if (!dts_core_sync(d, size) || size < 16 || dr_dca_core_header(d, size, h) < 0)
         return -1;
-    return dts_rates[h->sr_code] ? 0 : -1;
+    return h->rate ? 0 : -1;
 }
 
 static int check_dts(const uint8_t *data, int size)
 {
-    DCACoreFrameHeader h;
+    DrDcaHeader h;
     return dts_core(data, size, &h) >= 0 || dts_exss_sync(data, size);
 }
 
 static int header_dts(DRAudio *a, const DRFrame *f, DRAudioHeader *out)
 {
-    DCACoreFrameHeader h;
+    DrDcaHeader h;
 
     if (dts_core(f->data, f->size, &h) >= 0) {
-        out->rate    = dts_rates[h.sr_code];
-        out->samples = h.npcmblocks * 32;
+        out->rate    = h.rate;
+        out->samples = h.samples;
         return 0;
     }
     if (dts_exss_sync(f->data, f->size) && f->samples > 0 && f->rate > 0) {
@@ -267,12 +260,12 @@ static int header_dts(DRAudio *a, const DRFrame *f, DRAudioHeader *out)
 static int duration_dts(DRAudio *a, DRFrame *f)
 {
     const DRAudioHeader *s = ff_disctl_audio_header(a);
-    DCACoreFrameHeader h;
+    DrDcaHeader h;
     int rate, samples;
 
     if (dts_core(f->data, f->size, &h) >= 0) {
-        rate    = dts_rates[h.sr_code];
-        samples = h.npcmblocks * 32;
+        rate    = h.rate;
+        samples = h.samples;
     } else if (dts_exss_sync(f->data, f->size) && !(ff_disctl_audio_flags(a) & DR_AUDIO_EXTRACTED) &&
                f->samples > 0 && f->rate > 0) {
         ff_disctl_audio_review(a, REVIEW_DTS_SUBSTREAM_ONLY, "DTS-HD extension substream without a core "
@@ -290,9 +283,9 @@ static int duration_dts(DRAudio *a, DRFrame *f)
 
 /* A DTS track taken out of a DTS-HD stream keeps each unit's DTS frame
  * alone (FFmpeg's dca_core filter takes the DTS-HD extension off). */
-static const char *filter_dts(int flags)
+static DRCoreFilter filter_dts(int flags)
 {
-    return flags & DR_AUDIO_EXTRACTED ? "dca_core" : NULL;
+    return flags & DR_AUDIO_EXTRACTED ? dr_dca_core : NULL;
 }
 
 static const DRAudioRules audio_dts = {
@@ -308,50 +301,31 @@ static const DRAudioRules audio_dts = {
  * are never sync units (the reference never drops them for audio skew).
  * Every MPEG audio track is reported for review (user rule 2026-10-05). */
 
-static int mpa_header(const uint8_t *d, int size, MPADecodeHeader *h)
-{
-    uint32_t head;
-
-    memset(h, 0, sizeof(*h));                   /* a free-format frame sets no frame_size */
-    if (size < 4)
-        return -1;
-    head = AV_RB32(d);
-    /* 1: a free-format frame (its size not in the header; the parser found it) */
-    if (ff_mpa_check_header(head) < 0 || avpriv_mpegaudio_decode_header(h, head) < 0)
-        return -1;
-    return 0;
-}
-
-static int mpa_samples(const MPADecodeHeader *h)
-{
-    return h->layer == 1 ? 384 : h->layer == 2 || !h->lsf ? 1152 : 576;
-}
-
 static int check_mpa(const uint8_t *data, int size)
 {
-    MPADecodeHeader h;
-    return mpa_header(data, size, &h) >= 0;
+    DrMpaHeader h;
+    return dr_mpa_header(data, size, &h) >= 0;
 }
 
 static int header_mpa(DRAudio *a, const DRFrame *f, DRAudioHeader *out)
 {
-    MPADecodeHeader h;
+    DrMpaHeader h;
 
-    if (mpa_header(f->data, f->size, &h) < 0)
+    if (dr_mpa_header(f->data, f->size, &h) < 0)
         return -1;
-    out->rate    = h.sample_rate;
-    out->samples = mpa_samples(&h);
+    out->rate    = h.rate;
+    out->samples = h.samples;
     return 0;
 }
 
 static int duration_mpa(DRAudio *a, DRFrame *f)
 {
-    MPADecodeHeader h;
+    DrMpaHeader h;
 
-    if (mpa_header(f->data, f->size, &h) < 0 || !h.sample_rate)
+    if (dr_mpa_header(f->data, f->size, &h) < 0 || !h.rate)
         return AVERROR_INVALIDDATA;
     ff_disctl_audio_review(a, REVIEW_MPEG_AUDIO, "MPEG audio track");
-    f->dur = (int64_t)((uint64_t)mpa_samples(&h) * DR_TICKS_PER_SECOND / h.sample_rate);
+    f->dur = (int64_t)((uint64_t)h.samples * DR_TICKS_PER_SECOND / h.rate);
     return 0;
 }
 
@@ -576,16 +550,15 @@ static int verify_hevc(const uint8_t *d, int size)
  * frame after its sync word comes out 0 (as FFmpeg's decoder checks it). */
 static int verify_ac3(const uint8_t *d, int size)
 {
-    const AVCRC *crc = av_crc_get_table(AV_CRC_16_ANSI);
     int ret = DR_UNIT_OK;
 
     if (!size)
         return DR_UNIT_BAD;
     for (int o = 0; o < size; ) {
-        AC3HeaderInfo h;
+        DrAc3Header h;
         if (ac3_header(d + o, size - o, &h) < 0 || h.frame_size < 7 || h.frame_size > size - o)
             return DR_UNIT_BAD;
-        if (av_crc(crc, 0, d + o + 2, h.frame_size - 2))
+        if (dr_crc16_ansi(0, d + o + 2, h.frame_size - 2))
             ret = DR_UNIT_CRC;
         o += h.frame_size;
     }
@@ -596,7 +569,7 @@ static int verify_ac3(const uint8_t *d, int size)
  * an extension substream alone. */
 static int verify_dts(const uint8_t *d, int size)
 {
-    DCACoreFrameHeader h;
+    DrDcaHeader h;
 
     if (dts_core(d, size, &h) >= 0) {
         if (h.frame_size > size)
@@ -609,9 +582,9 @@ static int verify_dts(const uint8_t *d, int size)
 /* MPEG audio: one frame of its header's size (free format: not sized). */
 static int verify_mpa(const uint8_t *d, int size)
 {
-    MPADecodeHeader h;
+    DrMpaHeader h;
 
-    if (mpa_header(d, size, &h) < 0)
+    if (dr_mpa_header(d, size, &h) < 0)
         return DR_UNIT_BAD;
     return !h.frame_size || h.frame_size == size ? DR_UNIT_OK : DR_UNIT_BAD;
 }

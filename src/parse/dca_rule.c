@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include "base/bytes.h"
+#include "base/err.h"
 
 #include "parse/bits.h"
 #include "parse/rules.h"
@@ -260,3 +261,69 @@ const DrFrameRule dr_dts_frames = {
 const DrFrameRule dr_dts_hd_frames = {
     disc_core_sync, disc_hd_size, disc_hd_check, disc_give_up, 0x14000,
 };
+
+/* ---- The timeline's header read and the DTS track's core filter ----
+ * dr_dca_core_header() reads what the timeline uses of a core frame's
+ * header (ETSI TS 102 114 5.4), accepting exactly the frames the processing
+ * library's header parser accepted: the sync word, a deficit of 32 samples,
+ * PCM blocks a multiple of 8, a frame size of at least 96 bytes, a known
+ * audio mode, sample rate, LFE flag and PCM resolution, the reserved bit 0. */
+
+int dr_dca_core_header(const uint8_t *b, int len, DrDcaHeader *h)
+{
+    /* core sample rates by SFREQ (Table 5-5) and source resolutions (5.4.1) */
+    static const int core_rates[16] = { 0, 8000, 16000, 32000, 0, 0, 11025, 22050, 44100,
+                                        0, 0, 12000, 24000, 48000, 0, 0 };
+    static const uint8_t pcm_bits[8] = { 16, 16, 20, 20, 0, 24, 24, 0 };
+    DrBits g;
+    int npcmblocks, amode, sr_code, crc_present, lfe, pcmr;
+
+    h->rate = h->samples = h->frame_size = 0;
+    if (dr_bits_init8(&g, b, len) < 0 || dr_bits_get(&g, 32) != 0x7FFE8001U)
+        return DR_ERR_INVALID;
+    dr_bits_get1(&g);                       /* normal frame flag */
+    if (dr_bits_get(&g, 5) + 1 != 32)       /* deficit samples */
+        return DR_ERR_INVALID;
+    crc_present = dr_bits_get1(&g);
+    npcmblocks  = dr_bits_get(&g, 7) + 1;
+    if (npcmblocks & 7)                     /* not a multiple of 8 subband samples */
+        return DR_ERR_INVALID;
+    h->frame_size = dr_bits_get(&g, 14) + 1;
+    if (h->frame_size < 96)
+        return DR_ERR_INVALID;
+    amode = dr_bits_get(&g, 6);
+    if (amode >= 16)
+        return DR_ERR_INVALID;
+    sr_code = dr_bits_get(&g, 4);
+    if (!core_rates[sr_code])
+        return DR_ERR_INVALID;
+    dr_bits_get(&g, 5);                     /* bit rate code */
+    if (dr_bits_get1(&g))                   /* reserved bit */
+        return DR_ERR_INVALID;
+    dr_bits_skip(&g, 1 + 1 + 1 + 1 + 3 + 1 + 1);    /* drc, timestamp, aux, hdcd, ext type, ext, ssf sync */
+    lfe = dr_bits_get(&g, 2);
+    if (lfe == 3)
+        return DR_ERR_INVALID;
+    dr_bits_get1(&g);                       /* predictor history */
+    if (crc_present)
+        dr_bits_skip(&g, 16);
+    dr_bits_skip(&g, 1 + 4 + 2);            /* filter, encoder revision, copy history */
+    pcmr = dr_bits_get(&g, 3);
+    if (!pcm_bits[pcmr])
+        return DR_ERR_INVALID;
+    h->rate    = core_rates[sr_code];
+    h->samples = npcmblocks * 32;
+    return 0;
+}
+
+int dr_dca_core(const uint8_t *data, int size, int *off, int *out_size)
+{
+    *off      = 0;
+    *out_size = size;
+    if (size >= 8 && dr_rb32(data) == 0x7FFE8001U) {
+        int core_size = (dr_rb24(data + 5) >> 4 & 0x3fff) + 1;
+        if (core_size <= size)
+            *out_size = core_size;
+    }
+    return 0;
+}

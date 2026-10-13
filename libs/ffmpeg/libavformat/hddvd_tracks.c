@@ -56,9 +56,7 @@
 #include "parse/rules.h"
 #include "parse/split.h"
 
-#include "libavcodec/ac3_parser_internal.h"
 #include "libavcodec/avcodec.h"
-#include "libavcodec/dca.h"
 
 #include "avformat.h"
 #include "disc.h"

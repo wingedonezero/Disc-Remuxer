@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include "base/bytes.h"
+#include "base/err.h"
 #include "base/crc16.h"
 
 #include "parse/bits.h"
@@ -179,3 +180,114 @@ static int disc_resync(void *ctx, const uint8_t *b, int len)
 }
 
 const DrFrameRule dr_ac3_frames = { disc_sync, disc_size, disc_check, disc_resync, DISC_LIMIT };
+
+/* ---- The timeline's header read and the AC-3 track's core filter ----
+ * dr_ac3_header() reads what the timeline uses of a syncframe's header
+ * (A/52 5.4.1; E-AC-3: Annex E E.1.2), accepting exactly the frames the
+ * processing library's header parser accepted: sync, bsid at most 16; AC-3
+ * (bsid 0..10): sample rate code not 3, frame size code at most 37; E-AC-3
+ * (bsid 11..16): frame type not reserved, a frame size of at least the
+ * 7-byte header, a valid sample rate combination, substream 0 only, and a
+ * dependent frame's channel map naming at most 16 channels. */
+
+int dr_ac3_header(const uint8_t *b, int len, DrAc3Header *h)
+{
+    static const int rates[3] = { 48000, 44100, 32000 };
+    static const uint8_t eac3_blocks[4] = { 1, 2, 3, 6 };
+    DrBits g;
+    int bsid, save, channel_mode;
+
+    h->bitstream_id = h->frame_type = h->frame_size = h->rate = h->blocks = 0;
+    if (dr_bits_init8(&g, b, len) < 0 || dr_bits_get(&g, 16) != 0x0B77)
+        return DR_ERR_INVALID;
+    save = g.pos;                           /* bsid read ahead: bits 24..28 after the sync word */
+    dr_bits_skip(&g, 24);
+    bsid  = dr_bits_get(&g, 5);
+    g.pos = save;
+    h->bitstream_id = bsid;
+    if (bsid > 16)
+        return DR_ERR_INVALID;
+    h->blocks = 6;
+    if (bsid <= 10) {
+        /* AC-3 */
+        int sr_code, frame_size_code, sr_shift;
+        dr_bits_skip(&g, 16);               /* crc1 */
+        sr_code = dr_bits_get(&g, 2);
+        if (sr_code == 3)
+            return DR_ERR_INVALID;
+        frame_size_code = dr_bits_get(&g, 6);
+        if (frame_size_code > 37)
+            return DR_ERR_INVALID;
+        sr_shift      = bsid > 8 ? bsid - 8 : 0;
+        h->rate       = rates[sr_code] >> sr_shift;
+        h->frame_size = frame_sizes[frame_size_code][sr_code] * 2;
+        h->frame_type = 2;                  /* reads as a converted independent frame */
+        /* the rest of the bitstream information reads nothing the timeline
+         * needs and cannot fail */
+        return 0;
+    }
+    /* E-AC-3 */
+    h->frame_type = dr_bits_get(&g, 2);
+    if (h->frame_type == 3)                 /* reserved */
+        return DR_ERR_INVALID;
+    if (dr_bits_get(&g, 3))                 /* substreamid: only substream 0 is taken */
+        return DR_ERR_INVALID;
+    h->frame_size = (dr_bits_get(&g, 11) + 1) * 2;
+    if (h->frame_size < 7)
+        return DR_ERR_INVALID;
+    {
+        int sr_code = dr_bits_get(&g, 2);
+        if (sr_code == 3) {
+            int sr_code2 = dr_bits_get(&g, 2);
+            if (sr_code2 == 3)
+                return DR_ERR_INVALID;
+            h->rate = rates[sr_code2] / 2;
+        } else {
+            h->blocks = eac3_blocks[dr_bits_get(&g, 2)];
+            h->rate   = rates[sr_code];
+        }
+    }
+    channel_mode = dr_bits_get(&g, 3);
+    dr_bits_get1(&g);                       /* lfe_on */
+    dr_bits_skip(&g, 5);                    /* bsid again */
+    for (int i = 0; i < (channel_mode ? 1 : 2); i++) {
+        dr_bits_skip(&g, 5);                /* dialog normalization */
+        if (dr_bits_get1(&g))
+            dr_bits_skip(&g, 8);            /* heavy dynamic range */
+    }
+    if (h->frame_type == 1 && dr_bits_get1(&g)) {
+        /* the dependent frame's channel map: channels per map bit
+         * (A/52 Annex E Table E.1.3.1.8; bit 15 - i is group i) */
+        static const uint8_t map_channels[16] = { 1, 1, 1, 1, 1, 2, 2, 1, 1, 2, 2, 2, 1, 2, 1, 1 };
+        unsigned map = dr_bits_get(&g, 16);
+        int n = 0;
+        for (int i = 0; i < 16; i++)
+            if (map & (1u << (15 - i)))
+                n += map_channels[i];
+        if (n > 16)
+            return DR_ERR_INVALID;
+    }
+    return 0;
+}
+
+int dr_eac3_core(const uint8_t *data, int size, int *off, int *out_size)
+{
+    DrAc3Header h;
+
+    *off      = 0;
+    *out_size = 0;
+    if (dr_ac3_header(data, size, &h) < 0)
+        return DR_ERR_INVALID;
+    if (h.frame_type == 0 || h.frame_type == 2) {
+        *out_size = h.frame_size < size ? h.frame_size : size;
+    } else if (h.frame_type == 1 && size > h.frame_size) {
+        DrAc3Header h2;
+        if (dr_ac3_header(data + h.frame_size, size - h.frame_size, &h2) < 0)
+            return DR_ERR_INVALID;
+        if (h2.frame_type == 0 || h2.frame_type == 2) {
+            *off      = h.frame_size;
+            *out_size = size - h.frame_size;
+        }
+    }
+    return 0;
+}
