@@ -33,15 +33,16 @@
  *   ends a directory as corrupt.
  */
 
+#include <errno.h>
 #include <inttypes.h>
 #include <string.h>
 
-#include "libavutil/error.h"
-#include "libavutil/intreadwrite.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
+#include "base/bytes.h"
+#include "base/err.h"
+#include "base/macros.h"
+#include "base/mem.h"
 
-#include "discio.h"
+#include "io/discio.h"
 
 #define ISO_MAX_DIR_LEN 0x100000
 #define ISO_LABEL_ROOM  161     /* a label longer than this (with its NUL) is empty */
@@ -143,7 +144,7 @@ static void svd_label(const uint8_t *id, char *label)
     int l = 16;
 
     for (int i = 0; i < 16; i++)
-        w[i] = AV_RB16(id + 2 * i);
+        w[i] = dr_rb16(id + 2 * i);
     while (l > 0 && w[l - 1] == 0x0020)
         l--;
     units_to_label(w, l, label);
@@ -161,7 +162,7 @@ static int joliet_name(const uint8_t *id, int id_len, uint8_t *out)
     if (id_len < 2)
         return 0;
     for (int i = 0; i < n; i++)
-        w[i] = AV_RB16(id + 2 * i);
+        w[i] = dr_rb16(id + 2 * i);
     len = units_to_utf8(w, n, out, 255);
     if (len > 2 && out[len - 2] == ';' && out[len - 1] == '1')
         len -= 2;
@@ -173,8 +174,8 @@ static int joliet_name(const uint8_t *id, int id_len, uint8_t *out)
 static void dir_free(ISODir *d)
 {
     if (d) {
-        av_free(d->buf);
-        av_free(d);
+        dr_free(d->buf);
+        dr_free(d);
     }
 }
 
@@ -187,20 +188,20 @@ static ISODir *dir_load(DiscIOFS *fs, uint32_t loc, uint32_t len)
     int ret;
 
     if (len < ISO_MIN_RECORD || len > ISO_MAX_DIR_LEN) {
-        av_log(src->logctx, AV_LOG_DEBUG,
+        dr_io_log(src->logctx, DR_IO_LOG_DEBUG,
                "%s on '%s': directory at sector %"PRIu32" has length %"PRIu32", outside 33 bytes - 1 MiB\n",
                fs->ops->name, src->name, loc, len);
         return NULL;
     }
-    if (!(d = av_mallocz(sizeof(*d))) || !(d->buf = av_malloc(len))) {
-        av_free(d);
+    if (!(d = dr_mallocz(sizeof(*d))) || !(d->buf = dr_malloc(len))) {
+        dr_free(d);
         return NULL;
     }
     d->loc = loc;
     d->len = len;
     if ((ret = ff_discio_read_bytes(src, (int64_t)loc * DISCIO_BLOCK_SIZE, d->buf, len,
                                     src->attempts, 0)) < 0) {
-        av_log(src->logctx, AV_LOG_DEBUG, "%s on '%s': directory at sector %"PRIu32" unreadable\n",
+        dr_io_log(src->logctx, DR_IO_LOG_DEBUG, "%s on '%s': directory at sector %"PRIu32" unreadable\n",
                fs->ops->name, src->name, loc);
         dir_free(d);
         return NULL;
@@ -213,7 +214,7 @@ static ISODir *root_dir(DiscIOFS *fs)
     ISOVolume *v = fs->priv;
     const uint8_t *d = v->joliet ? v->svd : v->pvd;
 
-    return dir_load(fs, AV_RL32(d + 158), AV_RL32(d + 166));
+    return dir_load(fs, dr_rl32(d + 158), dr_rl32(d + 166));
 }
 
 /* The record named name in dir (offset into its data), or -1. ISO 9660
@@ -231,7 +232,7 @@ static int dir_find(DiscIOFS *fs, const ISODir *dir, const char *name, int n)
 
         if (!rl) {
             if (off % DISCIO_BLOCK_SIZE == 0) {
-                av_log(fs->src->logctx, AV_LOG_DEBUG,
+                dr_io_log(fs->src->logctx, DR_IO_LOG_DEBUG,
                        "%s: zero record length at a sector start (offset %d) in the directory at sector %"PRIu32"\n",
                        fs->ops->name, off, dir->loc);
                 return -1;
@@ -240,7 +241,7 @@ static int dir_find(DiscIOFS *fs, const ISODir *dir, const char *name, int n)
             continue;
         }
         if (rl < ISO_MIN_RECORD || off + rl > len) {
-            av_log(fs->src->logctx, AV_LOG_DEBUG,
+            dr_io_log(fs->src->logctx, DR_IO_LOG_DEBUG,
                    "%s: bad record length %d at offset %d in the directory at sector %"PRIu32"\n",
                    fs->ops->name, rl, off, dir->loc);
             return -1;
@@ -249,8 +250,8 @@ static int dir_find(DiscIOFS *fs, const ISODir *dir, const char *name, int n)
         /* the identifier is taken from the directory data as recorded (a
          * malformed length can reach past the record, not past the data);
          * a match needs the recorded length and the bytes present */
-        id     = buf + FFMIN(off + 0x21, len);
-        id_end = FFMIN(off + 0x21 + lfi, len);
+        id     = buf + DR_MIN(off + 0x21, len);
+        id_end = DR_MIN(off + 0x21 + lfi, len);
         avail  = id_end - (int)(id - buf);
         if (!v->joliet) {
             if ((lfi == n && avail == n && !memcmp(id, name, n)) ||
@@ -278,9 +279,9 @@ static int walk_subdir(void *ctx, void **dirp, const char *name, int n)
     int off = dir_find(fs, dir, name, n);
 
     if (off < 0 || !(dir->buf[off + 0x19] & 2))
-        return AVERROR(ENOENT);
-    if (!(sub = dir_load(fs, AV_RL32(dir->buf + off + 2), AV_RL32(dir->buf + off + 10))))
-        return AVERROR_INVALIDDATA;
+        return DR_ERR(ENOENT);
+    if (!(sub = dir_load(fs, dr_rl32(dir->buf + off + 2), dr_rl32(dir->buf + off + 10))))
+        return DR_ERR_INVALID;
     dir_free(dir);
     *dirp = sub;
     return 0;
@@ -294,7 +295,7 @@ static int walk_to_parent(DiscIOFS *fs, const char *path, ISODir **parent, const
     int ret;
 
     if (!dir)
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
     if ((ret = ff_discio_walk_path(path, &dir, walk_subdir, &ctx, last)) < 0) {
         dir_free(dir);
         return ret;
@@ -317,18 +318,18 @@ static int iso_open_file(DiscIOFS *fs, const char *path, DiscIOFile **out)
     off = dir_find(fs, dir, last, strlen(last));
     if (off < 0 || ((flags = dir->buf[off + 0x19]) & 2)) {
         dir_free(dir);
-        return AVERROR(ENOENT);
+        return DR_ERR(ENOENT);
     }
     if (flags != 1 && (flags & 1))
-        av_log(fs->src->logctx, AV_LOG_DEBUG, "%s: file '%s' is hidden and has other flags (0x%02x)\n",
+        dr_io_log(fs->src->logctx, DR_IO_LOG_DEBUG, "%s: file '%s' is hidden and has other flags (0x%02x)\n",
                fs->ops->name, path, flags);
-    start = AV_RL32(dir->buf + off + 2);
-    size  = AV_RL32(dir->buf + off + 10);
+    start = dr_rl32(dir->buf + off + 2);
+    size  = dr_rl32(dir->buf + off + 10);
     dir_free(dir);
 
-    if (!(f = av_mallocz(sizeof(*f))) || !(f->extents = av_mallocz(sizeof(*f->extents)))) {
-        av_free(f);
-        return AVERROR(ENOMEM);
+    if (!(f = dr_mallocz(sizeof(*f))) || !(f->extents = dr_mallocz(sizeof(*f->extents)))) {
+        dr_free(f);
+        return DR_ERR(ENOMEM);
     }
     f->size              = size;
     f->nb_extents        = 1;
@@ -346,7 +347,7 @@ static int iso_list_dir(DiscIOFS *fs, const char *path, DiscIODirCallback cb, vo
 
     if (!strcmp(path, "/")) {
         if (!(dir = root_dir(fs)))
-            return AVERROR_INVALIDDATA;
+            return DR_ERR_INVALID;
     } else {
         ISODir *parent;
         const char *last;
@@ -371,20 +372,20 @@ static int iso_list_dir(DiscIOFS *fs, const char *path, DiscIODirCallback cb, vo
 
         if (!rl) {
             if (off % DISCIO_BLOCK_SIZE == 0) {
-                ret = AVERROR_INVALIDDATA;
+                ret = DR_ERR_INVALID;
                 break;
             }
             off = (off + DISCIO_BLOCK_SIZE - 1) / DISCIO_BLOCK_SIZE * DISCIO_BLOCK_SIZE;
             continue;
         }
         if (rl < ISO_MIN_RECORD || off + rl > (int)dir->len) {
-            ret = AVERROR_INVALIDDATA;
+            ret = DR_ERR_INVALID;
             break;
         }
         is_dir = (dir->buf[off + 0x19] >> 1) & 1;
         lfi    = dir->buf[off + 0x20];
-        id     = dir->buf + FFMIN(off + 0x21, (int)dir->len);
-        id_end = FFMIN(off + 0x21 + lfi, (int)dir->len);
+        id     = dir->buf + DR_MIN(off + 0x21, (int)dir->len);
+        id_end = DR_MIN(off + 0x21 + lfi, (int)dir->len);
         lfi    = id_end - (int)(id - dir->buf);
         if (lfi == 1 && id[0] == 0) {
             strcpy(name, ".");
@@ -408,8 +409,8 @@ static int iso_list_dir(DiscIOFS *fs, const char *path, DiscIODirCallback cb, vo
             break;
         off += rl;
     }
-    if (ret == AVERROR_INVALIDDATA)
-        av_log(fs->src->logctx, AV_LOG_DEBUG, "%s: corrupt record in the directory at sector %"PRIu32"\n",
+    if (ret == DR_ERR_INVALID)
+        dr_io_log(fs->src->logctx, DR_IO_LOG_DEBUG, "%s: corrupt record in the directory at sector %"PRIu32"\n",
                fs->ops->name, dir->loc);
     dir_free(dir);
     return ret;
@@ -425,7 +426,7 @@ static int iso_find_dir(DiscIOFS *fs, const char *path)
 
     if (!strcmp(path, "/")) {
         if (!(dir = root_dir(fs)))
-            return AVERROR_INVALIDDATA;
+            return DR_ERR_INVALID;
         dir_free(dir);
         return 0;
     }
@@ -442,7 +443,7 @@ static int iso_find_dir(DiscIOFS *fs, const char *path)
 
 static void iso_close(DiscIOFS *fs)
 {
-    av_freep(&fs->priv);
+    dr_freep(&fs->priv);
 }
 
 static const DiscIOFSOps iso9660_ops = {
@@ -472,9 +473,9 @@ int ff_discio_iso9660_mount(DiscIOSource *src, int joliet, DiscIOFS **out)
     ISOVolume *v;
 
     *out = NULL;
-    if (!(fs = av_mallocz(sizeof(*fs))) || !(v = av_mallocz(sizeof(*v)))) {
-        av_free(fs);
-        return AVERROR(ENOMEM);
+    if (!(fs = dr_mallocz(sizeof(*fs))) || !(v = dr_mallocz(sizeof(*v)))) {
+        dr_free(fs);
+        return DR_ERR(ENOMEM);
     }
     fs->ops  = joliet ? &joliet_ops : &iso9660_ops;
     fs->priv = v;
@@ -484,7 +485,7 @@ int ff_discio_iso9660_mount(DiscIOSource *src, int joliet, DiscIOFS **out)
     for (int s = 16; s < 128; s++) {
         if ((ret = ff_discio_read_blocks(src, (int64_t)s * DISCIO_BLOCK_SIZE, sec, sizeof(sec),
                                          src->attempts, 0)) < 0) {
-            av_log(src->logctx, AV_LOG_DEBUG, "%s on '%s': volume descriptor sector %d unreadable\n",
+            dr_io_log(src->logctx, DR_IO_LOG_DEBUG, "%s on '%s': volume descriptor sector %d unreadable\n",
                    what, src->name, s);
             if (pvd_found)
                 break;   /* a read failure after the primary descriptor keeps the volume */
@@ -495,17 +496,17 @@ int ff_discio_iso9660_mount(DiscIOSource *src, int joliet, DiscIOFS **out)
         if (sec[0] == 1 && !pvd_found) {
             memcpy(v->pvd, sec, sizeof(sec));
             if (memcmp(sec + 1, "CD001", 5)) {
-                av_log(src->logctx, AV_LOG_DEBUG, "%s on '%s': the primary volume descriptor has no CD001\n", what, src->name);
-                ret = AVERROR_INVALIDDATA;
+                dr_io_log(src->logctx, DR_IO_LOG_DEBUG, "%s on '%s': the primary volume descriptor has no CD001\n", what, src->name);
+                ret = DR_ERR_INVALID;
                 goto fail;
             }
-            if (AV_RL16(sec + 0x80) != DISCIO_BLOCK_SIZE) {
-                av_log(src->logctx, AV_LOG_DEBUG, "%s on '%s': logical block size is not 2048\n", what, src->name);
-                ret = AVERROR_INVALIDDATA;
+            if (dr_rl16(sec + 0x80) != DISCIO_BLOCK_SIZE) {
+                dr_io_log(src->logctx, DR_IO_LOG_DEBUG, "%s on '%s': logical block size is not 2048\n", what, src->name);
+                ret = DR_ERR_INVALID;
                 goto fail;
             }
             pvd_found = 1;
-            av_log(src->logctx, AV_LOG_DEBUG, "%s on '%s': primary volume descriptor at sector %d\n", what, src->name, s);
+            dr_io_log(src->logctx, DR_IO_LOG_DEBUG, "%s on '%s': primary volume descriptor at sector %d\n", what, src->name, s);
             if (!joliet)
                 pvd_label(sec + 0x28, fs->label);
             continue;
@@ -513,31 +514,31 @@ int ff_discio_iso9660_mount(DiscIOSource *src, int joliet, DiscIOFS **out)
         if (sec[0] == 2 && !svd_found) {
             svd_found = 1;
             memcpy(v->svd, sec, sizeof(sec));
-            if (memcmp(sec + 1, "CD001", 5) || AV_RL16(sec + 0x80) != DISCIO_BLOCK_SIZE) {
-                av_log(src->logctx, AV_LOG_DEBUG,
+            if (memcmp(sec + 1, "CD001", 5) || dr_rl16(sec + 0x80) != DISCIO_BLOCK_SIZE) {
+                dr_io_log(src->logctx, DR_IO_LOG_DEBUG,
                        "%s on '%s': the supplementary volume descriptor has no CD001 or a block size other than 2048\n",
                        what, src->name);
-                ret = AVERROR_INVALIDDATA;
+                ret = DR_ERR_INVALID;
                 goto fail;
             }
-            av_log(src->logctx, AV_LOG_DEBUG, "%s on '%s': supplementary volume descriptor at sector %d\n", what, src->name, s);
+            dr_io_log(src->logctx, DR_IO_LOG_DEBUG, "%s on '%s': supplementary volume descriptor at sector %d\n", what, src->name, s);
             if (joliet)
                 svd_label(sec + 0x28, fs->label);
         }
     }
     if (!pvd_found || (joliet && !svd_found)) {
-        av_log(src->logctx, AV_LOG_DEBUG, "%s on '%s': no %s volume descriptor in sectors 16-127\n",
+        dr_io_log(src->logctx, DR_IO_LOG_DEBUG, "%s on '%s': no %s volume descriptor in sectors 16-127\n",
                what, src->name, pvd_found ? "supplementary" : "primary");
-        ret = AVERROR_INVALIDDATA;
+        ret = DR_ERR_INVALID;
         goto fail;
     }
-    av_log(src->logctx, AV_LOG_VERBOSE, "%s file system on '%s': label '%s'\n", what, src->name, fs->label);
+    dr_io_log(src->logctx, DR_IO_LOG_VERBOSE, "%s file system on '%s': label '%s'\n", what, src->name, fs->label);
     *out = fs;
     return 0;
 
 fail:
-    av_free(v);
-    av_free(fs);
+    dr_free(v);
+    dr_free(fs);
     return ret;
 }
 
@@ -546,7 +547,7 @@ int ff_discio_iso9660_creation_date(const DiscIOFS *fs, char date[15])
     const ISOVolume *v;
 
     if (fs->ops != &iso9660_ops && fs->ops != &joliet_ops)
-        return AVERROR(EINVAL);
+        return DR_ERR(EINVAL);
     v = fs->priv;
     memcpy(date, v->pvd + 813, 14);
     date[14] = 0;

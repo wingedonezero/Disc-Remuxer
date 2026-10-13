@@ -36,25 +36,25 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#include "libavutil/avstring.h"
-#include "libavutil/error.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
+#include "base/err.h"
+#include "base/mem.h"
 
-#include "discio.h"
+#include "io/discio.h"
 
 typedef struct Folder {
     char *root;                 /* the folder's path, without a trailing separator */
 } Folder;
 
-/* The host path of a path on the disc (av_free()), or NULL. */
+/* The host path of a path on the disc (dr_free()), or NULL. */
 static char *host_path(const DiscIOFS *fs, const char *path)
 {
     const Folder *f = fs->priv;
 
     if (*path == '/' || *path == '\\')
         path++;
-    return av_asprintf("%s/%s", f->root, path);
+    char *out = NULL;
+    dr_asprintf(&out, "%s/%s", f->root, path);
+    return out;
 }
 
 static int folder_open_file(DiscIOFS *fs, const char *path, DiscIOFile **out)
@@ -66,19 +66,19 @@ static int folder_open_file(DiscIOFS *fs, const char *path, DiscIOFile **out)
 
     *out = NULL;
     if (!p)
-        return AVERROR(ENOMEM);
+        return DR_ERR(ENOMEM);
     if (stat(p, &st) < 0 || !S_ISREG(st.st_mode)) {
-        av_free(p);
-        return AVERROR(ENOENT);
+        dr_free(p);
+        return DR_ERR(ENOENT);
     }
-    if (!(file = av_mallocz(sizeof(*file)))) {
-        av_free(p);
-        return AVERROR(ENOMEM);
+    if (!(file = dr_mallocz(sizeof(*file)))) {
+        dr_free(p);
+        return DR_ERR(ENOMEM);
     }
     ret = ff_discio_source_open_file(fs->src->logctx, p, &file->host);
-    av_free(p);
+    dr_free(p);
     if (ret < 0) {
-        av_free(file);
+        dr_free(file);
         return ret;
     }
     file->host->attempts = fs->src->attempts;
@@ -95,11 +95,11 @@ static int folder_list_dir(DiscIOFS *fs, const char *path, DiscIODirCallback cb,
     int ret = 0;
 
     if (!p)
-        return AVERROR(ENOMEM);
+        return DR_ERR(ENOMEM);
     d = opendir(p);
-    av_free(p);
+    dr_free(p);
     if (!d)
-        return AVERROR(ENOENT);
+        return DR_ERR(ENOENT);
     while ((e = readdir(d)))
         if ((ret = cb(opaque, e->d_name, e->d_type == DT_DIR)))
             break;
@@ -114,9 +114,9 @@ static int folder_find_dir(DiscIOFS *fs, const char *path)
     int ret;
 
     if (!p)
-        return AVERROR(ENOMEM);
-    ret = stat(p, &st) < 0 || !S_ISDIR(st.st_mode) ? AVERROR(ENOENT) : 0;
-    av_free(p);
+        return DR_ERR(ENOMEM);
+    ret = stat(p, &st) < 0 || !S_ISDIR(st.st_mode) ? DR_ERR(ENOENT) : 0;
+    dr_free(p);
     return ret;
 }
 
@@ -125,8 +125,8 @@ static void folder_close(DiscIOFS *fs)
     Folder *f = fs->priv;
 
     if (f)
-        av_freep(&f->root);
-    av_freep(&fs->priv);
+        dr_freep(&f->root);
+    dr_freep(&fs->priv);
     ff_discio_source_free(&fs->src);
 }
 
@@ -142,7 +142,7 @@ static const DiscIOFSOps folder_ops = {
 /* The folder itself is no source of bytes: every read goes to a file. */
 static int no_read(void *opaque, int64_t pos, uint8_t *buf, int len)
 {
-    return AVERROR(EINVAL);
+    return DR_ERR(EINVAL);
 }
 
 static const DiscIOSourceOps folder_source_ops = {
@@ -163,16 +163,16 @@ int ff_discio_mount_folder(void *logctx, const char *path, int attempts, DiscIOF
 
     *out = NULL;
     if (!ff_discio_folder_is_dir(path)) {
-        av_log(logctx, AV_LOG_ERROR, "'%s' is not a folder\n", path);
-        return AVERROR(ENOTDIR);
+        dr_io_log(logctx, DR_IO_LOG_ERROR, "'%s' is not a folder\n", path);
+        return DR_ERR(ENOTDIR);
     }
-    if (!(fs = av_mallocz(sizeof(*fs))) || !(f = fs->priv = av_mallocz(sizeof(*f))) ||
-        !(f->root = av_strdup(path)) ||
+    if (!(fs = dr_mallocz(sizeof(*fs))) || !(f = fs->priv = dr_mallocz(sizeof(*f))) ||
+        !(f->root = dr_strdup(path)) ||
         !(fs->src = ff_discio_source_new(logctx, path, 0, &folder_source_ops, NULL))) {
         if (fs)
             folder_close(fs);
-        av_free(fs);
-        return AVERROR(ENOMEM);
+        dr_free(fs);
+        return DR_ERR(ENOMEM);
     }
     /* one trailing separator is not part of the folder's path */
     if (n > 1 && (f->root[n - 1] == '/' || f->root[n - 1] == '\\'))
@@ -180,6 +180,6 @@ int ff_discio_mount_folder(void *logctx, const char *path, int attempts, DiscIOF
     fs->ops           = &folder_ops;
     fs->src->attempts = attempts;
     *out = fs;
-    av_log(logctx, AV_LOG_VERBOSE, "'%s': a disc folder, read as host files\n", f->root);
+    dr_io_log(logctx, DR_IO_LOG_VERBOSE, "'%s': a disc folder, read as host files\n", f->root);
     return 0;
 }

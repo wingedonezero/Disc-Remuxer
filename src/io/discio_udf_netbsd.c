@@ -74,7 +74,7 @@
  * in 2048-byte blocks through ff_discio_read_blocks() (one closed track of
  * the image's size), kernel plumbing (vnodes, buffer cache, locks, pools,
  * write paths, mount options) is left out, kernel printf / DPRINTF become
- * av_log() lines. Upstream function names and comments are kept.
+ * dr_io_log() lines. Upstream function names and comments are kept.
  *
  * Changes from upstream, each kept where the upstream code it changes is:
  * - Kept for compatibility with other readers (named switches in UDFCompat,
@@ -112,19 +112,18 @@
  *   as ISO-8859-1), not taken from sys/fs/unicode.h.
  */
 
+#include <errno.h>
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
-#include "libavutil/attributes.h"
-#include "libavutil/error.h"
-#include "libavutil/intreadwrite.h"
-#include "libavutil/log.h"
-#include "libavutil/macros.h"
-#include "libavutil/mem.h"
+#include "base/bytes.h"
+#include "base/err.h"
+#include "base/macros.h"
+#include "base/mem.h"
 
-#include "discio.h"
+#include "io/discio.h"
 
 /* ---- constants (udf.h, ecma167-udf.h) ---- */
 
@@ -324,7 +323,7 @@ struct long_ad {
 
 static struct long_ad udf_long_ad(const uint8_t *b)
 {
-    struct long_ad ad = { AV_RL32(b), { AV_RL32(b + 4), AV_RL16(b + 8) } };
+    struct long_ad ad = { dr_rl32(b), { dr_rl32(b + 4), dr_rl16(b + 8) } };
     return ad;
 }
 
@@ -418,18 +417,18 @@ typedef struct UDFMount {
 
 /* ---- logging ---- */
 
-#define UDF_LOG(ump, level, ...) av_log((ump)->logctx, level, __VA_ARGS__)
+#define UDF_LOG(ump, level, ...) dr_io_log((ump)->logctx, level, __VA_ARGS__)
 
 /** Records why something failed (for the message of the caller), logs it at
  *  debug level and returns err. */
-static av_printf_format(3, 4) int udf_err(UDFMount *ump, int err, const char *fmt, ...)
+static __attribute__((format(printf, 3, 4))) int udf_err(UDFMount *ump, int err, const char *fmt, ...)
 {
     va_list vl;
 
     va_start(vl, fmt);
     vsnprintf(ump->why, sizeof(ump->why), fmt, vl);
     va_end(vl);
-    UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': %s\n", ump->src->name, ump->why);
+    UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': %s\n", ump->src->name, ump->why);
     return err;
 }
 
@@ -695,7 +694,7 @@ static int UDFTransName(uint16_t *newName, const uint16_t *udfName, int nraw, in
         }
         newName[newIndex++] = CRC_MARK; /* Add mark for CRC. */
         /* Calculate CRC from original filename from FileIdentifier. */
-        valueCRC = udf_unicode_cksum(udfName, FFMIN(udfLen, nraw));
+        valueCRC = udf_unicode_cksum(udfName, DR_MIN(udfLen, nraw));
         /* Convert 16-bits of CRC to hex characters. */
         newName[newIndex++] = hexChar[(valueCRC & 0xf000) >> 12];
         newName[newIndex++] = hexChar[(valueCRC & 0x0f00) >> 8];
@@ -794,7 +793,7 @@ static int udf_to_unix_name(UDFMount *ump, char *result, int result_len, const u
 
     if (udf_is_osta_typ0(chsp)) {
         uint16_t raw_name[256], unix_name[MAXLEN + 10];
-        int nraw, ucode_chars, nice_uchars, n = FFMIN(len, 256);
+        int nraw, ucode_chars, nice_uchars, n = DR_MIN(len, 256);
 
         nraw = ucode_chars = udf_UncompressUnicode(n, id, avail, raw_name);
         if (ucode_chars >= 0) {
@@ -804,7 +803,7 @@ static int udf_to_unix_name(UDFMount *ump, char *result, int result_len, const u
                 l++;
             ucode_chars = l;
         }
-        nice_uchars = UDFTransName(unix_name, raw_name, FFMAX(nraw, 0), ucode_chars, rules);
+        nice_uchars = UDFTransName(unix_name, raw_name, DR_MAX(nraw, 0), ucode_chars, rules);
         /* output UTF8 */
         for (int i = 0; i < nice_uchars; i++) {
             uint16_t ch = unix_name[i];
@@ -816,7 +815,7 @@ static int udf_to_unix_name(UDFMount *ump, char *result, int result_len, const u
     } else {
         /* assume 8bit char length byte latin-1 */
         if (avail < 1 || id[0] != 8)
-            UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': a name in a non-OSTA character set does not "
+            UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': a name in a non-OSTA character set does not "
                     "start with the 8-bit marker\n", ump->src->name);
         for (int i = 1; i < avail && id[i] && out < result_len; i++)
             outchp[out++] = id[i];
@@ -872,7 +871,7 @@ static int udf_check_tag(const uint8_t *tag)
         if (cnt != TAG_CKSUM)
             sum += tag[cnt];
     /* bad tag header checksum; this is not a valid tag */
-    return sum == tag[TAG_CKSUM] ? 0 : AVERROR_INVALIDDATA;
+    return sum == tag[TAG_CKSUM] ? 0 : DR_ERR_INVALID;
 }
 
 /*
@@ -883,7 +882,7 @@ static int udf_check_tag(const uint8_t *tag)
  */
 static int udf_check_tag_payload(const uint8_t *tag, uint32_t buf_len, uint32_t max_length)
 {
-    uint16_t crc_len = AV_RL16(tag + TAG_DESC_CRC_LEN);
+    uint16_t crc_len = dr_rl16(tag + TAG_DESC_CRC_LEN);
 
     /* check payload CRC if applicable */
     if (crc_len == 0)
@@ -891,7 +890,7 @@ static int udf_check_tag_payload(const uint8_t *tag, uint32_t buf_len, uint32_t 
     if (crc_len > max_length)
         return 1;
     if (UDF_DESC_TAG_LENGTH + (uint32_t)crc_len > buf_len ||
-        udf_cksum(tag + UDF_DESC_TAG_LENGTH, crc_len) != AV_RL16(tag + TAG_DESC_CRC)) {
+        udf_cksum(tag + UDF_DESC_TAG_LENGTH, crc_len) != dr_rl16(tag + TAG_DESC_CRC)) {
         /* bad payload CRC; this is a broken tag */
         return -1;
     }
@@ -908,31 +907,31 @@ static uint32_t udf_tagsize(const uint8_t *dscr, uint32_t lb_size)
 {
     uint32_t size, num_lb;
 
-    switch (AV_RL16(dscr + TAG_ID)) {
+    switch (dr_rl16(dscr + TAG_ID)) {
     case TAGID_LOGVOL:          /* sizeof(struct logvol_desc) - 1 + mt_l */
-        size = 440 + AV_RL32(dscr + LVD_MT_L);
+        size = 440 + dr_rl32(dscr + LVD_MT_L);
         break;
     case TAGID_UNALLOC_SPACE:   /* sizeof(unalloc_sp_desc) - elmsz + n * elmsz */
-        size = 24 + AV_RL32(dscr + USD_ALLOC_DESC_NUM) * 8;
+        size = 24 + dr_rl32(dscr + USD_ALLOC_DESC_NUM) * 8;
         break;
     case TAGID_FID:
-        size = UDF_FID_SIZE + dscr[FID_L_FI] + AV_RL16(dscr + FID_L_IU);
+        size = UDF_FID_SIZE + dscr[FID_L_FI] + dr_rl16(dscr + FID_L_IU);
         size = (size + 3) & ~3u;
         break;
     case TAGID_LOGVOL_INTEGRITY: /* sizeof(logvol_int_desc) - 4 + l_iu + 2 * num_part * 4 */
-        size = 80 + AV_RL32(dscr + LVID_L_IU) + 2 * AV_RL32(dscr + LVID_NUM_PART) * 4;
+        size = 80 + dr_rl32(dscr + LVID_L_IU) + 2 * dr_rl32(dscr + LVID_NUM_PART) * 4;
         break;
     case TAGID_SPACE_BITMAP:    /* sizeof(space_bitmap_desc) - 1 + num_bytes */
-        size = 24 + AV_RL32(dscr + SBD_NUM_BYTES);
+        size = 24 + dr_rl32(dscr + SBD_NUM_BYTES);
         break;
     case TAGID_SPARING_TABLE:   /* sizeof(udf_sparing_table) - elmsz + rt_l * elmsz */
-        size = 56 + AV_RL16(dscr + SPT_RT_L) * 8u;
+        size = 56 + dr_rl16(dscr + SPT_RT_L) * 8u;
         break;
     case TAGID_FENTRY:          /* sizeof(file_entry) + l_ea + l_ad - 1 */
-        size = 177 + AV_RL32(dscr + FE_L_EA) + AV_RL32(dscr + FE_L_AD) - 1;
+        size = 177 + dr_rl32(dscr + FE_L_EA) + dr_rl32(dscr + FE_L_AD) - 1;
         break;
     case TAGID_EXTFENTRY:
-        size = 217 + AV_RL32(dscr + EFE_L_EA) + AV_RL32(dscr + EFE_L_AD) - 1;
+        size = 217 + dr_rl32(dscr + EFE_L_EA) + dr_rl32(dscr + EFE_L_AD) - 1;
         break;
     case TAGID_FSD:             /* sizeof(struct fileset_desc) */
     default:                    /* sizeof(union dscrptr) */
@@ -951,7 +950,7 @@ static uint32_t udf_tagsize(const uint8_t *dscr, uint32_t lb_size)
 
 static uint32_t udf_fidsize(const uint8_t *fid)
 {
-    uint32_t size = UDF_FID_SIZE + fid[FID_L_FI] + AV_RL16(fid + FID_L_IU);
+    uint32_t size = UDF_FID_SIZE + fid[FID_L_FI] + dr_rl16(fid + FID_L_IU);
     return (size + 3) & ~3u;
 }
 
@@ -964,11 +963,11 @@ static int udf_read_phys_sectors(UDFMount *ump, uint8_t *blob, uint32_t start, u
     int64_t rblkno = start;
 
     while (sectors > 0) {
-        uint32_t piece = FFMIN(MAXPHYS / sector_size, sectors);
+        uint32_t piece = DR_MIN(MAXPHYS / sector_size, sectors);
         int ret = ff_discio_read_blocks(ump->src, rblkno * sector_size, blob, piece * sector_size,
                                         ump->src->attempts, 0);
         if (ret < 0)
-            return udf_err(ump, ret, "reading sector %"PRId64" failed (%s)", rblkno, av_err2str(ret));
+            return udf_err(ump, ret, "reading sector %"PRId64" failed (%s)", rblkno, dr_err_text(ret));
         rblkno += piece;
         blob   += piece * sector_size;
         sectors -= piece;
@@ -991,10 +990,10 @@ static int udf_read_phys_dscr(UDFMount *ump, uint32_t sector, uint8_t **dstp, ui
     *dstp = NULL;
     *lenp = 0;
     /* read initial piece */
-    if (!(dst = av_malloc(sector_size)))
-        return AVERROR(ENOMEM);
+    if (!(dst = dr_malloc(sector_size)))
+        return DR_ERR(ENOMEM);
     if ((error = udf_read_phys_sectors(ump, dst, sector, 1)) < 0) {
-        av_free(dst);
+        dr_free(dst);
         return error;
     }
     /* check if its a valid tag */
@@ -1003,13 +1002,13 @@ static int udf_read_phys_dscr(UDFMount *ump, uint32_t sector, uint8_t **dstp, ui
         for (i = 0; i < (int)sector_size; i++)
             if (dst[i])
                 break;
-        av_free(dst);
+        dr_free(dst);
         if (i == (int)sector_size) {
             /* return no error but with no dscrptr */
-            UDF_LOG(ump, AV_LOG_TRACE, "UDF on '%s': sector %"PRIu32" is blank\n", ump->src->name, sector);
+            UDF_LOG(ump, DR_IO_LOG_TRACE, "UDF on '%s': sector %"PRIu32" is blank\n", ump->src->name, sector);
             return 0;
         }
-        return udf_err(ump, AVERROR_INVALIDDATA, "descriptor at sector %"PRIu32" has a bad tag checksum", sector);
+        return udf_err(ump, DR_ERR_INVALID, "descriptor at sector %"PRIu32" has a bad tag checksum", sector);
     }
     /* calculate descriptor size */
     dscrlen = udf_tagsize(dst, sector_size);
@@ -1019,26 +1018,26 @@ static int udf_read_phys_dscr(UDFMount *ump, uint32_t sector, uint8_t **dstp, ui
         uint32_t sectors = (dscrlen + sector_size - 1) / sector_size;
         uint8_t *new_dst;
 
-        UDF_LOG(ump, AV_LOG_TRACE, "UDF on '%s': sector %"PRIu32": multi block descriptor of %"PRIu32" bytes\n",
+        UDF_LOG(ump, DR_IO_LOG_TRACE, "UDF on '%s': sector %"PRIu32": multi block descriptor of %"PRIu32" bytes\n",
                 ump->src->name, sector, dscrlen);
-        if (!(new_dst = av_realloc(dst, (size_t)sectors * sector_size))) {
-            av_free(dst);
-            return AVERROR(ENOMEM);
+        if (!(new_dst = dr_realloc(dst, (size_t)sectors * sector_size))) {
+            dr_free(dst);
+            return DR_ERR(ENOMEM);
         }
         dst = new_dst;
         buf_len = sectors * sector_size;
         if ((error = udf_read_phys_sectors(ump, dst + sector_size, sector + 1, sectors - 1)) < 0) {
-            av_free(dst);
+            dr_free(dst);
             return error;
         }
     }
     error = udf_check_tag_payload(dst, buf_len, dscrlen);
     if (error) {
-        av_free(dst);
+        dr_free(dst);
         if (error > 0)
-            return udf_err(ump, AVERROR_INVALIDDATA,
+            return udf_err(ump, DR_ERR_INVALID,
                            "descriptor at sector %"PRIu32" has a CRC length larger than the descriptor", sector);
-        return udf_err(ump, AVERROR_INVALIDDATA, "descriptor at sector %"PRIu32" has a bad CRC", sector);
+        return udf_err(ump, DR_ERR_INVALID, "descriptor at sector %"PRIu32" has a bad CRC", sector);
     }
     *dstp = dst;
     *lenp = buf_len;
@@ -1052,7 +1051,7 @@ static int udf_translate_vtop(UDFMount *ump, const struct long_ad *icb_loc,
  * address, reads the descriptor and keeps one logical block of it. */
 static int udf_read_logvol_dscr(UDFMount *ump, const struct long_ad *icb, uint8_t **dscrptr)
 {
-    uint32_t lb_size = AV_RL32(ump->logical_vol + LVD_LB_SIZE);
+    uint32_t lb_size = dr_rl32(ump->logical_vol + LVD_LB_SIZE);
     uint32_t sector, dummy, len;
     uint8_t *tmpdscr;
     int error;
@@ -1064,16 +1063,16 @@ static int udf_read_logvol_dscr(UDFMount *ump, const struct long_ad *icb, uint8_
     if ((error = udf_read_phys_dscr(ump, sector, &tmpdscr, &len)) < 0)
         return error;
     if (!tmpdscr) /* not reachable (see udf_read_phys_dscr); upstream would copy from NULL */
-        return udf_err(ump, AVERROR_INVALIDDATA, "the descriptor at block %"PRIu32" of partition "
+        return udf_err(ump, DR_ERR_INVALID, "the descriptor at block %"PRIu32" of partition "
                        "reference %u is a blank block", icb->loc.lb_num, icb->loc.part_num);
-    if (!(*dscrptr = av_malloc(lb_size))) {
-        av_free(tmpdscr);
-        return AVERROR(ENOMEM);
+    if (!(*dscrptr = dr_malloc(lb_size))) {
+        dr_free(tmpdscr);
+        return DR_ERR(ENOMEM);
     }
-    memcpy(*dscrptr, tmpdscr, FFMIN(lb_size, len));
+    memcpy(*dscrptr, tmpdscr, DR_MIN(lb_size, len));
     if (lb_size > len)
         memset(*dscrptr + len, 0, lb_size - len);
-    av_free(tmpdscr);
+    dr_free(tmpdscr);
     return 0;
 }
 
@@ -1086,7 +1085,7 @@ static const uint8_t *udf_node_dscr(const UDFNode *node)
 
 static int udf_node_icbflags(const UDFNode *node)
 {
-    return AV_RL16(udf_node_dscr(node) + ICB_FLAGS);
+    return dr_rl16(udf_node_dscr(node) + ICB_FLAGS);
 }
 
 /* offset of data, l_ea, l_ad of the node's file entry */
@@ -1094,23 +1093,23 @@ static void udf_node_ad_area(const UDFNode *node, uint32_t *base, uint32_t *l_ea
 {
     if (node->fe) {
         *base = FE_DATA;
-        *l_ea = AV_RL32(node->fe + FE_L_EA);
-        *l_ad = AV_RL32(node->fe + FE_L_AD);
+        *l_ea = dr_rl32(node->fe + FE_L_EA);
+        *l_ad = dr_rl32(node->fe + FE_L_AD);
     } else {
         *base = EFE_DATA;
-        *l_ea = AV_RL32(node->efe + EFE_L_EA);
-        *l_ad = AV_RL32(node->efe + EFE_L_AD);
+        *l_ea = dr_rl32(node->efe + EFE_L_EA);
+        *l_ad = dr_rl32(node->efe + EFE_L_AD);
     }
 }
 
 static uint64_t udf_node_inf_len(const UDFNode *node)
 {
-    return AV_RL64(udf_node_dscr(node) + FE_INF_LEN);
+    return dr_rl64(udf_node_dscr(node) + FE_INF_LEN);
 }
 
 static uint64_t udf_node_unique_id(const UDFNode *node)
 {
-    return node->fe ? AV_RL64(node->fe + FE_UNIQUE_ID) : AV_RL64(node->efe + EFE_UNIQUE_ID);
+    return node->fe ? dr_rl64(node->fe + FE_UNIQUE_ID) : dr_rl64(node->efe + EFE_UNIQUE_ID);
 }
 
 static const uint8_t *udf_node_mtime(const UDFNode *node)
@@ -1121,7 +1120,7 @@ static const uint8_t *udf_node_mtime(const UDFNode *node)
 /*
  * udf_get_adslot: allocation descriptor number slot of node, through its
  * allocation extent descriptors. Short descriptors take the partition of the
- * node itself. Returns 0 (*eof set at the end) or AVERROR_INVALIDDATA where
+ * node itself. Returns 0 (*eof set at the end) or DR_ERR_INVALID where
  * upstream cannot produce an element and its callers would loop forever on
  * the same slot: extended allocation descriptors (not read upstream), or
  * descriptors that run past the descriptor buffer (*why says which).
@@ -1129,7 +1128,7 @@ static const uint8_t *udf_node_mtime(const UDFNode *node)
 static int udf_get_adslot(UDFMount *ump, const UDFNode *node, uint32_t slot, struct long_ad *icb,
                           int *eof, const char **why)
 {
-    const uint32_t lb_size = AV_RL32(ump->logical_vol + LVD_LB_SIZE);
+    const uint32_t lb_size = dr_rl32(ump->logical_vol + LVD_LB_SIZE);
     const uint8_t *buf = udf_node_dscr(node);
     uint32_t base, l_ea, l_ad, offset, adlen;
     uint64_t data_pos;
@@ -1155,9 +1154,9 @@ static int udf_get_adslot(UDFMount *ump, const UDFNode *node, uint32_t slot, str
          * extent pointer, or there is no extent to go to. */
         if (l_ad == 0) {
             uint64_t at = (uint64_t)base + l_ea;
-            uint32_t word = at + 4 <= lb_size ? AV_RL32(buf + at) : 0;
+            uint32_t word = at + 4 <= lb_size ? dr_rl32(buf + at) : 0;
 
-            UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': file entry at block %"PRIu32" uses extended "
+            UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': file entry at block %"PRIu32" uses extended "
                     "allocation descriptors\n", ump->src->name, node->loc.loc.lb_num);
             if (word < 0xc0000000u || !node->num_extensions) {
                 *eof = 1;
@@ -1165,18 +1164,18 @@ static int udf_get_adslot(UDFMount *ump, const UDFNode *node, uint32_t slot, str
             }
         }
         *why = "extended allocation descriptors";
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
     }
 
 #define UDF_ELEMENT(at, out) do {                                               \
         if ((at) + adlen > lb_size) {                                           \
             *why = "allocation descriptors run past the descriptor";            \
-            return AVERROR_INVALIDDATA;                                         \
+            return DR_ERR_INVALID;                                         \
         }                                                                       \
-        (out).len = AV_RL32(buf + (at));                                        \
-        (out).loc.lb_num = AV_RL32(buf + (at) + 4);                             \
+        (out).len = dr_rl32(buf + (at));                                        \
+        (out).loc.lb_num = dr_rl32(buf + (at) + 4);                             \
         (out).loc.part_num = addr_type == UDF_ICB_SHORT_ALLOC ?                 \
-            node->loc.loc.part_num : AV_RL16(buf + (at) + 8);                   \
+            node->loc.loc.part_num : dr_rl16(buf + (at) + 8);                   \
     } while (0)
 
     /* if offset too big, we go to the allocation extensions */
@@ -1189,7 +1188,7 @@ static int udf_get_adslot(UDFMount *ump, const UDFNode *node, uint32_t slot, str
          * reads the bytes just before it, as upstream does) */
         if (data_pos + l_ad < adlen) {
             *why = "allocation descriptors run past the descriptor";
-            return AVERROR_INVALIDDATA;
+            return DR_ERR_INVALID;
         }
         UDF_ELEMENT(data_pos + l_ad - adlen, l_icb);
         if (UDF_EXT_FLAGS(l_icb.len) != UDF_EXT_REDIRECT) {
@@ -1204,7 +1203,7 @@ static int udf_get_adslot(UDFMount *ump, const UDFNode *node, uint32_t slot, str
         }
         offset   = offset - l_ad;
         buf      = node->ext[extnr];
-        l_ad     = AV_RL32(buf + AEE_L_AD);
+        l_ad     = dr_rl32(buf + AEE_L_AD);
         data_pos = AEE_DATA;    /* sizeof(struct alloc_ext_entry) - 1 */
     }
 
@@ -1224,8 +1223,8 @@ static int udf_vat_read(UDFMount *ump, uint32_t *blob, uint32_t offset)
 {
     if ((uint64_t)offset + 4 > (uint64_t)ump->vat_offset + (uint64_t)ump->vat_entries * 4 ||
         (uint64_t)offset + 4 > ump->vat_table_len)
-        return AVERROR_INVALIDDATA;
-    *blob = AV_RL32(ump->vat_table + offset);
+        return DR_ERR_INVALID;
+    *blob = dr_rl32(ump->vat_table + offset);
     return 0;
 }
 
@@ -1251,7 +1250,7 @@ static int udf_translate_vtop(UDFMount *ump, const struct long_ad *icb_loc,
 
 translate_again:
     if (vpart > UDF_VTOP_RAWPART) {
-        UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': a metadata extent names partition reference %d, "
+        UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': a metadata extent names partition reference %d, "
                 "past the map table\n", ump->src->name, vpart);
         goto fail;
     }
@@ -1263,19 +1262,19 @@ translate_again:
         /* 1:1 to the end of the device */
         *lb_numres = lb_num;
         *extres = INT32_MAX;
-        av_free(seen);
+        dr_free(seen);
         return 0;
     case UDF_VTOP_TYPE_PHYS:
         /* an empty partition slot behind the map (upstream: NULL access) */
         if (!pdesc)
             goto fail;
         /* transform into its disc logical block */
-        if (lb_num > AV_RL32(pdesc + PD_PART_LEN))
+        if (lb_num > dr_rl32(pdesc + PD_PART_LEN))
             goto fail;
-        *lb_numres = lb_num + AV_RL32(pdesc + PD_START_LOC);
+        *lb_numres = lb_num + dr_rl32(pdesc + PD_START_LOC);
         /* extent from here to the end of the partition */
-        *extres = AV_RL32(pdesc + PD_PART_LEN) - lb_num;
-        av_free(seen);
+        *extres = dr_rl32(pdesc + PD_PART_LEN) - lb_num;
+        dr_free(seen);
         return 0;
     case UDF_VTOP_TYPE_VIRT:
         /* only maps one logical block, lookup in VAT */
@@ -1288,12 +1287,12 @@ translate_again:
         if (!pdesc)
             goto fail;
         /* transform into its disc logical block */
-        if (lb_num > AV_RL32(pdesc + PD_PART_LEN))
+        if (lb_num > dr_rl32(pdesc + PD_PART_LEN))
             goto fail;
-        *lb_numres = lb_num + AV_RL32(pdesc + PD_START_LOC);
+        *lb_numres = lb_num + dr_rl32(pdesc + PD_START_LOC);
         /* just one logical block */
         *extres = 1;
-        av_free(seen);
+        dr_free(seen);
         return 0;
     case UDF_VTOP_TYPE_SPARABLE:
         /* sparing packet length 0 (upstream: division by zero) */
@@ -1302,42 +1301,42 @@ translate_again:
         /* check if the packet containing the lb_num is remapped */
         lb_packet = lb_num / ump->sparable_packet_size;
         lb_rel    = lb_num % ump->sparable_packet_size;
-        for (int rel = 0; rel < AV_RL16(ump->sparing_table + SPT_RT_L); rel++) {
+        for (int rel = 0; rel < dr_rl16(ump->sparing_table + SPT_RT_L); rel++) {
             uint32_t at = SPT_ENTRIES + 8 * rel;
             if (at + 8 > ump->sparing_table_len)
                 break;
-            if (lb_packet == AV_RL32(ump->sparing_table + at)) {
+            if (lb_packet == dr_rl32(ump->sparing_table + at)) {
                 /* NOTE maps to absolute disc logical block! */
-                *lb_numres = AV_RL32(ump->sparing_table + at + 4) + lb_rel;
+                *lb_numres = dr_rl32(ump->sparing_table + at + 4) + lb_rel;
                 *extres    = ump->sparable_packet_size - lb_rel;
-                av_free(seen);
+                dr_free(seen);
                 return 0;
             }
         }
         if (!pdesc)
             goto fail;
         /* transform into its disc logical block */
-        if (lb_num > AV_RL32(pdesc + PD_PART_LEN))
+        if (lb_num > dr_rl32(pdesc + PD_PART_LEN))
             goto fail;
-        *lb_numres = lb_num + AV_RL32(pdesc + PD_START_LOC);
+        *lb_numres = lb_num + dr_rl32(pdesc + PD_START_LOC);
         /* rest of block */
         *extres = ump->sparable_packet_size - lb_rel;
-        av_free(seen);
+        dr_free(seen);
         return 0;
     case UDF_VTOP_TYPE_META:
         /* a (map, block) pair seen again is a certain endless loop (only one
          * metadata map exists) */
         for (int i = 0; i < nb_seen; i++)
             if (seen[i] == lb_num) {
-                UDF_LOG(ump, AV_LOG_WARNING, "UDF on '%s': metadata partition translation loops back "
+                UDF_LOG(ump, DR_IO_LOG_WARNING, "UDF on '%s': metadata partition translation loops back "
                         "to block %"PRIu32"; stopped\n", ump->src->name, lb_num);
                 goto fail;
             }
         if (!(nb_seen & (nb_seen - 1))) {
-            uint32_t *n = av_realloc_array(seen, nb_seen ? 2 * nb_seen : 4, sizeof(*seen));
+            uint32_t *n = dr_realloc_array(seen, nb_seen ? 2 * nb_seen : 4, sizeof(*seen));
             if (!n) {
-                av_free(seen);
-                return AVERROR(ENOMEM);
+                dr_free(seen);
+                return DR_ERR(ENOMEM);
             }
             seen = n;
         }
@@ -1347,18 +1346,18 @@ translate_again:
             goto fail;
 
         /* we have to look into the file's allocation descriptors */
-        lb_size = AV_RL32(ump->logical_vol + LVD_LB_SIZE);
+        lb_size = dr_rl32(ump->logical_vol + LVD_LB_SIZE);
 
         /* get first overlapping extent */
         foffset = 0;
         slot    = 0;
         for (;;) {
             if ((error = udf_get_adslot(ump, ump->metadata_node, slot, &s_icb_loc, &eof, &why)) < 0) {
-                UDF_LOG(ump, AV_LOG_WARNING, "UDF on '%s': metadata file: %s\n", ump->src->name, why);
+                UDF_LOG(ump, DR_IO_LOG_WARNING, "UDF on '%s': metadata file: %s\n", ump->src->name, why);
                 goto fail;
             }
             if (eof) {
-                UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': meta partition translation failed: "
+                UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': meta partition translation failed: "
                         "can't seek location\n", ump->src->name);
                 goto fail;
             }
@@ -1385,7 +1384,7 @@ translate_again:
         lb_num += (ext_offset + lb_size - 1) / lb_size;
 
         if (flags != UDF_EXT_ALLOCATED) {
-            UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': metadata partition translation failed: "
+            UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': metadata partition translation failed: "
                     "not allocated\n", ump->src->name);
             goto fail;
         }
@@ -1399,8 +1398,8 @@ translate_again:
     }
 
 fail:
-    av_free(seen);
-    return udf_err(ump, AVERROR_INVALIDDATA, "logical block %"PRIu32" of partition reference %u could "
+    dr_free(seen);
+    return udf_err(ump, DR_ERR_INVALID, "logical block %"PRIu32" of partition reference %u could "
                    "not be translated to a sector", icb_loc->loc.lb_num, icb_loc->loc.part_num);
 }
 
@@ -1420,7 +1419,7 @@ static int udf_translate_file_extent(UDFMount *ump, const UDFNode *udf_node, uin
     int eof, error, flags, slot;
     const char *why;
 
-    lb_size = AV_RL32(ump->logical_vol + LVD_LB_SIZE);
+    lb_size = dr_rl32(ump->logical_vol + LVD_LB_SIZE);
 
     /* do the work */
     if ((udf_node_icbflags(udf_node) & UDF_ICB_TAG_FLAGS_ALLOC_MASK) == UDF_ICB_INTERN_ALLOC) {
@@ -1430,7 +1429,7 @@ static int udf_translate_file_extent(UDFMount *ump, const UDFNode *udf_node, uin
 
 #define UDF_GET_ADSLOT() do {                                                                   \
         if ((error = udf_get_adslot(ump, udf_node, slot, &s_ad, &eof, &why)) < 0) {             \
-            UDF_LOG(ump, AV_LOG_WARNING, "UDF on '%s': file entry at block %"PRIu32": %s\n",    \
+            UDF_LOG(ump, DR_IO_LOG_WARNING, "UDF on '%s': file entry at block %"PRIu32": %s\n",    \
                     ump->src->name, udf_node->loc.loc.lb_num, why);                             \
             return udf_err(ump, error, "the file entry at block %"PRIu32" of partition "        \
                            "reference %u could not be read: %s", udf_node->loc.loc.lb_num,      \
@@ -1444,9 +1443,9 @@ static int udf_translate_file_extent(UDFMount *ump, const UDFNode *udf_node, uin
     for (;;) {
         UDF_GET_ADSLOT();
         if (eof) {
-            UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': translate file extent failed: can't seek location\n",
+            UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': translate file extent failed: can't seek location\n",
                     ump->src->name);
-            return udf_err(ump, AVERROR_INVALIDDATA, "a file block lies beyond the file's allocation descriptors");
+            return udf_err(ump, DR_ERR_INVALID, "a file block lies beyond the file's allocation descriptors");
         }
         len   = s_ad.len;
         flags = UDF_EXT_FLAGS(len);
@@ -1468,9 +1467,9 @@ static int udf_translate_file_extent(UDFMount *ump, const UDFNode *udf_node, uin
     for (;;) {
         UDF_GET_ADSLOT();
         if (eof) {
-            UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': translate file extent failed: past eof\n",
+            UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': translate file extent failed: past eof\n",
                     ump->src->name);
-            return udf_err(ump, AVERROR_INVALIDDATA, "a file block lies beyond the file's allocation descriptors");
+            return udf_err(ump, DR_ERR_INVALID, "a file block lies beyond the file's allocation descriptors");
         }
         len   = s_ad.len;
         flags = UDF_EXT_FLAGS(len);
@@ -1491,7 +1490,7 @@ static int udf_translate_file_extent(UDFMount *ump, const UDFNode *udf_node, uin
          * the udf_translate_vtop() returns doesn't have to span the
          * whole extent.
          */
-        overlap = FFMIN(overlap, num_lb);
+        overlap = DR_MIN(overlap, num_lb);
         while (overlap && (flags != UDF_EXT_REDIRECT)) {
             switch (flags) {
             case UDF_EXT_FREE:
@@ -1514,9 +1513,9 @@ static int udf_translate_file_extent(UDFMount *ump, const UDFNode *udf_node, uin
                 if (translen == 0) {
                     /* no progress is possible: upstream would repeat this
                      * translation forever */
-                    UDF_LOG(ump, AV_LOG_WARNING, "UDF on '%s': file entry at block %"PRIu32": an extent "
+                    UDF_LOG(ump, DR_IO_LOG_WARNING, "UDF on '%s': file entry at block %"PRIu32": an extent "
                             "starts at the end of its partition\n", ump->src->name, udf_node->loc.loc.lb_num);
-                    return udf_err(ump, AVERROR_INVALIDDATA, "the file entry at block %"PRIu32" of partition "
+                    return udf_err(ump, DR_ERR_INVALID, "the file entry at block %"PRIu32" of partition "
                                    "reference %u could not be read: an extent starts at the end of its partition",
                                    udf_node->loc.loc.lb_num, udf_node->loc.loc.part_num);
                 }
@@ -1545,14 +1544,14 @@ static void udf_dispose_node(UDFNode *node)
 {
     if (!node)
         return;
-    av_free(node->fe);
-    av_free(node->efe);
+    dr_free(node->fe);
+    dr_free(node->efe);
     for (int i = 0; i < node->num_extensions; i++)
-        av_free(node->ext[i]);
+        dr_free(node->ext[i]);
     for (int i = 0; i < node->dirh_nb; i++)
-        av_free(node->dirh[i].name);
-    av_free(node->dirh);
-    av_free(node);
+        dr_free(node->dirh[i].name);
+    dr_free(node->dirh);
+    dr_free(node);
 }
 
 typedef struct UDFChainLoc {
@@ -1567,7 +1566,7 @@ typedef struct UDFChainLoc {
  */
 static int udf_loadvnode(UDFMount *ump, const struct long_ad *key, UDFNode **out)
 {
-    uint32_t lb_size = AV_RL32(ump->logical_vol + LVD_LB_SIZE);
+    uint32_t lb_size = dr_rl32(ump->logical_vol + LVD_LB_SIZE);
     const int limit = ump->compat->alloc_extent_limit_250 ? UDF_MAX_ALLOC_EXTENTS_COMPAT
                                                           : UDF_MAX_ALLOC_EXTENTS;
     struct long_ad node_icb_loc, icb_loc;
@@ -1587,14 +1586,14 @@ static int udf_loadvnode(UDFMount *ump, const struct long_ad *key, UDFNode **out
 
     /* garbage check: translate udf_node_icb_loc to sectornr */
     if (udf_translate_vtop(ump, &node_icb_loc, &sector, &dummy) < 0) {
-        UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': can't translate icb address\n", ump->src->name);
-        return udf_err(ump, AVERROR_INVALIDDATA, "the file entry at block %"PRIu32" of partition reference %u "
+        UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': can't translate icb address\n", ump->src->name);
+        return udf_err(ump, DR_ERR_INVALID, "the file entry at block %"PRIu32" of partition reference %u "
                        "could not be read: can't translate icb address", key->loc.lb_num, key->loc.part_num);
     }
 
     /* build udf_node (do initialise!) */
-    if (!(udf_node = av_mallocz(sizeof(*udf_node))))
-        return AVERROR(ENOMEM);
+    if (!(udf_node = dr_mallocz(sizeof(*udf_node))))
+        return DR_ERR(ENOMEM);
     udf_node->loc = node_icb_loc;
 
     icb_loc = node_icb_loc;
@@ -1608,15 +1607,15 @@ static int udf_loadvnode(UDFMount *ump, const struct long_ad *key, UDFNode **out
                 visited[i].strat4096 == strat4096)
                 known = 1;
         if (known) {
-            UDF_LOG(ump, AV_LOG_WARNING, "UDF on '%s': the file entry chain of block %"PRIu32" returns to "
+            UDF_LOG(ump, DR_IO_LOG_WARNING, "UDF on '%s': the file entry chain of block %"PRIu32" returns to "
                     "block %"PRIu32"; it would never end\n", ump->src->name, key->loc.lb_num,
                     icb_loc.loc.lb_num);
             NODE_FAIL("file entry chain loops");
         }
         if (!(nb_visited & (nb_visited - 1))) {
-            UDFChainLoc *n = av_realloc_array(visited, nb_visited ? 2 * nb_visited : 4, sizeof(*visited));
+            UDFChainLoc *n = dr_realloc_array(visited, nb_visited ? 2 * nb_visited : 4, sizeof(*visited));
             if (!n) {
-                error = AVERROR(ENOMEM);
+                error = DR_ERR(ENOMEM);
                 goto fail_error;
             }
             visited = n;
@@ -1628,17 +1627,17 @@ static int udf_loadvnode(UDFMount *ump, const struct long_ad *key, UDFNode **out
 
         /* try to read in fe/efe */
         if ((error = udf_read_logvol_dscr(ump, &icb_loc, &dscr)) < 0) {
-            UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': node fe/efe failed: %s\n", ump->src->name, ump->why);
+            UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': node fe/efe failed: %s\n", ump->src->name, ump->why);
             NODE_FAIL("file entry unreadable");
         }
 
         /* process descriptor based on the descriptor type */
-        dscr_type = AV_RL16(dscr + TAG_ID);
+        dscr_type = dr_rl16(dscr + TAG_ID);
 
         /* if dealing with an indirect entry, follow the link */
         if (dscr_type == TAGID_INDIRECTENTRY) {
             icb_loc = udf_long_ad(dscr + INDE_INDIRECT_ICB);
-            av_free(dscr);
+            dr_free(dscr);
             if (++num_indir_followed > UDF_MAX_INDIRS_FOLLOW)
                 NODE_FAIL("too many indirect entries");
             continue;
@@ -1646,23 +1645,23 @@ static int udf_loadvnode(UDFMount *ump, const struct long_ad *key, UDFNode **out
 
         /* only file entries and extended file entries allowed here */
         if ((dscr_type != TAGID_FENTRY) && (dscr_type != TAGID_EXTFENTRY)) {
-            av_free(dscr);
+            dr_free(dscr);
             NODE_FAIL("not a file entry");
         }
 
         if (udf_tagsize(dscr, lb_size) != lb_size)
-            UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': file entry at block %"PRIu32" is longer than one block\n",
+            UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': file entry at block %"PRIu32" is longer than one block\n",
                     ump->src->name, icb_loc.loc.lb_num);
 
         /* record and process/update (ext)fentry */
-        strat = AV_RL16(dscr + ICB_STRAT_TYPE);
+        strat = dr_rl16(dscr + ICB_STRAT_TYPE);
         udf_node->file_type = dscr[ICB_FILE_TYPE];
-        udf_node->file_size = AV_RL64(dscr + FE_INF_LEN);
+        udf_node->file_size = dr_rl64(dscr + FE_INF_LEN);
         if (dscr_type == TAGID_FENTRY) {
-            av_free(udf_node->fe);
+            dr_free(udf_node->fe);
             udf_node->fe = dscr;
         } else {
-            av_free(udf_node->efe);
+            dr_free(udf_node->efe);
             udf_node->efe = dscr;
         }
 
@@ -1689,7 +1688,7 @@ static int udf_loadvnode(UDFMount *ump, const struct long_ad *key, UDFNode **out
         /* any other strategy: upstream reads the same location again,
          * forever; the visited check above stops it */
     }
-    av_freep(&visited);
+    dr_freep(&visited);
 
     /*
      * Go through all allocations extents of this descriptor and when
@@ -1711,13 +1710,13 @@ static int udf_loadvnode(UDFMount *ump, const struct long_ad *key, UDFNode **out
             continue;
 
         if (udf_node->num_extensions >= limit) {
-            UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': udf_get_node: implementation limit, too many "
+            UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': udf_get_node: implementation limit, too many "
                     "allocation extensions on udf_node\n", ump->src->name);
             NODE_FAIL("too many allocation extent descriptors");
         }
         /* length can only be *one* lb : UDF 2.50/2.3.7.1 */
         if (UDF_EXT_LEN(icb_loc.len) != lb_size) {
-            UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': udf_get_node: bad allocation extension size in "
+            UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': udf_get_node: bad allocation extension size in "
                     "udf_node\n", ump->src->name);
             NODE_FAIL("bad allocation extent descriptor size");
         }
@@ -1725,8 +1724,8 @@ static int udf_loadvnode(UDFMount *ump, const struct long_ad *key, UDFNode **out
         if (udf_read_logvol_dscr(ump, &icb_loc, &dscr) < 0)
             NODE_FAIL("allocation extent descriptor unreadable");
         /* process read-in descriptor */
-        if (AV_RL16(dscr + TAG_ID) != TAGID_ALLOCEXTENT) {
-            av_free(dscr);
+        if (dr_rl16(dscr + TAG_ID) != TAGID_ALLOCEXTENT) {
+            dr_free(dscr);
             NODE_FAIL("not an allocation extent descriptor");
         }
         udf_node->ext[udf_node->num_extensions++] = dscr;
@@ -1753,17 +1752,17 @@ static int udf_loadvnode(UDFMount *ump, const struct long_ad *key, UDFNode **out
         /* VAT, metadata files and anything else */
         udf_node->v_type = VNON;
     }
-    UDF_LOG(ump, AV_LOG_TRACE, "UDF on '%s': node at block %"PRIu32" partition %u: file type %d, "
+    UDF_LOG(ump, DR_IO_LOG_TRACE, "UDF on '%s': node at block %"PRIu32" partition %u: file type %d, "
             "%"PRIu64" bytes, %d allocation extent descriptor(s)\n", ump->src->name, key->loc.lb_num,
             key->loc.part_num, udf_node->file_type, udf_node->file_size, udf_node->num_extensions);
     *out = udf_node;
     return 0;
 
 fail:
-    error = udf_err(ump, AVERROR_INVALIDDATA, "the file entry at block %"PRIu32" of partition reference %u "
+    error = udf_err(ump, DR_ERR_INVALID, "the file entry at block %"PRIu32" of partition reference %u "
                     "could not be read: %s", key->loc.lb_num, key->loc.part_num, fail_why);
 fail_error:
-    av_free(visited);
+    dr_free(visited);
     udf_dispose_node(udf_node);
     return error;
 #undef NODE_FAIL
@@ -1797,7 +1796,7 @@ static int udf_get_node(UDFMount *ump, const struct long_ad *node_icb_loc, UDFNo
  * of the block (blob holds lb_size bytes) */
 static void udf_read_internal(UDFMount *ump, const UDFNode *node, uint8_t *blob)
 {
-    uint32_t lb_size = AV_RL32(ump->logical_vol + LVD_LB_SIZE);
+    uint32_t lb_size = dr_rl32(ump->logical_vol + LVD_LB_SIZE);
     const uint8_t *d = udf_node_dscr(node);
     uint32_t base, l_ea, l_ad;
     uint64_t start, inflen = udf_node_inf_len(node), n;
@@ -1808,8 +1807,8 @@ static void udf_read_internal(UDFMount *ump, const UDFNode *node, uint8_t *blob)
      * in case ->l_ea or ->inf_len contains nonsense.
      * (bounded here by the descriptor's block)
      */
-    start = FFMIN((uint64_t)base + l_ea, lb_size);
-    n = FFMIN(FFMIN(inflen, lb_size - start), lb_size);
+    start = DR_MIN((uint64_t)base + l_ea, lb_size);
+    n = DR_MIN(DR_MIN(inflen, lb_size - start), lb_size);
     /* copy out info */
     memcpy(blob, d + start, n);
     memset(blob + n, 0, lb_size - n);
@@ -1819,12 +1818,12 @@ static void udf_read_internal(UDFMount *ump, const UDFNode *node, uint8_t *blob)
 static int udf_read_filebuf(UDFMount *ump, const UDFNode *udf_node, uint32_t from, uint32_t sectors,
                             uint8_t *buf)
 {
-    uint32_t lb_size = AV_RL32(ump->logical_vol + LVD_LB_SIZE);
+    uint32_t lb_size = dr_rl32(ump->logical_vol + LVD_LB_SIZE);
     uint64_t mapping[MAXPHYS / DISCIO_BLOCK_SIZE];
     int error;
 
-    if (sectors > FF_ARRAY_ELEMS(mapping))
-        return AVERROR_BUG;
+    if (sectors > DR_ARRAY_ELEMS(mapping))
+        return DR_ERR_EXTERNAL;   /* an internal bound was broken */
     if ((error = udf_translate_file_extent(ump, udf_node, from, sectors, mapping)) < 0)
         return error;
 
@@ -1856,7 +1855,7 @@ static int udf_read_filebuf(UDFMount *ump, const UDFNode *udf_node, uint32_t fro
             sector++;
         }
         if (run_start > UINT32_MAX)
-            return udf_err(ump, AVERROR_INVALIDDATA, "logical block %"PRIu32" of partition reference %u "
+            return udf_err(ump, DR_ERR_INVALID, "logical block %"PRIu32" of partition reference %u "
                            "could not be translated to a sector", from, udf_node->loc.loc.part_num);
         if ((error = udf_read_phys_sectors(ump, buf_pos, run_start, run_length)) < 0)
             return error;
@@ -1878,7 +1877,7 @@ static int udf_read(UDFMount *ump, const UDFNode *node, uint64_t pos, uint8_t *d
                     size_t *got)
 {
     uint64_t file_size = udf_node_inf_len(node);
-    uint64_t lb = AV_RL32(ump->logical_vol + LVD_LB_SIZE);
+    uint64_t lb = dr_rl32(ump->logical_vol + LVD_LB_SIZE);
     uint8_t *data;
     size_t done = 0;
     int error = 0;
@@ -1886,26 +1885,26 @@ static int udf_read(UDFMount *ump, const UDFNode *node, uint64_t pos, uint8_t *d
     *got = 0;
     if (pos >= file_size || !len)
         return 0;
-    len = FFMIN(file_size - pos, len);
-    if (!(data = av_malloc(BUF_BLOCKS * lb)))
-        return AVERROR(ENOMEM);
+    len = DR_MIN(file_size - pos, len);
+    if (!(data = dr_malloc(BUF_BLOCKS * lb)))
+        return DR_ERR(ENOMEM);
     while (done < len) {
         uint64_t at = pos + done;
         uint64_t from = at / lb;
         /* one buffer: up to the next 64 KiB boundary or the end of the read */
         uint64_t buf_end_block = (from / BUF_BLOCKS + 1) * BUF_BLOCKS;
         uint64_t last_block = (pos + len - 1) / lb;
-        uint64_t to = FFMIN(buf_end_block, last_block + 1);
+        uint64_t to = DR_MIN(buf_end_block, last_block + 1);
         size_t skip = at - from * lb, n;
 
         if ((error = udf_read_filebuf(ump, node, from > UINT32_MAX ? UINT32_MAX : (uint32_t)from,
                                       to - from, data)) < 0)
             break;
-        n = FFMIN((to - from) * lb - skip, len - done);
+        n = DR_MIN((to - from) * lb - skip, len - done);
         memcpy(dst + done, data + skip, n);
         done += n;
     }
-    av_free(data);
+    dr_free(data);
     if (error < 0)
         return error;
     *got = len;
@@ -1936,7 +1935,7 @@ static int udf_read_fid_stream(UDFMount *ump, const UDFNode *dir_node, uint64_t 
                                int *err)
 {
     uint64_t file_size = udf_node_inf_len(dir_node);
-    uint32_t lb_size = AV_RL32(ump->logical_vol + LVD_LB_SIZE), fid_size, l_iu, start;
+    uint32_t lb_size = dr_rl32(ump->logical_vol + LVD_LB_SIZE), fid_size, l_iu, start;
     uint8_t *fid;
     size_t want, got;
     int error;
@@ -1949,21 +1948,21 @@ static int udf_read_fid_stream(UDFMount *ump, const UDFNode *dir_node, uint64_t 
         /* short dir ... */
         return FID_SHORT;
     }
-    if (!(fid = av_mallocz(lb_size))) {
-        *err = AVERROR(ENOMEM);
+    if (!(fid = dr_mallocz(lb_size))) {
+        *err = DR_ERR(ENOMEM);
         return FID_READ;
     }
-    want = FFMIN(file_size - *offset, lb_size);
+    want = DR_MIN(file_size - *offset, lb_size);
     if ((error = udf_read(ump, dir_node, *offset, fid, want, &got)) < 0 || got != want) {
         *err = error < 0 ? error
-                         : udf_err(ump, AVERROR_INVALIDDATA, "a read of %zu bytes at %"PRIu64" runs past the "
+                         : udf_err(ump, DR_ERR_INVALID, "a read of %zu bytes at %"PRIu64" runs past the "
                                    "end of a %"PRIu64"-byte file", want, *offset, file_size);
-        av_free(fid);
+        dr_free(fid);
         return FID_READ;
     }
 
     /* check if our FID header is OK */
-    if (udf_check_tag(fid) < 0 || AV_RL16(fid + TAG_ID) != TAGID_FID)
+    if (udf_check_tag(fid) < 0 || dr_rl16(fid + TAG_ID) != TAGID_FID)
         goto brokendir;
     /* check for length */
     fid_size = udf_fidsize(fid);
@@ -1971,10 +1970,10 @@ static int udf_read_fid_stream(UDFMount *ump, const UDFNode *dir_node, uint64_t 
         goto brokendir;
     /* check FID contents */
     if (udf_check_tag_payload(fid, lb_size, lb_size)) {
-        uint32_t crc_len = AV_RL16(fid + TAG_DESC_CRC_LEN);
+        uint32_t crc_len = dr_rl16(fid + TAG_DESC_CRC_LEN);
 
         if (ump->compat->lenient_fid_crc && fid_size == crc_len + 16) {
-            UDF_LOG(ump, AV_LOG_WARNING, "UDF on '%s': directory entry at offset %"PRIu64" of the directory "
+            UDF_LOG(ump, DR_IO_LOG_WARNING, "UDF on '%s': directory entry at offset %"PRIu64" of the directory "
                     "at block %"PRIu32" has a bad CRC; its length is consistent, so it is used\n",
                     ump->src->name, *offset, dir_node->loc.loc.lb_num);
         } else {
@@ -1983,8 +1982,8 @@ static int udf_read_fid_stream(UDFMount *ump, const UDFNode *dir_node, uint64_t 
     }
 
     /* create resulting dirent structure */
-    l_iu  = AV_RL16(fid + FID_L_IU);
-    start = FFMIN(FID_DATA + l_iu, lb_size);
+    l_iu  = dr_rl16(fid + FID_L_IU);
+    start = DR_MIN(FID_DATA + l_iu, lb_size);
     udf_to_unix_name(ump, out->name, NAME_MAX_UDF, fid + start, lb_size - start, fid[FID_L_FI],
                      ump->logical_vol + LVD_DESC_CHARSET, ump->compat->name_rules);
     out->file_char = fid[FID_FILE_CHAR];
@@ -1992,7 +1991,7 @@ static int udf_read_fid_stream(UDFMount *ump, const UDFNode *dir_node, uint64_t 
     if (out->file_char & UDF_FILE_CHAR_PAR)
         strcpy(out->name, "..");
     out->icb = udf_long_ad(fid + FID_ICB);
-    av_free(fid);
+    dr_free(fid);
 
     /* advance */
     *offset += fid_size;
@@ -2000,16 +1999,16 @@ static int udf_read_fid_stream(UDFMount *ump, const UDFNode *dir_node, uint64_t 
 
 brokendir:
     /* note that is sometimes a bit quick to report */
-    UDF_LOG(ump, AV_LOG_WARNING, "UDF on '%s': BROKEN DIRECTORY ENTRY (directory at block %"PRIu32", "
+    UDF_LOG(ump, DR_IO_LOG_WARNING, "UDF on '%s': BROKEN DIRECTORY ENTRY (directory at block %"PRIu32", "
             "offset %"PRIu64")\n", ump->src->name, dir_node->loc.loc.lb_num, *offset);
-    av_free(fid);
+    dr_free(fid);
     return FID_BROKEN;
 }
 
 static void udf_dirhash_purge(UDFNode *dir_node)
 {
     for (int i = 0; i < dir_node->dirh_nb; i++)
-        av_freep(&dir_node->dirh[i].name);
+        dr_freep(&dir_node->dirh[i].name);
     dir_node->dirh_nb = 0;
 }
 
@@ -2022,7 +2021,7 @@ static int udf_dirhash_fill(UDFMount *ump, UDFNode *dir_node)
     int error = 0;
 
     if (dir_node->dirh_broken)
-        return udf_err(ump, AVERROR_INVALIDDATA, "a directory holds a broken entry");
+        return udf_err(ump, DR_ERR_INVALID, "a directory holds a broken entry");
     if (dir_node->dirh_complete)
         return 0;
 
@@ -2040,7 +2039,7 @@ static int udf_dirhash_fill(UDFMount *ump, UDFNode *dir_node)
             dir_node->dirh_broken = 1;
             udf_dirhash_purge(dir_node);
             error = stop == FID_READ ? err
-                                     : udf_err(ump, AVERROR_INVALIDDATA, "a directory holds a broken entry");
+                                     : udf_err(ump, DR_ERR_INVALID, "a directory holds a broken entry");
             break;
         }
         if (fid.file_char & UDF_FILE_CHAR_DEL)
@@ -2048,21 +2047,21 @@ static int udf_dirhash_fill(UDFMount *ump, UDFNode *dir_node)
         /* append to the dirhash */
         if (dir_node->dirh_nb == dir_node->dirh_alloc) {
             int n = dir_node->dirh_alloc ? 2 * dir_node->dirh_alloc : 16;
-            UDFDirhashEntry *e = av_realloc_array(dir_node->dirh, n, sizeof(*e));
+            UDFDirhashEntry *e = dr_realloc_array(dir_node->dirh, n, sizeof(*e));
             if (!e) {
-                error = AVERROR(ENOMEM);
+                error = DR_ERR(ENOMEM);
                 break;
             }
             dir_node->dirh = e;
             dir_node->dirh_alloc = n;
         }
-        if (!(dir_node->dirh[dir_node->dirh_nb].name = av_strdup(fid.name))) {
-            error = AVERROR(ENOMEM);
+        if (!(dir_node->dirh[dir_node->dirh_nb].name = dr_strdup(fid.name))) {
+            error = DR_ERR(ENOMEM);
             break;
         }
         dir_node->dirh[dir_node->dirh_nb++].offset = pre_diroffset;
     }
-    if (error == AVERROR(ENOMEM)) {
+    if (error == DR_ERR(ENOMEM)) {
         udf_dirhash_purge(dir_node);
         return error;
     }
@@ -2096,19 +2095,19 @@ static int udf_lookup_name_in_dir(UDFMount *ump, UDFNode *dir_node, const char *
         return error;
 
     /* convert given unix name to canonical unix name */
-    compressed = av_malloc(1 + 2 * (size_t)namelen);
-    raw = av_malloc_array(FFMAX(namelen, 1), sizeof(*raw));
+    compressed = dr_malloc(1 + 2 * (size_t)namelen);
+    raw = dr_malloc_array(DR_MAX(namelen, 1), sizeof(*raw));
     if (!compressed || !raw) {
-        av_free(compressed);
-        av_free(raw);
-        return AVERROR(ENOMEM);
+        dr_free(compressed);
+        dr_free(raw);
+        return DR_ERR(ENOMEM);
     }
     udf_osta_charset(osta_charspec);
     unix_to_udf_name(compressed, &l_fi, name, namelen, raw);
-    udf_to_unix_name(ump, s_name, NAME_MAX_UDF, compressed, FFMIN(1 + 2 * (size_t)namelen, 256), l_fi,
+    udf_to_unix_name(ump, s_name, NAME_MAX_UDF, compressed, DR_MIN(1 + 2 * (size_t)namelen, 256), l_fi,
                      osta_charspec, UDF_NAMES_UNIX);
-    av_free(compressed);
-    av_free(raw);
+    dr_free(compressed);
+    dr_free(raw);
 
     /* search our dirhash hits */
     for (int i = dir_node->dirh_nb - 1; i >= 0; i--) {
@@ -2125,7 +2124,7 @@ static int udf_lookup_name_in_dir(UDFMount *ump, UDFNode *dir_node, const char *
         if (stop == FID_READ)
             return err;
         if (stop != FID_OK)
-            return udf_err(ump, AVERROR_INVALIDDATA, "a directory holds a broken entry");
+            return udf_err(ump, DR_ERR_INVALID, "a directory holds a broken entry");
         /* see if its our entry */
         if (!strcmp(fid.name, s_name)) {
             *found = 1;
@@ -2147,11 +2146,11 @@ static int udf_read_anchor(UDFMount *ump, uint32_t sector, uint8_t **dst)
         return error;
     /* blank terminator blocks are not allowed here */
     if (!*dst)
-        return AVERROR(ENOENT);
-    if (AV_RL16(*dst + TAG_ID) != TAGID_ANCHOR) {
-        av_freep(dst);
-        UDF_LOG(ump, AV_LOG_TRACE, "UDF on '%s': sector %"PRIu32" is not an anchor\n", ump->src->name, sector);
-        return AVERROR(ENOENT);
+        return DR_ERR(ENOENT);
+    if (dr_rl16(*dst + TAG_ID) != TAGID_ANCHOR) {
+        dr_freep(dst);
+        UDF_LOG(ump, DR_IO_LOG_TRACE, "UDF on '%s': sector %"PRIu32" is not an anchor\n", ump->src->name, sector);
+        return DR_ERR(ENOENT);
     }
     return 0;
 }
@@ -2168,7 +2167,7 @@ static int udf_read_anchors(UDFMount *ump)
     int ok = 0;
 
     /* get our packet size: take max, but not bigger than 64 */
-    ump->packet_size = FFMIN(MAXPHYS / ump->sector_size, 64);
+    ump->packet_size = DR_MIN(MAXPHYS / ump->sector_size, 64);
 
     /* read anchors start+256, start+512, end-256, end */
     positions[0] = track_start + 256;
@@ -2178,7 +2177,7 @@ static int udf_read_anchors(UDFMount *ump)
     /* XXX shouldn't +512 be preferred over +256 for compat with Roxio CD */
 
     for (int anch = 0; anch < 4; anch++) {
-        UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': reading anchor %d at sector %"PRIu32"\n",
+        UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': reading anchor %d at sector %"PRIu32"\n",
                 ump->src->name, anch, positions[anch]);
         if (udf_read_anchor(ump, positions[anch], &ump->anchors[ok]) == 0)
             ok++;
@@ -2204,7 +2203,7 @@ static int udf_find_raw_phys(UDFMount *ump, uint16_t raw_phys_part)
         const uint8_t *part = ump->partitions[phys_part];
         if (!part)
             break;
-        if (AV_RL16(part + PD_PART_NUM) == raw_phys_part)
+        if (dr_rl16(part + PD_PART_NUM) == raw_phys_part)
             break;
     }
     return phys_part;
@@ -2212,13 +2211,13 @@ static int udf_find_raw_phys(UDFMount *ump, uint16_t raw_phys_part)
 
 /* we dont try to be smart; we just record the parts (the last of each kind
  * wins; no volume descriptor sequence numbers are compared) */
-#define UDF_UPDATE_DSCR(name, dscr) do { av_free(name); name = dscr; } while (0)
+#define UDF_UPDATE_DSCR(name, dscr) do { dr_free(name); name = dscr; } while (0)
 
 static int udf_process_vds_descriptor(UDFMount *ump, uint8_t *dscr, uint32_t len)
 {
     int phys_part;
 
-    switch (AV_RL16(dscr + TAG_ID)) {
+    switch (dr_rl16(dscr + TAG_ID)) {
     case TAGID_PRI_VOL:         /* primary partition */
         UDF_UPDATE_DSCR(ump->primary_vol, dscr);
         break;
@@ -2235,27 +2234,27 @@ static int udf_process_vds_descriptor(UDFMount *ump, uint8_t *dscr, uint32_t len
         break;
     case TAGID_PARTITION:       /* physical partition */
         /* not much use if its not allocated */
-        if ((AV_RL16(dscr + PD_FLAGS) & UDF_PART_FLAG_ALLOCATED) == 0) {
-            av_free(dscr);
+        if ((dr_rl16(dscr + PD_FLAGS) & UDF_PART_FLAG_ALLOCATED) == 0) {
+            dr_free(dscr);
             break;
         }
-        phys_part = udf_find_raw_phys(ump, AV_RL16(dscr + PD_PART_NUM));
+        phys_part = udf_find_raw_phys(ump, dr_rl16(dscr + PD_PART_NUM));
         if (phys_part == UDF_PARTITIONS) {
             /* upstream frees the descriptor twice here; it is rejected once */
-            av_free(dscr);
-            return udf_err(ump, AVERROR_INVALIDDATA, "bad volume descriptor sequence: more than %d "
+            dr_free(dscr);
+            return udf_err(ump, DR_ERR_INVALID, "bad volume descriptor sequence: more than %d "
                            "partition descriptors", UDF_PARTITIONS);
         }
         UDF_UPDATE_DSCR(ump->partitions[phys_part], dscr);
         break;
     case TAGID_VOL:             /* volume space extender; rare */
-        UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': VDS extender ignored\n", ump->src->name);
-        av_free(dscr);
+        UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': VDS extender ignored\n", ump->src->name);
+        dr_free(dscr);
         break;
     default:
-        UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': unhandled VDS type %d\n", ump->src->name,
-                AV_RL16(dscr + TAG_ID));
-        av_free(dscr);
+        UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': unhandled VDS type %d\n", ump->src->name,
+                dr_rl16(dscr + TAG_ID));
+        dr_free(dscr);
     }
     return 0;
 }
@@ -2271,7 +2270,7 @@ static int udf_read_vds_extent(UDFMount *ump, uint32_t loc, uint32_t len)
 
     /* loc is sectornr, len is in bytes */
     if (!len)
-        return udf_err(ump, AVERROR_INVALIDDATA, "bad volume descriptor sequence: empty volume descriptor sequence");
+        return udf_err(ump, DR_ERR_INVALID, "bad volume descriptor sequence: empty volume descriptor sequence");
     while (len) {
         if ((error = udf_read_phys_dscr(ump, loc, &dscr, &dlen)) < 0)
             return error;
@@ -2279,8 +2278,8 @@ static int udf_read_vds_extent(UDFMount *ump, uint32_t loc, uint32_t len)
         if (!dscr)
             return 0;
         /* TERM descriptor is a terminator */
-        if (AV_RL16(dscr + TAG_ID) == TAGID_TERM) {
-            av_free(dscr);
+        if (dr_rl16(dscr + TAG_ID) == TAGID_TERM) {
+            dr_free(dscr);
             return 0;
         }
         /* process all others */
@@ -2288,10 +2287,10 @@ static int udf_read_vds_extent(UDFMount *ump, uint32_t loc, uint32_t len)
         /* a descriptor of size 0 would be read again at the same place with
          * the same length left, without end */
         if (dscr_size == 0) {
-            av_free(dscr);
-            UDF_LOG(ump, AV_LOG_WARNING, "UDF on '%s': volume descriptor at block %"PRIu32" has size 0; "
+            dr_free(dscr);
+            UDF_LOG(ump, DR_IO_LOG_WARNING, "UDF on '%s': volume descriptor at block %"PRIu32" has size 0; "
                     "the sequence cannot be read past it\n", ump->src->name, loc);
-            return udf_err(ump, AVERROR_INVALIDDATA, "bad volume descriptor sequence: volume descriptor of size 0");
+            return udf_err(ump, DR_ERR_INVALID, "bad volume descriptor sequence: volume descriptor of size 0");
         }
         if ((error = udf_process_vds_descriptor(ump, dscr, dlen)) < 0)
             return error;
@@ -2319,16 +2318,16 @@ static int udf_read_vds_space(UDFMount *ump)
             anchor = anchor2;
         /* reserve is specified to be a literal copy of main */
     }
-    main_len    = AV_RL32(anchor + AVDP_MAIN_VDS_EX);
-    main_loc    = AV_RL32(anchor + AVDP_MAIN_VDS_EX + 4);
-    reserve_len = AV_RL32(anchor + AVDP_RESERVE_VDS_EX);
-    reserve_loc = AV_RL32(anchor + AVDP_RESERVE_VDS_EX + 4);
+    main_len    = dr_rl32(anchor + AVDP_MAIN_VDS_EX);
+    main_loc    = dr_rl32(anchor + AVDP_MAIN_VDS_EX + 4);
+    reserve_len = dr_rl32(anchor + AVDP_RESERVE_VDS_EX);
+    reserve_loc = dr_rl32(anchor + AVDP_RESERVE_VDS_EX + 4);
 
-    UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': main volume descriptor sequence at sector %"PRIu32", "
+    UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': main volume descriptor sequence at sector %"PRIu32", "
             "%"PRIu32" bytes\n", ump->src->name, main_loc, main_len);
     error = udf_read_vds_extent(ump, main_loc, main_len);
     if (error < 0) {
-        UDF_LOG(ump, AV_LOG_WARNING, "UDF on '%s': reading in reserve VDS extent (main sequence failed: %s)\n",
+        UDF_LOG(ump, DR_IO_LOG_WARNING, "UDF on '%s': reading in reserve VDS extent (main sequence failed: %s)\n",
                 ump->src->name, ump->why);
         error = udf_read_vds_extent(ump, reserve_loc, reserve_len);
     }
@@ -2345,9 +2344,9 @@ static int udf_read_vds_space(UDFMount *ump)
  */
 static void udf_retrieve_lvint(UDFMount *ump)
 {
-    uint32_t lb_size = AV_RL32(ump->logical_vol + LVD_LB_SIZE);
-    uint32_t len     = AV_RL32(ump->logical_vol + LVD_INTEGRITY_SEQ_LOC);
-    uint32_t lbnum   = AV_RL32(ump->logical_vol + LVD_INTEGRITY_SEQ_LOC + 4);
+    uint32_t lb_size = dr_rl32(ump->logical_vol + LVD_LB_SIZE);
+    uint32_t len     = dr_rl32(ump->logical_vol + LVD_INTEGRITY_SEQ_LOC);
+    uint32_t lbnum   = dr_rl32(ump->logical_vol + LVD_INTEGRITY_SEQ_LOC + 4);
     uint8_t *lvint = NULL, *dscr;
     uint32_t lvint_len = 0, dlen;
     int error = 0;
@@ -2360,22 +2359,22 @@ static void udf_retrieve_lvint(UDFMount *ump)
 
             if (!dscr)
                 break;      /* empty terminates */
-            dscr_type = AV_RL16(dscr + TAG_ID);
+            dscr_type = dr_rl16(dscr + TAG_ID);
             if (dscr_type == TAGID_TERM) {
-                av_free(dscr);
+                dr_free(dscr);
                 break;      /* clean terminator */
             }
             if (dscr_type != TAGID_LOGVOL_INTEGRITY) {
                 /* fatal... corrupt disc */
-                av_free(dscr);
-                error = AVERROR(ENOENT);
+                dr_free(dscr);
+                error = DR_ERR(ENOENT);
                 break;
             }
-            av_free(lvint);
+            dr_free(lvint);
             lvint = dscr;
             lvint_len = dlen;
         } else {
-            UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': integrity sequence sector %"PRIu32" unreadable\n",
+            UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': integrity sequence sector %"PRIu32" unreadable\n",
                     ump->src->name, lbnum);
         }
         /* proceed sequential */
@@ -2384,7 +2383,7 @@ static void udf_retrieve_lvint(UDFMount *ump)
     }
     /* clean up the mess, esp. when there is an error */
     if (error && lvint)
-        av_freep(&lvint);
+        dr_freep(&lvint);
     ump->logvol_integrity = lvint;
     ump->logvol_integrity_len = lvint ? lvint_len : 0;
 }
@@ -2404,22 +2403,22 @@ static int udf_process_vds(UDFMount *ump)
 
     /* we need at least one primary and one logical volume descriptor */
     if (!ump->primary_vol || !ump->logical_vol)
-        return udf_err(ump, AVERROR_INVALIDDATA, "bad volume descriptor sequence: primary or logical volume "
+        return udf_err(ump, DR_ERR_INVALID, "bad volume descriptor sequence: primary or logical volume "
                        "descriptor missing");
     /* we need at least one partition descriptor */
     if (!ump->partitions[0])
-        return udf_err(ump, AVERROR_INVALIDDATA, "bad volume descriptor sequence: no partition descriptor");
+        return udf_err(ump, DR_ERR_INVALID, "bad volume descriptor sequence: no partition descriptor");
 
     /* check logical volume sector size verses device sector size */
-    if (AV_RL32(ump->logical_vol + LVD_LB_SIZE) != ump->sector_size) {
-        UDF_LOG(ump, AV_LOG_WARNING, "UDF on '%s': format violation, lb_size != sector size\n", ump->src->name);
-        return udf_err(ump, AVERROR_INVALIDDATA, "logical block size %"PRIu32" differs from the %"PRIu32"-byte "
-                       "sector size", AV_RL32(ump->logical_vol + LVD_LB_SIZE), ump->sector_size);
+    if (dr_rl32(ump->logical_vol + LVD_LB_SIZE) != ump->sector_size) {
+        UDF_LOG(ump, DR_IO_LOG_WARNING, "UDF on '%s': format violation, lb_size != sector size\n", ump->src->name);
+        return udf_err(ump, DR_ERR_INVALID, "logical block size %"PRIu32" differs from the %"PRIu32"-byte "
+                       "sector size", dr_rl32(ump->logical_vol + LVD_LB_SIZE), ump->sector_size);
     }
     /* check domain name */
     if (memcmp(ump->logical_vol + LVD_DOMAIN_ID + 1, "*OSTA UDF Compliant", 20)) {
-        UDF_LOG(ump, AV_LOG_WARNING, "UDF on '%s': disc not OSTA UDF Compliant, aborting\n", ump->src->name);
-        return udf_err(ump, AVERROR_INVALIDDATA, "the volume is not OSTA UDF compliant");
+        UDF_LOG(ump, DR_IO_LOG_WARNING, "UDF on '%s': disc not OSTA UDF Compliant, aborting\n", ump->src->name);
+        return udf_err(ump, DR_ERR_INVALID, "the volume is not OSTA UDF compliant");
     }
 
     /* retrieve logical volume integrity sequence */
@@ -2430,11 +2429,11 @@ static int udf_process_vds(UDFMount *ump)
      * will close/update the integrity.
      */
     if (!ump->logvol_integrity)
-        return udf_err(ump, AVERROR_INVALIDDATA, "bad volume descriptor sequence: no logical volume integrity "
+        return udf_err(ump, DR_ERR_INVALID, "bad volume descriptor sequence: no logical volume integrity "
                        "descriptor");
 
     /* process derived structures */
-    n_pm = AV_RL32(ump->logical_vol + LVD_N_PM);       /* num partmaps */
+    n_pm = dr_rl32(ump->logical_vol + LVD_N_PM);       /* num partmaps */
     ump->logvol_info = LVID_TABLES + 8 * n_pm;         /* &lvint->tables[2 * n_pm] */
 
     /*
@@ -2443,8 +2442,8 @@ static int udf_process_vds(UDFMount *ump)
      * strncmp() in tight places.
      */
     if (n_pm > UDF_PMAPS) {
-        UDF_LOG(ump, AV_LOG_WARNING, "UDF on '%s': too many mappings (%"PRIu32")\n", ump->src->name, n_pm);
-        return udf_err(ump, AVERROR_INVALIDDATA, "%"PRIu32" partition maps (at most %d are supported)",
+        UDF_LOG(ump, DR_IO_LOG_WARNING, "UDF on '%s': too many mappings (%"PRIu32")\n", ump->src->name, n_pm);
+        return udf_err(ump, DR_ERR_INVALID, "%"PRIu32" partition maps (at most %d are supported)",
                        n_pm, UDF_PMAPS);
     }
 
@@ -2456,14 +2455,14 @@ static int udf_process_vds(UDFMount *ump)
         int pmap_stype, pmap_size, pmap_type, phys_part, raw_phys_part;
 
         if (map_pos + 64 > ump->logical_vol_len)
-            return udf_err(ump, AVERROR_INVALIDDATA, "bad volume descriptor sequence: partition maps run "
+            return udf_err(ump, DR_ERR_INVALID, "bad volume descriptor sequence: partition maps run "
                            "past the descriptor");
         pmap_pos   = ump->logical_vol + map_pos;
         pmap_stype = pmap_pos[0];
         pmap_size  = pmap_pos[1];
         switch (pmap_stype) {
         case 1:     /* physical mapping */
-            raw_phys_part = AV_RL16(pmap_pos + 4);
+            raw_phys_part = dr_rl16(pmap_pos + 4);
             pmap_type = UDF_VTOP_TYPE_PHYS;
             n_phys++;
             ump->data_part = log_part;
@@ -2471,7 +2470,7 @@ static int udf_process_vds(UDFMount *ump)
             ump->fids_part = log_part;
             break;
         case 2:     /* virtual/sparable/meta mapping */
-            raw_phys_part = AV_RL16(pmap_pos + PM2_PART_NUM);
+            raw_phys_part = dr_rl16(pmap_pos + PM2_PART_NUM);
             pmap_type = UDF_VTOP_TYPE_UNKNOWN;
             if (udf_regid_is(pmap_pos + PM2_PART_ID, "*UDF Virtual Partition")) {
                 pmap_type = UDF_VTOP_TYPE_VIRT;
@@ -2496,7 +2495,7 @@ static int udf_process_vds(UDFMount *ump)
             }
             break;
         default:
-            return udf_err(ump, AVERROR_INVALIDDATA, "bad volume descriptor sequence: unknown partition map type");
+            return udf_err(ump, DR_ERR_INVALID, "bad volume descriptor sequence: unknown partition map type");
         }
 
         /*
@@ -2505,13 +2504,13 @@ static int udf_process_vds(UDFMount *ump)
          * the number.
          */
         phys_part = udf_find_raw_phys(ump, raw_phys_part);
-        UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': partition map %"PRIu32" -> partition %d (slot %d), type %d\n",
+        UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': partition map %"PRIu32" -> partition %d (slot %d), type %d\n",
                 ump->src->name, log_part, raw_phys_part, phys_part, pmap_type);
         if (phys_part == UDF_PARTITIONS)
-            return udf_err(ump, AVERROR_INVALIDDATA, "bad volume descriptor sequence: partition map names no "
+            return udf_err(ump, DR_ERR_INVALID, "bad volume descriptor sequence: partition map names no "
                            "partition");
         if (pmap_type == UDF_VTOP_TYPE_UNKNOWN)
-            return udf_err(ump, AVERROR_INVALIDDATA, "bad volume descriptor sequence: unknown partition map");
+            return udf_err(ump, DR_ERR_INVALID, "bad volume descriptor sequence: unknown partition map");
 
         ump->vtop   [log_part] = phys_part;
         ump->vtop_tp[log_part] = pmap_type;
@@ -2523,18 +2522,18 @@ static int udf_process_vds(UDFMount *ump)
 
     /* test some basic UDF assertions/requirements */
     if ((n_virt > 1) || (n_spar > 1) || (n_meta > 1))
-        return udf_err(ump, AVERROR_INVALIDDATA, "bad volume descriptor sequence: more than one virtual, "
+        return udf_err(ump, DR_ERR_INVALID, "bad volume descriptor sequence: more than one virtual, "
                        "sparable or metadata map");
     if (n_virt) {
         if ((n_phys == 0) || n_spar || n_meta)
-            return udf_err(ump, AVERROR_INVALIDDATA, "bad volume descriptor sequence: virtual map without a "
+            return udf_err(ump, DR_ERR_INVALID, "bad volume descriptor sequence: virtual map without a "
                            "physical map, or with sparable / metadata maps");
     }
     if (n_spar + n_phys == 0)
-        return udf_err(ump, AVERROR_INVALIDDATA, "bad volume descriptor sequence: no physical or sparable map");
+        return udf_err(ump, DR_ERR_INVALID, "bad volume descriptor sequence: no physical or sparable map");
 
     /* print results */
-    UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': data partition %d, node partition %d, fids partition %d\n",
+    UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': data partition %d, node partition %d, fids partition %d\n",
             ump->src->name, ump->data_part, ump->node_part, ump->fids_part);
     /* signal its OK for now */
     return 0;
@@ -2562,8 +2561,8 @@ static int udf_impl_extattr_check(const uint8_t *implext)
 {
     if (!strncmp((const char *)implext + IMPLEXT_IMP_ID + 1, "*UDF", 4)) {
         /* checksum valid? */
-        if (AV_RL16(implext + IMPLEXT_DATA) != udf_ea_cksum(implext))
-            return AVERROR_INVALIDDATA;
+        if (dr_rl16(implext + IMPLEXT_DATA) != udf_ea_cksum(implext))
+            return DR_ERR_INVALID;
     }
     return 0;
 }
@@ -2576,7 +2575,7 @@ static int udf_impl_extattr_check(const uint8_t *implext)
 static int udf_extattr_search_intern(UDFMount *ump, const UDFNode *node, uint32_t sattr,
                                      const char *sattrname, uint32_t *offsetp, uint32_t *lengthp)
 {
-    uint32_t lb_size = AV_RL32(ump->logical_vol + LVD_LB_SIZE);
+    uint32_t lb_size = dr_rl32(ump->logical_vol + LVD_LB_SIZE);
     uint32_t sector_size = ump->sector_size, offset, a_l, base, ul_ea, l_ad, avail;
     const uint8_t *eahdr;
     int32_t l_ea;
@@ -2589,34 +2588,34 @@ static int udf_extattr_search_intern(UDFMount *ump, const UDFNode *node, uint32_
 
     /* something recorded here? */
     if (l_ea == 0)
-        return AVERROR(ENOENT);
+        return DR_ERR(ENOENT);
 
     /* check extended attribute tag; what to do if it fails? */
     if (udf_check_tag(eahdr) < 0)
-        return AVERROR_INVALIDDATA;
-    if (AV_RL16(eahdr + TAG_ID) != TAGID_EXTATTR_HDR)
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
+    if (dr_rl16(eahdr + TAG_ID) != TAGID_EXTATTR_HDR)
+        return DR_ERR_INVALID;
     if (udf_check_tag_payload(eahdr, avail, EAHDR_SIZE))
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
 
     /* looking for Ecma-167 attributes? */
     offset = EAHDR_SIZE;
 
     /* looking for either implementation use or application use */
     if (sattr == 2048) {                /* [4/48.10.8] */
-        offset = AV_RL32(eahdr + EAHDR_IMPL_ATTR_LOC);
+        offset = dr_rl32(eahdr + EAHDR_IMPL_ATTR_LOC);
         if (offset == UINT32_MAX)
-            return AVERROR(ENOENT);
+            return DR_ERR(ENOENT);
     }
     if (sattr == 65536) {               /* [4/48.10.9] */
-        offset = AV_RL32(eahdr + EAHDR_APPL_ATTR_LOC);
+        offset = dr_rl32(eahdr + EAHDR_APPL_ATTR_LOC);
         if (offset == UINT32_MAX)
-            return AVERROR(ENOENT);
+            return DR_ERR(ENOENT);
     }
 
     /* paranoia check offset and l_ea */
     if ((uint32_t)l_ea + offset >= sector_size - EXTATTR_ENTRY_SIZE)
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
 
     /* find our extended attribute  */
     l_ea -= offset;
@@ -2626,13 +2625,13 @@ static int udf_extattr_search_intern(UDFMount *ump, const UDFNode *node, uint32_
         uint32_t type;
 
         if (offset + EXTATTR_ENTRY_SIZE > avail)
-            return AVERROR_INVALIDDATA;
+            return DR_ERR_INVALID;
         pos = eahdr + offset;
         /* get complete attribute length and check for roque values */
-        type = AV_RL32(pos);
-        a_l  = AV_RL32(pos + 8);
+        type = dr_rl32(pos);
+        a_l  = dr_rl32(pos + 8);
         if ((a_l == 0) || (a_l > (uint32_t)l_ea))
-            return AVERROR_INVALIDDATA;
+            return DR_ERR_INVALID;
 
         if (type == sattr) {
             /* we might have found it! */
@@ -2654,7 +2653,7 @@ static int udf_extattr_search_intern(UDFMount *ump, const UDFNode *node, uint32_
                 while (n < room && id[n])
                     n++;
                 if (n == room)          /* no NUL in the block */
-                    return AVERROR_INVALIDDATA;
+                    return DR_ERR_INVALID;
                 if (!strcmp(id, sattrname)) {
                     /* we have found our appl/implementation attribute */
                     *offsetp = offset;
@@ -2662,7 +2661,7 @@ static int udf_extattr_search_intern(UDFMount *ump, const UDFNode *node, uint32_
                     return 0;           /* success */
                 }
             } else {
-                return AVERROR_INVALIDDATA;
+                return DR_ERR_INVALID;
             }
         }
         /* next attribute */
@@ -2670,7 +2669,7 @@ static int udf_extattr_search_intern(UDFMount *ump, const UDFNode *node, uint32_
         offset += a_l;
     }
     /* not found */
-    return AVERROR(ENOENT);
+    return DR_ERR(ENOENT);
 }
 
 static void udf_set_lvinfo(UDFMount *ump, uint32_t at, const uint8_t *src, uint32_t len)
@@ -2684,7 +2683,7 @@ static void udf_set_lvinfo(UDFMount *ump, uint32_t at, const uint8_t *src, uint3
  * it belongs to this VAT */
 static void udf_update_lvid_from_vat_extattr(UDFMount *ump, const UDFNode *vat_node)
 {
-    uint32_t lb_size = AV_RL32(ump->logical_vol + LVD_LB_SIZE);
+    uint32_t lb_size = dr_rl32(ump->logical_vol + LVD_LB_SIZE);
     uint32_t offset, a_l, base, l_ea, l_ad, iu_l;
     const uint8_t *implext, *lvextpos;
 
@@ -2698,9 +2697,9 @@ static void udf_update_lvid_from_vat_extattr(UDFMount *ump, const UDFNode *vat_n
         return;
 
     /* paranoia */
-    iu_l = AV_RL32(implext + IMPLEXT_IU_L);
+    iu_l = dr_rl32(implext + IMPLEXT_IU_L);
     if ((uint64_t)a_l != IMPLEXT_DATA + (uint64_t)iu_l + VATLVEXT_SIZE) {
-        UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': VAT LVExtension size doesn't compute\n", ump->src->name);
+        UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': VAT LVExtension size doesn't compute\n", ump->src->name);
         return;
     }
     if ((uint64_t)base + offset + IMPLEXT_DATA + iu_l + VATLVEXT_SIZE > lb_size)
@@ -2709,14 +2708,14 @@ static void udf_update_lvid_from_vat_extattr(UDFMount *ump, const UDFNode *vat_n
     lvextpos = implext + IMPLEXT_DATA + iu_l;
 
     /* check if it was updated the last time */
-    if (AV_RL64(lvextpos) == udf_node_unique_id(vat_node)) {
+    if (dr_rl64(lvextpos) == udf_node_unique_id(vat_node)) {
         udf_set_lvinfo(ump, LVINFO_NUM_FILES, lvextpos + 8, 4);
         udf_set_lvinfo(ump, LVINFO_NUM_DIRECTORIES, lvextpos + 12, 4);
         udf_update_logvolname(ump, lvextpos + 16);
     } else {
         /* upstream replaces the attribute by a free space EA in the node's
          * memory copy; nothing reads it again */
-        UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': VAT LVExtension out of date\n", ump->src->name);
+        UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': VAT LVExtension out of date\n", ump->src->name);
     }
 }
 
@@ -2729,7 +2728,7 @@ static int udf_read_exact(UDFMount *ump, const UDFNode *node, uint64_t pos, uint
     if (error < 0)
         return error;
     if (got != len)
-        return udf_err(ump, AVERROR_INVALIDDATA, "a read of %zu bytes at %"PRIu64" runs past the end of a "
+        return udf_err(ump, DR_ERR_INVALID, "a read of %zu bytes at %"PRIu64" runs past the end of a "
                        "%"PRIu64"-byte file", len, pos, udf_node_inf_len(node));
     return 0;
 }
@@ -2748,10 +2747,10 @@ static int udf_check_for_vat(UDFMount *ump, const UDFNode *vat_node)
     /* Check icb filetype! it has to be 0 or UDF_ICB_FILETYPE_VAT */
     filetype = vat_node->file_type;
     if ((filetype != 0) && (filetype != UDF_ICB_FILETYPE_VAT))
-        return udf_err(ump, AVERROR(ENOENT), "the VAT could not be read");
+        return udf_err(ump, DR_ERR(ENOENT), "the VAT could not be read");
 
     vat_table_alloc_len = ((vat_length + UDF_VAT_CHUNKSIZE - 1) / UDF_VAT_CHUNKSIZE) * UDF_VAT_CHUNKSIZE;
-    UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': possible VAT of %"PRIu32" bytes (table %"PRIu32" bytes)\n",
+    UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': possible VAT of %"PRIu32" bytes (table %"PRIu32" bytes)\n",
             ump->src->name, vat_length, vat_table_alloc_len);
 
     /*
@@ -2771,8 +2770,8 @@ static int udf_check_for_vat(UDFMount *ump, const UDFNode *vat_node)
             return error;
         /* check 1.50 VAT */
         if (strncmp((const char *)raw_vat + 1, "*UDF Virtual Alloc Tbl", 22)) {
-            UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': VAT format 1.50 rejected\n", ump->src->name);
-            return udf_err(ump, AVERROR(ENOENT), "the VAT could not be read");
+            UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': VAT format 1.50 rejected\n", ump->src->name);
+            return udf_err(ump, DR_ERR(ENOENT), "the VAT could not be read");
         }
         /*
          * update LVID from "*UDF VAT LVExtension" extended attribute
@@ -2784,7 +2783,7 @@ static int udf_check_for_vat(UDFMount *ump, const UDFNode *vat_node)
         if ((error = udf_read_exact(ump, vat_node, 0, raw_vat, UDF_VAT_SIZE)) < 0)
             return error;
         /* definition */
-        vat_offset  = AV_RL16(raw_vat);     /* header_len */
+        vat_offset  = dr_rl16(raw_vat);     /* header_len */
         vat_entries = (vat_length - vat_offset) / 4;
 
         /* num_files, num_directories, min_udf_readver, min_udf_writever,
@@ -2794,22 +2793,22 @@ static int udf_check_for_vat(UDFMount *ump, const UDFNode *vat_node)
     }
 
     /* read in complete VAT file */
-    if (!(vat_table = av_malloc(FFMAX(vat_length, 1))))
-        return AVERROR(ENOMEM);
+    if (!(vat_table = dr_malloc(DR_MAX(vat_length, 1))))
+        return DR_ERR(ENOMEM);
     if ((error = udf_read_exact(ump, vat_node, 0, vat_table, vat_length)) < 0) {
-        UDF_LOG(ump, AV_LOG_WARNING, "UDF on '%s': read in of complete VAT file failed (%s)\n",
+        UDF_LOG(ump, DR_IO_LOG_WARNING, "UDF on '%s': read in of complete VAT file failed (%s)\n",
                 ump->src->name, ump->why);
-        av_free(vat_table);
+        dr_free(vat_table);
         return error;
     }
 
-    UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': VAT format accepted, marking it closed\n", ump->src->name);
-    AV_WL64(ump->logvol_integrity + LVID_NEXT_UNIQUE_ID, udf_node_unique_id(vat_node));
-    AV_WL32(ump->logvol_integrity + LVID_INTEGRITY_TYPE, UDF_INTEGRITY_CLOSED);
+    UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': VAT format accepted, marking it closed\n", ump->src->name);
+    dr_wl64(ump->logvol_integrity + LVID_NEXT_UNIQUE_ID, udf_node_unique_id(vat_node));
+    dr_wl32(ump->logvol_integrity + LVID_INTEGRITY_TYPE, UDF_INTEGRITY_CLOSED);
     memcpy(ump->logvol_integrity + LVID_TIME, udf_node_mtime(vat_node), 12);
 
     /* if we're updating, free old allocated space */
-    av_free(ump->vat_table);
+    dr_free(ump->vat_table);
     ump->vat_table     = vat_table;
     ump->vat_table_len = vat_length;
     ump->vat_offset    = vat_offset;
@@ -2840,13 +2839,13 @@ static int udf_search_vat(UDFMount *ump)
      * until we get a hit.
      */
     late_vat_loc  = ump->last_possible_vat_location;
-    early_vat_loc = FFMAX(late_vat_loc - 64, ump->first_possible_vat_location);
+    early_vat_loc = DR_MAX(late_vat_loc - 64, ump->first_possible_vat_location);
 
     do {
         int wrapped = early_vat_loc > late_vat_loc;
 
         vat_loc = early_vat_loc;
-        UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': checking for a VAT in sectors %"PRIu32" to %"PRIu32"\n",
+        UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': checking for a VAT in sectors %"PRIu32" to %"PRIu32"\n",
                 ump->src->name, early_vat_loc, late_vat_loc);
         do {
             /* a location past the end of the image cannot be read; upstream
@@ -2858,10 +2857,10 @@ static int udf_search_vat(UDFMount *ump)
                 error = udf_get_node(ump, &icb_loc, &vat_node);
                 if (!error)
                     error = udf_check_for_vat(ump, vat_node);
-                if (error == AVERROR(ENOMEM))
+                if (error == DR_ERR(ENOMEM))
                     return error;
                 if (!error) {
-                    UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': VAT candidate accepted at %"PRIu32"\n",
+                    UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': VAT candidate accepted at %"PRIu32"\n",
                             ump->src->name, vat_loc);
                     accepted_vat_node = vat_node;
                 }
@@ -2871,12 +2870,12 @@ static int udf_search_vat(UDFMount *ump)
         if (accepted_vat_node)
             break;
         if (wrapped) {
-            UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': VAT search window wrapped below sector 0; every sector "
+            UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': VAT search window wrapped below sector 0; every sector "
                     "has been tried\n", ump->src->name);
             break;
         }
-        early_vat_loc = FFMAX(early_vat_loc - 64, ump->first_possible_vat_location);
-        late_vat_loc  = FFMIN(early_vat_loc + 64, ump->last_possible_vat_location);
+        early_vat_loc = DR_MAX(early_vat_loc - 64, ump->first_possible_vat_location);
+        late_vat_loc  = DR_MIN(early_vat_loc + 64, ump->last_possible_vat_location);
     } while (late_vat_loc > ump->first_possible_vat_location);
 
     /* keep our last accepted VAT node around */
@@ -2884,7 +2883,7 @@ static int udf_search_vat(UDFMount *ump)
         ump->vat_node = accepted_vat_node;
         return 0;
     }
-    return udf_err(ump, AVERROR(ENOENT), "no VAT found");
+    return udf_err(ump, DR_ERR(ENOENT), "no VAT found");
 }
 
 /* udf_read_sparables: the first readable sparing table of the map at pos in
@@ -2894,9 +2893,9 @@ static int udf_read_sparables(UDFMount *ump, uint32_t pos)
     const uint8_t *pms = ump->logical_vol + pos;
     int n_st;
 
-    ump->sparable_packet_size = AV_RL16(pms + PMS_PACKET_LEN);
+    ump->sparable_packet_size = dr_rl16(pms + PMS_PACKET_LEN);
     if (ump->sparable_packet_size < ump->packet_size)   /* upstream: KASSERT */
-        UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': sparable packet size %"PRIu32" below the packet size %"PRIu32"\n",
+        UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': sparable packet size %"PRIu32" below the packet size %"PRIu32"\n",
                 ump->src->name, ump->sparable_packet_size, ump->packet_size);
 
     n_st = pms[PMS_N_ST];
@@ -2906,23 +2905,23 @@ static int udf_read_sparables(UDFMount *ump, uint32_t pos)
 
         if (pos + PMS_ST_LOC + 4 * spar + 4 > ump->logical_vol_len)
             break;
-        lb_num = AV_RL32(pms + PMS_ST_LOC + 4 * spar);
-        UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': checking for sparing table %"PRIu32"\n", ump->src->name, lb_num);
+        lb_num = dr_rl32(pms + PMS_ST_LOC + 4 * spar);
+        UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': checking for sparing table %"PRIu32"\n", ump->src->name, lb_num);
         if (udf_read_phys_dscr(ump, lb_num, &dscr, &len) == 0 && dscr) {
-            if (AV_RL16(dscr + TAG_ID) == TAGID_SPARING_TABLE) {
-                av_free(ump->sparing_table);
+            if (dr_rl16(dscr + TAG_ID) == TAGID_SPARING_TABLE) {
+                dr_free(ump->sparing_table);
                 ump->sparing_table = dscr;
                 ump->sparing_table_len = len;
-                UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': sparing table accepted (%d entries)\n",
-                        ump->src->name, AV_RL16(dscr + SPT_RT_L));
+                UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': sparing table accepted (%d entries)\n",
+                        ump->src->name, dr_rl16(dscr + SPT_RT_L));
                 break;  /* we're done */
             }
-            av_free(dscr);
+            dr_free(dscr);
         }
     }
     if (ump->sparing_table)
         return 0;
-    return udf_err(ump, AVERROR(ENOENT), "the sparing table could not be read");
+    return udf_err(ump, DR_ERR(ENOENT), "the sparing table could not be read");
 }
 
 /* udf_read_metadata_nodes: the metadata file, its mirror and its bitmap.
@@ -2934,51 +2933,51 @@ static int udf_read_metadata_nodes(UDFMount *ump, uint32_t pos)
     uint32_t lbn;
 
     /* extract our allocation parameters set up on format */
-    ump->metadata_alloc_unit_size     = AV_RL32(pmm + PMM_ALLOC_UNIT_SIZE);
-    ump->metadata_alignment_unit_size = AV_RL16(pmm + PMM_ALIGNMENT_UNIT_SIZE);
+    ump->metadata_alloc_unit_size     = dr_rl32(pmm + PMM_ALLOC_UNIT_SIZE);
+    ump->metadata_alignment_unit_size = dr_rl16(pmm + PMM_ALIGNMENT_UNIT_SIZE);
     ump->metadata_flags               = pmm[PMM_FLAGS];
 
     memset(&icb_loc, 0, sizeof(icb_loc));
-    icb_loc.loc.part_num = udf_find_raw_phys(ump, AV_RL16(pmm + PM2_PART_NUM));
+    icb_loc.loc.part_num = udf_find_raw_phys(ump, dr_rl16(pmm + PM2_PART_NUM));
 
-    icb_loc.loc.lb_num = AV_RL32(pmm + PMM_META_FILE_LBN);
-    UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': metadata file at block %"PRIu32"\n", ump->src->name, icb_loc.loc.lb_num);
-    if (udf_get_node(ump, &icb_loc, &ump->metadata_node) == AVERROR(ENOMEM))
-        return AVERROR(ENOMEM);
+    icb_loc.loc.lb_num = dr_rl32(pmm + PMM_META_FILE_LBN);
+    UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': metadata file at block %"PRIu32"\n", ump->src->name, icb_loc.loc.lb_num);
+    if (udf_get_node(ump, &icb_loc, &ump->metadata_node) == DR_ERR(ENOMEM))
+        return DR_ERR(ENOMEM);
 
-    lbn = AV_RL32(pmm + PMM_META_MIRROR_FILE_LBN);
+    lbn = dr_rl32(pmm + PMM_META_MIRROR_FILE_LBN);
     if (lbn != UINT32_MAX) {
         icb_loc.loc.lb_num = lbn;
-        UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': metadata copy file at block %"PRIu32"\n", ump->src->name, lbn);
-        if (udf_get_node(ump, &icb_loc, &ump->metadatamirror_node) == AVERROR(ENOMEM))
-            return AVERROR(ENOMEM);
+        UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': metadata copy file at block %"PRIu32"\n", ump->src->name, lbn);
+        if (udf_get_node(ump, &icb_loc, &ump->metadatamirror_node) == DR_ERR(ENOMEM))
+            return DR_ERR(ENOMEM);
     }
-    lbn = AV_RL32(pmm + PMM_META_BITMAP_FILE_LBN);
+    lbn = dr_rl32(pmm + PMM_META_BITMAP_FILE_LBN);
     if (lbn != UINT32_MAX) {
         icb_loc.loc.lb_num = lbn;
-        UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': metadata bitmap file at block %"PRIu32"\n", ump->src->name, lbn);
-        if (udf_get_node(ump, &icb_loc, &ump->metadatabitmap_node) == AVERROR(ENOMEM))
-            return AVERROR(ENOMEM);
+        UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': metadata bitmap file at block %"PRIu32"\n", ump->src->name, lbn);
+        if (udf_get_node(ump, &icb_loc, &ump->metadatabitmap_node) == DR_ERR(ENOMEM))
+            return DR_ERR(ENOMEM);
     }
 
     /* if we're mounting read-only we relax the requirements */
     if (ump->metadata_node)
         return 0;
     if (ump->metadatamirror_node) {
-        UDF_LOG(ump, AV_LOG_WARNING, "UDF on '%s': Metadata file not readable, substituting Metadata copy file\n",
+        UDF_LOG(ump, DR_IO_LOG_WARNING, "UDF on '%s': Metadata file not readable, substituting Metadata copy file\n",
                 ump->src->name);
         ump->metadata_node = ump->metadatamirror_node;
         ump->metadatamirror_node = NULL;
         return 0;
     }
-    return udf_err(ump, AVERROR_INVALIDDATA, "the metadata file could not be read");
+    return udf_err(ump, DR_ERR_INVALID, "the metadata file could not be read");
 }
 
 /* udf_read_vds_tables: VAT, sparing table or metadata files for each
  * partition map */
 static int udf_read_vds_tables(UDFMount *ump)
 {
-    uint32_t n_pm = AV_RL32(ump->logical_vol + LVD_N_PM), pos = LVD_MAPS;
+    uint32_t n_pm = dr_rl32(ump->logical_vol + LVD_N_PM), pos = LVD_MAPS;
     int error;
 
     /* Iterate (again) over the part mappings for locations */
@@ -2990,8 +2989,8 @@ static int udf_read_vds_tables(UDFMount *ump)
         case UDF_VTOP_TYPE_VIRT:
             /* search and load VAT */
             if ((error = udf_search_vat(ump)) < 0)
-                return error == AVERROR(ENOMEM) ? error
-                                                : udf_err(ump, AVERROR_INVALIDDATA, "the VAT could not be read");
+                return error == DR_ERR(ENOMEM) ? error
+                                                : udf_err(ump, DR_ERR_INVALID, "the VAT could not be read");
             break;
         case UDF_VTOP_TYPE_SPARABLE:
             /* load one of the sparable tables */
@@ -3036,15 +3035,15 @@ static int udf_read_rootdirs(UDFMount *ump)
             if (visited[i].lb_num == fsd_loc.loc.lb_num && visited[i].part_num == fsd_loc.loc.part_num)
                 known = 1;
         if (known) {
-            UDF_LOG(ump, AV_LOG_WARNING, "UDF on '%s': the file set descriptor chain returns to block "
+            UDF_LOG(ump, DR_IO_LOG_WARNING, "UDF on '%s': the file set descriptor chain returns to block "
                     "%"PRIu32"; stopped\n", ump->src->name, fsd_loc.loc.lb_num);
             break;
         }
         if (!(nb_visited & (nb_visited - 1))) {
-            struct lb_addr *n = av_realloc_array(visited, nb_visited ? 2 * nb_visited : 4, sizeof(*visited));
+            struct lb_addr *n = dr_realloc_array(visited, nb_visited ? 2 * nb_visited : 4, sizeof(*visited));
             if (!n) {
-                av_free(visited);
-                return AVERROR(ENOMEM);
+                dr_free(visited);
+                return DR_ERR(ENOMEM);
             }
             visited = n;
         }
@@ -3053,20 +3052,20 @@ static int udf_read_rootdirs(UDFMount *ump)
         /* translate fsd_loc to lb_num */
         if (udf_translate_vtop(ump, &fsd_loc, &lb_num, &dummy) < 0)
             break;
-        UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': reading FSD at sector %"PRIu32"\n", ump->src->name, lb_num);
+        UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': reading FSD at sector %"PRIu32"\n", ump->src->name, lb_num);
         /* end markers */
         if (udf_read_phys_dscr(ump, lb_num, &dscr, &len) < 0 || !dscr)
             break;
         /* analyse */
-        dscr_type = AV_RL16(dscr + TAG_ID);
+        dscr_type = dr_rl16(dscr + TAG_ID);
         if (dscr_type == TAGID_TERM) {
-            av_free(dscr);
+            dr_free(dscr);
             break;
         }
         if (dscr_type != TAGID_FSD) {
-            av_free(dscr);
-            av_free(visited);
-            return udf_err(ump, AVERROR_INVALIDDATA, "the file set descriptor or the root directory could not "
+            dr_free(dscr);
+            dr_free(visited);
+            return udf_err(ump, DR_ERR_INVALID, "the file set descriptor or the root directory could not "
                            "be read");
         }
         /*
@@ -3075,7 +3074,7 @@ static int udf_read_rootdirs(UDFMount *ump)
          * correctness/interpretability
          */
         /* update */
-        av_free(ump->fileset_desc);
+        dr_free(ump->fileset_desc);
         ump->fileset_desc = dscr;
 
         /* continue to the next fsd */
@@ -3085,18 +3084,18 @@ static int udf_read_rootdirs(UDFMount *ump)
         /* follow up to fsd->next_ex (long_ad) if its not null */
         next = udf_long_ad(ump->fileset_desc + FSD_NEXT_EX);
         if (next.len) {
-            UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': follow up FSD extent\n", ump->src->name);
+            UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': follow up FSD extent\n", ump->src->name);
             fsd_loc = next;
             fsd_len = next.len;
         }
     }
-    av_free(visited);
+    dr_free(visited);
 
     /* there has to be one */
     if (!ump->fileset_desc)
-        return udf_err(ump, AVERROR_INVALIDDATA, "the file set descriptor or the root directory could not be read");
+        return udf_err(ump, DR_ERR_INVALID, "the file set descriptor or the root directory could not be read");
 
-    UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': FSD read in fine\n", ump->src->name);
+    UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': FSD read in fine\n", ump->src->name);
     udf_update_logvolname(ump, ump->logical_vol + LVD_LOGVOL_ID);
 
     /*
@@ -3109,7 +3108,7 @@ static int udf_read_rootdirs(UDFMount *ump)
 
     /* try to read in the rootdir */
     if (udf_get_node(ump, &rootdir_icb, &node) < 0)
-        return udf_err(ump, AVERROR_INVALIDDATA, "the file set descriptor or the root directory could not be read");
+        return udf_err(ump, DR_ERR_INVALID, "the file set descriptor or the root directory could not be read");
 
     /*
      * Try the system stream directory; not very likely in the ones we
@@ -3117,16 +3116,16 @@ static int udf_read_rootdirs(UDFMount *ump)
      */
     if (streamdir_icb.len) {
         if (ump->compat->skip_stream_directory) {
-            UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': system stream directory present; not loaded\n",
+            UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': system stream directory present; not loaded\n",
                     ump->src->name);
         } else if (udf_get_node(ump, &streamdir_icb, &node) < 0) {
-            UDF_LOG(ump, AV_LOG_INFO, "UDF on '%s': streamdir defined but error in streamdir reading\n",
+            UDF_LOG(ump, DR_IO_LOG_INFO, "UDF on '%s': streamdir defined but error in streamdir reading\n",
                     ump->src->name);
         } else {
-            UDF_LOG(ump, AV_LOG_INFO, "UDF on '%s': streamdir defined but ignored\n", ump->src->name);
+            UDF_LOG(ump, DR_IO_LOG_INFO, "UDF on '%s': streamdir defined but ignored\n", ump->src->name);
         }
     }
-    UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': Rootdir(s) read in fine\n", ump->src->name);
+    UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': Rootdir(s) read in fine\n", ump->src->name);
     return 0;
 }
 
@@ -3144,60 +3143,60 @@ static int udf_mountfs(UDFMount *ump)
     while ((1u << bshift) < sector_size)
         bshift++;
     if ((1u << bshift) != sector_size || sector_size >= 8192) {
-        UDF_LOG(ump, AV_LOG_WARNING, "UDF on '%s': sector size %"PRIu32" is not supported\n",
+        UDF_LOG(ump, DR_IO_LOG_WARNING, "UDF on '%s': sector size %"PRIu32" is not supported\n",
                 ump->src->name, sector_size);
-        return AVERROR(EINVAL);
+        return DR_ERR(EINVAL);
     }
 
     /* read all anchors to get volume descriptor sequence */
-    UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': reading anchors\n", ump->src->name);
+    UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': reading anchors\n", ump->src->name);
     if (udf_read_anchors(ump) == 0) {
-        UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': no anchor volume descriptor pointer\n", ump->src->name);
+        UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': no anchor volume descriptor pointer\n", ump->src->name);
         snprintf(ump->why, sizeof(ump->why), "no UDF anchor volume descriptor pointer found");
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
     }
-    UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': %d anchor(s) read\n", ump->src->name, ump->num_anchors);
+    UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': %d anchor(s) read\n", ump->src->name, ump->num_anchors);
 
     /* read in volume descriptor space */
     if ((error = udf_read_vds_space(ump)) < 0) {
-        UDF_LOG(ump, AV_LOG_WARNING, "UDF on '%s': error reading volume space (%s)\n", ump->src->name, ump->why);
+        UDF_LOG(ump, DR_IO_LOG_WARNING, "UDF on '%s': error reading volume space (%s)\n", ump->src->name, ump->why);
         snprintf(ump->why, sizeof(ump->why), "the volume descriptor sequence could not be read (main and "
                  "reserve copy)");
-        return error == AVERROR(ENOMEM) ? error : AVERROR_INVALIDDATA;
+        return error == DR_ERR(ENOMEM) ? error : DR_ERR_INVALID;
     }
 
     /* check consistency and completeness */
     if ((error = udf_process_vds(ump)) < 0) {
-        UDF_LOG(ump, AV_LOG_WARNING, "UDF on '%s': disc not properly formatted (bad VDS): %s\n",
+        UDF_LOG(ump, DR_IO_LOG_WARNING, "UDF on '%s': disc not properly formatted (bad VDS): %s\n",
                 ump->src->name, ump->why);
         return error;
     }
 
     /* read vds support tables like VAT, sparable etc. */
     if ((error = udf_read_vds_tables(ump)) < 0) {
-        UDF_LOG(ump, AV_LOG_WARNING, "UDF on '%s': error in format or damaged disc (VDS tables failing): %s\n",
+        UDF_LOG(ump, DR_IO_LOG_WARNING, "UDF on '%s': error in format or damaged disc (VDS tables failing): %s\n",
                 ump->src->name, ump->why);
         return error;
     }
 
     /* check if volume integrity is closed otherwise its dirty */
-    integrity = AV_RL32(ump->logvol_integrity + LVID_INTEGRITY_TYPE);
+    integrity = dr_rl32(ump->logvol_integrity + LVID_INTEGRITY_TYPE);
     if (integrity != UDF_INTEGRITY_CLOSED) {
         if (ump->compat->accept_unclean_volume) {
-            UDF_LOG(ump, AV_LOG_WARNING, "UDF on '%s': file system is not clean (logical volume integrity "
+            UDF_LOG(ump, DR_IO_LOG_WARNING, "UDF on '%s': file system is not clean (logical volume integrity "
                     "%"PRIu32"); reading it anyway\n", ump->src->name, integrity);
         } else {
-            UDF_LOG(ump, AV_LOG_WARNING, "UDF on '%s': file system is not clean; please fsck(8)\n", ump->src->name);
+            UDF_LOG(ump, DR_IO_LOG_WARNING, "UDF on '%s': file system is not clean; please fsck(8)\n", ump->src->name);
             snprintf(ump->why, sizeof(ump->why), "the logical volume is not closed (file system not clean)");
-            return AVERROR(EPERM);
+            return DR_ERR(EPERM);
         }
     }
 
     /* read root directory */
     if ((error = udf_read_rootdirs(ump)) < 0) {
-        UDF_LOG(ump, AV_LOG_WARNING, "UDF on '%s': disc not properly formatted or damaged disc (rootdirs "
+        UDF_LOG(ump, DR_IO_LOG_WARNING, "UDF on '%s': disc not properly formatted or damaged disc (rootdirs "
                 "failing): %s\n", ump->src->name, ump->why);
-        return error == AVERROR(ENOMEM) ? error : AVERROR_INVALIDDATA;
+        return error == DR_ERR(ENOMEM) ? error : DR_ERR_INVALID;
     }
     return 0;
 }
@@ -3207,24 +3206,24 @@ static int udf_mountfs(UDFMount *ump)
 static void udf_free_mount(UDFMount *ump)
 {
     for (int i = 0; i < 4; i++)
-        av_free(ump->anchors[i]);
-    av_free(ump->primary_vol);
-    av_free(ump->logical_vol);
-    av_free(ump->unallocated);
-    av_free(ump->implementation);
+        dr_free(ump->anchors[i]);
+    dr_free(ump->primary_vol);
+    dr_free(ump->logical_vol);
+    dr_free(ump->unallocated);
+    dr_free(ump->implementation);
     for (int i = 0; i < UDF_PARTITIONS; i++)
-        av_free(ump->partitions[i]);
-    av_free(ump->logvol_integrity);
-    av_free(ump->sparing_table);
-    av_free(ump->vat_table);
-    av_free(ump->fileset_desc);
+        dr_free(ump->partitions[i]);
+    dr_free(ump->logvol_integrity);
+    dr_free(ump->sparing_table);
+    dr_free(ump->vat_table);
+    dr_free(ump->fileset_desc);
     for (int h = 0; h < UDF_NODE_HASH; h++)
         while (ump->nodes[h]) {
             UDFNode *n = ump->nodes[h];
             ump->nodes[h] = n->hnext;
             udf_dispose_node(n);
         }
-    av_free(ump);
+    dr_free(ump);
 }
 
 /*
@@ -3248,7 +3247,7 @@ static void udf_volume_info(UDFMount *ump, DiscIOFS *fs)
         keep = DISCIO_LABEL_SIZE - 1;
         while (keep > 0 && ((uint8_t)label[keep] & 0xc0) == 0x80)
             keep--;
-        UDF_LOG(ump, AV_LOG_WARNING, "UDF on '%s': the volume label (%d bytes) is cut to %d bytes\n",
+        UDF_LOG(ump, DR_IO_LOG_WARNING, "UDF on '%s': the volume label (%d bytes) is cut to %d bytes\n",
                 ump->src->name, len, keep);
     }
     memcpy(fs->label, label, keep);
@@ -3261,7 +3260,7 @@ static void udf_volume_info(UDFMount *ump, DiscIOFS *fs)
             if (iu[i])
                 zero = 0;
         if (zero)
-            fs->udf_revision = AV_RL16(iu + IVD_IMPL_ID + 24);
+            fs->udf_revision = dr_rl16(iu + IVD_IMPL_ID + 24);
     }
     memset(fs->udf_recording_time, 0, sizeof(fs->udf_recording_time));
     if (ump->primary_vol)
@@ -3274,7 +3273,7 @@ static int udf_root_node(UDFMount *ump, UDFNode **out)
     return udf_get_node(ump, &icb, out);
 }
 
-/* The sub-directory name of dir (AVERROR(ENOENT) when it does not exist or is
+/* The sub-directory name of dir (DR_ERR(ENOENT) when it does not exist or is
  * not a directory). */
 static int udf_subdir(UDFMount *ump, UDFNode *dir, const char *name, int namelen, UDFNode **out)
 {
@@ -3284,10 +3283,10 @@ static int udf_subdir(UDFMount *ump, UDFNode *dir, const char *name, int namelen
     if ((error = udf_lookup_name_in_dir(ump, dir, name, namelen, &icb, &found)) < 0)
         return error;
     if (!found)
-        return AVERROR(ENOENT);
+        return DR_ERR(ENOENT);
     if ((error = udf_get_node(ump, &icb, out)) < 0)
         return error;
-    return (*out)->v_type == VDIR ? 0 : AVERROR(ENOENT);
+    return (*out)->v_type == VDIR ? 0 : DR_ERR(ENOENT);
 }
 
 static int udf_walk_subdir(void *ctx, void **dirp, const char *name, int name_len)
@@ -3344,7 +3343,7 @@ static int udf_open_dir(UDFMount *ump, const char *path, UDFNode **out)
 static int udf_block_extent(UDFMount *ump, const UDFNode *node, uint32_t block, int64_t *sector,
                             uint32_t *count)
 {
-    uint32_t bs = AV_RL32(ump->logical_vol + LVD_LB_SIZE), off, into, rem, n, lb, run;
+    uint32_t bs = dr_rl32(ump->logical_vol + LVD_LB_SIZE), off, into, rem, n, lb, run;
     uint64_t target = (uint64_t)block * bs, start = 0, end;
     struct long_ad ad, next, t;
     uint32_t slot = 0;
@@ -3360,7 +3359,7 @@ static int udf_block_extent(UDFMount *ump, const UDFNode *node, uint32_t block, 
                            "reference %u could not be read: %s", node->loc.loc.lb_num,          \
                            node->loc.loc.part_num, why);                                        \
         if (eof)                                                                                \
-            return udf_err(ump, AVERROR_INVALIDDATA,                                            \
+            return udf_err(ump, DR_ERR_INVALID,                                            \
                            "a file block lies beyond the file's allocation descriptors");       \
     } while (0)
 
@@ -3413,7 +3412,7 @@ static int udf_block_extent(UDFMount *ump, const UDFNode *node, uint32_t block, 
     if ((error = udf_translate_vtop(ump, &t, &lb, &run)) < 0)
         return error;
     *sector = lb;
-    *count  = FFMIN(n, run);
+    *count  = DR_MIN(n, run);
     return 0;
 }
 
@@ -3428,7 +3427,7 @@ static int udf_block_extent(UDFMount *ump, const UDFNode *node, uint32_t block, 
  */
 static int udf_file_extents(UDFMount *ump, const UDFNode *node, DiscIOFile *f)
 {
-    uint64_t bs = AV_RL32(ump->logical_vol + LVD_LB_SIZE);
+    uint64_t bs = dr_rl32(ump->logical_vol + LVD_LB_SIZE);
     int shift = 0;
     uint64_t size = node->file_size;
     uint64_t pad = (size & 0x7ff) ? 0x800 - (size & 0x7ff) : 0;
@@ -3444,7 +3443,7 @@ static int udf_file_extents(UDFMount *ump, const UDFNode *node, DiscIOFile *f)
         int64_t sector;
 
         if (pos & (bs - 1))
-            return udf_err(ump, AVERROR_INVALIDDATA, "the file entry at block %"PRIu32" of partition reference "
+            return udf_err(ump, DR_ERR_INVALID, "the file entry at block %"PRIu32" of partition reference "
                            "%u could not be read: a file piece does not end on a block boundary",
                            node->loc.loc.lb_num, node->loc.loc.part_num);
         b = (uint32_t)(pos >> shift);
@@ -3452,13 +3451,13 @@ static int udf_file_extents(UDFMount *ump, const UDFNode *node, DiscIOFile *f)
         if (error < 0)
             return error;
         if (error > 0)
-            return udf_err(ump, AVERROR_INVALIDDATA, "the file entry at block %"PRIu32" of partition reference "
+            return udf_err(ump, DR_ERR_INVALID, "the file entry at block %"PRIu32" of partition reference "
                            "%u could not be read: the file's data is recorded inside its file entry",
                            node->loc.loc.lb_num, node->loc.loc.part_num);
-        blocks = FFMIN(len, (uint32_t)(blocks_in_file - b));
+        blocks = DR_MIN(len, (uint32_t)(blocks_in_file - b));
         if (blocks == 0) {
             /* the same block would be translated again forever */
-            return udf_err(ump, AVERROR_INVALIDDATA, "the file entry at block %"PRIu32" of partition reference "
+            return udf_err(ump, DR_ERR_INVALID, "the file entry at block %"PRIu32" of partition reference "
                            "%u could not be read: a file piece of zero blocks (no progress possible)",
                            node->loc.loc.lb_num, node->loc.loc.part_num);
         }
@@ -3466,9 +3465,9 @@ static int udf_file_extents(UDFMount *ump, const UDFNode *node, DiscIOFile *f)
         adj = pos + bytes == size + pad ? pad : 0;
         if (f->nb_extents == nb_alloc) {
             int n = nb_alloc ? 2 * nb_alloc : 4;
-            DiscIOExtent *e = av_realloc_array(f->extents, n, sizeof(*e));
+            DiscIOExtent *e = dr_realloc_array(f->extents, n, sizeof(*e));
             if (!e)
-                return AVERROR(ENOMEM);
+                return DR_ERR(ENOMEM);
             f->extents = e;
             nb_alloc = n;
         }
@@ -3502,28 +3501,28 @@ static int udf_netbsd_open_file(DiscIOFS *fs, const char *path, DiscIOFile **out
     if ((error = udf_lookup_name_in_dir(ump, parent, last, strlen(last), &icb, &found)) < 0)
         return error;
     if (!found)
-        return AVERROR(ENOENT);
+        return DR_ERR(ENOENT);
     if ((error = udf_get_node(ump, &icb, &node)) < 0)
         return error;
     if (node->v_type != VREG)
-        return AVERROR(ENOENT);
+        return DR_ERR(ENOENT);
 
-    if (!(f = av_mallocz(sizeof(*f))))
-        return AVERROR(ENOMEM);
+    if (!(f = dr_mallocz(sizeof(*f))))
+        return DR_ERR(ENOMEM);
     f->size = node->file_size;
     if ((udf_node_icbflags(node) & UDF_ICB_TAG_FLAGS_ALLOC_MASK) == UDF_ICB_INTERN_ALLOC &&
         !ump->compat->embedded_data_not_a_file) {
-        uint32_t lb_size = AV_RL32(ump->logical_vol + LVD_LB_SIZE);
+        uint32_t lb_size = dr_rl32(ump->logical_vol + LVD_LB_SIZE);
 
-        if (!(f->data = av_malloc(lb_size))) {
+        if (!(f->data = dr_malloc(lb_size))) {
             ff_discio_file_free(&f);
-            return AVERROR(ENOMEM);
+            return DR_ERR(ENOMEM);
         }
         udf_read_internal(ump, node, f->data);
         if ((uint64_t)f->size > lb_size)
             f->size = lb_size;
     } else if ((error = udf_file_extents(ump, node, f)) < 0) {
-        UDF_LOG(ump, AV_LOG_WARNING, "UDF on '%s': could not turn the file entry of '%s' into sector extents; "
+        UDF_LOG(ump, DR_IO_LOG_WARNING, "UDF on '%s': could not turn the file entry of '%s' into sector extents; "
                 "the UDF file system seems damaged (%s)\n", ump->src->name, path, ump->why);
         ff_discio_file_free(&f);
         return error;
@@ -3557,11 +3556,11 @@ static int udf_netbsd_list_dir(DiscIOFS *fs, const char *path, DiscIODirCallback
         if (stop == FID_END)
             break;
         if (stop == FID_SHORT || stop == FID_BROKEN)
-            return udf_err(ump, AVERROR_INVALIDDATA, "a directory holds a broken entry");
+            return udf_err(ump, DR_ERR_INVALID, "a directory holds a broken entry");
         if (stop == FID_READ) {
-            if (err == AVERROR(ENOMEM))
+            if (err == DR_ERR(ENOMEM))
                 return err;
-            UDF_LOG(ump, AV_LOG_DEBUG, "UDF on '%s': directory listing of '%s' ended by a read error: %s\n",
+            UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF on '%s': directory listing of '%s' ended by a read error: %s\n",
                     ump->src->name, path, ump->why);
             break;
         }
@@ -3578,7 +3577,7 @@ static int udf_netbsd_list_dir(DiscIOFS *fs, const char *path, DiscIODirCallback
             if ((error = udf_lookup_name_in_dir(ump, dir, fid.name, strlen(fid.name), &icb, &found)) < 0)
                 return error;
             if (!found)
-                return udf_err(ump, AVERROR_INVALIDDATA, "'%s' listed in '%s' not found again", fid.name, path);
+                return udf_err(ump, DR_ERR_INVALID, "'%s' listed in '%s' not found again", fid.name, path);
             if ((error = udf_get_node(ump, &icb, &node)) < 0)
                 return error;
         }
@@ -3619,9 +3618,9 @@ int ff_discio_udf_netbsd_mount(DiscIOSource *src, DiscIOFS **out)
     int error;
 
     *out = NULL;
-    if (!(fs = av_mallocz(sizeof(*fs))) || !(ump = av_mallocz(sizeof(*ump)))) {
-        av_free(fs);
-        return AVERROR(ENOMEM);
+    if (!(fs = dr_mallocz(sizeof(*fs))) || !(ump = dr_mallocz(sizeof(*ump)))) {
+        dr_free(fs);
+        return DR_ERR(ENOMEM);
     }
     fs->ops  = &udf_netbsd_ops;
     fs->priv = ump;
@@ -3635,14 +3634,14 @@ int ff_discio_udf_netbsd_mount(DiscIOSource *src, DiscIOFS **out)
     ump->psize = sectors > UINT32_MAX ? UINT32_MAX : (uint32_t)sectors;
 
     if ((error = udf_mountfs(ump)) < 0) {
-        UDF_LOG(ump, AV_LOG_DEBUG, "UDF (NetBSD) on '%s': no UDF file system mounted: %s\n", src->name, ump->why);
+        UDF_LOG(ump, DR_IO_LOG_DEBUG, "UDF (NetBSD) on '%s': no UDF file system mounted: %s\n", src->name, ump->why);
         udf_free_mount(ump);
-        av_free(fs);
+        dr_free(fs);
         return error;
     }
     udf_volume_info(ump, fs);
-    av_log(src->logctx, AV_LOG_VERBOSE, "UDF file system on '%s' (NetBSD reader): label '%s', UDF revision "
-           "0x%04x, recorded %d\n", src->name, fs->label, fs->udf_revision, AV_RL16(fs->udf_recording_time + 2));
+    dr_io_log(src->logctx, DR_IO_LOG_VERBOSE, "UDF file system on '%s' (NetBSD reader): label '%s', UDF revision "
+           "0x%04x, recorded %d\n", src->name, fs->label, fs->udf_revision, dr_rl16(fs->udf_recording_time + 2));
     *out = fs;
     return 0;
 }

@@ -19,10 +19,24 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#ifndef AVFORMAT_DISCIO_H
-#define AVFORMAT_DISCIO_H
+#ifndef DISC_IO_DISCIO_H
+#define DISC_IO_DISCIO_H
 
+#include <stdarg.h>
 #include <stdint.h>
+
+/* Where the module's log lines go (levels below). The program hands them to
+ * its log; nothing is printed without a hook. logctx is the caller's opaque
+ * log context, passed back as given. */
+enum DrIoLogLevel {
+    DR_IO_LOG_ERROR, DR_IO_LOG_WARNING, DR_IO_LOG_INFO,
+    DR_IO_LOG_VERBOSE, DR_IO_LOG_DEBUG, DR_IO_LOG_TRACE,
+};
+typedef void (*DrIoVlog)(void *logctx, int level, const char *fmt, va_list vl);
+void dr_io_set_vlog(DrIoVlog fn);
+
+/* The module's own lines (discio_log.c). */
+void dr_io_log(void *logctx, int level, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
 
 /** Block size of disc sources (DVD, HD DVD, Blu-ray). */
 #define DISCIO_BLOCK_SIZE       2048
@@ -53,7 +67,7 @@ typedef struct DiscIOSource {
     void                  *opaque;
     int64_t                size;    /**< bytes */
     char                  *name;    /**< for log messages (the path) */
-    void                  *logctx;  /**< av_log() context, may be NULL */
+    void                  *logctx;  /**< dr_io_log() context, may be NULL */
     int                    attempts; /**< read attempts used by the file systems
                                           (DISCIO_DEFAULT_ATTEMPTS unless set) */
 } DiscIOSource;
@@ -347,4 +361,4 @@ int ff_discio_folder_is_dir(const char *path);
  */
 int ff_discio_mount_folder(void *logctx, const char *path, int attempts, DiscIOFS **out);
 
-#endif /* AVFORMAT_DISCIO_H */
+#endif /* DISC_IO_DISCIO_H */

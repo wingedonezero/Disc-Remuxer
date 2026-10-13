@@ -29,7 +29,7 @@
 #include "libavcodec/codec_id.h"
 
 #include "discinfo.h"
-#include "discio.h"
+#include "io/discio.h"
 
 /* ---- reading a disc file (bluray_files.c) ---- */
 

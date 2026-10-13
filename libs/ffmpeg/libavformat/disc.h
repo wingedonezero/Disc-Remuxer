@@ -29,7 +29,7 @@
 
 #include "discinfo.h"
 #include "avformat.h"
-#include "discio.h"
+#include "io/discio.h"
 
 struct DRTitleTrack;
 

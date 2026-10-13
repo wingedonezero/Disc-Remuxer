@@ -16,7 +16,7 @@ from helpers.disc import Image, env_or_skip
 from synth.image import (BUP, VMG, VTS1, Img, Udf, bridge, broken_files, dvd_files, iso,
                          udf102)
 
-INVALIDDATA = -0x41444E49  # FFERRTAG('I','N','D','A')
+INVALIDDATA = lib.DR_ERR_INVALID
 
 
 def chosen(im):

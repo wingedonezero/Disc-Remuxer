@@ -21,12 +21,12 @@ $(BRIDGE)/dvdnav_selftest.o: $(ROOT)/tests/bridge/dvdnav_selftest.c $(BUILD)/dvd
 	@mkdir -p $(BRIDGE)
 	$(CC) $(LIB_CFLAGS) $(DVDNAV_CFLAGS) -c $< -o $@
 
-$(BRIDGE)/.built: $(VENV)/.installed $(BUILD)/ffmpeg/.installed $(BASE_LIB) $(BRIDGE)/dvdnav_selftest.o \
+$(BRIDGE)/.built: $(VENV)/.installed $(BUILD)/ffmpeg/.installed $(IO_LIB) $(BASE_LIB) $(BRIDGE)/dvdnav_selftest.o \
                   $(wildcard $(ROOT)/tests/bridge/*.* $(ROOT)/tests/bridge/cdef/*)
 	@mkdir -p $(BRIDGE)
 	BRIDGE_CFLAGS="$$(sed -n 's/^CPPFLAGS=//p' $(BUILD)/ffmpeg/build/ffbuild/config.mak) -DHAVE_AV_CONFIG_H -std=c17 \
 	  -I$(ROOT)/src -I$(FFMPEG_SRC) -I$(BUILD)/ffmpeg/build $$($(TOOL_PC) pkg-config --static --cflags $(BRIDGE_PKGS) dvdnav dvdread expat libaacs)" \
-	BRIDGE_LIBS="$(BRIDGE)/dvdnav_selftest.o $(BASE_LIB) $$($(TOOL_PC) pkg-config --static --libs $(BRIDGE_PKGS)) -lpthread $(COV_LDFLAGS)" \
+	BRIDGE_LIBS="$(BRIDGE)/dvdnav_selftest.o $$($(TOOL_PC) pkg-config --static --libs $(BRIDGE_PKGS)) $(IO_LIB) $(BASE_LIB) -lpthread $(COV_LDFLAGS)" \
 	$(PY) $(ROOT)/tests/bridge/build_bridge.py $(BRIDGE)
 	touch $@
 

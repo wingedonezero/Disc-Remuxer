@@ -31,6 +31,9 @@ enum {
  * returns buf. */
 const char *dr_err_str(int err, char *buf, size_t size);
 
+/* The error in words in an expression (a temporary buffer on the stack). */
+#define dr_err_text(err) dr_err_str((err), (char[128]){0}, 128)
+
 #ifdef __cplusplus
 }
 #endif

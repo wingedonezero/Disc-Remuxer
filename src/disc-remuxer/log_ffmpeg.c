@@ -10,6 +10,7 @@
 #include <libavutil/log.h>
 
 #include "base/log.h"
+#include "io/discio.h"
 #include "log_ffmpeg.h"
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
@@ -72,8 +73,19 @@ static void av_callback(void *avcl, int level, const char *fmt, va_list vl)
     pthread_mutex_unlock(&lock);
 }
 
+/* The io module's lines go through FFmpeg's log (the source names stay
+ * those of the callers' AVClass contexts) until the disc layer leaves
+ * libavformat. */
+static void io_vlog(void *logctx, int level, const char *fmt, va_list vl)
+{
+    static const int map[] = { AV_LOG_ERROR, AV_LOG_WARNING, AV_LOG_INFO,
+                               AV_LOG_VERBOSE, AV_LOG_DEBUG, AV_LOG_TRACE };
+    av_vlog(logctx, map[level], fmt, vl);
+}
+
 void log_ffmpeg_install(void)
 {
     av_log_set_level(AV_LOG_TRACE);
     av_log_set_callback(av_callback);
+    dr_io_set_vlog(io_vlog);
 }

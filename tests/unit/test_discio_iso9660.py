@@ -12,7 +12,7 @@ from helpers import ENOENT, averror, ffi, lib
 from helpers.disc import Image, env_or_skip, free_file
 from helpers.source import list_dir
 
-INVALIDDATA = -0x41444E49  # FFERRTAG('I','N','D','A')
+INVALIDDATA = lib.DR_ERR_INVALID
 
 
 # ---- building images ----

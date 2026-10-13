@@ -39,6 +39,11 @@ void *dr_realloc_array(void *p, size_t n, size_t size)
     return realloc(p, n && size ? n * size : 1);
 }
 
+void *dr_malloc_array(size_t n, size_t size)
+{
+    return dr_realloc_array(NULL, n, size);
+}
+
 void dr_freep(void *p)
 {
     void **pp = p;
@@ -62,6 +67,29 @@ void *dr_memdup(const void *p, size_t size)
     if (out)
         memcpy(out, p, size);
     return out;
+}
+
+size_t dr_strlcpy(char *dst, const char *src, size_t size)
+{
+    size_t len = strlen(src);
+
+    if (size) {
+        size_t n = len < size - 1 ? len : size - 1;
+        memcpy(dst, src, n);
+        dst[n] = 0;
+    }
+    return len;
+}
+
+size_t dr_strlcat(char *dst, const char *src, size_t size)
+{
+    size_t used = 0;
+
+    while (used < size && dst[used])
+        used++;
+    if (used == size)
+        return size + strlen(src);
+    return used + dr_strlcpy(dst + used, src, size - used);
 }
 
 int dr_asprintf(char **out, const char *fmt, ...)

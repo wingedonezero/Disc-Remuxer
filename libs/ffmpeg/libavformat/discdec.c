@@ -44,7 +44,7 @@
 #include "demux.h"
 #include "disc.h"
 #include "discinfo.h"
-#include "discio.h"
+#include "io/discio.h"
 #include "disclang.h"
 #include "disctl.h"
 #include "internal.h"

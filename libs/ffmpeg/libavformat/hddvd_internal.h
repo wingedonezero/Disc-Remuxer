@@ -27,7 +27,7 @@
 #include "libavcodec/codec_id.h"
 #include "libavutil/avutil.h"
 
-#include "discio.h"
+#include "io/discio.h"
 
 /* ---- the Advanced VTS information file (HVDVD_TS/HVA00001.VTI) ---- */
 

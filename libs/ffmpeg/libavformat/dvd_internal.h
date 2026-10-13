@@ -34,7 +34,7 @@
 #include <dvdread/ifo_types.h>
 #include <dvdread/vob_read.h>
 
-#include "discio.h"
+#include "io/discio.h"
 #include "discinfo.h"
 
 #define DVD_SECTOR          2048

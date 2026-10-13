@@ -54,6 +54,7 @@ dist: $(DIST)/disc-remuxer $(DIST)/disc-remuxer-gui $(DIST)/ffmpeg $(DIST)/ffpro
 libs: $(BUILD)/ffmpeg/.installed
 
 include mk/base.mk
+include mk/io.mk
 include mk/dvd.mk
 include mk/expat.mk
 include mk/aacs.mk
