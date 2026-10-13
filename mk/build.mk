@@ -55,6 +55,7 @@ libs: $(BUILD)/ffmpeg/.installed
 
 include mk/base.mk
 include mk/io.mk
+include mk/mux.mk
 include mk/dvd.mk
 include mk/expat.mk
 include mk/aacs.mk
