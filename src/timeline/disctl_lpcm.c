@@ -23,12 +23,20 @@
 
 #include <string.h>
 
-#include "libavutil/error.h"
-#include "libavutil/intreadwrite.h"
-#include "libavutil/log.h"
-#include "libavutil/macros.h"
 
-#include "disctl.h"
+#include <errno.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "base/bytes.h"
+#include "base/err.h"
+#include "base/macros.h"
+#include "base/mem.h"
+#include "base/vlog.h"
+
+#include "timeline/disctl.h"
 
 static const int rates[3] = { 48000, 96000, 192000 };
 
@@ -50,9 +58,9 @@ static int parse(DRLpcm *p, void *log, uint8_t b0, uint8_t b1, uint8_t b2, int h
         int q = b1 >> 6, f = (b1 >> 4) & 3;
 
         if (q == 3 || f == 3) {
-            av_log(log, AV_LOG_ERROR, "Title timeline: LPCM: the header %02x %02x %02x states no %s\n", b0, b1, b2,
+            dr_vlog(log, DR_VLOG_ERROR, "Title timeline: LPCM: the header %02x %02x %02x states no %s\n", b0, b1, b2,
                    q == 3 ? "sample size" : "sampling frequency");
-            return AVERROR_INVALIDDATA;
+            return DR_ERR_INVALID;
         }
         p->b0       = b0;
         p->b1       = b1;
@@ -65,18 +73,18 @@ static int parse(DRLpcm *p, void *log, uint8_t b0, uint8_t b1, uint8_t b2, int h
         p->out_frame_bytes = (p->bits == 16 ? 2 : 3) * p->channels * p->spf;
         p->hd       = hd;
         p->init     = 1;
-        av_log(log, AV_LOG_DEBUG, "Title timeline: LPCM: %d bits, %d Hz, %d channels, %d samples per frame (%d bytes)\n",
+        dr_vlog(log, DR_VLOG_DEBUG, "Title timeline: LPCM: %d bits, %d Hz, %d channels, %d samples per frame (%d bytes)\n",
                p->bits, p->rate, p->channels, p->spf, p->frame_bytes);
         if (p->bits != 16 || p->channels > 2)
-            av_log(log, AV_LOG_WARNING, "Title timeline: LPCM: %d-bit %d-channel samples are converted by the DVD-Video "
+            dr_vlog(log, DR_VLOG_WARNING, "Title timeline: LPCM: %d-bit %d-channel samples are converted by the DVD-Video "
                    "sample layout, the channels kept in the disc's order [untested on real discs]\n", p->bits,
                    p->channels);
         if (hd)
-            av_log(log, AV_LOG_WARNING, "Title timeline: LPCM: HD DVD LPCM [untested on real discs]\n");
+            dr_vlog(log, DR_VLOG_WARNING, "Title timeline: LPCM: HD DVD LPCM [untested on real discs]\n");
     } else if ((b0 ^ p->b0) >= 0x20 || b1 != p->b1) {
-        av_log(log, AV_LOG_ERROR, "Title timeline: LPCM: the header %02x %02x %02x does not match the stream's first "
+        dr_vlog(log, DR_VLOG_ERROR, "Title timeline: LPCM: the header %02x %02x %02x does not match the stream's first "
                "(%02x %02x): the format changed\n", b0, b1, b2, p->b0, p->b1);
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
     }
     p->drc = b2;
     return 0;
@@ -86,7 +94,7 @@ int ff_disctl_lpcm_header(DRLpcm *p, void *log, const uint8_t *h, int len, int h
 {
     if (!hd) {
         if (len != 3)
-            return AVERROR_INVALIDDATA;
+            return DR_ERR_INVALID;
         return parse(p, log, h[0], h[1], h[2], 0, 0);
     }
     /* the HD DVD header (5 bytes) in the DVD layout: quantisation from bit 0
@@ -97,8 +105,8 @@ int ff_disctl_lpcm_header(DRLpcm *p, void *log, const uint8_t *h, int len, int h
         uint8_t b0, b1;
 
         if (len != 5 || q >= 4 || f >= 8) {
-            av_log(log, AV_LOG_ERROR, "Title timeline: LPCM: an HD DVD header that cannot be read\n");
-            return AVERROR_INVALIDDATA;
+            dr_vlog(log, DR_VLOG_ERROR, "Title timeline: LPCM: an HD DVD header that cannot be read\n");
+            return DR_ERR_INVALID;
         }
         b0 = (h[0] & 0xC0) | ((h[0] >> 1) & 0x1F);
         b1 = ((h[0] & 1) << 7) | (((h[1] >> 7) & 1) << 6) | (q << 4) | f;
@@ -136,26 +144,26 @@ int ff_disctl_lpcm_bd_header(DRLpcm *p, void *log, const uint8_t *u, int size)
     int payload, ca, fs, q;
 
     if (size < 4) {
-        av_log(log, AV_LOG_ERROR, "Title timeline: LPCM: a %d-byte unit has no header\n", size);
-        return AVERROR_INVALIDDATA;
+        dr_vlog(log, DR_VLOG_ERROR, "Title timeline: LPCM: a %d-byte unit has no header\n", size);
+        return DR_ERR_INVALID;
     }
-    payload = AV_RB16(u);
+    payload = dr_rb16(u);
     if (p->init) {
         if (u[2] != p->h2 || (u[3] ^ p->h3) >= 0x40 || payload != p->payload) {
-            av_log(log, AV_LOG_ERROR, "Title timeline: LPCM: the header %02x %02x %02x %02x does not match the "
+            dr_vlog(log, DR_VLOG_ERROR, "Title timeline: LPCM: the header %02x %02x %02x %02x does not match the "
                    "stream's first (payload %d bytes, %02x %02x): the format changed [untested on real discs]\n",
                    u[0], u[1], u[2], u[3], p->payload, p->h2, p->h3);
-            return AVERROR_INVALIDDATA;
+            return DR_ERR_INVALID;
         }
         return 0;
     }
     ca = u[2] >> 4;
     fs = u[2] & 0x0F;
     q  = u[3] >> 6;
-    if (ca >= FF_ARRAY_ELEMS(bd_assign) || !bd_assign[ca].channels || !bd_rate(fs) || !q || !payload) {
-        av_log(log, AV_LOG_ERROR, "Title timeline: LPCM: the header %02x %02x %02x %02x states no format\n",
+    if (ca >= DR_ARRAY_ELEMS(bd_assign) || !bd_assign[ca].channels || !bd_rate(fs) || !q || !payload) {
+        dr_vlog(log, DR_VLOG_ERROR, "Title timeline: LPCM: the header %02x %02x %02x %02x states no format\n",
                u[0], u[1], u[2], u[3]);
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
     }
     p->bd       = 1;
     p->h2       = u[2];
@@ -183,16 +191,16 @@ int ff_disctl_lpcm_bd_header(DRLpcm *p, void *log, const uint8_t *u, int size)
     p->spf             = payload / ((p->bits == 16 ? 2 : 3) * p->coded);
     p->out_frame_bytes = (p->bits == 16 ? 2 : 3) * p->channels * p->spf;
     p->init            = 1;
-    av_log(log, AV_LOG_DEBUG, "Title timeline: LPCM: Blu-ray, %d bits, %d Hz, %d channels (%d stored, mask 0x%"PRIx64
+    dr_vlog(log, DR_VLOG_DEBUG, "Title timeline: LPCM: Blu-ray, %d bits, %d Hz, %d channels (%d stored, mask 0x%"PRIx64
            "), %d samples per %d-byte unit\n", p->bits, p->rate, p->channels, p->coded, p->chmask, p->spf,
            p->frame_bytes);
     /* the formats real discs have shown, each = the reference's samples:
      * 24-bit and 16-bit stereo at 48 kHz */
     if ((p->bits != 24 && p->bits != 16) || p->channels != 2 || p->rate != 48000)
-        av_log(log, AV_LOG_WARNING, "Title timeline: LPCM: Blu-ray %d-bit %d-channel %d Hz [untested on real discs]\n",
+        dr_vlog(log, DR_VLOG_WARNING, "Title timeline: LPCM: Blu-ray %d-bit %d-channel %d Hz [untested on real discs]\n",
                p->bits, p->channels, p->rate);
     if (p->payload % ((p->bits == 16 ? 2 : 3) * p->coded))
-        av_log(log, AV_LOG_WARNING, "Title timeline: LPCM: a %d-byte payload is no whole number of samples: its "
+        dr_vlog(log, DR_VLOG_WARNING, "Title timeline: LPCM: a %d-byte payload is no whole number of samples: its "
                "last %d bytes are left out [untested on real discs]\n", p->payload,
                p->payload % ((p->bits == 16 ? 2 : 3) * p->coded));
     return 0;

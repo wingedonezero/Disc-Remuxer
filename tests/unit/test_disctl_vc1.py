@@ -14,7 +14,7 @@ from helpers.disctl import Handles, codec_id, events_into, fn
 FIELD = 18018000  # 1001/60000 s
 BASE = 5 * 1080000000
 F_KEY, F_DISCARD = lib.DR_F_KEY, lib.DR_F_DISCARD
-INVALID = -0x41444E49  # AVERROR_INVALIDDATA
+INVALID = -0x44520002  # DR_ERR_INVALID
 
 
 class BitW:

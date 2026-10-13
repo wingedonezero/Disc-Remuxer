@@ -20,19 +20,80 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#ifndef AVFORMAT_DISCTL_H
-#define AVFORMAT_DISCTL_H
+#ifndef DISC_TIMELINE_DISCTL_H
+#define DISC_TIMELINE_DISCTL_H
 
 #include <stdint.h>
 
-#include "libavcodec/codec_id.h"
+#include "base/buf.h"
+#include "parse/rules.h"
 #include "parse/split.h"
-#include "libavutil/channel_layout.h"
-#include "libavutil/buffer.h"
+
+/* Track codec ids. The values are the processing library's own, so the ids
+ * the format parts and the tests pass cross this seam unchanged until the
+ * disc model becomes ours (checked at build time in disctl_ffmpeg.c). */
+typedef enum DRCodecID {
+    DR_CODEC_NONE               = 0,
+    DR_CODEC_MPEG1VIDEO         = 1,
+    DR_CODEC_MPEG2VIDEO         = 2,
+    DR_CODEC_H264               = 27,
+    DR_CODEC_VC1                = 70,
+    DR_CODEC_HEVC               = 172,
+    DR_CODEC_PCM_DVD            = 65555,
+    DR_CODEC_PCM_BLURAY         = 65560,
+    DR_CODEC_MP2                = 86016,
+    DR_CODEC_MP3                = 86017,
+    DR_CODEC_AAC                = 86018,
+    DR_CODEC_AC3                = 86019,
+    DR_CODEC_DTS                = 86020,
+    DR_CODEC_MLP                = 86045,
+    DR_CODEC_EAC3               = 86056,
+    DR_CODEC_MP1                = 86058,
+    DR_CODEC_TRUEHD             = 86060,
+    DR_CODEC_AAC_LATM           = 86065,
+    DR_CODEC_DVD_SUBTITLE       = 94208,
+    DR_CODEC_HDMV_PGS_SUBTITLE  = 94214,
+    DR_CODEC_SUBRIP             = 94225,
+    DR_CODEC_HDMV_TEXT_SUBTITLE = 94231,
+} DRCodecID;
+
+/** A codec's name in the codec table, or "?". */
+const char *ff_disctl_codec_id_name(DRCodecID id);
+
+/** A missing time. */
+#define DR_NOPTS_VALUE ((int64_t)UINT64_C(0x8000000000000000))
+
+/* ---- The host: what the timeline borrows from the processing library
+ * until src/analyze takes it over (step 6): the stock frame parser for the
+ * codecs without a rule of their own (MPEG video, E-AC-3), the LATM stream
+ * header (one decoded frame) and the TrueHD / MLP end-of-stream decode.
+ * Registered once by the program and the test bridge
+ * (ff_disctl_set_host). ---- */
+typedef struct DRTimelineHost {
+    /** The library's frame parser for codec, or NULL when it has none. */
+    void *(*parser_open)(DRCodecID codec);
+    /** Bytes in, at most one chunk out (*out / *out_size; *frame_offset its
+     *  stream offset, *duration / *rate what the parser read of it);
+     *  returns the bytes consumed. pos: the stream offset of data. */
+    int (*parser_parse)(void *p, const uint8_t *data, int size, int64_t pos,
+                        uint8_t **out, int *out_size, int64_t *frame_offset,
+                        int *duration, int *rate);
+    void (*parser_close)(void **p);
+    /** One LATM / LOAS frame decoded: the stream's rate and samples. */
+    int (*latm_header)(const uint8_t *data, int size, int *rate, int *samples);
+    /** TrueHD / MLP: the n access units decoded in order (a major sync
+     *  leads); *count = the samples of the last one. Logs its own failures
+     *  (debug). */
+    int (*mlp_last_au_samples)(void *logctx, const uint8_t *const *aus, const int *sizes,
+                               int n, int *count);
+} DRTimelineHost;
+
+void ff_disctl_set_host(const DRTimelineHost *host);
+const DRTimelineHost *ff_disctl_host(void);
 
 /* Time: one unit = 1/1,080,000,000 s (27 MHz x 40). Exact for 90 kHz PES
  * times, for 1001-based frame and field durations and for 48 / 96 / 192 kHz
- * samples. A missing time is AV_NOPTS_VALUE. */
+ * samples. A missing time is DR_NOPTS_VALUE. */
 #define DR_TICKS_PER_SECOND 1080000000LL
 #define DR_TICKS_PER_PTS    12000          /* 90 kHz -> ticks */
 
@@ -62,10 +123,10 @@
                                     (ff_disctl_title_place()); ctr holds how many */
 
 typedef struct DRFrame {
-    AVBufferRef *buf;      /**< owns the bytes (NULL for a marker) */
+    DrBuf *buf;      /**< owns the bytes (NULL for a marker) */
     uint8_t     *data;
     int          size;
-    int64_t      time;     /**< ticks, or AV_NOPTS_VALUE */
+    int64_t      time;     /**< ticks, or DR_NOPTS_VALUE */
     int64_t      dur;      /**< ticks */
     int64_t      pos;      /**< byte offset of the unit in its track's stream */
     unsigned     flags;    /**< DR_F_* */
@@ -186,7 +247,7 @@ typedef struct DRAudioRules {
  * grow with the stages; a missing function means the rule is not known yet
  * and is never guessed. */
 typedef struct DRCodec {
-    enum AVCodecID id;
+    DRCodecID id;
     const char    *name;
     /** Offset inside a unit where the part that takes a PES timestamp starts
      *  (MPEG-2 video: the picture start code; VC-1: the frame start code),
@@ -239,14 +300,14 @@ enum { DR_UNIT_OK = 0, DR_UNIT_BAD = 1, DR_UNIT_CRC = 2 };
 
 
 /** The codec table entry of a codec, or NULL (the codec is not supported). */
-const DRCodec *ff_disctl_codec(enum AVCodecID id);
+const DRCodec *ff_disctl_codec(DRCodecID id);
 
 /* ---- Stage 1: units and timestamp records (disctl_frames.c) ---- */
 
 typedef struct DRUnit {
     const uint8_t *data;   /**< the unit's bytes, valid during the callback */
     int            size;
-    int64_t        time;   /**< ticks, or AV_NOPTS_VALUE */
+    int64_t        time;   /**< ticks, or DR_NOPTS_VALUE */
     int64_t        pos;    /**< byte offset of the unit's first byte in the track's stream */
     int            samples;/**< samples FFmpeg's parser gives the unit, 0 = none */
     int            rate;   /**< and their sample rate */
@@ -278,12 +339,12 @@ typedef struct DRFrames DRFrames;
  * to the first access unit that starts in it).
  *
  * @param logctx for av_log
- * @return 0, AVERROR(ENOSYS) when the codec has no table entry or no parser
+ * @return 0, DR_ERR(ENOSYS) when the codec has no table entry or no parser
  */
-int ff_disctl_frames_open(DRFrames **frames, void *logctx, enum AVCodecID codec,
+int ff_disctl_frames_open(DRFrames **frames, void *logctx, DRCodecID codec,
                            DRUnitCb cb, void *opaque);
 
-/** One payload; time in ticks or AV_NOPTS_VALUE. */
+/** One payload; time in ticks or DR_NOPTS_VALUE. */
 int ff_disctl_frames_write(DRFrames *c, const uint8_t *data, int size, int64_t time);
 
 /** Where a block of the segment lies, for the log: the place in words into
@@ -343,9 +404,9 @@ typedef struct DRAudioStats {
 /**
  * Audio timing of one track in one segment. Units come from the track's
  * frame step (ff_disctl_audio_unit as its callback); timed frames go to cb.
- * @return 0, AVERROR(ENOSYS) when the codec's audio rules are missing
+ * @return 0, DR_ERR(ENOSYS) when the codec's audio rules are missing
  */
-int ff_disctl_audio_open(DRAudio **audio, void *logctx, enum AVCodecID codec, int flags,
+int ff_disctl_audio_open(DRAudio **audio, void *logctx, DRCodecID codec, int flags,
                           DRFrameCb cb, void *opaque);
 
 /** A DRUnitCb: opaque = the DRAudio. */
@@ -481,7 +542,7 @@ typedef struct DRJunctionConfig {
     DRFrameCb  out;  void *out_opaque;
     DREventCb  event; void *event_opaque;
     /** The stream's codec and sample rate. */
-    enum AVCodecID codec;
+    DRCodecID codec;
     int        rate;
 } DRJunctionConfig;
 
@@ -563,7 +624,7 @@ int  ff_disctl_join_push(DRJoin *j, int track, DRFrame *frame);
 int  ff_disctl_join_finish(DRJoin *j);
 void ff_disctl_join_stats(const DRJoin *j, DRJoinStats *st);
 /** Segment seg's start (its first video time, ticks, its own clock) once
- *  placed; AVERROR(EAGAIN) before. */
+ *  placed; DR_ERR(EAGAIN) before. */
 int  ff_disctl_join_segment_start(const DRJoin *j, int seg, int64_t *start);
 /** The times of the frames marked as chapter starts so far (valid until
  *  the joiner is closed); returns their number. */
@@ -589,7 +650,7 @@ typedef struct DRChapterPlan {
  * The marks of a title's chapter records. A broken tail (a last record at 0
  * after one that is not, or one earlier than the record before it) is cut
  * off; a record earlier than the one before it otherwise refuses the title
- * (AVERROR_INVALIDDATA). Records before skip (leading segments left out) are
+ * (DR_ERR_INVALID). Records before skip (leading segments left out) are
  * dropped, the others move back by skip; the first kept one within 0.1 s of
  * the start is at 0; a record at the time of the one before it is dropped.
  * When the first kept record does not start the title, a chapter at 0 is
@@ -607,7 +668,7 @@ typedef struct DRChapter {
 /** The chapters of a ripped title: the k-th start time (of the k-th frame
  *  the joiner marked) starts plan atom k; each ends where the next starts,
  *  the last at duration. Fewer than two starts: no chapters (*nb_out = 0).
- *  *out is freed with av_free(). */
+ *  *out is freed with dr_free(). */
 int  ff_disctl_chapter_list(const DRChapterPlan *plan, const int64_t *starts, int nb_starts, int64_t duration,
                              DRChapter **out, int *nb_out);
 
@@ -638,14 +699,14 @@ typedef struct DRVideoStats {
  * (ff_disctl_video_unit as its callback); frames go to cb in decode order
  * with grid times; the last frame of each batch carries DR_F_BATCH.
  */
-int  ff_disctl_video_open(DRVideo **v, void *logctx, enum AVCodecID codec, int track,
+int  ff_disctl_video_open(DRVideo **v, void *logctx, DRCodecID codec, int track,
                            DRFrameCb cb, void *opaque, DREventCb event, void *event_opaque);
 int  ff_disctl_video_unit(void *video, const DRUnit *unit);
 int  ff_disctl_video_flush(DRVideo *v);
 /** A frame rate a header states: the first one times the segment; a later
  *  different one is a warning (logged, event), the timing keeps the first. */
 void ff_disctl_video_set_rate(DRVideo *v, int num, int den);
-/** The grid's field period (ticks, truncated): AVERROR(EAGAIN) while the grid
+/** The grid's field period (ticks, truncated): DR_ERR(EAGAIN) while the grid
  *  is not known yet. */
 int  ff_disctl_video_field(const DRVideo *v, int64_t *ticks);
 /** Bytes taken out of the unit being read (from DRVideoRules.split), at
@@ -663,8 +724,8 @@ void ff_disctl_video_stuffing(DRVideo *v, int64_t bytes);
 enum { DR_REMOVED_SEQ_END, DR_REMOVED_STREAM_END, DR_REMOVED_FILLER };
 void ff_disctl_video_removed(DRVideo *v, int kind, int64_t n);
 /** The grid point nearest to a time t (ticks, the segment's own clock):
- *  *out = that point, or AV_NOPTS_VALUE when t is more than 0.1 ms before
- *  the grid base. AVERROR(EAGAIN) while the grid is not known yet. */
+ *  *out = that point, or DR_NOPTS_VALUE when t is more than 0.1 ms before
+ *  the grid base. DR_ERR(EAGAIN) while the grid is not known yet. */
 int  ff_disctl_video_snap(const DRVideo *v, int64_t t, int64_t *out);
 void *ff_disctl_video_priv(DRVideo *v);
 void ff_disctl_video_stats(const DRVideo *v, DRVideoStats *st);
@@ -709,7 +770,7 @@ int  ff_disctl_textst_anchor(const uint8_t *data, int size);
 int  ff_disctl_textst_check(const uint8_t *data, int size);
 int  ff_disctl_textst_verify(const uint8_t *data, int size);
 /** A dialog presentation segment (size bytes) with only its forced regions
- *  into out (room for size): its bytes, or AVERROR_INVALIDDATA; *kept: the
+ *  into out (room for size): its bytes, or DR_ERR_INVALID; *kept: the
  *  regions kept. */
 int  ff_disctl_textst_forced_only(const uint8_t *in, int size, uint8_t *out, int *kept);
 
@@ -828,7 +889,7 @@ typedef struct DRVerifyStats {
 typedef struct DRVerify DRVerify;
 
 /** Checks of one output track (kind: DRTrackKind). */
-int  ff_disctl_verify_open(DRVerify **v, void *logctx, enum AVCodecID codec, int track, int kind,
+int  ff_disctl_verify_open(DRVerify **v, void *logctx, DRCodecID codec, int track, int kind,
                             DREventCb event, void *event_opaque);
 /** A frame as it leaves the core (not taken over). */
 int  ff_disctl_verify_frame(DRVerify *v, const DRFrame *frame);
@@ -909,11 +970,11 @@ typedef struct DRLpcm {
 
 /** A PES packet's audio frame header: DVD-Video 3 bytes, HD DVD 5 bytes (hd).
  *  The first sets the format; a later one that differs in more than the
- *  frame number and the dynamic range is an error (AVERROR_INVALIDDATA). */
+ *  frame number and the dynamic range is an error (DR_ERR_INVALID). */
 int ff_disctl_lpcm_header(DRLpcm *p, void *logctx, const uint8_t *hdr, int len, int hd);
 /** A Blu-ray LPCM unit's header (its first 4 of size bytes): the first sets
  *  the format; a later one must state the same channel assignment, sampling
- *  frequency, bits per sample and payload size (AVERROR_INVALIDDATA). */
+ *  frequency, bits per sample and payload size (DR_ERR_INVALID). */
 int ff_disctl_lpcm_bd_header(DRLpcm *p, void *logctx, const uint8_t *unit, int size);
 /** The samples of size disc bytes as little-endian PCM into out (room for
  *  size x 6 / 5); returns the bytes written. Blu-ray: in is a unit's payload
@@ -930,7 +991,7 @@ int ff_disctl_lpcm_convert(const DRLpcm *p, const uint8_t *in, int size, uint8_t
  * been handed on past their time (the junction compares them with it). */
 
 typedef struct DRTitleTrack {
-    enum AVCodecID codec;
+    DRCodecID codec;
     int            kind;           /**< DRTrackKind */
     int            audio_flags;    /**< DR_AUDIO_EXTRACTED, DR_AUDIO_EXTENDED */
     int            width, height;  /**< sub-pictures: the canvas they are drawn on (0 x 0: not known) */
@@ -974,7 +1035,7 @@ int  ff_disctl_title_open(DRTitle **t, void *logctx, const DRTitleConfig *cfg);
 /** The next segment begins (ends the one before). */
 int  ff_disctl_title_segment(DRTitle *t);
 /** A payload of a track in the current segment: time in ticks or
- *  AV_NOPTS_VALUE; tail = read from the last 64 MiB of the segment's source.
+ *  DR_NOPTS_VALUE; tail = read from the last 64 MiB of the segment's source.
  *  LPCM payloads start with their audio frame header. */
 int  ff_disctl_title_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time);
 /** The same, for a payload from block (of the segment, from 0; -1 not
@@ -987,7 +1048,7 @@ int  ff_disctl_title_payload_at(DRTitle *t, int track, const uint8_t *data, int 
  *  segment's start); where names the clip for the log. */
 int  ff_disctl_title_side_open(DRTitle *t, int track, int64_t offset, const char *where);
 /** A payload of a DR_SUB_SIDE track: time in ticks (its clip's clock) or
- *  AV_NOPTS_VALUE. */
+ *  DR_NOPTS_VALUE. */
 int  ff_disctl_title_side_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time);
 /** The end of a DR_SUB_SIDE track's clip. */
 int  ff_disctl_title_side_end(DRTitle *t, int track);
@@ -995,8 +1056,8 @@ int  ff_disctl_title_side_end(DRTitle *t, int track);
 const uint8_t *ff_disctl_title_textst_style(const DRTitle *t, int track, int *size);
 /** The end of the title: every stage finishes. */
 int  ff_disctl_title_finish(DRTitle *t);
-/** The next output frame (taken over by the caller): 0, AVERROR(EAGAIN)
- *  when none is ready yet, AVERROR_EOF after the last one. */
+/** The next output frame (taken over by the caller): 0, DR_ERR(EAGAIN)
+ *  when none is ready yet, DR_ERR_EOF after the last one. */
 int  ff_disctl_title_frame(DRTitle *t, int *track, DRFrame *frame);
 /** A chapter's position is reached in the video's source (DVD-Video: a
  *  byte offset in the segment): the first video unit from the bytes given
@@ -1010,7 +1071,7 @@ int  ff_disctl_title_place(DRTitle *t);
  *  given out before it; 0, or < 0 while not known (no picture after it). */
 int  ff_disctl_title_place_time(const DRTitle *t, int p, int64_t *time);
 /** After finish: the chapters of the plan the marks came from (*out freed
- *  with av_free()). */
+ *  with dr_free()). */
 int  ff_disctl_title_chapters(const DRTitle *t, const DRChapterPlan *plan, DRChapter **out, int *nb_out);
 /** PGS: the forced objects the track shows (a forced-only track: none
  *  means it shows nothing). */
@@ -1034,7 +1095,7 @@ int ff_disctl_title_cc_result(const DRTitle *t, int track, int64_t *blocks, int6
  *  bytes (0: the caption slot was empty). */
 void ff_disctl_title_cc_dropped(const DRTitle *t, int64_t *blocks, int64_t *text);
 /** Segment seg's start (from 0) once the joiner placed it: its first video
- *  time (ticks, the segment's own clock); AVERROR(EAGAIN) before. */
+ *  time (ticks, the segment's own clock); DR_ERR(EAGAIN) before. */
 int ff_disctl_title_segment_start(const DRTitle *t, int seg, int64_t *start);
 /** After finish: the end of the video (title duration, ticks). */
 int64_t ff_disctl_title_duration(const DRTitle *t);
@@ -1113,4 +1174,4 @@ int ff_disctl_vobsub_header(char *buf, int size, int width, int height, const ui
 int ff_disctl_mlp_verify(const uint8_t *data, int size);
 
 
-#endif /* AVFORMAT_DISCTL_H */
+#endif /* DISC_TIMELINE_DISCTL_H */

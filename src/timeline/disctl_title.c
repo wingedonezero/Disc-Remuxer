@@ -26,13 +26,20 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "libavcodec/avcodec.h"
-#include "libavutil/avutil.h"
-#include "libavutil/error.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
 
-#include "disctl.h"
+#include <errno.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "base/bytes.h"
+#include "base/err.h"
+#include "base/macros.h"
+#include "base/mem.h"
+#include "base/vlog.h"
+
+#include "timeline/disctl.h"
 
 typedef struct Out {
     int     track;
@@ -243,7 +250,7 @@ static const char *const event_names[] = {
 
 const char *ff_disctl_event_name(int kind)
 {
-    return kind > 0 && kind < FF_ARRAY_ELEMS(event_names) && event_names[kind] ? event_names[kind] : "unknown";
+    return kind > 0 && kind < DR_ARRAY_ELEMS(event_names) && event_names[kind] ? event_names[kind] : "unknown";
 }
 
 /* A time on the title timeline as h:mm:ss.mmm (truncated). */
@@ -287,121 +294,121 @@ static void event_text(DRTitle *t, const DREvent *e)
     switch (e->kind) {
     case DR_EV_START_EARLY:
         /* no fault: the track keeps its frames before the video (a negative delay) */
-        av_log(t->log, AV_LOG_INFO, "Track %d: the audio starts %s ms before the video on the disc: every frame "
+        dr_vlog(t->log, DR_VLOG_INFO, "Track %d: the audio starts %s ms before the video on the disc: every frame "
                "kept at its time (a negative delay)\n", k, msec(a, 32, e->dur, 0));
         return;
     case DR_EV_DROP:
-        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: %"PRId64" frame(s) (%s ms) dropped to bring the audio skew "
+        dr_vlog(t->log, DR_VLOG_WARNING, "Track %d at %s: %"PRId64" frame(s) (%s ms) dropped to bring the audio skew "
                "to %s ms\n", k, hms(a, 32, e->pos), e->count, msec(b, 32, e->dur, 0), msec(c, 32, e->skew, 1));
         break;
     case DR_EV_AUDIO_COPY:
-        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: the next segment starts with a copy of the last frame (%s ms; "
+        dr_vlog(t->log, DR_VLOG_WARNING, "Track %d at %s: the next segment starts with a copy of the last frame (%s ms; "
                "the stamps overlap by %s ms): the copy is left out\n", k, hms(a, 32, e->pos), msec(b, 32, e->dur, 0),
                msec(c, 32, e->count, 0));
         break;
     case DR_EV_AUDIO_COPY_LONG:
-        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: the next segment starts with copies of the last %"PRId64
+        dr_vlog(t->log, DR_VLOG_WARNING, "Track %d at %s: the next segment starts with copies of the last %"PRId64
                " frames (the stamps overlap by %s ms): found only, nothing left out\n", k, hms(a, 32, e->pos),
                e->count, msec(b, 32, e->dur, 0));
         break;
     case DR_EV_SAMPLE_JOIN:
         switch (e->count) {
         case DR_JOIN_CONTINUES:
-            av_log(t->log, AV_LOG_INFO, "Track %d at %s: join: the next segment continues at the sample where this "
+            dr_vlog(t->log, DR_VLOG_INFO, "Track %d at %s: join: the next segment continues at the sample where this "
                    "one ends: everything kept\n", k, hms(a, 32, e->pos));
             return;
         case DR_JOIN_SAME:
-            av_log(t->log, AV_LOG_INFO, "Track %d at %s: join: the next segment's first unit holds the last %"PRId64
+            dr_vlog(t->log, DR_VLOG_INFO, "Track %d at %s: join: the next segment's first unit holds the last %"PRId64
                    " samples of this one again: left out\n", k, hms(a, 32, e->pos), e->dur);
             return;
         case DR_JOIN_SAME_KEPT:
-            av_log(t->log, AV_LOG_WARNING, "Track %d at %s: join: the next segment's first unit holds the last %"PRId64
+            dr_vlog(t->log, DR_VLOG_WARNING, "Track %d at %s: join: the next segment's first unit holds the last %"PRId64
                    " samples of this one again, but the unit after it is no major sync: kept\n", k,
                    hms(a, 32, e->pos), e->dur);
             return;
         case DR_JOIN_APART:
-            av_log(t->log, AV_LOG_WARNING, "Track %d at %s: join: the sample numbers do not connect (%+"PRId64
+            dr_vlog(t->log, DR_VLOG_WARNING, "Track %d at %s: join: the sample numbers do not connect (%+"PRId64
                    " samples; a piece on another timeline): the timing rule decides\n", k, hms(a, 32, e->pos), e->dur);
             return;
         default:
-            av_log(t->log, AV_LOG_WARNING, "Track %d at %s: join: a side has no sample numbers: the timing rule "
+            dr_vlog(t->log, DR_VLOG_WARNING, "Track %d at %s: join: a side has no sample numbers: the timing rule "
                    "decides\n", k, hms(a, 32, e->pos));
             return;
         }
     case DR_EV_OVERLAP:
-        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: frames overlap by %s ms; audio skew now %s ms\n", k,
+        dr_vlog(t->log, DR_VLOG_WARNING, "Track %d at %s: frames overlap by %s ms; audio skew now %s ms\n", k,
                hms(a, 32, e->pos), msec(b, 32, e->dur, 0), msec(c, 32, e->skew, 1));
         break;
     case DR_EV_GAP_ABSORBED:
-        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: short audio gap of %s ms closed; audio skew now %s ms\n", k,
+        dr_vlog(t->log, DR_VLOG_WARNING, "Track %d at %s: short audio gap of %s ms closed; audio skew now %s ms\n", k,
                hms(a, 32, e->pos), msec(b, 32, e->dur, 0), msec(c, 32, e->skew, 1));
         break;
     case DR_EV_GAP:
-        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: audio gap of %s ms (%"PRId64".%03d frames missing), "
+        dr_vlog(t->log, DR_VLOG_WARNING, "Track %d at %s: audio gap of %s ms (%"PRId64".%03d frames missing), "
                "left open\n", k, hms(a, 32, e->pos), msec(b, 32, e->dur, 0), e->count / 1000, (int)(e->count % 1000));
         break;
     case DR_EV_VIDEO_ENDED:
-        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: the video ends before this audio: the rest of the track is "
+        dr_vlog(t->log, DR_VLOG_WARNING, "Track %d at %s: the video ends before this audio: the rest of the track is "
                "left out\n", k, hms(a, 32, e->pos));
         break;
     case DR_EV_VIDEO_TIMECODE:
-        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: a picture's disc time is %s ms off the frame grid\n", k,
+        dr_vlog(t->log, DR_VLOG_WARNING, "Track %d at %s: a picture's disc time is %s ms off the frame grid\n", k,
                hms(a, 32, e->pos), msec(b, 32, e->dur, 1));
         break;
     case DR_EV_VIDEO_INVALID:
-        av_log(t->log, AV_LOG_WARNING, "Track %d: %"PRId64" picture(s) with disc times off the frame grid\n", k,
+        dr_vlog(t->log, DR_VLOG_WARNING, "Track %d: %"PRId64" picture(s) with disc times off the frame grid\n", k,
                e->count);
         break;
     case DR_EV_VIDEO_REPAIR:
-        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: the frame grid follows a jump of the disc times (%"PRId64
+        dr_vlog(t->log, DR_VLOG_WARNING, "Track %d at %s: the frame grid follows a jump of the disc times (%"PRId64
                " placeholder(s))\n", k, hms(a, 32, e->pos), e->count);
         break;
     case DR_EV_PCM_SILENCE:
-        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: a gap of %s ms filled with silence\n", k,
+        dr_vlog(t->log, DR_VLOG_WARNING, "Track %d at %s: a gap of %s ms filled with silence\n", k,
                hms(a, 32, e->pos), msec(b, 32, e->dur, 0));
         break;
     case DR_EV_PCM_SKIP:
-        av_log(t->log, AV_LOG_WARNING, "Track %d: the audio starts %s ms after the video: skipped on the output "
+        dr_vlog(t->log, DR_VLOG_WARNING, "Track %d: the audio starts %s ms after the video: skipped on the output "
                "clock\n", k, msec(b, 32, e->dur, 0));
         break;
     case DR_EV_JOIN_START:
         if (e->skew == DR_START_CLEAN || !e->count)
             return;
         if (e->skew == DR_START_BROKEN)
-            av_log(t->log, AV_LOG_WARNING, "Track %d at %s: segment %"PRId64" starts at a broken link: %"PRId64
+            dr_vlog(t->log, DR_VLOG_WARNING, "Track %d at %s: segment %"PRId64" starts at a broken link: %"PRId64
                    " picture(s) shown before its first key frame cannot be decoded\n", k, hms(a, 32, e->pos),
                    e->dur, e->count);
         else
-            av_log(t->log, AV_LOG_WARNING, "Track %d at %s: segment %"PRId64" starts with %s key frame: %"PRId64
+            dr_vlog(t->log, DR_VLOG_WARNING, "Track %d at %s: segment %"PRId64" starts with %s key frame: %"PRId64
                    " picture(s) shown before it may need pictures from %s\n", k, hms(a, 32, e->pos), e->dur,
                    e->skew == DR_START_OPEN ? "an open" : "a", e->count,
                    e->dur > 1 ? "the end of the segment before (the join)" : "before the title's start");
         break;
     case DR_EV_JOIN_NOT_KEY:
-        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: segment %"PRId64" starts with a picture that is no key "
+        dr_vlog(t->log, DR_VLOG_WARNING, "Track %d at %s: segment %"PRId64" starts with a picture that is no key "
                "frame\n", k, hms(a, 32, e->pos), e->dur);
         break;
     case DR_EV_JOIN_REPEAT:
-        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: segment %"PRId64" starts with the %"PRId64" picture(s) the "
+        dr_vlog(t->log, DR_VLOG_WARNING, "Track %d at %s: segment %"PRId64" starts with the %"PRId64" picture(s) the "
                "segment before ends with (the same bytes, in the same order): repeated at the join\n", k,
                hms(a, 32, e->pos), e->skew, e->count);
         break;
     case DR_EV_SEQ_END_INSIDE:
         if (e->dur) {
             /* a sequence change: no warning */
-            av_log(t->log, AV_LOG_INFO, "Track %d at %s: an end of sequence code, then a new sequence (its sequence "
+            dr_vlog(t->log, DR_VLOG_INFO, "Track %d at %s: an end of sequence code, then a new sequence (its sequence "
                    "header) in the same segment: kept as it is\n", k, hms(a, 32, e->pos));
             return;
         }
-        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: an end of sequence code with pictures after it in the "
+        dr_vlog(t->log, DR_VLOG_WARNING, "Track %d at %s: an end of sequence code with pictures after it in the "
                "same segment and no new sequence header\n", k, hms(a, 32, e->pos));
         break;
     case DR_EV_PICTURES:
-        av_log(t->log, AV_LOG_WARNING, "Track %d: segment %"PRId64": %"PRId64" picture(s) read but not given out\n",
+        dr_vlog(t->log, DR_VLOG_WARNING, "Track %d: segment %"PRId64": %"PRId64" picture(s) read but not given out\n",
                k, e->dur, e->count);
         break;
     case DR_EV_SYNC:
-        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: segment %"PRId64": the audio is %s ms off its time on the "
+        dr_vlog(t->log, DR_VLOG_WARNING, "Track %d at %s: segment %"PRId64": the audio is %s ms off its time on the "
                "disc as a stream file plays it\n", k, hms(a, 32, e->pos), e->count + 1, msec(b, 32, e->dur, 1));
         break;
     default:
@@ -421,7 +428,7 @@ static void on_event(void *opaque, const DREvent *e)
                  &t->ev_count[e->track * EVENT_KINDS + e->kind] : NULL;
 
     if (!n || ++*n <= EVENT_LOGGED)
-        av_log(t->log, AV_LOG_DEBUG, "Title timeline: event %s track=%d pos=%"PRId64" dur=%"PRId64" skew=%"PRId64
+        dr_vlog(t->log, DR_VLOG_DEBUG, "Title timeline: event %s track=%d pos=%"PRId64" dur=%"PRId64" skew=%"PRId64
                " count=%"PRId64"\n", ff_disctl_event_name(e->kind), e->track, e->pos, e->dur, e->skew, e->count);
     event_text(t, e);
     if (e->kind >= DR_EV_VERIFY_UNIT && e->kind <= DR_EV_VERIFY_OVERLAP && e->track >= 0 &&
@@ -460,9 +467,9 @@ static void on_seg_event(void *opaque, const DREvent *e)
 
     if (t->nb_pend == t->pend_cap) {
         int cap = t->pend_cap ? 2 * t->pend_cap : 64;
-        DREvent *p = av_realloc_array(t->pend, cap, sizeof(*p));
+        DREvent *p = dr_realloc_array(t->pend, cap, sizeof(*p));
         if (!p) {
-            av_log(t->log, AV_LOG_ERROR, "Title timeline: no memory for an event: given on its segment's clock\n");
+            dr_vlog(t->log, DR_VLOG_ERROR, "Title timeline: no memory for an event: given on its segment's clock\n");
             on_event(t, e);
             return;
         }
@@ -489,10 +496,10 @@ static int emit(DRTitle *t, Track *k, DRFrame *f)
             t->q_head = 0;
         } else {
             int cap = t->q_cap ? 2 * t->q_cap : 256;
-            Out *q = av_realloc_array(t->q, cap, sizeof(*q));
+            Out *q = dr_realloc_array(t->q, cap, sizeof(*q));
             if (!q) {
                 ff_disctl_frame_unref(f);
-                return AVERROR(ENOMEM);
+                return DR_ERR(ENOMEM);
             }
             t->q     = q;
             t->q_cap = cap;
@@ -549,13 +556,13 @@ static int seq_end_out(DRTitle *t, Track *k, const DRFrame *next)
     }
     if (!ret) {
         k->seq_removed++;
-        av_log(t->log, AV_LOG_VERBOSE, "Title timeline: track %d: end of sequence unit at %s taken out (%s: it "
+        dr_vlog(t->log, DR_VLOG_VERBOSE, "Title timeline: track %d: end of sequence unit at %s taken out (%s: it "
                "changes nothing there)\n", k->index, hms(a, 32, f.time),
                next ? "an IDR or BLA picture follows" : "the title ends");
     } else {
         k->seq_kept++;
         k->warnings++;
-        av_log(t->log, AV_LOG_WARNING, "Title timeline: track %d: end of sequence unit at %s kept: %s [untested on "
+        dr_vlog(t->log, DR_VLOG_WARNING, "Title timeline: track %d: end of sequence unit at %s kept: %s [untested on "
                "real discs]\n", k->index, hms(a, 32, f.time), ret == 1 ?
                "a CRA picture follows, whose leading pictures it marks as not to be shown (H.265 7.4.3.6)" :
                "the next picture is no random access point (a stream fault, H.265 7.4.2.4.3)");
@@ -576,7 +583,7 @@ static int video_advance(void *opaque, int64_t target, int *ended)
     /* audio frames are held until the video is past them or has ended, so
      * the video is never needed further than it is */
     if (!t->video_done && t->vmax < target)
-        av_log(t->log, AV_LOG_DEBUG, "Title timeline: the junction asks for video at %"PRId64", handed on up to %"
+        dr_vlog(t->log, DR_VLOG_DEBUG, "Title timeline: the junction asks for video at %"PRId64", handed on up to %"
                PRId64"\n", target, t->vmax);
     *ended = t->video_done && t->vmax < target;
     return 0;
@@ -588,14 +595,14 @@ static int audio_out_open(DRTitle *t, Track *k)
 {
     DRVideoRef vref = { t, video_max, video_advance };
 
-    if (k->cfg.codec == AV_CODEC_ID_PCM_DVD || k->cfg.codec == AV_CODEC_ID_PCM_BLURAY) {
+    if (k->cfg.codec == DR_CODEC_PCM_DVD || k->cfg.codec == DR_CODEC_PCM_BLURAY) {
         DRPcmConfig pc = {
             .track = k->index, .rate = k->lpcm.rate, .bits = k->lpcm.bits > 16 ? 24 : 16,
             .bytes_per_sample_frame = k->lpcm.spf ? k->lpcm.out_frame_bytes / k->lpcm.spf : 0,
             .video = vref, .out = track_out, .out_opaque = k, .event = on_event, .event_opaque = t,
         };
         if (!k->lpcm.init || !pc.bytes_per_sample_frame)
-            return AVERROR_BUG;
+            return DR_ERR_BUG;
         return ff_disctl_pcm_open(&k->pcm, t->log, &pc);
     } else {
         DRJunctionConfig jc = {
@@ -656,9 +663,9 @@ static int wait_add(Track *k, DRFrame *f)
             k->wait_head = 0;
         } else {
             int cap = k->wait_cap ? 2 * k->wait_cap : 256;
-            DRFrame *w = av_realloc_array(k->wait, cap, sizeof(*w));
+            DRFrame *w = dr_realloc_array(k->wait, cap, sizeof(*w));
             if (!w)
-                return AVERROR(ENOMEM);
+                return DR_ERR(ENOMEM);
             k->wait     = w;
             k->wait_cap = cap;
         }
@@ -682,7 +689,7 @@ static int spu_held_out(DRTitle *t, Track *k, int64_t until)
         h->dur = until - h->time;
         k->extended++;
     } else {
-        av_log(t->log, AV_LOG_WARNING, "Track %d at %s: a sub-picture without a stop time is followed by one "
+        dr_vlog(t->log, DR_VLOG_WARNING, "Track %d at %s: a sub-picture without a stop time is followed by one "
                "that does not start later: it keeps its one delay step\n", k->index, hms(b, sizeof(b), h->time));
         k->warnings++;
     }
@@ -693,11 +700,11 @@ static int spu_joined(DRTitle *t, Track *k, DRFrame *f)
 {
     int ret;
 
-    if (k->holding && f->time != AV_NOPTS_VALUE && (ret = spu_held_out(t, k, f->time)) < 0) {
+    if (k->holding && f->time != DR_NOPTS_VALUE && (ret = spu_held_out(t, k, f->time)) < 0) {
         ff_disctl_frame_unref(f);
         return ret;
     }
-    if (!(f->flags & DR_F_NO_STOP) || f->time == AV_NOPTS_VALUE)
+    if (!(f->flags & DR_F_NO_STOP) || f->time == DR_NOPTS_VALUE)
         return emit(t, k, f);
     if (k->holding && (ret = emit(t, k, &k->held)) < 0) {
         ff_disctl_frame_unref(f);
@@ -717,7 +724,7 @@ static int spu_finish(DRTitle *t, Track *k)
 
     if (!k->holding)
         return 0;
-    av_log(t->log, AV_LOG_WARNING, "Track %d at %s: the last sub-picture has no stop time: shown until the "
+    dr_vlog(t->log, DR_VLOG_WARNING, "Track %d at %s: the last sub-picture has no stop time: shown until the "
            "video's end at %s [untested on real discs]\n", k->index, hms(b, sizeof(b), k->held.time),
            hms(e, sizeof(e), t->vend));
     t->review++;
@@ -749,10 +756,10 @@ static int side_frame(void *opaque, DRFrame *f)
             k->sq_head = 0;
         } else {
             int cap = k->sq_cap ? 2 * k->sq_cap : 64;
-            DRFrame *q = av_realloc_array(k->sq, cap, sizeof(*q));
+            DRFrame *q = dr_realloc_array(k->sq, cap, sizeof(*q));
             if (!q) {
                 ff_disctl_frame_unref(f);
-                return AVERROR(ENOMEM);
+                return DR_ERR(ENOMEM);
             }
             k->sq     = q;
             k->sq_cap = cap;
@@ -785,7 +792,7 @@ static int side_release(DRTitle *t)
             k->sq_head++;
             k->sq_n--;
             if (at < 0) {
-                av_log(t->log, AV_LOG_WARNING, "Title timeline: TextST track %d: the dialog at stream offset %"PRId64
+                dr_vlog(t->log, DR_VLOG_WARNING, "Title timeline: TextST track %d: the dialog at stream offset %"PRId64
                        " of %s starts %s before the title's start: left out\n", i, f.pos, k->side_where,
                        hms(b, sizeof(b), -at));
                 k->side_early++;
@@ -813,7 +820,7 @@ static void side_finish(DRTitle *t, Track *k)
     char b[32];
 
     if (k->sq_n) {
-        av_log(t->log, AV_LOG_WARNING, "Title timeline: TextST track %d: %d dialogs left out: the title's first "
+        dr_vlog(t->log, DR_VLOG_WARNING, "Title timeline: TextST track %d: %d dialogs left out: the title's first "
                "segment has no place (no video)\n", k->index, k->sq_n);
         k->warnings++;
         for (int j = 0; j < k->sq_n; j++)
@@ -824,11 +831,11 @@ static void side_finish(DRTitle *t, Track *k)
         return;
     ff_disctl_textst_stats(k->textst, &st);
     k->warnings += st.warnings;
-    av_log(t->log, AV_LOG_INFO, "Title timeline: TextST track %d: %"PRId64" of %"PRId64" dialogs of %s given out%s"
+    dr_vlog(t->log, DR_VLOG_INFO, "Title timeline: TextST track %d: %"PRId64" of %"PRId64" dialogs of %s given out%s"
            "\n", k->index, k->out, st.dialogs, k->side_where,
            (k->cfg.sub_flags & DR_SUB_FORCED_ONLY) ? " (forced subtitles only)" : "");
     if (k->cfg.sub_flags & DR_SUB_FORCED_ONLY)
-        av_log(t->log, AV_LOG_INFO, "Title timeline: TextST track %d: forced subtitles: %"PRId64" dialogs without a "
+        dr_vlog(t->log, DR_VLOG_INFO, "Title timeline: TextST track %d: forced subtitles: %"PRId64" dialogs without a "
                "forced region not shown, %"PRId64" regions without forced_on_flag taken out of the others, as a "
                "player shows them with subtitles off [untested on real discs]\n", k->index, st.not_forced,
                st.regions_cut);
@@ -838,16 +845,16 @@ static void side_finish(DRTitle *t, Track *k)
         DRFramesStats fs;
         ff_disctl_frames_stats(k->cut, &fs);
         if (st.disc_count != st.dialogs + fs.skipped) {
-            av_log(t->log, AV_LOG_WARNING, "Title check: TextST track %d: the dialog style segment counts %d dialogs, "
+            dr_vlog(t->log, DR_VLOG_WARNING, "Title check: TextST track %d: the dialog style segment counts %d dialogs, "
                    "%s has %"PRId64" (and %"PRId64" pieces that are no segment)\n", k->index, st.disc_count,
                    k->side_where, st.dialogs, fs.skipped);
             k->warnings++;
         } else
-            av_log(t->log, AV_LOG_VERBOSE, "Title check: TextST track %d: %d dialogs, as the dialog style segment "
+            dr_vlog(t->log, DR_VLOG_VERBOSE, "Title check: TextST track %d: %d dialogs, as the dialog style segment "
                    "counts: checked\n", k->index, st.disc_count);
     }
     if (k->side_late) {
-        av_log(t->log, AV_LOG_WARNING, "Title timeline: TextST track %d: %"PRId64" dialogs start after the video's "
+        dr_vlog(t->log, DR_VLOG_WARNING, "Title timeline: TextST track %d: %"PRId64" dialogs start after the video's "
                "end at %s: kept [untested on real discs]\n", k->index, k->side_late, hms(b, sizeof(b), t->vend));
         k->warnings++;
         t->review++;
@@ -897,15 +904,15 @@ static int cc_side(void *opaque, DRFrame *f)
         return 0;
     }
     k = &t->t[t->cc_track];
-    if (!m || f->time == AV_NOPTS_VALUE) {
+    if (!m || f->time == DR_NOPTS_VALUE) {
         ff_disctl_frame_unref(f);
         return 0;
     }
     if (!k->ccx) {
         if (!t->cfg.cc_helper || !*t->cfg.cc_helper) {
-            av_log(t->log, AV_LOG_ERROR, "Captions: track %d: the converter program (%s) is not known: the "
+            dr_vlog(t->log, DR_VLOG_ERROR, "Captions: track %d: the converter program (%s) is not known: the "
                    "captions cannot be made into text\n", k->index, DR_CCX_PROGRAM);
-            ret = AVERROR(ENOENT);
+            ret = DR_ERR(ENOENT);
         } else {
             ret = ff_disctl_ccx_start(&k->ccx, t->log, t->cfg.cc_helper);
             k->cc_origin = f->time;
@@ -914,7 +921,7 @@ static int cc_side(void *opaque, DRFrame *f)
     ms = (f->time - k->cc_origin) / (DR_TICKS_PER_SECOND / 1000);
     if (ret >= 0 && ms < 0) {
         /* the converter's times only go forward from its origin */
-        av_log(t->log, AV_LOG_WARNING, "Captions: track %d: a caption block %"PRId64" ms before the segment's "
+        dr_vlog(t->log, DR_VLOG_WARNING, "Captions: track %d: a caption block %"PRId64" ms before the segment's "
                "first one is left out\n", k->index, -ms);
         k->warnings++;
     } else if (ret >= 0 && (ret = ff_disctl_ccx_block(k->ccx, ms, tri, m)) >= 0) {
@@ -946,21 +953,21 @@ static int cc_segment_end(DRTitle *t)
         if (cues[i].start_ms > CC_END_MS)
             continue;
         if (cues[i].end_ms > CC_END_MS) {
-            av_log(t->log, AV_LOG_VERBOSE, "Captions: track %d: a caption still shown at the end of segment %d "
+            dr_vlog(t->log, DR_VLOG_VERBOSE, "Captions: track %d: a caption still shown at the end of segment %d "
                    "(from %"PRId64" ms after its first caption block) is left out\n", k->index, t->segments,
                    cues[i].start_ms);
             lost++;
             continue;
         }
         f.src = f.time;
-        f.dur = FFMAX(cues[i].end_ms - cues[i].start_ms, 0) * tick;
-        if (!(f.buf = av_buffer_alloc(len + AV_INPUT_BUFFER_PADDING_SIZE))) {
-            ret = AVERROR(ENOMEM);
+        f.dur = DR_MAX(cues[i].end_ms - cues[i].start_ms, 0) * tick;
+        if (!(f.buf = dr_buf_alloc(len + DR_BUF_PADDING))) {
+            ret = DR_ERR(ENOMEM);
             break;
         }
-        memcpy(f.buf->data, cues[i].text, len);
-        memset(f.buf->data + len, 0, AV_INPUT_BUFFER_PADDING_SIZE);
-        f.data = f.buf->data;
+        memcpy(dr_buf_data(f.buf), cues[i].text, len);
+        memset(dr_buf_data(f.buf) + len, 0, DR_BUF_PADDING);
+        f.data = dr_buf_data(f.buf);
         f.size = len;
         ret = ff_disctl_join_push(t->join, k->index, &f);
     }
@@ -980,12 +987,12 @@ static int cc_joined(DRTitle *t, Track *k, DRFrame *f)
 static int cc_finish(DRTitle *t, Track *k)
 {
     if (!k->cc_blocks) {
-        av_log(t->log, AV_LOG_WARNING, "Captions: track %d: the video carries no caption block: no cues\n",
+        dr_vlog(t->log, DR_VLOG_WARNING, "Captions: track %d: the video carries no caption block: no cues\n",
                k->index);
         k->warnings++;
         return 0;
     }
-    av_log(t->log, AV_LOG_VERBOSE, "Captions: track %d: %"PRId64" caption blocks in %d segment(s) -> %"PRId64" cues "
+    dr_vlog(t->log, DR_VLOG_VERBOSE, "Captions: track %d: %"PRId64" caption blocks in %d segment(s) -> %"PRId64" cues "
            "(CCExtractor %s), %d caption(s) shown at a segment's end left out\n", k->index, k->cc_blocks,
            k->cc_segments, k->cc_cues, DR_CCX_VERSION, k->cc_lost);
     return 0;
@@ -1012,9 +1019,9 @@ static int layer_key(DRTitle *t, DRFrame *f)
             t->bq_head = 0;
         } else {
             int cap = t->bq_cap ? 2 * t->bq_cap : 64;
-            LayerKey *q = av_realloc_array(t->bq, cap, sizeof(*q));
+            LayerKey *q = dr_realloc_array(t->bq, cap, sizeof(*q));
             if (!q)
-                return AVERROR(ENOMEM);
+                return DR_ERR(ENOMEM);
             t->bq     = q;
             t->bq_cap = cap;
         }
@@ -1035,10 +1042,10 @@ static int layer_add(Track *k, DRFrame *f)
             k->lq_head = 0;
         } else {
             int cap = k->lq_cap ? 2 * k->lq_cap : 64;
-            DRFrame *q = av_realloc_array(k->lq, cap, sizeof(*q));
+            DRFrame *q = dr_realloc_array(k->lq, cap, sizeof(*q));
             if (!q) {
                 ff_disctl_frame_unref(f);
-                return AVERROR(ENOMEM);
+                return DR_ERR(ENOMEM);
             }
             k->lq     = q;
             k->lq_cap = cap;
@@ -1055,7 +1062,7 @@ static void layer_stray_flush(Track *k)
 {
     if (!k->stray_n)
         return;
-    av_log(k->title->log, AV_LOG_WARNING, "Title timeline: track %d: %"PRId64" %s picture%s from the disc time %.3f ms "
+    dr_vlog(k->title->log, DR_VLOG_WARNING, "Title timeline: track %d: %"PRId64" %s picture%s from the disc time %.3f ms "
            "on %s no video frame of %s time: left out\n", k->index, k->stray_n,
            k->title->layer_hevc ? "Dolby Vision enhancement" : "second-view", k->stray_n == 1 ? "" : "s",
            k->stray_src / (double)(DR_TICKS_PER_SECOND / 1000), k->stray_n == 1 ? "has" : "have",
@@ -1072,12 +1079,12 @@ static void layer_gap_flush(DRTitle *t)
     if (!t->gap_n)
         return;
     if (t->layer_hevc)
-        av_log(t->log, AV_LOG_WARNING, "Title timeline: at %s: %"PRId64" video frame%s without %s Dolby Vision "
+        dr_vlog(t->log, DR_VLOG_WARNING, "Title timeline: at %s: %"PRId64" video frame%s without %s Dolby Vision "
                "enhancement picture: written without it (no Dolby Vision metadata for %s)\n",
                hms((char[32]){ 0 }, 32, t->gap_time), t->gap_n, t->gap_n == 1 ? "" : "s",
                t->gap_n == 1 ? "its" : "their", t->gap_n == 1 ? "it" : "them");
     else
-        av_log(t->log, AV_LOG_WARNING, "Title timeline: at %s: %"PRId64" video frame%s without %s second-view "
+        dr_vlog(t->log, DR_VLOG_WARNING, "Title timeline: at %s: %"PRId64" video frame%s without %s second-view "
                "picture: written without it (the second view's stream misses %s from here on, it is out of step "
                "with the video after this) [untested on real discs]\n",
                hms((char[32]){ 0 }, 32, t->gap_time), t->gap_n, t->gap_n == 1 ? "" : "s",
@@ -1125,21 +1132,21 @@ static int layer_miss_head(DRTitle *t)
 static int layer_merge(DRTitle *t, LayerKey *b, DRFrame *el)
 {
     DRFrame f = b->f;
-    AVBufferRef *buf;
+    DrBuf *buf;
     int ret, o;
 
     memset(&b->f, 0, sizeof(b->f));
-    if (!(buf = av_buffer_alloc(f.size + ff_disctl_hevc_wrap_size(el->data, el->size) +
-                                AV_INPUT_BUFFER_PADDING_SIZE))) {
+    if (!(buf = dr_buf_alloc(f.size + ff_disctl_hevc_wrap_size(el->data, el->size) +
+                                DR_BUF_PADDING))) {
         ff_disctl_frame_unref(&f);
-        return AVERROR(ENOMEM);
+        return DR_ERR(ENOMEM);
     }
-    memcpy(buf->data, f.data, f.size);
-    o = f.size + ff_disctl_hevc_wrap_layer(el->data, el->size, buf->data + f.size);
-    memset(buf->data + o, 0, AV_INPUT_BUFFER_PADDING_SIZE);
-    av_buffer_unref(&f.buf);
+    memcpy(dr_buf_data(buf), f.data, f.size);
+    o = f.size + ff_disctl_hevc_wrap_layer(el->data, el->size, dr_buf_data(buf) + f.size);
+    memset(dr_buf_data(buf) + o, 0, DR_BUF_PADDING);
+    dr_buf_unref(&f.buf);
     f.buf  = buf;
-    f.data = buf->data;
+    f.data = dr_buf_data(buf);
     f.size = o;
     ret = emit(t, &t->t[0], &f);
     return ret;
@@ -1159,7 +1166,7 @@ static int layer_match(DRTitle *t, int final)
         const LayerKey *b = &t->bq[t->bq_head];
         int m = -1;
         for (int i = 0; i < k->lq_n && i < LAYER_WINDOW && m < 0; i++)
-            if (FFABS(k->lq[k->lq_head + i].src - b->src) < LAYER_TOLERANCE)
+            if (DR_ABS(k->lq[k->lq_head + i].src - b->src) < LAYER_TOLERANCE)
                 m = i;
         if (m < 0) {
             if (!final && k->lq_n < LAYER_WINDOW)
@@ -1226,22 +1233,22 @@ static int layer_next(const uint8_t *p, int n, int i)
  * before it: each time is taken once). */
 static int layer_picture(Track *k, int n)
 {
-    DRFrame f = { .time = AV_NOPTS_VALUE, .pos = k->acc_pos };
+    DRFrame f = { .time = DR_NOPTS_VALUE, .pos = k->acc_pos };
     int changed, out, used = 0;
 
     while (used < k->nb_rec && k->rec[used][0] <= k->acc_pos)
         f.time = k->rec[used++][1];
     memmove(k->rec, k->rec + used, (k->nb_rec - used) * sizeof(*k->rec));
     k->nb_rec -= used;
-    if (!(f.buf = av_buffer_alloc(n + AV_INPUT_BUFFER_PADDING_SIZE)))
-        return AVERROR(ENOMEM);
-    out = ff_disctl_h264_clean(k->acc, n, f.buf->data, k->layer_dropped, &k->layer_stuffing, &changed);
+    if (!(f.buf = dr_buf_alloc(n + DR_BUF_PADDING)))
+        return DR_ERR(ENOMEM);
+    out = ff_disctl_h264_clean(k->acc, n, dr_buf_data(f.buf), k->layer_dropped, &k->layer_stuffing, &changed);
     if (!changed) {
-        memcpy(f.buf->data, k->acc, n);
+        memcpy(dr_buf_data(f.buf), k->acc, n);
         out = n;
     }
-    memset(f.buf->data + out, 0, AV_INPUT_BUFFER_PADDING_SIZE);
-    f.data = f.buf->data;
+    memset(dr_buf_data(f.buf) + out, 0, DR_BUF_PADDING);
+    f.data = dr_buf_data(f.buf);
     f.size = out;
     memmove(k->acc, k->acc + n, k->acc_len - n);
     k->acc_len -= n;
@@ -1272,19 +1279,19 @@ static int layer_payload(DRTitle *t, Track *k, const uint8_t *data, int size, in
     int ret, d;
 
     if (k->acc_len + size > k->acc_cap) {
-        int cap = FFMAX(2 * k->acc_cap, k->acc_len + size);
-        uint8_t *a = av_realloc(k->acc, cap);
+        int cap = DR_MAX(2 * k->acc_cap, k->acc_len + size);
+        uint8_t *a = dr_realloc(k->acc, cap);
         if (!a)
-            return AVERROR(ENOMEM);
+            return DR_ERR(ENOMEM);
         k->acc     = a;
         k->acc_cap = cap;
     }
-    if (time != AV_NOPTS_VALUE) {
+    if (time != DR_NOPTS_VALUE) {
         if (k->nb_rec == k->rec_cap) {
             int cap = k->rec_cap ? 2 * k->rec_cap : 16;
-            int64_t (*r)[2] = av_realloc_array(k->rec, cap, sizeof(*r));
+            int64_t (*r)[2] = dr_realloc_array(k->rec, cap, sizeof(*r));
             if (!r)
-                return AVERROR(ENOMEM);
+                return DR_ERR(ENOMEM);
             k->rec     = r;
             k->rec_cap = cap;
         }
@@ -1299,7 +1306,7 @@ static int layer_payload(DRTitle *t, Track *k, const uint8_t *data, int size, in
         if ((d = layer_next(k->acc, k->acc_len, 0)) < 0)
             return 0;
         if ((d = layer_cut(k, d)) > 0) {
-            av_log(t->log, AV_LOG_WARNING, "Title timeline: track %d: %d bytes before the segment's first MVC "
+            dr_vlog(t->log, DR_VLOG_WARNING, "Title timeline: track %d: %d bytes before the segment's first MVC "
                    "delimiter start no picture: left out [untested on real discs]\n", k->index, d);
             memmove(k->acc, k->acc + d, k->acc_len - d);
             k->acc_len -= d;
@@ -1313,7 +1320,7 @@ static int layer_payload(DRTitle *t, Track *k, const uint8_t *data, int size, in
     while ((d = layer_next(k->acc, k->acc_len, k->acc_scan)) > 0 && (d = layer_cut(k, d)) > 0)
         if ((ret = layer_picture(k, d)) < 0)
             return ret;
-    k->acc_scan = FFMAX(4, k->acc_len - 3);
+    k->acc_scan = DR_MAX(4, k->acc_len - 3);
     return 0;
 }
 
@@ -1327,15 +1334,15 @@ static int layer_unit(void *opaque, const DRUnit *u)
     DRFrame f = { .time = u->time, .pos = u->pos };
     int changed, seq_end, out;
 
-    if (!(f.buf = av_buffer_alloc(u->size + AV_INPUT_BUFFER_PADDING_SIZE)))
-        return AVERROR(ENOMEM);
-    out = ff_disctl_hevc_clean(u->data, u->size, f.buf->data, &k->el_dropped, &changed, &seq_end);
+    if (!(f.buf = dr_buf_alloc(u->size + DR_BUF_PADDING)))
+        return DR_ERR(ENOMEM);
+    out = ff_disctl_hevc_clean(u->data, u->size, dr_buf_data(f.buf), &k->el_dropped, &changed, &seq_end);
     if (!changed) {
-        memcpy(f.buf->data, u->data, u->size);
+        memcpy(dr_buf_data(f.buf), u->data, u->size);
         out = u->size;
     }
-    memset(f.buf->data + out, 0, AV_INPUT_BUFFER_PADDING_SIZE);
-    f.data = f.buf->data;
+    memset(dr_buf_data(f.buf) + out, 0, DR_BUF_PADDING);
+    f.data = dr_buf_data(f.buf);
     f.size = out;
     if (seq_end)
         f.flags |= DR_F_SEQ_END;
@@ -1369,14 +1376,14 @@ static int joined(void *opaque, int track, DRFrame *f)
     switch (k->cfg.kind) {
     case DR_KIND_VIDEO:
         /* the places this picture marks: the pictures before it end there */
-        if ((f->flags & DR_F_PLACE) && f->time != AV_NOPTS_VALUE)
+        if ((f->flags & DR_F_PLACE) && f->time != DR_NOPTS_VALUE)
             for (int n = 0; n < f->ctr && t->places_timed < t->nb_places; n++)
                 t->places[t->places_timed++] = t->vpic_end == INT64_MIN ? f->time : t->vpic_end;
-        if (f->time != AV_NOPTS_VALUE && f->size && !(f->flags & DR_F_MARKER))
-            t->vpic_end = t->vpic_end == INT64_MIN ? f->time + f->dur : FFMAX(t->vpic_end, f->time + f->dur);
-        if (f->time != AV_NOPTS_VALUE) {
-            t->vmax = FFMAX(t->vmax, f->time);
-            t->vend = FFMAX(t->vend, f->time + f->dur);
+        if (f->time != DR_NOPTS_VALUE && f->size && !(f->flags & DR_F_MARKER))
+            t->vpic_end = t->vpic_end == INT64_MIN ? f->time + f->dur : DR_MAX(t->vpic_end, f->time + f->dur);
+        if (f->time != DR_NOPTS_VALUE) {
+            t->vmax = DR_MAX(t->vmax, f->time);
+            t->vend = DR_MAX(t->vend, f->time + f->dur);
         }
         if (k->seq_holding && f->size && !(f->flags & DR_F_MARKER) && (ret = seq_end_out(t, k, f)) < 0) {
             ff_disctl_frame_unref(f);
@@ -1443,7 +1450,7 @@ static void join_repeat_done(DRTitle *t)
     if (c->rep_done)
         return;
     c->rep_done = 1;
-    for (int m = FFMIN(c->nb_prev, c->nb_first); m > 0 && !run; m--) {
+    for (int m = DR_MIN(c->nb_prev, c->nb_first); m > 0 && !run; m--) {
         int same = 1, key = 0;
         for (int i = 0; i < m && same; i++) {
             same = c->prev[c->nb_prev - m + i] == c->first[i];
@@ -1494,7 +1501,7 @@ static void join_frame(DRTitle *t, const DRFrame *f)
     }
     c->last[c->last_head] = h;
     c->last_head = (c->last_head + 1) % JOIN_PICTURES;
-    c->nb_last   = FFMIN(c->nb_last + 1, JOIN_PICTURES);
+    c->nb_last   = DR_MIN(c->nb_last + 1, JOIN_PICTURES);
 }
 
 /* The end of a segment (its video flushed): the start check if still open,
@@ -1513,7 +1520,7 @@ static void join_segment_end(DRTitle *t, const DRVideo *video)
         c->pictures_off++;
         on_seg_event(t, &(DREvent){ DR_EV_PICTURES, 0, 0, t->segments, 0, vs.pictures - vs.out });
     }
-    av_log(t->log, AV_LOG_VERBOSE, "Title check: segment %d: %"PRId64" pictures read, %"PRId64" given out, %"PRId64
+    dr_vlog(t->log, DR_VLOG_VERBOSE, "Title check: segment %d: %"PRId64" pictures read, %"PRId64" given out, %"PRId64
            " placeholders; its first key frame: %s, %"PRId64" picture(s) after it shown before it\n",
            t->segments, vs.pictures, vs.out, vs.placeholders, !c->have_key ? "none" :
            c->start == DR_START_CLEAN ? "a clean start" : c->start == DR_START_BROKEN ? "a broken link" :
@@ -1528,7 +1535,7 @@ static void join_segment_end(DRTitle *t, const DRVideo *video)
     c->total.other          += vs.other;
     c->total.other_bytes    += vs.other_bytes;
     c->total.stuffing       += vs.stuffing;
-    for (int i = 0; i < FF_ARRAY_ELEMS(vs.removed); i++)
+    for (int i = 0; i < DR_ARRAY_ELEMS(vs.removed); i++)
         c->total.removed[i] += vs.removed[i];
     c->total.seq_end        += vs.seq_end;
     c->total.seq_end_inside += vs.seq_end_inside;
@@ -1561,14 +1568,14 @@ static void title_summary(DRTitle *t)
 
     /* the title checks: a line in the log when one fails (a warning) or
      * needs a look, the passing ones as detail lines */
-    av_log(t->log, c->start_issues || c->not_key || c->repeats ? AV_LOG_INFO : AV_LOG_VERBOSE,
+    dr_vlog(t->log, c->start_issues || c->not_key || c->repeats ? DR_VLOG_INFO : DR_VLOG_VERBOSE,
            "Title check: %d segment(s); their first key frames: %"PRId64" clean, %"PRId64
            " open, %"PRId64" broken link%s; %s\n", t->segments, c->starts[DR_START_CLEAN], c->starts[DR_START_OPEN],
            c->starts[DR_START_BROKEN], c->starts[DR_START_UNKNOWN] ?
            strf(a, sizeof(a), ", %"PRId64" not known", c->starts[DR_START_UNKNOWN]) : "",
            c->start_issues || c->not_key || c->repeats ? "see the warnings above" :
            "no picture at a segment's start needs one before it, none repeated at a join");
-    av_log(t->log, c->pictures_off ? AV_LOG_WARNING : AV_LOG_VERBOSE, "Title check: video: %"PRId64" pictures read, %"
+    dr_vlog(t->log, c->pictures_off ? DR_VLOG_WARNING : DR_VLOG_VERBOSE, "Title check: video: %"PRId64" pictures read, %"
            PRId64" given out%s\n", v->pictures, v->out, c->pictures_off ? " (see the warnings above)" : "");
     /* what the codec rules took out of the video: one line (in the standard
      * log when anything was), naming only what was */
@@ -1578,31 +1585,31 @@ static void title_summary(DRTitle *t)
         int len = 0;
         for (int i = 0; i < 3; i++)
             if (v->removed[i])
-                len += snprintf(line + len, sizeof(line) - FFMIN(len, sizeof(line)), "%s%"PRId64" %s",
+                len += snprintf(line + len, sizeof(line) - DR_MIN(len, sizeof(line)), "%s%"PRId64" %s",
                                 len ? ", " : "", v->removed[i], what[i]);
         if (v->stuffing)
-            len += snprintf(line + len, sizeof(line) - FFMIN(len, sizeof(line)), "%s%"PRId64" zero stuffing bytes",
+            len += snprintf(line + len, sizeof(line) - DR_MIN(len, sizeof(line)), "%s%"PRId64" zero stuffing bytes",
                             len ? ", " : "", v->stuffing);
         if (len)
-            len += snprintf(line + len, sizeof(line) - FFMIN(len, sizeof(line)), " (none of them changes a picture)");
+            len += snprintf(line + len, sizeof(line) - DR_MIN(len, sizeof(line)), " (none of them changes a picture)");
         if (v->side)
-            len += snprintf(line + len, sizeof(line) - FFMIN(len, sizeof(line)), "%s%"PRId64" user data units (%"
+            len += snprintf(line + len, sizeof(line) - DR_MIN(len, sizeof(line)), "%s%"PRId64" user data units (%"
                             PRId64" bytes: captions go to the caption track)", len ? ", " : "", v->side, v->side_bytes);
         if (v->other)
-            len += snprintf(line + len, sizeof(line) - FFMIN(len, sizeof(line)), "%s%"PRId64" units that are no "
+            len += snprintf(line + len, sizeof(line) - DR_MIN(len, sizeof(line)), "%s%"PRId64" units that are no "
                             "picture (%"PRId64" bytes)", len ? ", " : "", v->other, v->other_bytes);
-        av_log(t->log, len ? AV_LOG_INFO : AV_LOG_VERBOSE, "Title check: track 0: taken out of the video: %s\n",
+        dr_vlog(t->log, len ? DR_VLOG_INFO : DR_VLOG_VERBOSE, "Title check: track 0: taken out of the video: %s\n",
                len ? line : "nothing");
     }
     if (v->scan_known)
-        av_log(t->log, AV_LOG_VERBOSE, "Title check: video scan as the pictures state it (kept as it is): %"PRId64
+        dr_vlog(t->log, DR_VLOG_VERBOSE, "Title check: video scan as the pictures state it (kept as it is): %"PRId64
                " progressive, %"PRId64" interlaced; top field first %"PRId64", repeat first field %"PRId64"%s\n",
                v->progressive, v->scan_known - v->progressive, v->tff, v->rff, v->scan_known < v->out ?
                strf(b, sizeof(b), "; %"PRId64" not read", v->out - v->scan_known) : "");
     else
-        av_log(t->log, AV_LOG_VERBOSE, "Title check: video scan: not read for this codec (kept as it is)\n");
+        dr_vlog(t->log, DR_VLOG_VERBOSE, "Title check: video scan: not read for this codec (kept as it is)\n");
     if (v->seq_end)
-        av_log(t->log, AV_LOG_VERBOSE, "Title check: video: %"PRId64" end of sequence code(s), %"PRId64" with pictures "
+        dr_vlog(t->log, DR_VLOG_VERBOSE, "Title check: video: %"PRId64" end of sequence code(s), %"PRId64" with pictures "
                "after them in their segment, %"PRId64" of those followed by a new sequence (kept as they are)\n",
                v->seq_end, v->seq_end_inside, v->seq_new);
     for (int i = 0; i < t->cfg.nb_tracks; i++) {
@@ -1615,16 +1622,16 @@ static void title_summary(DRTitle *t)
         ff_disctl_verify_stats(k->verify, &st);
         issues = st.bad_units + st.crc_errors + st.order_errors + st.holes + (k->cfg.kind == DR_KIND_VIDEO) *
                  st.overlaps;
-        av_log(t->log, issues ? AV_LOG_WARNING : AV_LOG_VERBOSE, "Title check: track %d (%s): %"PRId64" frames; %"
+        dr_vlog(t->log, issues ? DR_VLOG_WARNING : DR_VLOG_VERBOSE, "Title check: track %d (%s): %"PRId64" frames; %"
                PRId64" units that do not parse, %"PRId64" checksum failures, %"PRId64" order errors, %"PRId64
-               " holes%s%s\n", i, avcodec_get_name(k->cfg.codec), st.frames - st.markers, st.bad_units,
+               " holes%s%s\n", i, ff_disctl_codec_id_name(k->cfg.codec), st.frames - st.markers, st.bad_units,
                st.crc_errors, st.order_errors, st.holes, st.unchecked ? " (units of this codec are not checked)" : "",
                issues ? "" : ": PASS");
         if (k->cfg.kind == DR_KIND_AUDIO && st.frames > st.markers)
-            av_log(t->log, st.sync_segments ? AV_LOG_WARNING : AV_LOG_VERBOSE, "Title check: track %d: as a stream "
+            dr_vlog(t->log, st.sync_segments ? DR_VLOG_WARNING : DR_VLOG_VERBOSE, "Title check: track %d: as a stream "
                    "file (start delay %s ms) the audio is %s %s ms of its time on the disc%s%s\n", i,
                    msec(a, 32, st.delay, 1), st.sync_segments ? "off by up to" : "within",
-                   msec(b, 32, FFABS(st.es_err_max), 0), st.sync_segments ?
+                   msec(b, 32, DR_ABS(st.es_err_max), 0), st.sync_segments ?
                    strf((char[96]){ 0 }, 96, ": %d of %d segment(s) more than 1 ms off, the most in "
                                    "segment %d", st.sync_segments, st.segments, st.sync_seg + 1) :
                    strf((char[64]){ 0 }, 64, " in every segment (%d)", st.segments),
@@ -1689,7 +1696,7 @@ static int seg_open(DRTitle *t)
 
         k->bytes     = 0;
         if (k->nb_posq)
-            av_log(t->log, AV_LOG_WARNING, "Title timeline: %d chapter position(s) at the end of the segment "
+            dr_vlog(t->log, DR_VLOG_WARNING, "Title timeline: %d chapter position(s) at the end of the segment "
                    "before: the next video frame starts them [untested on real discs]\n", k->nb_posq);
         for (int q = 0; q < k->nb_posq; q++)
             k->posq[q] = 0;
@@ -1697,8 +1704,8 @@ static int seg_open(DRTitle *t)
             k->placeq[q] = 0;
         if (k->cfg.kind == DR_KIND_CAPTION || is_side(k))
             continue;                    /* fed by the video's side units / by a clip of its own */
-        if (k->cfg.kind == DR_KIND_LAYER && k->cfg.codec == AV_CODEC_ID_HEVC) {
-            if ((ret = ff_disctl_frames_open(&k->cut, t->log, AV_CODEC_ID_HEVC, layer_unit, k)) < 0)
+        if (k->cfg.kind == DR_KIND_LAYER && k->cfg.codec == DR_CODEC_HEVC) {
+            if ((ret = ff_disctl_frames_open(&k->cut, t->log, DR_CODEC_HEVC, layer_unit, k)) < 0)
                 return ret;
             frames_report(t, k->cut, i);
             continue;
@@ -1726,7 +1733,7 @@ static int seg_open(DRTitle *t)
             ret   = ff_disctl_spu_open(&k->spu, t->log, i, t->t[0].video, k->cfg.width, k->cfg.height, seg_frame, k, on_seg_event, t);
             unit  = ff_disctl_spu_unit;
             stage = k->spu;
-            if (ret >= 0 && k->cfg.codec == AV_CODEC_ID_HDMV_PGS_SUBTITLE)
+            if (ret >= 0 && k->cfg.codec == DR_CODEC_HDMV_PGS_SUBTITLE)
                 ff_disctl_spu_set_pgs(k->spu, !!(k->cfg.sub_flags & DR_SUB_FORCED_ONLY));
             break;
         }
@@ -1735,8 +1742,8 @@ static int seg_open(DRTitle *t)
         if ((ret = ff_disctl_frames_open(&k->cut, t->log, k->cfg.codec, unit, stage)) < 0)
             return ret;
         frames_report(t, k->cut, i);
-        if (k->cfg.codec == AV_CODEC_ID_PCM_DVD || k->cfg.codec == AV_CODEC_ID_PCM_BLURAY) {
-            k->lpcm.bd = k->cfg.codec == AV_CODEC_ID_PCM_BLURAY;
+        if (k->cfg.codec == DR_CODEC_PCM_DVD || k->cfg.codec == DR_CODEC_PCM_BLURAY) {
+            k->lpcm.bd = k->cfg.codec == DR_CODEC_PCM_BLURAY;
             ff_disctl_audio_set_state(k->audio, &k->lpcm);
         }
         if (k->cfg.kind == DR_KIND_AUDIO && (k->cfg.audio_flags & DR_AUDIO_EXTENDED))
@@ -1776,7 +1783,7 @@ static int seg_end(DRTitle *t)
     for (int i = 1; i < t->cfg.nb_tracks; i++) {
         Track *k = &t->t[i];
         if (k->cfg.kind == DR_KIND_LAYER &&
-            (ret = k->cfg.codec == AV_CODEC_ID_HEVC ? ff_disctl_frames_flush(k->cut) : layer_flush(k)) < 0)
+            (ret = k->cfg.codec == DR_CODEC_HEVC ? ff_disctl_frames_flush(k->cut) : layer_flush(k)) < 0)
             return ret;
         if (k->cfg.kind == DR_KIND_CAPTION || k->cfg.kind == DR_KIND_LAYER || is_side(k))
             continue;
@@ -1812,16 +1819,16 @@ int ff_disctl_title_open(DRTitle **tp, void *logctx, const DRTitleConfig *cfg)
 
     *tp = NULL;
     if (cfg->nb_tracks < 1 || cfg->tracks[0].kind != DR_KIND_VIDEO)
-        return AVERROR(EINVAL);
-    if (!(t = av_mallocz(sizeof(*t))))
-        return AVERROR(ENOMEM);
+        return DR_ERR(EINVAL);
+    if (!(t = dr_mallocz(sizeof(*t))))
+        return DR_ERR(ENOMEM);
     t->log  = logctx;
     t->cfg  = *cfg;
     /* the title keeps its own copy of the converter's path */
     t->cfg.cc_helper = NULL;
-    if (cfg->cc_helper && !(t->cc_helper = av_strdup(cfg->cc_helper))) {
-        av_free(t);
-        return AVERROR(ENOMEM);
+    if (cfg->cc_helper && !(t->cc_helper = dr_strdup(cfg->cc_helper))) {
+        dr_free(t);
+        return DR_ERR(ENOMEM);
     }
     t->cfg.cc_helper = t->cc_helper;
     t->vmax = INT64_MIN;
@@ -1829,10 +1836,10 @@ int ff_disctl_title_open(DRTitle **tp, void *logctx, const DRTitleConfig *cfg)
     t->vpic_end = INT64_MIN;
     t->cc_track = -1;
     t->layer = -1;
-    if (!(t->t = av_calloc(cfg->nb_tracks, sizeof(*t->t))) ||
-        !(t->ev_count = av_calloc(cfg->nb_tracks * EVENT_KINDS, sizeof(*t->ev_count))) ||
-        !(kinds = av_calloc(cfg->nb_tracks, sizeof(*kinds)))) {
-        ret = AVERROR(ENOMEM);
+    if (!(t->t = dr_calloc(cfg->nb_tracks, sizeof(*t->t))) ||
+        !(t->ev_count = dr_calloc(cfg->nb_tracks * EVENT_KINDS, sizeof(*t->ev_count))) ||
+        !(kinds = dr_calloc(cfg->nb_tracks, sizeof(*kinds)))) {
+        ret = DR_ERR(ENOMEM);
         goto fail;
     }
     for (int i = 0; i < cfg->nb_tracks; i++) {
@@ -1844,19 +1851,19 @@ int ff_disctl_title_open(DRTitle **tp, void *logctx, const DRTitleConfig *cfg)
         kinds[i]    = k->cfg.kind == DR_KIND_CAPTION ? DR_KIND_SUBTITLE : k->cfg.kind;  /* each keeps its time */
         if (k->cfg.kind == DR_KIND_CAPTION) {
             if (t->cc_track >= 0) {
-                ret = AVERROR(EINVAL);   /* one caption track per title */
+                ret = DR_ERR(EINVAL);   /* one caption track per title */
                 goto fail;
             }
             t->cc_track = i;
         }
         if (k->cfg.kind == DR_KIND_LAYER) {
-            if (t->layer >= 0 || (k->cfg.codec != AV_CODEC_ID_H264 && k->cfg.codec != AV_CODEC_ID_HEVC) ||
-                ((k->cfg.layer_flags & DR_LAYER_MERGED) && k->cfg.codec != AV_CODEC_ID_HEVC)) {
-                ret = AVERROR(EINVAL);   /* one second layer per title: H.264 (MVC) or HEVC (Dolby Vision) */
+            if (t->layer >= 0 || (k->cfg.codec != DR_CODEC_H264 && k->cfg.codec != DR_CODEC_HEVC) ||
+                ((k->cfg.layer_flags & DR_LAYER_MERGED) && k->cfg.codec != DR_CODEC_HEVC)) {
+                ret = DR_ERR(EINVAL);   /* one second layer per title: H.264 (MVC) or HEVC (Dolby Vision) */
                 goto fail;
             }
             t->layer        = i;
-            t->layer_hevc   = k->cfg.codec == AV_CODEC_ID_HEVC;
+            t->layer_hevc   = k->cfg.codec == DR_CODEC_HEVC;
             t->layer_merged = !!(k->cfg.layer_flags & DR_LAYER_MERGED);
             continue;
         }
@@ -1872,11 +1879,11 @@ int ff_disctl_title_open(DRTitle **tp, void *logctx, const DRTitleConfig *cfg)
         if ((ret = ff_disctl_join_open(&t->join, logctx, &jc)) < 0)
             goto fail;
     }
-    av_free(kinds);
+    dr_free(kinds);
     *tp = t;
     return 0;
 fail:
-    av_free(kinds);
+    dr_free(kinds);
     ff_disctl_title_close(&t);
     return ret;
 }
@@ -1886,7 +1893,7 @@ static int title_segment(DRTitle *t)
     int ret;
 
     if (t->finished)
-        return AVERROR(EINVAL);
+        return DR_ERR(EINVAL);
     if (t->segments && (ret = seg_end(t)) < 0)
         return ret;
     if ((ret = ff_disctl_join_segment(t->join)) < 0)
@@ -1901,20 +1908,20 @@ static int title_payload(DRTitle *t, int track, const uint8_t *data, int size, i
     int ret;
 
     if (track < 0 || track >= t->cfg.nb_tracks || !t->segments || t->finished)
-        return AVERROR(EINVAL);
+        return DR_ERR(EINVAL);
     k = &t->t[track];
     if (k->cfg.kind == DR_KIND_CAPTION || is_side(k))
-        return AVERROR(EINVAL);          /* its data comes from the video / a clip of its own */
-    if (k->cfg.kind == DR_KIND_LAYER && k->cfg.codec == AV_CODEC_ID_HEVC) {
+        return DR_ERR(EINVAL);          /* its data comes from the video / a clip of its own */
+    if (k->cfg.kind == DR_KIND_LAYER && k->cfg.codec == DR_CODEC_HEVC) {
         k->bytes += size;
         return ff_disctl_frames_write_at(k->cut, data, size, time, block);
     }
     if (k->cfg.kind == DR_KIND_LAYER)
         return layer_payload(t, k, data, size, time);
-    if (k->cfg.codec == AV_CODEC_ID_PCM_DVD) {
+    if (k->cfg.codec == DR_CODEC_PCM_DVD) {
         int h = t->cfg.lpcm_hd ? 5 : 3;
         if (size < h) {
-            av_log(t->log, AV_LOG_WARNING, "Title timeline: track %d: an LPCM payload of %d bytes has no audio frame "
+            dr_vlog(t->log, DR_VLOG_WARNING, "Title timeline: track %d: an LPCM payload of %d bytes has no audio frame "
                    "header: left out\n", track, size);
             return 0;
         }
@@ -1945,25 +1952,25 @@ static int layer_report(DRTitle *t)
             if (!k->layer_dropped[n])
                 continue;
             if (names[n])
-                av_log(t->log, AV_LOG_INFO, "Title timeline: track %d: %"PRId64" %s taken out of the second "
+                dr_vlog(t->log, DR_VLOG_INFO, "Title timeline: track %d: %"PRId64" %s taken out of the second "
                        "layer\n", t->layer, k->layer_dropped[n], names[n]);
             else
-                av_log(t->log, AV_LOG_WARNING, "Title timeline: track %d: %"PRId64" NAL units of type %d (they "
+                dr_vlog(t->log, DR_VLOG_WARNING, "Title timeline: track %d: %"PRId64" NAL units of type %d (they "
                        "start no unit) taken out of the second layer [untested on real discs]\n", t->layer,
                        k->layer_dropped[n], n);
         }
         if (k->layer_stuffing)
-            av_log(t->log, AV_LOG_INFO, "Title timeline: track %d: %"PRId64" zero stuffing bytes taken out of the "
+            dr_vlog(t->log, DR_VLOG_INFO, "Title timeline: track %d: %"PRId64" zero stuffing bytes taken out of the "
                    "second layer\n", t->layer, k->layer_stuffing);
     }
     /* each gap and each run of stray pictures was a warning of its own:
      * the totals */
     if (k->layer_alone)
-        av_log(t->log, AV_LOG_INFO, "Title timeline: track %d: %"PRId64" %s picture%s in all without a video frame "
+        dr_vlog(t->log, DR_VLOG_INFO, "Title timeline: track %d: %"PRId64" %s picture%s in all without a video frame "
                "of %s time, left out\n", t->layer, k->layer_alone, what, k->layer_alone == 1 ? "" : "s",
                k->layer_alone == 1 ? "its" : "their");
     if (t->layer_missing)
-        av_log(t->log, AV_LOG_INFO, "Title timeline: %"PRId64" video frame%s in all without %s %s picture, written "
+        dr_vlog(t->log, DR_VLOG_INFO, "Title timeline: %"PRId64" video frame%s in all without %s %s picture, written "
                "without it\n", t->layer_missing, t->layer_missing == 1 ? "" : "s",
                t->layer_missing == 1 ? "its" : "their", what);
     return 0;
@@ -1984,7 +1991,7 @@ static int title_finish(DRTitle *t)
         if (k->seq_holding && (ret = seq_end_out(t, k, NULL)) < 0)
             return ret;
         if (k->seq_removed)
-            av_log(t->log, AV_LOG_INFO, "Title timeline: track %d: %"PRId64" end of sequence units taken out (at "
+            dr_vlog(t->log, DR_VLOG_INFO, "Title timeline: track %d: %"PRId64" end of sequence units taken out (at "
                    "the ends of stream files, before an IDR picture or at the title's end: they change nothing "
                    "there)\n", i, k->seq_removed);
     }
@@ -2006,7 +2013,7 @@ static int title_finish(DRTitle *t)
             for (int w = 1; w < DR_JOIN_KINDS; w++)
                 n += js.joins[w];
             if (n)
-                av_log(t->log, AV_LOG_INFO, "Title timeline: track %d: %"PRId64" join(s) by the stream's sample numbers: "
+                dr_vlog(t->log, DR_VLOG_INFO, "Title timeline: track %d: %"PRId64" join(s) by the stream's sample numbers: "
                        "%"PRId64" continue, %"PRId64" with a repeated unit left out, %"PRId64" with a repeated unit "
                        "kept, %"PRId64" not connected, %"PRId64" without sample numbers\n", i, n,
                        js.joins[DR_JOIN_CONTINUES], js.joins[DR_JOIN_SAME], js.joins[DR_JOIN_SAME_KEPT],
@@ -2019,30 +2026,30 @@ static int title_finish(DRTitle *t)
         if (k->cfg.kind == DR_KIND_CAPTION && (ret = cc_finish(t, k)) < 0)
             return ret;
         if (k->extended)
-            av_log(t->log, AV_LOG_VERBOSE, "Title timeline: track %d: %"PRId64" sub-pictures without a stop time shown "
+            dr_vlog(t->log, DR_VLOG_VERBOSE, "Title timeline: track %d: %"PRId64" sub-pictures without a stop time shown "
                    "until the next one starts\n", i, k->extended);
     }
     for (int i = 0; i < t->cfg.nb_tracks; i++) {
         Track *k = &t->t[i];
         if (k->verify && (ret = ff_disctl_verify_finish(k->verify)) < 0)
             return ret;
-        av_log(t->log, AV_LOG_VERBOSE, "Title timeline: track %d (%s): %"PRId64" frames\n", i,
-               avcodec_get_name(k->cfg.codec), k->out);
+        dr_vlog(t->log, DR_VLOG_VERBOSE, "Title timeline: track %d (%s): %"PRId64" frames\n", i,
+               ff_disctl_codec_id_name(k->cfg.codec), k->out);
         for (int e = 1; e < EVENT_KINDS; e++)
             if (t->ev_count[i * EVENT_KINDS + e] > EVENT_LOGGED)
-                av_log(t->log, AV_LOG_VERBOSE, "Title timeline: track %d: %"PRId64" %s events, the first %d logged\n",
+                dr_vlog(t->log, DR_VLOG_VERBOSE, "Title timeline: track %d: %"PRId64" %s events, the first %d logged\n",
                        i, t->ev_count[i * EVENT_KINDS + e], ff_disctl_event_name(e), EVENT_LOGGED);
     }
     if (t->cc_text) {
-        av_log(t->log, AV_LOG_WARNING, "Captions: the video carries %"PRId64" caption blocks with %"PRId64" caption "
+        dr_vlog(t->log, DR_VLOG_WARNING, "Captions: the video carries %"PRId64" caption blocks with %"PRId64" caption "
                "byte pairs, and the title has no caption track: taken out of the video and left out\n",
                t->cc_dropped, t->cc_text);
         t->t[0].warnings++;
     } else if (t->cc_dropped) {
-        av_log(t->log, AV_LOG_VERBOSE, "Captions: the video carries %"PRId64" caption blocks without caption text: "
+        dr_vlog(t->log, DR_VLOG_VERBOSE, "Captions: the video carries %"PRId64" caption blocks without caption text: "
                "taken out of the video\n", t->cc_dropped);
     }
-    av_log(t->log, AV_LOG_DEBUG, "Title timeline: GOP user data taken out of the video: %"PRId64" caption blocks, %"
+    dr_vlog(t->log, DR_VLOG_DEBUG, "Title timeline: GOP user data taken out of the video: %"PRId64" caption blocks, %"
            PRId64" other\n", t->cc_track >= 0 ? t->t[t->cc_track].cc_blocks : t->cc_dropped, t->user_data);
     title_summary(t);
     t->finished = 1;
@@ -2054,7 +2061,7 @@ int ff_disctl_title_frame(DRTitle *t, int *track, DRFrame *f)
     if (t->error)
         return t->error;
     if (!t->q_n)
-        return t->finished ? AVERROR_EOF : AVERROR(EAGAIN);
+        return t->finished ? DR_ERR_EOF : DR_ERR(EAGAIN);
     *track = t->q[t->q_head].track;
     *f     = t->q[t->q_head].f;
     t->q_head++;
@@ -2068,10 +2075,10 @@ int ff_disctl_title_frame(DRTitle *t, int *track, DRFrame *f)
  * call returns the same error instead of going on with broken state. */
 static int sticky(DRTitle *t, int ret)
 {
-    if (ret < 0 && ret != AVERROR(EAGAIN) && ret != AVERROR(EINVAL) && !t->error) {
+    if (ret < 0 && ret != DR_ERR(EAGAIN) && ret != DR_ERR(EINVAL) && !t->error) {
         t->error = ret;
-        av_log(t->log, AV_LOG_ERROR, "Title timeline: the title failed (%s): nothing more is read or given out\n",
-               av_err2str(ret));
+        dr_vlog(t->log, DR_VLOG_ERROR, "Title timeline: the title failed (%s): nothing more is read or given out\n",
+               dr_err_text(ret));
     }
     return ret;
 }
@@ -2099,9 +2106,9 @@ int ff_disctl_title_chapter_position(DRTitle *t)
         return t->error;
     if (k->nb_posq == k->posq_cap) {
         int cap = k->posq_cap ? 2 * k->posq_cap : 8;
-        int64_t *q = av_realloc_array(k->posq, cap, sizeof(*q));
+        int64_t *q = dr_realloc_array(k->posq, cap, sizeof(*q));
         if (!q)
-            return AVERROR(ENOMEM);
+            return DR_ERR(ENOMEM);
         k->posq     = q;
         k->posq_cap = cap;
     }
@@ -2117,17 +2124,17 @@ int ff_disctl_title_place(DRTitle *t)
         return t->error;
     if (k->nb_placeq == k->placeq_cap) {
         int cap = k->placeq_cap ? 2 * k->placeq_cap : 8;
-        int64_t *q = av_realloc_array(k->placeq, cap, sizeof(*q));
+        int64_t *q = dr_realloc_array(k->placeq, cap, sizeof(*q));
         if (!q)
-            return AVERROR(ENOMEM);
+            return DR_ERR(ENOMEM);
         k->placeq     = q;
         k->placeq_cap = cap;
     }
     if (t->nb_places == t->places_cap) {
         int cap = t->places_cap ? 2 * t->places_cap : 8;
-        void *p = av_realloc_array(t->places, cap, sizeof(*t->places));
+        void *p = dr_realloc_array(t->places, cap, sizeof(*t->places));
         if (!p)
-            return AVERROR(ENOMEM);
+            return DR_ERR(ENOMEM);
         t->places     = p;
         t->places_cap = cap;
     }
@@ -2138,7 +2145,7 @@ int ff_disctl_title_place(DRTitle *t)
 int ff_disctl_title_place_time(const DRTitle *t, int p, int64_t *time)
 {
     if (p < 0 || p >= t->places_timed)
-        return AVERROR(EINVAL);
+        return DR_ERR(EINVAL);
     *time = t->places[p];
     return 0;
 }
@@ -2149,12 +2156,12 @@ static int side_open(DRTitle *t, int track, int64_t offset, const char *where)
     int ret;
 
     if (track < 1 || track >= t->cfg.nb_tracks || !is_side(&t->t[track]) || t->t[track].side_open || t->finished)
-        return AVERROR(EINVAL);
+        return DR_ERR(EINVAL);
     k = &t->t[track];
     k->side_open   = 1;
     k->side_offset = offset;
-    if (!(k->side_where = av_strdup(where ? where : "its clip")))
-        return AVERROR(ENOMEM);
+    if (!(k->side_where = dr_strdup(where ? where : "its clip")))
+        return DR_ERR(ENOMEM);
     if ((ret = ff_disctl_textst_open(&k->textst, t->log, track, !!(k->cfg.sub_flags & DR_SUB_FORCED_ONLY),
                                      k->side_where, side_frame, k)) < 0 ||
         (ret = ff_disctl_frames_open(&k->cut, t->log, k->cfg.codec, ff_disctl_textst_unit, k->textst)) < 0)
@@ -2172,7 +2179,7 @@ static int side_payload(DRTitle *t, int track, const uint8_t *data, int size, in
     Track *k;
 
     if (track < 1 || track >= t->cfg.nb_tracks || !t->t[track].side_open || t->t[track].side_ended)
-        return AVERROR(EINVAL);
+        return DR_ERR(EINVAL);
     k = &t->t[track];
     k->bytes += size;
     return ff_disctl_frames_write(k->cut, data, size, time);
@@ -2184,7 +2191,7 @@ static int side_end(DRTitle *t, int track)
     int ret;
 
     if (track < 1 || track >= t->cfg.nb_tracks || !t->t[track].side_open || t->t[track].side_ended)
-        return AVERROR(EINVAL);
+        return DR_ERR(EINVAL);
     k = &t->t[track];
     k->side_ended = 1;
     if ((ret = ff_disctl_frames_flush(k->cut)) < 0)
@@ -2238,7 +2245,7 @@ int ff_disctl_title_track_result(const DRTitle *t, int track, int64_t *frames, i
     DRVerifyStats st;
 
     if (track < 0 || track >= t->cfg.nb_tracks)
-        return AVERROR(EINVAL);
+        return DR_ERR(EINVAL);
     if (!t->t[track].verify) {           /* a second layer: its frames are its video frames' */
         *frames   = t->t[track].out;
         *warnings = t->t[track].warnings;
@@ -2255,7 +2262,7 @@ int ff_disctl_title_track_result(const DRTitle *t, int track, int64_t *frames, i
 int ff_disctl_title_cc_result(const DRTitle *t, int track, int64_t *blocks, int64_t *cues, int64_t *lost)
 {
     if (track < 0 || track >= t->cfg.nb_tracks || t->t[track].cfg.kind != DR_KIND_CAPTION)
-        return AVERROR(EINVAL);
+        return DR_ERR(EINVAL);
     *blocks = t->t[track].cc_blocks;
     *cues   = t->t[track].cc_cues;
     *lost   = t->t[track].cc_lost;
@@ -2271,7 +2278,7 @@ void ff_disctl_title_cc_dropped(const DRTitle *t, int64_t *blocks, int64_t *text
 int ff_disctl_title_forced_objects(const DRTitle *t, int track, int64_t *forced)
 {
     if (track < 0 || track >= t->cfg.nb_tracks || t->t[track].cfg.kind != DR_KIND_SUBTITLE)
-        return AVERROR(EINVAL);
+        return DR_ERR(EINVAL);
     *forced = t->t[track].forced_objects;
     return 0;
 }
@@ -2279,7 +2286,7 @@ int ff_disctl_title_forced_objects(const DRTitle *t, int track, int64_t *forced)
 int ff_disctl_title_spu_result(const DRTitle *t, int track, int64_t *no_stop, int64_t *outside)
 {
     if (track < 0 || track >= t->cfg.nb_tracks || t->t[track].cfg.kind != DR_KIND_SUBTITLE)
-        return AVERROR(EINVAL);
+        return DR_ERR(EINVAL);
     *no_stop = t->t[track].extended;
     *outside = t->t[track].outside;
     return 0;
@@ -2288,7 +2295,7 @@ int ff_disctl_title_spu_result(const DRTitle *t, int track, int64_t *no_stop, in
 const DRLpcm *ff_disctl_title_lpcm(const DRTitle *t, int track)
 {
     if (track < 0 || track >= t->cfg.nb_tracks ||
-        (t->t[track].cfg.codec != AV_CODEC_ID_PCM_DVD && t->t[track].cfg.codec != AV_CODEC_ID_PCM_BLURAY) ||
+        (t->t[track].cfg.codec != DR_CODEC_PCM_DVD && t->t[track].cfg.codec != DR_CODEC_PCM_BLURAY) ||
         !t->t[track].lpcm.init)
         return NULL;
     return &t->t[track].lpcm;
@@ -2316,7 +2323,7 @@ void ff_disctl_title_close(DRTitle **tp)
             Track *k = &t->t[i];
             for (int j = 0; j < k->nb_wait; j++)
                 ff_disctl_frame_unref(&k->wait[k->wait_head + j]);
-            av_free(k->wait);
+            dr_free(k->wait);
             if (k->holding)
                 ff_disctl_frame_unref(&k->held);
             if (k->seq_holding)
@@ -2327,31 +2334,31 @@ void ff_disctl_title_close(DRTitle **tp)
             ff_disctl_verify_close(&k->verify);
             for (int j = 0; j < k->lq_n; j++)
                 ff_disctl_frame_unref(&k->lq[k->lq_head + j]);
-            av_free(k->lq);
-            av_free(k->acc);
-            av_free(k->rec);
-            av_free(k->posq);
-            av_free(k->placeq);
+            dr_free(k->lq);
+            dr_free(k->acc);
+            dr_free(k->rec);
+            dr_free(k->posq);
+            dr_free(k->placeq);
             if (is_side(k))
                 ff_disctl_frames_close(&k->cut);
             ff_disctl_textst_close(&k->textst);
             for (int j = 0; j < k->sq_n; j++)
                 ff_disctl_frame_unref(&k->sq[k->sq_head + j]);
-            av_free(k->sq);
-            av_free(k->side_where);
+            dr_free(k->sq);
+            dr_free(k->side_where);
         }
     }
     for (int i = 0; i < t->q_n; i++)
         ff_disctl_frame_unref(&t->q[t->q_head + i].f);
-    av_free(t->q);
+    dr_free(t->q);
     for (int i = 0; i < t->bq_n; i++)
         ff_disctl_frame_unref(&t->bq[t->bq_head + i].f);
-    av_free(t->bq);
-    av_free(t->pend);
-    av_free(t->places);
-    av_free(t->ev_count);
+    dr_free(t->bq);
+    dr_free(t->pend);
+    dr_free(t->places);
+    dr_free(t->ev_count);
     ff_disctl_join_close(&t->join);
-    av_free(t->t);
-    av_free(t->cc_helper);
-    av_freep(tp);
+    dr_free(t->t);
+    dr_free(t->cc_helper);
+    dr_freep(tp);
 }

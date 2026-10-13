@@ -37,13 +37,20 @@
 
 #include <string.h>
 
-#include "libavcodec/avcodec.h"
-#include "libavutil/buffer.h"
-#include "libavutil/error.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
 
-#include "disctl.h"
+#include <errno.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "base/bytes.h"
+#include "base/err.h"
+#include "base/macros.h"
+#include "base/mem.h"
+#include "base/vlog.h"
+
+#include "timeline/disctl.h"
 
 typedef struct H264State {
     int64_t dropped[32];       /* NAL units taken out, per nal_unit_type */
@@ -105,16 +112,16 @@ int ff_disctl_h264_clean(const uint8_t *p, int n, uint8_t *out, int64_t dropped_
 static int split_h264(DRVideo *v, DRFrame *f)
 {
     H264State *s = ff_disctl_video_priv(v);
-    AVBufferRef *buf;
+    DrBuf *buf;
     int out, changed;
 
     if (next_sc(f->data, f->size, 0) < 0)
         return 0;                       /* no NAL unit: picture() leaves it out */
-    if (!(buf = av_buffer_alloc(f->size + AV_INPUT_BUFFER_PADDING_SIZE)))
-        return AVERROR(ENOMEM);
+    if (!(buf = dr_buf_alloc(f->size + DR_BUF_PADDING)))
+        return DR_ERR(ENOMEM);
     {
         int64_t d[32] = { 0 }, stuffing = 0;
-        out = ff_disctl_h264_clean(f->data, f->size, buf->data, d, &stuffing, &changed);
+        out = ff_disctl_h264_clean(f->data, f->size, dr_buf_data(buf), d, &stuffing, &changed);
         for (int t = 0; t < 32; t++)
             s->dropped[t] += d[t];
         s->stuffing += stuffing;
@@ -125,13 +132,13 @@ static int split_h264(DRVideo *v, DRFrame *f)
         ff_disctl_video_removed(v, DR_REMOVED_FILLER, d[12]);
     }
     if (!changed || out == f->size) {
-        av_buffer_unref(&buf);
+        dr_buf_unref(&buf);
         return 0;
     }
-    memset(buf->data + out, 0, AV_INPUT_BUFFER_PADDING_SIZE);
-    av_buffer_unref(&f->buf);
+    memset(dr_buf_data(buf) + out, 0, DR_BUF_PADDING);
+    dr_buf_unref(&f->buf);
     f->buf  = buf;
-    f->data = buf->data;
+    f->data = dr_buf_data(buf);
     f->size = out;
     return 0;
 }
@@ -212,7 +219,7 @@ static int picture_h264(DRVideo *v, const DRFrame *f, DRPicture *pic)
     }
     if (pic->fields == 1 && !s->said_field) {
         s->said_field = 1;
-        av_log(NULL, AV_LOG_INFO, "Title timeline: H.264: field pictures: the two fields of a frame are joined "
+        dr_vlog(NULL, DR_VLOG_INFO, "Title timeline: H.264: field pictures: the two fields of a frame are joined "
                "into one frame [untested on real discs]\n");
     }
     return 0;
@@ -226,7 +233,7 @@ static void close_h264(void *priv)
 
     for (int t = 0; t < 32; t++)
         if (s->dropped[t] && (t < 10 || t > 12))
-            av_log(NULL, AV_LOG_WARNING, "Title timeline: H.264: %"PRId64" NAL units of type %d (they start no "
+            dr_vlog(NULL, DR_VLOG_WARNING, "Title timeline: H.264: %"PRId64" NAL units of type %d (they start no "
                    "unit) taken out of the frames [untested on real discs]\n", s->dropped[t], t);
 }
 

@@ -21,9 +21,20 @@
 
 #include <string.h>
 
-#include "libavutil/log.h"
 
-#include "disctl.h"
+#include <errno.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "base/bytes.h"
+#include "base/err.h"
+#include "base/macros.h"
+#include "base/mem.h"
+#include "base/vlog.h"
+
+#include "timeline/disctl.h"
 
 /* frame_rate_code 1..8 (ISO/IEC 13818-2 Table 6-4) */
 static const int rates[8][2] = {
@@ -175,7 +186,7 @@ static int picture_mpv(DRVideo *v, const DRFrame *f, DRPicture *pic)
         return 0;
     }
     if (pct < 1 || pct > 3 || !structure) {
-        av_log(NULL, AV_LOG_WARNING, "Title timeline: MPEG video: a picture of coding type %d (structure %d) is not a "
+        dr_vlog(NULL, DR_VLOG_WARNING, "Title timeline: MPEG video: a picture of coding type %d (structure %d) is not a "
                "picture of the stream: left out\n", pct, structure);
         pic->type = DR_PIC_OTHER;
         return 0;

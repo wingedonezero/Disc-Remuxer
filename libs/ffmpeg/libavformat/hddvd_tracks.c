@@ -61,7 +61,7 @@
 #include "avformat.h"
 #include "disc.h"
 #include "disclang.h"
-#include "disctl.h"
+#include "timeline/disctl.h"
 #include "hddvd_internal.h"
 #include "mpeg.h"
 

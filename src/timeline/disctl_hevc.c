@@ -43,13 +43,20 @@
 
 #include <string.h>
 
-#include "libavcodec/avcodec.h"
-#include "libavutil/buffer.h"
-#include "libavutil/error.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
 
-#include "disctl.h"
+#include <errno.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "base/bytes.h"
+#include "base/err.h"
+#include "base/macros.h"
+#include "base/mem.h"
+#include "base/vlog.h"
+
+#include "timeline/disctl.h"
 
 typedef struct HEVCState {
     DRHevcDropped dropped;      /* what was taken out */
@@ -115,25 +122,25 @@ int ff_disctl_hevc_clean(const uint8_t *p, int n, uint8_t *out, DRHevcDropped *d
 void ff_disctl_hevc_dropped_log(const DRHevcDropped *d, const char *what)
 {
     if (d->units[38])
-        av_log(NULL, AV_LOG_INFO, "Title timeline: %s: %"PRId64" filler data units taken out of the frames (no "
+        dr_vlog(NULL, DR_VLOG_INFO, "Title timeline: %s: %"PRId64" filler data units taken out of the frames (no "
                "decoding meaning, H.265 7.4.3.8)\n", what, d->units[38]);
     for (int t = 0; t < 64; t++)
         if (d->units[t] && t != 38)
-            av_log(NULL, AV_LOG_WARNING, "Title timeline: %s: %"PRId64" NAL units of the reserved type %d taken "
+            dr_vlog(NULL, DR_VLOG_WARNING, "Title timeline: %s: %"PRId64" NAL units of the reserved type %d taken "
                    "out of the frames (decoders discard them, H.265 7.4.2.2; a badly made stream?) [untested on "
                    "real discs]\n", what, d->units[t], t);
     if (d->other_layer)
-        av_log(NULL, AV_LOG_WARNING, "Title timeline: %s: %"PRId64" NAL units of another layer (nuh_layer_id not "
+        dr_vlog(NULL, DR_VLOG_WARNING, "Title timeline: %s: %"PRId64" NAL units of another layer (nuh_layer_id not "
                "0; a Blu-ray carries a second layer as a stream of its own) taken out of the frames [untested on "
                "real discs]\n", what, d->other_layer);
     if (d->short_units)
-        av_log(NULL, AV_LOG_WARNING, "Title timeline: %s: %"PRId64" NAL units too short for their header (damaged "
+        dr_vlog(NULL, DR_VLOG_WARNING, "Title timeline: %s: %"PRId64" NAL units too short for their header (damaged "
                "data) taken out of the frames [untested on real discs]\n", what, d->short_units);
     if (d->unspecified)
-        av_log(NULL, AV_LOG_WARNING, "Title timeline: %s: %"PRId64" NAL units of the unspecified types 48-61 "
+        dr_vlog(NULL, DR_VLOG_WARNING, "Title timeline: %s: %"PRId64" NAL units of the unspecified types 48-61 "
                "(application data) kept [untested on real discs]\n", what, d->unspecified);
     if (d->stuffing)
-        av_log(NULL, AV_LOG_INFO, "Title timeline: %s: %"PRId64" zero stuffing bytes taken out\n", what,
+        dr_vlog(NULL, DR_VLOG_INFO, "Title timeline: %s: %"PRId64" zero stuffing bytes taken out\n", what,
                d->stuffing);
 }
 
@@ -154,15 +161,15 @@ static int first_vcl(const uint8_t *p, int n)
 int ff_disctl_hevc_seq_end(DRFrame *f, const DRFrame *next)
 {
     int t = next ? first_vcl(next->data, next->size) : -2;
-    AVBufferRef *buf;
+    DrBuf *buf;
     int o = 0, i, from = 0;
 
     if (t >= 21 && t <= 23)
         return 1;                       /* CRA (or reserved IRAP): its leading pictures depend on it */
     if (t != -2 && (t < 16 || t > 20))
         return 2;                       /* no random access point follows: a stream fault, kept as it is */
-    if (!(buf = av_buffer_alloc(f->size + AV_INPUT_BUFFER_PADDING_SIZE)))
-        return AVERROR(ENOMEM);
+    if (!(buf = dr_buf_alloc(f->size + DR_BUF_PADDING)))
+        return DR_ERR(ENOMEM);
     /* each NAL unit from the zero bytes in front of its start code to the
      * next one's; the end units left out */
     for (i = next_sc(f->data, f->size, 0); i >= 0; ) {
@@ -172,20 +179,20 @@ int ff_disctl_hevc_seq_end(DRFrame *f, const DRFrame *next)
         while (e >= 0 && ez > i + 3 && !f->data[ez - 1])
             ez--;
         if (i == next_sc(f->data, f->size, 0) && z > 0) {
-            memcpy(buf->data, f->data, z);  /* bytes before the first unit stay */
+            memcpy(dr_buf_data(buf), f->data, z);  /* bytes before the first unit stay */
             o = z;
         }
         if (i + 3 >= f->size || (((f->data[i + 3] >> 1) & 0x3f) != 36 && ((f->data[i + 3] >> 1) & 0x3f) != 37)) {
-            memcpy(buf->data + o, f->data + z, ez - z);
+            memcpy(dr_buf_data(buf) + o, f->data + z, ez - z);
             o += ez - z;
         }
         from = ez;
         i = e;
     }
-    memset(buf->data + o, 0, AV_INPUT_BUFFER_PADDING_SIZE);
-    av_buffer_unref(&f->buf);
+    memset(dr_buf_data(buf) + o, 0, DR_BUF_PADDING);
+    dr_buf_unref(&f->buf);
     f->buf   = buf;
-    f->data  = buf->data;
+    f->data  = dr_buf_data(buf);
     f->size  = o;
     f->flags &= ~DR_F_SEQ_END;
     return 0;
@@ -234,16 +241,16 @@ int ff_disctl_hevc_wrap_layer(const uint8_t *p, int n, uint8_t *out)
 static int split_hevc(DRVideo *v, DRFrame *f)
 {
     HEVCState *s = ff_disctl_video_priv(v);
-    AVBufferRef *buf;
+    DrBuf *buf;
     int out, changed, seq_end;
 
     if (next_sc(f->data, f->size, 0) < 0)
         return 0;                       /* no NAL unit: picture() leaves it out */
-    if (!(buf = av_buffer_alloc(f->size + AV_INPUT_BUFFER_PADDING_SIZE)))
-        return AVERROR(ENOMEM);
+    if (!(buf = dr_buf_alloc(f->size + DR_BUF_PADDING)))
+        return DR_ERR(ENOMEM);
     {
         int64_t filler = s->dropped.units[38], stuffing = s->dropped.stuffing;
-        out = ff_disctl_hevc_clean(f->data, f->size, buf->data, &s->dropped, &changed, &seq_end);
+        out = ff_disctl_hevc_clean(f->data, f->size, dr_buf_data(buf), &s->dropped, &changed, &seq_end);
         /* said in the title's summary */
         ff_disctl_video_removed(v, DR_REMOVED_FILLER, s->dropped.units[38] - filler);
         ff_disctl_video_stuffing(v, s->dropped.stuffing - stuffing);
@@ -251,13 +258,13 @@ static int split_hevc(DRVideo *v, DRFrame *f)
     if (seq_end)
         f->flags |= DR_F_SEQ_END;
     if (!changed || out == f->size) {
-        av_buffer_unref(&buf);
+        dr_buf_unref(&buf);
         return 0;
     }
-    memset(buf->data + out, 0, AV_INPUT_BUFFER_PADDING_SIZE);
-    av_buffer_unref(&f->buf);
+    memset(dr_buf_data(buf) + out, 0, DR_BUF_PADDING);
+    dr_buf_unref(&f->buf);
     f->buf  = buf;
-    f->data = buf->data;
+    f->data = dr_buf_data(buf);
     f->size = out;
     return 0;
 }

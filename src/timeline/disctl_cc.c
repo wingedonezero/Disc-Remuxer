@@ -21,7 +21,19 @@
 
 #include <string.h>
 
-#include "disctl.h"
+#include <errno.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "base/bytes.h"
+#include "base/err.h"
+#include "base/macros.h"
+#include "base/mem.h"
+#include "base/vlog.h"
+
+#include "timeline/disctl.h"
 
 /* The DVD caption user data: user_data_start_code, 'C' 'C', 0x01, 0xF8,
  * then one byte: bit 7 the first entry is the odd field, bit 6 0, bits 0-5

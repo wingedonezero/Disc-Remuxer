@@ -21,14 +21,22 @@
 
 #include <string.h>
 
-#include "libavcodec/avcodec.h"
-#include "libavutil/avutil.h"
-#include "libavutil/error.h"
-#include "libavutil/log.h"
-#include "libavutil/mathematics.h"
-#include "libavutil/mem.h"
 
-#include "disctl.h"
+#include <errno.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "base/bytes.h"
+#include "base/err.h"
+#include "base/macros.h"
+#include "base/mem.h"
+#include "base/vlog.h"
+
+#include "parse/rational.h"
+
+#include "timeline/disctl.h"
 
 #define THR           108000LL      /* 0.1 ms: a PES time this far from the grid is off it */
 #define GROUP_MAX     450           /* pictures of one group / of one batch scan */
@@ -99,7 +107,7 @@ struct DRVideo {
     int64_t             lastdiff;
     int                 have_lastdiff;
     int64_t             seq;       /* the unit being read */
-    int64_t             end_time;  /* the picture with an end of sequence code given out last, AV_NOPTS_VALUE: none
+    int64_t             end_time;  /* the picture with an end of sequence code given out last, DR_NOPTS_VALUE: none
                                       since (a later picture makes it one inside the segment) */
     DRFrameCb           side_cb;   void *side_opaque;
     Side               *side;      /* side[side_head .. side_head + side_n) wait for their picture */
@@ -122,9 +130,9 @@ static int q_push(VQ *q, const VUnit *u)
     }
     if (q->head + q->n == q->cap) {
         int cap = q->cap ? 2 * q->cap : 256;
-        VUnit *n = av_realloc_array(q->u, cap, sizeof(*n));
+        VUnit *n = dr_realloc_array(q->u, cap, sizeof(*n));
         if (!n)
-            return AVERROR(ENOMEM);
+            return DR_ERR(ENOMEM);
         q->u   = n;
         q->cap = cap;
     }
@@ -142,7 +150,7 @@ static void q_free(VQ *q)
 {
     for (int i = 0; i < q->n; i++)
         ff_disctl_frame_unref(&at(q, i)->f);
-    av_freep(&q->u);
+    dr_freep(&q->u);
     q->head = q->n = 0;
 }
 
@@ -182,7 +190,7 @@ static int display_less(const DRVideo *v, const VUnit *a, const VUnit *b)
         if (P - 128 < B && B < P && A < 0 && P <= A + 2 * P && A + 2 * P < P + 128 && A + 2 * P != B)
             return A + 2 * P < B;
     }
-    if (a->f.time != AV_NOPTS_VALUE && b->f.time != AV_NOPTS_VALUE && a->f.time > 0 && b->f.time > 0 &&
+    if (a->f.time != DR_NOPTS_VALUE && b->f.time != DR_NOPTS_VALUE && a->f.time > 0 && b->f.time > 0 &&
         a->f.time != b->f.time)
         return (uint64_t)a->f.time < (uint64_t)b->f.time;
     return (uint64_t)a->rank < (uint64_t)b->rank;
@@ -196,8 +204,8 @@ static int collect(DRVideo *v, int *pend, int *count, int *consumed)
         int i = (*consumed)++;
         if (is_pic(at(&v->g, i)->type)) {
             if (*count == GROUP_MAX) {
-                av_log(v->log, AV_LOG_ERROR, "Title timeline: video: more than %d pictures in one group\n", GROUP_MAX);
-                return AVERROR_INVALIDDATA;
+                dr_vlog(v->log, DR_VLOG_ERROR, "Title timeline: video: more than %d pictures in one group\n", GROUP_MAX);
+                return DR_ERR_INVALID;
             }
             pend[(*count)++] = i;
             return HAVE;
@@ -287,7 +295,7 @@ static int64_t offset_of(const DRVideo *v, const VUnit *u)
 static void set_scale(DRVideo *v)
 {
     uint64_t a = (uint64_t)v->den * DR_TICKS_PER_SECOND, b = (uint64_t)v->num * UNITS_FRAME;
-    uint64_t g = av_gcd(a, b);
+    uint64_t g = dr_gcd64(a, b);
 
     v->v70 = a / g;
     v->v78 = b / g;
@@ -316,7 +324,7 @@ static int measure_rate(DRVideo *v)
         if (r == NONE)
             break;
         u = at(&v->q, i);
-        if (u->type != DR_PIC_I || u->f.time == AV_NOPTS_VALUE || u->f.time < 0)
+        if (u->type != DR_PIC_I || u->f.time == DR_NOPTS_VALUE || u->f.time < 0)
             continue;
         if (i0 < 0) {
             i0 = i;
@@ -332,9 +340,9 @@ static int measure_rate(DRVideo *v)
             break;
     }
     if (i0 < 0 || i1 < 0 || t1 <= t0) {
-        av_log(v->log, AV_LOG_ERROR, "Title timeline: video: no frame rate in the stream and too few I pictures with "
+        dr_vlog(v->log, DR_VLOG_ERROR, "Title timeline: video: no frame rate in the stream and too few I pictures with "
                "times to measure one\n");
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
     }
     R = (uint64_t)(i1 - i0) * 1080000000000ULL / (uint64_t)(t1 - t0);
     if (R >= 22800 && R <= 23979)      { v->num = 24000; v->den = 1001; }
@@ -342,7 +350,7 @@ static int measure_rate(DRVideo *v)
     else if (R >= 24100 && R <= 25899) { v->num = 25;    v->den = 1;    }
     else if (R >= 29800 && R <= 30899) { v->num = 30000; v->den = 1001; }
     else                               { v->num = R / 1000; v->den = 1; }
-    av_log(v->log, AV_LOG_WARNING, "Title timeline: video: no frame rate in the stream; measured %d/%d from the "
+    dr_vlog(v->log, DR_VLOG_WARNING, "Title timeline: video: no frame rate in the stream; measured %d/%d from the "
            "pictures' times\n", v->num, v->den);
     return HAVE;
 }
@@ -377,7 +385,7 @@ static int start(DRVideo *v)
         if (r == NONE)
             break;
         u = at(&v->q, i);
-        if (!is_pic(u->type) || u->f.time == AV_NOPTS_VALUE)
+        if (!is_pic(u->type) || u->f.time == DR_NOPTS_VALUE)
             continue;
         key = u->f.time - (int64_t)(v->v70 * (uint64_t)u->pos / v->v78);
         for (k = 0; k < nh && h[k].key < key; k++)
@@ -393,7 +401,7 @@ static int start(DRVideo *v)
         for (;;) {
             int m = -1;
             for (k = 0; k + 1 < nh; k++)
-                if (FFABS(h[k + 1].key - h[k].key) < tol) {
+                if (DR_ABS(h[k + 1].key - h[k].key) < tol) {
                     m = k;
                     break;
                 }
@@ -422,7 +430,7 @@ static int start(DRVideo *v)
         }
     }
     if (!nh) {
-        av_log(v->log, AV_LOG_DEBUG, "Title timeline: video: no picture with a time: grid base 0\n");
+        dr_vlog(v->log, DR_VLOG_DEBUG, "Title timeline: video: no picture with a time: grid base 0\n");
         v->base = 0;
         return HAVE;
     }
@@ -451,9 +459,9 @@ static int64_t time_to_unit(const DRVideo *v, int64_t t)
     rel = t - v->base;
     q   = v->v78 * (uint64_t)rel / v->v70;
     i0  = q < 3 ? 0 : (int64_t)q - 3;
-    err = FFABS((int64_t)((uint64_t)i0 * v->v70 / v->v78) - rel);
+    err = DR_ABS((int64_t)((uint64_t)i0 * v->v70 / v->v78) - rel);
     for (int k = 1; k <= 6 && err; k++) {
-        int64_t e = FFABS((int64_t)((uint64_t)(i0 + k) * v->v70 / v->v78) - rel);
+        int64_t e = DR_ABS((int64_t)((uint64_t)(i0 + k) * v->v70 / v->v78) - rel);
         if (e < err) {
             err  = e;
             best = k;
@@ -522,7 +530,7 @@ static void side_drop(DRVideo *v, int64_t before, const char *why)
         Side *sd = &v->side[v->side_head++];
 
         v->side_n--;
-        av_log(v->log, AV_LOG_WARNING, "Title timeline: video: %d bytes taken out of the unit at byte %"PRId64" have no "
+        dr_vlog(v->log, DR_VLOG_WARNING, "Title timeline: video: %d bytes taken out of the unit at byte %"PRId64" have no "
                "picture to take a time from (%s): left out\n", sd->f.size, sd->f.pos, why);
         ff_disctl_frame_unref(&sd->f);
     }
@@ -536,7 +544,7 @@ static void side_drop(DRVideo *v, int64_t before, const char *why)
 static int assign(DRVideo *v, int n, int no_check)
 {
     VUnit *prev = at(&v->q, n - 1);
-    int64_t lim = prev->pos + offset_of(v, prev), batch_end, last_time = AV_NOPTS_VALUE;
+    int64_t lim = prev->pos + offset_of(v, prev), batch_end, last_time = DR_NOPTS_VALUE;
     int last_pic = -1, r;
 
     if (n < GROUP_MAX) {
@@ -579,7 +587,7 @@ static int assign(DRVideo *v, int n, int no_check)
         {
             int64_t p  = u.pos + offset_of(v, &u);
             int64_t ts = grid(v, p);
-            if (u.f.time != AV_NOPTS_VALUE && u.f.time >= 0 && !no_check && FFABS(ts - u.f.time) >= THR)
+            if (u.f.time != DR_NOPTS_VALUE && u.f.time >= 0 && !no_check && DR_ABS(ts - u.f.time) >= THR)
                 timecode(v, ts, u.f.time);
             u.f.time = ts;
             u.f.dur  = (int64_t)((uint64_t)u.fields * v->v70 / v->v78);
@@ -598,11 +606,11 @@ static int assign(DRVideo *v, int n, int no_check)
         /* an end of sequence code with a picture after it in the segment:
          * a sequence change when that picture starts a new sequence with
          * its sequence header (ISO/IEC 13818-2 6.2.1, SMPTE 421M Annex E) */
-        if (v->end_time != AV_NOPTS_VALUE) {
+        if (v->end_time != DR_NOPTS_VALUE) {
             v->st.seq_end_inside++;
             v->st.seq_new += !!u.seq_start;
             event(v, DR_EV_SEQ_END_INSIDE, v->end_time, !!u.seq_start, 1);
-            v->end_time = AV_NOPTS_VALUE;
+            v->end_time = DR_NOPTS_VALUE;
         }
         if (u.seq_end) {
             v->st.seq_end++;
@@ -634,7 +642,7 @@ static int assign(DRVideo *v, int n, int no_check)
         }
     }
     /* no later picture in the batch: the batch's last picture */
-    if (last_time != AV_NOPTS_VALUE) {
+    if (last_time != DR_NOPTS_VALUE) {
         if ((r = side_out(v, batch_end, last_time)) < 0)
             return r;
     } else
@@ -660,10 +668,10 @@ static int repair(DRVideo *v, int *more, int i, int64_t target)
         if ((r = need(v, m - 1)) == WAIT)
             return WAIT;
         if (r == HAVE) {
-            av_log(v->log, AV_LOG_ERROR, "Title timeline: video: the PES times jump by %"PRId64" fields, beyond what the "
+            dr_vlog(v->log, DR_VLOG_ERROR, "Title timeline: video: the PES times jump by %"PRId64" fields, beyond what the "
                    "grid follows\n", d);
             timecode(v, f->f.time, f->f.time + (int64_t)((uint64_t)d * v->v70 / v->v78));
-            return AVERROR_INVALIDDATA;
+            return DR_ERR_INVALID;
         }
         *more = 1;
         return HAVE;
@@ -720,7 +728,7 @@ static int pull(DRVideo *v)
     uint64_t w1, w2;
 
     if (v->b8) {
-        uint32_t k = FFMIN(v->b8, 4);
+        uint32_t k = DR_MIN(v->b8, 4);
         int64_t old = v->b0;
         DRFrame m = { .time = grid(v, old), .flags = DR_F_KEY | DR_F_MARKER, .pos = -1 };
         v->b0 += k;
@@ -728,7 +736,7 @@ static int pull(DRVideo *v)
         v->a8 += v->bc;
         v->bc  = 0;
         v->st.placeholders++;
-        return v->cb(v->opaque, &m) < 0 ? AVERROR(EINVAL) : HAVE;
+        return v->cb(v->opaque, &m) < 0 ? DR_ERR(EINVAL) : HAVE;
     }
     for (i = 0;; i++) {
         if ((r = need(v, i)) == WAIT)
@@ -736,13 +744,13 @@ static int pull(DRVideo *v)
         if (r == NONE)
             goto no_timed;
         u = at(&v->q, i);
-        if (u->f.time != AV_NOPTS_VALUE && u->f.time >= 0 && is_pic(u->type))
+        if (u->f.time != DR_NOPTS_VALUE && u->f.time >= 0 && is_pic(u->type))
             break;
         if (i + 1 == GROUP_MAX)
             goto no_timed;
     }
     exp = grid(v, offset_of(v, u) + u->pos);
-    if (FFABS(u->f.time - exp) < THR)
+    if (DR_ABS(u->f.time - exp) < THR)
         return assign(v, i + 1, 0);
 
     idx        = time_to_unit(v, u->f.time);
@@ -764,8 +772,8 @@ static int pull(DRVideo *v)
         uint64_t in = 0, out = 0;
         for (int j = i; j < v->q.n; j++) {
             VUnit *g = at(&v->q, j);
-            if (is_pic(g->type) && g->f.time != AV_NOPTS_VALUE && g->f.time >= 0) {
-                if (FFABS(g->f.time - grid(v, offset_of(v, g) + g->pos)) < THR)
+            if (is_pic(g->type) && g->f.time != DR_NOPTS_VALUE && g->f.time >= 0) {
+                if (DR_ABS(g->f.time - grid(v, offset_of(v, g) + g->pos)) < THR)
                     in++;
                 else
                     out++;
@@ -872,7 +880,7 @@ static int run(DRVideo *v)
             return r;
         v->started  = 1;
         v->st.base  = v->base;
-        av_log(v->log, AV_LOG_DEBUG, "Title timeline: video: %d/%d fps, grid base %"PRId64" ticks\n",
+        dr_vlog(v->log, DR_VLOG_DEBUG, "Title timeline: video: %d/%d fps, grid base %"PRId64" ticks\n",
                v->num, v->den, v->base);
     }
     while (v->q.n || v->b8) {
@@ -901,7 +909,7 @@ static int unit_in(DRVideo *v, VUnit *u)
             int ret;
             v->held.fields = 2;
             v->have_held   = 0;
-            av_log(v->log, AV_LOG_WARNING, "Title timeline: video: a field picture without its second field\n");
+            dr_vlog(v->log, DR_VLOG_WARNING, "Title timeline: video: a field picture without its second field\n");
             if ((ret = to_next(v, &v->held)) < 0)
                 return ret;
         }
@@ -915,16 +923,16 @@ static int unit_in(DRVideo *v, VUnit *u)
     /* the second field: one unit with both fields' bytes */
     {
         DRFrame *a = &v->held.f, *b = &u->f;
-        AVBufferRef *buf = av_buffer_alloc(a->size + b->size + AV_INPUT_BUFFER_PADDING_SIZE);
+        DrBuf *buf = dr_buf_alloc(a->size + b->size + DR_BUF_PADDING);
         int ret;
         if (!buf)
-            return AVERROR(ENOMEM);
-        memcpy(buf->data, a->data, a->size);
-        memcpy(buf->data + a->size, b->data, b->size);
-        memset(buf->data + a->size + b->size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
-        av_buffer_unref(&a->buf);
+            return DR_ERR(ENOMEM);
+        memcpy(dr_buf_data(buf), a->data, a->size);
+        memcpy(dr_buf_data(buf) + a->size, b->data, b->size);
+        memset(dr_buf_data(buf) + a->size + b->size, 0, DR_BUF_PADDING);
+        dr_buf_unref(&a->buf);
         a->buf  = buf;
-        a->data = buf->data;
+        a->data = dr_buf_data(buf);
         a->size += b->size;
         v->held.seq_end |= u->seq_end;
         ff_disctl_frame_unref(b);
@@ -938,13 +946,13 @@ static int unit_in(DRVideo *v, VUnit *u)
 
 int ff_disctl_video_side(DRVideo *v, const uint8_t *data, int size, int64_t pos)
 {
-    Side sd = { .f = { .time = AV_NOPTS_VALUE, .pos = pos }, .tag = v->seq };
+    Side sd = { .f = { .time = DR_NOPTS_VALUE, .pos = pos }, .tag = v->seq };
 
-    if (!(sd.f.buf = av_buffer_alloc(size + AV_INPUT_BUFFER_PADDING_SIZE)))
-        return AVERROR(ENOMEM);
-    memcpy(sd.f.buf->data, data, size);
-    memset(sd.f.buf->data + size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
-    sd.f.data = sd.f.buf->data;
+    if (!(sd.f.buf = dr_buf_alloc(size + DR_BUF_PADDING)))
+        return DR_ERR(ENOMEM);
+    memcpy(dr_buf_data(sd.f.buf), data, size);
+    memset(dr_buf_data(sd.f.buf) + size, 0, DR_BUF_PADDING);
+    sd.f.data = dr_buf_data(sd.f.buf);
     sd.f.size = size;
     if (v->side_head && v->side_head + v->side_n == v->side_cap) {
         memmove(v->side, v->side + v->side_head, v->side_n * sizeof(*v->side));
@@ -952,10 +960,10 @@ int ff_disctl_video_side(DRVideo *v, const uint8_t *data, int size, int64_t pos)
     }
     if (v->side_head + v->side_n == v->side_cap) {
         int cap = v->side_cap ? 2 * v->side_cap : 16;
-        Side *n = av_realloc_array(v->side, cap, sizeof(*n));
+        Side *n = dr_realloc_array(v->side, cap, sizeof(*n));
         if (!n) {
             ff_disctl_frame_unref(&sd.f);
-            return AVERROR(ENOMEM);
+            return DR_ERR(ENOMEM);
         }
         v->side     = n;
         v->side_cap = cap;
@@ -972,7 +980,7 @@ void ff_disctl_video_set_side(DRVideo *v, DRFrameCb cb, void *opaque)
 
 void ff_disctl_video_removed(DRVideo *v, int kind, int64_t n)
 {
-    if (kind >= 0 && kind < FF_ARRAY_ELEMS(v->st.removed))
+    if (kind >= 0 && kind < DR_ARRAY_ELEMS(v->st.removed))
         v->st.removed[kind] += n;
 }
 
@@ -989,11 +997,11 @@ int ff_disctl_video_unit(void *opaque, const DRUnit *du)
     DRPicture pic = du->pic ? *du->pic : (DRPicture){ 0 };
     int ret;
 
-    if (!(u.f.buf = av_buffer_alloc(du->size + AV_INPUT_BUFFER_PADDING_SIZE)))
-        return AVERROR(ENOMEM);
-    memcpy(u.f.buf->data, du->data, du->size);
-    memset(u.f.buf->data + du->size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
-    u.f.data = u.f.buf->data;
+    if (!(u.f.buf = dr_buf_alloc(du->size + DR_BUF_PADDING)))
+        return DR_ERR(ENOMEM);
+    memcpy(dr_buf_data(u.f.buf), du->data, du->size);
+    memset(dr_buf_data(u.f.buf) + du->size, 0, DR_BUF_PADDING);
+    u.f.data = dr_buf_data(u.f.buf);
     u.f.size = du->size;
     v->seq   = u.seq;
     if (v->rules->split && (ret = v->rules->split(v, &u.f)) < 0) {
@@ -1013,9 +1021,9 @@ int ff_disctl_video_unit(void *opaque, const DRUnit *du)
     u.seq_end   = pic.seq_end;
     u.seq_start = pic.seq_start;
     if (is_pic(u.type) && u.fields <= 0) {
-        av_log(v->log, AV_LOG_ERROR, "Title timeline: video: a picture without a duration\n");
+        dr_vlog(v->log, DR_VLOG_ERROR, "Title timeline: video: a picture without a duration\n");
         ff_disctl_frame_unref(&u.f);
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
     }
     if ((ret = unit_in(v, &u)) < 0) {
         ff_disctl_frame_unref(&u.f);
@@ -1038,7 +1046,7 @@ int ff_disctl_video_flush(DRVideo *v)
     if ((ret = run(v)) < 0)
         return ret;
     if (v->q.n || v->g.n || v->c.n)
-        av_log(v->log, AV_LOG_WARNING, "Title timeline: video: %d units left at the end of the segment\n",
+        dr_vlog(v->log, DR_VLOG_WARNING, "Title timeline: video: %d units left at the end of the segment\n",
                v->q.n + v->g.n + v->c.n);
     side_drop(v, INT64_MAX, "the end of the segment");
     if (v->invalid && v->started)
@@ -1047,7 +1055,7 @@ int ff_disctl_video_flush(DRVideo *v)
     return 0;
 }
 
-int ff_disctl_video_open(DRVideo **vp, void *logctx, enum AVCodecID codec, int track,
+int ff_disctl_video_open(DRVideo **vp, void *logctx, DRCodecID codec, int track,
                           DRFrameCb cb, void *opaque, DREventCb ev, void *ev_opaque)
 {
     const DRCodec *c = ff_disctl_codec(codec);
@@ -1055,12 +1063,12 @@ int ff_disctl_video_open(DRVideo **vp, void *logctx, enum AVCodecID codec, int t
 
     *vp = NULL;
     if (!c || !c->video) {
-        av_log(logctx, AV_LOG_ERROR, "Title timeline: %s has no video rules in the codec table: its track cannot be "
-               "ripped\n", avcodec_get_name(codec));
-        return AVERROR(ENOSYS);
+        dr_vlog(logctx, DR_VLOG_ERROR, "Title timeline: %s has no video rules in the codec table: its track cannot be "
+               "ripped\n", ff_disctl_codec_id_name(codec));
+        return DR_ERR(ENOSYS);
     }
-    if (!(v = av_mallocz(sizeof(*v))))
-        return AVERROR(ENOMEM);
+    if (!(v = dr_mallocz(sizeof(*v))))
+        return DR_ERR(ENOMEM);
     v->log   = logctx;
     v->codec = c;
     v->rules = c->video;
@@ -1069,10 +1077,10 @@ int ff_disctl_video_open(DRVideo **vp, void *logctx, enum AVCodecID codec, int t
     v->opaque = opaque;
     v->event = ev;
     v->event_opaque = ev_opaque;
-    v->end_time = AV_NOPTS_VALUE;
-    if (v->rules->priv_size && !(v->priv = av_mallocz(v->rules->priv_size))) {
-        av_free(v);
-        return AVERROR(ENOMEM);
+    v->end_time = DR_NOPTS_VALUE;
+    if (v->rules->priv_size && !(v->priv = dr_mallocz(v->rules->priv_size))) {
+        dr_free(v);
+        return DR_ERR(ENOMEM);
     }
     *vp = v;
     return 0;
@@ -1091,7 +1099,7 @@ void ff_disctl_video_set_rate(DRVideo *v, int num, int den)
     if ((int64_t)num * v->den == (int64_t)v->num * den)
         return;
     if (!v->warn_den || (int64_t)num * v->warn_den != (int64_t)v->warn_num * den) {
-        av_log(v->log, AV_LOG_WARNING, "Title timeline: video: a header states %d/%d fps, the segment is timed at "
+        dr_vlog(v->log, DR_VLOG_WARNING, "Title timeline: video: a header states %d/%d fps, the segment is timed at "
                "%d/%d fps (its first header)\n", num, den, v->num, v->den);
         event(v, DR_EV_VIDEO_RATE_CHANGE, 0, den, num);
     }
@@ -1104,16 +1112,16 @@ int ff_disctl_video_snap(const DRVideo *v, int64_t t, int64_t *out)
     int64_t i;
 
     if (!v->started)
-        return AVERROR(EAGAIN);
+        return DR_ERR(EAGAIN);
     i    = time_to_unit(v, t);
-    *out = i < 0 ? AV_NOPTS_VALUE : grid(v, i);
+    *out = i < 0 ? DR_NOPTS_VALUE : grid(v, i);
     return 0;
 }
 
 int ff_disctl_video_field(const DRVideo *v, int64_t *ticks)
 {
     if (!v->started)
-        return AVERROR(EAGAIN);
+        return DR_ERR(EAGAIN);
     *ticks = (int64_t)(v->v70 / v->v78);
     return 0;
 }
@@ -1141,9 +1149,9 @@ void ff_disctl_video_close(DRVideo **vp)
     q_free(&v->q);
     for (int i = 0; i < v->side_n; i++)
         ff_disctl_frame_unref(&v->side[v->side_head + i].f);
-    av_freep(&v->side);
+    dr_freep(&v->side);
     if (v->priv && v->rules->close)
         v->rules->close(v->priv);
-    av_freep(&v->priv);
-    av_freep(vp);
+    dr_freep(&v->priv);
+    dr_freep(vp);
 }

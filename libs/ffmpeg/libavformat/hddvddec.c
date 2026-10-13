@@ -37,7 +37,7 @@
 #include "disc.h"
 #include "discinfo.h"
 #include "io/discio.h"
-#include "disctl.h"
+#include "timeline/disctl.h"
 #include "hddvd_internal.h"
 #include "internal.h"
 

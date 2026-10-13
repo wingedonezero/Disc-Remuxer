@@ -25,13 +25,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "libavcodec/avcodec.h"
-#include "libavutil/common.h"
-#include "libavutil/error.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
 
-#include "disctl.h"
+#include <errno.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "base/bytes.h"
+#include "base/err.h"
+#include "base/macros.h"
+#include "base/mem.h"
+#include "base/vlog.h"
+
+#include "timeline/disctl.h"
 
 #define LOG_MAX  10              /* findings of one kind logged one by one */
 #define GRID_TOL 1               /* ticks: grid times and durations are each truncated */
@@ -75,7 +82,7 @@ static void finding(DRVerify *v, int kind, int64_t pos, int64_t dur, int64_t cou
         va_start(ap, fmt);
         vsnprintf(buf, sizeof(buf), fmt, ap);
         va_end(ap);
-        av_log(v->log, AV_LOG_WARNING, "Title timeline: check: track %d (%s): %s%s\n", v->track, v->codec->name, buf,
+        dr_vlog(v->log, DR_VLOG_WARNING, "Title timeline: check: track %d (%s): %s%s\n", v->track, v->codec->name, buf,
                ++*n == LOG_MAX ? " (further ones of this kind are only counted)" : "");
     }
 }
@@ -85,7 +92,7 @@ static double ms(int64_t t)
     return t / (DR_TICKS_PER_SECOND / 1000.0);
 }
 
-int ff_disctl_verify_open(DRVerify **vp, void *logctx, enum AVCodecID codec, int track, int kind,
+int ff_disctl_verify_open(DRVerify **vp, void *logctx, DRCodecID codec, int track, int kind,
                            DREventCb ev, void *ev_opaque)
 {
     const DRCodec *c = ff_disctl_codec(codec);
@@ -93,17 +100,17 @@ int ff_disctl_verify_open(DRVerify **vp, void *logctx, enum AVCodecID codec, int
 
     *vp = NULL;
     if (!c)
-        return AVERROR(ENOSYS);
-    if (!(v = av_mallocz(sizeof(*v))))
-        return AVERROR(ENOMEM);
+        return DR_ERR(ENOSYS);
+    if (!(v = dr_mallocz(sizeof(*v))))
+        return DR_ERR(ENOMEM);
     v->log   = logctx;
     v->codec = c;
     v->track = track;
     v->kind  = kind;
     v->event = ev;
     v->event_opaque = ev_opaque;
-    v->st.es_err_at = v->st.mkv_err_at = AV_NOPTS_VALUE;
-    v->seg_at = AV_NOPTS_VALUE;
+    v->st.es_err_at = v->st.mkv_err_at = DR_NOPTS_VALUE;
+    v->seg_at = DR_NOPTS_VALUE;
     *vp = v;
     return 0;
 }
@@ -115,9 +122,9 @@ static int grow(void *a, int n, int *cap, size_t size)
 
     if (n == *cap) {
         int c = *cap ? 2 * *cap : 1024;
-        void *p = av_realloc_array(*pa, c, size);
+        void *p = dr_realloc_array(*pa, c, size);
         if (!p)
-            return AVERROR(ENOMEM);
+            return DR_ERR(ENOMEM);
         *pa  = p;
         *cap = c;
     }
@@ -128,17 +135,17 @@ static int grow(void *a, int n, int *cap, size_t size)
  * finding beyond DR_SYNC_LIMIT. */
 static void sync_segment_end(DRVerify *v)
 {
-    if (v->seg_at == AV_NOPTS_VALUE)
+    if (v->seg_at == DR_NOPTS_VALUE)
         return;
-    av_log(v->log, AV_LOG_VERBOSE, "Title timeline: check: track %d (%s): segment %d: sync error as a stream file "
+    dr_vlog(v->log, DR_VLOG_VERBOSE, "Title timeline: check: track %d (%s): segment %d: sync error as a stream file "
            "%+.3f ms at its largest (at %.3f ms)\n", v->track, v->codec->name, v->seg + 1, ms(v->seg_err),
            ms(v->seg_at));
-    if (FFABS(v->seg_err) > DR_SYNC_LIMIT) {
+    if (DR_ABS(v->seg_err) > DR_SYNC_LIMIT) {
         v->st.sync_segments++;
         if (v->event)
             v->event(v->event_opaque, &(DREvent){ DR_EV_SYNC, v->track, v->seg_at, v->seg_err, 0, v->seg });
     }
-    v->seg_at = AV_NOPTS_VALUE;
+    v->seg_at = DR_NOPTS_VALUE;
 }
 
 static void sync_error(DRVerify *v, const DRFrame *f)
@@ -150,17 +157,17 @@ static void sync_error(DRVerify *v, const DRFrame *f)
         v->seg = f->seg;
         v->st.segments++;
     }
-    if (v->seg_at == AV_NOPTS_VALUE || FFABS(es) > FFABS(v->seg_err)) {
+    if (v->seg_at == DR_NOPTS_VALUE || DR_ABS(es) > DR_ABS(v->seg_err)) {
         v->seg_err = es;
         v->seg_at  = f->src;
     }
 
-    if (v->st.es_err_at == AV_NOPTS_VALUE || FFABS(es) > FFABS(v->st.es_err_max)) {
+    if (v->st.es_err_at == DR_NOPTS_VALUE || DR_ABS(es) > DR_ABS(v->st.es_err_max)) {
         v->st.es_err_max = es;
         v->st.es_err_at  = f->src;
         v->st.sync_seg   = f->seg;
     }
-    if (v->st.mkv_err_at == AV_NOPTS_VALUE || FFABS(mkv) > FFABS(v->st.mkv_err_max)) {
+    if (v->st.mkv_err_at == DR_NOPTS_VALUE || DR_ABS(mkv) > DR_ABS(v->st.mkv_err_max)) {
         v->st.mkv_err_max = mkv;
         v->st.mkv_err_at  = f->src;
     }
@@ -214,7 +221,7 @@ int ff_disctl_verify_frame(DRVerify *v, const DRFrame *f)
                 "after the one before it (%.3f ms)", ms(f->time), ms(v->prev_time));
     } else if (v->have_prev && f->time < v->prev_end) {
         v->st.overlaps++;
-        v->st.overlap_dur = FFMAX(v->st.overlap_dur, v->prev_end - f->time);
+        v->st.overlap_dur = DR_MAX(v->st.overlap_dur, v->prev_end - f->time);
     }
     if (v->kind == DR_KIND_AUDIO) {
         if (!v->have_prev) {
@@ -253,7 +260,7 @@ static void video_order(DRVerify *v)
         int64_t end = v->v[i].time + v->v[i].dur, d = v->v[i + 1].time - end;
         int filled = 0;
 
-        if (FFABS(d) <= GRID_TOL)
+        if (DR_ABS(d) <= GRID_TOL)
             continue;
         if (d > 0) {
             while (p < v->nb_ph && v->ph[p] < end)
@@ -268,7 +275,7 @@ static void video_order(DRVerify *v)
                     ms(end), ms(d), filled);
         } else {
             v->st.overlaps++;
-            v->st.overlap_dur = FFMAX(v->st.overlap_dur, -d);
+            v->st.overlap_dur = DR_MAX(v->st.overlap_dur, -d);
             finding(v, DR_EV_VERIFY_OVERLAP, v->v[i + 1].time, -d, 1, "the picture at %.3f ms starts %.3f ms "
                     "before the one before it ends", ms(v->v[i + 1].time), ms(-d));
         }
@@ -284,14 +291,14 @@ int ff_disctl_verify_finish(DRVerify *v)
     if (v->kind == DR_KIND_AUDIO)
         sync_segment_end(v);
     /* the summary goes to the debug log; every finding was a warning already */
-    av_log(v->log, AV_LOG_VERBOSE,
+    dr_vlog(v->log, DR_VLOG_VERBOSE,
            "Title timeline: check: track %d (%s): %"PRId64" frames, %"PRId64" units that do not parse, %"PRId64
            " checksum failures, %"PRId64" time-order errors, %"PRId64" holes (%.3f ms), %"PRId64" overlaps "
            "(largest %.3f ms)%s\n", v->track, v->codec->name, s->frames - s->markers, s->bad_units, s->crc_errors,
            s->order_errors, s->holes, ms(s->hole_dur), s->overlaps, ms(s->overlap_dur),
            s->unchecked ? ", units not checked (no check for this codec)" : "");
     if (v->kind == DR_KIND_AUDIO && v->have_prev) {
-        av_log(v->log, AV_LOG_VERBOSE, "Title timeline: check: track %d (%s): start delay %.3f ms; sync error as a stream "
+        dr_vlog(v->log, DR_VLOG_VERBOSE, "Title timeline: check: track %d (%s): start delay %.3f ms; sync error as a stream "
                "file %+.3f ms at its largest (at %.3f ms), %+.3f ms at the end; by the output times %+.3f ms at "
                "its largest (at %.3f ms)\n", v->track, v->codec->name, ms(s->delay), ms(s->es_err_max),
                ms(s->es_err_at), ms(s->es_err_end), ms(s->mkv_err_max), ms(s->mkv_err_at));
@@ -310,7 +317,7 @@ void ff_disctl_verify_close(DRVerify **vp)
 
     if (!v)
         return;
-    av_freep(&v->v);
-    av_freep(&v->ph);
-    av_freep(vp);
+    dr_freep(&v->v);
+    dr_freep(&v->ph);
+    dr_freep(vp);
 }

@@ -22,19 +22,27 @@
 
 #include <string.h>
 
-#include "libavutil/common.h"
-#include "libavutil/error.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
 
-#include "disctl.h"
+#include <errno.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "base/bytes.h"
+#include "base/err.h"
+#include "base/macros.h"
+#include "base/mem.h"
+#include "base/vlog.h"
+
+#include "timeline/disctl.h"
 
 #define SNAP 107999999LL         /* a first mark this close after the title start (just under 0.1 s) is at 0 */
 
 void ff_disctl_chapter_plan_free(DRChapterPlan *p)
 {
-    av_freep(&p->marks);
-    av_freep(&p->atoms);
+    dr_freep(&p->marks);
+    dr_freep(&p->atoms);
     p->nb_marks = p->nb_atoms = 0;
 }
 
@@ -49,29 +57,29 @@ int ff_disctl_chapter_plan(void *log, const int64_t *r, int n, int64_t skip, int
     /* a broken tail: a last record at 0 after one that is not, or one
      * earlier than the record before it, is cut off */
     while (n > 1 && ((!r[n - 1] && r[n - 2]) || (uint64_t)r[n - 2] > (uint64_t)r[n - 1])) {
-        av_log(log, AV_LOG_WARNING, "Title timeline: chapters: record %d (at %"PRId64") does not follow record %d "
+        dr_vlog(log, DR_VLOG_WARNING, "Title timeline: chapters: record %d (at %"PRId64") does not follow record %d "
                "(at %"PRId64"): cut off with the records after it\n", n - 1, r[n - 1], n - 2, r[n - 2]);
         n--;
     }
     /* times must not go back: the title is refused */
     for (int i = 0; i < n; i++) {
         if ((uint64_t)r[i] < (uint64_t)prev) {
-            av_log(log, AV_LOG_ERROR, "Title timeline: chapters: record %d (at %"PRId64") is earlier than the one "
+            dr_vlog(log, DR_VLOG_ERROR, "Title timeline: chapters: record %d (at %"PRId64") is earlier than the one "
                    "before it (at %"PRId64"): the title's chapter list is broken\n", i, r[i], prev);
-            return AVERROR_INVALIDDATA;
+            return DR_ERR_INVALID;
         }
         prev = r[i];
     }
-    if (!(p->marks = av_malloc_array(n + 1, sizeof(*p->marks))) ||
-        !(p->atoms = av_malloc_array(n + 1, sizeof(*p->atoms)))) {
+    if (!(p->marks = dr_malloc_array(n + 1, sizeof(*p->marks))) ||
+        !(p->atoms = dr_malloc_array(n + 1, sizeof(*p->atoms)))) {
         ff_disctl_chapter_plan_free(p);
-        return AVERROR(ENOMEM);
+        return DR_ERR(ENOMEM);
     }
     for (int i = 0; i < n; i++) {
         int64_t d;
 
         if ((uint64_t)r[i] < (uint64_t)skip) {
-            av_log(log, AV_LOG_DEBUG, "Title timeline: chapters: record %d is in the leading segments left out: "
+            dr_vlog(log, DR_VLOG_DEBUG, "Title timeline: chapters: record %d is in the leading segments left out: "
                    "dropped\n", i);
             continue;
         }
@@ -83,7 +91,7 @@ int ff_disctl_chapter_plan(void *log, const int64_t *r, int n, int64_t skip, int
         if (p->nb_marks && d <= p->marks[p->nb_marks - 1]) {
             /* the same time as the record before it: one chapter (the
              * reference keeps the record, so later names shift by one) */
-            av_log(log, AV_LOG_WARNING, "Title timeline: chapters: record %d is at the same time as the one before it: "
+            dr_vlog(log, DR_VLOG_WARNING, "Title timeline: chapters: record %d is at the same time as the one before it: "
                    "dropped\n", i);
             continue;
         }
@@ -114,14 +122,14 @@ int ff_disctl_chapter_list(const DRChapterPlan *p, const int64_t *starts, int nb
                             DRChapter **out, int *nb_out)
 {
     DRChapter *c;
-    int n = FFMIN(nb_starts, p->nb_atoms);
+    int n = DR_MIN(nb_starts, p->nb_atoms);
 
     *out    = NULL;
     *nb_out = 0;
     if (n < 2)
         return 0;
-    if (!(c = av_malloc_array(n, sizeof(*c))))
-        return AVERROR(ENOMEM);
+    if (!(c = dr_malloc_array(n, sizeof(*c))))
+        return DR_ERR(ENOMEM);
     for (int k = 0; k < n; k++) {
         c[k].start  = starts[k];
         c[k].end    = k + 1 < n ? starts[k + 1] : duration;

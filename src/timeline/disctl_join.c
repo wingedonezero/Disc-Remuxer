@@ -20,12 +20,20 @@
 
 #include <string.h>
 
-#include "libavutil/avutil.h"
-#include "libavutil/error.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
 
-#include "disctl.h"
+#include <errno.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "base/bytes.h"
+#include "base/err.h"
+#include "base/macros.h"
+#include "base/mem.h"
+#include "base/vlog.h"
+
+#include "timeline/disctl.h"
 
 #define MARK_AHEAD   432000000LL   /* a chapter mark goes on a video key frame up to 0.4 s before it */
 #define SEED_UNITS   1000          /* audio frames searched for the first one with a time */
@@ -52,7 +60,7 @@ struct DRJoin {
     int          mark;      /* next chapter mark */
     int64_t     *chap;      /* times of the frames that start chapters */
     int          nb_chap, chap_cap;
-    int64_t     *starts;    /* each placed segment's start (its first video time), AV_NOPTS_VALUE: not placed */
+    int64_t     *starts;    /* each placed segment's start (its first video time), DR_NOPTS_VALUE: not placed */
     int          nb_starts;
     DRJoinStats  st;
 };
@@ -61,9 +69,9 @@ static int wait_add(Track *t, DRFrame *f)
 {
     if (t->nb_wait == t->cap) {
         int cap = t->cap ? 2 * t->cap : 64;
-        DRFrame *w = av_realloc_array(t->wait, cap, sizeof(*w));
+        DRFrame *w = dr_realloc_array(t->wait, cap, sizeof(*w));
         if (!w)
-            return AVERROR(ENOMEM);
+            return DR_ERR(ENOMEM);
         t->wait = w;
         t->cap  = cap;
     }
@@ -90,10 +98,10 @@ static int give(DRJoin *j, int track, DRFrame *f, int64_t ts, int64_t src)
         if (m <= o || m - o < MARK_AHEAD) {
             if (j->nb_chap == j->chap_cap) {
                 int cap = j->chap_cap ? 2 * j->chap_cap : 32;
-                int64_t *c = av_realloc_array(j->chap, cap, sizeof(*c));
+                int64_t *c = dr_realloc_array(j->chap, cap, sizeof(*c));
                 if (!c) {
                     ff_disctl_frame_unref(f);
-                    return AVERROR(ENOMEM);
+                    return DR_ERR(ENOMEM);
                 }
                 j->chap     = c;
                 j->chap_cap = cap;
@@ -124,15 +132,15 @@ static int place_frame(DRJoin *j, int track, DRFrame *f)
         return give(j, track, f, ts, ts);
     if (t->kind == DR_KIND_VIDEO) {
         if (ts < 0) {
-            av_log(j->log, AV_LOG_ERROR, "Title timeline: joiner: a video frame without a time\n");
-            return AVERROR_BUG;
+            dr_vlog(j->log, DR_VLOG_ERROR, "Title timeline: joiner: a video frame without a time\n");
+            return DR_ERR_BUG;
         }
         if (!t->seeded || t->e < ts + f->dur)
             t->e = ts + f->dur;                    /* running maximum of the frame ends */
         t->seeded = 1;
         return give(j, track, f, ts, ts);
     }
-    if (ts == AV_NOPTS_VALUE) {
+    if (ts == DR_NOPTS_VALUE) {
         ts = t->e;                                 /* no time of its own: where the track is */
         src = ts;
     } else {
@@ -142,7 +150,7 @@ static int place_frame(DRJoin *j, int track, DRFrame *f)
         } else if (gap > 0 && gap > f->dur && t->kind == DR_KIND_SUBTITLE) {
             /* a sub-picture replaces the one shown before it: it keeps its
              * time (the reference moves it to the end of the one before) */
-            av_log(j->log, AV_LOG_DEBUG, "Title timeline: joiner: subtitle track %d: a unit at %"PRId64" ticks starts "
+            dr_vlog(j->log, DR_VLOG_DEBUG, "Title timeline: joiner: subtitle track %d: a unit at %"PRId64" ticks starts "
                    "%"PRId64" ticks before the one before it ends: kept at its time\n", track,
                    j->offset + ts - j->start, gap);
             event(j, DR_EV_SUB_OVERLAP, track, j->offset + ts - j->start, gap, 0);
@@ -171,20 +179,20 @@ static int seed(DRJoin *j, int track, int final)
     if (t->kind == DR_KIND_SUBTITLE || t->kind == DR_KIND_LAYER) {
         if (!t->nb_wait)
             return 0;
-        if (t->wait[0].time == AV_NOPTS_VALUE || t->wait[0].time < 0) {
-            av_log(j->log, AV_LOG_ERROR, "Title timeline: joiner: %s track %d: its first frame in segment %d "
+        if (t->wait[0].time == DR_NOPTS_VALUE || t->wait[0].time < 0) {
+            dr_vlog(j->log, DR_VLOG_ERROR, "Title timeline: joiner: %s track %d: its first frame in segment %d "
                    "has no time\n", t->kind == DR_KIND_LAYER ? "layer" : "subtitle", track, j->seg);
-            return AVERROR_INVALIDDATA;
+            return DR_ERR_INVALID;
         }
         t->e = t->wait[0].time;
         return 1;
     }
     for (int i = 0; i < t->nb_wait && i < SEED_UNITS; i++) {
         if (t->wait[i].dur <= 0 && t->wait[i].size) {
-            av_log(j->log, AV_LOG_ERROR, "Title timeline: joiner: audio track %d: a frame without a duration\n", track);
-            return AVERROR_INVALIDDATA;
+            dr_vlog(j->log, DR_VLOG_ERROR, "Title timeline: joiner: audio track %d: a frame without a duration\n", track);
+            return DR_ERR_INVALID;
         }
-        if (t->wait[i].time != AV_NOPTS_VALUE && t->wait[i].time >= 0) {
+        if (t->wait[i].time != DR_NOPTS_VALUE && t->wait[i].time >= 0) {
             int64_t e = t->wait[i].time;
             for (int k = i - 1; k >= 0; k--)
                 e -= t->wait[k].dur;
@@ -193,9 +201,9 @@ static int seed(DRJoin *j, int track, int final)
         }
     }
     if (final || t->nb_wait >= SEED_UNITS) {
-        av_log(j->log, AV_LOG_ERROR, "Title timeline: joiner: audio track %d: none of its first %d frames in segment %d "
-               "has a time\n", track, FFMIN(t->nb_wait, SEED_UNITS), j->seg);
-        return AVERROR_INVALIDDATA;
+        dr_vlog(j->log, DR_VLOG_ERROR, "Title timeline: joiner: audio track %d: none of its first %d frames in segment %d "
+               "has a time\n", track, DR_MIN(t->nb_wait, SEED_UNITS), j->seg);
+        return DR_ERR_INVALID;
     }
     return 0;
 }
@@ -227,18 +235,18 @@ static int drain(DRJoin *j, int track, int final)
 /* The segment's start (its first video time) and place on the timeline. */
 static int place_segment(DRJoin *j)
 {
-    if (j->batch_min == AV_NOPTS_VALUE) {
-        av_log(j->log, AV_LOG_ERROR, "Title timeline: joiner: segment %d has no video frame with a time\n", j->seg);
-        return AVERROR_INVALIDDATA;
+    if (j->batch_min == DR_NOPTS_VALUE) {
+        dr_vlog(j->log, DR_VLOG_ERROR, "Title timeline: joiner: segment %d has no video frame with a time\n", j->seg);
+        return DR_ERR_INVALID;
     }
     j->start  = j->batch_min;
     j->offset = j->seg ? j->prev_e0 - j->prev_start + j->prev_offset : 0;
     if (j->seg >= j->nb_starts) {
-        int64_t *p = av_realloc_array(j->starts, j->seg + 1, sizeof(*p));
+        int64_t *p = dr_realloc_array(j->starts, j->seg + 1, sizeof(*p));
         if (!p)
-            return AVERROR(ENOMEM);
+            return DR_ERR(ENOMEM);
         for (int k = j->nb_starts; k <= j->seg; k++)
-            p[k] = AV_NOPTS_VALUE;
+            p[k] = DR_NOPTS_VALUE;
         j->starts    = p;
         j->nb_starts = j->seg + 1;
     }
@@ -247,7 +255,7 @@ static int place_segment(DRJoin *j)
     j->st.placed = 1;
     j->st.start  = j->start;
     j->st.offset = j->offset;
-    av_log(j->log, AV_LOG_DEBUG, "Title timeline: joiner: segment %d starts at %"PRId64" ticks, placed at %"PRId64"\n",
+    dr_vlog(j->log, DR_VLOG_DEBUG, "Title timeline: joiner: segment %d starts at %"PRId64" ticks, placed at %"PRId64"\n",
            j->seg, j->start, j->offset);
     for (int k = 0; k < j->cfg.nb_tracks; k++) {
         int ret = drain(j, k, 0);
@@ -283,7 +291,7 @@ int ff_disctl_join_segment(DRJoin *j)
     j->seg++;
     j->placed    = 0;
     j->st.placed = 0;
-    j->batch_min = AV_NOPTS_VALUE;
+    j->batch_min = DR_NOPTS_VALUE;
     for (int k = 0; k < j->cfg.nb_tracks; k++)
         j->t[k].seeded = 0;
     j->st.segments = j->seg + 1;
@@ -297,14 +305,14 @@ int ff_disctl_join_push(DRJoin *j, int track, DRFrame *f)
 
     if (track < 0 || track >= j->cfg.nb_tracks || j->seg < 0) {
         ff_disctl_frame_unref(f);
-        return AVERROR(EINVAL);
+        return DR_ERR(EINVAL);
     }
     t = &j->t[track];
     if (j->placed && (t->seeded || t->kind == DR_KIND_VIDEO) && !t->nb_wait)
         return place_frame(j, track, f);
 
-    if (!track && !j->placed && f->time != AV_NOPTS_VALUE && f->time >= 0 && (f->dur || f->size))
-        j->batch_min = j->batch_min == AV_NOPTS_VALUE ? f->time : FFMIN(j->batch_min, f->time);
+    if (!track && !j->placed && f->time != DR_NOPTS_VALUE && f->time >= 0 && (f->dur || f->size))
+        j->batch_min = j->batch_min == DR_NOPTS_VALUE ? f->time : DR_MIN(j->batch_min, f->time);
     {
         int batch_end = !track && (f->flags & DR_F_BATCH);
         if ((ret = wait_add(t, f)) < 0)
@@ -326,10 +334,10 @@ int ff_disctl_join_open(DRJoin **jp, void *logctx, const DRJoinConfig *cfg)
 
     *jp = NULL;
     if (cfg->nb_tracks < 1 || cfg->kinds[0] != DR_KIND_VIDEO)
-        return AVERROR(EINVAL);
-    if (!(j = av_mallocz(sizeof(*j))) || !(j->t = av_calloc(cfg->nb_tracks, sizeof(*j->t)))) {
-        av_free(j);
-        return AVERROR(ENOMEM);
+        return DR_ERR(EINVAL);
+    if (!(j = dr_mallocz(sizeof(*j))) || !(j->t = dr_calloc(cfg->nb_tracks, sizeof(*j->t)))) {
+        dr_free(j);
+        return DR_ERR(ENOMEM);
     }
     j->log = logctx;
     j->cfg = *cfg;
@@ -349,8 +357,8 @@ void ff_disctl_join_stats(const DRJoin *j, DRJoinStats *st)
 
 int ff_disctl_join_segment_start(const DRJoin *j, int seg, int64_t *start)
 {
-    if (seg < 0 || seg >= j->nb_starts || j->starts[seg] == AV_NOPTS_VALUE)
-        return AVERROR(EAGAIN);
+    if (seg < 0 || seg >= j->nb_starts || j->starts[seg] == DR_NOPTS_VALUE)
+        return DR_ERR(EAGAIN);
     *start = j->starts[seg];
     return 0;
 }
@@ -370,10 +378,10 @@ void ff_disctl_join_close(DRJoin **jp)
     for (int k = 0; k < j->cfg.nb_tracks; k++) {
         for (int i = 0; i < j->t[k].nb_wait; i++)
             ff_disctl_frame_unref(&j->t[k].wait[i]);
-        av_freep(&j->t[k].wait);
+        dr_freep(&j->t[k].wait);
     }
-    av_freep(&j->t);
-    av_freep(&j->chap);
-    av_freep(&j->starts);
-    av_freep(jp);
+    dr_freep(&j->t);
+    dr_freep(&j->chap);
+    dr_freep(&j->starts);
+    dr_freep(jp);
 }

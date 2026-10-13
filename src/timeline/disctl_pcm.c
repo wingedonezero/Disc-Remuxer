@@ -24,14 +24,22 @@
 
 #include <string.h>
 
-#include "libavcodec/defs.h"
-#include "libavutil/common.h"
-#include "libavutil/error.h"
-#include "libavutil/log.h"
-#include "libavutil/mathematics.h"
-#include "libavutil/mem.h"
 
-#include "disctl.h"
+#include <errno.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "base/bytes.h"
+#include "base/err.h"
+#include "base/macros.h"
+#include "base/mem.h"
+#include "base/vlog.h"
+
+#include "parse/rational.h"
+
+#include "timeline/disctl.h"
 
 #define MS          1080000LL
 #define DRIFT       10800               /* ticks: a frame this far off the sample count is off it */
@@ -103,11 +111,11 @@ static int emit(DRPcm *p)
 
     if (!p->fill)
         return 0;
-    if (!(f.buf = av_buffer_alloc(bytes + AV_INPUT_BUFFER_PADDING_SIZE)))
-        return AVERROR(ENOMEM);
-    memcpy(f.buf->data, p->buf, bytes);
-    memset(f.buf->data + bytes, 0, AV_INPUT_BUFFER_PADDING_SIZE);
-    f.data = f.buf->data;
+    if (!(f.buf = dr_buf_alloc(bytes + DR_BUF_PADDING)))
+        return DR_ERR(ENOMEM);
+    memcpy(dr_buf_data(f.buf), p->buf, bytes);
+    memset(dr_buf_data(f.buf) + bytes, 0, DR_BUF_PADDING);
+    f.data = dr_buf_data(f.buf);
     f.size = bytes;
     f.time = (int64_t)((uint64_t)p->emitted * p->out / p->in) - p->origin;
     f.dur  = (int64_t)((uint64_t)p->fill * p->out / p->in);
@@ -123,7 +131,7 @@ static int emit(DRPcm *p)
 static int append(DRPcm *p, const uint8_t *data, int64_t n, int *emitted)
 {
     while (n > 0) {
-        int k = FFMIN(n, p->n - p->fill), ret;
+        int k = DR_MIN(n, p->n - p->fill), ret;
         memcpy(p->buf + p->fill * p->bpf, data, k * p->bpf);
         p->fill += k;
         data    += k * p->bpf;
@@ -144,7 +152,7 @@ static int silence(DRPcm *p, int64_t n, int *emitted)
     memset(z, p->cfg.bits == 8 ? 0x80 : 0x00, sizeof(z));
     p->st.silence += n;
     while (n > 0) {
-        int64_t m = FFMIN(n, (int64_t)(sizeof(z) / p->bpf));
+        int64_t m = DR_MIN(n, (int64_t)(sizeof(z) / p->bpf));
         int ret = append(p, z, m, emitted);
         if (ret < 0)
             return ret;
@@ -175,7 +183,7 @@ static int start(DRPcm *p)
     f = q_get(p, 0);
     t = p->origin + f->time;
     if (t < 0)
-        return AVERROR_BUG;
+        return DR_ERR_BUG;
     k = (int64_t)((uint64_t)t * p->cfg.rate / DR_TICKS_PER_SECOND);
     if (k < (int64_t)p->cfg.rate * 5) {
         p->carry = k;
@@ -224,7 +232,7 @@ static int broken_time(DRPcm *p, const DRFrame *f, int idx, int64_t spos, int *h
             return HAVE;
         gts = g->time + p->origin;
         if (gts < 0)
-            return AVERROR_INVALIDDATA;
+            return DR_ERR_INVALID;
         gpos = (int64_t)((uint64_t)gts * p->in / p->out);
         if (gpos == (spos - opos) + end) {
             end += samples_of(p, g);
@@ -284,8 +292,8 @@ static int timeline(DRPcm *p, DRFrame *f, int idx)
 
     p->seg = f->seg;
     if (p->carry)
-        return AVERROR_BUG;
-    if (FFABS(exp - pts) > DRIFT && FFABS(spos - opos) > 2) {
+        return DR_ERR_BUG;
+    if (DR_ABS(exp - pts) > DRIFT && DR_ABS(spos - opos) > 2) {
         int ended = 0, handled;
 
         if (p->cfg.video.advance) {
@@ -301,20 +309,20 @@ static int timeline(DRPcm *p, DRFrame *f, int idx)
                 }
                 while (p->nq)
                     q_pop(p);
-                return emit(p) < 0 ? AVERROR(ENOMEM) : HAVE;
+                return emit(p) < 0 ? DR_ERR(ENOMEM) : HAVE;
             }
         }
         if (p->have_held)
-            return AVERROR_BUG;
+            return DR_ERR_BUG;
         if ((r = broken_time(p, f, idx, spos, &handled)) != HAVE)
             return r;
         if (handled)
             return HAVE;
         if (spos < opos) {
-            av_log(p->log, AV_LOG_ERROR, "Title timeline: PCM track %d: a frame %"PRId64" samples before the samples "
+            dr_vlog(p->log, DR_VLOG_ERROR, "Title timeline: PCM track %d: a frame %"PRId64" samples before the samples "
                    "written reaches the silence path: copied as it is\n", p->cfg.track, opos - spos);
         } else {
-            int64_t gap = spos - opos, fill = FFMIN(gap, 2 * (int64_t)p->n);
+            int64_t gap = spos - opos, fill = DR_MIN(gap, 2 * (int64_t)p->n);
             p->carry += gap - fill;
             event(p, DR_EV_PCM_SILENCE, exp, pts - exp, gap);
             if ((ret = silence(p, fill, &e)) < 0)
@@ -332,7 +340,7 @@ static int timeline(DRPcm *p, DRFrame *f, int idx)
         int64_t gts = p->origin + g->time, gpos, gn = samples_of(p, g);
 
         if (gts < 0)
-            return AVERROR_INVALIDDATA;
+            return DR_ERR_INVALID;
         gpos = (int64_t)((uint64_t)gts * p->in / p->out);
         if (gpos < spos) {
             int64_t end_g = gpos + gn;
@@ -361,12 +369,12 @@ static int timeline(DRPcm *p, DRFrame *f, int idx)
                 q_pop(p);
                 return HAVE;
             }
-            return AVERROR_BUG;
+            return DR_ERR_BUG;
         }
         {
             int64_t end_out = n + opos;
             int64_t end_ticks = (int64_t)((uint64_t)end_out * p->out / p->in);
-            if (end_ticks > gts && end_ticks - gts >= DRIFT + 1 && FFABS(end_out - gpos) >= 3) {
+            if (end_ticks > gts && end_ticks - gts >= DRIFT + 1 && DR_ABS(end_out - gpos) >= 3) {
                 /* this frame runs into the next one: cut at its start */
                 p->st.overlap++;
                 copy = opos < gpos ? gpos - opos : 0;
@@ -386,14 +394,14 @@ static int step(DRPcm *p)
     if (p->nq) {
         DRFrame *f = q_get(p, 0);
         if (p->origin + f->time < 0)
-            return AVERROR_INVALIDDATA;
+            return DR_ERR_INVALID;
         if (is_marker(f)) {
             q_pop(p);
             return HAVE;
         }
     }
     if (p->carry) {
-        int64_t m = FFMIN(p->carry, (int64_t)p->n + 1);
+        int64_t m = DR_MIN(p->carry, (int64_t)p->n + 1);
         p->carry -= m;
         if ((ret = silence(p, m, &e)) < 0)
             return ret;
@@ -440,12 +448,12 @@ int ff_disctl_pcm_open(DRPcm **pp, void *logctx, const DRPcmConfig *cfg)
 
     *pp = NULL;
     if (cfg->rate <= 0 || cfg->bytes_per_sample_frame <= 0 || cfg->bytes_per_sample_frame > 512)
-        return AVERROR(EINVAL);
-    if (!(p = av_mallocz(sizeof(*p))))
-        return AVERROR(ENOMEM);
+        return DR_ERR(EINVAL);
+    if (!(p = dr_mallocz(sizeof(*p))))
+        return DR_ERR(ENOMEM);
     p->log = logctx;
     p->cfg = *cfg;
-    g      = av_gcd(cfg->rate, DR_TICKS_PER_SECOND);
+    g      = dr_gcd64(cfg->rate, DR_TICKS_PER_SECOND);
     p->in  = cfg->rate / g;
     p->out = DR_TICKS_PER_SECOND / g;
     /* 1/30 s at 48 / 44.1 kHz; else about 32 ms rounded up to a divisor of the rate */
@@ -453,9 +461,9 @@ int ff_disctl_pcm_open(DRPcm **pp, void *logctx, const DRPcmConfig *cfg)
     while (cfg->rate % p->n)
         p->n++;
     p->bpf = cfg->bytes_per_sample_frame;
-    if (!(p->buf = av_malloc((size_t)p->n * p->bpf))) {
-        av_free(p);
-        return AVERROR(ENOMEM);
+    if (!(p->buf = dr_malloc((size_t)p->n * p->bpf))) {
+        dr_free(p);
+        return DR_ERR(ENOMEM);
     }
     *pp = p;
     return 0;
@@ -475,9 +483,9 @@ int ff_disctl_pcm_push(DRPcm *p, DRFrame *f)
             p->head = 0;
         }
         if (p->nq == p->cap) {
-            if (!(q = av_realloc_array(p->q, cap, sizeof(*q)))) {
+            if (!(q = dr_realloc_array(p->q, cap, sizeof(*q)))) {
                 ff_disctl_frame_unref(f);
-                return AVERROR(ENOMEM);
+                return DR_ERR(ENOMEM);
             }
             p->q   = q;
             p->cap = cap;
@@ -515,7 +523,7 @@ void ff_disctl_pcm_close(DRPcm **pp)
         q_pop(p);
     if (p->have_held)
         ff_disctl_frame_unref(&p->held);
-    av_freep(&p->q);
-    av_freep(&p->buf);
-    av_freep(pp);
+    dr_freep(&p->q);
+    dr_freep(&p->buf);
+    dr_freep(pp);
 }

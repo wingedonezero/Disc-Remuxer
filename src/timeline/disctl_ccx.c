@@ -33,14 +33,20 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "libavutil/avstring.h"
-#include "libavutil/bprint.h"
-#include "libavutil/error.h"
-#include "libavutil/log.h"
-#include "libavutil/macros.h"
-#include "libavutil/mem.h"
 
-#include "disctl.h"
+#include <errno.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "base/bytes.h"
+#include "base/err.h"
+#include "base/macros.h"
+#include "base/mem.h"
+#include "base/vlog.h"
+
+#include "timeline/disctl.h"
 
 extern char **environ;
 
@@ -51,6 +57,43 @@ static const char *const ccx_args[] = { "-in=bin", "-out=srt", "-stdin", "-stdou
 /* The helper's exit status when the data held no caption text (its
  * EXIT_NO_CAPTIONS): no cues, not a failure. */
 #define CCX_EXIT_NO_CAPTIONS 10
+
+/* A growable text buffer (always NUL-terminated; oom set when an append
+ * failed: its text is then incomplete and not used). */
+typedef struct DrText {
+    char  *s;
+    size_t len, cap;
+    int    oom;
+} DrText;
+
+static void text_append(DrText *t, const char *data, size_t n)
+{
+    if (t->oom)
+        return;
+    if (t->len + n + 1 > t->cap) {
+        size_t cap = t->cap ? t->cap : 256;
+        while (cap < t->len + n + 1)
+            cap *= 2;
+        char *s = dr_realloc(t->s, cap);
+        if (!s) {
+            t->oom = 1;
+            return;
+        }
+        t->s   = s;
+        t->cap = cap;
+    }
+    memcpy(t->s + t->len, data, n);
+    t->len += n;
+    t->s[t->len] = '\0';
+}
+
+static void text_free(DrText *t)
+{
+    dr_free(t->s);
+    t->s   = NULL;
+    t->len = t->cap = 0;
+    t->oom = 0;
+}
 
 /* The raw caption format's header: magic, creator, version, format
  * revision 1 (CEA-608 blocks). */
@@ -63,7 +106,7 @@ struct DRCcx {
     int        out, err;           /* our ends of its standard output and error */
     pthread_t  reader;
     int        reader_running;
-    AVBPrint   out_text, err_text; /* filled by the reader thread until it ends */
+    DrText     out_text, err_text; /* filled by the reader thread until it ends */
     int        started;            /* the header was written */
     int        failed;             /* a write failed: the helper is gone */
 };
@@ -106,14 +149,14 @@ static int next_line(const char *srt, int size, int *pos, const char **line, int
 void ff_disctl_cues_free(DRCue **cues, int nb)
 {
     for (int i = 0; *cues && i < nb; i++)
-        av_free((*cues)[i].text);
-    av_freep(cues);
+        dr_free((*cues)[i].text);
+    dr_freep(cues);
 }
 
 int ff_disctl_srt_parse(void *logctx, const char *srt, int size, DRCue **cues, int *nb_cues)
 {
     DRCue *c = NULL;
-    int n = 0, cap = 0, pos = 0, len, ret = AVERROR_INVALIDDATA;
+    int n = 0, cap = 0, pos = 0, len, ret = DR_ERR_INVALID;
     const char *line;
 
     *cues    = NULL;
@@ -122,7 +165,7 @@ int ff_disctl_srt_parse(void *logctx, const char *srt, int size, DRCue **cues, i
         pos = 3;
     for (;;) {
         char num[16];
-        AVBPrint text;
+        DrText text = { 0 };
 
         /* empty lines between cues */
         do {
@@ -134,8 +177,8 @@ int ff_disctl_srt_parse(void *logctx, const char *srt, int size, DRCue **cues, i
         } while (!len);
         snprintf(num, sizeof(num), "%d", n + 1);
         if (len != (int)strlen(num) || memcmp(line, num, len)) {
-            av_log(logctx, AV_LOG_ERROR, "Captions: the converter's SRT: cue %d: the number line is \"%.*s\"\n",
-                   n + 1, FFMIN(len, 40), line);
+            dr_vlog(logctx, DR_VLOG_ERROR, "Captions: the converter's SRT: cue %d: the number line is \"%.*s\"\n",
+                   n + 1, DR_MIN(len, 40), line);
             goto fail;
         }
         if (!next_line(srt, size, &pos, &line, &len) || len != 29 || memcmp(line + 12, " --> ", 5) ||
@@ -143,15 +186,15 @@ int ff_disctl_srt_parse(void *logctx, const char *srt, int size, DRCue **cues, i
             line[25] != ',' || !digits(line, 2) || !digits(line + 3, 2) || !digits(line + 6, 2) ||
             !digits(line + 9, 3) || !digits(line + 17, 2) || !digits(line + 20, 2) || !digits(line + 23, 2) ||
             !digits(line + 26, 3)) {
-            av_log(logctx, AV_LOG_ERROR, "Captions: the converter's SRT: cue %d: the timing line is \"%.*s\"\n",
-                   n + 1, FFMIN(len, 40), line);
+            dr_vlog(logctx, DR_VLOG_ERROR, "Captions: the converter's SRT: cue %d: the timing line is \"%.*s\"\n",
+                   n + 1, DR_MIN(len, 40), line);
             goto fail;
         }
         if (n == cap) {
             int k = cap ? 2 * cap : 64;
-            DRCue *g = av_realloc_array(c, k, sizeof(*c));
+            DRCue *g = dr_realloc_array(c, k, sizeof(*c));
             if (!g) {
-                ret = AVERROR(ENOMEM);
+                ret = DR_ERR(ENOMEM);
                 goto fail;
             }
             c   = g;
@@ -160,12 +203,15 @@ int ff_disctl_srt_parse(void *logctx, const char *srt, int size, DRCue **cues, i
         c[n].start_ms = srt_time(line);
         c[n].end_ms   = srt_time(line + 17);
         c[n].text     = NULL;
-        av_bprint_init(&text, 0, AV_BPRINT_SIZE_UNLIMITED);
         /* text lines up to an empty line (or the end) */
-        while (next_line(srt, size, &pos, &line, &len) && len)
-            av_bprintf(&text, "%s%.*s", text.len ? "\n" : "", len, line);
-        if (av_bprint_finalize(&text, &c[n].text) < 0) {
-            ret = AVERROR(ENOMEM);
+        while (next_line(srt, size, &pos, &line, &len) && len) {
+            if (text.len)
+                text_append(&text, "\n", 1);
+            text_append(&text, line, len);
+        }
+        if (text.oom || !(c[n].text = text.s ? text.s : dr_strdup(""))) {
+            text_free(&text);
+            ret = DR_ERR(ENOMEM);
             goto fail;
         }
         n++;
@@ -188,7 +234,7 @@ const char *ff_disctl_ccx_default(char *buf, int size)
     if (!(slash = strrchr(buf, '/')))
         return NULL;
     slash[1] = 0;
-    if (av_strlcat(buf, DR_CCX_PROGRAM, size) >= size || access(buf, X_OK))
+    if (dr_strlcat(buf, DR_CCX_PROGRAM, size) >= size || access(buf, X_OK))
         return NULL;
     return buf;
 }
@@ -199,7 +245,7 @@ static void *reader(void *opaque)
 {
     DRCcx *c = opaque;
     struct pollfd p[2] = { { c->out, POLLIN, 0 }, { c->err, POLLIN, 0 } };
-    AVBPrint *dst[2] = { &c->out_text, &c->err_text };
+    DrText *dst[2] = { &c->out_text, &c->err_text };
     int open = 2;
     char buf[4096];
 
@@ -215,7 +261,7 @@ static void *reader(void *opaque)
                 continue;
             n = read(p[i].fd, buf, sizeof(buf));
             if (n > 0) {
-                av_bprint_append_data(dst[i], buf, n);
+                text_append(dst[i], buf, n);
             } else if (n == 0 || errno != EINTR) {
                 p[i].fd = -1;
                 open--;
@@ -230,32 +276,31 @@ int ff_disctl_ccx_start(DRCcx **cp, void *logctx, const char *program)
     DRCcx *c;
     int sv[2] = { -1, -1 }, po[2] = { -1, -1 }, pe[2] = { -1, -1 }, ret;
     posix_spawn_file_actions_t fa;
-    char *argv[FF_ARRAY_ELEMS(ccx_args) + 2];
+    char *argv[DR_ARRAY_ELEMS(ccx_args) + 2];
 
     *cp = NULL;
     if (!program || !*program)
-        return AVERROR(EINVAL);
-    if (!(c = av_mallocz(sizeof(*c))))
-        return AVERROR(ENOMEM);
+        return DR_ERR(EINVAL);
+    if (!(c = dr_mallocz(sizeof(*c))))
+        return DR_ERR(ENOMEM);
     c->log = logctx;
     c->in = c->out = c->err = -1;
-    av_bprint_init(&c->out_text, 0, AV_BPRINT_SIZE_UNLIMITED);
-    av_bprint_init(&c->err_text, 0, AV_BPRINT_SIZE_UNLIMITED);
+
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) || pipe(po) || pipe(pe)) {
-        ret = AVERROR(errno);
+        ret = DR_ERR(errno);
         goto fail;
     }
     /* our ends stay out of the helper (and of any other child) */
     if (fcntl(sv[0], F_SETFD, FD_CLOEXEC) || fcntl(po[0], F_SETFD, FD_CLOEXEC) || fcntl(pe[0], F_SETFD, FD_CLOEXEC)) {
-        ret = AVERROR(errno);
+        ret = DR_ERR(errno);
         goto fail;
     }
     argv[0] = (char *)program;
-    for (int i = 0; i < FF_ARRAY_ELEMS(ccx_args); i++)
+    for (int i = 0; i < DR_ARRAY_ELEMS(ccx_args); i++)
         argv[i + 1] = (char *)ccx_args[i];
-    argv[FF_ARRAY_ELEMS(ccx_args) + 1] = NULL;
+    argv[DR_ARRAY_ELEMS(ccx_args) + 1] = NULL;
     if ((ret = posix_spawn_file_actions_init(&fa))) {
-        ret = AVERROR(ret);
+        ret = DR_ERR(ret);
         goto fail;
     }
     if (!(ret = posix_spawn_file_actions_adddup2(&fa, sv[1], 0)) &&
@@ -264,8 +309,8 @@ int ff_disctl_ccx_start(DRCcx **cp, void *logctx, const char *program)
         ret = posix_spawn(&c->pid, program, &fa, NULL, argv, environ);
     posix_spawn_file_actions_destroy(&fa);
     if (ret) {
-        av_log(logctx, AV_LOG_ERROR, "Captions: the converter %s cannot be started: %s\n", program, strerror(ret));
-        ret = AVERROR(ret);
+        dr_vlog(logctx, DR_VLOG_ERROR, "Captions: the converter %s cannot be started: %s\n", program, strerror(ret));
+        ret = DR_ERR(ret);
         goto fail;
     }
     close(sv[1]);
@@ -275,12 +320,12 @@ int ff_disctl_ccx_start(DRCcx **cp, void *logctx, const char *program)
     c->out = po[0];
     c->err = pe[0];
     if ((ret = pthread_create(&c->reader, NULL, reader, c))) {
-        ret = AVERROR(ret);
+        ret = DR_ERR(ret);
         ff_disctl_ccx_close(&c);
         return ret;
     }
     c->reader_running = 1;
-    av_log(logctx, AV_LOG_VERBOSE, "Captions: converter %s (CCExtractor %s) started\n", program, DR_CCX_VERSION);
+    dr_vlog(logctx, DR_VLOG_VERBOSE, "Captions: converter %s (CCExtractor %s) started\n", program, DR_CCX_VERSION);
     *cp = c;
     return 0;
 fail:
@@ -289,9 +334,9 @@ fail:
         if (po[i] >= 0) close(po[i]);
         if (pe[i] >= 0) close(pe[i]);
     }
-    av_bprint_finalize(&c->out_text, NULL);
-    av_bprint_finalize(&c->err_text, NULL);
-    av_free(c);
+    text_free(&c->out_text);
+    text_free(&c->err_text);
+    dr_free(c);
     return ret;
 }
 
@@ -303,8 +348,8 @@ static int send_all(DRCcx *c, const uint8_t *b, size_t n)
             if (errno == EINTR)
                 continue;
             c->failed = 1;
-            av_log(c->log, AV_LOG_ERROR, "Captions: the converter does not take data: %s\n", strerror(errno));
-            return AVERROR(errno);
+            dr_vlog(c->log, DR_VLOG_ERROR, "Captions: the converter does not take data: %s\n", strerror(errno));
+            return DR_ERR(errno);
         }
         b += w;
         n -= w;
@@ -320,9 +365,9 @@ int ff_disctl_ccx_block(DRCcx *c, int64_t ms, const uint8_t *triplets, int count
     if (count <= 0)
         return 0;
     if (c->failed)
-        return AVERROR(EPIPE);
+        return DR_ERR(EPIPE);
     if (count > 0xffff || ms < 0)
-        return AVERROR(EINVAL);
+        return DR_ERR(EINVAL);
     if (!c->started) {
         if ((ret = send_all(c, rcwt_header, sizeof(rcwt_header))) < 0)
             return ret;
@@ -365,24 +410,24 @@ int ff_disctl_ccx_finish(DRCcx *c, DRCue **cues, int *nb_cues)
 
     *cues    = NULL;
     *nb_cues = 0;
-    if (!av_bprint_is_complete(&c->out_text) || !av_bprint_is_complete(&c->err_text))
-        return AVERROR(ENOMEM);
+    if (c->out_text.oom || c->err_text.oom)
+        return DR_ERR(ENOMEM);
     if (c->err_text.len)
-        av_log(c->log, AV_LOG_DEBUG, "Captions: the converter said: %s\n", c->err_text.str);
+        dr_vlog(c->log, DR_VLOG_DEBUG, "Captions: the converter said: %s\n", c->err_text.s);
     if (st == CCX_EXIT_NO_CAPTIONS) {
-        av_log(c->log, AV_LOG_VERBOSE, "Captions: the caption data carries no caption text\n");
+        dr_vlog(c->log, DR_VLOG_VERBOSE, "Captions: the caption data carries no caption text\n");
         return 0;
     }
     if (st) {
-        av_log(c->log, AV_LOG_ERROR, "Captions: the converter failed (exit status %d): %.300s\n", st,
-               c->err_text.len ? c->err_text.str : "no message");
-        return AVERROR_EXTERNAL;
+        dr_vlog(c->log, DR_VLOG_ERROR, "Captions: the converter failed (exit status %d): %.300s\n", st,
+               c->err_text.len ? c->err_text.s : "no message");
+        return DR_ERR_EXTERNAL;
     }
     if (!c->started)
         return 0;
-    if ((ret = ff_disctl_srt_parse(c->log, c->out_text.str, c->out_text.len, cues, nb_cues)) < 0)
+    if ((ret = ff_disctl_srt_parse(c->log, c->out_text.s ? c->out_text.s : "", c->out_text.len, cues, nb_cues)) < 0)
         return ret;
-    av_log(c->log, AV_LOG_VERBOSE, "Captions: the converter gave %d cue(s) (%u bytes of SRT)\n", *nb_cues,
+    dr_vlog(c->log, DR_VLOG_VERBOSE, "Captions: the converter gave %d cue(s) (%u bytes of SRT)\n", *nb_cues,
            c->out_text.len);
     return 0;
 }
@@ -400,7 +445,7 @@ void ff_disctl_ccx_close(DRCcx **cp)
         close(c->out);
     if (c->err >= 0)
         close(c->err);
-    av_bprint_finalize(&c->out_text, NULL);
-    av_bprint_finalize(&c->err_text, NULL);
-    av_freep(cp);
+    text_free(&c->out_text);
+    text_free(&c->err_text);
+    dr_freep(cp);
 }

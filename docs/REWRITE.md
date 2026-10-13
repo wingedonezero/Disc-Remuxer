@@ -4,8 +4,8 @@ Updated 2026-10-13, on branch `claude/rewrite-untangle-1c24ca` (the rewrite
 branch; main still holds the pre-rewrite program and is the byte-compare
 reference). Inventory of what the old shape was made of: `docs/UNTANGLE.md`.
 
-Status: **steps 1–4 done** (details in part 3). The next step is 5 (the
-title timeline moves).
+Status: **steps 1–5 done** (details in part 3). The next step is 6
+(src/analyze: FFmpeg quarantined behind the four probe calls).
 Tests at every commit: 735 passed, 15 skipped (the disc-marked ones without a
 disc). Every move so far is behavior-preserving by construction and by test;
 the real-disc byte-compare against a main build is still owed (user runs it
@@ -293,22 +293,30 @@ again.**
 
 ---
 
-## Part 4 — What is left, in detail
+**Step 5 — the title timeline moved (rows 254, 255).**
+- 5a: the audio header reads and core filters became ours in `parse/`
+  (`dr_ac3_header` / `dr_dca_core_header` / `dr_mpa_header`;
+  `dr_eac3_core` / `dr_dca_core` replace the eac3_core / dca_core
+  bitstream filters, applied by the audio stage directly).
+- 5b: the 11k-line timeline moved whole into `src/timeline`
+  (`libdisc-timeline.a`), FFmpeg-free by build construction — on base and
+  parse only. Its own codec ids (`DRCodecID`, value-pinned to the
+  library's, asserted at build time), `DrBuf` buffers, base errors (the
+  title reader translates EOF once at the seam and wraps a frame's bytes
+  for the packet), the MLP major-sync CRC and the CCExtractor text
+  buffers our own. What it still borrows goes through ONE host interface
+  (`DRTimelineHost` in `timeline/disctl.h`, implemented by
+  `libavformat/disctl_ffmpeg.c`, registered by the program and the test
+  bridge): the stock frame parser (MPEG video, E-AC-3 — codecs that never
+  had disc rules), the LATM stream-header decode and the TrueHD / MLP
+  end-of-stream decode. Step 6 moves the host's duties into `analyze/`.
+- The dependency note of §2.1 reads "base only" for the four leaf
+  modules; since the splitter lives in parse, the timeline depends on
+  base AND parse.
 
-### Step 5 — `src/timeline` (the title timeline moves)
-What: `disctl_*` (~11k lines, 22 files) → `timeline/`. Most are
-utility-coupled and move with shims (AVBufferRef → `base/buf.h` is the main
-mechanical change; log → vlog; err values). The deep spots and their fate:
-- `disctl_frames.c`: re-hosted on the splitter in 4d; lands here renamed.
-- `disctl_audio.c`: the eac3_core/dca_core bitstream filters become
-  core-only frame filters in `parse/` (frames are already cut; "keep only
-  the core syncframes" / "drop dependent frames"). DATA PATH — byte-compare.
-- `disctl_codecs.c`: its header checks move onto parse's own readers
-  (done for AC-3/DTS/MPA); the LATM one-frame decode and TrueHD
-  `decode_count` become `analyze/` calls (step 6) — until then they keep
-  linking avcodec from the timeline's wrapper side.
-- `disctl_ccx.c`: unchanged (CCExtractor process).
-Gate: full suite + corpus byte-compare (this is the timing heart).
+---
+
+## Part 4 — What is left, in detail
 
 ### Step 6 — `src/analyze` (FFmpeg quarantined)
 What: the four entry points of §2.5 as a small library that is the ONLY

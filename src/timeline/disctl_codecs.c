@@ -21,14 +21,23 @@
 #include <stddef.h>
 #include <string.h>
 
-#include "libavcodec/avcodec.h"
-#include "libavutil/frame.h"
-#include "libavutil/intreadwrite.h"
 
 #include "base/crc16.h"
 #include "parse/rules.h"
 
-#include "disctl.h"
+#include <errno.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "base/bytes.h"
+#include "base/err.h"
+#include "base/macros.h"
+#include "base/mem.h"
+#include "base/vlog.h"
+
+#include "timeline/disctl.h"
 
 enum {
     REVIEW_FRAME_LENGTH = 1,   /* frame length or rate changes within the stream */
@@ -153,7 +162,7 @@ static int duration_ac3(DRAudio *a, DRFrame *f)
     DrAc3Header h;
 
     if (ac3_header(f->data, f->size, &h) < 0 || !h.rate)
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
     if (h.rate != s->rate || h.blocks * 256 != s->samples)
         ff_disctl_audio_review(a, REVIEW_FRAME_LENGTH, "a frame's length or sample rate differs from the "
                                 "stream's first frame (timed by its own values)");
@@ -215,12 +224,12 @@ static const DRAudioRules audio_eac3 = {
 
 static int dts_core_sync(const uint8_t *d, int size)
 {
-    return size >= 4 && AV_RB32(d) == 0x7FFE8001;
+    return size >= 4 && dr_rb32(d) == 0x7FFE8001;
 }
 
 static int dts_exss_sync(const uint8_t *d, int size)
 {
-    return size >= 4 && AV_RB32(d) == 0x64582025;
+    return size >= 4 && dr_rb32(d) == 0x64582025;
 }
 
 static int dts_core(const uint8_t *d, int size, DrDcaHeader *h)
@@ -273,7 +282,7 @@ static int duration_dts(DRAudio *a, DRFrame *f)
         rate    = f->rate;
         samples = f->samples;
     } else
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
     if (rate != s->rate || samples != s->samples)
         ff_disctl_audio_review(a, REVIEW_FRAME_LENGTH, "a frame's length or sample rate differs from the "
                                 "stream's first frame (timed by its own values)");
@@ -323,7 +332,7 @@ static int duration_mpa(DRAudio *a, DRFrame *f)
     DrMpaHeader h;
 
     if (dr_mpa_header(f->data, f->size, &h) < 0 || !h.rate)
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
     ff_disctl_audio_review(a, REVIEW_MPEG_AUDIO, "MPEG audio track");
     f->dur = (int64_t)((uint64_t)h.samples * DR_TICKS_PER_SECOND / h.rate);
     return 0;
@@ -382,7 +391,7 @@ static int duration_adts(DRAudio *a, DRFrame *f)
     int rate, samples;
 
     if (!check_adts(f->data, f->size))
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
     if (!(f->data[1] & 0x08))
         ff_disctl_audio_review(a, REVIEW_AAC_MPEG4_ADTS, "AAC ADTS frames with the MPEG-4 ID");
     rate    = aac_rates[(f->data[2] >> 2) & 0xF];
@@ -409,25 +418,13 @@ static int sync_latm(const uint8_t *d, int size)
 
 static int header_latm(DRAudio *a, const DRFrame *f, DRAudioHeader *out)
 {
-    const AVCodec *dec = avcodec_find_decoder(AV_CODEC_ID_AAC_LATM);
-    AVCodecContext *ctx = dec ? avcodec_alloc_context3(dec) : NULL;
-    AVPacket *pkt = av_packet_alloc();
-    AVFrame *fr = av_frame_alloc();
-    int ret = -1;
+    const DRTimelineHost *host = ff_disctl_host();
 
-    if (ctx && pkt && fr && avcodec_open2(ctx, dec, NULL) >= 0 && av_new_packet(pkt, f->size) >= 0) {
-        memcpy(pkt->data, f->data, f->size);
-        if (avcodec_send_packet(ctx, pkt) >= 0 && avcodec_receive_frame(ctx, fr) >= 0 &&
-            fr->nb_samples > 0 && fr->sample_rate > 0) {
-            out->rate    = fr->sample_rate;
-            out->samples = fr->nb_samples;
-            ret = 0;
-        }
-    }
-    avcodec_free_context(&ctx);
-    av_packet_free(&pkt);
-    av_frame_free(&fr);
-    return ret;
+    if (!host || !host->latm_header ||
+        host->latm_header(f->data, f->size, &out->rate, &out->samples) < 0 ||
+        out->samples <= 0 || out->rate <= 0)
+        return -1;
+    return 0;
 }
 
 static void inspect_latm(DRAudio *a, const DRFrame *f)
@@ -467,11 +464,11 @@ static int duration_lpcm(DRAudio *a, DRFrame *f)
 {
     DRLpcm *p = ff_disctl_audio_state(a);
     const uint8_t *in;
-    AVBufferRef *buf;
+    DrBuf *buf;
     int n, bps, size, ret;
 
     if (!p || !p->init)
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
     in   = f->data;
     size = f->size;
     if (p->bd) {
@@ -480,13 +477,13 @@ static int duration_lpcm(DRAudio *a, DRFrame *f)
         in   += 4;
         size -= 4;
     }
-    if (!(buf = av_buffer_alloc(size * 6 / 5 + 16 + AV_INPUT_BUFFER_PADDING_SIZE)))
-        return AVERROR(ENOMEM);
-    n = ff_disctl_lpcm_convert(p, in, size, buf->data);
-    memset(buf->data + n, 0, AV_INPUT_BUFFER_PADDING_SIZE);
-    av_buffer_unref(&f->buf);
+    if (!(buf = dr_buf_alloc(size * 6 / 5 + 16 + DR_BUF_PADDING)))
+        return DR_ERR(ENOMEM);
+    n = ff_disctl_lpcm_convert(p, in, size, dr_buf_data(buf));
+    memset(dr_buf_data(buf) + n, 0, DR_BUF_PADDING);
+    dr_buf_unref(&f->buf);
     f->buf  = buf;
-    f->data = buf->data;
+    f->data = dr_buf_data(buf);
     f->size = n;
     bps     = p->channels * (p->bits == 16 ? 2 : 3);
     f->dur  = (int64_t)((uint64_t)(n / bps) * DR_TICKS_PER_SECOND / (uint64_t)p->rate);
@@ -625,56 +622,74 @@ static int vc1_headers(const uint8_t *h, int size, int *start, int *end)
 }
 
 static const DRCodec codecs[] = {
-    { .id = AV_CODEC_ID_MPEG1VIDEO, .name = "mpeg1video", .anchor = anchor_mpegvideo, .video = &ff_disctl_video_mpv,
+    { .id = DR_CODEC_MPEG1VIDEO, .name = "mpeg1video", .anchor = anchor_mpegvideo, .video = &ff_disctl_video_mpv,
       .verify = verify_mpegvideo, .video_bit_rate = DR_RATE_STATED, .no_display_aspect = 1 },
-    { .id = AV_CODEC_ID_MPEG2VIDEO, .name = "mpeg2video", .anchor = anchor_mpegvideo, .video = &ff_disctl_video_mpv,
+    { .id = DR_CODEC_MPEG2VIDEO, .name = "mpeg2video", .anchor = anchor_mpegvideo, .video = &ff_disctl_video_mpv,
       .verify = verify_mpegvideo, .video_bit_rate = DR_RATE_MAX },
-    { .id = AV_CODEC_ID_VC1, .name = "vc1", .anchor = anchor_vc1, .video = &ff_disctl_video_vc1, .verify = verify_vc1,
+    { .id = DR_CODEC_VC1, .name = "vc1", .anchor = anchor_vc1, .video = &ff_disctl_video_vc1, .verify = verify_vc1,
       .split = DR_SPLIT_VC1, .decoder_headers = vc1_headers },
-    { .id = AV_CODEC_ID_H264, .name = "h264", .anchor = anchor_h264, .video = &ff_disctl_video_h264,
+    { .id = DR_CODEC_H264, .name = "h264", .anchor = anchor_h264, .video = &ff_disctl_video_h264,
       .verify = verify_h264, .split = DR_SPLIT_H264, .parser_picture = 1 },
-    { .id = AV_CODEC_ID_HEVC, .name = "hevc", .anchor = anchor_hevc, .video = &ff_disctl_video_hevc,
+    { .id = DR_CODEC_HEVC, .name = "hevc", .anchor = anchor_hevc, .video = &ff_disctl_video_hevc,
       .verify = verify_hevc, .split = DR_SPLIT_HEVC, .parser_picture = 1 },
-    { .id = AV_CODEC_ID_AC3, .name = "ac3", .check = check_ac3, .audio = &audio_ac3,
+    { .id = DR_CODEC_AC3, .name = "ac3", .check = check_ac3, .audio = &audio_ac3,
       .verify = verify_ac3, .split = DR_SPLIT_AC3 },
-    { .id = AV_CODEC_ID_EAC3, .name = "eac3", .check = check_eac3, .audio = &audio_eac3,
+    { .id = DR_CODEC_EAC3, .name = "eac3", .check = check_eac3, .audio = &audio_eac3,
       .verify = verify_ac3 },
-    { .id = AV_CODEC_ID_TRUEHD, .name = "truehd", .check = ff_disctl_mlp_check,
+    { .id = DR_CODEC_TRUEHD, .name = "truehd", .check = ff_disctl_mlp_check,
       .audio = &ff_disctl_audio_mlp, .split = DR_SPLIT_MLP,
       .verify = ff_disctl_mlp_verify },
-    { .id = AV_CODEC_ID_MLP, .name = "mlp", .check = ff_disctl_mlp_check,
+    { .id = DR_CODEC_MLP, .name = "mlp", .check = ff_disctl_mlp_check,
       .audio = &ff_disctl_audio_mlp, .split = DR_SPLIT_MLP,
       .verify = ff_disctl_mlp_verify },
-    { .id = AV_CODEC_ID_DTS, .name = "dts", .check = check_dts, .audio = &audio_dts,
+    { .id = DR_CODEC_DTS, .name = "dts", .check = check_dts, .audio = &audio_dts,
       .verify = verify_dts, .split = DR_SPLIT_DTS },
-    { .id = AV_CODEC_ID_PCM_DVD, .name = "pcm_dvd", .audio = &audio_lpcm,
+    { .id = DR_CODEC_PCM_DVD, .name = "pcm_dvd", .audio = &audio_lpcm,
       .split = DR_SPLIT_PCM_DVD, .bits_coded = 1 },
-    { .id = AV_CODEC_ID_PCM_BLURAY, .name = "pcm_bluray", .audio = &audio_lpcm,
+    { .id = DR_CODEC_PCM_BLURAY, .name = "pcm_bluray", .audio = &audio_lpcm,
       .split = DR_SPLIT_PCM_BLURAY, .bits_coded = 1 },
-    { .id = AV_CODEC_ID_MP1, .name = "mp1", .check = check_mpa, .audio = &audio_mpa,
+    { .id = DR_CODEC_MP1, .name = "mp1", .check = check_mpa, .audio = &audio_mpa,
       .verify = verify_mpa, .split = DR_SPLIT_MPA },
-    { .id = AV_CODEC_ID_MP2, .name = "mp2", .check = check_mpa, .audio = &audio_mpa,
+    { .id = DR_CODEC_MP2, .name = "mp2", .check = check_mpa, .audio = &audio_mpa,
       .verify = verify_mpa, .split = DR_SPLIT_MPA },
-    { .id = AV_CODEC_ID_MP3, .name = "mp3", .check = check_mpa, .audio = &audio_mpa,
+    { .id = DR_CODEC_MP3, .name = "mp3", .check = check_mpa, .audio = &audio_mpa,
       .verify = verify_mpa, .split = DR_SPLIT_MPA },
-    { .id = AV_CODEC_ID_AAC, .name = "aac", .check = check_adts, .audio = &audio_adts,
+    { .id = DR_CODEC_AAC, .name = "aac", .check = check_adts, .audio = &audio_adts,
       .verify = verify_adts, .split = DR_SPLIT_ADTS },
-    { .id = AV_CODEC_ID_AAC_LATM, .name = "aac_latm", .check = loas, .audio = &audio_latm,
+    { .id = DR_CODEC_AAC_LATM, .name = "aac_latm", .check = loas, .audio = &audio_latm,
       .verify = verify_latm, .split = DR_SPLIT_LATM },
-    { .id = AV_CODEC_ID_DVD_SUBTITLE, .name = "dvd_subtitle",
+    { .id = DR_CODEC_DVD_SUBTITLE, .name = "dvd_subtitle",
       .check = ff_disctl_spu_check, .split = DR_SPLIT_DVDSUB,
       .verify = ff_disctl_spu_verify, .info_without_data = 1 },
-    { .id = AV_CODEC_ID_HDMV_PGS_SUBTITLE, .name = "hdmv_pgs_subtitle",
+    { .id = DR_CODEC_HDMV_PGS_SUBTITLE, .name = "hdmv_pgs_subtitle",
       .check = ff_disctl_pgs_check, .split = DR_SPLIT_PGS, .verify = ff_disctl_pgs_verify, .info_without_data = 1 },
     /* Blu-ray text subtitles: one segment per unit; a dialog takes the PES time */
-    { .id = AV_CODEC_ID_HDMV_TEXT_SUBTITLE, .name = "hdmv_text_subtitle", .anchor = ff_disctl_textst_anchor,
+    { .id = DR_CODEC_HDMV_TEXT_SUBTITLE, .name = "hdmv_text_subtitle", .anchor = ff_disctl_textst_anchor,
       .check = ff_disctl_textst_check, .split = DR_SPLIT_TEXTST, .verify = ff_disctl_textst_verify,
       .info_without_data = 1 },
     /* closed captions as text cues (made by the caption converter) */
-    { .id = AV_CODEC_ID_SUBRIP, .name = "subrip", .info_without_data = 1 },
+    { .id = DR_CODEC_SUBRIP, .name = "subrip", .info_without_data = 1 },
 };
 
-const DRCodec *ff_disctl_codec(enum AVCodecID id)
+static const DRTimelineHost *disctl_host;
+
+void ff_disctl_set_host(const DRTimelineHost *host)
+{
+    disctl_host = host;
+}
+
+const DRTimelineHost *ff_disctl_host(void)
+{
+    return disctl_host;
+}
+
+const char *ff_disctl_codec_id_name(DRCodecID id)
+{
+    const DRCodec *c = ff_disctl_codec(id);
+    return c ? c->name : "?";
+}
+
+const DRCodec *ff_disctl_codec(DRCodecID id)
 {
     for (size_t i = 0; i < sizeof(codecs) / sizeof(codecs[0]); i++)
         if (codecs[i].id == id)

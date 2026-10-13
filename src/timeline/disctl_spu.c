@@ -27,14 +27,20 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "libavcodec/defs.h"
-#include "libavutil/common.h"
-#include "libavutil/error.h"
-#include "libavutil/intreadwrite.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
 
-#include "disctl.h"
+#include <errno.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "base/bytes.h"
+#include "base/err.h"
+#include "base/macros.h"
+#include "base/mem.h"
+#include "base/vlog.h"
+
+#include "timeline/disctl.h"
 
 #define DELAY_TICKS 12288000LL   /* one SP_DCSQ_STM step: 1024 / 90000 s */
 #define MAX_DCSQ    40000        /* control sequences walked per unit */
@@ -65,13 +71,13 @@ static int header(const uint8_t *b, int64_t avail, Header *h)
 {
     if (avail < 4)
         return 0;
-    if (AV_RB16(b)) {
-        *h = (Header){ AV_RB16(b), AV_RB16(b + 2), 0 };
+    if (dr_rb16(b)) {
+        *h = (Header){ dr_rb16(b), dr_rb16(b + 2), 0 };
         return 1;
     }
     if (avail < 10)
         return 0;
-    *h = (Header){ AV_RB32(b + 2), AV_RB32(b + 6), 1 };
+    *h = (Header){ dr_rb32(b + 2), dr_rb32(b + 6), 1 };
     return 1;
 }
 
@@ -99,7 +105,7 @@ static int control(const uint8_t *b, int64_t len, Control *c)
 
         if (cur + 5 > len)
             return 0;
-        next = h.wide ? AV_RB32(b + cur + 2) : AV_RB16(b + cur + 2);
+        next = h.wide ? dr_rb32(b + cur + 2) : dr_rb16(b + cur + 2);
         p    = cur + (h.wide ? 6 : 4);
         if (p >= len)
             return 0;
@@ -109,7 +115,7 @@ static int control(const uint8_t *b, int64_t len, Control *c)
             switch (b[p]) {
             case 0x00: c->forced = 1; k = 1; break;
             case 0x01:                k = 1; break;
-            case 0x02: c->stop = AV_RB16(b + cur); k = 1; break;
+            case 0x02: c->stop = dr_rb16(b + cur); k = 1; break;
             case 0x03:
             case 0x04:                k = 3; break;
             case 0x05:
@@ -117,28 +123,28 @@ static int control(const uint8_t *b, int64_t len, Control *c)
                 if (len - p < 7)
                     return 0;
                 c->area = 1;
-                c->x2 = FFMAX(c->x2, (b[p + 2] & 0x0F) << 8 | b[p + 3]);
-                c->y2 = FFMAX(c->y2, (b[p + 5] & 0x0F) << 8 | b[p + 6]);
+                c->x2 = DR_MAX(c->x2, (b[p + 2] & 0x0F) << 8 | b[p + 3]);
+                c->y2 = DR_MAX(c->y2, (b[p + 5] & 0x0F) << 8 | b[p + 6]);
                 k = 7;
                 break;
             case 0x06:
                 c->dspxa = 1;
-                if (len - p < 5 || AV_RB16(b + p + 1) >= len || AV_RB16(b + p + 3) >= len)
+                if (len - p < 5 || dr_rb16(b + p + 1) >= len || dr_rb16(b + p + 3) >= len)
                     return 0;
                 k = 5;
                 break;
             case 0x86:
                 c->dspxa = 1;
-                if (len - p < 9 || AV_RB32(b + p + 1) >= len || AV_RB32(b + p + 5) >= len)
+                if (len - p < 9 || dr_rb32(b + p + 1) >= len || dr_rb32(b + p + 5) >= len)
                     return 0;
                 k = 9;
                 break;
             case 0x07:
             case 0x87:
                 c->colcon = 1;
-                if (len - p < 3 || AV_RB16(b + p + 1) < 2)
+                if (len - p < 3 || dr_rb16(b + p + 1) < 2)
                     return 0;
-                k = AV_RB16(b + p + 1) + 3;
+                k = dr_rb16(b + p + 1) + 3;
                 break;
             case 0x83:                k = 0x301; break;
             case 0x84:                k = 0x101; break;
@@ -213,21 +219,21 @@ static int drain(DRSpu *s)
         int64_t t;
         int ret = ff_disctl_video_snap(s->video, h->pes, &t);
 
-        if (ret == AVERROR(EAGAIN))
+        if (ret == DR_ERR(EAGAIN))
             return 0;
         if (ret < 0)
             return ret;
         s->head++;
         s->n--;
-        if (t == AV_NOPTS_VALUE || t < 0) {
-            av_log(s->log, AV_LOG_WARNING, "Title timeline: sub-picture track %d: a unit at %"PRId64" ticks is before "
+        if (t == DR_NOPTS_VALUE || t < 0) {
+            dr_vlog(s->log, DR_VLOG_WARNING, "Title timeline: sub-picture track %d: a unit at %"PRId64" ticks is before "
                    "the video's first field: left out\n", s->track, h->pes);
             event(s, DR_EV_SUB_EARLY, h->pes, h->f.dur);
             s->st.early++;
             ff_disctl_frame_unref(&h->f);
             continue;
         }
-        s->st.max_shift = FFMAX(s->st.max_shift, FFABS(t - h->pes));
+        s->st.max_shift = DR_MAX(s->st.max_shift, DR_ABS(t - h->pes));
         h->f.time = t;
         if (s->pgs && (ret = ff_disctl_video_field(s->video, &h->f.dur)) < 0)
             return ret;
@@ -248,9 +254,9 @@ static int hold(DRSpu *s, Held *h)
     }
     if (s->head + s->n == s->cap) {
         int cap = s->cap ? 2 * s->cap : 16;
-        Held *q = av_realloc_array(s->q, cap, sizeof(*q));
+        Held *q = dr_realloc_array(s->q, cap, sizeof(*q));
         if (!q)
-            return AVERROR(ENOMEM);
+            return DR_ERR(ENOMEM);
         s->q   = q;
         s->cap = cap;
     }
@@ -267,22 +273,22 @@ static int pgs_unit(DRSpu *s, const DRUnit *u)
 
     s->st.units++;
     if (!ff_disctl_pgs_check(u->data, u->size)) {
-        av_log(s->log, AV_LOG_ERROR, "Title timeline: PGS track %d: a display set the parser passed does not parse\n",
+        dr_vlog(s->log, DR_VLOG_ERROR, "Title timeline: PGS track %d: a display set the parser passed does not parse\n",
                s->track);
-        return AVERROR_BUG;
+        return DR_ERR_BUG;
     }
-    if (u->time == AV_NOPTS_VALUE || u->time < 0) {
-        av_log(s->log, AV_LOG_WARNING, "Title timeline: PGS track %d: the display set at byte %"PRId64" has no time: "
+    if (u->time == DR_NOPTS_VALUE || u->time < 0) {
+        dr_vlog(s->log, DR_VLOG_WARNING, "Title timeline: PGS track %d: the display set at byte %"PRId64" has no time: "
                "left out\n", s->track, u->pos);
         event(s, DR_EV_SUB_UNTIMED, u->pos, 0);
         s->st.untimed++;
         return 0;
     }
-    if (!(h.f.buf = av_buffer_alloc(u->size + AV_INPUT_BUFFER_PADDING_SIZE)))
-        return AVERROR(ENOMEM);
-    n = ff_disctl_pgs_forced_only(u->data, u->size, h.f.buf->data, &forced);
+    if (!(h.f.buf = dr_buf_alloc(u->size + DR_BUF_PADDING)))
+        return DR_ERR(ENOMEM);
+    n = ff_disctl_pgs_forced_only(u->data, u->size, dr_buf_data(h.f.buf), &forced);
     if (n < 0) {
-        av_log(s->log, AV_LOG_ERROR, "Title timeline: PGS track %d: the composition of the display set at byte %"PRId64
+        dr_vlog(s->log, DR_VLOG_ERROR, "Title timeline: PGS track %d: the composition of the display set at byte %"PRId64
                " does not parse\n", s->track, u->pos);
         ff_disctl_frame_unref(&h.f);
         return n;
@@ -291,15 +297,15 @@ static int pgs_unit(DRSpu *s, const DRUnit *u)
     if (s->forced_only) {
         if (forced && !s->said_forced) {
             s->said_forced = 1;
-            av_log(s->log, AV_LOG_INFO, "Title timeline: PGS track %d: forced subtitles: each display set shows only "
+            dr_vlog(s->log, DR_VLOG_INFO, "Title timeline: PGS track %d: forced subtitles: each display set shows only "
                    "its forced objects, as a player does with subtitles off [untested on real discs]\n", s->track);
         }
     } else {
-        memcpy(h.f.buf->data, u->data, u->size);
+        memcpy(dr_buf_data(h.f.buf), u->data, u->size);
         n = u->size;
     }
-    memset(h.f.buf->data + n, 0, AV_INPUT_BUFFER_PADDING_SIZE);
-    h.f.data = h.f.buf->data;
+    memset(dr_buf_data(h.f.buf) + n, 0, DR_BUF_PADDING);
+    h.f.data = dr_buf_data(h.f.buf);
     h.f.size = n;
     if ((ret = hold(s, &h)) < 0) {
         ff_disctl_frame_unref(&h.f);
@@ -325,19 +331,19 @@ int ff_disctl_spu_unit(void *opaque, const DRUnit *u)
         return pgs_unit(s, u);
     s->st.units++;
     if (!control(u->data, u->size, &c)) {
-        av_log(s->log, AV_LOG_ERROR, "Title timeline: sub-picture track %d: a unit the parser passed does not parse\n",
+        dr_vlog(s->log, DR_VLOG_ERROR, "Title timeline: sub-picture track %d: a unit the parser passed does not parse\n",
                s->track);
-        return AVERROR_BUG;
+        return DR_ERR_BUG;
     }
     if (c.colcon && !s->warned_colcon) {
-        av_log(s->log, AV_LOG_WARNING, "Title timeline: sub-picture track %d: a unit changes colour and contrast "
+        dr_vlog(s->log, DR_VLOG_WARNING, "Title timeline: sub-picture track %d: a unit changes colour and contrast "
                "per line (CHG_COLCON) [untested on real discs]\n", s->track);
         s->warned_colcon = 1;
     }
     s->st.colcon += c.colcon;
     if (s->width && c.area && (c.x2 >= s->width || c.y2 >= s->height)) {
         if (!s->warned_outside)
-            av_log(s->log, AV_LOG_WARNING, "Title timeline: sub-picture track %d: the unit at byte %"PRId64" is drawn "
+            dr_vlog(s->log, DR_VLOG_WARNING, "Title timeline: sub-picture track %d: the unit at byte %"PRId64" is drawn "
                    "up to column %d, line %d, outside the track's %dx%d canvas\n", s->track, u->pos, c.x2, c.y2,
                    s->width, s->height);
         s->warned_outside = 1;
@@ -349,18 +355,18 @@ int ff_disctl_spu_unit(void *opaque, const DRUnit *u)
         h.f.flags |= DR_F_NO_STOP;
         s->st.no_stop++;
     }
-    if (u->time == AV_NOPTS_VALUE || u->time < 0) {
-        av_log(s->log, AV_LOG_WARNING, "Title timeline: sub-picture track %d: the unit at byte %"PRId64" has no time "
+    if (u->time == DR_NOPTS_VALUE || u->time < 0) {
+        dr_vlog(s->log, DR_VLOG_WARNING, "Title timeline: sub-picture track %d: the unit at byte %"PRId64" has no time "
                "of its own (not the first unit of its PES packet): left out\n", s->track, u->pos);
         event(s, DR_EV_SUB_UNTIMED, u->pos, h.f.dur);
         s->st.untimed++;
         return 0;
     }
-    if (!(h.f.buf = av_buffer_alloc(u->size + AV_INPUT_BUFFER_PADDING_SIZE)))
-        return AVERROR(ENOMEM);
-    memcpy(h.f.buf->data, u->data, u->size);
-    memset(h.f.buf->data + u->size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
-    h.f.data = h.f.buf->data;
+    if (!(h.f.buf = dr_buf_alloc(u->size + DR_BUF_PADDING)))
+        return DR_ERR(ENOMEM);
+    memcpy(dr_buf_data(h.f.buf), u->data, u->size);
+    memset(dr_buf_data(h.f.buf) + u->size, 0, DR_BUF_PADDING);
+    h.f.data = dr_buf_data(h.f.buf);
     h.f.size = u->size;
     if ((ret = hold(s, &h)) < 0) {
         ff_disctl_frame_unref(&h.f);
@@ -376,16 +382,16 @@ int ff_disctl_spu_flush(DRSpu *s)
     if (ret < 0)
         return ret;
     if (s->n) {
-        av_log(s->log, AV_LOG_ERROR, "Title timeline: sub-picture track %d: %d units, but the segment's video has "
+        dr_vlog(s->log, DR_VLOG_ERROR, "Title timeline: sub-picture track %d: %d units, but the segment's video has "
                "no grid to time them\n", s->track, s->n);
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
     }
-    av_log(s->log, AV_LOG_DEBUG, "Title timeline: sub-picture track %d: %"PRId64" units -> %"PRId64" out (%"PRId64
+    dr_vlog(s->log, DR_VLOG_DEBUG, "Title timeline: sub-picture track %d: %"PRId64" units -> %"PRId64" out (%"PRId64
            " without a time, %"PRId64" before the video, %"PRId64" without a stop time), largest move to the "
            "video grid %"PRId64" ticks\n", s->track, s->st.units, s->st.out, s->st.untimed, s->st.early,
            s->st.no_stop, s->st.max_shift);
     if (s->width)
-        av_log(s->log, AV_LOG_VERBOSE, "Title timeline: sub-picture track %d: units inside the %dx%d canvas: "
+        dr_vlog(s->log, DR_VLOG_VERBOSE, "Title timeline: sub-picture track %d: units inside the %dx%d canvas: "
                "%"PRId64" of %"PRId64": %s\n", s->track, s->width, s->height, s->st.units - s->st.outside,
                s->st.units, s->st.outside ? "FAIL" : "PASS");
     return 0;
@@ -398,9 +404,9 @@ int ff_disctl_spu_open(DRSpu **sp, void *logctx, int track, DRVideo *video, int 
 
     *sp = NULL;
     if (!video)
-        return AVERROR(EINVAL);
-    if (!(s = av_mallocz(sizeof(*s))))
-        return AVERROR(ENOMEM);
+        return DR_ERR(EINVAL);
+    if (!(s = dr_mallocz(sizeof(*s))))
+        return DR_ERR(ENOMEM);
     s->log    = logctx;
     s->track  = track;
     s->width  = width;
@@ -427,8 +433,8 @@ void ff_disctl_spu_close(DRSpu **sp)
         return;
     for (int i = 0; i < s->n; i++)
         ff_disctl_frame_unref(&s->q[s->head + i].f);
-    av_freep(&s->q);
-    av_freep(sp);
+    dr_freep(&s->q);
+    dr_freep(sp);
 }
 
 /* A palette entry 0x00 Y Cr Cb as RGB, the way the reference converts it:

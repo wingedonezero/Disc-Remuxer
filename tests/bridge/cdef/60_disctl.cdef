@@ -1,4 +1,4 @@
-/* libavformat/disctl.h: the title timeline. */
+/* timeline/disctl.h: the title timeline. */
 
 #define DR_TICKS_PER_SECOND ...
 #define DR_TICKS_PER_PTS ...
@@ -25,7 +25,7 @@
 #define DR_CHAPTER_00 ...
 
 typedef struct DRFrame {
-    struct AVBufferRef *buf;
+    struct DrBuf *buf;
     uint8_t     *data;
     int          size;
     int64_t      time;

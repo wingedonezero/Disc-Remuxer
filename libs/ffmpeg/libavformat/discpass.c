@@ -59,7 +59,7 @@
 
 #include "avformat.h"
 #include "disc.h"
-#include "disctl.h"
+#include "timeline/disctl.h"
 
 #define DETAILS_LIMIT (64LL << 20)
 #define DISC_BLOCK    2048

@@ -44,6 +44,12 @@ static inline uint64_t dr_rb64(const uint8_t *p)
     return (uint64_t)dr_rb32(p) << 32 | dr_rb32(p + 4);
 }
 
+static inline void dr_wb16(uint8_t *p, uint16_t v)
+{
+    p[0] = v >> 8;
+    p[1] = v;
+}
+
 static inline void dr_wl16(uint8_t *p, uint16_t v)
 {
     p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8);

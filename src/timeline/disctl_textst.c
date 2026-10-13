@@ -30,13 +30,21 @@
 
 #include <string.h>
 
-#include "libavcodec/defs.h"
 #include "parse/hdmv_textst.h"
-#include "libavutil/intreadwrite.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
 
-#include "disctl.h"
+#include <errno.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "base/bytes.h"
+#include "base/err.h"
+#include "base/macros.h"
+#include "base/mem.h"
+#include "base/vlog.h"
+
+#include "timeline/disctl.h"
 
 struct DRTextst {
     void       *log;
@@ -78,7 +86,7 @@ int ff_disctl_textst_forced_only(const uint8_t *in, int size, uint8_t *out, int 
 
     *kept = 0;
     if (!ff_hdmv_textst_dialog(in, size, &d))
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
     /* the fields up to number_of_regions, then the forced regions; what
      * follows the regions (none in the format) stays */
     memcpy(out, in, d.regions_at);
@@ -95,18 +103,18 @@ int ff_disctl_textst_forced_only(const uint8_t *in, int size, uint8_t *out, int 
         o += d.size - tail;
     }
     out[d.regions_at] = *kept;
-    AV_WB16(out + 1, o - 3);
+    dr_wb16(out + 1, o - 3);
     return o;
 }
 
 int ff_disctl_textst_open(DRTextst **x, void *logctx, int track, int forced_only, const char *where,
                           DRFrameCb cb, void *opaque)
 {
-    DRTextst *t = av_mallocz(sizeof(*t));
+    DRTextst *t = dr_mallocz(sizeof(*t));
 
     *x = t;
     if (!t)
-        return AVERROR(ENOMEM);
+        return DR_ERR(ENOMEM);
     t->log         = logctx;
     t->track       = track;
     t->forced_only = forced_only;
@@ -120,12 +128,12 @@ static int style_unit(DRTextst *t, const DRUnit *u)
 {
     int n = u->size - 2;            /* the dialog count after it is no part of it */
 
-    if (!(t->style = av_memdup(u->data, n)))
-        return AVERROR(ENOMEM);
+    if (!(t->style = dr_memdup(u->data, n)))
+        return DR_ERR(ENOMEM);
     t->style_size = n;
-    av_log(t->log, AV_LOG_VERBOSE, "Title timeline: TextST track %d: dialog style segment of %d bytes; the disc "
-           "counts %d dialogs\n", t->track, n, AV_RB16(u->data + n));
-    t->st.disc_count = AV_RB16(u->data + n);
+    dr_vlog(t->log, DR_VLOG_VERBOSE, "Title timeline: TextST track %d: dialog style segment of %d bytes; the disc "
+           "counts %d dialogs\n", t->track, n, dr_rb16(u->data + n));
+    t->st.disc_count = dr_rb16(u->data + n);
     return 0;
 }
 
@@ -144,7 +152,7 @@ int ff_disctl_textst_unit(void *opaque, const DRUnit *u)
     if (!t->style) {
         if (u->data[0] == HDMV_TEXTST_DSS)
             return style_unit(t, u);
-        av_log(t->log, AV_LOG_WARNING, "Title timeline: TextST track %d: %s does not start with a dialog style "
+        dr_vlog(t->log, DR_VLOG_WARNING, "Title timeline: TextST track %d: %s does not start with a dialog style "
                "segment (its first segment, at stream offset %"PRId64", has type 0x%02x): the track has no "
                "subtitles\n", t->track, t->where, u->pos, u->data[0]);
         t->failed = 1;
@@ -153,7 +161,7 @@ int ff_disctl_textst_unit(void *opaque, const DRUnit *u)
         return 0;
     }
     if (u->data[0] != HDMV_TEXTST_DPS) {
-        av_log(t->log, AV_LOG_WARNING, "Title timeline: TextST track %d: %s: %s at stream offset %"PRId64": left "
+        dr_vlog(t->log, DR_VLOG_WARNING, "Title timeline: TextST track %d: %s: %s at stream offset %"PRId64": left "
                "out\n", t->track, t->where, u->data[0] == HDMV_TEXTST_DSS ? "a second dialog style segment (the "
                "first one styles every dialog)" : "a segment of another type", u->pos);
         t->st.left_out++;
@@ -162,19 +170,19 @@ int ff_disctl_textst_unit(void *opaque, const DRUnit *u)
     }
     t->st.dialogs++;
     if (!ff_hdmv_textst_dialog(u->data, u->size, &d)) {
-        av_log(t->log, AV_LOG_ERROR, "Title timeline: TextST track %d: a dialog the parser passed does not parse "
+        dr_vlog(t->log, DR_VLOG_ERROR, "Title timeline: TextST track %d: a dialog the parser passed does not parse "
                "(%s)\n", t->track, d.error);
-        return AVERROR_BUG;
+        return DR_ERR_BUG;
     }
-    if (u->time == AV_NOPTS_VALUE || u->time < 0) {
-        av_log(t->log, AV_LOG_WARNING, "Title timeline: TextST track %d: %s: the dialog at stream offset %"PRId64
+    if (u->time == DR_NOPTS_VALUE || u->time < 0) {
+        dr_vlog(t->log, DR_VLOG_WARNING, "Title timeline: TextST track %d: %s: the dialog at stream offset %"PRId64
                " has no time: left out\n", t->track, t->where, u->pos);
         t->st.left_out++;
         t->st.warnings++;
         return 0;
     }
     if (d.end < d.start) {
-        av_log(t->log, AV_LOG_WARNING, "Title timeline: TextST track %d: %s: the dialog at stream offset %"PRId64
+        dr_vlog(t->log, DR_VLOG_WARNING, "Title timeline: TextST track %d: %s: the dialog at stream offset %"PRId64
                " ends (PTS %"PRId64") before it starts (PTS %"PRId64"): left out\n", t->track, t->where, u->pos,
                d.end, d.start);
         t->st.left_out++;
@@ -186,20 +194,20 @@ int ff_disctl_textst_unit(void *opaque, const DRUnit *u)
         t->st.not_forced++;
         return 0;
     }
-    if (!(f.buf = av_buffer_alloc(d.size + AV_INPUT_BUFFER_PADDING_SIZE)))
-        return AVERROR(ENOMEM);
+    if (!(f.buf = dr_buf_alloc(d.size + DR_BUF_PADDING)))
+        return DR_ERR(ENOMEM);
     if (t->forced_only) {
-        if ((n = ff_disctl_textst_forced_only(u->data, d.size, f.buf->data, &kept)) < 0) {
+        if ((n = ff_disctl_textst_forced_only(u->data, d.size, dr_buf_data(f.buf), &kept)) < 0) {
             ff_disctl_frame_unref(&f);
-            return AVERROR_BUG;
+            return DR_ERR_BUG;
         }
         t->st.regions_cut += d.nb_regions - kept;
     } else {
-        memcpy(f.buf->data, u->data, d.size);
+        memcpy(dr_buf_data(f.buf), u->data, d.size);
         n = d.size;
     }
-    memset(f.buf->data + n, 0, AV_INPUT_BUFFER_PADDING_SIZE);
-    f.data = f.buf->data;
+    memset(dr_buf_data(f.buf) + n, 0, DR_BUF_PADDING);
+    f.data = dr_buf_data(f.buf);
     f.size = n;
     f.dur  = (d.end - d.start) * DR_TICKS_PER_PTS;
     t->st.out++;
@@ -221,6 +229,6 @@ void ff_disctl_textst_close(DRTextst **x)
 {
     if (!*x)
         return;
-    av_freep(&(*x)->style);
-    av_freep(x);
+    dr_freep(&(*x)->style);
+    dr_freep(x);
 }

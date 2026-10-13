@@ -20,17 +20,20 @@
 
 #include <string.h>
 
-#include "libavcodec/avcodec.h"
-#include "libavcodec/mlp_parse.h"
-#include "libavutil/crc.h"
-#include "libavutil/error.h"
-#include "libavutil/frame.h"
-#include "libavutil/intreadwrite.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
-#include "libavutil/thread.h"
 
-#include "disctl.h"
+#include <errno.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "base/bytes.h"
+#include "base/err.h"
+#include "base/macros.h"
+#include "base/mem.h"
+#include "base/vlog.h"
+
+#include "timeline/disctl.h"
 
 /* An access unit (AU) starts with a 4-byte header: check nibble, AU length
  * in 16-bit words (12 bits), input timing. A major-sync AU then holds the
@@ -54,17 +57,29 @@ typedef struct MlpState {
     int has_ctr;          /* ctr is known (a major sync's restart header was read) */
     int ctr;              /* sample number of the next AU's first sample, modulo 65536 */
 
-    AVBufferRef *hist[HISTORY_MAX];   /* AUs since the last major sync */
+    DrBuf *hist[HISTORY_MAX];   /* AUs since the last major sync */
     int          hist_size[HISTORY_MAX];
     int          nb_hist;
 } MlpState;
 
-static AVCRC crc_2d[1024];
-static AVOnce crc_once = AV_ONCE_INIT;
-
-static void crc_init(void)
+/* CRC-16, polynomial 0x002D, most significant bit first (MLP's major sync
+ * checksum). */
+static uint16_t mlp_crc(uint16_t crc, const uint8_t *buf, int len)
 {
-    av_crc_init(crc_2d, 0, 16, 0x002D, sizeof(crc_2d));
+    for (int i = 0; i < len; i++) {
+        crc ^= (uint16_t)buf[i] << 8;
+        for (int j = 0; j < 8; j++)
+            crc = crc & 0x8000 ? (crc << 1) ^ 0x002D : crc << 1;
+    }
+    return crc;
+}
+
+/* The sample rate a major sync's rate bits state (0xF: none). */
+static int mlp_samplerate(int in)
+{
+    if (in == 0xF)
+        return 0;
+    return (in & 8 ? 44100 : 48000) << (in & 7);
 }
 
 static int major_sync(const uint8_t *p, int n)
@@ -96,9 +111,8 @@ static int major_sync_ok(const uint8_t *p, int n)
     hs = major_sync_size(p);
     if (au_length(p) < hs + 4 || n < hs + 4)
         return 0;
-    ff_thread_once(&crc_once, crc_init);
-    crc = av_crc(crc_2d, 0, p + 4, hs - 4) ^ AV_RL16(p + hs);
-    return crc == AV_RL16(p + hs + 2);
+    crc = mlp_crc(0, p + 4, hs - 4) ^ dr_rb16(p + hs);
+    return crc == dr_rb16(p + hs + 2);
 }
 
 /* A unit of the stream: an AU of at least 8 bytes; a major-sync AU only with
@@ -140,7 +154,7 @@ static int header_mlp(DRAudio *a, const DRFrame *f, DRAudioHeader *h)
     m->rate       = mlp_samplerate(ratebits);
     m->samples    = 40 << (ratebits & 7);
     m->nsub       = p[0x14] >> 4;
-    m->nsub_check = FFMIN(m->nsub, 3);
+    m->nsub_check = DR_MIN(m->nsub, 3);
     m->ext        = m->truehd && (p[0x1d] & 1) ? p[0x1e] >> 4 : 0;
     h->rate       = m->rate;
     h->samples    = m->samples;
@@ -159,7 +173,7 @@ static int header_mlp(DRAudio *a, const DRFrame *f, DRAudioHeader *h)
 static void history_clear(MlpState *m)
 {
     for (int i = 0; i < m->nb_hist; i++)
-        av_buffer_unref(&m->hist[i]);
+        dr_buf_unref(&m->hist[i]);
     m->nb_hist = 0;
 }
 
@@ -168,53 +182,31 @@ static void close_mlp(void *priv)
     history_clear(priv);
 }
 
-/* The number of samples an AU that ends the stream decodes to: the AUs since
- * the last major sync, then this one, through FFmpeg's decoder; the samples
- * of this AU's frame. */
 static int decode_count(DRAudio *a, MlpState *m, const uint8_t *p, int n, int *count)
 {
-    const uint8_t *hdr = m->nb_hist ? m->hist[0]->data : p;
-    const AVCodec *dec;
-    AVCodecContext *ctx = NULL;
-    AVPacket *pkt = av_packet_alloc();
-    AVFrame *frame = av_frame_alloc();
-    int ret = AVERROR(ENOMEM);
+    const uint8_t *aus[HISTORY_MAX + 1];
+    int sizes[HISTORY_MAX + 1];
+    const DRTimelineHost *host = ff_disctl_host();
+    int ret;
 
-    if (!pkt || !frame)
-        goto end;
-    if (!major_sync(hdr, m->nb_hist ? m->hist_size[0] : n)) {
-        ret = AVERROR_INVALIDDATA;
-        goto end;
-    }
-    dec = avcodec_find_decoder(hdr[7] == 0xBA ? AV_CODEC_ID_TRUEHD : AV_CODEC_ID_MLP);
-    if (!dec || !(ctx = avcodec_alloc_context3(dec))) {
-        ret = AVERROR(ENOSYS);
+    if (!major_sync(m->nb_hist ? dr_buf_data(m->hist[0]) : p, m->nb_hist ? m->hist_size[0] : n) ||
+        !host || !host->mlp_last_au_samples) {
+        ret = DR_ERR_INVALID;
         goto end;
     }
-    if ((ret = avcodec_open2(ctx, dec, NULL)) < 0)
-        goto end;
-    for (int i = 0; i <= m->nb_hist; i++) {
-        const uint8_t *d = i < m->nb_hist ? m->hist[i]->data : p;
-        int size         = i < m->nb_hist ? m->hist_size[i]   : n;
-
-        av_packet_unref(pkt);
-        if ((ret = av_new_packet(pkt, size)) < 0)
-            goto end;
-        memcpy(pkt->data, d, size);
-        if ((ret = avcodec_send_packet(ctx, pkt)) < 0 ||
-            (ret = avcodec_receive_frame(ctx, frame)) < 0)
-            goto end;
-        *count = frame->nb_samples;
-        av_frame_unref(frame);
+    for (int i = 0; i < m->nb_hist; i++) {
+        aus[i]   = dr_buf_data(m->hist[i]);
+        sizes[i] = m->hist_size[i];
     }
-    ret = *count > m->samples ? AVERROR_INVALIDDATA : 0;
+    aus[m->nb_hist]   = p;
+    sizes[m->nb_hist] = n;
+    ret = host->mlp_last_au_samples(ff_disctl_audio_log(a), aus, sizes, m->nb_hist + 1, count);
+    if (ret >= 0)
+        ret = *count > m->samples ? DR_ERR_INVALID : 0;
 end:
     if (ret < 0)
-        av_log(ff_disctl_audio_log(a), AV_LOG_DEBUG, "Title timeline: MLP / TrueHD: the AU that ends the stream "
-               "could not be decoded (%s)\n", av_err2str(ret));
-    avcodec_free_context(&ctx);
-    av_packet_free(&pkt);
-    av_frame_free(&frame);
+        dr_vlog(ff_disctl_audio_log(a), DR_VLOG_DEBUG, "Title timeline: MLP / TrueHD: the AU that ends the stream "
+               "could not be decoded (%s)\n", dr_err_text(ret));
     return ret;
 }
 
@@ -239,14 +231,14 @@ static int au_samples(DRAudio *a, MlpState *m, const uint8_t *p, int n)
     for (int i = 0; i < m->nsub; i++) {
         if (d + 2 > n)
             return m->samples;
-        dir[i] = AV_RB16(p + d);
+        dir[i] = dr_rb16(p + d);
         d += 2 + 2 * (dir[i] >> 15);
     }
     end = (dir[m->nsub - 1] * 2) & 0x1FFE;
     if (len < end + d)
         return m->samples;
     if (len > end + d && !m->ext &&
-        (end + d + 2 > n || len - (end + d) - 2 != ((AV_RB16(p + d + end) * 2) & 0x1FFE)))
+        (end + d + 2 > n || len - (end + d) - 2 != ((dr_rb16(p + d + end) * 2) & 0x1FFE)))
         return m->samples;
 
     /* Each of the first min(substreams, 3) substreams must end with the
@@ -271,11 +263,11 @@ static int au_samples(DRAudio *a, MlpState *m, const uint8_t *p, int n)
         e -= 4;
         if (j && e < pe)
             return m->samples;
-        if (d + e + 4 > n || AV_RL16(p + d + e) != 0x34D2)
+        if (d + e + 4 > n || dr_rl16(p + d + e) != 0x34D2)
             return m->samples;
-        w = AV_RB16(p + d + e + 2);
+        w = dr_rb16(p + d + e + 2);
         if (!m->truehd) {
-            if (AV_RL16(p + d + e + 2) != 0x34D2)
+            if (dr_rl16(p + d + e + 2) != 0x34D2)
                 return m->samples;
         } else if (w & 0x2000) {
             int t = w & 0x1FFF;
@@ -312,14 +304,14 @@ static int output_timing(const MlpState *m, const uint8_t *p, int n)
     for (int i = 0; i < m->nsub; i++) {
         if (d + 2 > n)
             return -1;
-        d += 2 + 2 * (AV_RB16(p + d) >> 15);
+        d += 2 + 2 * (dr_rb16(p + d) >> 15);
     }
     if (d + 4 > n)
         return -1;
-    w = AV_RB16(p + d);
+    w = dr_rb16(p + d);
     if (w >> 14 != 3 || ((w >> 1) & 0x1FFF) != 0x18F5)
         return -1;
-    return AV_RB16(p + d + 2);
+    return dr_rb16(p + d + 2);
 }
 
 static int duration_mlp(DRAudio *a, DRFrame *f)
@@ -328,7 +320,7 @@ static int duration_mlp(DRAudio *a, DRFrame *f)
     int samples;
 
     if (f->size < 8)
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
     if (major_sync(f->data, f->size)) {
         int t = output_timing(m, f->data, f->size);
         history_clear(m);
@@ -344,8 +336,8 @@ static int duration_mlp(DRAudio *a, DRFrame *f)
     samples = au_samples(a, m, f->data, f->size);
     f->dur  = (int64_t)((uint64_t)samples * DR_TICKS_PER_SECOND / (uint64_t)m->rate);
     if (m->nb_hist < HISTORY_MAX) {
-        if (!(m->hist[m->nb_hist] = av_buffer_ref(f->buf)))
-            return AVERROR(ENOMEM);
+        if (!(m->hist[m->nb_hist] = dr_buf_ref(f->buf)))
+            return DR_ERR(ENOMEM);
         m->hist_size[m->nb_hist++] = f->size;
     }
     return 0;

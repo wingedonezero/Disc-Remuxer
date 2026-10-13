@@ -38,7 +38,7 @@
 #include "avformat.h"
 #include "bluray_internal.h"
 #include "disc.h"
-#include "disctl.h"
+#include "timeline/disctl.h"
 #include "internal.h"
 
 

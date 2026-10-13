@@ -21,13 +21,20 @@
 
 #include <string.h>
 
-#include "libavcodec/defs.h"
-#include "libavutil/avutil.h"
-#include "libavutil/error.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
 
-#include "disctl.h"
+#include <errno.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "base/bytes.h"
+#include "base/err.h"
+#include "base/macros.h"
+#include "base/mem.h"
+#include "base/vlog.h"
+
+#include "timeline/disctl.h"
 
 #define MS            1080000LL                 /* ticks per millisecond */
 #define REPORT        MS                        /* changes above 1 ms are events */
@@ -95,7 +102,7 @@ static int need(DRJunction *j, int k)
 
 static void event(DRJunction *j, int kind, int64_t pos, int64_t dur, int64_t skew, int64_t count)
 {
-    if (j->nb_ev < FF_ARRAY_ELEMS(j->ev))
+    if (j->nb_ev < DR_ARRAY_ELEMS(j->ev))
         j->ev[j->nb_ev++] = (DREvent){ kind, j->cfg.track, pos, dur, skew, count };
 }
 
@@ -111,7 +118,7 @@ static void events_flush(DRJunction *j)
  * by comparing bytes. */
 static int is_mlp(const DRJunction *j)
 {
-    return j->cfg.codec == AV_CODEC_ID_TRUEHD || j->cfg.codec == AV_CODEC_ID_MLP;
+    return j->cfg.codec == DR_CODEC_TRUEHD || j->cfg.codec == DR_CODEC_MLP;
 }
 
 /* A reference to a frame's bytes (a copy when it owns none). */
@@ -120,12 +127,12 @@ static int frame_ref(DRFrame *dst, const DRFrame *f)
     *dst = (DRFrame){ .data = f->data, .size = f->size, .time = f->time, .dur = f->dur, .flags = f->flags,
                       .seg = f->seg };
     if (f->buf)
-        dst->buf = av_buffer_ref(f->buf);
-    else if ((dst->buf = av_buffer_alloc(f->size + AV_INPUT_BUFFER_PADDING_SIZE))) {
-        memcpy(dst->buf->data, f->data, f->size);
-        dst->data = dst->buf->data;
+        dst->buf = dr_buf_ref(f->buf);
+    else if ((dst->buf = dr_buf_alloc(f->size + DR_BUF_PADDING))) {
+        memcpy(dr_buf_data(dst->buf), f->data, f->size);
+        dst->data = dr_buf_data(dst->buf);
     }
-    return dst->buf ? 0 : AVERROR(ENOMEM);
+    return dst->buf ? 0 : DR_ERR(ENOMEM);
 }
 
 /* Keeps a frame handed on in the ring of the last COPY_TAIL ones. */
@@ -270,13 +277,13 @@ static int copy_check(DRJunction *j, State *s)
 
     if (ov <= TICK) {
         if (same_bytes(f, tail_get(j, 1)))
-            av_log(j->log, AV_LOG_INFO, "Title timeline: audio track %d: segment %d starts with the bytes of the "
+            dr_vlog(j->log, DR_VLOG_INFO, "Title timeline: audio track %d: segment %d starts with the bytes of the "
                    "frame before it, but the stamps do not overlap (%"PRId64" ticks): no copy, kept\n", j->cfg.track,
                    f->seg + 1, ov);
         return NONE;
     }
     if (same_bytes(f, tail_get(j, 1))) {
-        av_log(j->log, AV_LOG_INFO, "Title timeline: audio track %d: segment %d starts with a copy of the frame the "
+        dr_vlog(j->log, DR_VLOG_INFO, "Title timeline: audio track %d: segment %d starts with a copy of the frame the "
                "segment before ends with (stamps overlap by %"PRId64" ticks): the copy is left out\n", j->cfg.track,
                f->seg + 1, ov);
         event(j, DR_EV_AUDIO_COPY, f->time, f->dur, s->skew, ov);
@@ -290,7 +297,7 @@ static int copy_check(DRJunction *j, State *s)
     }
     n = f->dur > 0 ? (ov - TICK + f->dur - 1) / f->dur : 0;
     if (n > j->nb_tail) {
-        av_log(j->log, AV_LOG_INFO, "Title timeline: audio track %d: segment %d: the stamps overlap by %"PRId64
+        dr_vlog(j->log, DR_VLOG_INFO, "Title timeline: audio track %d: segment %d: the stamps overlap by %"PRId64
                " ticks, more frames than the %d kept: not compared\n", j->cfg.track, f->seg + 1, ov, j->nb_tail);
     } else if (n > 1) {
         int i;
@@ -373,10 +380,10 @@ static int step(DRJunction *j)
     int r, ret;
 
     j->nb_ev = 0;
-    if (f->time == AV_NOPTS_VALUE) {
-        av_log(j->log, AV_LOG_ERROR, "Title timeline: audio track %d: a frame without a time reached the junction\n",
+    if (f->time == DR_NOPTS_VALUE) {
+        dr_vlog(j->log, DR_VLOG_ERROR, "Title timeline: audio track %d: a frame without a time reached the junction\n",
                j->cfg.track);
-        return AVERROR_BUG;
+        return DR_ERR_BUG;
     }
     if (!f->dur && !f->size) {
         /* an empty marker leaves shifted */
@@ -408,15 +415,15 @@ static int step(DRJunction *j)
             int64_t ov = s.exp - f->time;
             s.skew += ov;
             s.exp   = f->time;
-            if (ov > REPORT || FFABS(s.skew) > REPORT)
+            if (ov > REPORT || DR_ABS(s.skew) > REPORT)
                 event(j, DR_EV_OVERLAP, f->time, ov, s.skew, 0);
         } else {
             int64_t gap = f->time - s.exp, ns = s.skew - gap;
             /* a gap of one frame (within one tick) is a missing frame, not absorbed */
-            if (ns > -(FFMAX(GAP_FLOOR, f->dur) - TICK)) {
+            if (ns > -(DR_MAX(GAP_FLOOR, f->dur) - TICK)) {
                 s.skew = ns;
                 s.exp  = f->time;
-                if (gap > REPORT || FFABS(ns) > REPORT)
+                if (gap > REPORT || DR_ABS(ns) > REPORT)
                     event(j, DR_EV_GAP_ABSORBED, f->time, gap, ns, 0);
             } else {
                 /* a real gap; first see where the video is */
@@ -536,11 +543,11 @@ static int run(DRJunction *j)
 
 int ff_disctl_junction_open(DRJunction **jp, void *logctx, const DRJunctionConfig *cfg)
 {
-    DRJunction *j = av_mallocz(sizeof(*j));
+    DRJunction *j = dr_mallocz(sizeof(*j));
 
     *jp = NULL;
     if (!j)
-        return AVERROR(ENOMEM);
+        return DR_ERR(ENOMEM);
     j->log      = logctx;
     j->cfg      = *cfg;
     j->checked_seg = -1;
@@ -556,9 +563,9 @@ int ff_disctl_junction_push(DRJunction *j, DRFrame *f)
     }
     if (j->head + j->n == j->cap) {
         int cap = j->cap ? 2 * j->cap : 64;
-        DRFrame *q = av_realloc_array(j->q, cap, sizeof(*q));
+        DRFrame *q = dr_realloc_array(j->q, cap, sizeof(*q));
         if (!q)
-            return AVERROR(ENOMEM);
+            return DR_ERR(ENOMEM);
         j->q   = q;
         j->cap = cap;
     }
@@ -590,6 +597,6 @@ void ff_disctl_junction_close(DRJunction **jp)
         q_drop_head(j);
     for (int i = 0; i < COPY_TAIL; i++)
         ff_disctl_frame_unref(&j->tail[i]);
-    av_freep(&j->q);
-    av_freep(jp);
+    dr_freep(&j->q);
+    dr_freep(jp);
 }

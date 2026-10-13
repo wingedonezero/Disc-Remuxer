@@ -11,7 +11,7 @@ FFMPEG_PCS := $(PC)/dvdread.pc $(PC)/dvdnav.pc $(PC)/expat.pc $(PC)/libaacs.pc
 FFMPEG_ARGS := --prefix=$(FFMPEG) --enable-gpl --enable-libdvdnav --enable-libdvdread --enable-libexpat \
   --enable-libaacs --disable-autodetect --enable-static --disable-shared --enable-pic --disable-doc \
   --disable-ffplay --pkg-config=pkg-config --pkg-config-flags=--static \
-  --extra-cflags=-I$(ROOT)/src --extra-libs="$(IO_LIB) $(MUX_LIB) $(PARSE_LIB) $(BASE_LIB)"
+  --extra-cflags=-I$(ROOT)/src --extra-libs="$(TIMELINE_LIB) $(IO_LIB) $(MUX_LIB) $(PARSE_LIB) $(BASE_LIB)"
 # the readers live in src/io (libdisc-io.a, on libdisc-base.a): the disc
 # demuxer inside libavformat calls them, so FFmpeg compiles with src/ on its
 # include path and links the two libraries
@@ -27,7 +27,7 @@ FFMPEG_LISTS := $(FFMPEG_SRC)/libavcodec/parsers.c $(FFMPEG_SRC)/libavcodec/allc
   $(FFMPEG_SRC)/libavcodec/bitstream_filters.c $(FFMPEG_SRC)/libavformat/allformats.c \
   $(FFMPEG_SRC)/libavformat/protocols.c
 
-$(BUILD)/ffmpeg/build/ffbuild/config.mak: $(BUILD)/ffmpeg/args $(FFMPEG_PCS) $(IO_LIB) $(MUX_LIB) $(PARSE_LIB) $(BASE_LIB) $(FFMPEG_SRC)/configure $(FFMPEG_LISTS)
+$(BUILD)/ffmpeg/build/ffbuild/config.mak: $(BUILD)/ffmpeg/args $(FFMPEG_PCS) $(TIMELINE_LIB) $(IO_LIB) $(MUX_LIB) $(PARSE_LIB) $(BASE_LIB) $(FFMPEG_SRC)/configure $(FFMPEG_LISTS)
 	@mkdir -p $(BUILD)/ffmpeg/build
 	cd $(BUILD)/ffmpeg/build && PKG_CONFIG_PATH=$(PC) PKG_CONFIG_LIBDIR=$(PC) $(FFMPEG_SRC)/configure $(FFMPEG_ARGS)
 	touch $@

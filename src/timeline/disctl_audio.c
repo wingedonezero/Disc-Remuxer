@@ -21,12 +21,20 @@
 
 #include <string.h>
 
-#include "libavcodec/avcodec.h"
-#include "libavutil/error.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
 
-#include "disctl.h"
+#include <errno.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "base/bytes.h"
+#include "base/err.h"
+#include "base/macros.h"
+#include "base/mem.h"
+#include "base/vlog.h"
+
+#include "timeline/disctl.h"
 
 struct DRAudio {
     void               *log;
@@ -51,12 +59,12 @@ struct DRAudio {
 
 void ff_disctl_frame_unref(DRFrame *f)
 {
-    av_buffer_unref(&f->buf);
+    dr_buf_unref(&f->buf);
     memset(f, 0, sizeof(*f));
-    f->time = AV_NOPTS_VALUE;
+    f->time = DR_NOPTS_VALUE;
 }
 
-int ff_disctl_audio_open(DRAudio **audio, void *logctx, enum AVCodecID codec, int flags,
+int ff_disctl_audio_open(DRAudio **audio, void *logctx, DRCodecID codec, int flags,
                           DRFrameCb cb, void *opaque)
 {
     const DRCodec *c = ff_disctl_codec(codec);
@@ -64,21 +72,21 @@ int ff_disctl_audio_open(DRAudio **audio, void *logctx, enum AVCodecID codec, in
 
     *audio = NULL;
     if (!c || !c->audio) {
-        av_log(logctx, AV_LOG_ERROR, "Title timeline: %s has no audio rules in the codec table: "
-               "its track cannot be ripped\n", avcodec_get_name(codec));
-        return AVERROR(ENOSYS);
+        dr_vlog(logctx, DR_VLOG_ERROR, "Title timeline: %s has no audio rules in the codec table: "
+               "its track cannot be ripped\n", ff_disctl_codec_id_name(codec));
+        return DR_ERR(ENOSYS);
     }
-    if (!(a = av_mallocz(sizeof(*a))))
-        return AVERROR(ENOMEM);
+    if (!(a = dr_mallocz(sizeof(*a))))
+        return DR_ERR(ENOMEM);
     a->log    = logctx;
     a->codec  = c;
     a->rules  = c->audio;
     a->flags  = flags;
     a->cb     = cb;
     a->opaque = opaque;
-    if (a->rules->priv_size && !(a->priv = av_mallocz(a->rules->priv_size))) {
-        av_free(a);
-        return AVERROR(ENOMEM);
+    if (a->rules->priv_size && !(a->priv = dr_mallocz(a->rules->priv_size))) {
+        dr_free(a);
+        return DR_ERR(ENOMEM);
     }
     if (a->rules->filter)
         a->core = a->rules->filter(flags);
@@ -94,11 +102,11 @@ void ff_disctl_audio_close(DRAudio **audio)
         return;
     for (int i = 0; i < a->nb_wait; i++)
         ff_disctl_frame_unref(&a->wait[i]);
-    av_freep(&a->wait);
+    dr_freep(&a->wait);
     if (a->priv && a->rules->close)
         a->rules->close(a->priv);
-    av_freep(&a->priv);
-    av_freep(audio);
+    dr_freep(&a->priv);
+    dr_freep(audio);
 }
 
 void ff_disctl_audio_stats(const DRAudio *a, DRAudioStats *stats)
@@ -149,7 +157,7 @@ void ff_disctl_audio_review(DRAudio *a, unsigned kind, const char *what)
     if (kind < 32)
         a->reviewed |= 1u << kind;
     a->st.review++;
-    av_log(a->log, AV_LOG_WARNING, "Title timeline: %s track: %s [untested on real discs]\n", a->codec->name, what);
+    dr_vlog(a->log, DR_VLOG_WARNING, "Title timeline: %s track: %s [untested on real discs]\n", a->codec->name, what);
 }
 
 /* A unit through the track's core filter: one unit in, its final bytes out
@@ -159,11 +167,11 @@ static int filter(DRAudio *a, DRFrame *f)
     int off, size, ret = a->core(f->data, f->size, &off, &size);
 
     if (ret < 0)
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
     if (size <= 0 || off < 0 || off + size > f->size) {
-        av_log(a->log, AV_LOG_ERROR, "Title timeline: %s: the core filter gave no bytes of the unit at stream "
+        dr_vlog(a->log, DR_VLOG_ERROR, "Title timeline: %s: the core filter gave no bytes of the unit at stream "
                "offset %"PRId64"\n", a->codec->name, f->pos);
-        return AVERROR_BUG;
+        return DR_ERR_BUG;
     }
     f->data += off;
     f->size  = size;
@@ -182,7 +190,7 @@ static int unit_done(DRAudio *a, DRFrame *f)
     if (a->rules->duration) {
         int size = f->size;
         if ((ret = a->rules->duration(a, f)) < 0) {
-            av_log(a->log, AV_LOG_ERROR, "Title timeline: %s: no duration for the %d-byte unit at stream "
+            dr_vlog(a->log, DR_VLOG_ERROR, "Title timeline: %s: no duration for the %d-byte unit at stream "
                    "offset %"PRId64"\n", a->codec->name, size, f->pos);
             ff_disctl_frame_unref(f);
             return ret;
@@ -200,12 +208,12 @@ static int unit_done(DRAudio *a, DRFrame *f)
 
     /* Continuity (log only, the times are not changed): a unit time that is
      * not the previous unit's end. */
-    if (f->time != AV_NOPTS_VALUE && f->time > 0) {
+    if (f->time != DR_NOPTS_VALUE && f->time > 0) {
         if (a->expect && f->time != a->expect) {
             a->st.continuity++;
-            av_log(a->log, AV_LOG_DEBUG, "Title timeline: %s: unit at %"PRId64" ticks, the previous one "
+            dr_vlog(a->log, DR_VLOG_DEBUG, "Title timeline: %s: unit at %"PRId64" ticks, the previous one "
                    "ended at %"PRId64" (%s of %"PRId64" ticks)\n", a->codec->name, f->time, a->expect,
-                   f->time < a->expect ? "overlap" : "gap", FFABS(f->time - a->expect));
+                   f->time < a->expect ? "overlap" : "gap", DR_ABS(f->time - a->expect));
         }
         a->expect = f->time;
     }
@@ -222,11 +230,11 @@ int ff_disctl_audio_unit(void *opaque, const DRUnit *u)
     DRFrame f = { .time = u->time, .pos = u->pos, .samples = u->samples, .rate = u->rate };
     int ret;
 
-    if (!(f.buf = av_buffer_alloc(u->size + AV_INPUT_BUFFER_PADDING_SIZE)))
-        return AVERROR(ENOMEM);
-    memcpy(f.buf->data, u->data, u->size);
-    memset(f.buf->data + u->size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
-    f.data = f.buf->data;
+    if (!(f.buf = dr_buf_alloc(u->size + DR_BUF_PADDING)))
+        return DR_ERR(ENOMEM);
+    memcpy(dr_buf_data(f.buf), u->data, u->size);
+    memset(dr_buf_data(f.buf) + u->size, 0, DR_BUF_PADDING);
+    f.data = dr_buf_data(f.buf);
     f.size = u->size;
     a->st.units++;
 
@@ -238,14 +246,14 @@ int ff_disctl_audio_unit(void *opaque, const DRUnit *u)
     if ((!a->rules->sync || a->rules->sync(f.data, f.size)) &&
         a->rules->header(a, &f, &a->hdr) >= 0) {
         if (a->hdr.rate <= 0 || a->hdr.samples <= 0) {
-            av_log(a->log, AV_LOG_ERROR, "Title timeline: %s: unusable stream values (rate %d, %d samples)\n",
+            dr_vlog(a->log, DR_VLOG_ERROR, "Title timeline: %s: unusable stream values (rate %d, %d samples)\n",
                    a->codec->name, a->hdr.rate, a->hdr.samples);
             ff_disctl_frame_unref(&f);
-            return AVERROR_INVALIDDATA;
+            return DR_ERR_INVALID;
         }
         a->have_header = 1;
         a->st.header   = a->hdr;
-        av_log(a->log, AV_LOG_DEBUG, "Title timeline: %s: %d Hz, %d samples per unit (from the unit at stream "
+        dr_vlog(a->log, DR_VLOG_DEBUG, "Title timeline: %s: %d Hz, %d samples per unit (from the unit at stream "
                "offset %"PRId64"; %d units before it)\n", a->codec->name, a->hdr.rate, a->hdr.samples,
                f.pos, a->nb_wait);
         for (int i = 0; i < a->nb_wait; i++) {
@@ -262,10 +270,10 @@ int ff_disctl_audio_unit(void *opaque, const DRUnit *u)
         return unit_done(a, &f);
     }
     if (a->nb_wait == a->wait_cap) {
-        DRFrame *w = av_realloc_array(a->wait, a->wait_cap ? 2 * a->wait_cap : 8, sizeof(*w));
+        DRFrame *w = dr_realloc_array(a->wait, a->wait_cap ? 2 * a->wait_cap : 8, sizeof(*w));
         if (!w) {
             ff_disctl_frame_unref(&f);
-            return AVERROR(ENOMEM);
+            return DR_ERR(ENOMEM);
         }
         a->wait     = w;
         a->wait_cap = a->wait_cap ? 2 * a->wait_cap : 8;
@@ -286,11 +294,11 @@ int ff_disctl_audio_marker(DRAudio *a, int64_t time)
 int ff_disctl_audio_flush(DRAudio *a)
 {
     if (!a->have_header && a->nb_wait) {
-        av_log(a->log, AV_LOG_ERROR, "Title timeline: %s: none of the segment's %d units gives the stream's "
+        dr_vlog(a->log, DR_VLOG_ERROR, "Title timeline: %s: none of the segment's %d units gives the stream's "
                "values (rate, samples per unit): the track cannot be timed\n", a->codec->name, a->nb_wait);
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
     }
-    av_log(a->log, AV_LOG_DEBUG, "Title timeline: %s: %"PRId64" units, %"PRId64" frames, %"PRId64" markers, %"PRId64
+    dr_vlog(a->log, DR_VLOG_DEBUG, "Title timeline: %s: %"PRId64" units, %"PRId64" frames, %"PRId64" markers, %"PRId64
            " bytes cut, %"PRId64" continuity breaks\n", a->codec->name, a->st.units, a->st.frames,
            a->st.markers, a->st.cut_bytes, a->st.continuity);
     return 0;

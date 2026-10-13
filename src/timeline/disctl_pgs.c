@@ -29,9 +29,20 @@
 
 #include <string.h>
 
-#include "libavutil/intreadwrite.h"
 
-#include "disctl.h"
+#include <errno.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "base/bytes.h"
+#include "base/err.h"
+#include "base/macros.h"
+#include "base/mem.h"
+#include "base/vlog.h"
+
+#include "timeline/disctl.h"
 
 #define SEG_PCS 0x16
 #define SEG_END 0x80
@@ -56,7 +67,7 @@ int ff_disctl_pgs_check(const uint8_t *d, int size)
         return 0;
     while (off + 3 <= size) {
         last = d[off];
-        off += 3 + AV_RB16(d + off + 1);
+        off += 3 + dr_rb16(d + off + 1);
     }
     return off == size && last == SEG_END;
 }
@@ -72,11 +83,11 @@ int ff_disctl_pgs_forced_only(const uint8_t *in, int size, uint8_t *out, int *fo
 
     *forced = 0;
     while (off + 3 <= size) {
-        int len = AV_RB16(in + off + 1);
+        int len = dr_rb16(in + off + 1);
         const uint8_t *b = in + off + 3;
 
         if (off + 3 + len > size)
-            return AVERROR_INVALIDDATA;
+            return DR_ERR_INVALID;
         if (in[off] != SEG_PCS || len < PCS_OBJECTS + 1) {
             memcpy(out + o, in + off, 3 + len);
             o += 3 + len;
@@ -90,7 +101,7 @@ int ff_disctl_pgs_forced_only(const uint8_t *in, int size, uint8_t *out, int *fo
             for (int i = 0; i < n; i++) {
                 int sz = object_size(b + p, len - p);
                 if (!sz)
-                    return AVERROR_INVALIDDATA;
+                    return DR_ERR_INVALID;
                 if (b[p + 3] & 0x40) {
                     memcpy(out + q, b + p, sz);
                     q += sz;
@@ -102,11 +113,11 @@ int ff_disctl_pgs_forced_only(const uint8_t *in, int size, uint8_t *out, int *fo
             memcpy(out + q, b + p, len - p);
             q += len - p;
             out[o + 3 + PCS_OBJECTS] = kept;
-            AV_WB16(out + o + 1, q - o - 3);
+            dr_wb16(out + o + 1, q - o - 3);
             *forced += kept;
             o = q;
         }
         off += 3 + len;
     }
-    return off == size ? o : AVERROR_INVALIDDATA;
+    return off == size ? o : DR_ERR_INVALID;
 }

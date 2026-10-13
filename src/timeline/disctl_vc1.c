@@ -19,9 +19,20 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
-#include "libavutil/log.h"
 
-#include "disctl.h"
+#include <errno.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "base/bytes.h"
+#include "base/err.h"
+#include "base/macros.h"
+#include "base/mem.h"
+#include "base/vlog.h"
+
+#include "timeline/disctl.h"
 
 #define SC_END    0x0A   /* end of sequence */
 #define SC_FIELD  0x0C
@@ -197,24 +208,24 @@ static int picture_vc1(DRVideo *v, const DRFrame *f, DRPicture *pic)
         if (!other) {
             /* an end of sequence without a second field before it */
             if (!s->ends_dropped++)
-                av_log(NULL, AV_LOG_INFO, "Title timeline: VC-1: an end-of-sequence code without a "
+                dr_vlog(NULL, DR_VLOG_INFO, "Title timeline: VC-1: an end-of-sequence code without a "
                        "second field before it is left out\n");
-            av_log(NULL, AV_LOG_DEBUG, "Title timeline: VC-1: end of sequence at stream offset %"PRId64" left out\n",
+            dr_vlog(NULL, DR_VLOG_DEBUG, "Title timeline: VC-1: end of sequence at stream offset %"PRId64" left out\n",
                    f->pos);
         } else {
             s->headers_dropped++;
-            av_log(NULL, AV_LOG_WARNING, "Title timeline: VC-1: %d bytes of headers at stream offset %"PRId64" without "
+            dr_vlog(NULL, DR_VLOG_WARNING, "Title timeline: VC-1: %d bytes of headers at stream offset %"PRId64" without "
                    "a frame after them: left out [untested on real discs]\n", f->size, f->pos);
         }
         return 0;
     }
     if (user_data && !s->said_user_data) {
         s->said_user_data = 1;
-        av_log(NULL, AV_LOG_INFO, "Title timeline: VC-1: user data after a frame header is kept with that frame "
+        dr_vlog(NULL, DR_VLOG_INFO, "Title timeline: VC-1: user data after a frame header is kept with that frame "
                "[untested on real discs]\n");
     }
     if (!s->have_seq) {
-        av_log(NULL, AV_LOG_WARNING, "Title timeline: VC-1: a frame before any usable sequence header: left out\n");
+        dr_vlog(NULL, DR_VLOG_WARNING, "Title timeline: VC-1: a frame before any usable sequence header: left out\n");
         pic->type = DR_PIC_OTHER;
         return 0;
     }
@@ -255,7 +266,7 @@ static int picture_vc1(DRVideo *v, const DRFrame *f, DRPicture *pic)
                 u(&b, 8);
             else if (ptype == 0x0F && s->tfcntr && !s->said_skipped_tfcntr) {
                 s->said_skipped_tfcntr = 1;
-                av_log(NULL, AV_LOG_WARNING, "Title timeline: VC-1: a skipped frame in a stream with frame counters, "
+                dr_vlog(NULL, DR_VLOG_WARNING, "Title timeline: VC-1: a skipped frame in a stream with frame counters, "
                        "read without one [untested on real discs]\n");
             }
             if (s->pulldown) {
@@ -275,7 +286,7 @@ static int picture_vc1(DRVideo *v, const DRFrame *f, DRPicture *pic)
             }
         }
         if (b.over) {
-            av_log(NULL, AV_LOG_WARNING, "Title timeline: VC-1: a frame header cut short: left out\n");
+            dr_vlog(NULL, DR_VLOG_WARNING, "Title timeline: VC-1: a frame header cut short: left out\n");
             pic->type = DR_PIC_OTHER;
             return 0;
         }
@@ -294,7 +305,7 @@ static void close_vc1(void *priv)
     const Vc1State *s = priv;
 
     if (s->ends_dropped || s->headers_dropped)
-        av_log(NULL, AV_LOG_INFO, "Title timeline: VC-1: left out: %"PRId64" lone end-of-sequence codes, %"PRId64
+        dr_vlog(NULL, DR_VLOG_INFO, "Title timeline: VC-1: left out: %"PRId64" lone end-of-sequence codes, %"PRId64
                " header groups without a frame\n", s->ends_dropped, s->headers_dropped);
 }
 

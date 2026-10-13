@@ -26,6 +26,7 @@ enum {
     DR_ERR_CANCELLED = -0x44520005,   /* the run was stopped */
     DR_ERR_EXTERNAL  = -0x44520006,   /* a library or helper program failed */
     DR_ERR_UNSUPPORTED = -0x44520007, /* valid data the program does not handle */
+    DR_ERR_BUG       = -0x44520008,   /* a check inside the program failed */
 };
 
 /* The error in words (errno text, or the DR_ERR_* meaning), into buf;

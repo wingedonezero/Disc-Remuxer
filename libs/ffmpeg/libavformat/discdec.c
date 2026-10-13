@@ -46,7 +46,7 @@
 #include "discinfo.h"
 #include "io/discio.h"
 #include "disclang.h"
-#include "disctl.h"
+#include "timeline/disctl.h"
 #include "internal.h"
 #include "matroska.h"
 

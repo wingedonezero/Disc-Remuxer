@@ -43,7 +43,9 @@
 #include "avio_internal.h"
 #include "demux.h"
 #include "disc.h"
-#include "disctl.h"
+#include "base/err.h"
+
+#include "timeline/disctl.h"
 #include "internal.h"
 #include "mpeg.h"
 #include "mpegts.h"
@@ -246,6 +248,14 @@ static void ps_read_add(DiscTitleReader *r)
     r->ps_read.other_bytes     += st.other_bytes;
     r->ps_read.discarded       += st.discarded;
     r->ps_read.discarded_bytes += st.discarded_bytes;
+}
+
+/* A frame's bytes (a base buffer) wrapped for the packet: the packet owns
+ * one reference. */
+static void drbuf_packet_free(void *opaque, uint8_t *data)
+{
+    DrBuf *b = opaque;
+    dr_buf_unref(&b);
 }
 
 static DiscTitleReader *reader_of(AVFormatContext *s)
@@ -1764,7 +1774,11 @@ int ff_disc_title_reader_packet(AVFormatContext *s, AVPacket *pkt)
                 ff_disctl_frame_unref(&f);
                 return ret;
             }
-            pkt->buf          = f.buf;
+            pkt->buf          = av_buffer_create(f.data, f.size, drbuf_packet_free, f.buf, 0);
+            if (!pkt->buf) {
+                ff_disctl_frame_unref(&f);
+                return AVERROR(ENOMEM);
+            }
             pkt->data         = f.data;
             pkt->size         = f.size;
             pkt->pts          = f.time;
@@ -1778,13 +1792,13 @@ int ff_disc_title_reader_packet(AVFormatContext *s, AVPacket *pkt)
                 pkt->flags |= AV_PKT_FLAG_DISPOSABLE;
             return 0;
         }
-        if (ret == AVERROR_EOF) {
+        if (ret == DR_ERR_EOF) {
             if (!r->chapters_set && (ret = title_end(s)) < 0)
                 return ret;
             return AVERROR_EOF;
         }
         if (ret != AVERROR(EAGAIN))
-            return ret;
+            return ret == DR_ERR_INVALID ? AVERROR_INVALIDDATA : ret;
         if ((ret = read_input(s)) < 0)
             return ret;
     }

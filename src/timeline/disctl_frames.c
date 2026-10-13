@@ -27,17 +27,24 @@
 
 #include <string.h>
 
-#include "libavcodec/avcodec.h"
-#include "libavutil/avassert.h"
-#include "libavutil/error.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
 
 #include "base/err.h"
 #include "parse/h264.h"
 #include "parse/split.h"
 
-#include "disctl.h"
+#include <errno.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "base/bytes.h"
+#include "base/err.h"
+#include "base/macros.h"
+#include "base/mem.h"
+#include "base/vlog.h"
+
+#include "timeline/disctl.h"
 
 /* A payload written with a time: the time belongs to the first unit whose
  * anchor lies in [pos, pos + span). */
@@ -49,8 +56,9 @@ struct DRFrames {
     void                 *log;
     const DRCodec        *codec;
     DrSplit              *split;   /* the codec's own rule (DRCodec.split), or */
-    AVCodecParserContext *parser;  /* FFmpeg's stock parser */
-    AVCodecContext       *avctx;
+    void                 *hp;      /* the host's stock parser */
+    int64_t               hp_frame_offset;  /* of the chunk it last gave */
+    int                   hp_duration, hp_rate;
     DRUnitCb              cb;
     void                 *opaque;
 
@@ -87,14 +95,14 @@ struct DRFrames {
                                   anchor (a delimiter or SEI muxed into the packet before) */
 };
 
-int ff_disctl_frames_open(DRFrames **frames, void *logctx, enum AVCodecID codec,
+int ff_disctl_frames_open(DRFrames **frames, void *logctx, DRCodecID codec,
                            DRUnitCb cb, void *opaque)
 {
     DRFrames *c;
 
     *frames = NULL;
-    if (!(c = av_mallocz(sizeof(*c))))
-        return AVERROR(ENOMEM);
+    if (!(c = dr_mallocz(sizeof(*c))))
+        return DR_ERR(ENOMEM);
     c->log    = logctx;
     c->cb     = cb;
     c->opaque = opaque;
@@ -104,31 +112,28 @@ int ff_disctl_frames_open(DRFrames **frames, void *logctx, enum AVCodecID codec,
         snprintf(c->part, sizeof(c->part), "title");
     }
     if (!c->codec) {
-        av_log(logctx, AV_LOG_ERROR, "Title timeline: codec %s has no entry in the codec table: "
-               "its track cannot be ripped\n", avcodec_get_name(codec));
-        av_free(c);
-        return AVERROR(ENOSYS);
+        dr_vlog(logctx, DR_VLOG_ERROR, "Title timeline: codec %s has no entry in the codec table: "
+               "its track cannot be ripped\n", ff_disctl_codec_id_name(codec));
+        dr_free(c);
+        return DR_ERR(ENOSYS);
     }
     c->rate_den = 1;
     if (c->codec->split) {
         if (!(c->split = dr_split_new(c->codec->split, logctx))) {
             ff_disctl_frames_close(&c);
-            return AVERROR(ENOMEM);
+            return DR_ERR(ENOMEM);
         }
         *frames = c;
         return 0;
     }
-    c->parser = av_parser_init(codec);
-    c->avctx  = avcodec_alloc_context3(NULL);
-    if (!c->parser || !c->avctx) {
-        int ret = c->avctx ? AVERROR(ENOSYS) : AVERROR(ENOMEM);
-        if (!c->parser)
-            av_log(logctx, AV_LOG_ERROR, "Title timeline: FFmpeg has no parser for %s\n", c->codec->name);
-        ff_disctl_frames_close(&c);
-        return ret;
+    {
+        const DRTimelineHost *host = ff_disctl_host();
+        if (!host || !host->parser_open || !(c->hp = host->parser_open(codec))) {
+            dr_vlog(logctx, DR_VLOG_ERROR, "Title timeline: FFmpeg has no parser for %s\n", c->codec->name);
+            ff_disctl_frames_close(&c);
+            return DR_ERR(ENOSYS);
+        }
     }
-    c->avctx->codec_id   = codec;
-    c->avctx->codec_type = avcodec_get_type(codec);
     *frames = c;
     return 0;
 }
@@ -140,17 +145,17 @@ void ff_disctl_frames_close(DRFrames **frames)
     if (!c)
         return;
     if (c->split_units)
-        av_log(c->log, AV_LOG_WARNING, "Title timeline: %s: %"PRId64" frames begin in the packet before the one "
+        dr_vlog(c->log, DR_VLOG_WARNING, "Title timeline: %s: %"PRId64" frames begin in the packet before the one "
                "with their picture (a badly muxed stream?): each takes the time of the packet with its picture\n",
                c->codec->name, c->split_units);
     dr_split_free(&c->split);
-    av_parser_close(c->parser);
-    avcodec_free_context(&c->avctx);
-    av_freep(&c->rec);
-    av_freep(&c->blk);
-    av_freep(&c->win);
-    av_freep(&c->feed);
-    av_freep(frames);
+    if (c->hp)
+        ff_disctl_host()->parser_close(&c->hp);
+    dr_freep(&c->rec);
+    dr_freep(&c->blk);
+    dr_freep(&c->win);
+    dr_freep(&c->feed);
+    dr_freep(frames);
 }
 
 void ff_disctl_frames_stats(const DRFrames *c, DRFramesStats *stats)
@@ -184,13 +189,6 @@ void ff_disctl_frames_set_pcm_format(DRFrames *c, int channels, int bits, int sa
 {
     if (c->split)
         dr_split_pcm_format(c->split, channels, bits, samples_per_frame);
-}
-
-/* the splitter speaks base/err.h; the callers FFmpeg's values */
-static int disc_err(int err)
-{
-    return err == DR_ERR_INVALID     ? AVERROR_INVALIDDATA :
-           err == DR_ERR_UNSUPPORTED ? AVERROR_PATCHWELCOME : err;
 }
 
 /* What a run of left-out bytes is. */
@@ -232,27 +230,27 @@ static void left_out(DRFrames *c, int64_t off, int k, int what)
         snprintf(at, sizeof(at), " (%s)", where);
     switch (what) {
     case LEFT_START:
-        av_log(c->log, AV_LOG_INFO, "%s: the first %d bytes of the %s come before its first frame start: left "
+        dr_vlog(c->log, DR_VLOG_INFO, "%s: the first %d bytes of the %s come before its first frame start: left "
                "out%s; the track starts with its first whole frame\n", c->label, k, c->part, at);
         break;
     case LEFT_SKIP:
-        av_log(c->log, AV_LOG_WARNING, "%s: %d bytes at stream offset %"PRId64" do not start a frame (damaged or "
+        dr_vlog(c->log, DR_VLOG_WARNING, "%s: %d bytes at stream offset %"PRId64" do not start a frame (damaged or "
                "cut data): left out%s; the track goes on at the next frame start\n", c->label, k, off, at);
         break;
     case LEFT_REFUSED:
-        av_log(c->log, AV_LOG_WARNING, "%s: a frame of %d bytes at stream offset %"PRId64" fails its check "
+        dr_vlog(c->log, DR_VLOG_WARNING, "%s: a frame of %d bytes at stream offset %"PRId64" fails its check "
                "(damaged data): left out%s\n", c->label, k, off, at);
         break;
     case LEFT_NO_START:
-        av_log(c->log, AV_LOG_WARNING, "%s: %d bytes at stream offset %"PRId64" with no frame start in them "
+        dr_vlog(c->log, DR_VLOG_WARNING, "%s: %d bytes at stream offset %"PRId64" with no frame start in them "
                "(damaged or cut data): left out%s\n", c->label, k, off, at);
         break;
     case LEFT_END:
-        av_log(c->log, AV_LOG_INFO, "%s: the %s ends inside a frame: its last %d bytes are the start of a frame it "
+        dr_vlog(c->log, DR_VLOG_INFO, "%s: the %s ends inside a frame: its last %d bytes are the start of a frame it "
                "does not finish: left out%s; the track ends with the frame before\n", c->label, c->part, k, at);
         break;
     default:
-        av_log(c->log, AV_LOG_INFO, "%s: the last %d bytes of the %s are in no whole frame: left out%s\n",
+        dr_vlog(c->log, DR_VLOG_INFO, "%s: the last %d bytes of the %s are in no whole frame: left out%s\n",
                c->label, k, c->part, at);
     }
     c->st.skipped++;
@@ -269,9 +267,9 @@ static int add_record(DRFrames *c, int64_t pos, int64_t span, int64_t time)
             c->nb_rec  -= c->rec_head;
             c->rec_head = 0;
         } else {
-            Record *r = av_realloc_array(c->rec, c->rec_cap ? 2 * c->rec_cap : 16, sizeof(*r));
+            Record *r = dr_realloc_array(c->rec, c->rec_cap ? 2 * c->rec_cap : 16, sizeof(*r));
             if (!r)
-                return AVERROR(ENOMEM);
+                return DR_ERR(ENOMEM);
             c->rec      = r;
             c->rec_cap  = c->rec_cap ? 2 * c->rec_cap : 16;
         }
@@ -287,7 +285,7 @@ static void drop_records(DRFrames *c, int64_t a)
     while (c->rec_head < c->nb_rec && c->rec[c->rec_head].pos + c->rec[c->rec_head].span <= a) {
         const Record *r = &c->rec[c->rec_head++];
 
-        av_log(c->log, AV_LOG_TRACE, "Title timeline: %s: time %"PRId64" of the payload at byte %"PRId64
+        dr_vlog(c->log, DR_VLOG_TRACE, "Title timeline: %s: time %"PRId64" of the payload at byte %"PRId64
                " (%"PRId64" bytes) belongs to no unit\n", c->codec->name, r->time, r->pos, r->span);
         c->st.records_unused++;
     }
@@ -311,7 +309,7 @@ static void split_check(DRFrames *c, const uint8_t *data, int64_t off, int64_t a
     for (int i = c->rec_head; i < c->nb_rec && c->rec[i].pos <= a; i++)
         if (c->rec[i].pos + c->rec[i].span > a) {
             if (c->rec[i].pos > first && c->split_units++ < 5)
-                av_log(c->log, AV_LOG_WARNING, "Title timeline: %s: a frame at stream offset %"PRId64" begins in "
+                dr_vlog(c->log, DR_VLOG_WARNING, "Title timeline: %s: a frame at stream offset %"PRId64" begins in "
                        "the packet before the one with its picture (a badly muxed stream?): it takes the time of "
                        "the packet with its picture\n", c->codec->name, first);
             break;
@@ -325,16 +323,16 @@ static int64_t take_time(DRFrames *c, int64_t a)
     drop_records(c, a);
     if (c->rec_head < c->nb_rec && c->rec[c->rec_head].pos <= a)
         return c->rec[c->rec_head++].time;
-    return AV_NOPTS_VALUE;
+    return DR_NOPTS_VALUE;
 }
 
 static int window_add(DRFrames *c, const uint8_t *data, int size)
 {
     if (c->win_len + size > c->win_cap) {
-        int cap = FFMAX(2 * c->win_cap, c->win_len + size);
-        uint8_t *w = av_realloc(c->win, cap);
+        int cap = DR_MAX(2 * c->win_cap, c->win_len + size);
+        uint8_t *w = dr_realloc(c->win, cap);
         if (!w)
-            return AVERROR(ENOMEM);
+            return DR_ERR(ENOMEM);
         c->win     = w;
         c->win_cap = cap;
     }
@@ -371,8 +369,8 @@ static void chunk_picture(DRFrames *c, const DrSplitChunk *ch, DRPicture *pic)
  * valid frame of the other kind is that track's, not damage. */
 static int other_kind(const DRFrames *c, const uint8_t *data, int size)
 {
-    const DRCodec *o = c->codec->id == AV_CODEC_ID_AC3  ? ff_disctl_codec(AV_CODEC_ID_EAC3) :
-                       c->codec->id == AV_CODEC_ID_EAC3 ? ff_disctl_codec(AV_CODEC_ID_AC3)  : NULL;
+    const DRCodec *o = c->codec->id == DR_CODEC_AC3  ? ff_disctl_codec(DR_CODEC_EAC3) :
+                       c->codec->id == DR_CODEC_EAC3 ? ff_disctl_codec(DR_CODEC_AC3)  : NULL;
     return o && o->check && o->check(data, size);
 }
 
@@ -382,14 +380,14 @@ static int other_kind(const DRFrames *c, const uint8_t *data, int size)
 static int unit_take(DRFrames *c, const uint8_t *data, int size, int64_t off,
                      const DRPicture *pic, int samples, int rate)
 {
-    int64_t time = AV_NOPTS_VALUE;
+    int64_t time = DR_NOPTS_VALUE;
     int unit, a, ret;
 
     unit = !c->codec->check || c->codec->check(data, size);
     if (!unit && other_kind(c, data, size)) {
         /* a frame of the stream's other kind (an AC-3 core track's E-AC-3
          * frames, the reverse): not the track's own data */
-        av_log(c->log, AV_LOG_DEBUG, "%s: a frame of %d bytes at stream offset %"PRId64" is not this track's "
+        dr_vlog(c->log, DR_VLOG_DEBUG, "%s: a frame of %d bytes at stream offset %"PRId64" is not this track's "
                "kind: not taken\n", c->label, size, off);
         c->st.skipped++;
         c->st.skipped_bytes += size;
@@ -410,14 +408,14 @@ static int unit_take(DRFrames *c, const uint8_t *data, int size, int64_t off,
         drop_records(c, off);
 
     c->st.units++;
-    if (time != AV_NOPTS_VALUE)
+    if (time != DR_NOPTS_VALUE)
         c->st.timed++;
     ret = c->cb(c->opaque, &(DRUnit){ data, size, time, off, samples, rate, pic });
-    if (ret < 0 && ret != AVERROR(ENOMEM) && ret != AVERROR(EAGAIN)) {
+    if (ret < 0 && ret != DR_ERR(ENOMEM) && ret != DR_ERR(EAGAIN)) {
         /* the stage said why (the line before): here where it is */
         char where[256];
         place_of(c, off, where, sizeof(where));
-        av_log(c->log, AV_LOG_ERROR, "%s: the unit at stream offset %"PRId64" of the %s%s%s stops the track\n",
+        dr_vlog(c->log, DR_VLOG_ERROR, "%s: the unit at stream offset %"PRId64" of the %s%s%s stops the track\n",
                c->label, off, c->part, where[0] ? " " : "", where);
     }
     return ret;
@@ -433,7 +431,7 @@ static void not_a_unit(DRFrames *c, const DrSplitChunk *ch)
         place_of(c, ch->offset, where, sizeof(where));
         if (where[0])
             snprintf(at, sizeof(at), " (%s)", where);
-        av_log(c->log, AV_LOG_WARNING, "%s: %d bytes at stream offset %"PRId64"%s: %s\n", c->label, ch->size,
+        dr_vlog(c->log, DR_VLOG_WARNING, "%s: %d bytes at stream offset %"PRId64"%s: %s\n", c->label, ch->size,
                ch->offset, at, ch->note);
         c->st.skipped++;
         c->st.skipped_bytes += ch->size;
@@ -465,7 +463,7 @@ static int drain(DRFrames *c)
             place_of(c, ch.offset, where, sizeof(where));
             if (where[0])
                 snprintf(at, sizeof(at), " (%s)", where);
-            av_log(c->log, AV_LOG_WARNING, "%s: the frame at stream offset %"PRId64"%s: %s\n", c->label,
+            dr_vlog(c->log, DR_VLOG_WARNING, "%s: the frame at stream offset %"PRId64"%s: %s\n", c->label,
                    ch.offset, at, ch.note);
         }
         if (ch.pic)
@@ -474,9 +472,9 @@ static int drain(DRFrames *c)
             return ret;
     }
     if (r < 0) {
-        av_log(c->log, AV_LOG_ERROR, "Title timeline: %s: the stream cannot be cut into units at stream offset %"
+        dr_vlog(c->log, DR_VLOG_ERROR, "Title timeline: %s: the stream cannot be cut into units at stream offset %"
                PRId64"\n", c->codec->name, dr_split_pos(c->split));
-        return disc_err(r);
+        return r;
     }
     return 0;
 }
@@ -492,21 +490,21 @@ static void window_consume(DRFrames *c, int64_t end)
     c->win_pos  = end;
 }
 
-/* One chunk from FFmpeg's stock parser. */
+/* One chunk from the host's stock parser. */
 static int unit_out(DRFrames *c, const uint8_t *data, int size)
 {
-    int64_t off = c->parser->frame_offset, rel = off - c->win_pos;
+    int64_t off = c->hp_frame_offset, rel = off - c->win_pos;
 
     /* Invariant: the unit is the stream's bytes at its offset, and units
      * follow each other in the stream. */
     if (rel < 0 || rel + size > c->win_len || memcmp(c->win + rel, data, size)) {
-        av_log(c->log, AV_LOG_ERROR, "Title timeline: %s: unit check FAIL: %d bytes at stream offset %"PRId64
+        dr_vlog(c->log, DR_VLOG_ERROR, "Title timeline: %s: unit check FAIL: %d bytes at stream offset %"PRId64
                " are not the stream's bytes there (kept bytes %"PRId64"..%"PRId64")\n",
                c->codec->name, size, off, c->win_pos, c->win_pos + c->win_len);
-        return AVERROR_BUG;
+        return DR_ERR_BUG;
     }
     window_consume(c, off + size);
-    return unit_take(c, data, size, off, NULL, c->parser->duration, c->avctx->sample_rate);
+    return unit_take(c, data, size, off, NULL, c->hp_duration, c->hp_rate);
 }
 
 int ff_disctl_frames_write(DRFrames *c, const uint8_t *data, int size, int64_t time)
@@ -523,9 +521,9 @@ int ff_disctl_frames_write_at(DRFrames *c, const uint8_t *data, int size, int64_
         return 0;
     if (block >= 0 && (!c->nb_blk || c->blk[c->nb_blk - 1][1] != block)) {
         if (c->nb_blk == c->blk_cap) {
-            int64_t (*b)[2] = av_realloc_array(c->blk, c->blk_cap ? 2 * c->blk_cap : 16, sizeof(*b));
+            int64_t (*b)[2] = dr_realloc_array(c->blk, c->blk_cap ? 2 * c->blk_cap : 16, sizeof(*b));
             if (!b)
-                return AVERROR(ENOMEM);
+                return DR_ERR(ENOMEM);
             c->blk     = b;
             c->blk_cap = c->blk_cap ? 2 * c->blk_cap : 16;
         }
@@ -533,7 +531,7 @@ int ff_disctl_frames_write_at(DRFrames *c, const uint8_t *data, int size, int64_
         c->blk[c->nb_blk][1] = block;
         c->nb_blk++;
     }
-    if (time != AV_NOPTS_VALUE) {
+    if (time != DR_NOPTS_VALUE) {
         if ((ret = add_record(c, c->in_pos, size, time)) < 0)
             return ret;
         c->st.records++;
@@ -541,7 +539,7 @@ int ff_disctl_frames_write_at(DRFrames *c, const uint8_t *data, int size, int64_
     if (c->split) {
         c->in_pos += size;
         if ((ret = dr_split_write(c->split, data, size)) < 0)
-            return disc_err(ret);
+            return ret;
         if ((ret = drain(c)) < 0)
             return ret;
         c->st.bytes += size;
@@ -549,18 +547,23 @@ int ff_disctl_frames_write_at(DRFrames *c, const uint8_t *data, int size, int64_
     }
     if ((ret = window_add(c, data, size)) < 0)
         return ret;
-    av_fast_padded_malloc(&c->feed, &c->feed_cap, size);
-    if (!c->feed)
-        return AVERROR(ENOMEM);
+    if ((unsigned)size + DR_BUF_PADDING > c->feed_cap) {
+        uint8_t *f = dr_realloc(c->feed, size + DR_BUF_PADDING);
+        if (!f)
+            return DR_ERR(ENOMEM);
+        c->feed     = f;
+        c->feed_cap = size + DR_BUF_PADDING;
+    }
     memcpy(c->feed, data, size);
+    memset(c->feed + size, 0, DR_BUF_PADDING);
 
     p    = c->feed;
     left = size;
     while (left > 0) {
         uint8_t *out;
         int out_size;
-        int used = av_parser_parse2(c->parser, c->avctx, &out, &out_size, p, left,
-                                    AV_NOPTS_VALUE, AV_NOPTS_VALUE, c->in_pos);
+        int used = ff_disctl_host()->parser_parse(c->hp, p, left, c->in_pos, &out, &out_size,
+                                                  &c->hp_frame_offset, &c->hp_duration, &c->hp_rate);
 
         c->in_pos += used;
         p         += used;
@@ -581,12 +584,12 @@ int ff_disctl_frames_flush(DRFrames *c)
         if ((ret = drain(c)) < 0)
             return ret;
     }
-    while (!c->split && c->parser) {
+    while (!c->split && c->hp) {
         uint8_t *out;
         int out_size;
 
-        av_parser_parse2(c->parser, c->avctx, &out, &out_size, NULL, 0,
-                         AV_NOPTS_VALUE, AV_NOPTS_VALUE, c->in_pos);
+        ff_disctl_host()->parser_parse(c->hp, NULL, 0, c->in_pos, &out, &out_size,
+                                       &c->hp_frame_offset, &c->hp_duration, &c->hp_rate);
         if (!out_size)
             break;
         if ((ret = unit_out(c, out, out_size)) < 0)
@@ -600,7 +603,7 @@ int ff_disctl_frames_flush(DRFrames *c)
         left_out(c, c->win_pos, c->win_len, LEFT_REST);
         window_consume(c, c->win_pos + c->win_len);
     }
-    av_log(c->log, AV_LOG_DEBUG, "Title timeline: %s: %"PRId64" bytes, %"PRId64" timed payloads -> %"PRId64
+    dr_vlog(c->log, DR_VLOG_DEBUG, "Title timeline: %s: %"PRId64" bytes, %"PRId64" timed payloads -> %"PRId64
            " units (%"PRId64" timed), %"PRId64" payload times belong to no unit\n", c->codec->name,
            c->st.bytes, c->st.records, c->st.units, c->st.timed, c->st.records_unused);
     return 0;
