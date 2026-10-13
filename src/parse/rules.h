@@ -1,11 +1,7 @@
 /*
  * The frame cutters' rules: how each codec's stream from a disc is cut into
- * units, as data (function tables) a generic engine runs. Today the engine
- * is FFmpeg's parser.c disc mode (ff_parser_disc_cut / ff_parser_disc_frames,
- * which keep the av_parser_parse2() contract); the native splitter replaces
- * it when the title reader leaves FFmpeg. Log lines leave through
- * base/vlog.h; rule errors are base/err.h values (the engine translates at
- * its edge).
+ * units, as data (function tables) the splitter (parse/split.h) runs. Log
+ * lines leave through base/vlog.h; rule errors are base/err.h values.
  */
 
 #ifndef DISC_PARSE_RULES_H
@@ -63,12 +59,19 @@ typedef struct DrMpaRuleCtx {
     int free_size;          /**< the free-format frame size found (0 none yet) */
 } DrMpaRuleCtx;
 
+/** dr_pcm_dvd_cut's state: the LPCM frame format the caller sets (while it
+ *  is not set the bytes are kept). */
+typedef struct DrPcmDvdCut {
+    int channels, bits, samples;
+} DrPcmDvdCut;
+
 /* The rules (one file each; the cutting is described there): */
 extern const DrCutRule   dr_mlp_cut;          /**< TrueHD / MLP access units */
 extern const DrCutRule   dr_dvdsub_cut;       /**< DVD / HD DVD sub-picture units */
 extern const DrCutRule   dr_vc1_cut;          /**< VC-1 frame units (start-code walk) */
 extern const DrCutRule   dr_pgs_cut;          /**< PGS display sets */
 extern const DrCutRule   dr_pcm_bluray_cut;   /**< Blu-ray LPCM units */
+extern const DrCutRule   dr_pcm_dvd_cut;      /**< DVD / HD DVD LPCM frames (state: DrPcmDvdCut) */
 extern const DrFrameRule dr_adts_frames;      /**< AAC ADTS frames */
 extern const DrFrameRule dr_latm_frames;      /**< AAC LATM / LOAS frames */
 extern const DrFrameRule dr_textst_frames;    /**< TextST segments (one per unit) */

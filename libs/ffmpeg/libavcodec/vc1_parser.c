@@ -59,7 +59,6 @@ typedef struct VC1ParseContext {
     uint8_t unesc_buffer[UNESCAPED_LIMIT];
     size_t unesc_index;
     VC1ParseSearchState search_state;
-    FFDiscCut disc;
 } VC1ParseContext;
 
 static void vc1_extract_header(AVCodecParserContext *s, AVCodecContext *avctx,
@@ -144,9 +143,6 @@ static int vc1_parse(AVCodecParserContext *s,
     int start_code_found = 0;
     int next = END_NOT_FOUND;
     int i = vpc->bytes_to_skip;
-
-    if (s->flags & PARSER_FLAG_DISC)
-        return ff_parser_disc_cut(s, avctx, &dr_vc1_cut, &vpc->disc, poutbuf, poutbuf_size, buf, buf_size);
 
     if (pic_found && buf_size == 0) {
         /* EOF considered as end of frame */
@@ -282,7 +278,6 @@ static av_cold void vc1_parse_close(AVCodecParserContext *s)
 {
     VC1ParseContext *vpc = s->priv_data;
 
-    ff_parser_disc_cut_close(&vpc->disc);
     ff_parse_close(s);
 }
 

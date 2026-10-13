@@ -31,7 +31,6 @@ typedef struct DVDSubParseContext {
     uint8_t *packet;
     int packet_len;
     int packet_index;
-    FFDiscCut disc;
 } DVDSubParseContext;
 
 
@@ -41,9 +40,6 @@ static int dvdsub_parse(AVCodecParserContext *s,
                         const uint8_t *buf, int buf_size)
 {
     DVDSubParseContext *pc = s->priv_data;
-
-    if (s->flags & PARSER_FLAG_DISC)
-        return ff_parser_disc_cut(s, avctx, &dr_dvdsub_cut, &pc->disc, poutbuf, poutbuf_size, buf, buf_size);
 
     *poutbuf      = buf;
     *poutbuf_size = buf_size;
@@ -88,7 +84,6 @@ static av_cold void dvdsub_parse_close(AVCodecParserContext *s)
 {
     DVDSubParseContext *pc = s->priv_data;
     av_freep(&pc->packet);
-    ff_parser_disc_cut_close(&pc->disc);
 }
 
 const FFCodecParser ff_dvdsub_parser = {

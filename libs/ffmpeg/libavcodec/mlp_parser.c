@@ -43,7 +43,6 @@ typedef struct MLPParseContext
 
     int num_substreams;
 
-    FFDiscCut disc;
 } MLPParseContext;
 
 
@@ -64,9 +63,6 @@ static int mlp_parse(AVCodecParserContext *s,
     int next;
     int ret;
     int i, p = 0;
-
-    if (s->flags & PARSER_FLAG_DISC)
-        return ff_parser_disc_cut(s, avctx, &dr_mlp_cut, &mp->disc, poutbuf, poutbuf_size, buf, buf_size);
 
     s->key_frame = 0;
 
@@ -215,7 +211,6 @@ static av_cold void mlp_parse_close(AVCodecParserContext *s)
 {
     MLPParseContext *mp = s->priv_data;
 
-    ff_parser_disc_cut_close(&mp->disc);
     ff_parse_close(s);
 }
 

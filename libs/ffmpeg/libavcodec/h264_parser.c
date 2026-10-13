@@ -53,9 +53,6 @@
 #include "parser_internal.h"
 #include "startcode.h"
 
-#include "base/err.h"
-#include "parse/h264.h"
-
 typedef struct H264ParseContext {
     ParseContext pc;
     H264ParamSets ps;
@@ -71,10 +68,6 @@ typedef struct H264ParseContext {
     int parse_last_mb;
     int64_t reference_dts;
     int last_frame_num, last_picture_structure;
-    /* disc mode (PARSER_FLAG_DISC): the rule and the picture values live in
-     * src/parse (parse/h264.h); this file only hands them the bytes */
-    FFDiscCut disc;
-    DrH264 *dr;
 } H264ParseContext;
 
 static int find_start_code(const uint8_t *buf, int buf_size,
@@ -594,69 +587,6 @@ fail:
     return -1;
 }
 
-/* ---- Disc mode (PARSER_FLAG_DISC) ----
- * The access-unit rule and the picture values live in src/parse
- * (parse/h264.h); this wrapper hands them the bytes and puts their answers
- * on the parser contract. */
-
-/* the rules speak base/err.h; here FFmpeg's values */
-static int disc_err(int err)
-{
-    return err == DR_ERR_INVALID     ? AVERROR_INVALIDDATA :
-           err == DR_ERR_UNSUPPORTED ? AVERROR_PATCHWELCOME : err;
-}
-
-static int disc_parse(AVCodecParserContext *s, AVCodecContext *avctx,
-                      const uint8_t **poutbuf, int *poutbuf_size, const uint8_t *buf, int buf_size)
-{
-    H264ParseContext *p = s->priv_data;
-    DrH264Cut *st;
-    int ret, r;
-
-    if (!p->dr && !(p->dr = dr_h264_new())) {
-        s->disc_status = AVERROR(ENOMEM);
-        *poutbuf       = NULL;
-        *poutbuf_size  = 0;
-        return 0;
-    }
-    if (!p->disc.state) {
-        if (!(p->disc.state = av_mallocz(sizeof(DrH264Cut)))) {
-            s->disc_status = AVERROR(ENOMEM);
-            *poutbuf       = NULL;
-            *poutbuf_size  = 0;
-            return 0;
-        }
-        dr_h264_cut_init(p->disc.state, p->dr);
-    }
-    st          = p->disc.state;
-    st->no_unit = 0;
-    st->why     = NULL;
-    s->disc_fields = 0;
-    ret = ff_parser_disc_cut(s, avctx, &dr_h264_cut, &p->disc, poutbuf, poutbuf_size, buf, buf_size);
-    if (*poutbuf_size && !s->disc_status) {
-        if (st->no_unit) {
-            s->disc_status = PARSER_DISC_SKIP;
-            s->disc_note   = st->why;
-        } else {
-            DrH264Picture pic;
-            r = dr_h264_picture(p->dr, avctx, *poutbuf, *poutbuf_size, &pic);
-            if (r < 0) {
-                s->disc_status = disc_err(r);
-            } else {
-                s->pict_type             = pic.type;    /* the classes share AVPictureType's numbering */
-                s->key_frame             = pic.key;
-                s->output_picture_number = pic.order;
-                s->disc_fields           = pic.fields;
-                s->disc_note             = pic.note;
-                if (pic.rate_den)
-                    avctx->framerate = (AVRational){ pic.rate_num, pic.rate_den };
-            }
-        }
-    }
-    return ret;
-}
-
-
 static int h264_parse(AVCodecParserContext *s,
                       AVCodecContext *avctx,
                       const uint8_t **poutbuf, int *poutbuf_size,
@@ -666,9 +596,6 @@ static int h264_parse(AVCodecParserContext *s,
     ParseContext *pc = &p->pc;
     AVRational time_base = { 0, 1 };
     int next;
-
-    if (s->flags & PARSER_FLAG_DISC)
-        return disc_parse(s, avctx, poutbuf, poutbuf_size, buf, buf_size);
 
     if (!p->got_first) {
         p->got_first = 1;
@@ -749,13 +676,6 @@ static av_cold void h264_close(AVCodecParserContext *s)
     ParseContext *pc = &p->pc;
 
     av_freep(&pc->buffer);
-    if (p->dr) {
-        dr_h264_close(p->dr, NULL);
-        dr_h264_free(&p->dr);
-    }
-    if (p->disc.state)
-        dr_h264_cut_end(p->disc.state);
-    ff_parser_disc_cut_close(&p->disc);
 
     ff_h264_sei_uninit(&p->sei);
     ff_h264_ps_uninit(&p->ps);

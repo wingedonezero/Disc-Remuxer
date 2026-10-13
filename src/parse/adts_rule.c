@@ -12,7 +12,7 @@
 
 #include "parse/rules.h"
 
-/* ---- Disc mode (PARSER_FLAG_DISC): the disc reader's ADTS frame rules ----
+/* ---- The disc reader's ADTS frame rules ----
  * A frame starts with the ADTS sync (12 bits) and layer 0; the reference
  * program takes only the MPEG-2 ID, here the MPEG-4 ID counts the same (its
  * frames are reviewed by the title timeline). A frame is as long as its

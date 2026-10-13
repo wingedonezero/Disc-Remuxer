@@ -12,12 +12,12 @@
 #include "parse/bits.h"
 #include "parse/rules.h"
 
-/* ---- Disc mode (PARSER_FLAG_DISC): the disc reader's AC-3 frame rules ----
+/* ---- The disc reader's AC-3 frame rules ----
  * A syncframe starts with 0x0B77. bsid 10..16: E-AC-3 (the frame size field
  * only); bsid 0..8: AC-3 (sample rate code 0..2, frame size code 0..37, as
  * the header parse here); bsid 9 and 17..: no frame. The frames taken: AC-3
  * only for an AC-3 stream, E-AC-3 only for an E-AC-3 one, both with
- * PARSER_FLAG_DISC_ANY. Where no frame starts, the next one is a 0x0B77 whose
+ * kind 0 of DrAc3RuleCtx. Where no frame starts, the next one is a 0x0B77 whose
  * header is valid, whose bytes are there, whose stream header is valid
  * (E-AC-3: through its channel map) and, for AC-3, whose two CRCs give 0;
  * with 0xA000 bytes or more and none, the kept bytes are given up. At most

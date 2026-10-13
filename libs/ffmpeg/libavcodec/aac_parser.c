@@ -49,8 +49,6 @@ static int aac_parse(AVCodecParserContext *s1, AVCodecContext *avctx, const uint
 {
     AACAC3ParseContext *s = s1->priv_data;
 
-    if (s1->flags & PARSER_FLAG_DISC)
-        return ff_parser_disc_frames(s1, s, &dr_adts_frames, &s->disc, poutbuf, poutbuf_size, buf, buf_size);
     return ff_aac_ac3_parse(s1, avctx, poutbuf, poutbuf_size, buf, buf_size);
 }
 
@@ -58,7 +56,6 @@ static av_cold void aac_parse_close(AVCodecParserContext *s1)
 {
     AACAC3ParseContext *s = s1->priv_data;
 
-    ff_parser_disc_cut_close(&s->disc.cut);
     ff_parse_close(s1);
 }
 

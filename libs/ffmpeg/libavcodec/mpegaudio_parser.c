@@ -37,9 +37,6 @@ typedef struct MpegAudioParseContext {
     uint32_t header;
     int header_count;
     int no_bitrate;
-    /* disc mode (PARSER_FLAG_DISC) */
-    FFDiscFrames disc;
-    DrMpaRuleCtx disc_ctx;              ///< the rules' own: the DVD rule, the free-format size found
 } MpegAudioParseContext;
 
 #define MPA_HEADER_SIZE 4
@@ -60,11 +57,6 @@ static int mpegaudio_parse(AVCodecParserContext *s1,
     int i;
     int next= END_NOT_FOUND;
     int flush = !buf_size;
-
-    if (s1->flags & PARSER_FLAG_DISC) {
-        s->disc_ctx.dvd = !!(s1->flags & PARSER_FLAG_DISC_DVD);
-        return ff_parser_disc_frames(s1, &s->disc_ctx, &dr_mpa_frames, &s->disc, poutbuf, poutbuf_size, buf, buf_size);
-    }
 
     for(i=0; i<buf_size; ){
         if(s->frame_size){
@@ -154,7 +146,6 @@ static av_cold void mpegaudio_close(AVCodecParserContext *s1)
 {
     MpegAudioParseContext *s = s1->priv_data;
 
-    ff_parser_disc_cut_close(&s->disc.cut);
     ff_parse_close(s1);
 }
 

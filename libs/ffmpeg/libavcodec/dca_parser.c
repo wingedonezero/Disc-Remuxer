@@ -42,10 +42,6 @@ typedef struct DCAParseContext {
     DCAExssParser exss;
     unsigned int sr_code;
 
-    /* disc mode (PARSER_FLAG_DISC) */
-    FFDiscFrames disc;
-    int disc_started;
-    DrDcaRuleCtx disc_ctx;  /**< the rules' own: whether an extension substream follows */
 } DCAParseContext;
 
 #define IS_CORE_MARKER(state) \
@@ -321,15 +317,6 @@ static int dca_parse(AVCodecParserContext *s, AVCodecContext *avctx,
     ParseContext *pc = &pc1->pc;
     int next, duration, sample_rate;
 
-    if (s->flags & PARSER_FLAG_DISC) {
-        if (!pc1->disc_started) {
-            pc1->disc_started        = 1;
-            pc1->disc_ctx.undecided  = 1;
-        }
-        return ff_parser_disc_frames(s, &pc1->disc_ctx, s->flags & PARSER_FLAG_DISC_ANY ? &dr_dts_hd_frames :
-                                     &dr_dts_frames, &pc1->disc, poutbuf, poutbuf_size, buf, buf_size);
-    }
-
     if (s->flags & PARSER_FLAG_COMPLETE_FRAMES) {
         next = buf_size;
     } else {
@@ -366,7 +353,6 @@ static av_cold void dca_parse_close(AVCodecParserContext *s)
 {
     DCAParseContext *pc1 = s->priv_data;
 
-    ff_parser_disc_cut_close(&pc1->disc.cut);
     ff_parse_close(s);
 }
 

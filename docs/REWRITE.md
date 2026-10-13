@@ -4,8 +4,8 @@ Updated 2026-10-13, on branch `claude/rewrite-untangle-1c24ca` (the rewrite
 branch; main still holds the pre-rewrite program and is the byte-compare
 reference). Inventory of what the old shape was made of: `docs/UNTANGLE.md`.
 
-Status: **steps 1–3 done, step 4 done but for 4d (the native splitter)**
-(details in part 3).
+Status: **steps 1–4 done** (details in part 3). The next step is 5 (the
+title timeline moves).
 Tests at every commit: 735 passed, 15 skipped (the disc-marked ones without a
 disc). Every move so far is behavior-preserving by construction and by test;
 the real-disc byte-compare against a main build is still owed (user runs it
@@ -264,35 +264,42 @@ Every step: moved with history (`git mv` where whole files), gated by
 - `pcm_dvd`'s 15-line rule deferred to 4d (its native host passes the LPCM
   frame size explicitly).
 
-**Moved so far: ~16k lines across 4 libraries; FFmpeg's in-place diff is
-shrinking with every slice.**
+**Step 4d — the native splitter; no FFmpeg parser knows discs (row 253).**
+- `parse/split.h/.c`: ONE splitter runs every rule — dr_split_write() /
+  dr_split_next() / dr_split_end(); chunks carry their bytes, stream offset,
+  status (unit / skip / refused / no-start / end), note and (H.264 / HEVC)
+  the picture values. The engine halves keep the parser-host engines'
+  decisions step for step. Per-codec hookup inside: the AC-3 kind
+  (dr_split_take_any), the DTS extension-substream rule, the MPEG-audio DVD
+  rule (dr_split_dvd), the LPCM frame format (dr_split_pcm_format,
+  `parse/pcm_dvd_rule.c` — the 15-line rule moved), the H.264 / HEVC
+  contexts and picture passes.
+- `disctl_frames.c` re-hosted: the splitter path has no av_parser offset
+  gymnastics and no shadow window (the splitter's window is authoritative);
+  the H.264 frame rate persists in the frame step now (the last rate a
+  unit's stream said). MPEG-1/2 video and E-AC-3 keep FFmpeg's stock
+  parsers (they never had disc rules); only they still use av_parser.
+  The HD DVD stream probe re-hosted the same way.
+- THE DELETION: `parser.c`'s two engines, `PARSER_FLAG_DISC*`,
+  `disc_status/note/fields` on AVCodecParserContext, every parser's disc
+  branch and fields, the two pcm parsers and the PGS parser shell
+  (deleted whole — they were ours); `parser.c`'s timestamp-lookup fix
+  (historical row 1) reverted — nothing on the rip path reads av_parser
+  timestamps — and its test removed with it. libavcodec's whole diff vs
+  upstream is now −736/+4 lines.
+
+**Moved so far: ~17k lines across 4 libraries; libavcodec is ~upstream
+again.**
 
 ---
 
 ## Part 4 — What is left, in detail
 
-### Step 4d — the native splitter + re-host (ends step 4)
-What: a push API in `parse/` that replaces FFmpeg's two engines:
-```
-DrSplit *dr_split_new(codec/rule, ctx, logctx)
-feed(bytes, len, final) → chunks { data, size, offset, status(unit/skip/
-    no-start/end), note, picture values (type/key/order/fields) }
-```
-Then: `disctl_frames.c` re-hosted on it (the av_parser_parse2 offset
-gymnastics disappear; its window/offset cross-check collapses), the HD DVD
-probe re-hosted, and THE DELETION: `parser.c`'s engines, `PARSER_FLAG_DISC*`,
-`disc_status/note/fields` on AVCodecParserContext, every parser's disc
-branch, the two new pcm parsers and the PGS parser shell. After this no
-FFmpeg parser knows discs.
-Gate: full suite (the frame step is exercised by every demux test) + a
-corpus byte-compare is strongly advised here (first behavior-relevant
-re-host).
-
 ### Step 5 — `src/timeline` (the title timeline moves)
 What: `disctl_*` (~11k lines, 22 files) → `timeline/`. Most are
 utility-coupled and move with shims (AVBufferRef → `base/buf.h` is the main
 mechanical change; log → vlog; err values). The deep spots and their fate:
-- `disctl_frames.c`: re-hosted in 4d already; lands here renamed.
+- `disctl_frames.c`: re-hosted on the splitter in 4d; lands here renamed.
 - `disctl_audio.c`: the eac3_core/dca_core bitstream filters become
   core-only frame filters in `parse/` (frames are already cut; "keep only
   the core syncframes" / "drop dependent frames"). DATA PATH — byte-compare.
@@ -323,8 +330,8 @@ goes), `discpass.c` on mux/parse/analyze, `disclang.c` with its own ISO-639
 table, the HD DVD and Blu-ray parts near-verbatim (utility-coupled).
 This deletes: the "disc" AVInputFormat, the mpeg.c/mpegts.c disc wrappers
 (mux/ is called directly), the last libavformat edits except nothing —
-**libs/ffmpeg returns to ~upstream** (the one remaining historical fix,
-parser.c timestamp lookup #1, dies with 4d).
+**libs/ffmpeg returns to ~upstream** (the one historical fix, parser.c
+timestamp lookup #1, died at 4d).
 The writer opens the disc layer natively; options come typed from settings.
 Gate: corpus byte-compare + info compare; the GUI must run (it still speaks
 engine.h v1 until step 9).

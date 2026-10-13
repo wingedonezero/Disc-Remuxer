@@ -12,7 +12,7 @@
 
 #include "parse/rules.h"
 
-/* ---- Disc mode (PARSER_FLAG_DISC): the disc reader's LOAS frame rules ----
+/* ---- The disc reader's LOAS frame rules ----
  * A frame starts with the LOAS sync (11 bits, 0x2B7) and is as long as its
  * audioMuxLengthBytes + 3. Where no frame starts, the next one is a sync
  * whose next sync (its length on) is there; with more than 0x20000 bytes

@@ -2627,26 +2627,6 @@ typedef struct AVCodecParserContext {
 /// Set if the parser has a valid file offset
 #define PARSER_FLAG_FETCHED_OFFSET            0x0004
 #define PARSER_FLAG_USE_CODEC_TS              0x1000
-/// Disc mode: the stream comes from a disc (DVD-Video, HD DVD, Blu-ray); the
-/// parsers that know disc rules cut it with them and set disc_status
-#define PARSER_FLAG_DISC                      0x2000
-/// Disc mode: take every variant of the codec (AC-3 and E-AC-3 frames alike;
-/// DTS frames with or without a DTS-HD extension, the kind decided from the
-/// stream), as for a stream whose kind is still to be found or that carries
-/// an extension
-#define PARSER_FLAG_DISC_ANY                  0x4000
-/// Disc mode: the stream comes from a DVD-Video disc (rules only DVD streams
-/// follow, e.g. MPEG audio: Layer II at 48 kHz)
-#define PARSER_FLAG_DISC_DVD                  0x8000
-/// disc_status: bytes before the next frame start (skipped to it)
-#define PARSER_DISC_SKIP                      1
-/// disc_status: a frame that fails its check
-#define PARSER_DISC_REFUSED                   2
-/// disc_status: bytes in which no frame starts (given up)
-#define PARSER_DISC_NO_START                  3
-/// disc_status: at the end, the start of a frame the stream does not finish
-#define PARSER_DISC_END                       4
-
     int64_t offset;      ///< byte offset from starting packet start
     int64_t cur_frame_end[AV_PARSER_PTS_NB];
 
@@ -2765,31 +2745,6 @@ typedef struct AVCodecParserContext {
      */
     int format;
 
-    /**
-     * Disc mode (PARSER_FLAG_DISC), set by a parser that cuts with disc rules
-     * after each call: 0 the chunk given out is a frame (or nothing was given
-     * out), > 0 the chunk given out is bytes that are no frame (to be left
-     * out), what they are: PARSER_DISC_SKIP, _REFUSED, _NO_START, _END; < 0
-     * the stream cannot be cut there (an AVERROR; the parser logged why).
-     */
-    int disc_status;
-
-    /**
-     * Disc mode: what the parser has to say about the chunk given out by the
-     * last call (a static string; NULL: nothing), for the caller to say with
-     * the chunk's place: with disc_status > 0 why it is no frame, else a
-     * finding about the frame.
-     */
-    const char *disc_note;
-
-    /**
-     * Disc mode, video parsers that time pictures by the disc reader's rules
-     * (H.264): the duration of the frame given out in field periods (0: not
-     * known). pict_type, key_frame (I pictures aside: a random access point
-     * the stream marks) and output_picture_number (the display-order
-     * number) go with it.
-     */
-    int disc_fields;
 } AVCodecParserContext;
 
 typedef struct AVCodecParser {

@@ -12,7 +12,7 @@
 
 #include "parse/rules.h"
 
-/* Disc mode (PARSER_FLAG_DISC): the stream is cut into units by their own
+/* The disc reader's rule: the stream is cut into units by their own
  * headers, whatever the packets it came in: a unit's header is its size and
  * the offset of its first display control sequence, 16-bit each, or (size
  * field 0: an HD DVD unit) 32-bit each after it. With 10 bytes or more, a

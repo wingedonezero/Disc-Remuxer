@@ -103,7 +103,7 @@ static const unsigned char alloc_table_4[] = {
 static const unsigned char *const alloc_tables[5] =
 { alloc_table_1, alloc_table_1, alloc_table_3, alloc_table_3, alloc_table_4, };
 
-/* ---- Disc mode (PARSER_FLAG_DISC): the disc reader's MPEG audio frame rules ----
+/* ---- The disc reader's MPEG audio frame rules ----
  * A frame starts with a header FFmpeg's header check accepts (ISO/IEC 11172-3
  * 2.4.1.3; not the reserved version); on a DVD-Video disc only Layer II at
  * 48 kHz that is not dual channel. Its size is the header's; a free-format

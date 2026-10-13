@@ -13,7 +13,7 @@
 
 #include "parse/rules.h"
 
-/* ---- Disc mode (PARSER_FLAG_DISC): the cut rule of the disc reader ----
+/* ---- The cut rule of the disc reader ----
  * A unit is one frame with what belongs to it, in start-code units (BDUs,
  * Annex E):
  *   [sequence header]* [sequence user data]* [entry point]*

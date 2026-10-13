@@ -30,7 +30,6 @@
 
 #include "codec_desc.h"
 #include "parser.h"
-#include "base/err.h"
 #include "parser_internal.h"
 
 av_cold AVCodecParserContext *av_parser_init(enum AVCodecID codec_id)
@@ -166,14 +165,9 @@ int av_parser_parse2(AVCodecParserContext *s, AVCodecContext *avctx,
         s->last_pts        = s->pts;
         s->last_dts        = s->dts;
         s->last_pos        = s->pos;
-        /* Look the timestamp up at the start of the frame that follows. When
-         * the parser returned a negative index, that frame began in data
-         * buffered from an earlier packet, i.e. before cur_offset; looking it
-         * up at cur_offset would give it the timestamp of the next packet,
-         * which belongs to the first frame starting in that packet. */
-        ff_fetch_timestamp(s, s->next_frame_offset - s->cur_offset, 0, 0);
+        ff_fetch_timestamp(s, 0, 0, 0);
     }
-    s->disc_note = NULL;
+
     /* WARNING: the returned index can be negative */
     index = ffcodecparser(s->parser)->parse(s, avctx, (const uint8_t **) poutbuf,
                                             poutbuf_size, buf, buf_size);
@@ -205,183 +199,6 @@ int av_parser_parse2(AVCodecParserContext *s, AVCodecContext *avctx,
         index = 0;
     s->cur_offset += index;
     return index;
-}
-
-av_cold /* The disc cut (PARSER_FLAG_DISC): the rule cuts the kept bytes plus buf
- * (all the bytes there are so far, as one window); a chunk given out takes
- * buf's bytes up to its end, the bytes of buf after it are taken out of the
- * window again (they come back with the next call). A chunk that ends in
- * the kept bytes returns how far before buf it ended (< 0). */
-int ff_parser_disc_cut(AVCodecParserContext *s, void *logctx, const FFDiscCutRule *rule, FFDiscCut *dc,
-                       const uint8_t **poutbuf, int *poutbuf_size, const uint8_t *buf, int buf_size)
-{
-    int final = !buf_size, old = dc->len, k, r;
-
-    s->disc_status = 0;
-    *poutbuf      = NULL;
-    *poutbuf_size = 0;
-    if (rule->state_size && !dc->state && !(dc->state = av_mallocz(rule->state_size))) {
-        s->disc_status = AVERROR(ENOMEM);
-        return 0;
-    }
-    if (buf_size) {
-        if (dc->len + buf_size > dc->cap) {
-            int cap = FFMAX(2 * dc->cap, dc->len + buf_size);
-            uint8_t *w = av_realloc(dc->win, cap);
-            if (!w) {
-                s->disc_status = AVERROR(ENOMEM);
-                return 0;
-            }
-            dc->win = w;
-            dc->cap = cap;
-        }
-        memcpy(dc->win + dc->len, buf, buf_size);
-        dc->len += buf_size;
-    }
-    if (!dc->len)
-        return 0;
-
-    r = rule->unit_size(logctx, dc->win, dc->len, final, dc->state);
-    if (r < 0 && r != DISC_CUT_NONE) {
-        dc->len = old;
-        /* the rules (src/parse) speak base/err.h; here FFmpeg's values */
-        s->disc_status = r == DR_ERR_INVALID     ? AVERROR_INVALIDDATA :
-                         r == DR_ERR_UNSUPPORTED ? AVERROR_PATCHWELCOME : r;
-        return 0;
-    }
-    if (r > 0) {
-        k = r;
-    } else if (!r && !final) {
-        return buf_size;                    /* the unit goes on in the bytes to come */
-    } else if (!r) {
-        k = dc->len;
-        s->disc_status = PARSER_DISC_END;   /* the unit is not finished when the stream ends */
-    } else {
-        int at = rule->resync(dc->win + 1, dc->len - 1);
-        if (at >= 0)
-            k = at + 1;
-        else if (final)
-            k = dc->len;
-        else
-            return buf_size;                /* a unit may start in the bytes to come */
-        s->disc_status = at >= 0 ? PARSER_DISC_SKIP : PARSER_DISC_NO_START;
-    }
-
-    av_fast_padded_malloc(&dc->out, &dc->out_cap, k);
-    if (!dc->out) {
-        dc->len = old;
-        s->disc_status = AVERROR(ENOMEM);
-        return 0;
-    }
-    memcpy(dc->out, dc->win, k);
-    *poutbuf      = dc->out;
-    *poutbuf_size = k;
-    if (k >= old) {
-        dc->len = 0;
-        return k - old;
-    }
-    /* the chunk ended in bytes kept from earlier calls: the next one starts
-     * before buf (a negative index, as the parser contract has it; the
-     * caller is told 0 bytes were taken) */
-    memmove(dc->win, dc->win + k, old - k);
-    dc->len = old - k;
-    return k - old;
-}
-
-/* The chunk of the first k kept bytes (see ff_parser_disc_cut): the bytes
- * of buf it did not take come again. */
-static int disc_give(AVCodecParserContext *s, FFDiscCut *dc, int k, int old, int status,
-                     const uint8_t **poutbuf, int *poutbuf_size)
-{
-    av_fast_padded_malloc(&dc->out, &dc->out_cap, k);
-    if (!dc->out) {
-        dc->len = old;
-        s->disc_status = AVERROR(ENOMEM);
-        return 0;
-    }
-    memcpy(dc->out, dc->win, k);
-    *poutbuf       = dc->out;
-    *poutbuf_size  = k;
-    s->disc_status = status;
-    if (k >= old) {
-        dc->len = 0;
-        return k - old;
-    }
-    memmove(dc->win, dc->win + k, old - k);
-    dc->len = old - k;
-    return k - old;
-}
-
-/* The disc frame search: the steps of the disc reader on the kept bytes plus
- * buf. Bytes that would pass the limit are given up with the kept ones
- * (and are not looked at); a sync that fails skips to the next frame start
- * (resync, at least 1 byte) or gives the kept bytes up; a frame is as long
- * as its size, then checked. Each of these is one chunk. */
-int ff_parser_disc_frames(AVCodecParserContext *s, void *ctx, const FFDiscFrameRule *rule, FFDiscFrames *df,
-                          const uint8_t **poutbuf, int *poutbuf_size, const uint8_t *buf, int buf_size)
-{
-    FFDiscCut *dc = &df->cut;
-    int old = dc->len, k;
-
-    s->disc_status = 0;
-    *poutbuf      = NULL;
-    *poutbuf_size = 0;
-    if (buf_size) {
-        if (dc->len + buf_size > dc->cap) {
-            int cap = FFMAX(2 * dc->cap, dc->len + buf_size);
-            uint8_t *w = av_realloc(dc->win, cap);
-            if (!w) {
-                s->disc_status = AVERROR(ENOMEM);
-                return 0;
-            }
-            dc->win = w;
-            dc->cap = cap;
-        }
-        memcpy(dc->win + dc->len, buf, buf_size);
-        dc->len += buf_size;
-        if (rule->limit - old < buf_size) {        /* too many bytes without a frame */
-            int started = df->synced;               /* a frame start whose frame never ends: refused */
-            df->synced = 0;
-            return disc_give(s, dc, dc->len, old, started ? PARSER_DISC_REFUSED : PARSER_DISC_NO_START, poutbuf,
-                             poutbuf_size);
-        }
-    } else if (old) {                               /* the end: the kept bytes are no frame */
-        int started = df->synced;                   /* they begin with a frame start: a frame not finished */
-        df->synced = 0;
-        return disc_give(s, dc, old, old, started ? PARSER_DISC_END : PARSER_DISC_NO_START, poutbuf, poutbuf_size);
-    }
-    if (!dc->len)
-        return 0;
-
-    if (!df->synced) {
-        int r = rule->sync(ctx, dc->win, dc->len);
-        if (!r) {
-            k = rule->resync(ctx, dc->win, dc->len);
-            if (k == -2)
-                return buf_size;
-            if (k == -1)
-                return disc_give(s, dc, dc->len, old, PARSER_DISC_NO_START, poutbuf, poutbuf_size);
-            if (!k)
-                k = 1;
-            return disc_give(s, dc, k, old, PARSER_DISC_SKIP, poutbuf, poutbuf_size);
-        }
-        if (r == 1)
-            df->synced = 1;
-    }
-    k = rule->size(ctx, dc->win, dc->len);
-    if (k <= 0 || k > dc->len)
-        return buf_size;                            /* the frame goes on in the bytes to come */
-    df->synced = 0;
-    return disc_give(s, dc, k, old, rule->check(ctx, dc->win, k) == 1 ? 0 : PARSER_DISC_REFUSED, poutbuf,
-                     poutbuf_size);
-}
-
-void ff_parser_disc_cut_close(FFDiscCut *dc)
-{
-    av_freep(&dc->win);
-    av_freep(&dc->out);
-    av_freep(&dc->state);
-    dc->len = dc->cap = dc->out_cap = 0;
 }
 
 void av_parser_close(AVCodecParserContext *s)

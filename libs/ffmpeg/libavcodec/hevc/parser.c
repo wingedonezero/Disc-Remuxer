@@ -35,9 +35,6 @@
 #include "ps.h"
 #include "sei.h"
 
-#include "base/err.h"
-#include "parse/hevc.h"
-
 #define START_CODE 0x000001 ///< start_code_prefix_one_3bytes
 
 #define IS_IRAP_NAL(nal) (nal->type >= 16 && nal->type <= 23)
@@ -57,10 +54,6 @@ typedef struct HEVCParserContext {
     int poc;
     int pocTid0;
 
-    /* disc mode (PARSER_FLAG_DISC): the rule and the picture values live in
-     * src/parse (parse/hevc.h); this file only hands them the bytes */
-    FFDiscCut disc;
-    DrHevc *dr;
 } HEVCParserContext;
 
 static int hevc_parse_slice_header(AVCodecParserContext *s, H2645NAL *nal,
@@ -315,64 +308,6 @@ static int hevc_find_frame_end(AVCodecParserContext *s, const uint8_t *buf,
     return END_NOT_FOUND;
 }
 
-/* ---- Disc mode (PARSER_FLAG_DISC) ----
- * The access-unit rule and the picture values live in src/parse
- * (parse/hevc.h); this wrapper hands them the bytes and puts their answers
- * on the parser contract. */
-
-/* the rules speak base/err.h; here FFmpeg's values */
-static int disc_err(int err)
-{
-    return err == DR_ERR_INVALID     ? AVERROR_INVALIDDATA :
-           err == DR_ERR_UNSUPPORTED ? AVERROR_PATCHWELCOME : err;
-}
-
-static int disc_parse(AVCodecParserContext *s, AVCodecContext *avctx,
-                      const uint8_t **poutbuf, int *poutbuf_size, const uint8_t *buf, int buf_size)
-{
-    HEVCParserContext *p = s->priv_data;
-    DrHevcCut *st;
-    int ret, r;
-
-    if (!p->dr && !(p->dr = dr_hevc_new())) {
-        s->disc_status = AVERROR(ENOMEM);
-        *poutbuf       = NULL;
-        *poutbuf_size  = 0;
-        return 0;
-    }
-    if (!p->disc.state) {
-        if (!(p->disc.state = av_mallocz(sizeof(DrHevcCut)))) {
-            s->disc_status = AVERROR(ENOMEM);
-            *poutbuf       = NULL;
-            *poutbuf_size  = 0;
-            return 0;
-        }
-        dr_hevc_cut_init(p->disc.state, p->dr);
-    }
-    st          = p->disc.state;
-    st->no_unit = 0;
-    s->disc_fields = 0;
-    ret = ff_parser_disc_cut(s, avctx, &dr_hevc_cut, &p->disc, poutbuf, poutbuf_size, buf, buf_size);
-    if (*poutbuf_size && !s->disc_status) {
-        if (st->no_unit) {
-            s->disc_status = PARSER_DISC_SKIP;
-        } else {
-            DrHevcPicture pic;
-            r = dr_hevc_picture(p->dr, avctx, *poutbuf, *poutbuf_size, &pic);
-            if (r < 0) {
-                s->disc_status = disc_err(r);
-            } else {
-                s->pict_type             = pic.type;    /* the classes share AVPictureType's numbering */
-                s->key_frame             = pic.key;
-                s->output_picture_number = pic.order;
-                s->disc_fields           = pic.fields;
-                avctx->framerate = (AVRational){ pic.rate_num, pic.rate_den };
-            }
-        }
-    }
-    return ret;
-}
-
 static int hevc_parse(AVCodecParserContext *s, AVCodecContext *avctx,
                       const uint8_t **poutbuf, int *poutbuf_size,
                       const uint8_t *buf, int buf_size)
@@ -382,9 +317,6 @@ static int hevc_parse(AVCodecParserContext *s, AVCodecContext *avctx,
     ParseContext *pc = &ctx->pc;
     int is_dummy_buf = !buf_size;
     const uint8_t *dummy_buf = buf;
-
-    if (s->flags & PARSER_FLAG_DISC)
-        return disc_parse(s, avctx, poutbuf, poutbuf_size, buf, buf_size);
 
     if (avctx->extradata && !ctx->parsed_extradata) {
         ff_hevc_decode_extradata(avctx->extradata, avctx->extradata_size, &ctx->ps, &ctx->sei,
@@ -423,10 +355,6 @@ static void hevc_parser_close(AVCodecParserContext *s)
     ff_hevc_reset_sei(&ctx->sei);
 
     av_freep(&ctx->pc.buffer);
-    dr_hevc_free(&ctx->dr);
-    if (ctx->disc.state)
-        dr_hevc_cut_end(ctx->disc.state);
-    ff_parser_disc_cut_close(&ctx->disc);
 }
 
 const FFCodecParser ff_hevc_parser = {

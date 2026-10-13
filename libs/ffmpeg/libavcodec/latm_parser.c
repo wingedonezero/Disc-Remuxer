@@ -34,7 +34,6 @@
 typedef struct LATMParseContext{
     ParseContext pc;
     int count;
-    FFDiscFrames disc;          ///< disc mode (PARSER_FLAG_DISC)
 } LATMParseContext;
 
 
@@ -91,8 +90,6 @@ static int latm_parse(AVCodecParserContext *s1, AVCodecContext *avctx,
     ParseContext *pc    = &s->pc;
     int next;
 
-    if (s1->flags & PARSER_FLAG_DISC)
-        return ff_parser_disc_frames(s1, s, &dr_latm_frames, &s->disc, poutbuf, poutbuf_size, buf, buf_size);
     if (s1->flags & PARSER_FLAG_COMPLETE_FRAMES) {
         next = buf_size;
     } else {
@@ -113,7 +110,6 @@ static av_cold void latm_close(AVCodecParserContext *s1)
 {
     LATMParseContext *s = s1->priv_data;
 
-    ff_parser_disc_cut_close(&s->disc.cut);
     ff_parse_close(s1);
 }
 

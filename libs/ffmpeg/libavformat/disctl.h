@@ -26,6 +26,7 @@
 #include <stdint.h>
 
 #include "libavcodec/codec_id.h"
+#include "parse/split.h"
 #include "libavutil/channel_layout.h"
 #include "libavutil/buffer.h"
 
@@ -198,13 +199,13 @@ typedef struct DRCodec {
     const DRAudioRules *audio;
     /** Video rules; NULL for audio / subtitles (or while not implemented). */
     const DRVideoRules *video;
-    /** 1: cut by FFmpeg's parser in disc mode (PARSER_FLAG_DISC), which
-     *  knows the reference's cut rule and says which of its chunks are no
-     *  unit (AVCodecParserContext.disc_status). */
-    int disc_parser;
-    /** 1: the disc-mode parser gives each unit's picture values
-     *  (pict_type, key_frame, output_picture_number, disc_fields, the frame
-     *  rate): they come with the unit (DRUnit.pic). */
+    /** The codec's own cut (the splitter, parse/split.h), which knows the
+     *  reference's rule and says which of its chunks are no unit; 0 (MPEG
+     *  video, E-AC-3): cut by FFmpeg's stock parser. */
+    enum DrSplitCodec split;
+    /** 1: the splitter gives each unit's picture values (type, key, display
+     *  order, field periods, the frame rate): they come with the unit
+     *  (DRUnit.pic). */
     int parser_picture;
     /** The check of an output unit (stage 5): DR_UNIT_OK, DR_UNIT_BAD (sync
      *  word or size wrong), DR_UNIT_CRC (a checksum fails). NULL: not
@@ -303,11 +304,11 @@ int ff_disctl_frames_flush(DRFrames *c);
 void ff_disctl_frames_stats(const DRFrames *c, DRFramesStats *stats);
 
 /** The stream carries an extension (DTS-HD): FFmpeg's parser takes every
- *  variant of the codec (PARSER_FLAG_DISC_ANY). */
+ *  variant of the codec (dr_split_take_any). */
 void ff_disctl_frames_take_any(DRFrames *c);
 
 /** The track is a DVD-Video disc's: its parser follows the DVD's frame
- *  rules (PARSER_FLAG_DISC_DVD). */
+ *  rules (dr_split_dvd). */
 void ff_disctl_frames_dvd(DRFrames *c);
 
 /** Linear PCM: the frame format for FFmpeg's parser (from the packets'

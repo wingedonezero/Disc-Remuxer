@@ -11,7 +11,7 @@
 
 #include "parse/rules.h"
 
-/* Disc mode (PARSER_FLAG_DISC): an access unit is as long as its length
+/* The disc reader's rule: an access unit is as long as its length
  * field says (12 bits, in 16-bit words, after the check nibble), at least 8
  * bytes; where none starts, the next one is looked for at a major sync (its
  * sync word F8 72 6F BA / BB 4 bytes in). Without disc mode an AU whose

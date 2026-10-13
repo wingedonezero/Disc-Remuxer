@@ -12,9 +12,9 @@
 #include "parse/bits.h"
 #include "parse/rules.h"
 
-/* ---- Disc mode (PARSER_FLAG_DISC): the disc reader's DTS frame rules ----
+/* ---- The disc reader's DTS frame rules ----
  * DTS: a frame is a core frame (sync word 7F FE 80 01, 11 bytes or more; as
- * long as its FSIZE + 1). DTS-HD (PARSER_FLAG_DISC_ANY): whether an extension
+ * long as its FSIZE + 1). DTS-HD (dr_dts_hd_frames): whether an extension
  * substream (64 58 20 25, ETSI TS 102 114 7.4) follows is decided once, after
  * the first core frame; then a frame is a core frame with the extension
  * substream after it (its header valid through the first asset's

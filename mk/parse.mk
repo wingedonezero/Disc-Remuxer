@@ -1,7 +1,6 @@
-# src/parse: the frame cutters' rules (libdisc-parse.a) — how each codec's
-# stream from a disc is cut into units, as data (parse/rules.h) a generic
-# engine runs. Pure byte logic on base only; today the engine is our
-# FFmpeg's parser.c disc mode, until the title reader leaves FFmpeg.
+# src/parse: the frame cutters' rules and the splitter that runs them
+# (libdisc-parse.a) — how each codec's stream from a disc is cut into units
+# (parse/rules.h, parse/split.h). Pure byte logic on base only.
 
 PARSE_SRC   := $(ROOT)/src/parse
 PARSE_OBJ   := $(BUILD)/parse

@@ -1,11 +1,12 @@
 /*
- * The title timeline, stage 1 (the frame step): FFmpeg's parser finds the
- * frames ("units") of a track's payloads, in disc mode where the parser has
- * the disc reader's rule; each unit gets the PES time that belongs to it (the
- * first unit whose anchor lies in a payload takes its time, ISO/IEC 13818-1
- * 2.4.3.7); units that do not belong to the track (DRCodec.check) and bytes
- * the parser says are no unit are left out, each run of left-out bytes said
- * with what it is, where it lies on the disc and what is done.
+ * The title timeline, stage 1 (the frame step): the splitter (src/parse,
+ * parse/split.h) cuts a track's payloads into the disc reader's units; each
+ * unit gets the PES time that belongs to it (the first unit whose anchor
+ * lies in a payload takes its time, ISO/IEC 13818-1 2.4.3.7); units that do
+ * not belong to the track (DRCodec.check) and bytes the splitter says are no
+ * unit are left out, each run of left-out bytes said with what it is, where
+ * it lies on the disc and what is done. A codec without a rule of its own
+ * (DRCodec.split 0: MPEG video, E-AC-3) is cut by FFmpeg's stock parser.
  *
  * This file is part of FFmpeg.
  *
@@ -32,6 +33,10 @@
 #include "libavutil/log.h"
 #include "libavutil/mem.h"
 
+#include "base/err.h"
+#include "parse/h264.h"
+#include "parse/split.h"
+
 #include "disctl.h"
 
 /* A payload written with a time: the time belongs to the first unit whose
@@ -43,7 +48,8 @@ typedef struct Record {
 struct DRFrames {
     void                 *log;
     const DRCodec        *codec;
-    AVCodecParserContext *parser;
+    DrSplit              *split;   /* the codec's own rule (DRCodec.split), or */
+    AVCodecParserContext *parser;  /* FFmpeg's stock parser */
     AVCodecContext       *avctx;
     DRUnitCb              cb;
     void                 *opaque;
@@ -53,8 +59,11 @@ struct DRFrames {
 
     int64_t  in_pos;           /* stream bytes written so far */
 
-    /* Bytes not yet given out as part of a unit, for the check that every
-     * unit the parser returns is the stream's own bytes at its offset. */
+    int      rate_num, rate_den;   /* the last frame rate a unit's stream said */
+
+    /* The stock parser's path: bytes not yet given out as part of a unit,
+     * for the check that every unit the parser returns is the stream's own
+     * bytes at its offset. */
     uint8_t *win;
     int64_t  win_pos;          /* stream offset of win[0] */
     int      win_len, win_cap;
@@ -100,10 +109,17 @@ int ff_disctl_frames_open(DRFrames **frames, void *logctx, enum AVCodecID codec,
         av_free(c);
         return AVERROR(ENOSYS);
     }
+    c->rate_den = 1;
+    if (c->codec->split) {
+        if (!(c->split = dr_split_new(c->codec->split, logctx))) {
+            ff_disctl_frames_close(&c);
+            return AVERROR(ENOMEM);
+        }
+        *frames = c;
+        return 0;
+    }
     c->parser = av_parser_init(codec);
     c->avctx  = avcodec_alloc_context3(NULL);
-    if (c->parser && c->codec->disc_parser)
-        c->parser->flags |= PARSER_FLAG_DISC;
     if (!c->parser || !c->avctx) {
         int ret = c->avctx ? AVERROR(ENOSYS) : AVERROR(ENOMEM);
         if (!c->parser)
@@ -127,6 +143,7 @@ void ff_disctl_frames_close(DRFrames **frames)
         av_log(c->log, AV_LOG_WARNING, "Title timeline: %s: %"PRId64" frames begin in the packet before the one "
                "with their picture (a badly muxed stream?): each takes the time of the packet with its picture\n",
                c->codec->name, c->split_units);
+    dr_split_free(&c->split);
     av_parser_close(c->parser);
     avcodec_free_context(&c->avctx);
     av_freep(&c->rec);
@@ -153,21 +170,27 @@ void ff_disctl_frames_set_report(DRFrames *c, const char *label, const char *par
 
 void ff_disctl_frames_take_any(DRFrames *c)
 {
-    if (c->parser)
-        c->parser->flags |= PARSER_FLAG_DISC_ANY;
+    if (c->split)
+        dr_split_take_any(c->split);
 }
 
 void ff_disctl_frames_dvd(DRFrames *c)
 {
-    if (c->parser)
-        c->parser->flags |= PARSER_FLAG_DISC_DVD;
+    if (c->split)
+        dr_split_dvd(c->split);
 }
 
 void ff_disctl_frames_set_pcm_format(DRFrames *c, int channels, int bits, int samples_per_frame)
 {
-    c->avctx->ch_layout.nb_channels = channels;
-    c->avctx->bits_per_coded_sample = bits;
-    c->avctx->frame_size            = samples_per_frame;
+    if (c->split)
+        dr_split_pcm_format(c->split, channels, bits, samples_per_frame);
+}
+
+/* the splitter speaks base/err.h; the callers FFmpeg's values */
+static int disc_err(int err)
+{
+    return err == DR_ERR_INVALID     ? AVERROR_INVALIDDATA :
+           err == DR_ERR_UNSUPPORTED ? AVERROR_PATCHWELCOME : err;
 }
 
 /* What a run of left-out bytes is. */
@@ -320,25 +343,28 @@ static int window_add(DRFrames *c, const uint8_t *data, int size)
     return 0;
 }
 
-/* The picture values a disc-mode parser gives the unit it just cut. */
-static void parser_picture(const DRFrames *c, DRPicture *pic)
+/* The picture values the splitter gives a video unit; the frame rate stays
+ * the last one a unit's stream said. */
+static void chunk_picture(DRFrames *c, const DrSplitChunk *ch, DRPicture *pic)
 {
-    const AVCodecParserContext *s = c->parser;
-
     memset(pic, 0, sizeof(*pic));
-    switch (s->pict_type) {
-    case AV_PICTURE_TYPE_I:
-    case AV_PICTURE_TYPE_SI: pic->type = DR_PIC_I; break;
-    case AV_PICTURE_TYPE_P:
-    case AV_PICTURE_TYPE_SP: pic->type = DR_PIC_P; break;
-    case AV_PICTURE_TYPE_B:  pic->type = DR_PIC_B; break;
-    default:                 pic->type = DR_PIC_OTHER;
+    switch (ch->pic->type) {
+    case DR_H26X_PIC_I:
+    case DR_H26X_PIC_SI: pic->type = DR_PIC_I; break;
+    case DR_H26X_PIC_P:
+    case DR_H26X_PIC_SP: pic->type = DR_PIC_P; break;
+    case DR_H26X_PIC_B:  pic->type = DR_PIC_B; break;
+    default:             pic->type = DR_PIC_OTHER;
     }
-    pic->order    = s->output_picture_number;
-    pic->fields   = s->disc_fields;
-    pic->key      = s->key_frame > 0;
-    pic->rate_num = c->avctx->framerate.num;
-    pic->rate_den = c->avctx->framerate.den;
+    pic->order  = ch->pic->order;
+    pic->fields = ch->pic->fields;
+    pic->key    = ch->pic->key > 0;
+    if (ch->pic->rate_den) {
+        c->rate_num = ch->pic->rate_num;
+        c->rate_den = ch->pic->rate_den;
+    }
+    pic->rate_num = c->rate_num;
+    pic->rate_den = c->rate_den;
 }
 
 /* AC-3 and E-AC-3 share one stream: a unit one track refuses that is a
@@ -350,13 +376,13 @@ static int other_kind(const DRFrames *c, const uint8_t *data, int size)
     return o && o->check && o->check(data, size);
 }
 
-/* One unit at stream offset off: check it, time it, give it out. */
-static int unit_take(DRFrames *c, const uint8_t *data, int size, int64_t off)
+/* One unit at stream offset off: check it, time it, give it out. pic: the
+ * picture values the splitter gave; samples / rate: what the stock parser
+ * read (0 otherwise). */
+static int unit_take(DRFrames *c, const uint8_t *data, int size, int64_t off,
+                     const DRPicture *pic, int samples, int rate)
 {
-    int samples = c->parser && !c->codec->disc_parser ? c->parser->duration : 0;
-    int rate    = c->parser && !c->codec->disc_parser ? c->avctx->sample_rate : 0;
     int64_t time = AV_NOPTS_VALUE;
-    DRPicture pic;
     int unit, a, ret;
 
     unit = !c->codec->check || c->codec->check(data, size);
@@ -372,7 +398,7 @@ static int unit_take(DRFrames *c, const uint8_t *data, int size, int64_t off)
     if (!unit) {
         /* FFmpeg's own parsers (no disc rule) give the bytes before the
          * first sync word as a unit of their own */
-        left_out(c, off, size, !off && !c->codec->disc_parser ? LEFT_START : LEFT_REFUSED);
+        left_out(c, off, size, !off && !c->codec->split ? LEFT_START : LEFT_REFUSED);
         return 0;
     }
     a = c->codec->anchor ? c->codec->anchor(data, size) : 0;
@@ -386,10 +412,7 @@ static int unit_take(DRFrames *c, const uint8_t *data, int size, int64_t off)
     c->st.units++;
     if (time != AV_NOPTS_VALUE)
         c->st.timed++;
-    if (c->codec->parser_picture)
-        parser_picture(c, &pic);
-    ret = c->cb(c->opaque, &(DRUnit){ data, size, time, off, samples, rate,
-                                      c->codec->parser_picture ? &pic : NULL });
+    ret = c->cb(c->opaque, &(DRUnit){ data, size, time, off, samples, rate, pic });
     if (ret < 0 && ret != AVERROR(ENOMEM) && ret != AVERROR(EAGAIN)) {
         /* the stage said why (the line before): here where it is */
         char where[256];
@@ -400,7 +423,66 @@ static int unit_take(DRFrames *c, const uint8_t *data, int size, int64_t off)
     return ret;
 }
 
-/* The bytes up to stream offset end are given out. */
+/* Bytes that are no unit; the splitter's note says why when it tells. */
+static void not_a_unit(DRFrames *c, const DrSplitChunk *ch)
+{
+    int what;
+
+    if (ch->note) {
+        char where[256], at[272] = "";
+        place_of(c, ch->offset, where, sizeof(where));
+        if (where[0])
+            snprintf(at, sizeof(at), " (%s)", where);
+        av_log(c->log, AV_LOG_WARNING, "%s: %d bytes at stream offset %"PRId64"%s: %s\n", c->label, ch->size,
+               ch->offset, at, ch->note);
+        c->st.skipped++;
+        c->st.skipped_bytes += ch->size;
+        return;
+    }
+    what = ch->status == DR_SPLIT_REFUSED  ? LEFT_REFUSED  :
+           ch->status == DR_SPLIT_NO_START ? LEFT_NO_START :
+           ch->status == DR_SPLIT_END      ? LEFT_END      :
+           !ch->offset                     ? LEFT_START    : LEFT_SKIP;
+    left_out(c, ch->offset, ch->size, what);
+}
+
+/* Every chunk the splitter has: units out, runs of left-out bytes said. */
+static int drain(DRFrames *c)
+{
+    DrSplitChunk ch;
+    int r, ret;
+
+    while ((r = dr_split_next(c->split, &ch)) > 0) {
+        DRPicture pic;
+
+        if (ch.status) {
+            not_a_unit(c, &ch);
+            continue;
+        }
+        /* what the splitter found about the frame, said with its place */
+        if (ch.note) {
+            char where[256], at[272] = "";
+            place_of(c, ch.offset, where, sizeof(where));
+            if (where[0])
+                snprintf(at, sizeof(at), " (%s)", where);
+            av_log(c->log, AV_LOG_WARNING, "%s: the frame at stream offset %"PRId64"%s: %s\n", c->label,
+                   ch.offset, at, ch.note);
+        }
+        if (ch.pic)
+            chunk_picture(c, &ch, &pic);
+        if ((ret = unit_take(c, ch.data, ch.size, ch.offset, ch.pic ? &pic : NULL, 0, 0)) < 0)
+            return ret;
+    }
+    if (r < 0) {
+        av_log(c->log, AV_LOG_ERROR, "Title timeline: %s: the stream cannot be cut into units at stream offset %"
+               PRId64"\n", c->codec->name, dr_split_pos(c->split));
+        return disc_err(r);
+    }
+    return 0;
+}
+
+/* The bytes up to stream offset end are given out (the stock parser's
+ * window). */
 static void window_consume(DRFrames *c, int64_t end)
 {
     int n = end - c->win_pos;
@@ -410,32 +492,7 @@ static void window_consume(DRFrames *c, int64_t end)
     c->win_pos  = end;
 }
 
-/* Bytes that are no unit (the parser's disc_status, PARSER_DISC_*); the
- * parser's note says why when it tells. */
-static void not_a_unit(DRFrames *c, int k, int status, const char *note)
-{
-    int what;
-
-    if (note) {
-        char where[256], at[272] = "";
-        place_of(c, c->win_pos, where, sizeof(where));
-        if (where[0])
-            snprintf(at, sizeof(at), " (%s)", where);
-        av_log(c->log, AV_LOG_WARNING, "%s: %d bytes at stream offset %"PRId64"%s: %s\n", c->label, k, c->win_pos,
-               at, note);
-        c->st.skipped++;
-        c->st.skipped_bytes += k;
-        return;
-    }
-    what = status == PARSER_DISC_REFUSED  ? LEFT_REFUSED  :
-               status == PARSER_DISC_NO_START ? LEFT_NO_START :
-               status == PARSER_DISC_END      ? LEFT_END      :
-               !c->win_pos                    ? LEFT_START    : LEFT_SKIP;
-    left_out(c, c->win_pos, k, what);
-}
-
-/* One chunk from FFmpeg's parser: a unit, or (disc mode, disc_status 1)
- * bytes that are no unit; disc_status < 0: the stream cannot be cut. */
+/* One chunk from FFmpeg's stock parser. */
 static int unit_out(DRFrames *c, const uint8_t *data, int size)
 {
     int64_t off = c->parser->frame_offset, rel = off - c->win_pos;
@@ -448,33 +505,8 @@ static int unit_out(DRFrames *c, const uint8_t *data, int size)
                c->codec->name, size, off, c->win_pos, c->win_pos + c->win_len);
         return AVERROR_BUG;
     }
-    if (c->codec->disc_parser && c->parser->disc_status > 0) {
-        not_a_unit(c, size, c->parser->disc_status, c->parser->disc_note);
-        window_consume(c, off + size);
-        return 0;
-    }
-    /* what the parser found about the frame, said with its place */
-    if (c->codec->disc_parser && c->parser->disc_note) {
-        char where[256], at[272] = "";
-        place_of(c, off, where, sizeof(where));
-        if (where[0])
-            snprintf(at, sizeof(at), " (%s)", where);
-        av_log(c->log, AV_LOG_WARNING, "%s: the frame at stream offset %"PRId64"%s: %s\n", c->label, off, at,
-               c->parser->disc_note);
-    }
     window_consume(c, off + size);
-    return unit_take(c, data, size, off);
-}
-
-/* After a call of a disc-mode parser: the stream cannot be cut. */
-static int cut_failed(DRFrames *c)
-{
-    int err = c->codec->disc_parser ? c->parser->disc_status : 0;
-
-    if (err < 0)
-        av_log(c->log, AV_LOG_ERROR, "Title timeline: %s: the stream cannot be cut into units at stream offset %"
-               PRId64"\n", c->codec->name, c->win_pos);
-    return err < 0 ? err : 0;
+    return unit_take(c, data, size, off, NULL, c->parser->duration, c->avctx->sample_rate);
 }
 
 int ff_disctl_frames_write(DRFrames *c, const uint8_t *data, int size, int64_t time)
@@ -506,6 +538,15 @@ int ff_disctl_frames_write_at(DRFrames *c, const uint8_t *data, int size, int64_
             return ret;
         c->st.records++;
     }
+    if (c->split) {
+        c->in_pos += size;
+        if ((ret = dr_split_write(c->split, data, size)) < 0)
+            return disc_err(ret);
+        if ((ret = drain(c)) < 0)
+            return ret;
+        c->st.bytes += size;
+        return 0;
+    }
     if ((ret = window_add(c, data, size)) < 0)
         return ret;
     av_fast_padded_malloc(&c->feed, &c->feed_cap, size);
@@ -524,7 +565,7 @@ int ff_disctl_frames_write_at(DRFrames *c, const uint8_t *data, int size, int64_
         c->in_pos += used;
         p         += used;
         left      -= used;
-        if ((ret = cut_failed(c)) < 0 || (out_size && (ret = unit_out(c, out, out_size)) < 0))
+        if (out_size && (ret = unit_out(c, out, out_size)) < 0)
             return ret;
     }
     c->st.bytes += size;
@@ -533,14 +574,19 @@ int ff_disctl_frames_write_at(DRFrames *c, const uint8_t *data, int size, int64_
 
 int ff_disctl_frames_flush(DRFrames *c)
 {
-    while (c->parser) {
+    int ret;
+
+    if (c->split) {
+        dr_split_end(c->split);
+        if ((ret = drain(c)) < 0)
+            return ret;
+    }
+    while (!c->split && c->parser) {
         uint8_t *out;
-        int out_size, ret;
+        int out_size;
 
         av_parser_parse2(c->parser, c->avctx, &out, &out_size, NULL, 0,
                          AV_NOPTS_VALUE, AV_NOPTS_VALUE, c->in_pos);
-        if ((ret = cut_failed(c)) < 0)
-            return ret;
         if (!out_size)
             break;
         if ((ret = unit_out(c, out, out_size)) < 0)

@@ -54,6 +54,7 @@
 #include "libavutil/mem.h"
 
 #include "parse/rules.h"
+#include "parse/split.h"
 
 #include "libavcodec/ac3_parser_internal.h"
 #include "libavcodec/avcodec.h"
@@ -82,10 +83,9 @@ static int pack_packet(const uint8_t *s, int *off, Pkt *p, int lpcm5)
 /* ---- the stream probe ----
  * The clip is read from its start through FFmpeg's MPEG-PS demuxer as disc
  * sectors (mpeg.c, option disc: the disc reader's sector rules) and the
- * stream's payloads go to FFmpeg's parser in disc mode taking every variant
- * of the codec (PARSER_FLAG_DISC | PARSER_FLAG_DISC_ANY: the disc reader's
- * frame rules, AC-3 and E-AC-3 frames alike, DTS frames with or without a
- * DTS-HD extension). */
+ * stream's payloads go to the splitter taking every variant of the codec
+ * (dr_split_take_any: the disc reader's frame rules, AC-3 and E-AC-3 frames
+ * alike, DTS frames with or without a DTS-HD extension). */
 
 typedef struct Probe {
     void          *log;
@@ -187,8 +187,7 @@ bad:
  * ends. 1 done, 0 failed, < 0 error. */
 static int probe_run(Probe *p, enum AVCodecID codec, int want)
 {
-    AVCodecParserContext *parser = NULL;
-    AVCodecContext *avctx = NULL;
+    DrSplit *split = NULL;
     AVPacket *pkt = NULL;
     DiscDemux ps;
     int ret, done = 0;
@@ -200,21 +199,17 @@ static int probe_run(Probe *p, enum AVCodecID codec, int want)
         ff_disc_demux_close(&ps);
         return p->read_failed ? 0 : ret;
     }
-    parser = av_parser_init(codec);
-    avctx  = avcodec_alloc_context3(NULL);
-    pkt    = av_packet_alloc();
-    if (!parser || !avctx || !pkt) {
+    split = dr_split_new(codec == AV_CODEC_ID_DTS ? DR_SPLIT_DTS : DR_SPLIT_AC3, NULL);
+    pkt   = av_packet_alloc();
+    if (!split || !pkt) {
         ret = AVERROR(ENOMEM);
         goto end;
     }
-    parser->flags   |= PARSER_FLAG_DISC | PARSER_FLAG_DISC_ANY;
-    avctx->codec_id   = codec;
-    avctx->codec_type = AVMEDIA_TYPE_AUDIO;
+    dr_split_take_any(split);
     ret = 1;
     while (!done && p->nb_units < want) {
         const AVStream *st;
-        const uint8_t *d;
-        int n, r = av_read_frame(ps.ctx, pkt);
+        int r = av_read_frame(ps.ctx, pkt);
 
         if (r == AVERROR_EOF)
             break;
@@ -225,20 +220,22 @@ static int probe_run(Probe *p, enum AVCodecID codec, int want)
             break;
         }
         st = ps.ctx->streams[pkt->stream_index];
-        d  = pkt->data;
-        n  = pkt->size;
-        while (st->id == p->sub && n > 0 && p->nb_units < want) {
-            uint8_t *out;
-            int out_size, used = av_parser_parse2(parser, avctx, &out, &out_size, d, n,
-                                                  AV_NOPTS_VALUE, AV_NOPTS_VALUE, 0);
-            d += used;
-            n -= used;
-            if (parser->disc_status < 0) {
-                ret = parser->disc_status == AVERROR(ENOMEM) ? parser->disc_status : 0;
+        if (st->id == p->sub && (r = dr_split_write(split, pkt->data, pkt->size)) < 0) {
+            ret  = r == AVERROR(ENOMEM) ? r : 0;
+            done = 1;
+        }
+        while (!done && p->nb_units < want) {
+            DrSplitChunk ch;
+
+            r = dr_split_next(split, &ch);
+            if (!r)
+                break;
+            if (r < 0) {
+                ret  = r == AVERROR(ENOMEM) ? r : 0;
                 done = 1;
                 break;
             }
-            if (out_size && !parser->disc_status && !probe_frame(p, codec, out, out_size)) {
+            if (!ch.status && !probe_frame(p, codec, ch.data, ch.size)) {
                 ret  = 0;
                 done = 1;
                 break;
@@ -248,8 +245,7 @@ static int probe_run(Probe *p, enum AVCodecID codec, int want)
     }
 end:
     av_packet_free(&pkt);
-    av_parser_close(parser);
-    avcodec_free_context(&avctx);
+    dr_split_free(&split);
     ff_disc_demux_close(&ps);
     return ret;
 }

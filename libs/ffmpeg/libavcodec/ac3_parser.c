@@ -481,32 +481,12 @@ static av_cold int ac3_parse_init(AVCodecParserContext *s1)
 
 
 
-static int ac3_parse(AVCodecParserContext *s, AVCodecContext *avctx,
-                     const uint8_t **poutbuf, int *poutbuf_size,
-                     const uint8_t *buf, int buf_size)
-{
-    AACAC3ParseContext *c = s->priv_data;
-
-    if (!(s->flags & PARSER_FLAG_DISC))
-        return ff_aac_ac3_parse(s, avctx, poutbuf, poutbuf_size, buf, buf_size);
-    c->disc_ctx.kind = s->flags & PARSER_FLAG_DISC_ANY ? 0 : avctx->codec_id == AV_CODEC_ID_EAC3 ? 2 : 1;
-    return ff_parser_disc_frames(s, &c->disc_ctx, &dr_ac3_frames, &c->disc, poutbuf, poutbuf_size, buf, buf_size);
-}
-
-static av_cold void ac3_parse_close(AVCodecParserContext *s)
-{
-    AACAC3ParseContext *c = s->priv_data;
-
-    ff_parser_disc_cut_close(&c->disc.cut);
-    ff_parse_close(s);
-}
-
 const FFCodecParser ff_ac3_parser = {
     PARSER_CODEC_LIST(AV_CODEC_ID_AC3, AV_CODEC_ID_EAC3),
     .priv_data_size = sizeof(AACAC3ParseContext),
     .init           = ac3_parse_init,
-    .parse          = ac3_parse,
-    .close          = ac3_parse_close,
+    .parse          = ff_aac_ac3_parse,
+    .close          = ff_parse_close,
 };
 
 #else
