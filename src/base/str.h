@@ -29,6 +29,9 @@ void dr_str_init(DrStr *s);
 /** Append the formatted text (nothing on a failed buffer). */
 void dr_str_catf(DrStr *s, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
+/** Append len bytes as they are. */
+void dr_str_cat_data(DrStr *s, const char *data, size_t len);
+
 /** 1 while everything appended is in the buffer, 0 after a failure. */
 int dr_str_ok(const DrStr *s);
 

@@ -16,8 +16,6 @@
 
 #include <stdint.h>
 
-#include "timeline/disctl.h"
-
 /** What a stream is (DiscStreamInfo.type). */
 enum DiscMediaKind {
     DISC_MEDIA_VIDEO    = 0,

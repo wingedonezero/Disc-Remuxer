@@ -157,7 +157,7 @@ static void take(DiscDetailsProbe *p, const AVFrame *f)
         if (!p->tc || !p->tc->no_display_aspect)
             av_reduce(&ds->aspect.num, &ds->aspect.den, (int64_t)f->width * sar.num, (int64_t)f->height * sar.den,
                       1 << 30);
-        ds->frame_rate = d->framerate;
+        ds->frame_rate = (DrRational){ d->framerate.num, d->framerate.den };
         hdr_text(ds, f);
         /* the sequence header's (MPEG-2: its maximum), else none */
         ds->bit_rate   = !p->tc ? 0 : p->tc->video_bit_rate == DR_RATE_MAX ? d->rc_max_rate :

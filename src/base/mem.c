@@ -93,6 +93,22 @@ size_t dr_strlcat(char *dst, const char *src, size_t size)
     return used + dr_strlcpy(dst + used, src, size - used);
 }
 
+char *dr_strndup(const char *s, size_t n)
+{
+    size_t len = 0;
+    char *p;
+
+    if (!s)
+        return NULL;
+    while (len < n && s[len])
+        len++;
+    if (!(p = dr_malloc(len + 1)))
+        return NULL;
+    memcpy(p, s, len);
+    p[len] = 0;
+    return p;
+}
+
 int dr_asprintf(char **out, const char *fmt, ...)
 {
     va_list vl;

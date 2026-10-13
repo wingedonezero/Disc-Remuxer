@@ -57,6 +57,15 @@ void dr_str_catf(DrStr *s, const char *fmt, ...)
     va_end(ap);
 }
 
+void dr_str_cat_data(DrStr *s, const char *data, size_t len)
+{
+    if (!room(s, len))
+        return;
+    memcpy(s->str + s->len, data, len);
+    s->len += len;
+    s->str[s->len] = 0;
+}
+
 int dr_str_ok(const DrStr *s)
 {
     return !s->failed;

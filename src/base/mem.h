@@ -28,6 +28,7 @@ static inline void dr_free(void *p) { free(p); }
 void dr_freep(void *p);
 
 char *dr_strdup(const char *s);                 /* NULL in: NULL out */
+char *dr_strndup(const char *s, size_t n);      /* at most n bytes, 0-terminated */
 void *dr_memdup(const void *p, size_t size);
 
 /* The classic strlcpy/strlcat: always NUL-terminated when size > 0; the
