@@ -245,7 +245,8 @@ int ff_parser_disc_cut(AVCodecParserContext *s, void *logctx, const FFDiscCutRul
     if (r < 0 && r != DISC_CUT_NONE) {
         dc->len = old;
         /* the rules (src/parse) speak base/err.h; here FFmpeg's values */
-        s->disc_status = r == DR_ERR_INVALID ? AVERROR_INVALIDDATA : r;
+        s->disc_status = r == DR_ERR_INVALID     ? AVERROR_INVALIDDATA :
+                         r == DR_ERR_UNSUPPORTED ? AVERROR_PATCHWELCOME : r;
         return 0;
     }
     if (r > 0) {

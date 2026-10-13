@@ -4,7 +4,8 @@ Updated 2026-10-13, on branch `claude/rewrite-untangle-1c24ca` (the rewrite
 branch; main still holds the pre-rewrite program and is the byte-compare
 reference). Inventory of what the old shape was made of: `docs/UNTANGLE.md`.
 
-Status: **steps 1–3 done, step 4 about two thirds done** (details in part 3).
+Status: **steps 1–3 done, step 4 done but for 4d (the native splitter)**
+(details in part 3).
 Tests at every commit: 735 passed, 15 skipped (the disc-marked ones without a
 disc). Every move so far is behavior-preserving by construction and by test;
 the real-disc byte-compare against a main build is still owed (user runs it
@@ -247,25 +248,28 @@ Every step: moved with history (`git mv` where whole files), gated by
   keep advancing, so every overrun check fires where it did.
 - The parsers keep hookups only; the HD DVD probe calls parse's checks.
 
-**Moved so far: ~13k lines across 4 libraries; FFmpeg's in-place diff is
+**Step 4c — the H.264 / HEVC cutters and picture values (ledger row 252).**
+- `parse/h264.h/_rule.c`, `parse/hevc.h/_rule.c`: the AU cutters moved as
+  they were, AND the whole picture pass (type, key, display order, fields,
+  rate, notes) — libavcodec's machinery replaced by our own spec-derived
+  readers: SPS / PPS (+ VPS) walks, SEI (pic timing / recovery point), the
+  slice header through the reference picture marking (MMCO 5), the POC math
+  (8.2.1 / 8.3.1), exp-Golomb in `parse/bits.h` (with the table reader's
+  over-long-code behaviour) and `parse/rational.h` (the rate reduction),
+  all written to read bit for bit what the FFmpeg parse read (the 60 /
+  1000-byte slice cap included).
+- The two parsers keep only the hookup; their edits inside
+  `parse_nal_units` reverted to upstream. `DR_ERR_UNSUPPORTED` added
+  (engine edge: `AVERROR_PATCHWELCOME`).
+- `pcm_dvd`'s 15-line rule deferred to 4d (its native host passes the LPCM
+  frame size explicitly).
+
+**Moved so far: ~16k lines across 4 libraries; FFmpeg's in-place diff is
 shrinking with every slice.**
 
 ---
 
 ## Part 4 — What is left, in detail
-
-### Step 4c — H.264 / HEVC cutters → `parse/` (next)
-What: the AU cutters in `h264_parser.c` (+571) and `hevc/parser.c` (+551):
-NAL walk, own slice-header compare (same-picture rule), SPS/PPS capture,
-pict type / key / display order / fields out.
-Needs copied: a NAL/RBSP unescaper and bounded readers for SPS, PPS and the
-slice header prefix (FFmpeg's `h2645_parse` + golomb equivalents, ~1–2k
-lines, under `parse/`), since parse must not include libavcodec.
-Gate: the disctl H.264/HEVC tests + full suite; the cutters' values
-(disc_fields, orders, key flags) are asserted there.
-Also here: `pcm_dvd`'s 15-line rule once the rule signature can carry the
-LPCM frame size (or it waits for 4d's native host, which passes it
-explicitly — decide when there).
 
 ### Step 4d — the native splitter + re-host (ends step 4)
 What: a push API in `parse/` that replaces FFmpeg's two engines:

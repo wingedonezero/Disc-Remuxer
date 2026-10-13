@@ -25,6 +25,7 @@ enum {
     DR_ERR_LIMIT     = -0x44520004,   /* a bound of ours was reached */
     DR_ERR_CANCELLED = -0x44520005,   /* the run was stopped */
     DR_ERR_EXTERNAL  = -0x44520006,   /* a library or helper program failed */
+    DR_ERR_UNSUPPORTED = -0x44520007, /* valid data the program does not handle */
 };
 
 /* The error in words (errno text, or the DR_ERR_* meaning), into buf;

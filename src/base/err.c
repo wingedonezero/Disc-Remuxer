@@ -21,6 +21,7 @@ const char *dr_err_str(int err, char *buf, size_t size)
     case DR_ERR_LIMIT:     text = "a bound was reached";           break;
     case DR_ERR_CANCELLED: text = "stopped";                       break;
     case DR_ERR_EXTERNAL:  text = "a library or helper failed";    break;
+    case DR_ERR_UNSUPPORTED: text = "data the program does not handle"; break;
     }
     if (text) {
         snprintf(buf, size, "%s", text);
