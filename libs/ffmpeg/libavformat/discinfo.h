@@ -155,6 +155,7 @@ typedef struct DiscInfo {
     int              fake_playlists; /**< playlists found likely fake (titles marked), 0 none */
     int              fakes_suspected;/**< no known kind of fake found, but the disc looks like one with fakes */
     const char      *menu_name;      /**< the project name in the disc's menu data, NULL none */
+    int              bdplus;         /**< the disc uses BD+ (not supported: its video may be damaged) */
 } DiscInfo;
 
 /**

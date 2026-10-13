@@ -95,6 +95,8 @@ void DetailsPanel::showDisc(const QString &source, const DiscInfo *d)
     h.row("File system", fs);
     h.row("Encrypted", d->encrypted ? "yes" : "no");
     h.row("Titles found", QString::number(d->nb_titles));
+    if (d->menu_name)
+        h.row("Menu name", QString::fromUtf8(d->menu_name) + " (the project name in the disc's menu data)");
     // the format part's own details; "Protection: X" ones in a block of their own
     bool protection = false;
     for (int p = 0; p < d->nb_props; p++) {
@@ -236,6 +238,8 @@ void DetailsPanel::showTitle(const DiscTitleInfo *t, const uint8_t *keep)
     h.head(QString("Title information: #%1").arg(t->index));
     if (t->name)
         h.row("Name", QString::fromUtf8(t->name));
+    if (t->menu_name)
+        h.row("Menu name", QString::fromUtf8(t->menu_name) + " (the name the disc's menu data gives it)");
     h.row("Duration", hms(t->duration));
     h.row("Size", bytesText(t->size));
     h.row("Chapters", QString::number(t->nb_chapters));

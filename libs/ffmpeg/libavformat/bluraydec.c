@@ -687,6 +687,7 @@ static int bluray_load(AVFormatContext *s)
         (ret = ff_bluray_titles_build(s, b, d->opt_min_length)) < 0)
         return ret;
     d->info.menu_name = b->menu_name;
+    d->info.bdplus    = b->bdplus;
     if ((ret = ff_bluray_decoys_check(s, b)) < 0)
         return ret;
     if (b->menu_name && ff_disc_add_prop(s, "Menu names", "%d playlists named by the menu's project data "

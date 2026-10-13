@@ -1,5 +1,7 @@
 #include "MainWindow.h"
 
+#include <cstring>
+
 #include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
@@ -18,6 +20,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSplitter>
+#include <QStyle>
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -398,10 +401,24 @@ void MainWindow::showTitleChecks(Job &job, int t)
 
     updating = true;
     title->setCheckState(C_NAME, on ? Qt::Checked : Qt::Unchecked);
-    QString state = ti->selected ? "" : "not the main angle";
+    QStringList state;
+    if (!ti->selected)
+        state << "not the main angle";
     if (job.split[t])
-        state = QString("written as %1 parts").arg(ti->nb_parts);
-    title->setText(C_STATUS, state);
+        state = QStringList{ QString("written as %1 parts").arg(ti->nb_parts) };
+    // the fake playlist check's mark (only on a disc where fakes were found)
+    title->setIcon(C_STATUS, QIcon());
+    title->setToolTip(C_STATUS, QString());
+    if (ti->playlist_check != DISC_PLAYLIST_NOT_MARKED) {
+        bool fake = ti->playlist_check == DISC_PLAYLIST_LIKELY_FAKE;
+        state.prepend(fake ? "likely fake" : "likely real");
+        title->setIcon(C_STATUS, style()->standardIcon(fake ? QStyle::SP_MessageBoxWarning
+                                                            : QStyle::SP_DialogApplyButton));
+        for (int p = 0; p < ti->nb_props; p++)
+            if (!strcmp(ti->props[p].name, "Fake playlist check"))
+                title->setToolTip(C_STATUS, QString::fromUtf8(ti->props[p].value));
+    }
+    title->setText(C_STATUS, state.join("; "));
     for (int i = 0; i < job.tracks[t].size(); i++) {
         QTreeWidgetItem *track = job.tracks[t][i];
         bool changeable = on && i != 0 && !running;
@@ -453,7 +470,26 @@ void MainWindow::fillDisc(Job &job)
         what += "  " + QString::fromUtf8(d->name ? d->name : d->label);
     job.item->setText(C_DESC, what);
     job.item->setToolTip(C_DESC, what);
-    job.item->setText(C_STATUS, QString("%1 title%2").arg(d->nb_titles).arg(d->nb_titles == 1 ? "" : "s"));
+    // what the disc's checks found (nothing shown when they found nothing)
+    QStringList notes, why;
+    if (d->bdplus) {
+        notes << "BD+";
+        why << "The disc uses BD+, which is not supported: unless this copy was made with BD+ removed, parts of the "
+               "video may be damaged.";
+    }
+    if (d->fake_playlists) {
+        notes << QString("%1 fake playlists").arg(d->fake_playlists);
+        why << QString("%1 playlists are likely fakes that hide the main feature; the titles marked likely real are "
+                       "the ones to rip.").arg(d->fake_playlists);
+    } else if (d->fakes_suspected) {
+        notes << "possibly fake playlists";
+        why << "Many long playlists are made from the same clips in different orders: possibly fakes of a kind not "
+               "recognised (see the log).";
+    }
+    job.item->setText(C_STATUS, QString("%1 title%2").arg(d->nb_titles).arg(d->nb_titles == 1 ? "" : "s") +
+                                    (notes.isEmpty() ? QString() : " – " + notes.join(", ")));
+    job.item->setIcon(C_STATUS, notes.isEmpty() ? QIcon() : style()->standardIcon(QStyle::SP_MessageBoxWarning));
+    job.item->setToolTip(C_STATUS, why.join("\n"));
     job.sel.fill(0, d->nb_titles);
     job.split.fill(0, d->nb_titles);
     job.tracks.clear();
@@ -469,7 +505,10 @@ void MainWindow::fillDisc(Job &job)
             made << QString("angle %1%2").arg(ti->angle).arg(ti->angle == ti->main_angle ? " (main)" : "");
         if (ti->nb_parts)
             made << QString("%1 parts").arg(ti->nb_parts);
-        QString desc = (ti->name && *ti->name ? QString::fromUtf8(ti->name) + " – " : QString()) + made.join(", ");
+        QString name = ti->name && *ti->name ? QString::fromUtf8(ti->name) : QString();
+        if (ti->menu_name)          // the name the disc's menu gives it, after the title's name
+            name += (name.isEmpty() ? "[" : " [") + QString::fromUtf8(ti->menu_name) + "]";
+        QString desc = (name.isEmpty() ? QString() : name + " – ") + made.join(", ");
         if (ti->source)
             desc += QString(" (%1)").arg(QString::fromUtf8(ti->source));
         auto *title = new QTreeWidgetItem(job.item, QStringList{ QString("Title #%1").arg(t) });
