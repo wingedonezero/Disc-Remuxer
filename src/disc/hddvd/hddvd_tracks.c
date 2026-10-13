@@ -47,19 +47,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "libavutil/avstring.h"
-#include "libavutil/error.h"
-#include "libavutil/intreadwrite.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
+#include "base/mem.h"
+#include "base/err.h"
+#include "base/bytes.h"
+#include "base/vlog.h"
+#include "base/mem.h"
 
 #include "parse/rules.h"
 #include "parse/split.h"
 
-#include "libavcodec/avcodec.h"
-
-#include "avformat.h"
-#include "disc.h"
 #include "disc/lang.h"
 #include "timeline/disctl.h"
 #include "hddvd_internal.h"
@@ -107,10 +103,10 @@ static int probe_block(Probe *p, uint32_t block, uint8_t *sec)
     int ret = ff_hddvd_clip_block(p->log, p->aacs, p->fs, p->clip, block, sec);
 
     if (ret < 0)
-        av_log(p->log, AV_LOG_WARNING, "EVOB %s: block %"PRIu32" cannot be read for the stream probe: %s\n",
-               p->clip->evob->name, block, av_err2str(ret));
+        dr_vlog(p->log, DR_VLOG_WARNING, "EVOB %s: block %"PRIu32" cannot be read for the stream probe: %s\n",
+               p->clip->evob->name, block, dr_err_text(ret));
     else if (!ret)
-        av_log(p->log, AV_LOG_DEBUG, "EVOB %s: block %"PRIu32" is probed as read\n", p->clip->evob->name, block);
+        dr_vlog(p->log, DR_VLOG_DEBUG, "EVOB %s: block %"PRIu32" is probed as read\n", p->clip->evob->name, block);
     return ret >= 0;
 }
 
@@ -127,13 +123,13 @@ static int probe_first_pts(Probe *p)
         if (!probe_block(p, i, sec))
             return 0;
         if (!pack_packet(sec, &off, &k, 1)) {
-            av_log(p->log, AV_LOG_WARNING, "EVOB %s: block %"PRIu32" is not a valid pack\n", p->clip->evob->name, i);
+            dr_vlog(p->log, DR_VLOG_WARNING, "EVOB %s: block %"PRIu32" is not a valid pack\n", p->clip->evob->name, i);
             return 0;
         }
         if (k.key == p->key && k.pts_present)
             return 1;
     }
-    av_log(p->log, AV_LOG_WARNING, "EVOB %s: stream 0x%04x: no PES packet with a PTS starts one of the first "
+    dr_vlog(p->log, DR_VLOG_WARNING, "EVOB %s: stream 0x%04x: no PES packet with a PTS starts one of the first "
            "%"PRIu32" packs\n", p->clip->evob->name, p->key, n);
     return 0;
 }
@@ -144,12 +140,12 @@ static int probe_read(void *opaque, uint8_t *buf, int size)
     Probe *p = opaque;
 
     if (size < PACK)
-        return AVERROR(EINVAL);
+        return DR_ERR(EINVAL);
     if (p->pos >= p->end)
         return DR_ERR_EOF;
     if (!probe_block(p, p->pos++, buf)) {
         p->read_failed = 1;
-        return AVERROR(EIO);
+        return DR_ERR(EIO);
     }
     return PACK;
 }
@@ -158,9 +154,9 @@ static int probe_read(void *opaque, uint8_t *buf, int size)
  * (AC-3: its E-AC-3 bitstream information through the channel map; DTS: a
  * core frame, with an extension substream whose header, frame and assets
  * fit). 1 taken, 0 the probe fails. */
-static int probe_frame(Probe *p, enum AVCodecID codec, const uint8_t *b, int len)
+static int probe_frame(Probe *p, DRCodecID codec, const uint8_t *b, int len)
 {
-    if (codec == AV_CODEC_ID_DTS) {
+    if (codec == DR_CODEC_DTS) {
         if (!p->nb_units) {
             int kind = dr_dca_first_frame(b, len);
             if (!kind)
@@ -176,14 +172,14 @@ static int probe_frame(Probe *p, enum AVCodecID codec, const uint8_t *b, int len
     p->nb_units++;
     return 1;
 bad:
-    av_log(p->log, AV_LOG_WARNING, "EVOB %s: stream 0x%04x: its first frame is not a valid header\n",
+    dr_vlog(p->log, DR_VLOG_WARNING, "EVOB %s: stream 0x%04x: its first frame is not a valid header\n",
            p->clip->evob->name, p->key);
     return 0;
 }
 
 /* Read the clip from its start until want frames are found or the clip
  * ends. 1 done, 0 failed, < 0 error. */
-static int probe_run(Probe *p, enum AVCodecID codec, int want)
+static int probe_run(Probe *p, DRCodecID codec, int want)
 {
     DrSplit *split = NULL;
     DrClipDemux *ps = NULL;
@@ -193,9 +189,9 @@ static int probe_run(Probe *p, enum AVCodecID codec, int want)
         return 0;
     p->pos = 0;
     if ((ret = dr_clip_ps_open(&ps, p->log, 5, probe_read, p)) < 0)
-        return ret == DR_ERR_NOMEM ? AVERROR(ENOMEM) : ret;
-    if (!(split = dr_split_new(codec == AV_CODEC_ID_DTS ? DR_SPLIT_DTS : DR_SPLIT_AC3, NULL))) {
-        ret = AVERROR(ENOMEM);
+        return ret == DR_ERR_NOMEM ? DR_ERR(ENOMEM) : ret;
+    if (!(split = dr_split_new(codec == DR_CODEC_DTS ? DR_SPLIT_DTS : DR_SPLIT_AC3, NULL))) {
+        ret = DR_ERR(ENOMEM);
         goto end;
     }
     dr_split_take_any(split);
@@ -209,11 +205,11 @@ static int probe_run(Probe *p, enum AVCodecID codec, int want)
         if (r < 0) {
             /* a block that cannot be read, or a sector the disc reader's
              * rules refuse (logged by the clip demuxer) */
-            ret = r == DR_ERR_NOMEM || r == AVERROR(ENOMEM) ? AVERROR(ENOMEM) : 0;
+            ret = r == DR_ERR_NOMEM || r == DR_ERR(ENOMEM) ? DR_ERR(ENOMEM) : 0;
             break;
         }
         if (pkt.id == p->sub && (r = dr_split_write(split, pkt.data, pkt.size)) < 0) {
-            ret  = r == AVERROR(ENOMEM) ? r : 0;
+            ret  = r == DR_ERR(ENOMEM) ? r : 0;
             done = 1;
         }
         while (!done && p->nb_units < want) {
@@ -223,7 +219,7 @@ static int probe_run(Probe *p, enum AVCodecID codec, int want)
             if (!r)
                 break;
             if (r < 0) {
-                ret  = r == AVERROR(ENOMEM) ? r : 0;
+                ret  = r == DR_ERR(ENOMEM) ? r : 0;
                 done = 1;
                 break;
             }
@@ -247,26 +243,26 @@ static void probe_init(Probe *p, void *logctx, DiscIOFS *fs, HDDVDAACS *aacs, HD
 }
 
 /* Dolby Digital Plus stream `number` of clip: *codec = E-AC-3, AC-3 or
- * AV_CODEC_ID_NONE (not supported). 1 done, 0 failed. */
+ * DR_CODEC_NONE (not supported). 1 done, 0 failed. */
 static int probe_ddplus(void *logctx, DiscIOFS *fs, HDDVDAACS *aacs, HDDVDClip *clip, int number,
-                        enum AVCodecID *codec)
+                        DRCodecID *codec)
 {
     Probe p;
     unsigned mask;
     int ret, k;
 
     probe_init(&p, logctx, fs, aacs, clip, 0xc0 + number);
-    if ((ret = probe_run(&p, AV_CODEC_ID_AC3, PROBE_FRAMES)) <= 0)
+    if ((ret = probe_run(&p, DR_CODEC_AC3, PROBE_FRAMES)) <= 0)
         return ret;
-    k = FFMIN(p.nb_units, PROBE_FRAMES);
+    k = DR_MIN(p.nb_units, PROBE_FRAMES);
     mask = k << 8;
     for (int i = 0; i < k; i++)
         if (p.bsid[i] >= 10 && p.bsid[i] <= 16)
             mask |= 1 << i;
-    *codec = mask == 0x40f ? AV_CODEC_ID_EAC3 : mask == 0x400 ? AV_CODEC_ID_AC3 : AV_CODEC_ID_NONE;
-    av_log(logctx, *codec == AV_CODEC_ID_NONE ? AV_LOG_WARNING : AV_LOG_VERBOSE,
+    *codec = mask == 0x40f ? DR_CODEC_EAC3 : mask == 0x400 ? DR_CODEC_AC3 : DR_CODEC_NONE;
+    dr_vlog(logctx, *codec == DR_CODEC_NONE ? DR_VLOG_WARNING : DR_VLOG_VERBOSE,
            "EVOB %s: Dolby Digital Plus stream %d: %d frame(s) found, %s\n", clip->evob->name, number, k,
-           *codec == AV_CODEC_ID_EAC3 ? "E-AC-3" : *codec == AV_CODEC_ID_AC3 ? "AC-3 only" :
+           *codec == DR_CODEC_EAC3 ? "E-AC-3" : *codec == DR_CODEC_AC3 ? "AC-3 only" :
            "a mix of AC-3 and E-AC-3 or fewer than 4 frames: not supported, the stream is left out "
            "[untested on real discs]");
     return 1;
@@ -281,14 +277,14 @@ static int probe_dts(void *logctx, DiscIOFS *fs, HDDVDAACS *aacs, HDDVDClip *cli
     int ret;
 
     probe_init(&p, logctx, fs, aacs, clip, 0x88 + number);
-    if ((ret = probe_run(&p, AV_CODEC_ID_DTS, 1)) <= 0)
+    if ((ret = probe_run(&p, DR_CODEC_DTS, 1)) <= 0)
         return ret;
     if (!p.nb_units) {
-        av_log(logctx, AV_LOG_WARNING, "EVOB %s: DTS stream %d: no frame found\n", clip->evob->name, number);
+        dr_vlog(logctx, DR_VLOG_WARNING, "EVOB %s: DTS stream %d: no frame found\n", clip->evob->name, number);
         return 0;
     }
     *hd = p.dts_hd;
-    av_log(logctx, AV_LOG_WARNING, "EVOB %s: DTS stream %d: %s [untested on real discs]\n", clip->evob->name,
+    dr_vlog(logctx, DR_VLOG_WARNING, "EVOB %s: DTS stream %d: %s [untested on real discs]\n", clip->evob->name,
            number, *hd ? "DTS-HD (a DTS stream with an extension): listed, and the DTS stream inside it as a second track"
                        : "DTS core");
     return 1;
@@ -348,7 +344,7 @@ static int stream_lang(void *logctx, HDDVDXpl *const *xpls, int nb_xpls, const c
                 if (code[0]) {
                     const char *iso = dr_disc_lang_code(code);
                     if (iso)
-                        av_strlcpy(code, iso, sizeof(code));
+                        dr_strlcpy(code, iso, sizeof(code));
                 }
                 memcpy(lang, code, 4);
                 return 1;
@@ -360,13 +356,13 @@ static int stream_lang(void *logctx, HDDVDXpl *const *xpls, int nb_xpls, const c
 
 /* ---- the tracks of a title ---- */
 
-static const enum AVCodecID video_codecs[4] = {
-    AV_CODEC_ID_MPEG2VIDEO, AV_CODEC_ID_MPEG2VIDEO, AV_CODEC_ID_H264, AV_CODEC_ID_VC1,
+static const DRCodecID video_codecs[4] = {
+    DR_CODEC_MPEG2VIDEO, DR_CODEC_MPEG2VIDEO, DR_CODEC_H264, DR_CODEC_VC1,
 };
 
-static const enum AVCodecID audio_codecs[8] = {   /* coding 3: no codec */
-    AV_CODEC_ID_AC3, AV_CODEC_ID_TRUEHD, AV_CODEC_ID_MP2, AV_CODEC_ID_NONE,
-    AV_CODEC_ID_PCM_DVD, AV_CODEC_ID_PCM_DVD, AV_CODEC_ID_DTS, AV_CODEC_ID_EAC3,
+static const DRCodecID audio_codecs[8] = {   /* coding 3: no codec */
+    DR_CODEC_AC3, DR_CODEC_TRUEHD, DR_CODEC_MP2, DR_CODEC_NONE,
+    DR_CODEC_PCM_DVD, DR_CODEC_PCM_DVD, DR_CODEC_DTS, DR_CODEC_EAC3,
 };
 
 /* Dolby Digital Plus (coding 7) and DTS (coding 6) are probed; coding 3 has
@@ -389,7 +385,7 @@ static void untested(Builder *b, unsigned bit, const char *what)
     if (b->untested & bit)
         return;
     b->untested |= bit;
-    av_log(b->log, AV_LOG_WARNING, "HD DVD: %s [untested on real discs]\n", what);
+    dr_vlog(b->log, DR_VLOG_WARNING, "HD DVD: %s [untested on real discs]\n", what);
 }
 
 /* Content probe of every audio stream of clip that needs one (once per
@@ -399,7 +395,7 @@ static int probe_clip(Builder *b, HDDVDClip *clip, const HDDVDEvobAttr *a)
     for (int j = 0; j < a->nb_audio; j++) {
         uint8_t c0 = a->raw[0x10 + 4 * j];
         int coding = c0 < 0x20 ? c0 >> 2 : -1, ret, hd = 0;
-        enum AVCodecID codec = coding >= 0 ? audio_codecs[coding] : AV_CODEC_ID_NONE;
+        DRCodecID codec = coding >= 0 ? audio_codecs[coding] : DR_CODEC_NONE;
 
         if (clip->probed[j])
             continue;
@@ -448,19 +444,19 @@ static int describe(Builder *b, const HDDVDClip *clip, const HDDVDEvobAttr *a, i
     t->from_track  = -1;
     if (!i) {
         uint8_t v = a->raw[2];
-        t->type  = AVMEDIA_TYPE_VIDEO;
-        t->codec = v < 0x80 ? video_codecs[v >> 5] : AV_CODEC_ID_NONE;
+        t->type  = DISC_MEDIA_VIDEO;
+        t->codec = v < 0x80 ? video_codecs[v >> 5] : DR_CODEC_NONE;
         return 1;
     }
     if (i <= a->nb_audio) {
         int j = i - 1;
         uint8_t c0 = a->raw[0x10 + 4 * j];
 
-        t->type   = AVMEDIA_TYPE_AUDIO;
+        t->type   = DISC_MEDIA_AUDIO;
         t->number = j;
         t->coding = c0 < 0x20 ? c0 >> 2 : -1;
-        t->codec  = clip->probed[j] ? clip->probe_codec[j] : t->coding >= 0 ? audio_codecs[t->coding] : AV_CODEC_ID_NONE;
-        if (t->codec != AV_CODEC_ID_NONE)
+        t->codec  = clip->probed[j] ? clip->probe_codec[j] : t->coding >= 0 ? audio_codecs[t->coding] : DR_CODEC_NONE;
+        if (t->codec != DR_CODEC_NONE)
             stream_lang(b->log, b->xpls, b->nb_xpls, clip->evob->name, 1, j + 1, t->lang);
         return 1;
     }
@@ -468,15 +464,15 @@ static int describe(Builder *b, const HDDVDClip *clip, const HDDVDEvobAttr *a, i
         const uint8_t *p = a->raw + 0xe6 + 5 * (i - 1 - a->nb_audio);
         int k;
 
-        t->type  = AVMEDIA_TYPE_SUBTITLE;
-        t->codec = AV_CODEC_ID_NONE;
+        t->type  = DISC_MEDIA_SUBTITLE;
+        t->codec = DR_CODEC_NONE;
         for (k = 1; k <= 4 && !(p[k] & 0x20); k++)
             ;
         if (k <= 4) {
             t->number = p[k] & 0x1f;
             t->coding = p[0] >> 5;
             if (t->coding == 0 || t->coding == 1 || t->coding == 4) {
-                t->codec   = AV_CODEC_ID_DVD_SUBTITLE;
+                t->codec   = DR_CODEC_DVD_SUBTITLE;
                 t->palette = a->words + ((p[1] & 0x20) ? 16 : 0);
                 if (t->coding == HDDVD_SUBPIC_CODING_HD) {
                     t->width  = 1920;
@@ -495,7 +491,7 @@ static int describe(Builder *b, const HDDVDClip *clip, const HDDVDEvobAttr *a, i
 
 static int add_track(HDDVDTitle *t, const HDDVDTrack *k)
 {
-    return av_dynarray2_add((void **)&t->tracks, &t->nb_tracks, sizeof(*k), (const uint8_t *)k) ? 0 : AVERROR(ENOMEM);
+    return dr_array_add(&t->tracks, &t->nb_tracks, sizeof(*k), k) ? 0 : DR_ERR(ENOMEM);
 }
 
 /* The tracks of title t: 1 built, 0 the title cannot be used, < 0 error. */
@@ -518,39 +514,39 @@ static int build_title(Builder *b, HDDVDTitle *t)
 
     if ((ret = probe_clip(b, clip, a)) <= 0) {
         if (!ret)
-            av_log(b->log, AV_LOG_WARNING, "Title %s: the streams of EVOB %s cannot be probed: "
+            dr_vlog(b->log, DR_VLOG_WARNING, "Title %s: the streams of EVOB %s cannot be probed: "
                    "the title is left out\n", t->name, clip->evob->name);
         return ret;
     }
     /* video: the first stream with a video codec */
     for (int i = 0; i < n; i++) {
         describe(b, clip, a, i, &k);
-        if (k.type == AVMEDIA_TYPE_VIDEO && k.codec != AV_CODEC_ID_NONE) {
+        if (k.type == DISC_MEDIA_VIDEO && k.codec != DR_CODEC_NONE) {
             if ((ret = add_track(t, &k)) < 0)
                 return ret;
             break;
         }
     }
     if (!t->nb_tracks) {
-        av_log(b->log, AV_LOG_WARNING, "Title %s: EVOB %s has no video stream: the title is left out\n",
+        dr_vlog(b->log, DR_VLOG_WARNING, "Title %s: EVOB %s has no video stream: the title is left out\n",
                t->name, clip->evob->name);
         return 0;
     }
     /* audio, then sub-pictures (a stream like an earlier one is left out by
      * the disc layer's stream pass) */
     for (int pass = 0; pass < 2; pass++) {
-        enum AVMediaType type = pass ? AVMEDIA_TYPE_SUBTITLE : AVMEDIA_TYPE_AUDIO;
+        int type = pass ? DISC_MEDIA_SUBTITLE : DISC_MEDIA_AUDIO;
         for (int i = 0; i < n; i++) {
             describe(b, clip, a, i, &k);
-            if (k.type == AVMEDIA_TYPE_AUDIO && type == k.type && k.coding == CODING_UNKNOWN) {
+            if (k.type == DISC_MEDIA_AUDIO && type == k.type && k.coding == CODING_UNKNOWN) {
                 untested(b, 1, "audio stream with coding mode 3: a title with one cannot be used");
-                av_log(b->log, AV_LOG_WARNING, "Title %s: audio stream %d has coding mode 3, which has no "
+                dr_vlog(b->log, DR_VLOG_WARNING, "Title %s: audio stream %d has coding mode 3, which has no "
                        "stream handler: the title is left out\n", t->name, i);
                 return 0;
             }
-            if (k.type != type || k.codec == AV_CODEC_ID_NONE)
+            if (k.type != type || k.codec == DR_CODEC_NONE)
                 continue;
-            if (k.type == AVMEDIA_TYPE_AUDIO && clip->probe_dtshd[k.number]) {
+            if (k.type == DISC_MEDIA_AUDIO && clip->probe_dtshd[k.number]) {
                 /* DTS-HD, then the DTS stream inside it as a track of its own */
                 k.inner_track = t->nb_tracks + 1;
                 if ((ret = add_track(t, &k)) < 0)
@@ -558,15 +554,15 @@ static int build_title(Builder *b, HDDVDTitle *t)
                 k.inner_track = -1;
                 k.from_track  = t->nb_tracks - 1;
             }
-            if (k.codec == AV_CODEC_ID_PCM_DVD)
+            if (k.codec == DR_CODEC_PCM_DVD)
                 untested(b, 2, "LPCM audio");
-            else if (k.codec == AV_CODEC_ID_MP2)
+            else if (k.codec == DR_CODEC_MP2)
                 untested(b, 4, "MPEG audio");
             if ((ret = add_track(t, &k)) < 0)
                 return ret;
         }
     }
-    if (t->tracks[0].codec == AV_CODEC_ID_H264)
+    if (t->tracks[0].codec == DR_CODEC_H264)
         untested(b, 8, "AVC video");
     return 1;
 }
@@ -574,7 +570,7 @@ static int build_title(Builder *b, HDDVDTitle *t)
 int ff_hddvd_tracks_build(void *logctx, DiscIOFS *fs, HDDVDAACS *aacs, const HDDVDVTI *vti,
                           HDDVDXpl *const *xpls, int nb_xpls, HDDVDTitlePlan *plan)
 {
-    Builder b = { logctx, fs, aacs, vti, xpls, nb_xpls };
+    Builder b = { .log = logctx, .fs = fs, .aacs = aacs, .vti = vti, .xpls = xpls, .nb_xpls = nb_xpls };
     int i = 0;
 
     while (i < plan->nb_titles) {
@@ -584,14 +580,14 @@ int ff_hddvd_tracks_build(void *logctx, DiscIOFS *fs, HDDVDAACS *aacs, const HDD
         if (ret < 0)
             return ret;
         if (ret) {
-            av_log(logctx, AV_LOG_VERBOSE, "Title %d (%s): %d track(s) from EVOB %s\n", i, t->name,
+            dr_vlog(logctx, DR_VLOG_VERBOSE, "Title %d (%s): %d track(s) from EVOB %s\n", i, t->name,
                    t->nb_tracks, t->clips[t->segment]->evob->name);
             i++;
             continue;
         }
-        av_free(t->clips);
-        av_free(t->marks);
-        av_free(t->tracks);
+        dr_free(t->clips);
+        dr_free(t->marks);
+        dr_free(t->tracks);
         memmove(t, t + 1, (plan->nb_titles - i - 1) * sizeof(*t));
         plan->nb_titles--;
     }

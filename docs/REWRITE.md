@@ -361,8 +361,8 @@ In five slices, one commit and one full test run each:
   model (`disc/info.h`, values pinned and asserted), and THE BLU-RAY PART
   (`disc/bluray/`, FFmpeg-free: base utilities, own SHA / CRC-32 / UTF-8
   read, libaacs + expat remain its libraries; errors as base values,
-  translated once at the seams — `part_err()` in discdec). HD DVD and DVD
-  follow the same recipe.
+  translated once at the seams — `part_err()` in discdec). THE HD DVD PART followed
+  (row 262, same recipe); DVD follows.
 - **7c — `discpass.c` and `disclang.c` move** (the pass on
   mux/parse/analyze; language names from our own ISO-639 table, the
   `avlanguage.c` link dropped).

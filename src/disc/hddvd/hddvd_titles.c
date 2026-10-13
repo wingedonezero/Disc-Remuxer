@@ -44,12 +44,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "libavutil/avstring.h"
-#include "libavutil/bprint.h"
-#include "libavutil/error.h"
-#include "libavutil/intreadwrite.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
+#include "base/mem.h"
+#include "base/str.h"
+#include "base/err.h"
+#include "base/bytes.h"
+#include "base/vlog.h"
+#include "base/mem.h"
 
 #include "libavcodec/avcodec.h"
 
@@ -72,12 +72,12 @@ static int block_read(BlockReader *r, int64_t pos, uint8_t *dst, int len)
 {
     while (len > 0) {
         int64_t blk = pos / 2048;
-        int at = pos % 2048, n = FFMIN(len, 2048 - at), ret;
+        int at = pos % 2048, n = DR_MIN(len, 2048 - at), ret;
 
         if (blk != r->cached) {
-            int64_t want = FFMIN(2048, r->file->size - blk * 2048);
+            int64_t want = DR_MIN(2048, r->file->size - blk * 2048);
             if (want <= 0)
-                return AVERROR(EINVAL);
+                return DR_ERR(EINVAL);
             if ((ret = ff_discio_file_read(r->fs, r->file, blk * 2048, r->buf, want)) < 0)
                 return ret;
             if (want < 2048)
@@ -85,7 +85,7 @@ static int block_read(BlockReader *r, int64_t pos, uint8_t *dst, int len)
             r->cached = blk;
         }
         if (pos + n > r->file->size)
-            return AVERROR(EINVAL);
+            return DR_ERR(EINVAL);
         memcpy(dst, r->buf + at, n);
         pos += n;
         dst += n;
@@ -109,8 +109,8 @@ static int add_extent(HDDVDClip *c, HDDVDExtent x)
     }
     if (lo < c->nb_extents && c->extents[lo].stream == x.stream)
         return 0;
-    if (!(e = av_realloc_array(c->extents, c->nb_extents + 1, sizeof(*e))))
-        return AVERROR(ENOMEM);
+    if (!(e = dr_realloc_array(c->extents, c->nb_extents + 1, sizeof(*e))))
+        return DR_ERR(ENOMEM);
     c->extents = e;
     memmove(e + lo + 1, e + lo, (c->nb_extents - lo) * sizeof(*e));
     e[lo] = x;
@@ -125,17 +125,17 @@ static int read_map(void *logctx, BlockReader *r, const char *path, HDDVDClip *c
     uint32_t stream = 0, file = 0;
 
     if (block_read(r, 0, hdr, sizeof(hdr)) < 0) {
-        av_log(logctx, AV_LOG_WARNING, "%s: cannot read the time map header\n", path);
+        dr_vlog(logctx, DR_VLOG_WARNING, "%s: cannot read the time map header\n", path);
         return 0;
     }
     if (memcmp(hdr, "HDDVD_TMAP00", 12)) {
-        av_log(logctx, AV_LOG_WARNING, "%s: identifier \"%.12s\" (\"HDDVD_TMAP00\")\n", path, (const char *)hdr);
+        dr_vlog(logctx, DR_VLOG_WARNING, "%s: identifier \"%.12s\" (\"HDDVD_TMAP00\")\n", path, (const char *)hdr);
         return 0;
     }
     flag      = (hdr[0x14] >> 1) & 1;
-    nb_tables = AV_RB16(hdr + 0x37);
+    nb_tables = dr_rb16(hdr + 0x37);
     if (!nb_tables) {
-        av_log(logctx, AV_LOG_WARNING, "%s: no time map table\n", path);
+        dr_vlog(logctx, DR_VLOG_WARNING, "%s: no time map table\n", path);
         return 0;
     }
     for (int i = 0; i < nb_tables; i++) {
@@ -143,27 +143,27 @@ static int read_map(void *logctx, BlockReader *r, const char *path, HDDVDClip *c
         int cnt, val;
 
         if (block_read(r, 0x180 + 0x20 * i, d, sizeof(d)) < 0) {
-            av_log(logctx, AV_LOG_WARNING, "%s: cannot read table %d's description\n", path, i + 1);
+            dr_vlog(logctx, DR_VLOG_WARNING, "%s: cannot read table %d's description\n", path, i + 1);
             return 0;
         }
-        off = AV_RB32(d);
-        cnt = AV_RB16(d + 6);
-        val = AV_RB16(d + 8);
+        off = dr_rb32(d);
+        cnt = dr_rb16(d + 6);
+        val = dr_rb16(d + 8);
         if (i == 0 && val)
-            av_log(logctx, AV_LOG_WARNING, "%s: the first time map table has the value %d (0 expected)\n", path, val);
+            dr_vlog(logctx, DR_VLOG_WARNING, "%s: the first time map table has the value %d (0 expected)\n", path, val);
         for (int j = 0; j < cnt; j++) {
             uint32_t n;
             if (block_read(r, off + 4 * (int64_t)j, v, 4) < 0) {
-                av_log(logctx, AV_LOG_WARNING, "%s: cannot read entry %d of table %d\n", path, j + 1, i + 1);
+                dr_vlog(logctx, DR_VLOG_WARNING, "%s: cannot read entry %d of table %d\n", path, j + 1, i + 1);
                 return 0;
             }
             if (i)
                 continue;
-            n = AV_RB16(v + 2) & 0x1fff;
-            if ((ret = add_extent(c, (HDDVDExtent){ stream, file, n })) < 0)
+            n = dr_rb16(v + 2) & 0x1fff;
+            if ((ret = add_extent(c, (HDDVDExtent){ .stream = stream, .file = file, .count = n })) < 0)
                 return ret;
             if (!ret)
-                av_log(logctx, AV_LOG_WARNING, "%s: entry %d starts at stream block %"PRIu32", "
+                dr_vlog(logctx, DR_VLOG_WARNING, "%s: entry %d starts at stream block %"PRIu32", "
                        "already taken: its %"PRIu32" blocks are not mapped\n", path, j + 1, stream, n);
             c->size += (uint64_t)n * 2048;
             stream  += n;
@@ -171,10 +171,10 @@ static int read_map(void *logctx, BlockReader *r, const char *path, HDDVDClip *c
         }
     }
     if (flag) {
-        av_log(logctx, AV_LOG_WARNING, "%s: header byte 0x14 has bit 1 set (0x%02x): not supported\n", path, hdr[0x14]);
+        dr_vlog(logctx, DR_VLOG_WARNING, "%s: header byte 0x14 has bit 1 set (0x%02x): not supported\n", path, hdr[0x14]);
         return 0;
     }
-    av_log(logctx, AV_LOG_DEBUG, "%s: %d table(s), %d extents, %"PRIu64" bytes\n",
+    dr_vlog(logctx, DR_VLOG_DEBUG, "%s: %d table(s), %d extents, %"PRIu64" bytes\n",
            path, nb_tables, c->nb_extents, c->size);
     return 1;
 }
@@ -191,7 +191,7 @@ int ff_hddvd_clip_load(void *logctx, DiscIOFS *fs, const char *folder, HDDVDClip
         return c->state > 0;
     c->state = -1;
     if (!dot) {
-        av_log(logctx, AV_LOG_WARNING, "EVOB %s: the name has no extension; it cannot be used\n", name);
+        dr_vlog(logctx, DR_VLOG_WARNING, "EVOB %s: the name has no extension; it cannot be used\n", name);
         return 0;
     }
     snprintf(map, sizeof(map), "/%s/%.*s.MAP", folder, (int)(dot - name), name);
@@ -200,31 +200,31 @@ int ff_hddvd_clip_load(void *logctx, DiscIOFS *fs, const char *folder, HDDVDClip
     re = fs->ops->open_file(fs, evo, &e);
     if (re < 0 || rm < 0) {
         ff_discio_file_free(&e);
-        av_log(logctx, AV_LOG_WARNING, "EVOB %s: %s%s%s; it cannot be used\n", name,
+        dr_vlog(logctx, DR_VLOG_WARNING, "EVOB %s: %s%s%s; it cannot be used\n", name,
                re < 0 ? "no EVO file" : "", re < 0 && rm < 0 ? ", " : "", rm < 0 ? "no time map" : "");
         ff_discio_file_free(&m);
         return 0;
     }
-    if (!(r = av_mallocz(sizeof(*r)))) {
+    if (!(r = dr_mallocz(sizeof(*r)))) {
         ff_discio_file_free(&m);
         ff_discio_file_free(&e);
-        return AVERROR(ENOMEM);
+        return DR_ERR(ENOMEM);
     }
     r->fs = fs;
     r->file = m;
     r->cached = -1;
     ret = read_map(logctx, r, map, c);
-    av_free(r);
+    dr_free(r);
     ff_discio_file_free(&m);
     if (ret <= 0)
         ff_discio_file_free(&e);
     if (ret < 0)
         return ret;
     if (!ret) {
-        av_freep(&c->extents);
+        dr_freep(&c->extents);
         c->nb_extents = 0;
         c->size = 0;
-        av_log(logctx, AV_LOG_WARNING, "EVOB %s: its time map is not usable; it cannot be used\n", name);
+        dr_vlog(logctx, DR_VLOG_WARNING, "EVOB %s: its time map is not usable; it cannot be used\n", name);
         return 0;
     }
     c->evo   = e;
@@ -255,8 +255,8 @@ typedef struct Planner {
 
 static void cand_free(Candidate *c)
 {
-    av_freep(&c->names);
-    av_freep(&c->marks);
+    dr_freep(&c->names);
+    dr_freep(&c->marks);
 }
 
 static int cand_cmp(const Candidate *a, const Candidate *b)
@@ -264,7 +264,7 @@ static int cand_cmp(const Candidate *a, const Candidate *b)
     if (a->nb_names != b->nb_names)
         return a->nb_names < b->nb_names ? -1 : 1;
     for (int i = 0; i < a->nb_names; i++) {
-        int r = av_strcasecmp(a->names[i], b->names[i]);
+        int r = strcasecmp(a->names[i], b->names[i]);
         if (r)
             return r;
     }
@@ -288,9 +288,9 @@ static int cand_insert(Planner *p, Candidate *c)
         cand_free(c);
         return 0;
     }
-    if (!(v = av_realloc_array(p->cands, p->nb_cands + 1, sizeof(*v)))) {
+    if (!(v = dr_realloc_array(p->cands, p->nb_cands + 1, sizeof(*v)))) {
         cand_free(c);
-        return AVERROR(ENOMEM);
+        return DR_ERR(ENOMEM);
     }
     p->cands = v;
     memmove(v + lo + 1, v + lo, (p->nb_cands - lo) * sizeof(*v));
@@ -301,14 +301,14 @@ static int cand_insert(Planner *p, Candidate *c)
 
 static int uri_prefix_ok(const char *s)
 {
-    return !av_strncasecmp(s, "file:///dvddisc/HVDVD_TS/", URI_PREFIX_LEN) ||
-           !av_strncasecmp(s, "file:///dvddisc/HDDVD_TS/", URI_PREFIX_LEN);
+    return !strncasecmp(s, "file:///dvddisc/HVDVD_TS/", URI_PREFIX_LEN) ||
+           !strncasecmp(s, "file:///dvddisc/HDDVD_TS/", URI_PREFIX_LEN);
 }
 
 static int ends_with_ci(const char *s, const char *end)
 {
     size_t n = strlen(s), k = strlen(end);
-    return n >= k && !av_strcasecmp(s + n - k, end);
+    return n >= k && !strcasecmp(s + n - k, end);
 }
 
 static uint32_t fps_of(const HDDVDXplNode *title_set)
@@ -361,8 +361,8 @@ static int collect(Planner *p, const HDDVDXplNode *title_set, const HDDVDXplNode
                                                "seamless"))
             k++;
         c.lang = ff_hddvd_xpl_str(title_set, "defaultLanguage");
-        if (!(c.names = av_calloc(k, sizeof(*c.names))))
-            return AVERROR(ENOMEM);
+        if (!(c.names = dr_calloc(k, sizeof(*c.names))))
+            return DR_ERR(ENOMEM);
         c.nb_names = k;
         for (int j = 0; j < k; j++) {
             const char *s = ff_hddvd_xpl_str(ff_hddvd_xpl_child(owner, HDDVD_XPL_PRIMARY_AUDIO_VIDEO_CLIP, i + j), "src");
@@ -371,7 +371,7 @@ static int collect(Planner *p, const HDDVDXplNode *title_set, const HDDVDXplNode
                 if (ends_with_ci(s, ".map"))
                     c.names[j] = s + URI_PREFIX_LEN;
                 else
-                    av_log(p->log, AV_LOG_DEBUG, "XPL: clip src \"%s\" does not end in .map\n", s);
+                    dr_vlog(p->log, DR_VLOG_DEBUG, "XPL: clip src \"%s\" does not end in .map\n", s);
             }
         }
         if (title) {
@@ -390,9 +390,9 @@ static int collect(Planner *p, const HDDVDXplNode *title_set, const HDDVDXplNode
 
                 if (t < lo || t > hi)
                     continue;
-                if (av_dynarray2_add((void **)&c.marks, &c.nb_marks, sizeof(m), (const uint8_t *)&m) == NULL) {
+                if (dr_array_add(&c.marks, &c.nb_marks, sizeof(m), &m) == NULL) {
                     cand_free(&c);
-                    return AVERROR(ENOMEM);
+                    return DR_ERR(ENOMEM);
                 }
             }
         }
@@ -411,8 +411,8 @@ static const char *keep(HDDVDTitlePlan *plan, const char *s)
 
     if (!s)
         return NULL;
-    if (!(d = av_strdup(s)) || av_dynarray_add_nofree(&plan->strings, &plan->nb_strings, d) < 0) {
-        av_free(d);
+    if (!(d = dr_strdup(s)) || dr_array_add_ptr(&plan->strings, &plan->nb_strings, d) < 0) {
+        dr_free(d);
         return NULL;
     }
     return d;
@@ -424,8 +424,8 @@ static HDDVDClip *clip_of(Planner *p, const HDDVDEvob *e, int *err)
     int ret;
 
     if (!*slot) {
-        if (!(*slot = av_mallocz(sizeof(**slot)))) {
-            *err = AVERROR(ENOMEM);
+        if (!(*slot = dr_mallocz(sizeof(**slot)))) {
+            *err = DR_ERR(ENOMEM);
             return NULL;
         }
         (*slot)->evob = e;
@@ -441,26 +441,26 @@ int ff_hddvd_src_names_evob(void *logctx, const char *s, const char *evo)
     size_t n = strlen(evo);
 
     if (!s) {
-        av_log(logctx, AV_LOG_DEBUG, "XPL: a clip without src\n");
+        dr_vlog(logctx, DR_VLOG_DEBUG, "XPL: a clip without src\n");
         return 0;
     }
     if (n < 5) {
-        av_log(logctx, AV_LOG_DEBUG, "EVOB name \"%s\" is shorter than 5 characters\n", evo);
+        dr_vlog(logctx, DR_VLOG_DEBUG, "EVOB name \"%s\" is shorter than 5 characters\n", evo);
         return 0;
     }
     if (!uri_prefix_ok(s))
         return 0;
     if (!ends_with_ci(s, ".map")) {
-        av_log(logctx, AV_LOG_DEBUG, "XPL: clip src \"%s\" does not end in .map\n", s);
+        dr_vlog(logctx, DR_VLOG_DEBUG, "XPL: clip src \"%s\" does not end in .map\n", s);
         return 0;
     }
     if (strlen(s + URI_PREFIX_LEN) != n)
         return 0;
     if (!ends_with_ci(evo, ".evo")) {
-        av_log(logctx, AV_LOG_DEBUG, "EVOB name \"%s\" does not end in .evo\n", evo);
+        dr_vlog(logctx, DR_VLOG_DEBUG, "EVOB name \"%s\" does not end in .evo\n", evo);
         return 0;
     }
-    return !av_strncasecmp(evo, s + URI_PREFIX_LEN, n - 4);
+    return !strncasecmp(evo, s + URI_PREFIX_LEN, n - 4);
 }
 
 void ff_hddvd_evob_marks(void *logctx, HDDVDVTI *vti, HDDVDXpl *const *xpls, int nb_xpls)
@@ -476,7 +476,7 @@ void ff_hddvd_evob_marks(void *logctx, HDDVDVTI *vti, HDDVDXpl *const *xpls, int
             if (!e || e->playlist >= q)
                 continue;
             if (nts != 1) {
-                av_log(logctx, AV_LOG_DEBUG, "Playlist %d has %d TitleSets: not looked at for EVOB %s\n",
+                dr_vlog(logctx, DR_VLOG_DEBUG, "Playlist %d has %d TitleSets: not looked at for EVOB %s\n",
                        q, nts, e->name);
                 continue;
             }
@@ -493,7 +493,7 @@ void ff_hddvd_evob_marks(void *logctx, HDDVDVTI *vti, HDDVDXpl *const *xpls, int
             }
             if (found) {
                 e->playlist = q;
-                av_log(logctx, AV_LOG_VERBOSE, "EVOB %s: named by playlist %d (title key ids from %d)\n",
+                dr_vlog(logctx, DR_VLOG_VERBOSE, "EVOB %s: named by playlist %d (title key ids from %d)\n",
                        e->name, q, q << 8);
             }
         }
@@ -542,10 +542,10 @@ static int finish_title(Planner *p, HDDVDTitle *t, int min_length)
         t->size     += t->clips[i]->size;
     }
     if (!t->name)
-        return AVERROR(ENOMEM);
+        return DR_ERR(ENOMEM);
     secs = t->duration / 90000;
     if (secs < (uint64_t)min_length) {
-        av_log(p->log, AV_LOG_INFO, "Title %s lasts %"PRIu64":%02"PRIu64":%02"PRIu64", less than the minimum "
+        dr_vlog(p->log, DR_VLOG_INFO, "Title %s lasts %"PRIu64":%02"PRIu64":%02"PRIu64", less than the minimum "
                "length of %d s: left out\n", t->name, secs / 3600, secs / 60 % 60, secs % 60, min_length);
         return 1;                                   /* left out */
     }
@@ -554,10 +554,10 @@ static int finish_title(Planner *p, HDDVDTitle *t, int min_length)
 
 static int add_title(Planner *p, HDDVDTitle *t)
 {
-    if (!av_dynarray2_add((void **)&p->plan->titles, &p->plan->nb_titles, sizeof(*t), (const uint8_t *)t)) {
-        av_free(t->clips);
-        av_free(t->marks);
-        return AVERROR(ENOMEM);
+    if (!dr_array_add(&p->plan->titles, &p->plan->nb_titles, sizeof(*t), t)) {
+        dr_free(t->clips);
+        dr_free(t->marks);
+        return DR_ERR(ENOMEM);
     }
     return 0;
 }
@@ -573,32 +573,32 @@ static int title_from_candidate(Planner *p, const Candidate *c, int min_length)
         HDDVDClip *clip;
 
         if (strlen(s) > 0xff || !dot || dot - s + 1 > 0xfd) {
-            av_log(p->log, AV_LOG_INFO, "Playlist title with clip \"%s\": not a time map name; title left out\n", s);
+            dr_vlog(p->log, DR_VLOG_INFO, "Playlist title with clip \"%s\": not a time map name; title left out\n", s);
             goto drop;
         }
         for (int x = 0; x < HDDVD_VTI_MAX_EVOBS && !e; x++)
-            if (p->vti->evobs[x] && !av_strncasecmp(p->vti->evobs[x]->name, s, dot - s + 1))
+            if (p->vti->evobs[x] && !strncasecmp(p->vti->evobs[x]->name, s, dot - s + 1))
                 e = p->vti->evobs[x];
         if (!e) {
-            av_log(p->log, AV_LOG_INFO, "Playlist title with clip \"%s\": no such EVOB; title left out\n", s);
+            dr_vlog(p->log, DR_VLOG_INFO, "Playlist title with clip \"%s\": no such EVOB; title left out\n", s);
             goto drop;
         }
         if (!(clip = clip_of(p, e, &err))) {
             if (err < 0)
                 goto fail;
-            av_log(p->log, AV_LOG_INFO, "Playlist title with clip \"%s\": the EVOB cannot be used; title left out\n", s);
+            dr_vlog(p->log, DR_VLOG_INFO, "Playlist title with clip \"%s\": the EVOB cannot be used; title left out\n", s);
             goto drop;
         }
-        if (av_dynarray_add_nofree(&t.clips, &t.nb_clips, clip) < 0) {
-            err = AVERROR(ENOMEM);
+        if (dr_array_add_ptr(&t.clips, &t.nb_clips, clip) < 0) {
+            err = DR_ERR(ENOMEM);
             goto fail;
         }
     }
     if (!t.nb_clips)
         goto drop;
     if (c->nb_marks) {
-        if (!(t.marks = av_calloc(c->nb_marks, sizeof(*t.marks)))) {
-            err = AVERROR(ENOMEM);
+        if (!(t.marks = dr_calloc(c->nb_marks, sizeof(*t.marks)))) {
+            err = DR_ERR(ENOMEM);
             goto fail;
         }
         for (int i = 0; i < c->nb_marks; i++)
@@ -614,16 +614,16 @@ static int title_from_candidate(Planner *p, const Candidate *c, int min_length)
         goto fail;
     }
     if (ret) {
-        av_free(t.marks);
+        dr_free(t.marks);
         goto drop;
     }
     return add_title(p, &t);
 drop:
-    av_free(t.clips);
+    dr_free(t.clips);
     return 0;
 fail:
-    av_free(t.clips);
-    av_free(t.marks);
+    dr_free(t.clips);
+    dr_free(t.marks);
     return err;
 }
 
@@ -643,21 +643,21 @@ static int plays(const HDDVDTitlePlan *plan, const HDDVDClip *clip)
 int ff_hddvd_titles_plan(void *logctx, DiscIOFS *fs, const HDDVDVTI *vti, HDDVDXpl *const *xpls,
                          int nb_xpls, int min_length, HDDVDTitlePlan **out)
 {
-    Planner p = { logctx, fs, vti, xpls, nb_xpls };
+    Planner p = { .log = logctx, .fs = fs, .vti = vti, .xpls = xpls, .nb_xpls = nb_xpls };
     int ret = 0;
 
     *out = NULL;
-    if (!(p.plan = av_mallocz(sizeof(*p.plan))))
-        return AVERROR(ENOMEM);
+    if (!(p.plan = dr_mallocz(sizeof(*p.plan))))
+        return DR_ERR(ENOMEM);
 
     for (int q = nb_xpls - 1; q >= 0; q--) {
         const HDDVDXplNode *root = &xpls[q]->root, *ts, *fpt;
         int nts = ff_hddvd_xpl_count(root, HDDVD_XPL_TITLE_SET);
 
         if (nts != 1) {
-            av_log(logctx, AV_LOG_ERROR, "Playlist VPLST%03d.XPL has %d TitleSets (1 expected): "
+            dr_vlog(logctx, DR_VLOG_ERROR, "Playlist VPLST%03d.XPL has %d TitleSets (1 expected): "
                    "the titles cannot be read\n", xpls[q]->file, nts);
-            ret = AVERROR_INVALIDDATA;
+            ret = DR_ERR_INVALID;
             goto end;
         }
         ts = ff_hddvd_xpl_child(root, HDDVD_XPL_TITLE_SET, 0);
@@ -669,7 +669,7 @@ int ff_hddvd_titles_plan(void *logctx, DiscIOFS *fs, const HDDVDVTI *vti, HDDVDX
                                ff_hddvd_xpl_child(ts, HDDVD_XPL_TITLE, i))) < 0)
                 goto end;
     }
-    av_log(logctx, AV_LOG_VERBOSE, "HD DVD: %d title candidates\n", p.nb_cands);
+    dr_vlog(logctx, DR_VLOG_VERBOSE, "HD DVD: %d title candidates\n", p.nb_cands);
     for (int i = p.nb_cands - 1; i >= 0; i--)
         if ((ret = title_from_candidate(&p, &p.cands[i], min_length)) < 0)
             goto end;
@@ -692,32 +692,32 @@ int ff_hddvd_titles_plan(void *logctx, DiscIOFS *fs, const HDDVDVTI *vti, HDDVDX
         }
         if (plays(p.plan, clip))
             continue;
-        if (av_dynarray_add_nofree(&t.clips, &t.nb_clips, clip) < 0) {
-            ret = AVERROR(ENOMEM);
+        if (dr_array_add_ptr(&t.clips, &t.nb_clips, clip) < 0) {
+            ret = DR_ERR(ENOMEM);
             goto end;
         }
         if ((ret = finish_title(&p, &t, min_length)) < 0 || (!ret && (ret = add_title(&p, &t)) < 0)) {
-            av_free(t.clips);
+            dr_free(t.clips);
             goto end;
         }
         if (ret) {                                  /* shorter than the minimum length */
-            av_free(t.clips);
+            dr_free(t.clips);
             ret = 0;
             continue;
         }
-        av_log(logctx, AV_LOG_INFO, "EVOB %s is played by no playlist title: title %s of its own\n",
+        dr_vlog(logctx, DR_VLOG_INFO, "EVOB %s is played by no playlist title: title %s of its own\n",
                e->name, t.name);
     }
     for (int i = 0; i < p.plan->nb_titles; i++) {
         const HDDVDTitle *t = &p.plan->titles[i];
-        av_log(logctx, AV_LOG_VERBOSE, "Title %d: %s, %d EVOB(s), %d chapter(s), %"PRIu64" s, %"PRIu64" bytes%s\n",
+        dr_vlog(logctx, DR_VLOG_VERBOSE, "Title %d: %s, %d EVOB(s), %d chapter(s), %"PRIu64" s, %"PRIu64" bytes%s\n",
                i, t->name, t->nb_clips, t->nb_marks, t->duration / 90000, t->size,
                "");
     }
 end:
     for (int i = 0; i < p.nb_cands; i++)
         cand_free(&p.cands[i]);
-    av_free(p.cands);
+    dr_free(p.cands);
     if (ret < 0)
         ff_hddvd_titles_free(&p.plan);
     *out = p.plan;
@@ -736,65 +736,75 @@ void ff_hddvd_titles_free(HDDVDTitlePlan **pplan)
     if (!plan)
         return;
     for (int i = 0; i < plan->nb_titles; i++) {
-        av_free(plan->titles[i].clips);
-        av_free(plan->titles[i].marks);
-        av_free(plan->titles[i].tracks);
+        dr_free(plan->titles[i].clips);
+        dr_free(plan->titles[i].marks);
+        dr_free(plan->titles[i].tracks);
     }
-    av_free(plan->titles);
+    dr_free(plan->titles);
     for (int i = 0; i < HDDVD_VTI_MAX_EVOBS; i++) {
         if (plan->clips[i]) {
-            av_free(plan->clips[i]->extents);
+            dr_free(plan->clips[i]->extents);
             ff_discio_file_free(&plan->clips[i]->evo);
         }
-        av_free(plan->clips[i]);
+        dr_free(plan->clips[i]);
     }
     for (int i = 0; i < plan->nb_strings; i++)
-        av_free(plan->strings[i]);
-    av_free(plan->strings);
-    av_freep(pplan);
+        dr_free(plan->strings[i]);
+    dr_free(plan->strings);
+    dr_freep(pplan);
+}
+
+/* The stream kind in words, as the processing library names its media
+ * types (the dump's reference format). */
+static const char *media_name(int type)
+{
+    switch (type) {
+    case DISC_MEDIA_VIDEO:    return "video";
+    case DISC_MEDIA_AUDIO:    return "audio";
+    case DISC_MEDIA_SUBTITLE: return "subtitle";
+    case DISC_MEDIA_DATA:     return "data";
+    }
+    return "?";
 }
 
 char *ff_hddvd_titles_dump(const HDDVDTitlePlan *plan)
 {
-    AVBPrint bp;
-    char *s;
+    DrStr bp;
 
-    av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
+    dr_str_init(&bp);
     for (int i = 0; i < plan->nb_titles; i++) {
         const HDDVDTitle *t = &plan->titles[i];
-        av_bprintf(&bp, "title %d|%s|%s|%s|%d|%"PRIu64"|%"PRIu64"|%"PRIu64"|%s|%d|", i, t->name,
+        dr_str_catf(&bp, "title %d|%s|%s|%s|%d|%"PRIu64"|%"PRIu64"|%"PRIu64"|%s|%d|", i, t->name,
                    t->lang ? t->lang : "(null)", t->from_playlist ? "playlist" : "evob", 1,
                    t->duration, t->duration / 90000, t->size, t->clips[0]->evob->name, t->nb_clips);
         for (int k = 0; k < t->nb_clips; k++)
-            av_bprintf(&bp, "%s%s", k ? "," : "", t->clips[k]->evob->base);
-        av_bprintf(&bp, "|%d\n", t->nb_marks);
+            dr_str_catf(&bp, "%s%s", k ? "," : "", t->clips[k]->evob->base);
+        dr_str_catf(&bp, "|%d\n", t->nb_marks);
         for (int k = 0; k < t->nb_marks; k++)
-            av_bprintf(&bp, "  chapter %d|%"PRIu32"|%s\n", k + 1, t->marks[k].ms, t->marks[k].name);
+            dr_str_catf(&bp, "  chapter %d|%"PRIu32"|%s\n", k + 1, t->marks[k].ms, t->marks[k].name);
         for (int k = 0; k < t->nb_tracks; k++) {
             const HDDVDTrack *r = &t->tracks[k];
-            av_bprintf(&bp, "  track %d|%s|%s|%d|%d|%s", k, av_get_media_type_string(r->type),
-                       avcodec_get_name(r->codec), r->index, r->number, r->lang);
+            dr_str_catf(&bp, "  track %d|%s|%s|%d|%d|%s", k, media_name(r->type),
+                       ff_disctl_codec_id_name(r->codec), r->index, r->number, r->lang);
             if (r->inner_track >= 0)
-                av_bprintf(&bp, "|gives track %d", r->inner_track);
+                dr_str_catf(&bp, "|gives track %d", r->inner_track);
             if (r->from_track >= 0)
-                av_bprintf(&bp, "|from track %d", r->from_track);
-            if (r->type == AVMEDIA_TYPE_SUBTITLE)
-                av_bprintf(&bp, "|%dx%d|%08"PRIx32, r->width, r->height, r->palette ? r->palette[0] : 0);
-            av_bprintf(&bp, "\n");
+                dr_str_catf(&bp, "|from track %d", r->from_track);
+            if (r->type == DISC_MEDIA_SUBTITLE)
+                dr_str_catf(&bp, "|%dx%d|%08"PRIx32, r->width, r->height, r->palette ? r->palette[0] : 0);
+            dr_str_catf(&bp, "\n");
         }
     }
     for (int x = 0; x < HDDVD_VTI_MAX_EVOBS; x++) {
         const HDDVDClip *c = plan->clips[x];
         if (!c)
             continue;
-        av_bprintf(&bp, "clip %d|%s|%s|%"PRIu64"|", x + 1, c->evob->name,
+        dr_str_catf(&bp, "clip %d|%s|%s|%"PRIu64"|", x + 1, c->evob->name,
                    c->state > 0 ? "usable" : "not usable", c->size);
         for (int k = 0; k < c->nb_extents; k++)
-            av_bprintf(&bp, "%s%"PRIu32":%"PRIu32":%"PRIu32, k ? "," : "", c->extents[k].stream,
+            dr_str_catf(&bp, "%s%"PRIu32":%"PRIu32":%"PRIu32, k ? "," : "", c->extents[k].stream,
                        c->extents[k].file, c->extents[k].count);
-        av_bprintf(&bp, "\n");
+        dr_str_catf(&bp, "\n");
     }
-    if (av_bprint_finalize(&bp, &s) < 0)
-        return NULL;
-    return s;
+    return dr_str_take(&bp, 1);
 }

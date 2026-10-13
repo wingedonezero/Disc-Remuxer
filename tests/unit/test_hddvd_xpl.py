@@ -17,7 +17,7 @@ from helpers.hddvd import take_text
 from helpers.source import Memory, Source
 from synth.image import S, Img, iso
 
-INVALIDDATA = -0x41444E49
+INVALIDDATA = lib.DR_ERR_INVALID
 
 
 # ---- parsing from memory ----

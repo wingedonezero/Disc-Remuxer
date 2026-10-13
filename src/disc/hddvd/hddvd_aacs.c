@@ -37,11 +37,11 @@
 
 #include <libaacs/aacs.h>
 
-#include "libavutil/error.h"
-#include "libavutil/sha.h"
-#include "libavutil/intreadwrite.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
+#include "base/err.h"
+#include "base/sha.h"
+#include "base/bytes.h"
+#include "base/vlog.h"
+#include "base/mem.h"
 
 #include "hddvd_internal.h"
 
@@ -72,30 +72,30 @@ static int read_aacs_file(void *opaque, const char *name, uint8_t **data, size_t
         uint8_t *buf;
 
         snprintf(path, sizeof(path), "%s/%s", dirs[i], name);
-        if ((ret = r->fs->ops->open_file(r->fs, path, &f)) == AVERROR(ENOENT))
+        if ((ret = r->fs->ops->open_file(r->fs, path, &f)) == DR_ERR(ENOENT))
             continue;
         found = 1;
         if (ret < 0) {
-            av_log(r->log, AV_LOG_WARNING, "AACS: cannot open %s: %s\n", path, av_err2str(ret));
+            dr_vlog(r->log, DR_VLOG_WARNING, "AACS: cannot open %s: %s\n", path, dr_err_text(ret));
             continue;
         }
         if (f->size > INT_MAX || !(buf = malloc(f->size ? f->size : 1))) {
             ff_discio_file_free(&f);
-            return AVERROR(ENOMEM);
+            return DR_ERR(ENOMEM);
         }
         if ((ret = ff_discio_file_read(r->fs, f, 0, buf, f->size)) < 0) {
-            av_log(r->log, AV_LOG_WARNING, "AACS: cannot read %s: %s\n", path, av_err2str(ret));
+            dr_vlog(r->log, DR_VLOG_WARNING, "AACS: cannot read %s: %s\n", path, dr_err_text(ret));
             free(buf);
             ff_discio_file_free(&f);
             continue;
         }
-        av_log(r->log, AV_LOG_VERBOSE, "AACS: %s, %"PRId64" bytes\n", path, f->size);
+        dr_vlog(r->log, DR_VLOG_VERBOSE, "AACS: %s, %"PRId64" bytes\n", path, f->size);
         *data = buf;
         *size = f->size;
         ff_discio_file_free(&f);
         return 0;
     }
-    return found ? AVERROR(EIO) : 1;
+    return found ? DR_ERR(EIO) : 1;
 }
 
 /* The disc ID the key files name a disc by (SHA-1 of VTKF000.AACS) as
@@ -104,17 +104,16 @@ static void disc_id_text(Reader *r, char hex[41])
 {
     uint8_t *data = NULL, sum[20];
     size_t size = 0;
-    struct AVSHA *sha;
+    DrSha sha;
 
     snprintf(hex, 41, "unknown");
-    if (read_aacs_file(r, "VTKF000.AACS", &data, &size) || !(sha = av_sha_alloc())) {
+    if (read_aacs_file(r, "VTKF000.AACS", &data, &size)) {
         free(data);
         return;
     }
-    av_sha_init(sha, 160);
-    av_sha_update(sha, data, size);
-    av_sha_final(sha, sum);
-    av_free(sha);
+    dr_sha_init(&sha, 160);
+    dr_sha_update(&sha, data, size);
+    dr_sha_final(&sha, sum);
     free(data);
     for (int i = 0; i < 20; i++)
         snprintf(hex + 2 * i, 3, "%02X", sum[i]);
@@ -122,13 +121,13 @@ static void disc_id_text(Reader *r, char hex[41])
 
 static void aacs_log(void *opaque, int level, const char *message)
 {
-    static const int levels[] = { AV_LOG_ERROR, AV_LOG_WARNING, AV_LOG_VERBOSE };
-    av_log(opaque, levels[level >= 0 && level <= 2 ? level : 2], "AACS: %s\n", message);
+    static const int levels[] = { DR_VLOG_ERROR, DR_VLOG_WARNING, DR_VLOG_VERBOSE };
+    dr_vlog(opaque, levels[level >= 0 && level <= 2 ? level : 2], "AACS: %s\n", message);
 }
 
 static void aacs_debug(const char *message)
 {
-    av_log(NULL, AV_LOG_DEBUG, "libaacs: %s", message);
+    dr_vlog(NULL, DR_VLOG_DEBUG, "libaacs: %s", message);
 }
 
 int ff_hddvd_aacs_open(void *logctx, DiscIOFS *fs, const char *const *key_files, int nb_key_files,
@@ -140,26 +139,26 @@ int ff_hddvd_aacs_open(void *logctx, DiscIOFS *fs, const char *const *key_files,
 
     *out = NULL;
     if (fs->ops->find_dir(fs, "/AACS") < 0) {
-        av_log(logctx, AV_LOG_VERBOSE, "No /AACS directory: the disc is not encrypted\n");
+        dr_vlog(logctx, DR_VLOG_VERBOSE, "No /AACS directory: the disc is not encrypted\n");
         return 0;
     }
     if (!nb_key_files)
-        av_log(logctx, AV_LOG_WARNING, "AACS: no key file is set (option keydb)\n");
-    if (!(a = av_mallocz(sizeof(*a))))
-        return AVERROR(ENOMEM);
+        dr_vlog(logctx, DR_VLOG_WARNING, "AACS: no key file is set (option keydb)\n");
+    if (!(a = dr_mallocz(sizeof(*a))))
+        return DR_ERR(ENOMEM);
     aacs_set_debug_handler(aacs_debug);
     a->h = aacs_hddvd_open(read_aacs_file, &r, key_files, nb_key_files, nb_playlists,
                            aacs_log, logctx, &err);
     if (!a->h) {
         char id[41];
         disc_id_text(&r, id);
-        av_log(logctx, AV_LOG_ERROR, "AACS: the disc (disc ID %s) cannot be decrypted (%s)\n", id,
+        dr_vlog(logctx, DR_VLOG_ERROR, "AACS: the disc (disc ID %s) cannot be decrypted (%s)\n", id,
                err == AACS_ERROR_NO_CONFIG ? "no key for it in the key files" :
                err == AACS_ERROR_NO_PK     ? "no key of the key files gives its media key" :
                err == AACS_ERROR_CORRUPTED_DISC ? "its AACS files are not usable" : aacs_error_str(err));
-        av_free(a);
+        dr_free(a);
         /* a key is missing (not a file access problem) */
-        return err == AACS_ERROR_CORRUPTED_DISC ? AVERROR_INVALIDDATA : AVERROR(ENOKEY);
+        return err == AACS_ERROR_CORRUPTED_DISC ? DR_ERR_INVALID : DR_ERR(ENOKEY);
     }
     *out = a;
     return 0;
@@ -172,7 +171,7 @@ void ff_hddvd_aacs_close(HDDVDAACS **pa)
     if (!a)
         return;
     aacs_hddvd_close(a->h);
-    av_freep(pa);
+    dr_freep(pa);
 }
 
 /* ---- sectors ---- */
@@ -185,7 +184,7 @@ static int pack_header_len(const uint8_t *s)
 
 static int is_pack(const uint8_t *s)
 {
-    return AV_RB32(s) == 0x000001ba && (s[4] & 0xc0) == 0x40;
+    return dr_rb32(s) == 0x000001ba && (s[4] & 0xc0) == 0x40;
 }
 
 /* The navigation pack's data (NAV_SIZE bytes) when sec is one. */
@@ -196,12 +195,12 @@ static int nav_of(uint8_t *nav, const uint8_t *s)
     if (!is_pack(s))
         return 0;
     h = pack_header_len(s);
-    if (AV_RB32(s + h) != 0x000001bb || h + AV_RB16(s + h + 4) != 0x23 ||
-        AV_RB32(s + 0x29) != 0x000001bf || AV_RB32(s + 0x2c) != 0xbf010104)
+    if (dr_rb32(s + h) != 0x000001bb || h + dr_rb16(s + h + 4) != 0x23 ||
+        dr_rb32(s + 0x29) != 0x000001bf || dr_rb32(s + 0x2c) != 0xbf010104)
         return 0;
     memcpy(nav, s + 0x30, 0x100);
     memcpy(nav + 0x100, s + 0x137, 0x3d0);
-    if (AV_RB32(s + 0x507) != 0x000001bf || AV_RB32(s + 0x50a) != 0xbf02f301)
+    if (dr_rb32(s + 0x507) != 0x000001bf || dr_rb32(s + 0x50a) != 0xbf02f301)
         return 0;
     memcpy(nav + 0x4d0, s + 0x50e, 0x2f2);
     return 1;
@@ -231,8 +230,8 @@ static int find_nav(void *logctx, DiscIOFS *fs, HDDVDClip *c, const HDDVDExtent 
     int ret;
 
     if ((ret = ff_discio_file_read(fs, c->evo, (int64_t)x->file * 2048, buf, 2048)) < 0) {
-        av_log(logctx, AV_LOG_ERROR, "EVOB %s: cannot read block %"PRIu32" for its navigation pack: %s\n",
-               c->evob->name, x->file, av_err2str(ret));
+        dr_vlog(logctx, DR_VLOG_ERROR, "EVOB %s: cannot read block %"PRIu32" for its navigation pack: %s\n",
+               c->evob->name, x->file, dr_err_text(ret));
         return 0;
     }
     if (nav_of(nav, buf))
@@ -242,17 +241,17 @@ static int find_nav(void *logctx, DiscIOFS *fs, HDDVDClip *c, const HDDVDExtent 
         if (off >= pos)
             break;
         if ((ret = ff_discio_file_read(fs, c->evo, pos - off, buf, 2048)) < 0) {
-            av_log(logctx, AV_LOG_ERROR, "EVOB %s: cannot read byte %"PRId64" looking for a navigation pack: %s\n",
-                   c->evob->name, pos - off, av_err2str(ret));
+            dr_vlog(logctx, DR_VLOG_ERROR, "EVOB %s: cannot read byte %"PRId64" looking for a navigation pack: %s\n",
+                   c->evob->name, pos - off, dr_err_text(ret));
             return 0;
         }
         if (nav_of(nav, buf)) {
-            av_log(logctx, AV_LOG_DEBUG, "EVOB %s: navigation pack %d blocks before byte %"PRId64"\n",
+            dr_vlog(logctx, DR_VLOG_DEBUG, "EVOB %s: navigation pack %d blocks before byte %"PRId64"\n",
                    c->evob->name, i, pos);
             return 1;
         }
     }
-    av_log(logctx, AV_LOG_ERROR, "EVOB %s: no navigation pack before byte %"PRId64"\n", c->evob->name, pos);
+    dr_vlog(logctx, DR_VLOG_ERROR, "EVOB %s: no navigation pack before byte %"PRId64"\n", c->evob->name, pos);
     return 0;
 }
 
@@ -283,20 +282,20 @@ int ff_hddvd_aacs_sector(void *logctx, HDDVDAACS *a, DiscIOFS *fs, HDDVDClip *c,
     if (!is_pack(sec))
         return 0;
     h = pack_header_len(sec);
-    if (AV_RB24(sec + h) != 1)
+    if (dr_rb24(sec + h) != 1)
         return 0;
     sid = sec[h + 3];
     if (sid != 0xbb && (sid == 0xbf || !(sec[h + 6] & 0x30)))
         return 1;                                   /* nothing to decrypt */
     if (!(x = extent_at(c, pos))) {
-        av_log(logctx, AV_LOG_ERROR, "EVOB %s: byte %"PRId64" lies in no extent\n", c->evob->name, pos);
+        dr_vlog(logctx, DR_VLOG_ERROR, "EVOB %s: byte %"PRId64" lies in no extent\n", c->evob->name, pos);
         return 0;
     }
     if (!x->key_resolved) {
         if (nav_of(nav, sec)) {
             if (!key_info(x, nav)) {
                 if (search)
-                    av_log(logctx, AV_LOG_ERROR, "EVOB %s: navigation pack at byte %"PRId64" has key mode 3\n",
+                    dr_vlog(logctx, DR_VLOG_ERROR, "EVOB %s: navigation pack at byte %"PRId64" has key mode 3\n",
                            c->evob->name, pos);
                 return 0;
             }
@@ -306,7 +305,7 @@ int ff_hddvd_aacs_sector(void *logctx, HDDVDAACS *a, DiscIOFS *fs, HDDVDClip *c,
             if (!find_nav(logctx, fs, c, x, pos, nav))
                 return 0;
             if (!key_info(x, nav)) {
-                av_log(logctx, AV_LOG_ERROR, "EVOB %s: navigation pack has key mode 3\n", c->evob->name);
+                dr_vlog(logctx, DR_VLOG_ERROR, "EVOB %s: navigation pack has key mode 3\n", c->evob->name);
                 return 0;
             }
         }
@@ -314,18 +313,18 @@ int ff_hddvd_aacs_sector(void *logctx, HDDVDAACS *a, DiscIOFS *fs, HDDVDClip *c,
     if (sid == 0xbb || sid == 0xbf || !(sec[h + 6] & 0x30))
         return 1;
     if (x->key_mode != 1) {
-        av_log(logctx, AV_LOG_ERROR, "EVOB %s: scrambled pack at byte %"PRId64" with key mode %d\n",
+        dr_vlog(logctx, DR_VLOG_ERROR, "EVOB %s: scrambled pack at byte %"PRId64" with key mode %d\n",
                c->evob->name, pos, x->key_mode);
         return 0;
     }
     id = x->key_offset + c->keybase;
     if (!a || !aacs_hddvd_title_key(a->h, id, key)) {
-        av_log(logctx, AV_LOG_ERROR, "EVOB %s: scrambled pack at byte %"PRId64" needs title key %"PRIu32", %s\n",
+        dr_vlog(logctx, DR_VLOG_ERROR, "EVOB %s: scrambled pack at byte %"PRId64" needs title key %"PRIu32", %s\n",
                c->evob->name, pos, id, a ? "which the disc does not have" : "but the disc has no AACS keys");
         return 0;
     }
     if (aacs_hddvd_decrypt_pack(key, x->seed, sec) < 0) {
-        av_log(logctx, AV_LOG_ERROR, "EVOB %s: decryption failed at byte %"PRId64"\n", c->evob->name, pos);
+        dr_vlog(logctx, DR_VLOG_ERROR, "EVOB %s: decryption failed at byte %"PRId64"\n", c->evob->name, pos);
         return 0;
     }
     sec[h + 6] &= 0xcf;
@@ -337,7 +336,7 @@ int ff_hddvd_clip_place(HDDVDClip *c, uint32_t block, char *file, int size, int6
     const HDDVDExtent *x = extent_at(c, (int64_t)block * 2048);
 
     if (!x || block - x->stream >= x->count)
-        return AVERROR(EINVAL);
+        return DR_ERR(EINVAL);
     snprintf(file, size, "%s", c->evob->name);
     *offset = ((int64_t)x->file + block - x->stream) * 2048;
     return 0;
@@ -349,8 +348,8 @@ int ff_hddvd_clip_block(void *logctx, HDDVDAACS *a, DiscIOFS *fs, HDDVDClip *c, 
     int ret;
 
     if (!x || !c->evo || block - x->stream >= x->count) {
-        av_log(logctx, AV_LOG_ERROR, "EVOB %s: block %"PRIu32" lies in no extent\n", c->evob->name, block);
-        return AVERROR(EINVAL);
+        dr_vlog(logctx, DR_VLOG_ERROR, "EVOB %s: block %"PRIu32" lies in no extent\n", c->evob->name, block);
+        return DR_ERR(EINVAL);
     }
     if ((ret = ff_discio_file_read(fs, c->evo, ((int64_t)x->file + block - x->stream) * 2048, buf, 2048)) < 0)
         return ret;

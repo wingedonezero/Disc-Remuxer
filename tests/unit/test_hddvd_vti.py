@@ -12,7 +12,7 @@ import pytest
 from helpers import EINVAL, averror, ffi, install_log, lib, logged
 from helpers.disc import Image, env_or_skip, free_file
 
-INVALIDDATA = -0x41444E49
+INVALIDDATA = lib.DR_ERR_INVALID
 
 
 # ---- building a VTI ----

@@ -12,13 +12,13 @@ import pathlib
 
 import pytest
 
-from helpers import install_log, logged
+from helpers import install_log, lib, logged
 from helpers.disc import env_or_skip
 from helpers.hddvd import open_file, open_image
 from synth.hddvd import (aes_g, data_pack, encrypt_pack, evob, hexs, image, nav_pack, playlist, tkf, title_keys,
                          tmap, vti)
 
-INVALIDDATA = -0x41444E49
+INVALIDDATA = lib.DR_ERR_INVALID
 # a key is missing: ENOKEY (not NO_KEY, which says a file cannot be accessed)
 NO_KEY = -errno.ENOKEY
 

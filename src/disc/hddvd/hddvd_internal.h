@@ -24,9 +24,10 @@
 
 #include <stdint.h>
 
-#include "libavcodec/codec_id.h"
-#include "libavutil/avutil.h"
+#include "timeline/disctl.h"
+#include "base/macros.h"
 
+#include "disc/info.h"
 #include "io/discio.h"
 
 /* ---- the Advanced VTS information file (HVDVD_TS/HVA00001.VTI) ---- */
@@ -84,7 +85,7 @@ typedef int (*HDDVDReadFn)(void *opaque, int64_t pos, uint8_t *buf, int len);
 /**
  * Parse an Advanced VTS information file read through read(). Every check
  * is logged with the values seen; the first failing one ends the parse.
- * @return 0, AVERROR_INVALIDDATA for a file that fails a check, or the
+ * @return 0, DR_ERR_INVALID for a file that fails a check, or the
  *         read error
  */
 int ff_hddvd_vti_parse(void *logctx, HDDVDReadFn read, void *opaque, HDDVDVTI **out);
@@ -92,7 +93,7 @@ int ff_hddvd_vti_parse(void *logctx, HDDVDReadFn read, void *opaque, HDDVDVTI **
 /**
  * Find /HVDVD_TS/HVA00001.VTI, else /HDDVD_TS/HVA00001.VTI, on fs and parse
  * it.
- * @return 0, AVERROR(ENOENT) when neither file exists, or as
+ * @return 0, DR_ERR(ENOENT) when neither file exists, or as
  *         ff_hddvd_vti_parse()
  */
 int ff_hddvd_vti_open(void *logctx, DiscIOFS *fs, HDDVDVTI **out);
@@ -174,8 +175,8 @@ typedef struct HDDVDXpl {
 /**
  * Parse length bytes from offset of a playlist file (read through read())
  * as XML.
- * @return 0, AVERROR_INVALIDDATA for XML that is not well-formed, the read
- *         error, or AVERROR(ENOMEM)
+ * @return 0, DR_ERR_INVALID for XML that is not well-formed, the read
+ *         error, or DR_ERR(ENOMEM)
  */
 int ff_hddvd_xpl_parse(void *logctx, HDDVDReadFn read, void *opaque,
                        int64_t offset, int64_t length, HDDVDXpl **out);
@@ -184,8 +185,8 @@ int ff_hddvd_xpl_parse(void *logctx, HDDVDReadFn read, void *opaque,
  * Read /ADV_OBJ/VPLST000.XPL, VPLST001.XPL, ... up to the first missing file
  * (at most 1000). A file that cannot be read or parsed is left out (logged);
  * the others are kept in file order.
- * @return 0 with at least one playlist, AVERROR_INVALIDDATA with none, or
- *         AVERROR(ENOMEM)
+ * @return 0 with at least one playlist, DR_ERR_INVALID with none, or
+ *         DR_ERR(ENOMEM)
  */
 int ff_hddvd_xpl_load(void *logctx, DiscIOFS *fs, HDDVDXpl ***out, int *nb_out);
 
@@ -211,7 +212,7 @@ int ff_hddvd_xpl_count(const HDDVDXplNode *n, int cls);
  * The whole element tree as text, one element per line in document order:
  * indentation, type name, every attribute of the type as name=value (with
  * defaults; strings in quotes, (null) for none), then text="..." when set.
- * @return a string to free with av_free(), NULL when out of memory
+ * @return a string to free with dr_free(), NULL when out of memory
  */
 char *ff_hddvd_xpl_dump(const HDDVDXpl *xpl);
 
@@ -244,7 +245,7 @@ typedef struct HDDVDClip {
     int              nb_extents;
     /* audio streams whose content was probed: their codec (NONE: left out) */
     uint8_t          probed[HDDVD_VTI_MAX_AUDIO];
-    enum AVCodecID   probe_codec[HDDVD_VTI_MAX_AUDIO];
+    DRCodecID   probe_codec[HDDVD_VTI_MAX_AUDIO];
     uint8_t          probe_dtshd[HDDVD_VTI_MAX_AUDIO];  /**< DTS-HD: a DTS stream with an extension */
 } HDDVDClip;
 
@@ -262,8 +263,8 @@ typedef struct HDDVDChapterMark {
 #define HDDVD_SUBPIC_CODING_HD 4
 
 typedef struct HDDVDTrack {
-    enum AVMediaType type;
-    enum AVCodecID   codec;
+    int type;
+    DRCodecID   codec;
     int              index;         /**< stream index in the EVOB: 0 video, 1.. audio, then sub-pictures */
     int              number;        /**< audio: stream number 0..7; sub-picture: stream number 0..31 */
     int              coding;        /**< audio / sub-picture coding mode from the attribute record */
@@ -327,8 +328,8 @@ void ff_hddvd_evob_marks(void *logctx, HDDVDVTI *vti, HDDVDXpl *const *xpls, int
  *    map can be used and that no title plays becomes a title of its own.
  * Each playlist must have exactly one TitleSet. Titles shorter than
  * min_length seconds are kept, not selected.
- * @return 0, AVERROR_INVALIDDATA (a playlist without exactly one TitleSet),
- *         AVERROR(ENOMEM)
+ * @return 0, DR_ERR_INVALID (a playlist without exactly one TitleSet),
+ *         DR_ERR(ENOMEM)
  */
 int ff_hddvd_titles_plan(void *logctx, DiscIOFS *fs, const HDDVDVTI *vti, HDDVDXpl *const *xpls,
                          int nb_xpls, int min_length, HDDVDTitlePlan **out);
@@ -348,7 +349,7 @@ int ff_hddvd_src_names_evob(void *logctx, const char *src, const char *evo);
  * Read an EVOB's time map and EVO file (once; later calls return the first
  * result). The time map must start "HDDVD_TMAP00", must not have bit 1 of byte
  * 0x14 set and must have at least one table.
- * @return 1 usable, 0 not usable (logged), AVERROR(ENOMEM)
+ * @return 1 usable, 0 not usable (logged), DR_ERR(ENOMEM)
  */
 int ff_hddvd_clip_load(void *logctx, DiscIOFS *fs, const char *folder, HDDVDClip *clip);
 
@@ -356,7 +357,7 @@ int ff_hddvd_clip_load(void *logctx, DiscIOFS *fs, const char *folder, HDDVDClip
  * The plan as text: per title its name, language, selection, duration
  * (90 kHz), size, EVOB names and chapters; then every EVOB looked at with its
  * time map's result, size and extents (stream:file:count); for the tests.
- * @return a string to free with av_free(), NULL when out of memory
+ * @return a string to free with dr_free(), NULL when out of memory
  */
 char *ff_hddvd_titles_dump(const HDDVDTitlePlan *plan);
 

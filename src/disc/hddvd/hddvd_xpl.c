@@ -55,12 +55,12 @@
 
 #include <expat.h>
 
-#include "libavutil/bprint.h"
-#include "libavutil/error.h"
-#include "libavutil/intreadwrite.h"
-#include "libavutil/log.h"
-#include "libavutil/macros.h"
-#include "libavutil/mem.h"
+#include "base/str.h"
+#include "base/err.h"
+#include "base/bytes.h"
+#include "base/vlog.h"
+#include "base/macros.h"
+#include "base/mem.h"
 
 #include "hddvd_internal.h"
 
@@ -262,9 +262,9 @@ static void node_free(HDDVDXplNode *n)
 {
     for (int k = 0; k < n->nb_kids; k++) {
         node_free(n->kids[k]);
-        av_free(n->kids[k]);
+        dr_free(n->kids[k]);
     }
-    av_freep(&n->kids);
+    dr_freep(&n->kids);
 }
 
 void ff_hddvd_xpl_free(HDDVDXpl **pxpl)
@@ -275,9 +275,9 @@ void ff_hddvd_xpl_free(HDDVDXpl **pxpl)
         return;
     node_free(&x->root);
     for (int i = 0; i < x->nb_strings; i++)
-        av_free(x->strings[i]);
-    av_free(x->strings);
-    av_freep(pxpl);
+        dr_free(x->strings[i]);
+    dr_free(x->strings);
+    dr_freep(pxpl);
 }
 
 void ff_hddvd_xpl_free_all(HDDVDXpl ***pxpls, int nb)
@@ -288,7 +288,7 @@ void ff_hddvd_xpl_free_all(HDDVDXpl ***pxpls, int nb)
         return;
     for (int i = 0; i < nb; i++)
         ff_hddvd_xpl_free(&x[i]);
-    av_freep(pxpls);
+    dr_freep(pxpls);
 }
 
 /* ---- parsing ---- */
@@ -310,8 +310,8 @@ static const char *keep(ParseCtx *c, const char *s, size_t len)
 
     if (c->nomem)
         return NULL;
-    if (av_dynarray_add_nofree(&x->strings, &x->nb_strings, NULL) < 0 ||
-        !(d = av_strndup(s, len))) {
+    if (dr_array_add_ptr(&x->strings, &x->nb_strings, NULL) < 0 ||
+        !(d = dr_strndup(s, len))) {
         c->nomem = 1;
         return NULL;
     }
@@ -335,9 +335,9 @@ static HDDVDXplNode *create_child(ParseCtx *c, HDDVDXplNode *parent, const char 
             continue;
         if (parent->cls == HDDVD_XPL_DOCUMENT)
             return &c->xpl->root;           /* the root is part of the document */
-        if (!(n = av_mallocz(sizeof(*n))) ||
-            av_dynarray_add_nofree(&parent->kids, &parent->nb_kids, n) < 0) {
-            av_free(n);
+        if (!(n = dr_mallocz(sizeof(*n))) ||
+            dr_array_add_ptr(&parent->kids, &parent->nb_kids, n) < 0) {
+            dr_free(n);
             c->nomem = 1;
             return NULL;
         }
@@ -359,7 +359,7 @@ static void XMLCALL start_element(void *opaque, const XML_Char *name, const XML_
         return;
     }
     if (!(n = create_child(c, c->cur, local_name(name)))) {
-        av_log(c->log, AV_LOG_DEBUG, "XPL: <%s> in <%s> is not read\n", name, classes[c->cur->cls].name);
+        dr_vlog(c->log, DR_VLOG_DEBUG, "XPL: <%s> in <%s> is not read\n", name, classes[c->cur->cls].name);
         c->skip++;
         return;
     }
@@ -400,7 +400,7 @@ static void XMLCALL end_element(void *opaque, const XML_Char *name)
 static void XMLCALL character_data(void *opaque, const XML_Char *s, int len)
 {
     ParseCtx *c = opaque;
-    int n = FFMIN(len, XPL_TEXT_MAX - c->text_len);
+    int n = DR_MIN(len, XPL_TEXT_MAX - c->text_len);
 
     if (n > 0) {
         memcpy(c->text + c->text_len, s, n);
@@ -417,10 +417,10 @@ static int xml_error(void *logctx, XML_Parser p)
 {
     enum XML_Error e = XML_GetErrorCode(p);
 
-    av_log(logctx, AV_LOG_ERROR, "XPL: not well-formed XML: expat error %d (%s) at line %llu, column %llu\n",
+    dr_vlog(logctx, DR_VLOG_ERROR, "XPL: not well-formed XML: expat error %d (%s) at line %llu, column %llu\n",
            (int)e, XML_ErrorString(e), (unsigned long long)XML_GetCurrentLineNumber64(p),
            (unsigned long long)XML_GetCurrentColumnNumber64(p));
-    return AVERROR_INVALIDDATA;
+    return DR_ERR_INVALID;
 }
 
 int ff_hddvd_xpl_parse(void *logctx, HDDVDReadFn read, void *opaque,
@@ -432,14 +432,14 @@ int ff_hddvd_xpl_parse(void *logctx, HDDVDReadFn read, void *opaque,
     int ret = 0;
 
     *out = NULL;
-    c   = av_mallocz(sizeof(*c));
-    buf = av_malloc(XPL_CHUNK);
-    if (!c || !buf || !(c->xpl = av_mallocz(sizeof(*c->xpl))) || !(p = XML_ParserCreate(NULL))) {
+    c   = dr_mallocz(sizeof(*c));
+    buf = dr_malloc(XPL_CHUNK);
+    if (!c || !buf || !(c->xpl = dr_mallocz(sizeof(*c->xpl))) || !(p = XML_ParserCreate(NULL))) {
         if (c)
-            av_free(c->xpl);
-        av_free(c);
-        av_free(buf);
-        return AVERROR(ENOMEM);
+            dr_free(c->xpl);
+        dr_free(c);
+        dr_free(buf);
+        return DR_ERR(ENOMEM);
     }
     c->log          = logctx;
     c->xpl->doc.cls = HDDVD_XPL_DOCUMENT;
@@ -451,12 +451,12 @@ int ff_hddvd_xpl_parse(void *logctx, HDDVDReadFn read, void *opaque,
     XML_SetDefaultHandlerExpand(p, default_handler);
 
     while (length > 0 && !c->nomem) {
-        int n = FFMIN(length, XPL_CHUNK);
+        int n = DR_MIN(length, XPL_CHUNK);
         if (offset % 2048)
-            n = FFMIN(n, 2048 - offset % 2048);
+            n = DR_MIN(n, 2048 - offset % 2048);
         if ((ret = read(opaque, offset, buf, n)) < 0) {
-            av_log(logctx, AV_LOG_ERROR, "XPL: cannot read %d bytes at %"PRId64": %s\n",
-                   n, offset, av_err2str(ret));
+            dr_vlog(logctx, DR_VLOG_ERROR, "XPL: cannot read %d bytes at %"PRId64": %s\n",
+                   n, offset, dr_err_text(ret));
             goto done;
         }
         if (XML_Parse(p, (const char *)buf, n, 0) != XML_STATUS_OK) {
@@ -470,14 +470,14 @@ int ff_hddvd_xpl_parse(void *logctx, HDDVDReadFn read, void *opaque,
         ret = xml_error(logctx, p);
 done:
     XML_ParserFree(p);
-    av_free(buf);
+    dr_free(buf);
     if (ret >= 0 && c->nomem)
-        ret = AVERROR(ENOMEM);
+        ret = DR_ERR(ENOMEM);
     if (ret < 0)
         ff_hddvd_xpl_free(&c->xpl);
     else
         *out = c->xpl;
-    av_free(c);
+    dr_free(c);
     return ret < 0 ? ret : 0;
 }
 
@@ -502,26 +502,26 @@ static int load_one(void *logctx, FileReader *r, const char *path, HDDVDXpl **ou
     int ret;
 
     if ((ret = file_read(r, 0, h, 4)) < 0) {
-        av_log(logctx, AV_LOG_WARNING, "%s: cannot read its first bytes; playlist left out\n", path);
+        dr_vlog(logctx, DR_VLOG_WARNING, "%s: cannot read its first bytes; playlist left out\n", path);
         return ret;
     }
     if (!memcmp(h, "AACS", 4)) {
         if ((ret = file_read(r, 0, h, 11)) < 0) {
-            av_log(logctx, AV_LOG_WARNING, "%s: cannot read its AACS header; playlist left out\n", path);
+            dr_vlog(logctx, DR_VLOG_WARNING, "%s: cannot read its AACS header; playlist left out\n", path);
             return ret;
         }
         if (h[4] != 0x02 && h[4] != 0x12 && h[4] != 0x21) {
-            av_log(logctx, AV_LOG_WARNING, "%s: AACS header type 0x%02x (0x02, 0x12, 0x21); "
+            dr_vlog(logctx, DR_VLOG_WARNING, "%s: AACS header type 0x%02x (0x02, 0x12, 0x21); "
                    "playlist left out\n", path, h[4]);
-            return AVERROR_INVALIDDATA;
+            return DR_ERR_INVALID;
         }
         offset = XPL_AACS_OFFSET;
-        length = AV_RB32(h + 7);
-        av_log(logctx, AV_LOG_VERBOSE, "%s: AACS header type 0x%02x, %"PRId64" bytes of XML at %"PRId64"\n",
+        length = dr_rb32(h + 7);
+        dr_vlog(logctx, DR_VLOG_VERBOSE, "%s: AACS header type 0x%02x, %"PRId64" bytes of XML at %"PRId64"\n",
                path, h[4], length, offset);
     }
-    if ((ret = ff_hddvd_xpl_parse(logctx, file_read, r, offset, length, out)) < 0 && ret != AVERROR(ENOMEM))
-        av_log(logctx, AV_LOG_WARNING, "%s: playlist left out\n", path);
+    if ((ret = ff_hddvd_xpl_parse(logctx, file_read, r, offset, length, out)) < 0 && ret != DR_ERR(ENOMEM))
+        dr_vlog(logctx, DR_VLOG_WARNING, "%s: playlist left out\n", path);
     return ret;
 }
 
@@ -533,72 +533,69 @@ int ff_hddvd_xpl_load(void *logctx, DiscIOFS *fs, HDDVDXpl ***out, int *nb_out)
     *out = NULL;
     *nb_out = 0;
     for (int i = 0; i < HDDVD_XPL_MAX_FILES; i++) {
-        FileReader r = { fs };
+        FileReader r = { fs, NULL };
         HDDVDXpl *x = NULL;
         char path[32];
 
         snprintf(path, sizeof(path), "/ADV_OBJ/VPLST%03d.XPL", i);
         if ((ret = fs->ops->open_file(fs, path, &r.file)) < 0) {
-            if (ret != AVERROR(ENOENT))
-                av_log(logctx, AV_LOG_WARNING, "%s: cannot open it (%s); no further playlists read\n",
-                       path, av_err2str(ret));
+            if (ret != DR_ERR(ENOENT))
+                dr_vlog(logctx, DR_VLOG_WARNING, "%s: cannot open it (%s); no further playlists read\n",
+                       path, dr_err_text(ret));
             break;
         }
         ret = load_one(logctx, &r, path, &x);
         ff_discio_file_free(&r.file);
-        if (ret == AVERROR(ENOMEM))
+        if (ret == DR_ERR(ENOMEM))
             goto fail;
         if (ret < 0)
             continue;
         x->file = i;
-        if ((ret = av_dynarray_add_nofree(&xpls, &nb, x)) < 0) {
+        if ((ret = dr_array_add_ptr(&xpls, &nb, x)) < 0) {
             ff_hddvd_xpl_free(&x);
             goto fail;
         }
-        av_log(logctx, AV_LOG_VERBOSE, "%s: playlist %d\n", path, nb - 1);
+        dr_vlog(logctx, DR_VLOG_VERBOSE, "%s: playlist %d\n", path, nb - 1);
     }
     if (!nb) {
-        av_log(logctx, AV_LOG_ERROR, "No playlist (/ADV_OBJ/VPLST000.XPL ...) could be read\n");
-        return AVERROR_INVALIDDATA;
+        dr_vlog(logctx, DR_VLOG_ERROR, "No playlist (/ADV_OBJ/VPLST000.XPL ...) could be read\n");
+        return DR_ERR_INVALID;
     }
     *out = xpls;
     *nb_out = nb;
     return 0;
 fail:
     ff_hddvd_xpl_free_all(&xpls, nb);
-    return AVERROR(ENOMEM);
+    return DR_ERR(ENOMEM);
 }
 
 /* ---- dump ---- */
 
-static void dump_node(AVBPrint *bp, const HDDVDXplNode *n, int depth)
+static void dump_node(DrStr *bp, const HDDVDXplNode *n, int depth)
 {
     const AttrDef *a = classes[n->cls].attrs;
 
-    av_bprintf(bp, "%*s%s", 2 * depth, "", classes[n->cls].name);
+    dr_str_catf(bp, "%*s%s", 2 * depth, "", classes[n->cls].name);
     for (int i = 0; a[i].name; i++) {
         if (a[i].type != STR)
-            av_bprintf(bp, " %s=%"PRIu32, a[i].name, n->num[i]);
+            dr_str_catf(bp, " %s=%"PRIu32, a[i].name, n->num[i]);
         else if (n->str[i])
-            av_bprintf(bp, " %s=\"%s\"", a[i].name, n->str[i]);
+            dr_str_catf(bp, " %s=\"%s\"", a[i].name, n->str[i]);
         else
-            av_bprintf(bp, " %s=(null)", a[i].name);
+            dr_str_catf(bp, " %s=(null)", a[i].name);
     }
     if (n->text)
-        av_bprintf(bp, " text=\"%s\"", n->text);
-    av_bprintf(bp, "\n");
+        dr_str_catf(bp, " text=\"%s\"", n->text);
+    dr_str_catf(bp, "\n");
     for (int k = 0; k < n->nb_kids; k++)
         dump_node(bp, n->kids[k], depth + 1);
 }
 
 char *ff_hddvd_xpl_dump(const HDDVDXpl *x)
 {
-    AVBPrint bp;
-    char *s;
+    DrStr bp;
 
-    av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
+    dr_str_init(&bp);
     dump_node(&bp, &x->root, 0);
-    if (av_bprint_finalize(&bp, &s) < 0)
-        return NULL;
-    return s;
+    return dr_str_take(&bp, 1);
 }

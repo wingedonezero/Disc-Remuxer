@@ -35,16 +35,16 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "libavutil/error.h"
-#include "libavutil/intreadwrite.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
+#include "base/err.h"
+#include "base/bytes.h"
+#include "base/vlog.h"
+#include "base/mem.h"
 
 #include "hddvd_internal.h"
 
-#define CHECK_PASS(...) av_log(logctx, AV_LOG_DEBUG, "VTI check " __VA_ARGS__)
+#define CHECK_PASS(...) dr_vlog(logctx, DR_VLOG_DEBUG, "VTI check " __VA_ARGS__)
 
-static int fail(void *logctx, const char *fmt, ...) av_printf_format(2, 3);
+static int fail(void *logctx, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
 static int fail(void *logctx, const char *fmt, ...)
 {
@@ -54,8 +54,8 @@ static int fail(void *logctx, const char *fmt, ...)
     va_start(vl, fmt);
     vsnprintf(msg, sizeof(msg), fmt, vl);
     va_end(vl);
-    av_log(logctx, AV_LOG_ERROR, "VTI check %s: FAIL; the title set information is not usable\n", msg);
-    return AVERROR_INVALIDDATA;
+    dr_vlog(logctx, DR_VLOG_ERROR, "VTI check %s: FAIL; the title set information is not usable\n", msg);
+    return DR_ERR_INVALID;
 }
 
 static int read_at(void *logctx, HDDVDReadFn read, void *opaque, int64_t pos,
@@ -63,8 +63,8 @@ static int read_at(void *logctx, HDDVDReadFn read, void *opaque, int64_t pos,
 {
     int ret = read(opaque, pos, buf, len);
     if (ret < 0)
-        av_log(logctx, AV_LOG_ERROR, "VTI: cannot read %s (%d bytes at %"PRId64"): %s\n",
-               what, len, pos, av_err2str(ret));
+        dr_vlog(logctx, DR_VLOG_ERROR, "VTI: cannot read %s (%d bytes at %"PRId64"): %s\n",
+               what, len, pos, dr_err_text(ret));
     return ret;
 }
 
@@ -75,25 +75,25 @@ static int parse_attrs(void *logctx, HDDVDReadFn read, void *opaque, int64_t tab
 
     if ((ret = read_at(logctx, read, opaque, table, head, sizeof(head), "the attribute table")) < 0)
         return ret;
-    n = AV_RB16(head);
+    n = dr_rb16(head);
     if (n == 0 || n > HDDVD_VTI_MAX_ATTRS)
         return fail(logctx, "attribute record count %d (1..%d)", n, HDDVD_VTI_MAX_ATTRS);
     CHECK_PASS("attribute record count %d: PASS\n", n);
 
-    vti->attrs = av_calloc(n, sizeof(*vti->attrs));
+    vti->attrs = dr_calloc(n, sizeof(*vti->attrs));
     if (!vti->attrs)
-        return AVERROR(ENOMEM);
+        return DR_ERR(ENOMEM);
 
     for (int i = 0; i < n; i++) {
         HDDVDEvobAttr *a = &vti->attrs[i];
         uint8_t ofs[4];
 
         if ((ret = read_at(logctx, read, opaque, table + 8 + 4 * i, ofs, 4, "an attribute record offset")) < 0 ||
-            (ret = read_at(logctx, read, opaque, table + AV_RB32(ofs), rec, sizeof(rec), "an attribute record")) < 0)
+            (ret = read_at(logctx, read, opaque, table + dr_rb32(ofs), rec, sizeof(rec), "an attribute record")) < 0)
             return ret;
         memcpy(a->raw, rec, sizeof(a->raw));
-        a->nb_audio  = AV_RB16(rec + 0x0e);
-        a->nb_subpic = AV_RB16(rec + 0xe4);
+        a->nb_audio  = dr_rb16(rec + 0x0e);
+        a->nb_subpic = dr_rb16(rec + 0xe4);
         if (a->nb_audio > HDDVD_VTI_MAX_AUDIO)
             return fail(logctx, "attribute record %d: audio stream count %d (0..%d)",
                         i + 1, a->nb_audio, HDDVD_VTI_MAX_AUDIO);
@@ -101,9 +101,9 @@ static int parse_attrs(void *logctx, HDDVDReadFn read, void *opaque, int64_t tab
             return fail(logctx, "attribute record %d: sub-picture stream count %d (0..%d)",
                         i + 1, a->nb_subpic, HDDVD_VTI_MAX_SUBPIC);
         for (int j = 0; j < 32; j++)
-            a->words[j] = AV_RB32(rec + HDDVD_VTI_ATTR_KEPT + 4 * j);
+            a->words[j] = dr_rb32(rec + HDDVD_VTI_ATTR_KEPT + 4 * j);
         CHECK_PASS("attribute record %d at +0x%"PRIx32": %d audio, %d sub-picture streams: PASS\n",
-                   i + 1, AV_RB32(ofs), a->nb_audio, a->nb_subpic);
+                   i + 1, dr_rb32(ofs), a->nb_audio, a->nb_subpic);
         vti->nb_attrs = i + 1;
     }
     return 0;
@@ -117,7 +117,7 @@ static int parse_evobs(void *logctx, HDDVDReadFn read, void *opaque, int64_t tab
 
     if ((ret = read_at(logctx, read, opaque, table, head, sizeof(head), "the EVOB table")) < 0)
         return ret;
-    m = AV_RB32(head);
+    m = dr_rb32(head);
     if (m > HDDVD_VTI_MAX_EVOBS)
         return fail(logctx, "EVOB record count %"PRIu32" (0..%d)", m, HDDVD_VTI_MAX_EVOBS);
     CHECK_PASS("EVOB record count %"PRIu32": PASS\n", m);
@@ -129,46 +129,46 @@ static int parse_evobs(void *logctx, HDDVDReadFn read, void *opaque, int64_t tab
         char *dot;
 
         if ((ret = read_at(logctx, read, opaque, table + 8 + 4 * (int64_t)i, ofs, 4, "an EVOB record offset")) < 0 ||
-            (ret = read_at(logctx, read, opaque, table + AV_RB32(ofs), r, sizeof(r), "an EVOB record")) < 0)
+            (ret = read_at(logctx, read, opaque, table + dr_rb32(ofs), r, sizeof(r), "an EVOB record")) < 0)
             return ret;
-        e = av_mallocz(sizeof(*e));
+        e = dr_mallocz(sizeof(*e));
         if (!e)
-            return AVERROR(ENOMEM);
+            return DR_ERR(ENOMEM);
         memcpy(e->raw, r, sizeof(r));
         memcpy(e->name, r + 2, 255);           /* 255 bytes, cut there without a NUL */
         e->name[255] = 0;
         memcpy(e->base, e->name, sizeof(e->base));
         if ((dot = strrchr(e->base, '.')))
             *dot = 0;
-        attr         = AV_RB32(r + 0x106);
-        e->start_ptm = AV_RB32(r + 0x10a);
-        e->end_ptm   = AV_RB32(r + 0x10e);
-        e->sectors   = AV_RB32(r + 0x112);
-        e->slot      = AV_RB16(r + 0x116);
-        if (attr == 0 || attr > vti->nb_attrs) {
+        attr         = dr_rb32(r + 0x106);
+        e->start_ptm = dr_rb32(r + 0x10a);
+        e->end_ptm   = dr_rb32(r + 0x10e);
+        e->sectors   = dr_rb32(r + 0x112);
+        e->slot      = dr_rb16(r + 0x116);
+        if (attr == 0 || attr > (uint32_t)vti->nb_attrs) {
             ret = fail(logctx, "EVOB record %"PRIu32" (%s): attribute record %"PRIu32" (1..%d)",
                        i + 1, e->name, attr, vti->nb_attrs);
-            av_free(e);
+            dr_free(e);
             return ret;
         }
         e->attr = attr;
         if (e->slot == 0 || e->slot > HDDVD_VTI_MAX_EVOBS) {
             ret = fail(logctx, "EVOB record %"PRIu32" (%s): slot %d (1..%d)",
                        i + 1, e->name, e->slot, HDDVD_VTI_MAX_EVOBS);
-            av_free(e);
+            dr_free(e);
             return ret;
         }
         if (vti->evobs[e->slot - 1]) {
             ret = fail(logctx, "EVOB record %"PRIu32" (%s): slot %d already taken by %s",
                        i + 1, e->name, e->slot, vti->evobs[e->slot - 1]->name);
-            av_free(e);
+            dr_free(e);
             return ret;
         }
         vti->evobs[e->slot - 1] = e;
         vti->nb_evobs = i + 1;
         CHECK_PASS("EVOB record %"PRIu32" at +0x%"PRIx32": %s, attribute record %d, "
                    "time %"PRIu32"..%"PRIu32" (90 kHz), %"PRIu32" sectors, slot %d: PASS\n",
-                   i + 1, AV_RB32(ofs), e->name, e->attr, e->start_ptm, e->end_ptm, e->sectors, e->slot);
+                   i + 1, dr_rb32(ofs), e->name, e->attr, e->start_ptm, e->end_ptm, e->sectors, e->slot);
     }
     return 0;
 }
@@ -187,17 +187,17 @@ int ff_hddvd_vti_parse(void *logctx, HDDVDReadFn read, void *opaque, HDDVDVTI **
         return fail(logctx, "identifier \"%.12s\" (\"ADVANCED-VTS\")", (const char *)hdr);
     CHECK_PASS("identifier ADVANCED-VTS: PASS\n");
 
-    vti = av_mallocz(sizeof(*vti));
+    vti = dr_mallocz(sizeof(*vti));
     if (!vti)
-        return AVERROR(ENOMEM);
-    attrs = (int64_t)AV_RB32(hdr + 0xb8) * 2048;
-    evobs = (int64_t)AV_RB32(hdr + 0xbc) * 2048;
+        return DR_ERR(ENOMEM);
+    attrs = (int64_t)dr_rb32(hdr + 0xb8) * 2048;
+    evobs = (int64_t)dr_rb32(hdr + 0xbc) * 2048;
     if ((ret = parse_attrs(logctx, read, opaque, attrs, vti)) < 0 ||
         (ret = parse_evobs(logctx, read, opaque, evobs, vti)) < 0) {
         ff_hddvd_vti_free(&vti);
         return ret;
     }
-    av_log(logctx, AV_LOG_VERBOSE, "VTI: %d attribute records, %d EVOB records\n",
+    dr_vlog(logctx, DR_VLOG_VERBOSE, "VTI: %d attribute records, %d EVOB records\n",
            vti->nb_attrs, vti->nb_evobs);
     *out = vti;
     return 0;
@@ -217,8 +217,8 @@ static int file_read(void *opaque, int64_t pos, uint8_t *buf, int len)
 int ff_hddvd_vti_open(void *logctx, DiscIOFS *fs, HDDVDVTI **out)
 {
     static const char *const folders[] = { "HVDVD_TS", "HDDVD_TS" };
-    FileReader r = { fs };
-    int ret = AVERROR(ENOENT);
+    FileReader r = { fs, NULL };
+    int ret = DR_ERR(ENOENT);
 
     *out = NULL;
     for (int i = 0; i < 2; i++) {
@@ -226,22 +226,22 @@ int ff_hddvd_vti_open(void *logctx, DiscIOFS *fs, HDDVDVTI **out)
 
         snprintf(path, sizeof(path), "/%s/HVA00001.VTI", folders[i]);
         ret = fs->ops->open_file(fs, path, &r.file);
-        if (ret == AVERROR(ENOENT)) {
-            av_log(logctx, AV_LOG_DEBUG, "VTI: no %s\n", path);
+        if (ret == DR_ERR(ENOENT)) {
+            dr_vlog(logctx, DR_VLOG_DEBUG, "VTI: no %s\n", path);
             continue;
         }
         if (ret < 0) {
-            av_log(logctx, AV_LOG_ERROR, "VTI: cannot open %s: %s\n", path, av_err2str(ret));
+            dr_vlog(logctx, DR_VLOG_ERROR, "VTI: cannot open %s: %s\n", path, dr_err_text(ret));
             return ret;
         }
-        av_log(logctx, AV_LOG_VERBOSE, "VTI: %s, %"PRId64" bytes\n", path, r.file->size);
+        dr_vlog(logctx, DR_VLOG_VERBOSE, "VTI: %s, %"PRId64" bytes\n", path, r.file->size);
         ret = ff_hddvd_vti_parse(logctx, file_read, &r, out);
         ff_discio_file_free(&r.file);
         if (ret >= 0)
             memcpy((*out)->folder, folders[i], sizeof((*out)->folder));
         return ret;
     }
-    av_log(logctx, AV_LOG_ERROR, "VTI: neither /HVDVD_TS/HVA00001.VTI nor /HDDVD_TS/HVA00001.VTI exists\n");
+    dr_vlog(logctx, DR_VLOG_ERROR, "VTI: neither /HVDVD_TS/HVA00001.VTI nor /HDDVD_TS/HVA00001.VTI exists\n");
     return ret;
 }
 
@@ -252,7 +252,7 @@ void ff_hddvd_vti_free(HDDVDVTI **pvti)
     if (!vti)
         return;
     for (int i = 0; i < HDDVD_VTI_MAX_EVOBS; i++)
-        av_free(vti->evobs[i]);
-    av_free(vti->attrs);
-    av_freep(pvti);
+        dr_free(vti->evobs[i]);
+    dr_free(vti->attrs);
+    dr_freep(pvti);
 }

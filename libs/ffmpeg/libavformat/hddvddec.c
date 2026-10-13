@@ -38,7 +38,7 @@
 #include "discinfo.h"
 #include "io/discio.h"
 #include "timeline/disctl.h"
-#include "hddvd_internal.h"
+#include "disc/hddvd/hddvd_internal.h"
 #include "internal.h"
 
 #define HDDVD_BLOCK 2048

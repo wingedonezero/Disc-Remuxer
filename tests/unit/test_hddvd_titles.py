@@ -20,7 +20,7 @@ from helpers.disc import env_or_skip
 from helpers.hddvd import plan, take_text
 from synth.hddvd import clip, evob, image, playlist, tmap, vti
 
-INVALIDDATA = -0x41444E49
+INVALIDDATA = lib.DR_ERR_INVALID
 
 
 def lang(code):
