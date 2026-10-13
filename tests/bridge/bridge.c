@@ -19,7 +19,6 @@
 #include "libavcodec/avcodec.h"
 #include "libavcodec/codec_desc.h"
 #include "libavformat/avformat.h"
-#include "libavformat/disctl_ffmpeg.h"
 #include "libavformat/demux.h"
 #include "libavutil/aes.h"
 #include "libavutil/bprint.h"
@@ -28,6 +27,7 @@
 
 #include "libavformat/bluray_internal.h"
 #include "libavformat/disclang.h"
+#include "analyze/analyze.h"
 #include "timeline/disctl.h"
 #include "libavformat/dvd_internal.h"
 #include "libavformat/hddvd_internal.h"
@@ -91,7 +91,7 @@ static void tb_module_vlog(void *logctx, int level, const char *fmt, va_list vl)
 static void tb_log_install(tb_log_sink sink, int max_level)
 {
     dr_vlog_set(tb_module_vlog);
-    ff_disctl_use_ffmpeg_host();
+    dr_analyze_use();
     pthread_mutex_lock(&log_lock);
     log_sink = sink;
     log_max_level = max_level;

@@ -34,7 +34,8 @@
 #include "base/log.h"
 #include "base/msg.h"
 #include "names.h"
-#include "check.h"
+#include "analyze/details.h"
+#include "log_ffmpeg.h"
 #include "engine.h"
 #include "base/settings.h"
 #include "writer.h"
@@ -161,9 +162,8 @@ typedef struct EsOut {
     int           opened;           /* the file name is chosen */
     int           profile;          /* the codec profile the name was chosen with (e.g. TrueHD + Atmos) */
     char            layout[64];     /* audio: the channel layout in the name ("" unknown) */
-    AVCodecContext *avctx;          /* audio: FFmpeg's decoder, for the channel layout */
-    AVFrame        *frame;
     int             layout_done;    /* a frame was decoded (or decoding gave up) */
+    DrLayoutProbe  *lp;             /* the decoder that gives the layout (analyze/details.h) */
     AVPacket    **hold;
     int           nb_hold;
     DetailsProbe *probe;            /* video / audio: the disc stream's details for the end check */
@@ -179,7 +179,7 @@ typedef struct EsOut {
 static void end_check(const AVStream *st, EsOut *o)
 {
     Details disc, file;
-    int n;
+    int n, ret_file;
 
     if (!o->probe || !o->opened)
         return;
@@ -189,7 +189,10 @@ static void end_check(const AVStream *st, EsOut *o)
         snprintf(o->problems, sizeof(o->problems), "the disc stream's first frame could not be decoded");
         return;
     }
-    if (details_of_file(o->name, st->codecpar->codec_type, &file) < 0 || !file.valid) {
+    log_ffmpeg_detail(1);
+    ret_file = details_of_file(o->name, st->codecpar->codec_type, &file);
+    log_ffmpeg_detail(0);
+    if (ret_file < 0 || !file.valid) {
         o->checked = -1;
         snprintf(o->problems, sizeof(o->problems), "the written file cannot be read back");
         return;
@@ -390,7 +393,7 @@ static int es_open(const AVFormatContext *ctx, const AVStream *st, EsOut *o, con
     const AVCodecParameters *par = st->codecpar;
     char layout[64] = "", delay[32] = "", roles[64] = "";
     int audio = par->codec_type == AVMEDIA_TYPE_AUDIO;
-    int profile = o->avctx ? o->avctx->profile : par->profile;
+    int profile = dr_layout_probe_profile(o->lp, par->profile);
 
     const AVDictionaryEntry *eye = av_dict_get(st->metadata, "eye", NULL, 0);
     const AVDictionaryEntry *dv = av_dict_get(st->metadata, "dolby_vision", NULL, 0);
@@ -411,7 +414,7 @@ static int es_open(const AVFormatContext *ctx, const AVStream *st, EsOut *o, con
     }
     if (audio) {
         const AVChannelLayout *cl = par->ch_layout.nb_channels ? &par->ch_layout :
-                                    o->frame && o->frame->ch_layout.nb_channels ? &o->frame->ch_layout : NULL;
+                                    dr_layout_probe_layout(o->lp);
         if (cl) {
             layout[0] = '_';
             av_channel_layout_describe(cl, layout + 1, sizeof(layout) - 1);
@@ -800,16 +803,13 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
                          st->codecpar->codec_id == AV_CODEC_ID_PCM_BLURAY;
         if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && !st->codecpar->ch_layout.nb_channels &&
             !o->probe_late) {
-            const AVCodec *dec = avcodec_find_decoder(st->codecpar->codec_id);
             if (!(o->hold = av_calloc(HOLD_MAX, sizeof(*o->hold)))) {
                 ret = AVERROR(ENOMEM);
                 goto end;
             }
-            if (!dec || !(o->avctx = avcodec_alloc_context3(dec)) || !(o->frame = av_frame_alloc()) ||
-                avcodec_open2(o->avctx, dec, NULL) < 0) {
+            if (dr_layout_probe_open(&o->lp, st->codecpar) < 0) {
                 log_text(LOG_DETAIL, "Track %d: no decoder for %s: its channel layout is not known", track_no(st),
                          avcodec_get_name(st->codecpar->codec_id));
-                avcodec_free_context(&o->avctx);
                 o->layout_done = 1;
             }
         }
@@ -859,8 +859,7 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
             o->st.end_ms = FFMAX(o->st.end_ms, end);
         }
         if (!o->opened && o->hold) {
-            if (!o->layout_done && avcodec_send_packet(o->avctx, pkt) >= 0 &&
-                avcodec_receive_frame(o->avctx, o->frame) >= 0)
+            if (!o->layout_done && dr_layout_probe_packet(o->lp, pkt))
                 o->layout_done = 1;
             if (!(o->hold[o->nb_hold++] = av_packet_clone(pkt))) {
                 ret = AVERROR(ENOMEM);
@@ -1073,8 +1072,7 @@ end:
         for (int k = 0; k < o->nb_hold; k++)
             av_packet_free(&o->hold[k]);
         av_free(o->hold);
-        av_frame_free(&o->frame);
-        avcodec_free_context(&o->avctx);
+        dr_layout_probe_close(&o->lp);
         details_probe_close(&o->probe);
         av_free(o->name);
     }

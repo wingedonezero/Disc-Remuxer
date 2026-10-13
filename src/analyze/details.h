@@ -1,5 +1,5 @@
 /*
- * disc-remuxer: the end check of a written stream file. The stream details
+ * The details probe and the end check of a written stream file. The stream details
  * (MediaInfo-like: format, profile, size, aspect, frame rate, scan, colour,
  * HDR; audio format, channels, layout, rate, depth, ...) are read with
  * FFmpeg's decoders once from the disc's stream while the title is ripped
@@ -7,8 +7,8 @@
  * gives must be in the file with the same value.
  */
 
-#ifndef DISC_REMUXER_CHECK_H
-#define DISC_REMUXER_CHECK_H
+#ifndef DISC_ANALYZE_DETAILS_H
+#define DISC_ANALYZE_DETAILS_H
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -42,5 +42,20 @@ int  details_of_file(const char *path, enum AVMediaType type, Details *d);
  * "name: disc -> file" items, "; " between them, into diff. Returns their
  * number. */
 int  details_compare(const Details *disc, const Details *file, char *diff, size_t size);
+
+/* ---- the channel-layout probe (the writer's file names) ---- */
+
+typedef struct DrLayoutProbe DrLayoutProbe;
+
+/* A decoder over an audio stream's packets until its first frame gives the
+ * channel layout: 0 opened, < 0 no decoder (or no memory). */
+int  dr_layout_probe_open(DrLayoutProbe **p, const AVCodecParameters *par);
+/* One packet in: 1 when a frame was decoded (the layout is known). */
+int  dr_layout_probe_packet(DrLayoutProbe *p, const AVPacket *pkt);
+/* The decoded frame's channel layout, NULL before one. */
+const AVChannelLayout *dr_layout_probe_layout(const DrLayoutProbe *p);
+/* The profile the decoder found, or fallback. */
+int  dr_layout_probe_profile(const DrLayoutProbe *p, int fallback);
+void dr_layout_probe_close(DrLayoutProbe **p);
 
 #endif

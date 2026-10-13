@@ -62,6 +62,7 @@ include mk/dvd.mk
 include mk/expat.mk
 include mk/aacs.mk
 include mk/ffmpeg.mk
+include mk/analyze.mk
 include mk/ccextractor.mk
 include mk/tool.mk
 include mk/gui.mk

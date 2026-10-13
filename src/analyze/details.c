@@ -1,5 +1,7 @@
 /*
- * disc-remuxer: the end check of a written stream file (check.h).
+ * The details probe and the end check of a written stream file
+ * (analyze/details.h): the processing library's decoders answering
+ * questions on copies of data.
  */
 
 #include <stdio.h>
@@ -14,9 +16,7 @@
 #include <libavutil/pixdesc.h>
 #include <libavutil/stereo3d.h>
 
-#include "check.h"
-#include "base/log.h"
-#include "log_ffmpeg.h"
+#include "analyze/details.h"
 
 #define PROBE_PACKETS 600   /* packets a decoder gets to give its first frame */
 
@@ -276,7 +276,6 @@ int details_of_file(const char *path, enum AVMediaType type, Details *d)
     /* room for enough pictures of a 2160p stream to measure its rate (the
      * default 5 MB holds a few dozen) */
     av_dict_set(&opts, "probesize", "67108864", 0);
-    log_ffmpeg_detail(1);
     ret = avformat_open_input(&fc, path, NULL, &opts);
     av_dict_free(&opts);
     if (ret < 0 || (ret = avformat_find_stream_info(fc, NULL)) < 0)
@@ -304,7 +303,6 @@ end:
     details_probe_close(&p);
     av_packet_free(&pkt);
     avformat_close_input(&fc);
-    log_ffmpeg_detail(0);
     return ret;
 }
 
@@ -327,4 +325,60 @@ int details_compare(const Details *disc, const Details *file, char *diff, size_t
     av_strlcpy(diff, b.str, size);
     av_bprint_finalize(&b, NULL);
     return n;
+}
+
+/* ---- the channel-layout probe ---- */
+
+struct DrLayoutProbe {
+    AVCodecContext *avctx;
+    AVFrame        *frame;
+    int             done;
+};
+
+int dr_layout_probe_open(DrLayoutProbe **pp, const AVCodecParameters *par)
+{
+    const AVCodec *dec = avcodec_find_decoder(par->codec_id);
+    DrLayoutProbe *p;
+
+    *pp = NULL;
+    if (!dec)
+        return AVERROR_DECODER_NOT_FOUND;
+    if (!(p = av_mallocz(sizeof(*p))))
+        return AVERROR(ENOMEM);
+    if (!(p->avctx = avcodec_alloc_context3(dec)) || !(p->frame = av_frame_alloc()) ||
+        avcodec_open2(p->avctx, dec, NULL) < 0) {
+        dr_layout_probe_close(&p);
+        return AVERROR(ENOSYS);
+    }
+    *pp = p;
+    return 0;
+}
+
+int dr_layout_probe_packet(DrLayoutProbe *p, const AVPacket *pkt)
+{
+    if (!p->done && avcodec_send_packet(p->avctx, pkt) >= 0 &&
+        avcodec_receive_frame(p->avctx, p->frame) >= 0)
+        p->done = 1;
+    return p->done;
+}
+
+const AVChannelLayout *dr_layout_probe_layout(const DrLayoutProbe *p)
+{
+    return p && p->done && p->frame->ch_layout.nb_channels ? &p->frame->ch_layout : NULL;
+}
+
+int dr_layout_probe_profile(const DrLayoutProbe *p, int fallback)
+{
+    return p && p->avctx ? p->avctx->profile : fallback;
+}
+
+void dr_layout_probe_close(DrLayoutProbe **pp)
+{
+    DrLayoutProbe *p = *pp;
+
+    if (!p)
+        return;
+    av_frame_free(&p->frame);
+    avcodec_free_context(&p->avctx);
+    av_freep(pp);
 }

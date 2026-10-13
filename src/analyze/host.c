@@ -1,10 +1,11 @@
 /*
- * The timeline's host (disctl.h DRTimelineHost): what the title timeline
- * borrows from FFmpeg until src/analyze takes it over — the stock frame
- * parser for the codecs without a rule of their own (MPEG video, E-AC-3),
- * the LATM stream header (one decoded frame) and the TrueHD / MLP
- * end-of-stream decode. The program and the test bridge register it with
- * ff_disctl_use_ffmpeg_host().
+ * The title timeline's host (timeline/disctl.h DRTimelineHost): the stock
+ * frame parser for the codecs without a rule of their own (MPEG video,
+ * E-AC-3), the LATM stream header (one decoded frame) and the TrueHD / MLP
+ * end-of-stream decode — the processing library answering questions on
+ * copies of data. The program and the test bridge register it with
+ * dr_analyze_use(). Here too: the build-time check that the timeline's
+ * codec ids are the library's values.
  *
  * This file is part of FFmpeg.
  *
@@ -31,9 +32,8 @@
 #include "base/err.h"
 #include "base/vlog.h"
 
-#include "avformat.h"
+#include "analyze/analyze.h"
 #include "timeline/disctl.h"
-#include "disctl_ffmpeg.h"
 
 /* The timeline's codec ids are the library's values (disctl.h). */
 #define SAME(a, b) _Static_assert((int)(a) == (int)(b), #a)
@@ -187,7 +187,7 @@ static const DRTimelineHost host = {
     .mlp_last_au_samples = host_mlp_last_au_samples,
 };
 
-void ff_disctl_use_ffmpeg_host(void)
+void dr_analyze_use(void)
 {
     ff_disctl_set_host(&host);
 }

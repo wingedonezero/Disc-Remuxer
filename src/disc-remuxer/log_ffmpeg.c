@@ -8,7 +8,7 @@
 #include <stdio.h>
 
 #include <libavutil/log.h>
-#include "libavformat/disctl_ffmpeg.h"
+#include "analyze/analyze.h"
 
 #include "base/log.h"
 #include "base/vlog.h"
@@ -89,5 +89,5 @@ void log_ffmpeg_install(void)
     av_log_set_level(AV_LOG_TRACE);
     av_log_set_callback(av_callback);
     dr_vlog_set(module_vlog);
-    ff_disctl_use_ffmpeg_host();
+    dr_analyze_use();
 }
