@@ -22,15 +22,11 @@
 #include "config_components.h"
 
 #include "libavutil/channel_layout.h"
-#include "libavutil/error.h"
-#include "libavutil/log.h"
 #include "libavutil/mem.h"
-#include "libavutil/opt.h"
 #include "avformat.h"
 #include "avio_internal.h"
 #include "demux.h"
 #include "internal.h"
-#include "mux/ps_disc.h"
 #include "mpeg.h"
 
 /*********************************************/
@@ -126,25 +122,13 @@ static int mpegps_probe(const AVProbeData *p)
     return score;
 }
 
-#define DISC_QUEUE 8             /* packets of one disc sector (two, or more with MPEG audio) */
-
 typedef struct MpegDemuxContext {
-    const AVClass *class;
     int32_t header_state;
     unsigned char psm_es_type[256];
     int sofdec;
     int dvd;
     int imkh_cctv;
     int raw_ac3;
-
-    /* disc sectors (option disc) */
-    int        disc;             /**< option: read one 2048-byte disc sector at a time, the disc reader's rules */
-    int        lpcm_header;      /**< option: the LPCM audio frame header's length, 3 or 5 */
-    int64_t    sector;           /**< sectors read */
-    AVPacket  *q[DISC_QUEUE];    /**< the current sector's packets, not given out yet */
-    int        q_head, q_n;
-    int        sticky;           /**< a failed sector: every later read returns this */
-    MpegPsDiscStats dstats;      /**< what was read */
 } MpegDemuxContext;
 
 static int mpegps_read_header(AVFormatContext *s)
@@ -155,8 +139,6 @@ static int mpegps_read_header(AVFormatContext *s)
 
     m->header_state = 0xff;
     s->ctx_flags   |= AVFMTCTX_NOHEADER;
-    if (m->disc)
-        return 0;
 
     avio_get_str(s->pb, 6, buffer, sizeof(buffer));
     if (!memcmp("IMKH", buffer, 4)) {
@@ -498,8 +480,6 @@ redo:
     return len;
 }
 
-static int disc_read_packet(AVFormatContext *s, AVPacket *pkt);
-
 static int mpegps_read_packet(AVFormatContext *s,
                               AVPacket *pkt)
 {
@@ -512,9 +492,6 @@ static int mpegps_read_packet(AVFormatContext *s,
     enum AVCodecID codec_id = AV_CODEC_ID_NONE;
     enum AVMediaType type;
     int64_t pts, dts, dummy_pos; // dummy_pos is needed for the index building to work
-
-    if (m->disc)
-        return disc_read_packet(s, pkt);
 
 redo:
     len = mpegps_read_pes_header(s, &dummy_pos, &startcode, &pts, &dts);
@@ -724,280 +701,14 @@ static int64_t mpegps_read_dts(AVFormatContext *s, int stream_index,
     return dts;
 }
 
-/* ---- Disc sectors (option disc): DVD-Video VOBs, HD DVD EVOBs ----
- * The stream is read one 2048-byte sector (one pack) at a time and its
- * packets with the rules of the reference's disc reader: an empty sector has
- * none; a pack holds at most two packets unless one is MPEG audio (else:
- * fail); bytes that are no packet start after a video or private stream 1
- * packet drop the rest of the sector (elsewhere: fail); a first packet
- * running past the sector leaves the sector out (short header) or fails; a
- * PTS whose marker bits are wrong is no time; an LPCM packet shorter than its
- * audio frame header, or whose first access unit starts inside it, fails.
- *
- * Each packet's payload is a packet of the stream with the ids of the
- * reading above: video and MPEG audio 0x100 | stream_id, VC-1 0xFD00 |
- * stream_id_extension, private stream 1 the sub-stream id, after the
- * sub-stream header (sub-pictures: the id byte; audio: id, frame count,
- * first access unit pointer; TrueHD / MLP: 5 bytes). A sub-stream 0xA0-0xAF
- * is always linear PCM, its audio frame header kept in the payload (3 bytes
- * on DVD-Video, 5 on HD DVD: option lpcm_header) for the title timeline; the
- * reading above guesses MLP from that header's dynamic range byte and cuts
- * 6 more bytes, which ruins LPCM whose dynamic range is not 0x80. */
-
-/* The stream of a packet: FFmpeg's MPEG-PS ids and codecs; 0 when the
- * packet carries no stream (padding, private stream 2, system header,
- * sub-streams and stream ids no disc format uses). */
-static int disc_stream_of(const MpegPsDiscPacket *p, int *id, enum AVMediaType *type, enum AVCodecID *codec)
-{
-    int sid = p->key & 0xff;
-
-    if (sid == 0xbd) {
-        int sub = p->key >> 8;
-        *id   = sub;
-        *type = AVMEDIA_TYPE_AUDIO;
-        if (sub >= 0x20 && sub <= 0x3f) {
-            *type  = AVMEDIA_TYPE_SUBTITLE;
-            *codec = AV_CODEC_ID_DVD_SUBTITLE;
-        } else if (sub >= 0x80 && sub <= 0x87) {
-            *codec = AV_CODEC_ID_AC3;
-        } else if ((sub >= 0x88 && sub <= 0x8f) || (sub >= 0x98 && sub <= 0x9f)) {
-            *codec = AV_CODEC_ID_DTS;
-        } else if (sub >= 0xa0 && sub <= 0xaf) {
-            *codec = AV_CODEC_ID_PCM_DVD;
-        } else if (sub >= 0xb0 && sub <= 0xbf) {
-            *codec = AV_CODEC_ID_TRUEHD;
-        } else if (sub >= 0xc0 && sub <= 0xcf) {
-            *codec = AV_CODEC_ID_AC3;        /* AC-3 and E-AC-3 */
-        } else {
-            return 0;
-        }
-        return 1;
-    }
-    if (sid == 0xfd) {
-        int ext = p->key >> 8;
-        if (ext < 0x55 || ext > 0x5f)
-            return 0;
-        *id    = 0xfd00 | ext;
-        *type  = AVMEDIA_TYPE_VIDEO;
-        *codec = AV_CODEC_ID_VC1;
-        return 1;
-    }
-    if (p->key > 0xff)
-        return 0;
-    if (sid >= 0xe0 && sid <= 0xef) {
-        *id    = 0x100 | sid;
-        *type  = AVMEDIA_TYPE_VIDEO;
-        *codec = sid == 0xe2 ? AV_CODEC_ID_H264 : AV_CODEC_ID_MPEG2VIDEO;
-        return 1;
-    }
-    if (sid >= 0xc0 && sid <= 0xdf) {
-        *id    = 0x100 | sid;
-        *type  = AVMEDIA_TYPE_AUDIO;
-        *codec = AV_CODEC_ID_MP2;
-        return 1;
-    }
-    return 0;
-}
-
-typedef struct DiscSectorRead {
-    AVFormatContext *s;
-    int64_t          pos;        /* the sector's byte position */
-} DiscSectorRead;
-
-/* Bytes start..end of the sector as a packet of the stream. */
-static int disc_queue(MpegDemuxContext *c, const uint8_t *sec, int start, int end, int64_t pts, int64_t pos,
-                      int stream_index)
-{
-    AVPacket *pkt;
-    int ret;
-
-    if (c->q_n == DISC_QUEUE)
-        return AVERROR_BUG;
-    if (!(pkt = av_packet_alloc()))
-        return AVERROR(ENOMEM);
-    if ((ret = av_new_packet(pkt, end - start)) < 0) {
-        av_packet_free(&pkt);
-        return ret;
-    }
-    memcpy(pkt->data, sec + start, end - start);
-    pkt->pts          = pts;
-    pkt->dts          = AV_NOPTS_VALUE;
-    pkt->pos          = pos;
-    pkt->stream_index = stream_index;
-    c->q[(c->q_head + c->q_n++) % DISC_QUEUE] = pkt;
-    return 0;
-}
-
-static int disc_on_packet(void *opaque, const uint8_t *sec, const MpegPsDiscPacket *p)
-{
-    DiscSectorRead *r = opaque;
-    AVFormatContext *s = r->s;
-    MpegDemuxContext *c = s->priv_data;
-    enum AVMediaType type;
-    enum AVCodecID codec;
-    AVStream *st = NULL;
-    int id, start, end, ret;
-
-    end   = p->len ? FFMIN(p->at + p->len, MPEGPS_DISC_SECTOR) : MPEGPS_DISC_SECTOR;
-    if (!disc_stream_of(p, &id, &type, &codec)) {
-        /* private stream 2 and padding end the sector: their bytes are the rest of it */
-        int bytes = (p->key == 0xbf || p->key == 0xbe) ? MPEGPS_DISC_SECTOR - p->at : end - p->at;
-        if (p->key == 0xbf) {
-            c->dstats.nav++;
-            c->dstats.nav_bytes += bytes;
-        } else if (p->key == 0xbe) {
-            c->dstats.padding++;
-            c->dstats.padding_bytes += bytes;
-        } else if (p->key == 0xbb) {
-            c->dstats.system++;
-            c->dstats.system_bytes += bytes;
-        } else {
-            c->dstats.other++;
-            c->dstats.other_bytes += bytes;
-        }
-        return 0;
-    }
-    start = p->at + p->payload - p->extra;          /* LPCM: its audio frame header stays */
-    if (end <= start)
-        return 0;
-    for (int i = 0; i < s->nb_streams; i++)
-        if (s->streams[i]->id == id)
-            st = s->streams[i];
-    if (!st) {
-        if (!(st = avformat_new_stream(s, NULL)))
-            return AVERROR(ENOMEM);
-        st->id                   = id;
-        st->codecpar->codec_type = type;
-        st->codecpar->codec_id   = codec;
-        avpriv_set_pts_info(st, 33, 1, 90000);
-    }
-    if (st->discard >= AVDISCARD_ALL) {
-        c->dstats.discarded++;
-        c->dstats.discarded_bytes += end - p->at;
-        return 0;
-    }
-    if (p->pts_present && !p->pts_valid)
-        av_log(s, AV_LOG_WARNING, "Disc pack reader: sector %"PRId64", stream 0x%x: the PTS's marker bits are "
-               "wrong: the packet has no time\n", r->pos / MPEGPS_DISC_SECTOR, id);
-    /* a private stream 1 audio payload whose first access unit starts inside
-     * it: the bytes before it (the end of a frame that began earlier) and the
-     * bytes from it go on as two packets, the time with the second (the
-     * reader hands them to the frame rules apart); not LPCM, whose payload
-     * begins with its audio frame header */
-    if ((p->key & 0xff) == 0xbd && type == AVMEDIA_TYPE_AUDIO && !p->extra &&
-        p->first_au > 0 && start + p->first_au < end) {
-        if ((ret = disc_queue(c, sec, start, start + p->first_au, AV_NOPTS_VALUE, r->pos + p->at, st->index)) < 0)
-            return ret;
-        start += p->first_au;
-    }
-    return disc_queue(c, sec, start, end, p->pts_valid ? (int64_t)p->pts : AV_NOPTS_VALUE, r->pos + p->at,
-                      st->index);
-}
-
-static int disc_read_packet(AVFormatContext *s, AVPacket *pkt)
-{
-    MpegDemuxContext *c = s->priv_data;
-    uint8_t sec[MPEGPS_DISC_SECTOR];
-
-    for (;;) {
-        DiscSectorRead r = { s, avio_tell(s->pb) };
-        const char *why;
-        int n, at, ret;
-
-        if (c->q_n) {
-            AVPacket *q = c->q[c->q_head];
-            c->q_head = (c->q_head + 1) % DISC_QUEUE;
-            c->q_n--;
-            av_packet_move_ref(pkt, q);
-            av_packet_free(&q);
-            return 0;
-        }
-        if (c->sticky)
-            return c->sticky;
-        n = avio_read(s->pb, sec, MPEGPS_DISC_SECTOR);
-        if (n == AVERROR_EOF || n == 0)
-            return AVERROR_EOF;
-        if (n < 0)
-            return n;
-        if (n < MPEGPS_DISC_SECTOR) {
-            av_log(s, AV_LOG_ERROR, "Disc pack reader: the stream ends %d bytes into sector %"PRId64"\n", n,
-                   c->sector);
-            return c->sticky = AVERROR_INVALIDDATA;
-        }
-        ret = ff_mpegps_disc_sector(sec, c->lpcm_header == 5, disc_on_packet, &r, &why, &at);
-        c->sector++;
-        c->dstats.sectors++;
-        switch (ret) {
-        case MPEGPS_DISC_OK:
-            break;
-        case MPEGPS_DISC_EMPTY:
-            c->dstats.empty++;
-            break;
-        case MPEGPS_DISC_BAD:
-            c->dstats.bad++;
-            av_log(s, AV_LOG_WARNING, "Disc pack reader: sector %"PRId64": %s: left out\n", c->sector - 1, why);
-            break;
-        case MPEGPS_DISC_REST_DROPPED:
-            c->dstats.rest_dropped++;
-            c->dstats.rest_bytes += MPEGPS_DISC_SECTOR - at;
-            av_log(s, AV_LOG_WARNING, "Disc pack reader: sector %"PRId64": %s (byte %d): the rest of the sector "
-                   "is left out\n", c->sector - 1, why, at);
-            break;
-        case MPEGPS_DISC_FAIL:
-            av_log(s, AV_LOG_ERROR, "Disc pack reader: sector %"PRId64" (byte %d): %s\n", c->sector - 1, at, why);
-            return c->sticky = AVERROR_INVALIDDATA;
-        default:
-            if (ret < 0)
-                return c->sticky = ret;
-        }
-    }
-}
-
-void ff_mpegps_disc_stats(const AVFormatContext *s, MpegPsDiscStats *st)
-{
-    const MpegDemuxContext *c = s->priv_data;
-    *st = c->dstats;
-}
-
-static int mpegps_read_close(AVFormatContext *s)
-{
-    MpegDemuxContext *c = s->priv_data;
-
-    while (c->q_n) {
-        av_packet_free(&c->q[c->q_head]);
-        c->q_head = (c->q_head + 1) % DISC_QUEUE;
-        c->q_n--;
-    }
-    return 0;
-}
-
-#define OFFSET(x) offsetof(MpegDemuxContext, x)
-static const AVOption mpegps_options[] = {
-    { "disc", "read the stream as disc sectors (DVD-Video VOBs, HD DVD EVOBs): one 2048-byte pack at a time with "
-      "the disc reader's rules, raw payloads", OFFSET(disc), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1,
-      AV_OPT_FLAG_DECODING_PARAM },
-    { "lpcm_header", "disc sectors: length of the LPCM audio frame header (3 DVD-Video, 5 HD DVD)", OFFSET(lpcm_header),
-      AV_OPT_TYPE_INT, { .i64 = 3 }, 3, 5, AV_OPT_FLAG_DECODING_PARAM },
-    { NULL }
-};
-
-static const AVClass mpegps_class = {
-    .class_name = "mpeg demuxer",
-    .item_name  = av_default_item_name,
-    .option     = mpegps_options,
-    .version    = LIBAVUTIL_VERSION_INT,
-};
-
 const FFInputFormat ff_mpegps_demuxer = {
     .p.name         = "mpeg",
     .p.long_name    = NULL_IF_CONFIG_SMALL("MPEG-PS (MPEG-2 Program Stream)"),
     .p.flags        = AVFMT_SHOW_IDS | AVFMT_TS_DISCONT,
-    .p.priv_class   = &mpegps_class,
     .priv_data_size = sizeof(MpegDemuxContext),
     .read_probe     = mpegps_probe,
     .read_header    = mpegps_read_header,
     .read_packet    = mpegps_read_packet,
-    .read_close     = mpegps_read_close,
     .read_timestamp = mpegps_read_dts,
 };
 

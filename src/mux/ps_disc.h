@@ -63,8 +63,8 @@ int ff_mpegps_disc_sector(const uint8_t *sec, int lpcm5, MpegPsDiscPacketCb cb, 
 
 
 /** What a program-stream disc reading counts: the sectors, and the packets
- *  given to no stream (filled by the caller that maps packets to streams,
- *  e.g. our FFmpeg's mpeg.c disc mode). */
+ *  given to no stream (filled by the caller that maps packets to streams:
+ *  the clip demuxer, src/disc/clip_demux.c). */
 typedef struct MpegPsDiscStats {
     int64_t sectors;                 /**< sectors read */
     int64_t empty;                   /**< of them empty (all 0x00 or all 0xff) */

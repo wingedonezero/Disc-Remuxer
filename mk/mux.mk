@@ -1,8 +1,7 @@
 # src/mux: the container splitters (libdisc-mux.a) — the MPEG-2 program
 # stream pack/sector reading (ps_disc.c) and the transport stream source
 # packet / PES reassembly (ts_disc.c), each as a disc reader does it. Pure
-# byte logic on base only; our FFmpeg's mpeg.c / mpegts.c disc modes wrap
-# them while the title reader still lives there.
+# byte logic on base only; the clip demuxer (src/disc) runs them.
 
 MUX_SRC   := $(ROOT)/src/mux
 MUX_OBJ   := $(BUILD)/mux

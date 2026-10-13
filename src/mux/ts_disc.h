@@ -5,8 +5,8 @@
  * given out as they arrive. What cannot be read is reported as stretches of
  * the stream file (MpegTSDiscGap) through the caller's events.
  *
- * Extracted from our FFmpeg's mpegts.c disc mode (the demuxer there wraps
- * this); the tests are tests/unit/test_mpegts_disc.py.
+ * The clip demuxer (src/disc/clip_demux.c) runs this; the tests are
+ * tests/unit/test_mpegts_disc.py.
  */
 
 #ifndef DISC_MUX_TS_DISC_H

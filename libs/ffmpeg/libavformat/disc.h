@@ -346,26 +346,6 @@ void ff_disc_pass_cache_free(DiscPassCache **pc);
 
 /* ---- disctitle.c ---- */
 
-/** A clip through FFmpeg's demuxer as a disc reader reads it, from the
- *  blocks read gives (one per call; AVERROR_EOF at the end): raw PES
- *  payloads with their own times (no parsing, no filled-in or corrected
- *  timestamps). parent (may be NULL): the context whose whitelists and
- *  interrupt callback the demuxer takes. */
-typedef struct DiscDemux {
-    AVFormatContext *ctx;
-    AVIOContext     *pb;
-} DiscDemux;
-
-/** MPEG-PS (mpeg.c, option disc): 2048-byte sectors, the format's LPCM
- *  header size. */
-int  ff_disc_ps_open(DiscDemux *dm, AVFormatContext *parent, int lpcm_header,
-                     int (*read)(void *opaque, uint8_t *buf, int size), void *opaque);
-/** MPEG-TS (mpegts.c, option disc): 6144-byte units of source packets, the
- *  PIDs read; each payload's stream id is PID | PES stream key << 16. */
-int  ff_disc_ts_open(DiscDemux *dm, AVFormatContext *parent, const int *pids, int nb_pids,
-                     int (*read)(void *opaque, uint8_t *buf, int size), void *opaque);
-void ff_disc_demux_close(DiscDemux *dm);
-
 /** The title reader (DiscContext.reader) over src: the title timeline for
  *  its tracks and chapters; reading starts at its first clip. */
 int  ff_disc_title_reader_open(AVFormatContext *s, const DiscTitleSource *src);

@@ -2,8 +2,8 @@
  * The stream pass of a title (the disc layer), the same for every format:
  * the title's tracks (DiscTrack, from its format part) checked against the
  * stream data of its largest segment, read the way the title reader reads
- * (the format part's block reader, FFmpeg's MPEG-PS or MPEG-TS demuxer in
- * disc mode, each payload to the track of its id or PID and keys).
+ * (the format part's block reader through the clip demuxer, each payload to
+ * the track of its id or PID and keys).
  *
  * - Duplicates: an audio or subtitle track with the same codec, the same
  *   data (id, or PID and keys) and the same kind (taken out of another
@@ -54,9 +54,26 @@
 #include "libavutil/mem.h"
 
 #include "avformat.h"
+#include "base/err.h"
 #include "disc.h"
 #include "discprobe.h"
+
+#include "disc/clip_demux.h"
 #include "timeline/disctl.h"
+
+/* The clip demuxer's errors as FFmpeg's values, so nothing above sees a
+ * change (the block reader's own values pass through as they are). */
+static int clip_err(int ret)
+{
+    switch (ret) {
+    case DR_ERR_EOF:      return AVERROR_EOF;
+    case DR_ERR_INVALID:  return AVERROR_INVALIDDATA;
+    case DR_ERR_NOMEM:    return AVERROR(ENOMEM);
+    case DR_ERR_EXTERNAL:
+    case DR_ERR_BUG:      return AVERROR_BUG;
+    default:              return ret;
+    }
+}
 
 #define DETAILS_LIMIT (64LL << 20)
 #define DISC_BLOCK    2048
@@ -276,7 +293,7 @@ static int pass_read(void *opaque, uint8_t *buf, int size)
     for (;;) {
         ret = r->src->read(r->src->opaque, r->block, buf);
         if (ret == AVERROR_EOF)
-            return ret;
+            return DR_ERR_EOF;
         if (ret < 0) {
             r->err = ret;
             return ret;
@@ -311,8 +328,7 @@ int ff_disc_stream_pass(AVFormatContext *s, const char *title, const DiscPassSou
     Probe *p;
     int np = 0, ret = 0, open = 0, unseen = 0, *pids = NULL, nb_pids = 0, *drop = NULL, nb_drop = 0;
     Reader r = { src, 0, src->ts ? TS_UNIT : DISC_BLOCK, 0 };
-    DiscDemux dm = { 0 };
-    AVPacket *pkt = NULL;
+    DrClipDemux *dm = NULL;
 
     if (!(drop = av_calloc(*nb_tracks + 1, sizeof(*drop)))) {
         ret = AVERROR(ENOMEM);
@@ -382,17 +398,15 @@ int ff_disc_stream_pass(AVFormatContext *s, const char *title, const DiscPassSou
                 if (!have)
                     pids[nb_pids++] = p[i].feed.pid;
             }
-            ret = ff_disc_ts_open(&dm, s, pids, nb_pids, pass_read, &r);
+            ret = clip_err(dr_clip_ts_open(&dm, s, pids, nb_pids, 0, 0, pass_read, &r));
         } else {
-            ret = ff_disc_ps_open(&dm, s, src->lpcm_header, pass_read, &r);
+            ret = clip_err(dr_clip_ps_open(&dm, s, src->lpcm_header, pass_read, &r));
         }
-        if (ret < 0 || !(pkt = av_packet_alloc())) {
-            ret = ret < 0 ? ret : AVERROR(ENOMEM);
+        if (ret < 0)
             goto end;
-        }
         for (;;) {
             int more = 0;
-            const AVStream *sub;
+            DrClipPacket pkt;
 
             /* read on: details still open (within the limit); a track
              * that needs data to be described (or, when asked, any
@@ -410,25 +424,23 @@ int ff_disc_stream_pass(AVFormatContext *s, const char *title, const DiscPassSou
             }
             if (!more && !(details_on && open))
                 break;
-            if ((ret = av_read_frame(dm.ctx, pkt)) < 0)
+            if ((ret = clip_err(dr_clip_read(dm, &pkt))) < 0)
                 break;
-            sub = dm.ctx->streams[pkt->stream_index];
             for (int i = 0; i < np; i++) {
-                if (!probe_wants(&p[i], src->ts, sub->id))
+                if (!probe_wants(&p[i], src->ts, pkt.id))
                     continue;
                 p[i].seen = 1;
                 if (!details_on || p[i].done)
                     continue;
                 if (p[i].kind == P_MVC) {
-                    mvc_bytes(&p[i], pkt->data, pkt->size);
+                    mvc_bytes(&p[i], pkt.data, pkt.size);
                 } else if (p[i].dp) {
-                    if ((ret = probe_ops->feed(p[i].dp, pkt->data, pkt->size)) < 0)
+                    if ((ret = probe_ops->feed(p[i].dp, pkt.data, pkt.size)) < 0)
                         goto end;
                     p[i].done = probe_ops->done(p[i].dp);
                 }
                 open -= p[i].done;
             }
-            av_packet_unref(pkt);
         }
         if (r.err) {
             av_log(s, AV_LOG_ERROR, "%s: title %s: block %"PRIu32" of segment %d cannot be read: its streams' data "
@@ -511,8 +523,7 @@ end:
     for (int i = 0; p && i < np; i++)
         if (p[i].dp)
             probe_ops->close(&p[i].dp);
-    av_packet_free(&pkt);
-    ff_disc_demux_close(&dm);
+    dr_clip_close(&dm);
     av_free(pids);
     av_free(drop);
     av_free(p);

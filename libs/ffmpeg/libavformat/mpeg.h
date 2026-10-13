@@ -63,15 +63,6 @@
 
 static const int lpcm_freq_tab[4] = { 48000, 96000, 44100, 32000 };
 
-/* The disc-sector reading (option disc) lives in src/mux/ps_disc.h; the
- * demuxer here wraps it, maps packets to streams and counts what it read. */
-#include "mux/ps_disc.h"
-
-struct AVFormatContext;
-/** The statistics of an MPEG-PS demuxer opened with option disc. */
-void ff_mpegps_disc_stats(const struct AVFormatContext *s, MpegPsDiscStats *st);
-
-
 /**
  * Parse MPEG-PES five-byte timestamp
  */

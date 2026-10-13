@@ -4,9 +4,9 @@ Updated 2026-10-13, on branch `claude/rewrite-untangle-1c24ca` (the rewrite
 branch; main still holds the pre-rewrite program and is the byte-compare
 reference). Inventory of what the old shape was made of: `docs/UNTANGLE.md`.
 
-Status: **steps 1–6 done** (part 3; one piece of 6 deferred: the log flip
-waits for step 7's own log contexts). The next step is 7 (the disc layer
-leaves FFmpeg).
+Status: **steps 1–6 done**, step 7 under way: 7a (the clip demuxer) is in
+(part 3; one piece of 6 deferred: the log flip waits for step 7's own log
+contexts, 7e).
 Tests at every commit: 735 passed, 15 skipped (the disc-marked ones without a
 disc). Every move so far is behavior-preserving by construction and by test;
 the real-disc byte-compare against a main build is still owed (user runs it
@@ -340,16 +340,39 @@ again.**
   attribution twice.
 
 ### Step 7 — `src/disc` + `hddvd/` + `bluray/` (the disc layer leaves FFmpeg)
-What: `discdec.c`/`disc.h`/`discinfo.h` → our own disc model (no
-AVFormatContext/AVStream/AVOption/metadata dicts: typed structs end to
-end), `disctitle.c` driving `mux/` directly (the AVIO + sub-demuxer seam
-goes), `discpass.c` on mux/parse/analyze, `disclang.c` with its own ISO-639
-table, the HD DVD and Blu-ray parts near-verbatim (utility-coupled).
-This deletes: the "disc" AVInputFormat, the mpeg.c/mpegts.c disc wrappers
-(mux/ is called directly), the last libavformat edits except nothing —
-**libs/ffmpeg returns to ~upstream** (the one historical fix, parser.c
-timestamp lookup #1, died at 4d).
-The writer opens the disc layer natively; options come typed from settings.
+In five slices, one commit and one full test run each:
+
+- **7a — DONE (ledger row 258): the clip demuxer.** `src/disc/clip_demux.h`
+  (`libdisc-disc.a`, the start of the disc module: base + mux + the
+  timeline's headers, no FFmpeg under it) reads a clip's blocks from the
+  caller and gives raw PES payloads; the title reader, the stream pass, the
+  filler probe, the side clips and the HD DVD stream probe drive it
+  directly. The AVIO + sub-demuxer seam is gone; **mpeg.c / mpegts.c /
+  mpeg.h / mpegts.h are byte-for-byte upstream again** (their disc wrapper
+  duties — the payloads' streams, the first-access-unit split, the PS
+  counts, the TS stretches — moved into the clip demuxer with the same log
+  texts). Errors cross the seam through `clip_err()`; the block readers
+  return `DR_ERR_EOF`. Dropped as dead: the sub-demuxer's per-stream
+  discard check (nothing ever set it; the `discarded` counts remain, at 0).
+- **7b — the format parts move** near-verbatim into
+  `src/disc/{dvd,hddvd,bluray}/`, keyed on an own disc context instead of
+  `AVFormatContext` (they use it only as a log handle and to reach their
+  private context); the disc layer, still in libavformat, calls them
+  through the same `DiscFormat` vtable.
+- **7c — `discpass.c` and `disclang.c` move** (the pass on
+  mux/parse/analyze; language names from our own ISO-639 table, the
+  `avlanguage.c` link dropped).
+- **7d — the disc model**: `discdec.c`/`disc.h`/`discinfo.h` → our own
+  disc model (no AVFormatContext/AVStream/AVOption/metadata dicts: typed
+  structs end to end), `disctitle.c` moves, the program (engine, writer,
+  CLI) and the test bridge switch to the new API, options come typed from
+  settings; the "disc" AVInputFormat dies — **libs/ffmpeg returns to
+  ~upstream** (the one historical fix, parser.c timestamp lookup #1, died
+  at 4d).
+- **7e — the deferred log flip**: `dr_vlog` → `base/log.h` directly, the
+  moved modules carry their own source names, `log_ffmpeg.c` moves into
+  `analyze/`.
+
 Gate: corpus byte-compare + info compare; the GUI must run (it still speaks
 engine.h v1 until step 9).
 

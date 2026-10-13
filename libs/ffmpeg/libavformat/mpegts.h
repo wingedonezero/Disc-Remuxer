@@ -304,15 +304,4 @@ int ff_parse_mpeg2_descriptor(AVFormatContext *fc, AVStream *st, int stream_type
  */
 int ff_check_h264_startcode(AVFormatContext *s, const AVStream *st, const AVPacket *pkt);
 
-/* The disc-mode reading (option disc) lives in src/mux/ts_disc.h (the PES
- * header read, the gap records); the demuxer here wraps it: */
-#include "mux/ts_disc.h"
-
-/**
- * Disc mode with option disc_gaps: the oldest stretch left out that has
- * ended (1, *gap filled), 0 none. flush: the stream has ended, the
- * stretches still open end with it. Without disc_gaps they are logged.
- */
-int ff_mpegts_disc_gap(AVFormatContext *s, int flush, MpegTSDiscGap *gap);
-
 #endif /* AVFORMAT_MPEGTS_H */

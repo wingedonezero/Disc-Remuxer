@@ -37,8 +37,6 @@
 #include "libavcodec/get_bits.h"
 #include "libavcodec/opus/opus.h"
 #include "avformat.h"
-#include "base/err.h"
-
 #include "mpegts.h"
 #include "internal.h"
 #include "avio_internal.h"
@@ -46,7 +44,6 @@
 #include "mpeg.h"
 #include "isom.h"
 #include "id3v2.h"
-#include "packet_internal.h"
 #if CONFIG_ICONV
 #include <iconv.h>
 #endif
@@ -201,19 +198,6 @@ struct MpegTSContext {
 
     AVStream *epg_stream;
     AVBufferPool* pools[32];
-
-    /* disc mode (Blu-ray / BDAV / AVCHD stream files read as a disc reader
-     * reads them, see "disc" below) */
-    int disc;
-    int *disc_pids;
-    unsigned nb_disc_pids;
-    int *disc_dialog_pids;
-    unsigned nb_disc_dialog_pids;
-    int disc_gaps;
-    struct TsDisc *tsdisc;        /* the reading (src/mux/ts_disc.c) */
-    PacketList disc_queue;
-    MpegTSDiscGap *gaps;          /* stretches left out that have ended, from gaps_head on */
-    int gaps_head, nb_gaps, gaps_cap;
 };
 
 #define MPEGTS_OPTIONS \
@@ -243,17 +227,6 @@ static const AVOption options[] = {
      {.i64 = 0}, 0, 1, 0 },
     {"max_packet_size", "maximum size of emitted packet", offsetof(MpegTSContext, max_packet_size), AV_OPT_TYPE_INT,
      {.i64 = 204800}, TS_PAYLOAD_SIZE, INT_MAX/2, AV_OPT_FLAG_DECODING_PARAM },
-    {"disc", "read 192-byte source packets as a disc reader does (Blu-ray): the payload of each PES packet of the "
-     "PIDs in disc_pids as it arrives, one stream per PID and PES stream key", offsetof(MpegTSContext, disc),
-     AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
-    {"disc_pids", "disc mode: the PIDs read", offsetof(MpegTSContext, disc_pids),
-     AV_OPT_TYPE_INT | AV_OPT_TYPE_FLAG_ARRAY, {.arr = NULL}, 0, 0x1fff, AV_OPT_FLAG_DECODING_PARAM },
-    {"disc_dialog_pids", "disc mode: PIDs of text subtitles (HDMV TextST): a PES packet without a PTS that starts "
-     "with a dialog presentation segment takes that dialog's start time", offsetof(MpegTSContext, disc_dialog_pids),
-     AV_OPT_TYPE_INT | AV_OPT_TYPE_FLAG_ARRAY, {.arr = NULL}, 0, 0x1fff, AV_OPT_FLAG_DECODING_PARAM },
-    {"disc_gaps", "disc mode: the stretches left out (TS packets that cannot be read, zeros, PES data dropped) are "
-     "kept for the caller (ff_mpegts_disc_gap()) instead of logged", offsetof(MpegTSContext, disc_gaps),
-     AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
     { NULL },
 };
 
@@ -3574,19 +3547,12 @@ static void seek_back(AVFormatContext *s, AVIOContext *pb, int64_t pos) {
         av_log(s, (pb->seekable & AVIO_SEEKABLE_NORMAL) ? AV_LOG_ERROR : AV_LOG_INFO, "Unable to seek back to the start\n");
 }
 
-static int disc_read_header(AVFormatContext *s);
-static int disc_read_packet(AVFormatContext *s, AVPacket *pkt);
-static void disc_free(MpegTSContext *ts);
-
 static int mpegts_read_header(AVFormatContext *s)
 {
     MpegTSContext *ts = s->priv_data;
     AVIOContext *pb   = s->pb;
     int64_t pos, probesize = s->probesize;
     int64_t seekback = FFMAX(s->probesize, (int64_t)ts->resync_size + PROBE_PACKET_MAX_BUF);
-
-    if (ts->disc)
-        return disc_read_header(s);
 
     if (ffio_ensure_seekback(pb, seekback) < 0)
         av_log(s, AV_LOG_WARNING, "Failed to allocate buffers for seekback\n");
@@ -3734,9 +3700,6 @@ static int mpegts_read_packet(AVFormatContext *s, AVPacket *pkt)
     MpegTSContext *ts = s->priv_data;
     int ret, i;
 
-    if (ts->disc)
-        return disc_read_packet(s, pkt);
-
     pkt->size = -1;
     ts->pkt = pkt;
     ret = handle_packets(ts, 0);
@@ -3779,197 +3742,8 @@ static void mpegts_free(MpegTSContext *ts)
 static int mpegts_read_close(AVFormatContext *s)
 {
     MpegTSContext *ts = s->priv_data;
-    disc_free(ts);
     mpegts_free(ts);
     return 0;
-}
-
-/* ---- disc mode ----
- *
- * The reading itself (source packets, PES reassembly, the stretches left
- * out) is src/mux/ts_disc.c; here: the options, the streams and packets it
- * feeds, and the stretches stored for ff_mpegts_disc_gap() (option
- * disc_gaps) or logged. */
-
-static int disc_stream(AVFormatContext *s, int pid, uint16_t key)
-{
-    int id = pid | key << 16;
-    AVStream *st;
-
-    for (int i = 0; i < s->nb_streams; i++)
-        if (s->streams[i]->id == id)
-            return i;
-    if (!(st = avformat_new_stream(s, NULL)))
-        return AVERROR(ENOMEM);
-    st->id = id;
-    st->codecpar->codec_type = AVMEDIA_TYPE_DATA;
-    avpriv_set_pts_info(st, 33, 1, 90000);
-    return st->index;
-}
-
-static int disc_pes_cb(void *opaque, int pid, uint16_t key)
-{
-    int st = disc_stream(opaque, pid, key);
-    return st < 0 ? st : 0;
-}
-
-static int disc_emit_cb(void *opaque, int pid, uint16_t key, const uint8_t *data, unsigned len, int64_t pts,
-                        int64_t pos)
-{
-    AVFormatContext *s = opaque;
-    MpegTSContext *ts = s->priv_data;
-    AVPacket *pkt = ts->pkt;
-    int st, ret;
-
-    if ((st = disc_stream(s, pid, key)) < 0)
-        return st;
-    if ((ret = av_new_packet(pkt, len)) < 0)
-        return ret;
-    memcpy(pkt->data, data, len);
-    pkt->stream_index = st;
-    pkt->pts = pkt->dts = pts;
-    pkt->pos = pos;
-    ret = ff_packet_list_put(&ts->disc_queue, pkt, NULL, 0);
-    av_packet_unref(pkt);
-    return ret;
-}
-
-/* A stretch left out (or a PTS / cut-short record): kept for the caller, or
- * logged as before the reading moved out. */
-static int disc_gap_cb(void *opaque, const MpegTSDiscGap *g)
-{
-    AVFormatContext *s = opaque;
-    MpegTSContext *ts = s->priv_data;
-
-    if (!ts->disc_gaps) {
-        switch (g->kind) {
-        case MPEGTS_DISC_GAP_PTS:
-            av_log(s, AV_LOG_WARNING, "TS: PID 0x%04x: a PES header at byte %"PRId64" has a PTS whose marker "
-                   "bits are not set: read as having no time\n", g->pid, g->pos);
-            break;
-        case MPEGTS_DISC_GAP_CUT:
-            av_log(s, AV_LOG_WARNING, "TS: PID 0x%04x: a PES packet cut short at byte %"PRId64"\n", g->pid, g->pos);
-            break;
-        case MPEGTS_DISC_GAP_PES:
-            av_log(s, AV_LOG_DEBUG, "TS: PID 0x%04x: %s at byte %"PRId64": %"PRId64" bytes left out until %s\n",
-                   g->pid, g->why, g->pos, g->bytes, g->to_end ? "the stream's end" : "the next PES start");
-            break;
-        default:
-            av_log(s, AV_LOG_DEBUG, "TS: bytes %"PRId64"-%"PRId64": %"PRId64" source packets %s%s%s: left out\n",
-                   g->pos, g->end - 1, g->packets, g->kind == MPEGTS_DISC_GAP_ZERO ? "of zeros" :
-                   "that cannot be read (", g->kind == MPEGTS_DISC_GAP_ZERO ? "" : g->why,
-                   g->kind == MPEGTS_DISC_GAP_ZERO ? "" : ")");
-        }
-        return 0;
-    }
-    if (ts->gaps_head && ts->gaps_head == ts->nb_gaps)
-        ts->gaps_head = ts->nb_gaps = 0;
-    if (ts->nb_gaps == ts->gaps_cap) {
-        int cap = ts->gaps_cap ? 2 * ts->gaps_cap : 16;
-        MpegTSDiscGap *q = av_realloc_array(ts->gaps, cap, sizeof(*q));
-        if (!q)
-            return AVERROR(ENOMEM);
-        ts->gaps     = q;
-        ts->gaps_cap = cap;
-    }
-    ts->gaps[ts->nb_gaps++] = *g;
-    return 0;
-}
-
-static void disc_drop_cb(void *opaque, int pid, const char *why)
-{
-    AVFormatContext *s = opaque;
-    MpegTSContext *ts = s->priv_data;
-
-    if (!ts->disc_gaps)
-        av_log(s, AV_LOG_WARNING, "TS: PID 0x%04x: %s: its data is dropped until its next PES start\n", pid, why);
-}
-
-static void disc_note_cb(void *opaque, int pid, const char *text)
-{
-    if (pid >= 0)
-        av_log(opaque, AV_LOG_DEBUG, "TS: PID 0x%04x: %s\n", pid, text);
-    else
-        av_log(opaque, AV_LOG_DEBUG, "TS: %s\n", text);
-}
-
-static void disc_error_cb(void *opaque, const char *text)
-{
-    av_log(opaque, AV_LOG_ERROR, "TS: %s\n", text);
-}
-
-/* The reading's errors as FFmpeg's values, so nothing above sees a change. */
-static int disc_err(int ret)
-{
-    if (ret == DR_ERR_INVALID)
-        return AVERROR_INVALIDDATA;
-    if (ret == DR_ERR_EXTERNAL)
-        return AVERROR_BUG;
-    return ret;
-}
-
-int ff_mpegts_disc_gap(AVFormatContext *s, int flush, MpegTSDiscGap *gap)
-{
-    MpegTSContext *ts = s->priv_data;
-    int ret;
-
-    if (!ts->disc)
-        return 0;
-    if (flush && (ret = disc_err(ts_disc_flush(ts->tsdisc, avio_tell(s->pb)))) < 0)
-        return ret;
-    if (ts->gaps_head == ts->nb_gaps)
-        return 0;
-    *gap = ts->gaps[ts->gaps_head++];
-    return 1;
-}
-
-static int disc_read_header(AVFormatContext *s)
-{
-    static const TsDiscEvents ev = { disc_pes_cb, disc_emit_cb, disc_gap_cb, disc_drop_cb, disc_note_cb,
-                                     disc_error_cb };
-    MpegTSContext *ts = s->priv_data;
-    TsDiscEvents e = ev;
-
-    e.opaque = s;
-    ts->stream          = s;
-    ts->raw_packet_size = TS_DISC_SRC_PACKET;
-    if (!(ts->tsdisc = ts_disc_new(ts->disc_pids, ts->nb_disc_pids, ts->disc_dialog_pids,
-                                   ts->nb_disc_dialog_pids, &e)))
-        return AVERROR(ENOMEM);
-    if (!(ts->pkt = av_packet_alloc()))
-        return AVERROR(ENOMEM);
-    s->ctx_flags |= AVFMTCTX_NOHEADER;
-    return 0;
-}
-
-static int disc_read_packet(AVFormatContext *s, AVPacket *pkt)
-{
-    MpegTSContext *ts = s->priv_data;
-    uint8_t buf[TS_DISC_SRC_PACKET];
-
-    while (!ts->disc_queue.head) {
-        int64_t pos = avio_tell(s->pb);
-        int ret = avio_read(s->pb, buf, TS_DISC_SRC_PACKET);
-        if (ret != TS_DISC_SRC_PACKET) {
-            int err;
-            /* the stretches still open: said here (or kept for the caller's flush) */
-            if (!ts->disc_gaps && (err = disc_err(ts_disc_flush(ts->tsdisc, avio_tell(s->pb)))) < 0)
-                return err;
-            return ret < 0 ? ret : AVERROR_EOF;
-        }
-        if ((ret = disc_err(ts_disc_source_packet(ts->tsdisc, buf, pos))) < 0)
-            return ret;
-    }
-    return ff_packet_list_get(&ts->disc_queue, pkt);
-}
-
-static void disc_free(MpegTSContext *ts)
-{
-    ts_disc_free(&ts->tsdisc);
-    ff_packet_list_free(&ts->disc_queue);
-    av_freep(&ts->gaps);
-    if (ts->disc)
-        av_packet_free(&ts->pkt);
 }
 
 av_unused static int64_t mpegts_get_pcr(AVFormatContext *s, int stream_index,

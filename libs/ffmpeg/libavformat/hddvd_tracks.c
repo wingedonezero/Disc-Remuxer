@@ -63,7 +63,7 @@
 #include "disclang.h"
 #include "timeline/disctl.h"
 #include "hddvd_internal.h"
-#include "mpeg.h"
+#include "disc/clip_demux.h"
 
 #define PACK            2048
 #define PTS_SCAN_PACKS  2000    /* packs searched for the stream's first PTS */
@@ -138,7 +138,7 @@ static int probe_first_pts(Probe *p)
     return 0;
 }
 
-/* The next block of the clip for the demuxer; AVERROR_EOF at its end. */
+/* The next block of the clip for the clip demuxer; DR_ERR_EOF at its end. */
 static int probe_read(void *opaque, uint8_t *buf, int size)
 {
     Probe *p = opaque;
@@ -146,7 +146,7 @@ static int probe_read(void *opaque, uint8_t *buf, int size)
     if (size < PACK)
         return AVERROR(EINVAL);
     if (p->pos >= p->end)
-        return AVERROR_EOF;
+        return DR_ERR_EOF;
     if (!probe_block(p, p->pos++, buf)) {
         p->read_failed = 1;
         return AVERROR(EIO);
@@ -186,39 +186,33 @@ bad:
 static int probe_run(Probe *p, enum AVCodecID codec, int want)
 {
     DrSplit *split = NULL;
-    AVPacket *pkt = NULL;
-    DiscDemux ps;
+    DrClipDemux *ps = NULL;
     int ret, done = 0;
 
     if (!probe_first_pts(p))
         return 0;
     p->pos = 0;
-    if ((ret = ff_disc_ps_open(&ps, NULL, 5, probe_read, p)) < 0) {
-        ff_disc_demux_close(&ps);
-        return p->read_failed ? 0 : ret;
-    }
-    split = dr_split_new(codec == AV_CODEC_ID_DTS ? DR_SPLIT_DTS : DR_SPLIT_AC3, NULL);
-    pkt   = av_packet_alloc();
-    if (!split || !pkt) {
+    if ((ret = dr_clip_ps_open(&ps, p->log, 5, probe_read, p)) < 0)
+        return ret == DR_ERR_NOMEM ? AVERROR(ENOMEM) : ret;
+    if (!(split = dr_split_new(codec == AV_CODEC_ID_DTS ? DR_SPLIT_DTS : DR_SPLIT_AC3, NULL))) {
         ret = AVERROR(ENOMEM);
         goto end;
     }
     dr_split_take_any(split);
     ret = 1;
     while (!done && p->nb_units < want) {
-        const AVStream *st;
-        int r = av_read_frame(ps.ctx, pkt);
+        DrClipPacket pkt;
+        int r = dr_clip_read(ps, &pkt);
 
-        if (r == AVERROR_EOF)
+        if (r == DR_ERR_EOF)
             break;
         if (r < 0) {
             /* a block that cannot be read, or a sector the disc reader's
-             * rules refuse (logged by the demuxer) */
-            ret = r == AVERROR(ENOMEM) ? r : 0;
+             * rules refuse (logged by the clip demuxer) */
+            ret = r == DR_ERR_NOMEM || r == AVERROR(ENOMEM) ? AVERROR(ENOMEM) : 0;
             break;
         }
-        st = ps.ctx->streams[pkt->stream_index];
-        if (st->id == p->sub && (r = dr_split_write(split, pkt->data, pkt->size)) < 0) {
+        if (pkt.id == p->sub && (r = dr_split_write(split, pkt.data, pkt.size)) < 0) {
             ret  = r == AVERROR(ENOMEM) ? r : 0;
             done = 1;
         }
@@ -239,12 +233,10 @@ static int probe_run(Probe *p, enum AVCodecID codec, int want)
                 break;
             }
         }
-        av_packet_unref(pkt);
     }
 end:
-    av_packet_free(&pkt);
     dr_split_free(&split);
-    ff_disc_demux_close(&ps);
+    dr_clip_close(&ps);
     return ret;
 }
 
