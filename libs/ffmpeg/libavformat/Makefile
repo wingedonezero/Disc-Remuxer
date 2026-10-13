@@ -3,6 +3,7 @@ DESC = FFmpeg container format library
 
 HEADERS = avformat.h                                                    \
           discinfo.h                                                    \
+          discprobe.h                                                   \
           avio.h                                                        \
           version.h                                                     \
           version_major.h                                               \

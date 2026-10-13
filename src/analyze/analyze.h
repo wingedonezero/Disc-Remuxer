@@ -20,6 +20,9 @@ extern "C" {
 
 void dr_analyze_use(void);
 
+/* internal: the stream pass's details probe (host.c registers it too) */
+void dr_analyze_use_probe(void);
+
 #ifdef __cplusplus
 }
 #endif

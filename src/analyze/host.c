@@ -190,4 +190,5 @@ static const DRTimelineHost host = {
 void dr_analyze_use(void)
 {
     ff_disctl_set_host(&host);
+    dr_analyze_use_probe();
 }

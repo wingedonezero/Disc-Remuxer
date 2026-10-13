@@ -4,8 +4,9 @@ Updated 2026-10-13, on branch `claude/rewrite-untangle-1c24ca` (the rewrite
 branch; main still holds the pre-rewrite program and is the byte-compare
 reference). Inventory of what the old shape was made of: `docs/UNTANGLE.md`.
 
-Status: **steps 1–5 done** (details in part 3). The next step is 6
-(src/analyze: FFmpeg quarantined behind the four probe calls).
+Status: **steps 1–6 done** (part 3; one piece of 6 deferred: the log flip
+waits for step 7's own log contexts). The next step is 7 (the disc layer
+leaves FFmpeg).
 Tests at every commit: 735 passed, 15 skipped (the disc-marked ones without a
 disc). Every move so far is behavior-preserving by construction and by test;
 the real-disc byte-compare against a main build is still owed (user runs it
@@ -318,17 +319,25 @@ again.**
 
 ## Part 4 — What is left, in detail
 
-### Step 6 — `src/analyze` (FFmpeg quarantined)
-What: the four entry points of §2.5 as a small library that is the ONLY
-FFmpeg linker in our tree; `log_ffmpeg.c` moves in (the av_log funnel);
-`dr_vlog` flips from av_vlog to `base/log.h` directly (source strings then
-come from the modules, not AVClass — the only intended log-attribution
-change of the rewrite; texts unchanged).
-Consumers rewired: `discpass.c` details (two tiers: header/SEI parse first,
-decode for decoded truths), `check.c` (same decoders, both sides),
-`writer.c` layout probe, `disctl_mlp`/LATM answers.
-Gate: info output of the corpus compared field by field; demux byte-compare
-unaffected by construction.
+**Step 6 — src/analyze stands; FFmpeg answers questions only (rows 256,
+257).**
+- `src/analyze` (`libdisc-analyze.a`) is the one module of ours that links
+  the processing library; it is handed copies of data and answers
+  questions. In it: the timeline's host (the stock frame parser for MPEG
+  video and E-AC-3, the LATM stream header, the TrueHD / MLP end-of-stream
+  decode; `dr_analyze_use()` registers it, with the codec-id build-time
+  checks), the details probe and end check (the former `check.c`), the
+  writer's channel-layout probe (`DrLayoutProbe`), and the stream pass's
+  details probe (`pass_probe.c`, registered as `DiscProbeOps` through
+  `libavformat/discprobe.h`; the pass keeps the probe list, cache, 3-D
+  byte scan, limits, drops and logs). Absent a registration, details stay
+  unknown and the pass says so — never a different rip.
+- DEFERRED to step 7: the log flip (`dr_vlog` straight to `base/log.h`,
+  the av_log funnel into analyze). Reason: today every module line's
+  source still comes from the FFmpeg-side caller's AVClass context; the
+  replacement — modules carrying their own source — only exists once the
+  disc layer's contexts are ours. Flipping earlier would change
+  attribution twice.
 
 ### Step 7 — `src/disc` + `hddvd/` + `bluray/` (the disc layer leaves FFmpeg)
 What: `discdec.c`/`disc.h`/`discinfo.h` → our own disc model (no
