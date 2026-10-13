@@ -1,157 +1,374 @@
-# PLAN v2 — the rewrite: a real demuxer of our own, FFmpeg as an instrument
+# The rewrite: architecture and progress
 
-Written 2026-10-13, after the untangle (UNTANGLE.md) and the decisions so far:
-demuxing lives inside the app; FFmpeg stays (full build, untrimmed is fine)
-but stops being the processing layer; no check or feature is lost; the current
-program's corpus output is the oracle for every step.
+Updated 2026-10-13, on branch `claude/rewrite-untangle-1c24ca` (the rewrite
+branch; main still holds the pre-rewrite program and is the byte-compare
+reference). Inventory of what the old shape was made of: `docs/UNTANGLE.md`.
 
-## 1. THE LINE (the rule that untangles everything)
+Status: **steps 1–3 done, step 4 about two thirds done** (details in part 3).
+Tests at every commit: 735 passed, 15 skipped (the disc-marked ones without a
+disc). Every move so far is behavior-preserving by construction and by test;
+the real-disc byte-compare against a main build is still owed (user runs it
+when the demux side is complete).
+
+---
+
+## Part 1 — The goal and the one rule
+
+The program (a disc demuxer: DVD, HD DVD, Blu-ray, UHD in; correct elementary
+streams, later MKV, out) was built INSIDE FFmpeg: ~38k lines of our own code
+lived in `libavformat/`, our frame-cutting rules inside FFmpeg's parsers, our
+DVD logic inside libdvdread. It worked (verified byte-for-byte on real discs)
+but had no boundary between "our engine" and "FFmpeg", two logging systems,
+string-typed data between layers, and no way to say what of FFmpeg we used.
+
+The rewrite re-hosts the same verified code into a tree of our own, module by
+module, each move gated by the test suite and byte-compares. Nothing is
+redesigned unless its design was the problem (the glue, the transport, the
+API shapes). One rule decides every placement question:
 
 > **Demuxing = every byte transformation from disc sector to output file.
-> That path is ours, end to end. No byte that reaches an output file ever
+> That path is ours, end to end: no byte that reaches an output file ever
 > passes through FFmpeg.**
 >
-> **FFmpeg = an analysis instrument. We hand it COPIES of data and it answers
-> questions ("what does this decode to?"). If FFmpeg vanished, every rip would
-> still be byte-identical — only reports and checks would degrade.**
+> **FFmpeg = an analysis instrument. It is handed COPIES of data and answers
+> questions ("what does this decode to?"). If it vanished, every rip would be
+> byte-identical; only reports and checks would degrade.**
 
-Consequence: FFmpeg can never corrupt a rip, time a frame, or decide a join.
-It also can never blur the logs again: it is called in exactly four places,
-all inside one module, with one log hook.
+Consequences: FFmpeg can never corrupt a rip, time a frame or decide a join;
+it is called from exactly one module (`analyze/`, step 6) with one log hook;
+everything else of it may one day be dropped or upgraded freely.
 
-### Where the line cuts today's code
+## Part 2 — The target architecture
 
-| Today's use | Side of the line | In the rewrite |
-|---|---|---|
-| mpeg.c / mpegts.c disc modes split packs/PES | data path | ours: `mux/` (the cores are already pure functions) |
-| `av_parser_parse2` + disc-mode frame rules cut frames | data path | ours: `parse/` (the rules are already ours; the host gets simpler) |
-| `eac3_core` / `dca_core` bitstream filters make the extracted-core TRACKS | **data path** (their output is written to files!) | ours: keep-only-core frame filters in `parse/` — trivial once frames are cut |
-| LPCM header stripping / frame sizing | data path | ours (already is: `disctl_lpcm`) |
-| Timeline, joins, junction, chapters, verify | data path | ours (already is: `timeline/`) |
-| Writers (ES, WAVE, VobSub, SUP, SRT, chapters) | data path | ours (already is) |
-| Details probe decodes one frame per track (HDR, DoVi, layout, profile...) | analysis | `analyze/` calls FFmpeg decoders on a sample copy |
-| End check decodes written files back and compares | analysis | `analyze/` (same decoders both sides) |
-| TrueHD seamless search decodes AU runs + mono mix to compare joins | analysis (it only *chooses* a join; bytes written are disc bytes) | `analyze/` (decoder + swresample mix, same numbers) |
-| TrueHD stream-end sample count (`decode_count`) | analysis | `analyze/`; directory-math fallback stays first |
-| LATM one-frame decode for rate/samples | analysis | `analyze/` (or later an own StreamMuxConfig parser) |
-| Channel-layout discovery for file names | analysis | from the details probe |
-| CCExtractor converts captions to text | analysis-style helper process | unchanged — it is the model: a tool beside the path |
-
-## 2. The pipeline (the rip path, all ours)
+### 2.1 The module map and the dependency rule
 
 ```
-source (image / folder)
-  │
-  ▼
-io/        readers: block reads with retries, ISO 9660 / UDF x2 / folder,
-           fs choice rule, disc format detection          [moved: discio_*]
-  │
-  ▼
-format/    DVD | HD DVD | Blu-ray part: structure, checks, titles, tracks,
-dvd/hddvd/ chapters, keys, "which block next" per segment; decryption via
-bluray/    libdvdcss / libaacs                            [moved: dvd_*/hddvd_*/bluray_* + DVD policy
-  │                                                        lifted from libdvdread; scan driver from libdvdnav]
-  ▼
-mux/       PS pack/sector splitter  |  TS per-PID PES reassembler
-           → PES payloads with their PTS                  [extracted: mpeg.c / mpegts.c disc modes]
-  │
-  ▼
-parse/     one frame cutter per codec behind one push API
-           (bytes in → units out + why-skipped), picture headers, core-only
-           filters (E-AC-3→AC-3, DTS-HD→DTS)              [extracted: the 14 parsers' disc rules;
-  │                                                        + copied NAL/SPS/slice + header readers]
-  ▼
-timeline/  the title timeline: frame step & time pairing, video grid, audio
-           durations, joiner, junction, PCM strategy, SPU/PGS/TextST, CC,
-           chapters, verify (stage 5: re-parse every written frame, CRCs,
-           order, durations)                              [moved: disctl_*]
-  │
-  ▼
-writer/    ES files, WAVE, VobSub, SUP, SRT, chapter XML; later MKV
-                                                          [moved: writer.c]
+gui/  cli/                    Qt 6 Widgets | the command line (a formatter)
+   │
+engine/                       settings use, selection, runs, writer, checks,
+   │                          the disc model and typed events for the GUI
+disc/                         the disc layer: open once, disc kind, title
+   │                          list, stream pass, title reader
+   ├── dvd/  hddvd/  bluray/  format parts: structure, titles, tracks, keys,
+   │                          chapters, "which block next"; decryption under
+   │                          them (libdvdcss, libaacs)
+   ├── timeline/              the title timeline: frame step, video grid,
+   │                          audio timing, joiner, junction, PCM strategy,
+   │                          SPU/PGS/TextST, captions, chapters, verify
+   ├── mux/                   container splitters: PS packs, TS PES
+   ├── parse/                 frame cutters: one rule set per codec, one
+   │                          splitter engine
+   └── io/                    readers: block reads with retries, ISO 9660,
+                              UDF x2, disc folder, fs choice, disc format
+base/                         the one part everything may use: log, events,
+                              settings, messages, errors, memory, buffers,
+                              byte readers, CRC, the library-line hook
+
+beside the path:
+analyze/                      the ONE module that links FFmpeg (untrimmed):
+                              details probe, end check, seamless helper,
+                              small answers; one av_log hook into our log
+helpers:                      ccextractor (a process), ffmpeg/ffprobe
+                              binaries in dist/ for testing
 ```
 
-Beside the path, called with data copies:
+Dependencies point down only. `base` depends on libc alone. `io`, `mux`,
+`parse`, `timeline` depend on `base` only — **enforced by the build**: their
+compile flags carry no FFmpeg include path, so an FFmpeg dependency is a
+compile error. Only `analyze/` includes FFmpeg headers. The GUI and CLI see
+the engine's headers and base's, nothing deeper.
+
+### 2.2 The rip path (all ours when done)
 
 ```
-analyze/   the ONE module that links FFmpeg (full build, untrimmed, vendored
-           as-is and ~upstream-clean once our edits move out):
-             a) details probe   (sample buffer → stream details incl. HDR,
-                                 Dolby Vision, layouts, profile/level)
-             b) end check       (disc-side sample + written file → compared
-                                 details, same decoder both sides)
-             c) seamless helper (TrueHD AU runs → PCM → mono mix → compare)
-             d) small answers   (LATM config, MLP end-AU sample count)
-           One av_log hook here, feeding our logger with a source tag.
-           Absent/failed decode → "not checked", said plainly, never fatal.
+source (image / folder / later a drive)
+  io/      opens it, picks the file system, reads 2048-byte blocks with the
+           retry rules, says every attempt and damage
+  format   places the title's segments, decrypts (CSS per sector key /
+  part     AACS per aligned unit), answers "the next block of this segment"
+  mux/     PS: one sector = one pack, its packets by the disc reader's
+           rules | TS: 192-byte source packets, per-PID PES reassembly;
+           payloads out with their PES times, stretches left out reported
+  parse/   the codec's rule cuts payloads into units/frames; picture
+           headers read; core-only filters (E-AC-3->AC-3, DTS-HD->DTS)
+  timeline/ the frame step pairs times with frames; video grid; audio
+           durations; the joiner puts segments on one timeline; the
+           junction fixes gaps/overlaps; chapters; stage-5 verify re-parses
+           every outgoing frame (CRCs, order, durations)
+  engine/writer  elementary-stream files, WAVE, VobSub, SUP, SRT, chapter
+           XML (all hand-written stdio today already); later the MKV writer
 ```
 
-And the info path (scan): format part reads the structure (with every IFO /
-playlist check and the findings book) → title list (policy) → stream pass
-(`mux/` + `parse/` over the largest segment, duplicates out, details via
-`analyze/`a) → the disc model → GUI/CLI.
+The info path: format part reads the structure (every check reported with
+file/table/byte offset through the findings book) → title list (policy) →
+stream pass (mux+parse over the largest segment; duplicates out; details via
+analyze) → the disc model (`DrDisc`/`DrTitle`/`DrTrack`) → GUI/CLI.
 
-## 3. No feature lost — where each check lives
+### 2.3 Logging: one system
 
-| Feature / check today | In the rewrite |
-|---|---|
-| Read retries, padding, failure accounting per attempt | `io/` (moves unchanged) |
-| File-system choice rule, UDF compatibility switches, loop guards | `io/` (moves unchanged) |
-| IFO/BUP redundant reads, raw table checks with byte-offset reports | `dvd/` (lifted `_rec` readers) |
-| Damage detection + coalesced damage ranges, per-sector validity | `dvd/` (lifted vob reader) + `DiscTitleSource.damage` contract unchanged |
-| CSS key crack + verification heuristics | `dvd/` + libdvdcss (unchanged) |
-| Navigation scan (plays like a viewer, every button) | libdvdnav (vendored, VM patch set) + `dvd/` scan driver |
-| Cell modes, decoy PGCs, fake/duplicate title rules | `dvd/` (policy, lifted) |
-| AACS (BD/UHD/HD DVD), content hash check, key files | libaacs (unchanged) + format parts |
-| Blu-ray decoy playlists, menu names without Java, stream-table repair | `bluray/` (moves unchanged) |
-| Track details: codec, profile, HDR10/+/HLG, Dolby Vision MEL/FEL, layouts | `analyze/`a (same decoders → same answers) |
-| Stream pass: duplicates, empty audio, unusable titles | `disc/` stream pass over `mux/`+`parse/` (moves) |
-| Frame-level verify of output (CRCs, order, durations, placeholders) | `timeline/` verify — already decode-free |
-| End check of written files (~25 fields vs disc side) | `analyze/`b (identical) |
-| Seamless TrueHD joins (sample-exact) | `timeline/` junction + `analyze/`c (identical numbers) |
-| Captions via CCExtractor | unchanged helper process |
-| Findings book: dedup, caps, summary; one log, library lines attributed | `base/` log — now one system; libraries' callbacks and `analyze/`'s hook feed it |
-| Numbered messages, JSON records, log files per disc | `base/` log (numbering scheme kept; JSON becomes a rendering of typed events) |
-| Settings registry + TOML + GUI prefs from it | `base/` settings (moves) |
-| GUI queue/details/progress/stop, selection kept per title | `gui/` on engine API v2 (typed events + disc model; loses its JSON re-parsing and text reverse-parsing) |
+- `base/log.h` is the log: levels error/warning/ok/info/detail, numbered
+  program messages (`base/msg.h`, 1000s program … 6000s output), step
+  headings, run log file + debug file, terminal colours or JSON records, the
+  caller's sink (today `EngineSink`, v2 `DrSink`), dedup of repeated library
+  lines, error/warning counts.
+- `base/vlog.h` is the ONE hook the extracted modules log through
+  (`dr_vlog(logctx, level, fmt, ...)`). During migration the program and the
+  test bridge point it at FFmpeg's `av_vlog`, so every line keeps its exact
+  text AND its source attribution (the AVClass of the caller). When the disc
+  layer leaves FFmpeg (step 7), the hook points at `base/log.h` directly and
+  `log_ffmpeg.c` moves into `analyze/`.
+- The DVD libraries already log through their callback structs into the same
+  funnel; libaacs through its handler. Nothing prints on its own.
 
-## 4. What gets copied from FFmpeg into `parse/` (bounded, one-time)
+### 2.4 Errors, events, settings
 
-- H.264/HEVC NAL/RBSP unpack + SPS/PPS/slice-header readers (~1–2 k lines)
-- AC-3/E-AC-3, DTS core, MPEG-audio header math (partly restated already)
-- Language table, CRC tables
-- Each copy noted with origin + license in the ledger (program is GPL-2.0-only
-  already; nothing changes)
+- Errors: `base/err.h` — 0 ok, `-errno` for system errors (numerically
+  identical to FFmpeg's `AVERROR(e)`, so values cross the migration seam
+  unchanged), `DR_ERR_*` for our conditions (EOF, invalid data, no memory,
+  limit, cancelled, external). Where our values reach FFmpeg-side consumers
+  during migration, the wrapper translates at the edge (`DR_ERR_INVALID` ->
+  `AVERROR_INVALIDDATA`), so tests and messages see no change.
+- Events: `base/events.h` — the engine-v2 contract. One `DrEvent` union
+  (line, progress, title start, track result, title result with a damage
+  range ARRAY, run result) on one `DrSink`. The GUI consumes structs; JSON
+  becomes a rendering by the CLI, never the transport. Adopted at step 9;
+  the fields mirror today's JSON records one to one.
+- Settings: the registry + `disc-remuxer.toml` (tomlc17) moved into base
+  unchanged; one settings system for CLI and GUI stays the law. Options
+  reach modules as typed fields (step 7+), not string dictionaries.
 
-Decoders are NOT copied — they stay in `analyze/` behind the line.
+### 2.5 analyze/ — FFmpeg as an instrument (step 6)
 
-## 5. Order of work (each step gated: tests green + corpus rips byte-identical
-to the frozen baseline, logs diffed)
+Four entry points, all fed copies, none on the data path:
 
-1. **Freeze the oracle**: full corpus ripped + info JSON + logs with the
-   current program, stored read-only.
-2. **Skeleton + base/**: build, pytest+cffi bridge, log/messages/settings/
-   buffers/events. Fresh, small.
-3. **io/ moves** (shims only). Proves the method.
-4. **mux/ + parse/ extracted** from the disc modes; their unit tests ported;
-   the splitter host replaces the AVCodecParser contract.
-5. **timeline/ moves**; frame step re-hosted on `parse/`; core-only filters in.
-6. **analyze/ built**: the four entry points over vendored FFmpeg (untrimmed),
-   one log hook. `libs/ffmpeg` sheds our edits (they now live in mux/parse) —
-   back to ~upstream.
-7. **disc/ + hddvd/ + bluray/ move** (utility-coupled only — near-verbatim);
-   stream pass on mux/parse/analyze.
-8. **dvd/ lift**: title list, stream probe, vob-reader policy, scan driver up
-   into the app; libdvdread slims toward upstream; libdvdnav keeps the VM
-   patch set.
-9. **engine API v2 + writer + end check**: typed events and models; CLI as a
-   formatter; GUI consumes structs.
-10. **MKV writer** (after every format's streams pass the gates), then retire
-    the old tree as the archive.
+| Call | In: | Out: | Replaces |
+|---|---|---|---|
+| details probe | a sample of a track's elementary stream | width/height/aspect, frame rate, profile/level, HDR10/HDR10+/HLG mastering + CLL, Dolby Vision MEL/FEL, channels/layout/rate/bits | the decoders in `discpass.c` and the writer's layout probe |
+| end check | the disc-side sample + the written file | ~25 stream details, compared by the same decoder build | `check.c`'s linked decode |
+| seamless helper | candidate TrueHD AU runs | PCM, mono mix, the comparison numbers | `disctl_mlp` decode + swresample |
+| small answers | one LATM frame; MLP end AUs | rate/samples; the end AU's sample count | the two narrow decode sites |
 
-## 6. Still open (user)
+FFmpeg stays full-build and vendored as-is; once the in-place edits are gone
+(end of step 4/5), it is ~upstream-clean and updatable. `analyze/` failing
+or absent degrades to "not checked", said plainly — never fatal, never a
+different rip.
 
-- D3: fresh repo vs the new tree beside the old in this repo until step 10.
-- D4: MKV writer: libebml/libmatroska vs own EBML writer (decide at step 10).
-- D5: `analyze/` behavior when decode disagrees with parse-level details —
-  today's precedence kept (decoder wins for decoded truths); revisit per case.
+### 2.6 The libraries that remain libraries
+
+- **libdvdnav**: vendored with the VM patch set (~1,100 lines: asserts →
+  recorded failures, deterministic random/shuffle, playback clock, GPRM
+  counter semantics, nav-only skipping, `open_files`, working `dup`). The
+  scan driver (`scan.c`) moves UP into `dvd/` at step 8.
+- **libdvdread**: slims toward upstream at step 8. The `_rec` IFO readers,
+  report instrumentation and fs hooks keep their value; the policy half
+  (title list, stream probe, cell heuristics, the `vob_css[100]` state
+  block) comes up into `dvd/` as an app-side disc context.
+- **libdvdcss** (+59) and **libaacs** (+941, cleanly additive incl. HD DVD)
+  stay as they are. expat, tomlc17, CCExtractor (helper process) unchanged.
+
+### 2.7 Build shape
+
+`./build.sh [release|test]` as before. Each module is a static library:
+`mk/base.mk → libdisc-base.a`, `io.mk`, `mux.mk`, `parse.mk` (later
+`timeline.mk`, `disc.mk`, formats, `analyze.mk`). During migration FFmpeg
+compiles with `--extra-cflags=-I<src>` and links the module libraries via
+`--extra-libs` (its disc code still calls them); the program, the GUI and
+the pytest/cffi bridge link them directly. Link order: engine → FFmpeg libs
+→ io → mux → parse → base.
+
+---
+
+## Part 3 — Progress: what is done
+
+Every step: moved with history (`git mv` where whole files), gated by
+`./build.sh test` (735 passed at each commit), ledgered in `libs/README.md`
+(rows 248–251).
+
+### Step 1 — docs (c78f9627)
+`docs/UNTANGLE.md` (the measured inventory of the old shape) and this plan.
+
+### Step 2 — `src/base` (f4f331d4)
+- MOVED: `log.c/h` (minus the FFmpeg hook), `msg.h`, `settings.c/h` (+
+  tomlc17 compiled here). The sink (`EngineSink`, `engine_set_sink`) moved
+  from `engine.h` into `base/log.h` — the GUI contract starts leaving the
+  FFmpeg-including header.
+- NEW: `err.h/c`, `mem.h/c` (checked wrappers, strlcpy/strlcat, asprintf),
+  `buf.h/c` (refcounted, 64-byte zeroed padding, atomic count — ready for
+  the timeline), `events.h` (the v2 contract), later `bytes.h` (rl/rb/wl
+  16/24/32/64), `macros.h`, `vlog.h/c`, `crc16.h/c`.
+- The FFmpeg log hook split into the program's `log_ffmpeg.c` (line
+  reassembly, AVClass source naming, the end check's detail demotion),
+  feeding `log_library_line()` — base is FFmpeg-free by build construction.
+- Tests: +12 (`test_base.py`); bridge and both programs link base.
+
+### Step 3 — `src/io` (5c501e4c)
+- MOVED whole: `discio_read/fs/iso9660/udf_netbsd/udf_linux/folder.c`,
+  `discio.h` (~8.6k lines). Shims only: `av_log`→`dr_vlog` (hook kept at
+  `av_vlog` → every logged line byte-identical, 100+ log assertions green),
+  allocs→`base/mem`, `AVERROR(e)`→same values, `AVERROR_INVALIDDATA`→
+  `DR_ERR_INVALID` (4 test files take the value from the bridge now),
+  `avpriv_open`→`open(O_CLOEXEC)`.
+- FFmpeg's disc layer keeps calling the readers (`io/discio.h`), compiled
+  with `src/` on its include path, linked via `--extra-libs`.
+
+### Step 4 — `src/mux` + `src/parse` (three commits so far)
+
+**cce5270c — the container splitters.**
+- `mux/ps_disc.c/h`: mpeg.c's disc-sector reading moved as it was (it was
+  already pure functions over `const uint8_t sec[2048]`).
+- `mux/ts_disc.c/h`: mpegts.c's disc mode re-hosted on an event seam —
+  `pes` (a PES begins; keeps stream-creation TIMING identical), `emit`
+  (payload piece with its PTS), `gap` (stretches left out), `drop`, `note`,
+  `error`. `TS_DISC_NOPTS` == `AV_NOPTS_VALUE` numerically.
+- The demuxers keep wrapper duty: streams/packets, storing stretches for
+  `ff_mpegts_disc_gap()` or logging them with the same words, `disc_err()`
+  translating our error values back to FFmpeg's.
+
+**ce0ed118 — the pure frame rules + one log hook.**
+- `parse/rules.h`: `DrCutRule` (unit_size/resync/state) and `DrFrameRule`
+  (sync/size/check/resync/limit) — the same member shapes the FFmpeg
+  engines run, so `FFDiscCutRule` is now a typedef of ours.
+- MOVED rules: TrueHD/MLP, VC-1 (start-code walk, its own state), DVD/HD
+  DVD sub-pictures, ADTS, LOAS, Blu-ray LPCM, PGS display sets, TextST
+  segments + the TextST segment reader (`parse/hdmv_textst.h`).
+- `base/vlog.h` becomes the one hook; io's own hook removed.
+- `parser.c`'s engine translates rule errors at its edge.
+
+**9e074440 — the audio rules, header math ours.**
+- `parse/ac3_rule.c`: A/52 frame-size table + syncinfo checks of our own;
+  crc1/crc2 through `base/crc16.c` (bit-identical construction);
+  `dr_ac3_stream_header()` (E-AC-3 bitstream info through the channel map).
+- `parse/dca_rule.c`: DTS core + extension-substream header walks,
+  `dr_dca_first_frame()`; the DTS-HD "does an extension follow" state in
+  `DrDcaRuleCtx`.
+- `parse/mpa_rule.c`: MPEG-audio header decode + Layer II allocation
+  tables (spec values), free-format search, the side-information CRC.
+- `parse/bits.h`: our bit reader; reads past the end return zero bits and
+  keep advancing, so every overrun check fires where it did.
+- The parsers keep hookups only; the HD DVD probe calls parse's checks.
+
+**Moved so far: ~13k lines across 4 libraries; FFmpeg's in-place diff is
+shrinking with every slice.**
+
+---
+
+## Part 4 — What is left, in detail
+
+### Step 4c — H.264 / HEVC cutters → `parse/` (next)
+What: the AU cutters in `h264_parser.c` (+571) and `hevc/parser.c` (+551):
+NAL walk, own slice-header compare (same-picture rule), SPS/PPS capture,
+pict type / key / display order / fields out.
+Needs copied: a NAL/RBSP unescaper and bounded readers for SPS, PPS and the
+slice header prefix (FFmpeg's `h2645_parse` + golomb equivalents, ~1–2k
+lines, under `parse/`), since parse must not include libavcodec.
+Gate: the disctl H.264/HEVC tests + full suite; the cutters' values
+(disc_fields, orders, key flags) are asserted there.
+Also here: `pcm_dvd`'s 15-line rule once the rule signature can carry the
+LPCM frame size (or it waits for 4d's native host, which passes it
+explicitly — decide when there).
+
+### Step 4d — the native splitter + re-host (ends step 4)
+What: a push API in `parse/` that replaces FFmpeg's two engines:
+```
+DrSplit *dr_split_new(codec/rule, ctx, logctx)
+feed(bytes, len, final) → chunks { data, size, offset, status(unit/skip/
+    no-start/end), note, picture values (type/key/order/fields) }
+```
+Then: `disctl_frames.c` re-hosted on it (the av_parser_parse2 offset
+gymnastics disappear; its window/offset cross-check collapses), the HD DVD
+probe re-hosted, and THE DELETION: `parser.c`'s engines, `PARSER_FLAG_DISC*`,
+`disc_status/note/fields` on AVCodecParserContext, every parser's disc
+branch, the two new pcm parsers and the PGS parser shell. After this no
+FFmpeg parser knows discs.
+Gate: full suite (the frame step is exercised by every demux test) + a
+corpus byte-compare is strongly advised here (first behavior-relevant
+re-host).
+
+### Step 5 — `src/timeline` (the title timeline moves)
+What: `disctl_*` (~11k lines, 22 files) → `timeline/`. Most are
+utility-coupled and move with shims (AVBufferRef → `base/buf.h` is the main
+mechanical change; log → vlog; err values). The deep spots and their fate:
+- `disctl_frames.c`: re-hosted in 4d already; lands here renamed.
+- `disctl_audio.c`: the eac3_core/dca_core bitstream filters become
+  core-only frame filters in `parse/` (frames are already cut; "keep only
+  the core syncframes" / "drop dependent frames"). DATA PATH — byte-compare.
+- `disctl_codecs.c`: its header checks move onto parse's own readers
+  (done for AC-3/DTS/MPA); the LATM one-frame decode and TrueHD
+  `decode_count` become `analyze/` calls (step 6) — until then they keep
+  linking avcodec from the timeline's wrapper side.
+- `disctl_ccx.c`: unchanged (CCExtractor process).
+Gate: full suite + corpus byte-compare (this is the timing heart).
+
+### Step 6 — `src/analyze` (FFmpeg quarantined)
+What: the four entry points of §2.5 as a small library that is the ONLY
+FFmpeg linker in our tree; `log_ffmpeg.c` moves in (the av_log funnel);
+`dr_vlog` flips from av_vlog to `base/log.h` directly (source strings then
+come from the modules, not AVClass — the only intended log-attribution
+change of the rewrite; texts unchanged).
+Consumers rewired: `discpass.c` details (two tiers: header/SEI parse first,
+decode for decoded truths), `check.c` (same decoders, both sides),
+`writer.c` layout probe, `disctl_mlp`/LATM answers.
+Gate: info output of the corpus compared field by field; demux byte-compare
+unaffected by construction.
+
+### Step 7 — `src/disc` + `hddvd/` + `bluray/` (the disc layer leaves FFmpeg)
+What: `discdec.c`/`disc.h`/`discinfo.h` → our own disc model (no
+AVFormatContext/AVStream/AVOption/metadata dicts: typed structs end to
+end), `disctitle.c` driving `mux/` directly (the AVIO + sub-demuxer seam
+goes), `discpass.c` on mux/parse/analyze, `disclang.c` with its own ISO-639
+table, the HD DVD and Blu-ray parts near-verbatim (utility-coupled).
+This deletes: the "disc" AVInputFormat, the mpeg.c/mpegts.c disc wrappers
+(mux/ is called directly), the last libavformat edits except nothing —
+**libs/ffmpeg returns to ~upstream** (the one remaining historical fix,
+parser.c timestamp lookup #1, dies with 4d).
+The writer opens the disc layer natively; options come typed from settings.
+Gate: corpus byte-compare + info compare; the GUI must run (it still speaks
+engine.h v1 until step 9).
+
+### Step 8 — `src/dvd` (the DVD lift)
+What: up from libdvdread into `dvd/`: `title_list.c`, `stream_probe.c`, the
+policy half of `vob_read.c` (cell walk/trim, decoys, segments, chapters),
+keyed by an app-side disc context that replaces `dvd_reader_s.vob_css[100]`
+and the `ifo_handle_private_s` extensions; up from libdvdnav: `scan.c` (the
+driver; the VM patch set stays). The findings book is base's already; the
+report structs become app types both libraries' callbacks feed.
+libdvdread's remaining diff: `_rec` readers + instrumentation + fs hooks
+(or further slimming if the `_rec` readers come up too — decide there).
+Gate: the 30-DVD title list/track comparisons re-run + corpus byte-compare.
+
+### Step 9 — engine API v2 (GUI-first)
+What: `engine.h` v2 on `base/events.h`: the disc model exposed as typed
+structs with enum property keys (nothing matched by English names), rip
+results as events (damage as arrays, not text blobs), selection written
+into the model, display strings built from fields (the GUI's reverse-
+parsing of `engine_track_parts()` and its QJsonDocument re-parsing go),
+`TitleOutcome` crosses the boundary typed, JSON rendered only by the CLI.
+The warts list to burn down is UNTANGLE.md §4, item by item.
+Gate: GUI feature parity by hand + the suite; no rip-path change.
+
+### Step 10 — the MKV writer, then retirement
+The writer once every format's streams pass (decision D4: libebml/
+libmatroska vs an own EBML writer — the streams and timeline are done by
+then, so it is a pure output module with the end check behind it). Then the
+old in-FFmpeg scaffolding is fully gone, `legacy/rust`'s remaining test
+ports continue as before, and main gets the merge.
+
+### Open decisions (ask the user at the step)
+- D-4c: pcm_dvd now (rule signature grows a format argument) or at 4d.
+- D-6: analyze/'s decode-vs-parse precedence when they disagree (today the
+  decoder wins for decoded truths; keep, revisit per case).
+- D-8: how far libdvdread slims (policy-only lift vs `_rec` readers too).
+- D-10: libebml/libmatroska vs own EBML writer.
+- Merge points: the user merges to main when he has byte-compared real
+  discs (earliest sensible: after 4d; safest: after 7).
+
+## Part 5 — How to verify at any point
+
+- `./build.sh test` — the suite (735 + growing; every moved module keeps
+  its tests, the bridge links the module libraries).
+- Corpus byte-compare: build main and the branch, `demux` the same titles,
+  `cmp` every output file, diff the logs (texts must match; the version
+  line and, after step 6, library source tags may differ).
+- `info` compare: field-for-field on every corpus disc (JSON records).
+- The ledger: every FFmpeg-touching change is one row in `libs/README.md`
+  with its test; the rewrite's rows are 248+.
