@@ -43,7 +43,7 @@ typedef struct AACAC3ParseContext {
 
     /* disc mode (PARSER_FLAG_DISC, AC-3 / E-AC-3) */
     FFDiscFrames disc;
-    int disc_kind;              /**< frames taken: 0 AC-3 and E-AC-3, 1 AC-3 only, 2 E-AC-3 only */
+    DrAc3RuleCtx disc_ctx;      /**< the rules' own: which frames are taken */
 } AACAC3ParseContext;
 
 int ff_aac_ac3_parse(AVCodecParserContext *s1,

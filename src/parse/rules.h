@@ -50,6 +50,19 @@ typedef struct DrFrameRule {
     int limit;
 } DrFrameRule;
 
+/* The frame rules' own contexts (the caller owns one per track): */
+typedef struct DrAc3RuleCtx {
+    int kind;               /**< frames taken: 0 AC-3 and E-AC-3, 1 AC-3 only, 2 E-AC-3 only */
+} DrAc3RuleCtx;
+typedef struct DrDcaRuleCtx {
+    int undecided;          /**< DTS-HD: whether an extension substream follows each core frame is still open */
+    int ext;                /**< and it does */
+} DrDcaRuleCtx;
+typedef struct DrMpaRuleCtx {
+    int dvd;                /**< a DVD-Video disc's stream: only Layer II, 48 kHz, not dual channel */
+    int free_size;          /**< the free-format frame size found (0 none yet) */
+} DrMpaRuleCtx;
+
 /* The rules (one file each; the cutting is described there): */
 extern const DrCutRule   dr_mlp_cut;          /**< TrueHD / MLP access units */
 extern const DrCutRule   dr_dvdsub_cut;       /**< DVD / HD DVD sub-picture units */
@@ -59,6 +72,21 @@ extern const DrCutRule   dr_pcm_bluray_cut;   /**< Blu-ray LPCM units */
 extern const DrFrameRule dr_adts_frames;      /**< AAC ADTS frames */
 extern const DrFrameRule dr_latm_frames;      /**< AAC LATM / LOAS frames */
 extern const DrFrameRule dr_textst_frames;    /**< TextST segments (one per unit) */
+extern const DrFrameRule dr_ac3_frames;       /**< AC-3 / E-AC-3 syncframes (ctx: DrAc3RuleCtx) */
+extern const DrFrameRule dr_dts_frames;       /**< DTS core frames (ctx: DrDcaRuleCtx) */
+extern const DrFrameRule dr_dts_hd_frames;    /**< DTS-HD: core + extension substream (ctx: DrDcaRuleCtx) */
+extern const DrFrameRule dr_mpa_frames;       /**< MPEG audio frames (ctx: DrMpaRuleCtx) */
+
+/** The stream header from an AC-3 / E-AC-3 frame: E-AC-3 bitstream
+ *  information up to the channel map (the frame must hold it; a dependent
+ *  stream's channel map must give the channels its audio coding mode and
+ *  LFE give); AC-3: the syncinfo. 1 valid, 0 not. */
+int dr_ac3_stream_header(const uint8_t *buf, int size);
+
+/** The first frame of a DTS stream as the disc reader takes it: 0 not a
+ *  valid first frame, 1 a core frame alone, 2 a core frame with a valid
+ *  extension substream after it (DTS-HD). */
+int dr_dca_first_frame(const uint8_t *buf, int size);
 
 /** dr_pgs_cut's state: whether the chunk given out is no display set (the
  *  engine's caller marks it skipped). */

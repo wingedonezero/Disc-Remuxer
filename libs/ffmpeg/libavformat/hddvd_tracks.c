@@ -53,6 +53,8 @@
 #include "libavutil/log.h"
 #include "libavutil/mem.h"
 
+#include "parse/rules.h"
+
 #include "libavcodec/ac3_parser_internal.h"
 #include "libavcodec/avcodec.h"
 #include "libavcodec/dca.h"
@@ -162,13 +164,13 @@ static int probe_frame(Probe *p, enum AVCodecID codec, const uint8_t *b, int len
 {
     if (codec == AV_CODEC_ID_DTS) {
         if (!p->nb_units) {
-            int kind = avpriv_dca_disc_first_frame(b, len);
+            int kind = dr_dca_first_frame(b, len);
             if (!kind)
                 goto bad;
             p->dts_hd = kind == 2;
         }
     } else {
-        if (!p->nb_units && !avpriv_ac3_disc_stream_header(b, len))
+        if (!p->nb_units && !dr_ac3_stream_header(b, len))
             goto bad;
         if (p->nb_units < PROBE_FRAMES)
             p->bsid[p->nb_units] = len > 5 ? b[5] >> 3 : 0;

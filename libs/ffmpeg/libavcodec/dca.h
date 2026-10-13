@@ -215,15 +215,6 @@ int avpriv_dca_convert_bitstream(const uint8_t *src, int src_size, uint8_t *dst,
  */
 int avpriv_dca_parse_core_frame_header(DCACoreFrameHeader *h, const uint8_t *buf, int size);
 
-/**
- * Disc mode: the first frame of a DTS stream as the disc reader takes it (a
- * core frame, or a core frame with a DTS-HD extension substream after it, as
- * the parser's disc mode gives them): 0 not a valid first frame, 1 a core
- * frame, 2 a core frame with an extension substream whose header is valid
- * (through the first asset's descriptor), whose frame and assets lie in the
- * frame.
- */
-int avpriv_dca_disc_first_frame(const uint8_t *buf, int size);
 
 /**
  * Parse and validate core frame header
