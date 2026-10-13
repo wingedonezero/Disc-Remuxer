@@ -38,9 +38,9 @@
 
 #include <string.h>
 
-#include "libavutil/intreadwrite.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
+#include "base/bytes.h"
+#include "base/vlog.h"
+#include "base/mem.h"
 
 #include "bluray_internal.h"
 
@@ -58,14 +58,14 @@ static int stn_stream(const BlurayFile *f, BlurayStnStream *r, uint32_t *pos)
         return 0;
     r->entry_len  = h[0] - 1;
     r->entry_type = h[1];
-    RD(p + 2, FFMIN(h[0] - 1, 8), r->entry);
+    RD(p + 2, DR_MIN(h[0] - 1, 8), r->entry);
     p += 1 + h[0];
     RD(p, 2, a);
     if (!a[0])
         return 0;
     r->coding_type = a[1];
     r->attr_len    = a[0] - 1;
-    RD(p + 2, FFMIN(a[0] - 1, 32), r->attr);
+    RD(p + 2, DR_MIN(a[0] - 1, 32), r->attr);
     *pos = p + 1 + a[0];
     return 1;
 }
@@ -82,8 +82,8 @@ static int angles(const BlurayFile *f, int present, BlurayAngleClip **out, int *
     *pos += 2;
     if (!h[0])
         return 0;
-    if (!(*out = av_calloc(h[0] - 1 ? h[0] - 1 : 1, sizeof(**out))))
-        return AVERROR(ENOMEM);
+    if (!(*out = dr_calloc(h[0] - 1 ? h[0] - 1 : 1, sizeof(**out))))
+        return DR_ERR(ENOMEM);
     *nb = h[0] - 1;
     for (int k = 0; k < h[0] - 1; k++) {
         BlurayAngleClip *r = &(*out)[k];
@@ -109,11 +109,11 @@ static int sub_play_item(const BlurayFile *f, BluraySubPlayItem *r, uint32_t off
     r->connection = (b[0xe] >> 1) & 0xf;
     r->multi_clip = b[0xe] & 1;
     r->stc_id     = b[0xf];
-    r->in_time    = AV_RB32(b + 0x10);
-    r->out_time   = AV_RB32(b + 0x14);
+    r->in_time    = dr_rb32(b + 0x10);
+    r->out_time   = dr_rb32(b + 0x14);
     RD(off + 0x18, 6, c);
-    r->sync_play_item = AV_RB16(c);
-    r->sync_start_pts = AV_RB32(c + 2);
+    r->sync_play_item = dr_rb16(c);
+    r->sync_start_pts = dr_rb32(c + 2);
     q = off + 0x1e;
     return angles(f, r->multi_clip, &r->clips, &r->nb_clips, &q);
 }
@@ -130,22 +130,22 @@ static int sub_path(void *log, const BlurayFile *f, BluraySubPath *sp, uint32_t 
     if (!n)
         return 0;
     RD(off + 10, 2, l);
-    if (!(sp->items = av_calloc(n, sizeof(*sp->items))))
-        return AVERROR(ENOMEM);
+    if (!(sp->items = dr_calloc(n, sizeof(*sp->items))))
+        return DR_ERR(ENOMEM);
     sp->nb_items = 1;
     if ((ret = sub_play_item(f, &sp->items[0], off + 10)) <= 0) {
-        av_log(log, AV_LOG_DEBUG, "Blu-ray: %s: SubPlayItem 0 cannot be read\n", f->path);
+        dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: %s: SubPlayItem 0 cannot be read\n", f->path);
         return ret;
     }
-    p = off + 12 + AV_RB16(l);
+    p = off + 12 + dr_rb16(l);
     for (int k = 1; k < n; k++) {
         RD(p, 2, l);
         sp->nb_items = k + 1;
         if ((ret = sub_play_item(f, &sp->items[k], p)) <= 0) {
-            av_log(log, AV_LOG_DEBUG, "Blu-ray: %s: SubPlayItem %d cannot be read\n", f->path, k);
+            dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: %s: SubPlayItem %d cannot be read\n", f->path, k);
             return ret;
         }
-        p += 2 + AV_RB16(l);
+        p += 2 + dr_rb16(l);
     }
     return 1;
 }
@@ -156,18 +156,18 @@ static int marks(const BlurayFile *f, BlurayPlaylist *pl, uint32_t off)
     int n;
 
     RD(off, 6, h);
-    if (!(n = AV_RB16(h + 4)))
+    if (!(n = dr_rb16(h + 4)))
         return 1;
-    if (!(pl->marks = av_calloc(n, sizeof(*pl->marks))))
-        return AVERROR(ENOMEM);
+    if (!(pl->marks = dr_calloc(n, sizeof(*pl->marks))))
+        return DR_ERR(ENOMEM);
     for (int i = 0; i < n; i++) {
         BlurayMark *m = &pl->marks[i];
         RD(off + 6 + 14 * i, 14, r);
         m->type      = r[1];
-        m->play_item = AV_RB16(r + 2);
-        m->time      = AV_RB32(r + 4);
-        m->pid       = AV_RB16(r + 8);
-        m->duration  = AV_RB32(r + 10);
+        m->play_item = dr_rb16(r + 2);
+        m->time      = dr_rb32(r + 4);
+        m->pid       = dr_rb16(r + 8);
+        m->duration  = dr_rb32(r + 10);
         pl->nb_marks = i + 1;
     }
     return 1;
@@ -186,8 +186,8 @@ static int play_item(void *log, const BlurayFile *f, BlurayPlayItem *it, uint32_
     it->connection  = b[0xc] & 0xf;
     it->multi_angle = (b[0xc] >> 4) & 1;
     it->stc_id      = b[0xd];
-    it->in_time     = AV_RB32(b + 0xe);
-    it->out_time    = AV_RB32(b + 0x12);
+    it->in_time     = dr_rb32(b + 0xe);
+    it->out_time    = dr_rb32(b + 0x12);
     RD(o + 0x1e, 4, x);                   /* read, not used */
     q = o + 0x22;
     if ((ret = angles(f, it->multi_angle, &it->angles, &it->nb_angles, &q)) <= 0)
@@ -196,18 +196,18 @@ static int play_item(void *log, const BlurayFile *f, BlurayPlayItem *it, uint32_
     q += 0x10;
     it->nb_ig = s[7];
     if (s[4] != 1) {
-        av_log(log, AV_LOG_DEBUG, "Blu-ray: %s: a PlayItem with %d primary video streams\n", f->path, s[4]);
+        dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: %s: a PlayItem with %d primary video streams\n", f->path, s[4]);
         return 0;
     }
     if (!stn_stream(f, &it->video, &q))
         return 0;
-    if (s[5] && !(it->audio = av_calloc(s[5], sizeof(*it->audio))))
-        return AVERROR(ENOMEM);
+    if (s[5] && !(it->audio = dr_calloc(s[5], sizeof(*it->audio))))
+        return DR_ERR(ENOMEM);
     for (int i = 0; i < s[5]; i++, it->nb_audio++)
         if (!stn_stream(f, &it->audio[i], &q))
             return 0;
-    if (s[6] && !(it->pg = av_calloc(s[6], sizeof(*it->pg))))
-        return AVERROR(ENOMEM);
+    if (s[6] && !(it->pg = dr_calloc(s[6], sizeof(*it->pg))))
+        return DR_ERR(ENOMEM);
     for (int i = 0; i < s[6]; i++, it->nb_pg++)
         if (!stn_stream(f, &it->pg[i], &q))
             return 0;
@@ -227,7 +227,7 @@ static int stn_ss(void *log, const BlurayFile *f, BlurayPlaylist *pl, const Blur
         if (p + 2 > lim)
             return 0;
         RD(p, 2, l);
-        nb = p + (uint16_t)(AV_RB16(l) + 2);
+        nb = p + (uint16_t)(dr_rb16(l) + 2);
         if (nb > lim)
             return 0;
         RD(p + 2, 2, b);
@@ -237,20 +237,20 @@ static int stn_ss(void *log, const BlurayFile *f, BlurayPlaylist *pl, const Blur
         if (!stn_stream(f, &it->ss.dep_video, &q))
             return 0;
         if (q + 2 > nb) {
-            av_log(log, AV_LOG_DEBUG, "Blu-ray: %s: STN_table_SS block of PlayItem %d too short\n", f->path, i);
+            dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: %s: STN_table_SS block of PlayItem %d too short\n", f->path, i);
             return 0;
         }
         RD(q, 2, c);
         it->ss.nb_offset_seq = c[1] & 0x3f;
-        if (it->nb_pg && !(it->ss.pg = av_calloc(it->nb_pg, sizeof(*it->ss.pg))))
-            return AVERROR(ENOMEM);
+        if (it->nb_pg && !(it->ss.pg = dr_calloc(it->nb_pg, sizeof(*it->ss.pg))))
+            return DR_ERR(ENOMEM);
         r = q + 2;
         for (int k = 0; k < it->nb_pg; k++) {
             uint8_t *R = it->ss.pg[k], d[2], e1[2], e2[2], g[2];
             uint32_t t;
 
             if (r + 2 > nb) {
-                av_log(log, AV_LOG_DEBUG, "Blu-ray: %s: STN_table_SS PG record %d of PlayItem %d too short\n",
+                dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: %s: STN_table_SS PG record %d of PlayItem %d too short\n",
                        f->path, k, i);
                 return 0;
             }
@@ -268,7 +268,7 @@ static int stn_ss(void *log, const BlurayFile *f, BlurayPlaylist *pl, const Blur
                 return 0;
             R[3] = e1[0] - 1;
             R[2] = e1[1];
-            RD(r + 4, FFMIN(e1[0] - 1, 8), R + 4);
+            RD(r + 4, DR_MIN(e1[0] - 1, 8), R + 4);
             t = r + 3 + e1[0];
             if (R[1] & 4) {
                 if (t + 1 > nb)
@@ -278,7 +278,7 @@ static int stn_ss(void *log, const BlurayFile *f, BlurayPlaylist *pl, const Blur
                     return 0;
                 R[0xd] = e2[0] - 1;
                 R[0xc] = e2[1];
-                RD(t + 2, FFMIN(e2[0] - 1, 8), R + 0xe);
+                RD(t + 2, DR_MIN(e2[0] - 1, 8), R + 0xe);
                 t += 1 + e2[0];
             }
             if (t + 2 > nb)
@@ -290,7 +290,7 @@ static int stn_ss(void *log, const BlurayFile *f, BlurayPlaylist *pl, const Blur
         p = nb;
     }
     if (p != lim) {
-        av_log(log, AV_LOG_DEBUG, "Blu-ray: %s: STN_table_SS blocks end at %u, the entry at %u\n", f->path, p, lim);
+        dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: %s: STN_table_SS blocks end at %u, the entry at %u\n", f->path, p, lim);
         return 0;
     }
     return 1;
@@ -311,56 +311,56 @@ int ff_bluray_mpls_parse(void *log, const BlurayFile *f, BlurayPlaylist *pl)
     pl->ext_subpath_type = 0xffff;
     RD(0, 0x28, H);
     ff_bluray_header(H, &pl->hdr);
-    if (pl->hdr.type != MKBETAG('M', 'P', 'L', 'S'))
+    if (pl->hdr.type != DR_MKBETAG('M', 'P', 'L', 'S'))
         return 0;
-    P = AV_RB32(H + 8);
-    M = AV_RB32(H + 0xc);
-    X = AV_RB32(H + 0x10);
+    P = dr_rb32(H + 8);
+    M = dr_rb32(H + 0xc);
+    X = dr_rb32(H + 0x10);
 
     /* AppInfoPlayList */
     RD(0x28, 4, l);
-    L = AV_RB32(l) + 4;
+    L = dr_rb32(l) + 4;
     if (L <= 5) {
-        av_log(log, AV_LOG_DEBUG, "Blu-ray: %s: AppInfoPlayList length %u\n", f->path, L);
+        dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: %s: AppInfoPlayList length %u\n", f->path, L);
         return 0;
     }
-    RD(0x28, FFMIN(L, 0x12), A);
+    RD(0x28, DR_MIN(L, 0x12), A);
     pl->playback_type  = A[5];
-    pl->playback_count = AV_RB16(A + 6);
-    pl->app_flags      = AV_RB16(A + 0x10);
+    pl->playback_count = dr_rb16(A + 6);
+    pl->app_flags      = dr_rb16(A + 0x10);
 
     /* PlayList: PlayItems, SubPaths */
     RD(P, 10, T);
-    end = P + AV_RB32(T) + 4;
-    nPI = AV_RB16(T + 6);
-    nSP = AV_RB16(T + 8);
-    if (nPI && !(pl->items = av_calloc(nPI, sizeof(*pl->items))))
-        return AVERROR(ENOMEM);
+    end = P + dr_rb32(T) + 4;
+    nPI = dr_rb16(T + 6);
+    nSP = dr_rb16(T + 8);
+    if (nPI && !(pl->items = dr_calloc(nPI, sizeof(*pl->items))))
+        return DR_ERR(ENOMEM);
     o = P + 10;
     for (int i = 0; i < nPI; i++) {
         uint32_t next;
         RD(o, 2, l);
-        next = o + 2 + AV_RB16(l);
+        next = o + 2 + dr_rb16(l);
         if (next > end)
             return 0;
         pl->nb_items = i + 1;
         if ((ret = play_item(log, f, &pl->items[i], o)) <= 0) {
-            av_log(log, AV_LOG_DEBUG, "Blu-ray: %s: PlayItem %d cannot be read\n", f->path, i);
+            dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: %s: PlayItem %d cannot be read\n", f->path, i);
             return ret;
         }
         o = next;
     }
-    if (nSP && !(pl->subpaths = av_calloc(nSP, sizeof(*pl->subpaths))))
-        return AVERROR(ENOMEM);
+    if (nSP && !(pl->subpaths = dr_calloc(nSP, sizeof(*pl->subpaths))))
+        return DR_ERR(ENOMEM);
     for (int j = 0; j < nSP; j++) {
         uint32_t next;
         RD(o, 4, l);
-        next = o + AV_RB32(l) + 4;
+        next = o + dr_rb32(l) + 4;
         if (next > end)
             return 0;
         pl->nb_subpaths = j + 1;
         if ((ret = sub_path(log, f, &pl->subpaths[j], o)) <= 0) {
-            av_log(log, AV_LOG_DEBUG, "Blu-ray: %s: SubPath %d cannot be read\n", f->path, j);
+            dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: %s: SubPath %d cannot be read\n", f->path, j);
             return ret;
         }
         o = next;
@@ -380,9 +380,9 @@ int ff_bluray_mpls_parse(void *log, const BlurayFile *f, BlurayPlaylist *pl)
             uint8_t h[6];
             int n;
             RD(e->start, 6, h);
-            n = AV_RB16(h + 4);
+            n = dr_rb16(h + 4);
             if (n != 1)
-                av_log(log, AV_LOG_DEBUG, "Blu-ray: %s: %d SubPath extension entries: the first is read\n",
+                dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: %s: %d SubPath extension entries: the first is read\n",
                        f->path, n);
             if (n) {
                 if ((ret = sub_path(log, f, &pl->ext_subpath, e->start + 6)) <= 0)
@@ -397,8 +397,8 @@ int ff_bluray_mpls_parse(void *log, const BlurayFile *f, BlurayPlaylist *pl)
 static void sub_path_free(BluraySubPath *sp)
 {
     for (int i = 0; i < sp->nb_items; i++)
-        av_freep(&sp->items[i].clips);
-    av_freep(&sp->items);
+        dr_freep(&sp->items[i].clips);
+    dr_freep(&sp->items);
     sp->nb_items = 0;
 }
 
@@ -406,17 +406,17 @@ void ff_bluray_playlist_free(BlurayPlaylist *pl)
 {
     for (int i = 0; i < pl->nb_items; i++) {
         BlurayPlayItem *it = &pl->items[i];
-        av_freep(&it->angles);
-        av_freep(&it->audio);
-        av_freep(&it->pg);
-        av_freep(&it->ss.pg);
+        dr_freep(&it->angles);
+        dr_freep(&it->audio);
+        dr_freep(&it->pg);
+        dr_freep(&it->ss.pg);
     }
-    av_freep(&pl->items);
+    dr_freep(&pl->items);
     for (int j = 0; j < pl->nb_subpaths; j++)
         sub_path_free(&pl->subpaths[j]);
-    av_freep(&pl->subpaths);
+    dr_freep(&pl->subpaths);
     sub_path_free(&pl->ext_subpath);
-    av_freep(&pl->marks);
+    dr_freep(&pl->marks);
     ff_bluray_ext_free(&pl->ext, &pl->nb_ext);
     pl->nb_items = pl->nb_subpaths = pl->nb_marks = 0;
 }

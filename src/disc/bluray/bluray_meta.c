@@ -24,10 +24,10 @@
 
 #include <expat.h>
 
-#include "libavutil/avstring.h"
-#include "libavutil/bprint.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
+#include "base/mem.h"
+#include "base/str.h"
+#include "base/vlog.h"
+#include "base/mem.h"
 
 #include "bluray_internal.h"
 
@@ -46,10 +46,9 @@ static const uint16_t cp1252[32] = {
  * is written as itself, a high surrogate as the last unit ends the text. */
 static char *utf16_to_utf8(const uint16_t *u, uint32_t n)
 {
-    AVBPrint bp;
-    char *s;
+    DrStr bp;
 
-    av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
+    dr_str_init(&bp);
     for (uint32_t i = 0; i < n && u[i]; i++) {
         uint32_t c = u[i];
         uint8_t b[4];
@@ -80,11 +79,9 @@ static char *utf16_to_utf8(const uint16_t *u, uint32_t n)
             b[3] = 0x80 | (c & 0x3f);
             len  = 4;
         }
-        av_bprint_append_data(&bp, b, len);
+        dr_str_cat_data(&bp, (const char *)b, len);
     }
-    if (av_bprint_finalize(&bp, &s) < 0)
-        return NULL;
-    return s;
+    return dr_str_take(&bp, 1);
 }
 
 /* Bytes valid as UTF-8 for the reference program's check: no 0 byte, every
@@ -117,36 +114,36 @@ char *ff_bluray_text(void *log, uint8_t charset, const uint8_t *text, uint32_t l
         return NULL;
     switch (charset) {
     case 0x10:                              /* as recorded */
-        return av_strndup(text, len);
+        return dr_strndup((const char *)text, len);
     case 0x11:                              /* single bytes: Latin-1 with Windows-1252 at 0x80 .. 0x9f */
-        if (!(u = av_malloc_array(len, sizeof(*u))))
+        if (!(u = dr_malloc_array(len, sizeof(*u))))
             return NULL;
         for (uint32_t i = 0; i < len; i++)
             u[i] = text[i] >= 0x80 && text[i] <= 0x9f ? cp1252[text[i] - 0x80] : text[i];
         s = utf16_to_utf8(u, len);
-        av_free(u);
+        dr_free(u);
         return s;
     case 0x20:                              /* UTF-8, else UTF-16 big-endian */
         if (valid_utf8(text, len))
-            return av_strndup(text, len);
+            return dr_strndup((const char *)text, len);
         if (len & 1) {
-            av_log(log, AV_LOG_DEBUG, "Blu-ray: recorded text of %u bytes is neither UTF-8 nor UTF-16\n", len);
+            dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: recorded text of %u bytes is neither UTF-8 nor UTF-16\n", len);
             return NULL;
         }
-        if (!(u = av_malloc_array(len / 2, sizeof(*u))))
+        if (!(u = dr_malloc_array(len / 2, sizeof(*u))))
             return NULL;
         for (uint32_t i = 0; i < len / 2; i++)
             u[i] = text[2 * i] << 8 | text[2 * i + 1];
         s = utf16_to_utf8(u, len / 2);
-        av_free(u);
+        dr_free(u);
         return s;
     case 0x01:
         /* ARIB STD-B24 8-bit character code (Japanese recorders) */
-        av_log(log, AV_LOG_WARNING, "Blu-ray: recorded text in the ARIB character code is not decoded "
+        dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: recorded text in the ARIB character code is not decoded "
                "[untested on real discs]\n");
         return NULL;
     default:
-        av_log(log, AV_LOG_DEBUG, "Blu-ray: recorded text in character set 0x%02x is not decoded\n", charset);
+        dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: recorded text in character set 0x%02x is not decoded\n", charset);
         return NULL;
     }
 }
@@ -193,13 +190,13 @@ char *ff_bluray_clean_title(const char *s)
         if (!L)
             return NULL;
     }
-    if (!(b = av_strndup(s, L)))
+    if (!(b = dr_strndup(s, L)))
         return NULL;
     n = L;
     while (n >= 3 && (uint8_t)b[n - 1] <= 0x20)
         n--;
     if (n < 3)
-        n = FFMIN(L, 2);
+        n = DR_MIN(L, 2);
     for (size_t i = 0; i < n;) {
         if (b[i] == '\r') {
             memmove(b + i, b + i + 1, n - i);
@@ -213,7 +210,7 @@ char *ff_bluray_clean_title(const char *s)
     }
     b[n] = 0;
     if (!strcmp(b, "Blu-ray"))
-        av_freep(&b);
+        dr_freep(&b);
     return b;
 }
 
@@ -223,7 +220,7 @@ typedef struct Lib {
     int      depth;
     int      in_disclib, discinfo, title, name, language;  /* element counts seen */
     int      in_name, in_lang;                              /* collecting text */
-    AVBPrint name_text, lang_text;
+    DrStr name_text, lang_text;
 } Lib;
 
 /* The element name without its namespace prefix. */
@@ -269,9 +266,9 @@ static void XMLCALL lib_text(void *opaque, const XML_Char *s, int len)
     Lib *l = opaque;
 
     if (l->in_name)
-        av_bprint_append_data(&l->name_text, s, len);
+        dr_str_cat_data(&l->name_text, s, len);
     else if (l->in_lang)
-        av_bprint_append_data(&l->lang_text, s, len);
+        dr_str_cat_data(&l->lang_text, s, len);
 }
 
 static int xml_parse(Lib *l, const char *buf, size_t len)
@@ -280,18 +277,18 @@ static int xml_parse(Lib *l, const char *buf, size_t len)
     int ok;
 
     if (!p)
-        return AVERROR(ENOMEM);
+        return DR_ERR(ENOMEM);
     memset(l, 0, sizeof(*l));
-    av_bprint_init(&l->name_text, 0, AV_BPRINT_SIZE_UNLIMITED);
-    av_bprint_init(&l->lang_text, 0, AV_BPRINT_SIZE_UNLIMITED);
+    dr_str_init(&l->name_text);
+    dr_str_init(&l->lang_text);
     XML_SetUserData(p, l);
     XML_SetElementHandler(p, lib_start, lib_end);
     XML_SetCharacterDataHandler(p, lib_text);
     ok = XML_Parse(p, buf, len, 1) == XML_STATUS_OK;
     XML_ParserFree(p);
     if (!ok) {
-        av_bprint_finalize(&l->name_text, NULL);
-        av_bprint_finalize(&l->lang_text, NULL);
+        dr_str_free(&l->name_text);
+        dr_str_free(&l->lang_text);
     }
     return ok;
 }
@@ -305,9 +302,9 @@ static int xml_parse_tolerant(void *log, const BlurayFile *f, Lib *l)
     int ret, fixes = 0;
     size_t L = f->size;
 
-    if ((ret = xml_parse(l, f->data, f->size)))
+    if ((ret = xml_parse(l, (const char *)f->data, f->size)))
         return ret;
-    if (L > 0x40000 || !(b = av_mallocz(L + 0x81)))
+    if (L > 0x40000 || !(b = dr_mallocz(L + 0x81)))
         return 0;
     memcpy(b, f->data, L);
     for (h = b;;) {
@@ -343,10 +340,10 @@ repaired:
     if (fixes) {
         b[L + 0x80] = 0;
         if ((ret = xml_parse(l, b, strlen(b)))) {
-            av_free(b);
+            dr_free(b);
             return ret;
         }
-        av_log(log, AV_LOG_DEBUG, "Blu-ray: %s does not parse with its href values quoted\n", f->path);
+        dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: %s does not parse with its href values quoted\n", f->path);
     }
     memcpy(b, f->data, L);
     b[L] = 0;
@@ -354,11 +351,11 @@ repaired:
         memset(d, ' ', e + 17 - d);
         ret = xml_parse(l, b, L);
         if (!ret)
-            av_log(log, AV_LOG_DEBUG, "Blu-ray: %s does not parse without its description\n", f->path);
+            dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: %s does not parse without its description\n", f->path);
     } else {
         ret = 0;
     }
-    av_free(b);
+    dr_free(b);
     return ret;
 }
 
@@ -371,14 +368,14 @@ int ff_bluray_meta_read(void *log, const BlurayFile *f, char **name, char lang[8
     lang[0] = 0;
     if ((ret = xml_parse_tolerant(log, f, &l)) <= 0) {
         if (!ret)
-            av_log(log, AV_LOG_DEBUG, "Blu-ray: %s is not readable XML\n", f->path);
+            dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: %s is not readable XML\n", f->path);
         return ret;
     }
-    if (l.language && av_bprint_is_complete(&l.lang_text))
-        av_strlcpy(lang, l.lang_text.str, 8);
-    if (l.name && av_bprint_is_complete(&l.name_text))
+    if (l.language && dr_str_ok(&l.lang_text))
+        dr_strlcpy(lang, l.lang_text.str, 8);
+    if (l.name && dr_str_ok(&l.name_text))
         *name = ff_bluray_clean_title(l.name_text.str);
-    av_bprint_finalize(&l.name_text, NULL);
-    av_bprint_finalize(&l.lang_text, NULL);
+    dr_str_free(&l.name_text);
+    dr_str_free(&l.lang_text);
     return 1;
 }

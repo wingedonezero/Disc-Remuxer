@@ -24,11 +24,11 @@
 #include <inttypes.h>
 #include <stdint.h>
 
-#include "libavutil/avutil.h"
-#include "libavutil/error.h"
-#include "libavcodec/codec_id.h"
+#include "base/macros.h"
+#include "base/err.h"
+#include "timeline/disctl.h"
 
-#include "discinfo.h"
+#include "disc/info.h"
 #include "io/discio.h"
 
 /* ---- reading a disc file (bluray_files.c) ---- */
@@ -332,16 +332,16 @@ int  ff_bluray_id_parse(void *log, const BlurayFile *f, BlurayId *id);
 
 /* ---- disc names (bluray_meta.c) ---- */
 
-/** Recorded text of the given character set as UTF-8 (av_free()), or NULL
+/** Recorded text of the given character set as UTF-8 (dr_free()), or NULL
  *  (none, or a character set that is not decoded). */
 char *ff_bluray_text(void *log, uint8_t charset, const uint8_t *text, uint32_t len);
 /** The disc library title with the suffixes the reference program removes
- *  (" Blu-ray 3D", " 4K Ultra HD", ", The", ...) taken off (av_free()), or
+ *  (" Blu-ray 3D", " 4K Ultra HD", ", The", ...) taken off (dr_free()), or
  *  NULL when nothing is left. */
 char *ff_bluray_clean_title(const char *s);
 /**
  * A disc library file (bdmt_LLL.xml): the name of its first discinfo's
- * first title, cleaned (av_free(); NULL when none), and the text of its
+ * first title, cleaned (dr_free(); NULL when none), and the text of its
  * first language element (as written, cut to 7 bytes; "" when none). A file
  * that does not parse is tried again with the reference program's repairs.
  * @return 1, 0 not readable XML, < 0 error
@@ -396,8 +396,8 @@ typedef struct BluraySide {
  *  gives (TrueHD and its AC-3, a subtitle and its forced-only copy, ...). */
 typedef struct BlurayTrack {
     int              code;          /**< the kind of track (internal codes, bluray_tracks.c) */
-    enum AVMediaType type;
-    enum AVCodecID   codec;
+    int type;
+    DRCodecID   codec;
     uint16_t         pid;
     uint32_t         sel1, sel2;    /**< what of the PID it takes (PES stream id extension, ...) */
     uint32_t         flags;         /**< BLURAY_TRACK_* */
@@ -434,7 +434,7 @@ typedef struct BlurayTitle {
     int                   nb_pids;
     const BlurayPlaylist *pl;           /**< NULL for a clip title */
     int                   angle;        /**< 1-based angle of a multi-angle playlist, 0 none */
-    char                 *title_name;   /**< BDAV / AVCHD title name (av_free()), or NULL */
+    char                 *title_name;   /**< BDAV / AVCHD title name (dr_free()), or NULL */
     char                 *alt_name;     /**< BDAV: the number or name part kept apart */
     int                   year, month, day, hour, minute, second;  /**< recording time (BDAV / AVCHD), 0 none */
     /* tracks (bluray_tracks.c) */
@@ -462,7 +462,7 @@ void ff_bluray_title_remove(struct BlurayDisc *d, int i);
  * largest segment's first clip (the title's streams only), the second view
  * of a 3-D title, its text subtitles; video first, then audio, then
  * subtitles, an identical audio / subtitle stream left out.
- * @return 0, AVERROR_INVALIDDATA the title has no video, < 0 error
+ * @return 0, DR_ERR_INVALID the title has no video, < 0 error
  */
 int ff_bluray_title_tracks(void *log, DiscIOFS *fs, BlurayAACS *aacs, BlurayTitle *t);
 
@@ -533,7 +533,7 @@ void    ff_bluray_seg_reader_init(BluraySegReader *u, void *log, DiscIOFS *fs, B
                                   const BluraySegment *s);
 /** The reader reads both views of the segment's 3-D items (before the first read). */
 void    ff_bluray_seg_reader_both(BluraySegReader *u);
-/** The unit at pos (a multiple of 6144) into buf: 0, AVERROR_EOF past the
+/** The unit at pos (a multiple of 6144) into buf: 0, DR_ERR_EOF past the
  *  end (also for a part unit at the end), < 0 error (logged). */
 int     ff_bluray_seg_read(BluraySegReader *u, int64_t pos, uint8_t *buf);
 void    ff_bluray_seg_reader_close(BluraySegReader *u);
@@ -568,7 +568,7 @@ typedef struct BlurayDisc {
     DiscIOFS       *parent_fs;       /**< AVCHD folder: the card's root (names only), or NULL */
     int             bdav;            /**< /BDAV/info.bdav: a BDAV (recorder) disc */
     int             bdplus;          /**< /BDSVM/00000.svm present */
-    char           *name;            /**< disc name (av_free()), or NULL */
+    char           *name;            /**< disc name (dr_free()), or NULL */
     char           *name_eng;        /**< its English name when another language was chosen */
     char            name_lang[4];    /**< language of the name's disc library file */
     char            meta_lang[16][4];/**< the languages of its disc library files (bdmt_<lang>.xml) */
@@ -617,7 +617,7 @@ typedef struct BlurayDisc {
  * once, every named playlist that plays no clip twice as long as the data
  * says); else a warning and nothing is set. Run before the title list: the
  * named playlists are listed first and keep their titles.
- * @return 0, AVERROR(ENOMEM)
+ * @return 0, DR_ERR(ENOMEM)
  */
 int  ff_bluray_menu_read(void *log, BlurayDisc *d);
 void ff_bluray_menu_free(BlurayDisc *d);
@@ -653,7 +653,7 @@ int  ff_bluray_decoys_check(void *log, BlurayDisc *d);
  * disc is not encrypted after all; without one the disc is taken as not
  * encrypted (with the checks for discs decrypted by other software). Sets
  * the clips' key_unit and the disc ID.
- * @return 0 (*out NULL when nothing is decrypted), AVERROR(EACCES) no key
+ * @return 0 (*out NULL when nothing is decrypted), DR_ERR(EACCES) no key
  *         for the disc, AVERROR_PATCHWELCOME a kind of AACS not supported,
  *         another < 0 error (the disc cannot be opened)
  */
@@ -684,7 +684,7 @@ int  ff_bluray_hash_open(void *log, DiscIOFS *fs, BlurayHash **out);
 /** A title's read starts: counts 0, every clip waiting for a hash unit's start. */
 void ff_bluray_hash_reset(BlurayHash *h);
 /** One aligned unit of clip `clip` at byte offset off of its stream file, as
- *  read (before decryption). A damaged hash unit is logged. 0 or AVERROR(ENOMEM). */
+ *  read (before decryption). A damaged hash unit is logged. 0 or DR_ERR(ENOMEM). */
 int  ff_bluray_hash_unit(void *log, BlurayHash *h, uint32_t clip, int64_t off, const uint8_t *unit);
 /** Hash units checked and found damaged since the reset, files with a damaged one. */
 void ff_bluray_hash_stats(const BlurayHash *h, int64_t *checked, int64_t *failed, int *files_failed);
@@ -703,7 +703,7 @@ int  ff_bluray_has_bdj(const BlurayDisc *d);
 void ff_bluray_disc_free(BlurayDisc *d);
 /** The disc's structure as text, one line per clip, playlist, PlayItem,
  *  mark and stream (for the log and for comparisons with other readers). */
-struct AVBPrint;
-void ff_bluray_disc_dump(const BlurayDisc *d, struct AVBPrint *bp);
+struct DrStr;
+void ff_bluray_disc_dump(const BlurayDisc *d, struct DrStr *bp);
 
 #endif /* AVFORMAT_BLURAY_INTERNAL_H */

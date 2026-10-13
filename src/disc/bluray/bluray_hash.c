@@ -37,13 +37,14 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "libavutil/intreadwrite.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
-#include "libavutil/sha.h"
+#include "base/bytes.h"
+#include "base/vlog.h"
+#include "base/mem.h"
+#include "base/sha.h"
 
 #include "bluray_internal.h"
 
@@ -60,7 +61,7 @@ typedef struct ClipCheck {
     uint32_t       clip;
     int64_t        expect;             /**< the offset of the next aligned unit of the hash unit, -1 none */
     const uint8_t *want;               /**< the value of the hash unit being read, NULL: not checked */
-    struct AVSHA  *sha;
+    DrSha          sha;
     int64_t        failed;
 } ClipCheck;
 
@@ -92,40 +93,38 @@ void ff_bluray_hash_free(BlurayHash **ph)
         return;
     for (int i = 0; i < h->nb_tables; i++)
         ff_bluray_file_free(&h->tables[i]);
-    for (int i = 0; i < h->nb_clips; i++)
-        av_free(h->clips[i].sha);
-    av_free(h->runs);
-    av_free(h->clips);
-    av_freep(ph);
+    dr_free(h->runs);
+    dr_free(h->clips);
+    dr_freep(ph);
 }
 
-/* One layer's index entries into runs. 0, or AVERROR_INVALIDDATA. */
+/* One layer's index entries into runs. 0, or DR_ERR_INVALID. */
 static int add_layer(void *log, BlurayHash *h, const BlurayFile *cer, const BlurayFile *tbl, int layer)
 {
-    uint32_t nb_values = AV_RB32(cer->data + 8), nb_entries = AV_RB16(cer->data + 12), first;
+    uint32_t nb_values = dr_rb32(cer->data + 8), nb_entries = dr_rb16(cer->data + 12), first;
     const uint8_t *p = tbl->data, *values;
     HashRun *runs;
 
     if ((uint64_t)nb_entries * 12 + (uint64_t)nb_values * 8 > (uint64_t)tbl->size || !nb_entries) {
-        av_log(log, AV_LOG_WARNING, "Blu-ray: AACS: %s: %"PRIu32" entries and %"PRIu32" hash values do not fit "
+        dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: AACS: %s: %"PRIu32" entries and %"PRIu32" hash values do not fit "
                "its %"PRId64" bytes\n", tbl->path, nb_entries, nb_values, (int64_t)tbl->size);
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
     }
-    if (!(runs = av_realloc_array(h->runs, h->nb_runs + nb_entries, sizeof(*runs))))
-        return AVERROR(ENOMEM);
+    if (!(runs = dr_realloc_array(h->runs, h->nb_runs + nb_entries, sizeof(*runs))))
+        return DR_ERR(ENOMEM);
     h->runs = runs;
     values  = p + nb_entries * 12;
-    first   = AV_RB32(p);
+    first   = dr_rb32(p);
     for (uint32_t i = 0; i < nb_entries; i++) {
-        uint32_t idx = AV_RB32(p + 12 * i), next = i + 1 < nb_entries ? AV_RB32(p + 12 * (i + 1)) : first + nb_values;
+        uint32_t idx = dr_rb32(p + 12 * i), next = i + 1 < nb_entries ? dr_rb32(p + 12 * (i + 1)) : first + nb_values;
         if (idx < first || next < idx || next - first > nb_values) {
-            av_log(log, AV_LOG_WARNING, "Blu-ray: AACS: %s: entry %"PRIu32" is out of order\n", tbl->path, i);
-            return AVERROR_INVALIDDATA;
+            dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: AACS: %s: entry %"PRIu32" is out of order\n", tbl->path, i);
+            return DR_ERR_INVALID;
         }
-        h->runs[h->nb_runs++] = (HashRun){ AV_RB32(p + 12 * i + 4), AV_RB32(p + 12 * i + 8), next - idx,
+        h->runs[h->nb_runs++] = (HashRun){ dr_rb32(p + 12 * i + 4), dr_rb32(p + 12 * i + 8), next - idx,
                                            values + (uint64_t)(idx - first) * 8 };
     }
-    av_log(log, AV_LOG_VERBOSE, "Blu-ray: AACS: layer %d: %"PRIu32" hash values for %"PRIu32" clip runs\n", layer,
+    dr_vlog(log, DR_VLOG_VERBOSE, "Blu-ray: AACS: layer %d: %"PRIu32" hash values for %"PRIu32" clip runs\n", layer,
            nb_values, nb_entries);
     return 0;
 }
@@ -139,38 +138,38 @@ int ff_bluray_hash_open(void *log, DiscIOFS *fs, BlurayHash **out)
 
     *out = NULL;
     if ((ret = ff_bluray_aacs_file(log, fs, "Content000.cer", 1, &cer)) <= 0) {
-        av_log(log, ret ? AV_LOG_WARNING : AV_LOG_INFO, "Blu-ray: AACS: %s: the stream files are not checked against "
+        dr_vlog(log, ret ? DR_VLOG_WARNING : DR_VLOG_INFO, "Blu-ray: AACS: %s: the stream files are not checked against "
                "the disc's content hashes\n", ret ? "its content certificate cannot be read" :
                "no content hash table");
         return ret;
     }
     if (cer.size < 0x14 || (cer.data[0] != 0x00 && cer.data[0] != 0x10)) {
-        av_log(log, AV_LOG_WARNING, "Blu-ray: AACS: %s is no content certificate this program knows (type 0x%02x): "
+        dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: AACS: %s is no content certificate this program knows (type 0x%02x): "
                "the stream files are not checked against the disc's content hashes\n", cer.path,
                cer.size ? cer.data[0] : 0);
         ff_bluray_file_free(&cer);
         return 0;
     }
-    if (!(h = av_mallocz(sizeof(*h)))) {
+    if (!(h = dr_mallocz(sizeof(*h)))) {
         ff_bluray_file_free(&cer);
-        return AVERROR(ENOMEM);
+        return DR_ERR(ENOMEM);
     }
     h->sha256 = cer.data[0] != 0;
-    layers = FFMIN(FFMAX(cer.data[6], 1), MAX_LAYERS);
+    layers = DR_MIN(DR_MAX(cer.data[6], 1), MAX_LAYERS);
     for (int l = 0; l < layers; l++) {
         const BlurayFile *c = &cer;
         if (l) {
             snprintf(name, sizeof(name), "Content%03d.cer", l);
             ff_bluray_file_free(&more);
             if ((ret = ff_bluray_aacs_file(log, fs, name, 0, &more)) <= 0 || more.size < 0x14) {
-                ret = ret < 0 ? ret : AVERROR_INVALIDDATA;
+                ret = ret < 0 ? ret : DR_ERR_INVALID;
                 break;
             }
             c = &more;
         }
         snprintf(name, sizeof(name), "ContentHash%03d.tbl", l);
         if ((ret = ff_bluray_aacs_file(log, fs, name, 0, &h->tables[h->nb_tables])) <= 0) {
-            ret = ret < 0 ? ret : AVERROR_INVALIDDATA;
+            ret = ret < 0 ? ret : DR_ERR_INVALID;
             break;
         }
         h->nb_tables++;
@@ -180,13 +179,13 @@ int ff_bluray_hash_open(void *log, DiscIOFS *fs, BlurayHash **out)
     ff_bluray_file_free(&cer);
     ff_bluray_file_free(&more);
     if (ret < 0) {
-        av_log(log, AV_LOG_WARNING, "Blu-ray: AACS: the content hash table cannot be loaded (%s): the stream files "
-               "are not checked against the disc's content hashes\n", av_err2str(ret));
+        dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: AACS: the content hash table cannot be loaded (%s): the stream files "
+               "are not checked against the disc's content hashes\n", dr_err_text(ret));
         ff_bluray_hash_free(&h);
-        return ret == AVERROR(ENOMEM) ? ret : 0;
+        return ret == DR_ERR(ENOMEM) ? ret : 0;
     }
     qsort(h->runs, h->nb_runs, sizeof(*h->runs), run_cmp);
-    av_log(log, AV_LOG_WARNING, "Blu-ray: AACS: content hash table loaded (%d layer%s, %s): the stream files read "
+    dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: AACS: content hash table loaded (%d layer%s, %s): the stream files read "
            "are checked against it [untested on real discs]\n", layers, layers == 1 ? "" : "s",
            h->sha256 ? "SHA-256" : "SHA-1");
     *out = h;
@@ -213,15 +212,11 @@ static ClipCheck *clip_check(BlurayHash *h, uint32_t clip)
     for (int i = 0; i < h->nb_clips; i++)
         if (h->clips[i].clip == clip)
             return &h->clips[i];
-    if (!(c = av_realloc_array(h->clips, h->nb_clips + 1, sizeof(*c))))
+    if (!(c = dr_realloc_array(h->clips, h->nb_clips + 1, sizeof(*c))))
         return NULL;
     h->clips = c;
     c = &h->clips[h->nb_clips++];
     *c = (ClipCheck){ .clip = clip, .expect = -1 };
-    if (!(c->sha = av_sha_alloc())) {
-        h->nb_clips--;
-        return NULL;
-    }
     return c;
 }
 
@@ -250,30 +245,30 @@ int ff_bluray_hash_unit(void *log, BlurayHash *h, uint32_t clip, int64_t off, co
     int bits = h->sha256 ? 256 : 160;
 
     if (!(c = clip_check(h, clip)))
-        return AVERROR(ENOMEM);
+        return DR_ERR(ENOMEM);
     if (off % HASH_UNIT == 0) {
         c->want = value_of(h, clip, off / HASH_UNIT);
         if (c->want)
-            av_sha_init(c->sha, bits);
+            dr_sha_init(&c->sha, bits);
     } else if (off != c->expect) {
         c->want = NULL;                /* read in part: not checked */
     }
     c->expect = off + BLURAY_UNIT;
     if (!c->want)
         return 0;
-    av_sha_update(c->sha, unit, BLURAY_UNIT);
+    dr_sha_update(&c->sha, unit, BLURAY_UNIT);
     if (off % HASH_UNIT != HASH_UNIT - BLURAY_UNIT)
         return 0;
-    av_sha_final(c->sha, digest);
+    dr_sha_final(&c->sha, digest);
     h->checked++;
     if (memcmp(digest + bits / 8 - 8, c->want, 8)) {
         h->failed++;
         h->files_failed += !c->failed;
         if (++c->failed <= LOGGED)
-            av_log(log, AV_LOG_WARNING, "Blu-ray: %05"PRIu32".m2ts: the %d bytes at offset %"PRId64" do not match "
+            dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: %05"PRIu32".m2ts: the %d bytes at offset %"PRId64" do not match "
                    "the disc's content hash: damaged\n", clip, HASH_UNIT, off + BLURAY_UNIT - HASH_UNIT);
         if (c->failed == LOGGED)
-            av_log(log, AV_LOG_WARNING, "Blu-ray: %05"PRIu32".m2ts: more damaged blocks: not each one is logged\n",
+            dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: %05"PRIu32".m2ts: more damaged blocks: not each one is logged\n",
                    clip);
     }
     c->want = NULL;

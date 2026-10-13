@@ -93,6 +93,18 @@ size_t dr_strlcat(char *dst, const char *src, size_t size)
     return used + dr_strlcpy(dst + used, src, size - used);
 }
 
+size_t dr_strlcatf(char *dst, size_t size, const char *fmt, ...)
+{
+    size_t used = strlen(dst);
+    va_list vl;
+    int n;
+
+    va_start(vl, fmt);
+    n = vsnprintf(dst + (used < size ? used : size), used < size ? size - used : 0, fmt, vl);
+    va_end(vl);
+    return used + (n < 0 ? 0 : (size_t)n);
+}
+
 char *dr_strndup(const char *s, size_t n)
 {
     size_t len = 0;
@@ -155,6 +167,7 @@ void *dr_array_add(void *array, int *nb, size_t elem_size, const void *data)
         return NULL;
     *arr = p;
     p += (size_t)(*nb)++ * elem_size;
-    memcpy(p, data, elem_size);
+    if (data)
+        memcpy(p, data, elem_size);
     return p;
 }

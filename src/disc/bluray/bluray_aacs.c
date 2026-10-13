@@ -55,13 +55,13 @@
 
 #include <libaacs/aacs.h>
 
-#include "libavutil/avstring.h"
-#include "libavutil/error.h"
-#include "libavutil/macros.h"
-#include "libavutil/intreadwrite.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
-#include "libavutil/sha.h"
+#include "base/mem.h"
+#include "base/err.h"
+#include "base/macros.h"
+#include "base/bytes.h"
+#include "base/vlog.h"
+#include "base/mem.h"
+#include "base/sha.h"
 
 #include "bluray_internal.h"
 
@@ -90,15 +90,15 @@ static int load_path(DiscIOFS *fs, const char *path, int64_t size_wanted, Bluray
 
     memset(out, 0, sizeof(*out));
     if ((ret = fs->ops->open_file(fs, path, &f)) < 0)
-        return ret == AVERROR(ENOENT) ? 0 : ret;
+        return ret == DR_ERR(ENOENT) ? 0 : ret;
     size = size_wanted >= 0 ? size_wanted : f->size;
     if (size > f->size || size > INT32_MAX) {
         ff_discio_file_free(&f);
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
     }
-    if (!(out->data = av_malloc(size + 1))) {
+    if (!(out->data = dr_malloc(size + 1))) {
         ff_discio_file_free(&f);
-        return AVERROR(ENOMEM);
+        return DR_ERR(ENOMEM);
     }
     out->size = size;
     ret = ff_discio_file_read(fs, f, 0, out->data, size);
@@ -124,9 +124,9 @@ int ff_bluray_aacs_file(void *log, DiscIOFS *fs, const char *name, int quiet, Bl
     int ret, err = 0;
 
     snprintf(path, sizeof(path), "/AACS/%s", name);
-    if ((ret = fs->ops->open_file(fs, path, &f)) == AVERROR(ENOENT)) {
+    if ((ret = fs->ops->open_file(fs, path, &f)) == DR_ERR(ENOENT)) {
         snprintf(path, sizeof(path), "/AACS_bd/%s", name);
-        if ((ret = fs->ops->open_file(fs, path, &f)) == AVERROR(ENOENT))
+        if ((ret = fs->ops->open_file(fs, path, &f)) == DR_ERR(ENOENT))
             ret = 1;
         else
             dir = "AACS_bd";
@@ -139,35 +139,31 @@ int ff_bluray_aacs_file(void *log, DiscIOFS *fs, const char *name, int quiet, Bl
                 return 1;
         }
         err = ret;
-        av_log(log, AV_LOG_WARNING, "Blu-ray: AACS: %s cannot be read (%s)\n", path, av_err2str(ret));
+        dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: AACS: %s cannot be read (%s)\n", path, dr_err_text(ret));
     }
     snprintf(path, sizeof(path), "/%s/DUPLICATE/%s", dir, name);
     if ((ret = load_path(fs, path, size, out)) > 0) {
-        av_log(log, AV_LOG_VERBOSE, "Blu-ray: AACS: %s read from %s\n", name, path);
+        dr_vlog(log, DR_VLOG_VERBOSE, "Blu-ray: AACS: %s read from %s\n", name, path);
         return 1;
     }
     if (ret < 0) {
-        av_log(log, AV_LOG_WARNING, "Blu-ray: AACS: %s cannot be read (%s)\n", path, av_err2str(ret));
+        dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: AACS: %s cannot be read (%s)\n", path, dr_err_text(ret));
         return ret;
     }
     if (err < 0)
         return err;
     if (!quiet)
-        av_log(log, AV_LOG_VERBOSE, "Blu-ray: AACS: no %s\n", name);
+        dr_vlog(log, DR_VLOG_VERBOSE, "Blu-ray: AACS: no %s\n", name);
     return 0;
 }
 
 static void sha1(const uint8_t *data, uint32_t size, uint8_t digest[20])
 {
-    struct AVSHA *s = av_sha_alloc();
+    DrSha s;
 
-    memset(digest, 0, 20);
-    if (!s)
-        return;
-    av_sha_init(s, 160);
-    av_sha_update(s, data, size);
-    av_sha_final(s, digest);
-    av_free(s);
+    dr_sha_init(&s, 160);
+    dr_sha_update(&s, data, size);
+    dr_sha_final(&s, digest);
 }
 
 static void set_disc_id(void *log, BlurayDisc *d, const BlurayFile *f)
@@ -179,7 +175,7 @@ static void set_disc_id(void *log, BlurayDisc *d, const BlurayFile *f)
     snprintf(d->disc_id_from, sizeof(d->disc_id_from), "%s", f->path);
     for (int i = 0; i < 20; i++)
         snprintf(hex + 2 * i, 3, "%02X", d->disc_id[i]);
-    av_log(log, AV_LOG_VERBOSE, "Blu-ray: disc ID %s (SHA-1 of %s)\n", hex, f->path);
+    dr_vlog(log, DR_VLOG_VERBOSE, "Blu-ray: disc ID %s (SHA-1 of %s)\n", hex, f->path);
 }
 
 static void set_keys(BlurayDisc *d, int unit)
@@ -219,9 +215,9 @@ static int root_entry(void *opaque, const char *name, int is_dir)
 
     if (!is_dir || strlen(name) >= 30 || !strcmp(name, ".") || !strcmp(name, ".."))
         return 0;
-    if (!(n = av_asprintf("/%s", name)) || av_dynarray_add_nofree(&l->names, &l->nb, n) < 0) {
-        av_free(n);
-        return l->err = AVERROR(ENOMEM);
+    if (dr_asprintf(&n, "/%s", name) < 0 || dr_array_add_ptr(&l->names, &l->nb, n) < 0) {
+        dr_free(n);
+        return l->err = DR_ERR(ENOMEM);
     }
     return 0;
 }
@@ -237,7 +233,7 @@ static int key_file_entry(void *opaque, const char *name, int is_dir)
 
 static void decrypted_warning(void *log, const char *software, const char *why)
 {
-    av_log(log, AV_LOG_WARNING, "Blu-ray: the disc looks decrypted by %s (%s); the disc is read as it is "
+    dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: the disc looks decrypted by %s (%s); the disc is read as it is "
            "(errors may follow)\n", software, why);
 }
 
@@ -250,7 +246,7 @@ static int decrypted_checks(void *log, BlurayDisc *d)
 
     if ((ret = fs->ops->list_dir(fs, "/", root_entry, &root)) < 0 || root.err < 0) {
         ret = ret < 0 ? ret : root.err;
-        av_log(log, AV_LOG_ERROR, "Blu-ray: the root directory cannot be listed (%s)\n", av_err2str(ret));
+        dr_vlog(log, DR_VLOG_ERROR, "Blu-ray: the root directory cannot be listed (%s)\n", dr_err_text(ret));
         goto out;
     }
     for (int i = 0; i < root.nb; i++) {
@@ -292,8 +288,8 @@ static int decrypted_checks(void *log, BlurayDisc *d)
     }
 out:
     for (int i = 0; i < root.nb; i++)
-        av_free(root.names[i]);
-    av_free(root.names);
+        dr_free(root.names[i]);
+    dr_free(root.names);
     return ret < 0 ? ret : 0;
 }
 
@@ -307,7 +303,7 @@ static void plain_disc_id(void *log, BlurayDisc *d)
         "/SLY!/Unit_Key_RO.inf", "/ANY!/Unit_Key_RO.inf",
     };
 
-    for (int i = 0; i < FF_ARRAY_ELEMS(paths); i++) {
+    for (int i = 0; i < (int)DR_ARRAY_ELEMS(paths); i++) {
         BlurayFile f;
         int ret = load_path(d->fs, paths[i], -1, &f);
         if (!ret)
@@ -315,7 +311,7 @@ static void plain_disc_id(void *log, BlurayDisc *d)
         if (ret > 0)
             set_disc_id(log, d, &f);
         else
-            av_log(log, AV_LOG_WARNING, "Blu-ray: %s cannot be read (%s): no disc ID\n", paths[i], av_err2str(ret));
+            dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: %s cannot be read (%s): no disc ID\n", paths[i], dr_err_text(ret));
         ff_bluray_file_free(&f);
         return;
     }
@@ -327,14 +323,14 @@ static int not_encrypted(void *log, BlurayDisc *d)
     int ret;
 
     if (avchd_maker_data(d)) {
-        av_log(log, AV_LOG_VERBOSE, "Blu-ray: AVCHD maker data found: the disc is not encrypted "
+        dr_vlog(log, DR_VLOG_VERBOSE, "Blu-ray: AVCHD maker data found: the disc is not encrypted "
                "[untested on real discs]\n");
     } else {
         if (has_dir(fs, "/SLY!") || has_dir(fs, "/ANY!"))
             decrypted_warning(log, "AnyDVD", has_dir(fs, "/SLY!") ? "/SLY! directory" : "/ANY! directory");
         else if ((ret = decrypted_checks(log, d)) < 0)
             return ret;
-        av_log(log, AV_LOG_VERBOSE, "Blu-ray: no AACS directory: the disc is not encrypted\n");
+        dr_vlog(log, DR_VLOG_VERBOSE, "Blu-ray: no AACS directory: the disc is not encrypted\n");
     }
     set_keys(d, BLURAY_KEY_NONE);
     plain_disc_id(log, d);
@@ -356,12 +352,12 @@ static int record_size(void *log, const BlurayFile *mkb)
     uint32_t type;
 
     if (mkb->size < 12 || mkb->data[0] != 0x10) {
-        av_log(log, AV_LOG_DEBUG, "Blu-ray: AACS: %s has no Type and Version record first\n", mkb->path);
+        dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: AACS: %s has no Type and Version record first\n", mkb->path);
         return 48;
     }
-    type = AV_RB24(mkb->data + 5);
-    av_log(log, AV_LOG_VERBOSE, "Blu-ray: AACS: MKB type 0x%06"PRIX32", version %"PRIu32"\n",
-           type, AV_RB32(mkb->data + 8));
+    type = dr_rb24(mkb->data + 5);
+    dr_vlog(log, DR_VLOG_VERBOSE, "Blu-ray: AACS: MKB type 0x%06"PRIX32", version %"PRIu32"\n",
+           type, dr_rb32(mkb->data + 8));
     return type == 0x141003 || type == 0x151003 ? 64 : 48;
 }
 
@@ -374,43 +370,43 @@ static int parse_unit_keys(void *log, const BlurayFile *f, int record, UnitKeys 
 
     memset(u, 0, sizeof(*u));
     if (f->size < 0x1a) {
-        av_log(log, AV_LOG_ERROR, "Blu-ray: AACS: %s is too short (%"PRIu32" bytes)\n", f->path, f->size);
-        return AVERROR_INVALIDDATA;
+        dr_vlog(log, DR_VLOG_ERROR, "Blu-ray: AACS: %s is too short (%"PRIu32" bytes)\n", f->path, f->size);
+        return DR_ERR_INVALID;
     }
     type = p[0x10];
     if (type == 2 || type == 4) {
-        av_log(log, AV_LOG_ERROR, "Blu-ray: AACS: %s is a recordable disc's unit key file (type %d)\n",
+        dr_vlog(log, DR_VLOG_ERROR, "Blu-ray: AACS: %s is a recordable disc's unit key file (type %d)\n",
                f->path, type);
         return 0;
     }
     if (type != 1 || p[0x11] != 1) {
-        av_log(log, AV_LOG_ERROR, "Blu-ray: AACS: %s has unit key file type %d.%d (1.1 expected)\n",
+        dr_vlog(log, DR_VLOG_ERROR, "Blu-ray: AACS: %s has unit key file type %d.%d (1.1 expected)\n",
                f->path, type, p[0x11]);
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
     }
     u->skb = p[0x12] != 0;
-    pos = AV_RB32(p);
+    pos = dr_rb32(p);
     if (pos > f->size - 2) {
-        av_log(log, AV_LOG_ERROR, "Blu-ray: AACS: %s: its key block (at %"PRIu32") lies outside the file\n",
+        dr_vlog(log, DR_VLOG_ERROR, "Blu-ray: AACS: %s: its key block (at %"PRIu32") lies outside the file\n",
                f->path, pos);
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
     }
-    u->nb = AV_RB16(p + pos);
+    u->nb = dr_rb16(p + pos);
     if (u->nb < 1 || u->nb > MAX_UNITS) {
-        av_log(log, AV_LOG_ERROR, "Blu-ray: AACS: %s gives %d CPS units (1..%d)\n", f->path, u->nb, MAX_UNITS);
-        return AVERROR_INVALIDDATA;
+        dr_vlog(log, DR_VLOG_ERROR, "Blu-ray: AACS: %s gives %d CPS units (1..%d)\n", f->path, u->nb, MAX_UNITS);
+        return DR_ERR_INVALID;
     }
     need = (uint32_t)u->nb * record;
     if (pos + 16 > f->size || f->size - pos - 16 < need) {
-        av_log(log, AV_LOG_ERROR, "Blu-ray: AACS: %s: the %d unit key records do not fit in the file\n",
+        dr_vlog(log, DR_VLOG_ERROR, "Blu-ray: AACS: %s: the %d unit key records do not fit in the file\n",
                f->path, u->nb);
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
     }
-    if (!(u->enc = av_malloc_array(u->nb, sizeof(*u->enc))))
-        return AVERROR(ENOMEM);
+    if (!(u->enc = dr_malloc_array(u->nb, sizeof(*u->enc))))
+        return DR_ERR(ENOMEM);
     for (int n = 0; n < u->nb; n++)
         memcpy(u->enc[n], p + pos + 16 + n * record + 0x20, 16);
-    av_log(log, AV_LOG_VERBOSE, "Blu-ray: AACS: %s: %d CPS unit(s), %d-byte records%s\n", f->path, u->nb,
+    dr_vlog(log, DR_VLOG_VERBOSE, "Blu-ray: AACS: %s: %d CPS unit(s), %d-byte records%s\n", f->path, u->nb,
            record, u->skb ? ", SKB" : "");
     return 1;
 }
@@ -502,10 +498,10 @@ static void sample_keys(void *log, BlurayDisc *d, BlurayAACS *a)
                     found = 1;
                     if (n) {
                         c->key_unit = n;
-                        av_log(log, AV_LOG_VERBOSE, "Blu-ray: AACS: clip %05u uses CPS unit %d (unit %"PRId64
+                        dr_vlog(log, DR_VLOG_VERBOSE, "Blu-ray: AACS: clip %05u uses CPS unit %d (unit %"PRId64
                                " of %s)\n", c->number, n, idx, c->stream_path);
                     } else {
-                        av_log(log, AV_LOG_WARNING, "Blu-ray: AACS: no unit key decrypts unit %"PRId64" of %s\n",
+                        dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: AACS: no unit key decrypts unit %"PRId64" of %s\n",
                                idx, c->stream_path);
                     }
                 }
@@ -519,13 +515,13 @@ static void sample_keys(void *log, BlurayDisc *d, BlurayAACS *a)
 
 static void aacs_log(void *opaque, int level, const char *message)
 {
-    static const int levels[] = { AV_LOG_ERROR, AV_LOG_WARNING, AV_LOG_VERBOSE };
-    av_log(opaque, levels[level >= 0 && level <= 2 ? level : 2], "Blu-ray: AACS: %s\n", message);
+    static const int levels[] = { DR_VLOG_ERROR, DR_VLOG_WARNING, DR_VLOG_VERBOSE };
+    dr_vlog(opaque, levels[level >= 0 && level <= 2 ? level : 2], "Blu-ray: AACS: %s\n", message);
 }
 
 static void aacs_debug(const char *message)
 {
-    av_log(NULL, AV_LOG_DEBUG, "libaacs: %s", message);
+    dr_vlog(NULL, DR_VLOG_DEBUG, "libaacs: %s", message);
 }
 
 /* ---- the step ---- */
@@ -548,9 +544,9 @@ int ff_bluray_aacs_open(void *log, BlurayDisc *d, const char *const *key_files, 
     if (!aacs && !av2 && !mv2)
         return not_encrypted(log, d);
     if (av2 || mv2) {
-        av_log(log, AV_LOG_ERROR, "Blu-ray: AACS 2 of a recordable disc (%s) is not supported yet "
+        dr_vlog(log, DR_VLOG_ERROR, "Blu-ray: AACS 2 of a recordable disc (%s) is not supported yet "
                "[untested on real discs]\n", av2 ? "/AACS2_av" : "/AACS2_mv");
-        return AVERROR_PATCHWELCOME;
+        return DR_ERR_UNSUPPORTED;
     }
 
     /* the unit keys and the media key block */
@@ -559,31 +555,31 @@ int ff_bluray_aacs_open(void *log, BlurayDisc *d, const char *const *key_files, 
     if (!ret) {
         if (has_dir(fs, "/AACS/AACS_av") || has_dir(fs, "/AACS/AACS_mv") ||
             has_dir(fs, "/AACS_bd/AACS_av") || has_dir(fs, "/AACS_bd/AACS_mv")) {
-            av_log(log, AV_LOG_ERROR, "Blu-ray: AACS of a recordable disc (Unit_Key_RW.inf) is not supported yet "
+            dr_vlog(log, DR_VLOG_ERROR, "Blu-ray: AACS of a recordable disc (Unit_Key_RW.inf) is not supported yet "
                    "[untested on real discs]\n");
-            ret = AVERROR_PATCHWELCOME;
+            ret = DR_ERR_UNSUPPORTED;
         } else {
-            av_log(log, AV_LOG_ERROR, "Blu-ray: AACS: the disc has no Unit_Key_RO.inf\n");
-            ret = AVERROR_INVALIDDATA;
+            dr_vlog(log, DR_VLOG_ERROR, "Blu-ray: AACS: the disc has no Unit_Key_RO.inf\n");
+            ret = DR_ERR_INVALID;
         }
         goto end;
     }
     if ((ret = ff_bluray_aacs_file(log, fs, "MKB_RO.inf", 0, &mkb)) <= 0) {
         if (!ret) {
-            av_log(log, AV_LOG_ERROR, "Blu-ray: AACS: the disc has no MKB_RO.inf\n");
-            ret = AVERROR_INVALIDDATA;
+            dr_vlog(log, DR_VLOG_ERROR, "Blu-ray: AACS: the disc has no MKB_RO.inf\n");
+            ret = DR_ERR_INVALID;
         }
         goto end;
     }
     if ((ret = parse_unit_keys(log, &uk, record_size(log, &mkb), &u)) <= 0) {
         if (!ret)
-            ret = AVERROR_PATCHWELCOME;
+            ret = DR_ERR_UNSUPPORTED;
         goto end;
     }
 
     /* nothing to decrypt after all */
     if (all_zero((const uint8_t *)u.enc, u.nb * sizeof(*u.enc)) || mkb.size < 2048 || all_zero(mkb.data, 2048)) {
-        av_log(log, AV_LOG_VERBOSE, "Blu-ray: AACS: %s: the disc is not encrypted\n",
+        dr_vlog(log, DR_VLOG_VERBOSE, "Blu-ray: AACS: %s: the disc is not encrypted\n",
                mkb.size < 2048 || all_zero(mkb.data, 2048) ? "the MKB's first 2048 bytes are missing or zero"
                                                             : "every unit key is zero");
         set_keys(d, BLURAY_KEY_NONE);
@@ -594,17 +590,17 @@ int ff_bluray_aacs_open(void *log, BlurayDisc *d, const char *const *key_files, 
     if (u.nb == 1)
         set_keys(d, 1);
     if (u.skb) {
-        av_log(log, AV_LOG_ERROR, "Blu-ray: AACS: the disc uses SKB, which is not supported "
+        dr_vlog(log, DR_VLOG_ERROR, "Blu-ray: AACS: the disc uses SKB, which is not supported "
                "[untested on real discs]\n");
-        ret = AVERROR_PATCHWELCOME;
+        ret = DR_ERR_UNSUPPORTED;
         goto end;
     }
 
     /* the keys */
     if (!nb_key_files)
-        av_log(log, AV_LOG_WARNING, "Blu-ray: AACS: no key file is set (option keydb)\n");
-    if (!(a = av_mallocz(sizeof(*a)))) {
-        ret = AVERROR(ENOMEM);
+        dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: AACS: no key file is set (option keydb)\n");
+    if (!(a = dr_mallocz(sizeof(*a)))) {
+        ret = DR_ERR(ENOMEM);
         goto end;
     }
     aacs_set_debug_handler(aacs_debug);
@@ -614,17 +610,17 @@ int ff_bluray_aacs_open(void *log, BlurayDisc *d, const char *const *key_files, 
         char id[41] = "unknown";
         for (int i = 0; d->has_disc_id && i < 20; i++)
             snprintf(id + 2 * i, 3, "%02X", d->disc_id[i]);
-        av_log(log, AV_LOG_ERROR, "Blu-ray: AACS: the volume key is unknown for this disc (disc ID %s): it "
+        dr_vlog(log, DR_VLOG_ERROR, "Blu-ray: AACS: the volume key is unknown for this disc (disc ID %s): it "
                "cannot be decrypted (%s)\n", id,
                err == AACS_ERROR_NO_CONFIG ? "no key for it in the key files" :
                err == AACS_ERROR_NO_PK     ? "no key of the key files gives its media key" :
                err == AACS_ERROR_CORRUPTED_DISC ? "its AACS files are not usable" : aacs_error_str(err));
         /* a key is missing (not a file access problem) */
-        ret = err == AACS_ERROR_CORRUPTED_DISC ? AVERROR_INVALIDDATA : AVERROR(ENOKEY);
+        ret = err == AACS_ERROR_CORRUPTED_DISC ? DR_ERR_INVALID : DR_ERR(ENOKEY);
         goto end;
     }
     a->nb_units = u.nb;
-    av_log(log, AV_LOG_WARNING, "Blu-ray: AACS: the disc is decrypted with %d unit key(s) "
+    dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: AACS: the disc is decrypted with %d unit key(s) "
            "[untested on real discs]\n", u.nb);
     if (u.nb > 1)
         sample_keys(log, d, a);
@@ -634,9 +630,9 @@ int ff_bluray_aacs_open(void *log, BlurayDisc *d, const char *const *key_files, 
 end:
     if (a) {
         aacs_bd_close(a->keys);
-        av_free(a);
+        dr_free(a);
     }
-    av_free(u.enc);
+    dr_free(u.enc);
     ff_bluray_file_free(&uk);
     ff_bluray_file_free(&mkb);
     return ret;
@@ -649,7 +645,7 @@ void ff_bluray_aacs_close(BlurayAACS **pa)
     if (!a)
         return;
     aacs_bd_close(a->keys);
-    av_freep(pa);
+    dr_freep(pa);
 }
 
 int ff_bluray_aacs_unit(void *log, BlurayAACS *a, BlurayClip *c, uint8_t *unit)
@@ -660,33 +656,33 @@ int ff_bluray_aacs_unit(void *log, BlurayAACS *a, BlurayClip *c, uint8_t *unit)
         return 0;                           /* not a TS unit, or not marked encrypted */
     if (c->key_unit == BLURAY_KEY_UNKNOWN) {
         if (!a) {
-            av_log(log, AV_LOG_ERROR, "Blu-ray: clip %05u: an encrypted unit, but the disc has no AACS keys\n",
+            dr_vlog(log, DR_VLOG_ERROR, "Blu-ray: clip %05u: an encrypted unit, but the disc has no AACS keys\n",
                    c->number);
-            return AVERROR(ENOKEY);
+            return DR_ERR(ENOKEY);
         }
         if (unit[0] < 0xc0) {
-            av_log(log, AV_LOG_ERROR, "Blu-ray: AACS: clip %05u: its first marked unit (copy permission %d) "
+            dr_vlog(log, DR_VLOG_ERROR, "Blu-ray: AACS: clip %05u: its first marked unit (copy permission %d) "
                    "gives no key\n", c->number, unit[0] >> 6);
-            return AVERROR_INVALIDDATA;
+            return DR_ERR_INVALID;
         }
         if (!(c->key_unit = find_key(a, unit))) {
             c->key_unit = BLURAY_KEY_UNKNOWN;
-            av_log(log, AV_LOG_ERROR, "Blu-ray: AACS: clip %05u: no unit key decrypts its first encrypted unit\n",
+            dr_vlog(log, DR_VLOG_ERROR, "Blu-ray: AACS: clip %05u: no unit key decrypts its first encrypted unit\n",
                    c->number);
-            return AVERROR(ENOKEY);
+            return DR_ERR(ENOKEY);
         }
-        av_log(log, AV_LOG_VERBOSE, "Blu-ray: AACS: clip %05u uses CPS unit %d\n", c->number, c->key_unit);
+        dr_vlog(log, DR_VLOG_VERBOSE, "Blu-ray: AACS: clip %05u uses CPS unit %d\n", c->number, c->key_unit);
     }
     if (c->key_unit == BLURAY_KEY_NONE)
         return 0;                           /* the disc is not encrypted: used as it is */
     if (c->stream_type == 2 && (unit[0] & 0xc0) != 0xc0) {
-        av_log(log, AV_LOG_ERROR, "Blu-ray: clip %05u: segment keys (copy permission %d in a .fmts file) are "
+        dr_vlog(log, DR_VLOG_ERROR, "Blu-ray: clip %05u: segment keys (copy permission %d in a .fmts file) are "
                "not supported yet [untested on real discs]\n", c->number, unit[0] >> 6);
-        return AVERROR_PATCHWELCOME;
+        return DR_ERR_UNSUPPORTED;
     }
     if (!a || !aacs_bd_unit_key(a->keys, c->key_unit, key) || aacs_bd_decrypt_unit(key, unit) < 0) {
-        av_log(log, AV_LOG_ERROR, "Blu-ray: AACS: clip %05u: CPS unit %d cannot decrypt\n", c->number, c->key_unit);
-        return AVERROR(ENOKEY);
+        dr_vlog(log, DR_VLOG_ERROR, "Blu-ray: AACS: clip %05u: CPS unit %d cannot decrypt\n", c->number, c->key_unit);
+        return DR_ERR(ENOKEY);
     }
     clear_marks(unit);
     return 0;

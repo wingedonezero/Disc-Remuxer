@@ -23,10 +23,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "libavutil/error.h"
-#include "libavutil/intreadwrite.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
+#include "base/err.h"
+#include "base/bytes.h"
+#include "base/vlog.h"
+#include "base/mem.h"
 
 #include "bluray_internal.h"
 
@@ -48,13 +48,13 @@ void ff_bluray_header(const uint8_t h[8], BlurayHeader *out)
 
     memcpy(v, h + 4, 4);
     v[4] = 0;
-    out->type    = AV_RB32(h);
+    out->type    = dr_rb32(h);
     out->version = strtoul(v, NULL, 16);
 }
 
 void ff_bluray_file_free(BlurayFile *f)
 {
-    av_freep(&f->data);
+    dr_freep(&f->data);
     f->size = 0;
 }
 
@@ -66,23 +66,23 @@ static int load_one(void *log, DiscIOFS *fs, const char *path, BlurayFile *out, 
     int ret = fs->ops->open_file(fs, path, &file);
 
     *size = -1;
-    if (ret == AVERROR(ENOENT))
+    if (ret == DR_ERR(ENOENT))
         return 0;
     if (ret < 0)
         return ret;
     *size = file->size;
     if (file->size > MAX_FILE) {
-        av_log(log, AV_LOG_ERROR, "Blu-ray: %s is %"PRId64" bytes: too large to read\n", path, file->size);
+        dr_vlog(log, DR_VLOG_ERROR, "Blu-ray: %s is %"PRId64" bytes: too large to read\n", path, file->size);
         ff_discio_file_free(&file);
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
     }
-    if (!(out->data = av_malloc(file->size + 1))) {
+    if (!(out->data = dr_malloc(file->size + 1))) {
         ff_discio_file_free(&file);
-        return AVERROR(ENOMEM);
+        return DR_ERR(ENOMEM);
     }
     out->size = file->size;
     if ((ret = ff_discio_file_read(fs, file, 0, out->data, file->size)) < 0) {
-        av_log(log, AV_LOG_WARNING, "Blu-ray: %s cannot be read (%s)\n", path, av_err2str(ret));
+        dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: %s cannot be read (%s)\n", path, dr_err_text(ret));
         ff_bluray_file_free(out);
     }
     ff_discio_file_free(&file);
@@ -109,24 +109,24 @@ int ff_bluray_load(void *log, DiscIOFS *fs, const char *root, const char *dir,
         snprintf(main_path, sizeof(main_path), "/%s%s/%s.%s", root, dir, nm, exts[k]);
         snprintf(backup_path, sizeof(backup_path), "/%s/BACKUP%s/%s.%s", root, dir, nm, exts[k]);
         m = load_one(log, fs, main_path, out, &msize);
-        if (m == AVERROR(ENOMEM))
+        if (m == DR_ERR(ENOMEM))
             return m;
         if (m == 1)
             return 1;
         /* the main copy is missing, or cannot be read: its BACKUP copy (of
          * the same size when the main copy exists) */
         r = load_one(log, fs, backup_path, &b, &bsize);
-        if (r == AVERROR(ENOMEM))
+        if (r == DR_ERR(ENOMEM))
             return r;
         if (r == 1 && msize >= 0 && bsize != msize) {
-            av_log(log, AV_LOG_WARNING, "Blu-ray: the backup copy %s is not the size of %s: not used\n",
+            dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: the backup copy %s is not the size of %s: not used\n",
                    backup_path, main_path);
             ff_bluray_file_free(&b);
             r = 0;
         }
         if (r == 1) {
             if (m < 0)
-                av_log(log, AV_LOG_WARNING, "Blu-ray: %s read from its backup copy %s\n", main_path, backup_path);
+                dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: %s read from its backup copy %s\n", main_path, backup_path);
             *out = b;
             return 1;
         }
@@ -157,13 +157,13 @@ static int list_entry(void *opaque, const char *name, int is_dir)
         return 0;
     for (int i = 0; i < 5; i++)
         if (name[i] < '0' || name[i] > '9') {
-            av_log(l->log, AV_LOG_DEBUG, "Blu-ray: %s/%s is not a numbered file: left out\n", l->dir, name);
+            dr_vlog(l->log, DR_VLOG_DEBUG, "Blu-ray: %s/%s is not a numbered file: left out\n", l->dir, name);
             return 0;
         }
     if (l->n == l->cap) {
-        uint32_t *v = av_realloc_array(l->v, l->cap + 64, sizeof(*v));
+        uint32_t *v = dr_realloc_array(l->v, l->cap + 64, sizeof(*v));
         if (!v)
-            return l->err = AVERROR(ENOMEM);
+            return l->err = DR_ERR(ENOMEM);
         l->v    = v;
         l->cap += 64;
     }
@@ -181,13 +181,13 @@ int ff_bluray_list_numbered(void *log, DiscIOFS *fs, const char *dir, const char
 
     *out = NULL;
     *nb  = 0;
-    if (ret == AVERROR(ENOENT))           /* a missing directory is no error */
+    if (ret == DR_ERR(ENOENT))           /* a missing directory is no error */
         ret = 0;
     if (ret < 0 || l.err < 0) {
-        av_free(l.v);
+        dr_free(l.v);
         if (ret >= 0)
             ret = l.err;
-        av_log(log, AV_LOG_ERROR, "Blu-ray: %s cannot be listed (%s)\n", dir, av_err2str(ret));
+        dr_vlog(log, DR_VLOG_ERROR, "Blu-ray: %s cannot be listed (%s)\n", dir, dr_err_text(ret));
         return ret;
     }
     *out = l.v;
@@ -209,8 +209,8 @@ void ff_bluray_sort_numbers(uint32_t *v, int n)
 void ff_bluray_ext_free(BlurayExtEntry **entries, int *nb)
 {
     for (int i = 0; i < *nb; i++)
-        av_freep(&(*entries)[i].data);
-    av_freep(entries);
+        dr_freep(&(*entries)[i].data);
+    dr_freep(entries);
     *nb = 0;
 }
 
@@ -224,11 +224,11 @@ int ff_bluray_ext_data(void *log, const BlurayFile *f, uint32_t off,
 
     if (!ff_bluray_read(f, off, h, 4))
         return 0;
-    if (!AV_RB32(h))                      /* no extension data */
+    if (!dr_rb32(h))                      /* no extension data */
         return 1;
     if (!ff_bluray_read(f, off, h, 12))
         return 0;
-    if (AV_RB32(h + 4) >= AV_RB32(h) || !h[11])
+    if (dr_rb32(h + 4) >= dr_rb32(h) || !h[11])
         return 1;                         /* data start not inside the block, or no entries */
     k   = h[11];
     pos = off + 12;
@@ -237,25 +237,25 @@ int ff_bluray_ext_data(void *log, const BlurayFile *f, uint32_t off,
         uint32_t n = 0;
 
         if (!ff_bluray_read(f, pos, e, 12)) {
-            av_log(log, AV_LOG_DEBUG, "Blu-ray: %s: extension entry %d cannot be read\n", f->path, i);
+            dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: %s: extension entry %d cannot be read\n", f->path, i);
             return 0;
         }
-        x = av_dynarray2_add((void **)entries, nb, sizeof(**entries), NULL);
+        x = dr_array_add(entries, nb, sizeof(**entries), NULL);
         if (!x)
-            return AVERROR(ENOMEM);
+            return DR_ERR(ENOMEM);
         memset(x, 0, sizeof(*x));
-        x->id1    = AV_RB16(e);
-        x->id2    = AV_RB16(e + 2);
-        x->start  = AV_RB32(e + 4) + off;
-        x->length = AV_RB32(e + 8);
+        x->id1    = dr_rb16(e);
+        x->id2    = dr_rb16(e + 2);
+        x->start  = dr_rb32(e + 4) + off;
+        x->length = dr_rb32(e + 8);
         if (!parsed_directly || !parsed_directly(x->id1, x->id2)) {
             n = x->start < f->size ? f->size - x->start : 0;
-            n = FFMIN(n, x->length);
+            n = DR_MIN(n, x->length);
         }
         x->copied = n;
         if (n) {
-            if (!(x->data = av_malloc(n)))
-                return AVERROR(ENOMEM);
+            if (!(x->data = dr_malloc(n)))
+                return DR_ERR(ENOMEM);
             memcpy(x->data, f->data + x->start, n);
         }
     }

@@ -45,12 +45,12 @@
 #include <inttypes.h>
 #include <string.h>
 
-#include "libavutil/crc.h"
-#include "libavutil/error.h"
-#include "libavutil/intreadwrite.h"
-#include "libavutil/log.h"
-#include "libavutil/macros.h"
-#include "libavutil/mem.h"
+#include "base/crc32.h"
+#include "base/err.h"
+#include "base/bytes.h"
+#include "base/vlog.h"
+#include "base/macros.h"
+#include "base/mem.h"
 
 #include "bluray_internal.h"
 
@@ -98,7 +98,7 @@ void ff_bluray_seg_reader_close(BluraySegReader *u)
 {
     ff_discio_file_free(&u->f);
     ff_discio_file_free(&u->f2);
-    av_freep(&u->chunks);
+    dr_freep(&u->chunks);
     u->nb_chunks = 0;
     u->item = -1;
 }
@@ -113,8 +113,8 @@ static int item_chunks(BluraySegReader *u, const BluraySegItem *it)
     int n = first->nb_ss_extents;
     int64_t pos = 0;
 
-    if (!(u->chunks = av_calloc(2 * n, sizeof(*u->chunks))))
-        return AVERROR(ENOMEM);
+    if (!(u->chunks = dr_calloc(2 * n, sizeof(*u->chunks))))
+        return DR_ERR(ENOMEM);
     for (int i = 0; i < n; i++)
         for (int k = 0; k < 2; k++) {
             const BlurayClip *x = k ? second : first;
@@ -123,7 +123,7 @@ static int item_chunks(BluraySegReader *u, const BluraySegItem *it)
             u->chunks[u->nb_chunks++] = (BlurayChunk){ pos, s0, s1 - s0, x == c };
             pos += s1 - s0;
         }
-    return pos == it->length ? 0 : AVERROR_BUG;
+    return pos == it->length ? 0 : DR_ERR_BUG;
 }
 
 int ff_bluray_seg_read(BluraySegReader *u, int64_t pos, uint8_t *buf)
@@ -145,19 +145,19 @@ int ff_bluray_seg_read(BluraySegReader *u, int64_t pos, uint8_t *buf)
             ff_bluray_seg_reader_close(u);
             if ((ret = u->fs->ops->open_file(u->fs, it->clip->stream_path, &u->f)) < 0 ||
                 (both && (ret = u->fs->ops->open_file(u->fs, it->dep->stream_path, &u->f2)) < 0)) {
-                av_log(u->log, AV_LOG_ERROR, "Blu-ray: %s cannot be opened: %s\n",
-                       u->f ? it->dep->stream_path : it->clip->stream_path, av_err2str(ret));
+                dr_vlog(u->log, DR_VLOG_ERROR, "Blu-ray: %s cannot be opened: %s\n",
+                       u->f ? it->dep->stream_path : it->clip->stream_path, dr_err_text(ret));
                 return ret;
             }
             if (both && (ret = item_chunks(u, it)) < 0) {
-                av_log(u->log, AV_LOG_ERROR, "Blu-ray: the views of %s cannot be read interleaved\n",
+                dr_vlog(u->log, DR_VLOG_ERROR, "Blu-ray: the views of %s cannot be read interleaved\n",
                        it->clip->stream_path);
                 return ret;
             }
             u->item = i;
         }
         if (pos + UNIT > base + len)
-            return AVERROR_EOF;             /* a part unit at the end */
+            return DR_ERR_EOF;             /* a part unit at the end */
         f = u->f;
         if (both) {
             /* the run holding the unit (runs are whole units: extents are
@@ -177,8 +177,8 @@ int ff_bluray_seg_read(BluraySegReader *u, int64_t pos, uint8_t *buf)
             }
         }
         if ((ret = ff_discio_file_read(u->fs, f, off, buf, UNIT)) < 0) {
-            av_log(u->log, AV_LOG_ERROR, "Blu-ray: error '%s' occurred while reading '%s' at offset '%"PRId64"'\n",
-                   av_err2str(ret), clip->stream_path, off);
+            dr_vlog(u->log, DR_VLOG_ERROR, "Blu-ray: error '%s' occurred while reading '%s' at offset '%"PRId64"'\n",
+                   dr_err_text(ret), clip->stream_path, off);
             return ret;
         }
         /* the disc's content hashes are of the bytes as they are on it */
@@ -186,7 +186,7 @@ int ff_bluray_seg_read(BluraySegReader *u, int64_t pos, uint8_t *buf)
             return ret;
         return ff_bluray_aacs_unit(u->log, u->aacs, clip, buf);
     }
-    return AVERROR_EOF;
+    return DR_ERR_EOF;
 }
 
 /* ---- TS packets and PES headers ---- */
@@ -265,7 +265,7 @@ static int scan_pes(BluraySegReader *u, uint16_t pid, int limit, Keys *k)
     memset(k, 0, sizeof(*k));
     for (int64_t pos = 0; pos < end && pos < SCAN_CAP; pos += UNIT) {
         int ret = ff_bluray_seg_read(u, pos, buf), zero = 1;
-        if (ret == AVERROR_EOF)
+        if (ret == DR_ERR_EOF)
             break;
         if (ret < 0)
             return 0;
@@ -287,7 +287,7 @@ static int scan_pes(BluraySegReader *u, uint16_t pid, int limit, Keys *k)
             if ((pl[3] & 0xfe) != 0xbe && (h.len < 9 || pl[8] + 9 > h.len))
                 continue;
             if (!pes_key(pl, h.len, &key)) {
-                av_log(u->log, AV_LOG_ERROR, "Blu-ray: PID 0x%04x: a PES header cannot be read\n", pid);
+                dr_vlog(u->log, DR_VLOG_ERROR, "Blu-ray: PID 0x%04x: a PES header cannot be read\n", pid);
                 return 0;
             }
             for (e = 0; e < k->n && k->key[e] != key; e++)
@@ -318,9 +318,8 @@ static int has_key(const Keys *k, uint16_t key)
  * (CRC checked), cached per clip; NULL none. */
 static const uint8_t *psi_section(BluraySegReader *u, BlurayClip *c, uint8_t table_id, uint16_t pid)
 {
-    const AVCRC *crc = av_crc_get_table(AV_CRC_32_IEEE);
     uint8_t acc[0x1008], buf[UNIT];
-    int64_t limit = FFMIN(ff_bluray_seg_size(u->s), PSI_SCAN);
+    int64_t limit = DR_MIN(ff_bluray_seg_size(u->s), PSI_SCAN);
     int n = 0;
 
     if (c->pmt_tried)
@@ -340,16 +339,16 @@ static const uint8_t *psi_section(BluraySegReader *u, BlurayClip *c, uint8_t tab
                 if (rest <= 0)
                     continue;
                 acc[0] = 0;
-                memmove(acc, p + h.off + 1 + ptr, FFMIN(rest, (int)sizeof(acc)));
-                n = acc[0] == table_id ? FFMIN(rest, (int)sizeof(acc)) : 0;
+                memmove(acc, p + h.off + 1 + ptr, DR_MIN(rest, (int)sizeof(acc)));
+                n = acc[0] == table_id ? DR_MIN(rest, (int)sizeof(acc)) : 0;
             } else if (n) {
-                int add = FFMIN(h.len, (int)sizeof(acc) - n);
+                int add = DR_MIN(h.len, (int)sizeof(acc) - n);
                 memcpy(acc + n, p + h.off, add);
                 n += add;
             }
             len = n >= 3 ? ((acc[1] & 0x0f) << 8 | acc[2]) + 3 : INT32_MAX;
             if (n >= 3 && n >= len) {
-                if (!av_crc(crc, UINT32_MAX, acc, len) && (c->pmt = av_memdup(acc, len))) {
+                if (!dr_crc32_mpeg(0xFFFFFFFF, acc, len) && (c->pmt = dr_memdup(acc, len))) {
                     c->pmt_len = len;
                     return c->pmt;
                 }
@@ -366,7 +365,7 @@ static int pmt_es(void *log, const uint8_t *s, uint16_t pid, const uint8_t **d, 
     int sl = (s[1] & 0x0f) << 8 | s[2], end = sl - 1, o;
 
     if (sl < 0xd || s[0] != 2) {
-        av_log(log, AV_LOG_DEBUG, "Blu-ray: the program map is not usable\n");
+        dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: the program map is not usable\n");
         return 0;
     }
     for (o = ((s[10] & 0x0f) << 8 | s[11]) + 0xc; o + 5 <= end; ) {
@@ -474,7 +473,7 @@ static int hevc_second_layer(BluraySegReader *u)
 
     for (int64_t pos = 0; pos < end && !nal_done(&n); pos += UNIT) {
         int ret = ff_bluray_seg_read(u, pos, buf);
-        if (ret == AVERROR_EOF)
+        if (ret == DR_ERR_EOF)
             break;
         if (ret < 0)
             return ret;
@@ -499,7 +498,7 @@ static int hevc_second_layer(BluraySegReader *u)
                 nal_bytes(&n, pl, len);
         }
     }
-    av_log(u->log, AV_LOG_DEBUG, "Blu-ray: PID 0x1015: %d NAL units, %d SPS, %d PPS, %d VPS, %d Dolby Vision RPU\n",
+    dr_vlog(u->log, DR_VLOG_DEBUG, "Blu-ray: PID 0x1015: %d NAL units, %d SPS, %d PPS, %d VPS, %d Dolby Vision RPU\n",
            n.units, n.sps, n.pps, n.vps, n.rpu);
     return n.sps && n.pps && n.vps && n.rpu;
 }
@@ -511,7 +510,7 @@ int ff_bluray_probe_stream(void *log, DiscIOFS *fs, BlurayAACS *aacs, const Blur
 {
     BluraySegReader u;
     BlurayClipStream *f = &c->program.streams[0];
-    int m2ts = c->hdr.type == MKBETAG('M', '2', 'T', 'S'), ret = 0;
+    int m2ts = c->hdr.type == DR_MKBETAG('M', '2', 'T', 'S'), ret = 0;
     Keys k;
 
     if (e->probe & BLURAY_PROBE_DONE)
@@ -519,12 +518,12 @@ int ff_bluray_probe_stream(void *log, DiscIOFS *fs, BlurayAACS *aacs, const Blur
     ff_bluray_seg_reader_init(&u, log, fs, aacs, s);
     if (nb_parts >= 2 && code >= 0x40 && code < 0xc0) {
         if (!scan_pes(&u, e->pid, 3, &k)) {
-            ret = AVERROR_INVALIDDATA;
+            ret = DR_ERR_INVALID;
             goto end;
         }
         if (!has_key(&k, 0x71fd) && !has_key(&k, 0x76fd)) {
             e->probe |= BLURAY_PROBE_NO_CORE;
-            av_log(log, AV_LOG_VERBOSE, "Blu-ray: clip %05u PID 0x%04x has no core substream\n", c->number, e->pid);
+            dr_vlog(log, DR_VLOG_VERBOSE, "Blu-ray: clip %05u PID 0x%04x has no core substream\n", c->number, e->pid);
         }
     }
     if (m2ts) {
@@ -547,7 +546,7 @@ int ff_bluray_probe_stream(void *log, DiscIOFS *fs, BlurayAACS *aacs, const Blur
             if (found)
                 e->probe |= BLURAY_PROBE_LANG;
         }
-        av_log(log, AV_LOG_DEBUG, "Blu-ray: clip %05u PID 0x%04x: BDAV program map probed [untested on real discs]\n",
+        dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: clip %05u PID 0x%04x: BDAV program map probed [untested on real discs]\n",
                c->number, e->pid);
     }
     if (e->coding_type == 0x24 && f->coding_type == 0x24) {
@@ -556,25 +555,25 @@ int ff_bluray_probe_stream(void *log, DiscIOFS *fs, BlurayAACS *aacs, const Blur
                 goto end;
             if (ret) {
                 f->probe |= BLURAY_PROBE_HEVC_EL;
-                av_log(log, AV_LOG_VERBOSE, "Blu-ray: clip %05u: HEVC second layer (Dolby Vision) on PID 0x1015\n",
+                dr_vlog(log, DR_VLOG_VERBOSE, "Blu-ray: clip %05u: HEVC second layer (Dolby Vision) on PID 0x1015\n",
                        c->number);
             }
             ret = 0;
         }
     } else if (!m2ts && e->coding_type == 0x1b) {
         if (!scan_pes(&u, e->pid, 1, &k)) {
-            ret = AVERROR_INVALIDDATA;
+            ret = DR_ERR_INVALID;
             goto end;
         }
         if (!(k.n == 1 && k.key[0] == 0xe0)) {
             if (!scan_pes(&u, e->pid, 20, &k)) {
-                ret = AVERROR_INVALIDDATA;
+                ret = DR_ERR_INVALID;
                 goto end;
             }
             if (!k.n) {
-                av_log(log, AV_LOG_DEBUG, "Blu-ray: clip %05u: no PES packet of its AVC video\n", c->number);
+                dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: clip %05u: no PES packet of its AVC video\n", c->number);
             } else if (k.n == 1 && k.key[0] != 0xe0) {
-                av_log(log, AV_LOG_VERBOSE, "Blu-ray: clip %05u: AVC video on PES stream id 0x%02x\n", c->number,
+                dr_vlog(log, DR_VLOG_VERBOSE, "Blu-ray: clip %05u: AVC video on PES stream id 0x%02x\n", c->number,
                        k.key[0]);
                 if ((k.key[0] & 0xfff8) == 0xe0)
                     f->probe |= BLURAY_PROBE_AVC_ID | (k.key[0] - 0xe0);
@@ -597,5 +596,5 @@ int ff_bluray_pid_scan(void *log, DiscIOFS *fs, BlurayAACS *aacs, const BluraySe
     ok = scan_pes(&u, pid, limit, &k);
 
     ff_bluray_seg_reader_close(&u);
-    return ok ? k.n : AVERROR_INVALIDDATA;
+    return ok ? k.n : DR_ERR_INVALID;
 }

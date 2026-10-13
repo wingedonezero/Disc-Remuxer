@@ -35,6 +35,7 @@ void *dr_memdup(const void *p, size_t size);
  * length the full string would have is returned. */
 size_t dr_strlcpy(char *dst, const char *src, size_t size);
 size_t dr_strlcat(char *dst, const char *src, size_t size);
+size_t dr_strlcatf(char *dst, size_t size, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
 
 /* asprintf: *out set (caller frees), the length returned; negative =
  * failure, *out NULL. */
@@ -45,9 +46,9 @@ int dr_asprintf(char **out, const char *fmt, ...) __attribute__((format(printf, 
  * was. */
 int dr_array_add_ptr(void *array, int *nb, void *item);
 
-/* Append one element of elem_size bytes (copied from data) to the value
- * array (pass the address of a T* array): the new element, NULL on
- * failure with the array as it was. */
+/* Append one element of elem_size bytes (copied from data; NULL: left for
+ * the caller to fill) to the value array (pass the address of a T* array):
+ * the new element, NULL on failure with the array as it was. */
 void *dr_array_add(void *array, int *nb, size_t elem_size, const void *data);
 
 #ifdef __cplusplus

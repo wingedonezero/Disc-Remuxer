@@ -33,9 +33,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "libavutil/intreadwrite.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
+#include "base/bytes.h"
+#include "base/vlog.h"
+#include "base/mem.h"
 
 #include "bluray_internal.h"
 
@@ -52,7 +52,7 @@ static void entry(const uint8_t e[12], BlurayIndexEntry *out)
         d[5] = 0;
         out->ref = strtoul(d, NULL, 10);
     } else if (out->object_type == 1) {
-        out->ref = AV_RB16(e + 6);
+        out->ref = dr_rb16(e + 6);
     }
 }
 
@@ -76,14 +76,14 @@ int ff_bluray_index_parse(void *log, const BlurayFile *f, BlurayIndex *ix)
 
     RD(0, 0x20, h);
     ff_bluray_header(h, &ix->hdr);
-    if (ix->hdr.type != MKBETAG('I', 'N', 'D', 'X'))
+    if (ix->hdr.type != DR_MKBETAG('I', 'N', 'D', 'X'))
         return 0;
-    X = AV_RB32(h + 8);
-    E = AV_RB32(h + 12);
+    X = dr_rb32(h + 8);
+    E = dr_rb32(h + 12);
     if (!X || f->size < (uint64_t)X + 8)
         return 0;
     RD(X, 4, l);
-    end = AV_RB32(l) + X + 4;
+    end = dr_rb32(l) + X + 4;
     if (end > f->size)
         end = f->size;
     if (f->size < (uint64_t)X + 0xc || !entry_read(f, X + 4, &ix->first_play) ||
@@ -92,9 +92,9 @@ int ff_bluray_index_parse(void *log, const BlurayFile *f, BlurayIndex *ix)
     if (X + 0x1e > end)
         return 0;
     RD(X + 0x1c, 2, n);
-    N = AV_RB16(n);
-    if (N && !(ix->titles = av_calloc(N, sizeof(*ix->titles))))
-        return AVERROR(ENOMEM);
+    N = dr_rb16(n);
+    if (N && !(ix->titles = dr_calloc(N, sizeof(*ix->titles))))
+        return DR_ERR(ENOMEM);
     pos = X + 0x1e;
     for (int i = 0; i < N; i++, pos += 12) {
         if (!entry_read(f, pos, &ix->titles[i]))
@@ -102,7 +102,7 @@ int ff_bluray_index_parse(void *log, const BlurayFile *f, BlurayIndex *ix)
         ix->nb_titles = i + 1;
     }
     if (E && (ret = ff_bluray_ext_data(log, f, E, NULL, &ix->ext, &ix->nb_ext)) <= 0) {
-        av_log(log, AV_LOG_DEBUG, "Blu-ray: %s: extension data at %u cannot be read\n", f->path, E);
+        dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: %s: extension data at %u cannot be read\n", f->path, E);
         return ret;
     }
     return 1;
@@ -110,7 +110,7 @@ int ff_bluray_index_parse(void *log, const BlurayFile *f, BlurayIndex *ix)
 
 void ff_bluray_index_free(BlurayIndex *ix)
 {
-    av_freep(&ix->titles);
+    dr_freep(&ix->titles);
     ix->nb_titles = 0;
     ff_bluray_ext_free(&ix->ext, &ix->nb_ext);
 }
@@ -121,10 +121,10 @@ int ff_bluray_id_parse(void *log, const BlurayFile *f, BlurayId *id)
 
     RD(0, 8, h);
     ff_bluray_header(h, &id->hdr);
-    if (id->hdr.type != MKBETAG('B', 'D', 'I', 'D'))
+    if (id->hdr.type != DR_MKBETAG('B', 'D', 'I', 'D'))
         return 0;
     RD(0x28, 0x14, b);
-    id->org_id = AV_RB32(b);
+    id->org_id = dr_rb32(b);
     memcpy(id->disc_id, b + 4, 16);
     return 1;
 }

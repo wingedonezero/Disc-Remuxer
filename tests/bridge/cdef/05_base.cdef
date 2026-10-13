@@ -7,6 +7,8 @@ static const int DR_ERR_NOMEM;
 static const int DR_ERR_LIMIT;
 static const int DR_ERR_CANCELLED;
 static const int DR_ERR_EXTERNAL;
+static const int DR_ERR_UNSUPPORTED;
+static const int DR_ERR_BUG;
 const char *dr_err_str(int err, char *buf, size_t size);
 
 void *dr_malloc(size_t size);

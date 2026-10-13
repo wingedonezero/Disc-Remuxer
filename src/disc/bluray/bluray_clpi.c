@@ -43,16 +43,16 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "libavutil/intreadwrite.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
+#include "base/bytes.h"
+#include "base/vlog.h"
+#include "base/mem.h"
 
 #include "bluray_internal.h"
 
 #define RD(off, len, buf) do { if (!ff_bluray_read(f, (off), (buf), (len))) return 0; } while (0)
 
-#define TYPE_HDMV MKBETAG('H', 'D', 'M', 'V')
-#define TYPE_M2TS MKBETAG('M', '2', 'T', 'S')
+#define TYPE_HDMV DR_MKBETAG('H', 'D', 'M', 'V')
+#define TYPE_M2TS DR_MKBETAG('M', '2', 'T', 'S')
 
 static int clip_info(void *log, const BlurayFile *f, BlurayClip *c)
 {
@@ -65,11 +65,11 @@ static int clip_info(void *log, const BlurayFile *f, BlurayClip *c)
     if (c->hdr.version < 0x200 || c->hdr.type != TYPE_HDMV)
         c->stream_type = c->app_type = 1;
     c->atc_delta = b[0x0b] != 0;
-    c->rate      = AV_RB32(b + 0x0c);
-    c->packets   = AV_RB32(b + 0x10);
-    L = AV_RB16(b + 0x94);
+    c->rate      = dr_rb32(b + 0x0c);
+    c->packets   = dr_rb32(b + 0x10);
+    L = dr_rb16(b + 0x94);
     if (L <= 4) {
-        av_log(log, AV_LOG_DEBUG, "Blu-ray: %s: TS_type_info length %u\n", f->path, L);
+        dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: %s: TS_type_info length %u\n", f->path, L);
         return 0;
     }
     c->ts_validity = b[0x96];
@@ -77,13 +77,13 @@ static int clip_info(void *log, const BlurayFile *f, BlurayClip *c)
     if (!c->atc_delta)
         return 1;
     RD(0xbe + L, 2, t);
-    if (t[1] && !(c->deltas = av_calloc(t[1], sizeof(*c->deltas))))
-        return AVERROR(ENOMEM);
+    if (t[1] && !(c->deltas = dr_calloc(t[1], sizeof(*c->deltas))))
+        return DR_ERR(ENOMEM);
     c->nb_deltas = t[1];
     pos = 0xc0 + L;
     for (int i = 0; i < t[1]; i++, pos += 14) {
         RD(pos, 14, r);
-        c->deltas[i].delta = AV_RB32(r);
+        c->deltas[i].delta = dr_rb32(r);
         memcpy(c->deltas[i].clip, r + 4, 5);
         memcpy(c->deltas[i].codec, r + 9, 4);
     }
@@ -98,33 +98,33 @@ static int sequence_info(void *log, const BlurayFile *f, BlurayClip *c, uint32_t
 
     RD(off, 6, h);
     if (!(n = h[5])) {
-        av_log(log, AV_LOG_DEBUG, "Blu-ray: %s: no ATC sequence\n", f->path);
+        dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: %s: no ATC sequence\n", f->path);
         return 0;
     }
-    if (!(c->atc = av_calloc(n, sizeof(*c->atc))))
-        return AVERROR(ENOMEM);
+    if (!(c->atc = dr_calloc(n, sizeof(*c->atc))))
+        return DR_ERR(ENOMEM);
     pos = off + 6;
     for (int k = 0; k < n; k++) {
         BlurayAtc *A = &c->atc[k];
         int m;
 
         RD(pos, 6, a);
-        A->spn_atc_start = AV_RB32(a);
+        A->spn_atc_start = dr_rb32(a);
         A->offset_stc_id = a[5];
         if (!(m = a[4])) {
-            av_log(log, AV_LOG_DEBUG, "Blu-ray: %s: ATC sequence %d without STC sequence\n", f->path, k);
+            dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: %s: ATC sequence %d without STC sequence\n", f->path, k);
             return 0;
         }
-        if (!(A->stc = av_calloc(m, sizeof(*A->stc))))
-            return AVERROR(ENOMEM);
+        if (!(A->stc = dr_calloc(m, sizeof(*A->stc))))
+            return DR_ERR(ENOMEM);
         c->nb_atc = k + 1;
         for (int j = 0; j < m; j++) {
             BlurayStc *T = &A->stc[j];
             RD(pos + 6 + 14 * j, 14, b);
-            T->pcr_pid       = AV_RB16(b);
-            T->spn_stc_start = AV_RB32(b + 2);
-            T->start         = AV_RB32(b + 6);
-            T->end           = AV_RB32(b + 10);
+            T->pcr_pid       = dr_rb16(b);
+            T->spn_stc_start = dr_rb32(b + 2);
+            T->start         = dr_rb32(b + 6);
+            T->end           = dr_rb32(b + 10);
             A->nb_stc        = j + 1;
         }
         pos += 6 + 14 * m;
@@ -138,24 +138,24 @@ static void fix_sequences(void *log, const BlurayFile *f, BlurayClip *c)
     BlurayAtc *A0 = &c->atc[0];
 
     if (A0->stc[0].spn_stc_start) {
-        av_log(log, AV_LOG_INFO, "Blu-ray: %s: its first STC sequence starts at source packet %u: taken as 0 (the "
+        dr_vlog(log, DR_VLOG_INFO, "Blu-ray: %s: its first STC sequence starts at source packet %u: taken as 0 (the "
                "clip's start)\n", f->path, A0->stc[0].spn_stc_start);
         A0->stc[0].spn_stc_start = 0;
     }
     if (A0->offset_stc_id) {
-        av_log(log, AV_LOG_INFO, "Blu-ray: %s: its first ATC sequence's offset_STC_id %u: taken as 0\n", f->path,
+        dr_vlog(log, DR_VLOG_INFO, "Blu-ray: %s: its first ATC sequence's offset_STC_id %u: taken as 0\n", f->path,
                A0->offset_stc_id);
         A0->offset_stc_id = 0;
     }
     for (int k = 1; k < c->nb_atc; k++) {
         BlurayAtc *A = &c->atc[k];
         if (A->spn_atc_start < A->stc[0].spn_stc_start) {
-            av_log(log, AV_LOG_INFO, "Blu-ray: %s: ATC sequence %d starts at source packet %u, its first STC "
+            dr_vlog(log, DR_VLOG_INFO, "Blu-ray: %s: ATC sequence %d starts at source packet %u, its first STC "
                    "sequence at %u: moved to its ATC sequence's start\n", f->path, k, A->spn_atc_start,
                    A->stc[0].spn_stc_start);
             A->stc[0].spn_stc_start = A->spn_atc_start;
         } else if (A->spn_atc_start > A->stc[0].spn_stc_start) {
-            av_log(log, AV_LOG_WARNING, "Blu-ray: %s: ATC sequence %d starts at source packet %u, after its first STC "
+            dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: %s: ATC sequence %d starts at source packet %u, after its first STC "
                    "sequence (%u): kept as it is\n", f->path, k, A->spn_atc_start, A->stc[0].spn_stc_start);
         }
     }
@@ -163,7 +163,7 @@ static void fix_sequences(void *log, const BlurayFile *f, BlurayClip *c)
         for (int j = 0; j < c->atc[k].nb_stc; j++) {
             BlurayStc *T = &c->atc[k].stc[j];
             if (T->spn_stc_start & 0x1f) {
-                av_log(log, AV_LOG_WARNING, "Blu-ray: clip %05u.m2ts: STC sequence start 0x%08x is not on an "
+                dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: clip %05u.m2ts: STC sequence start 0x%08x is not on an "
                        "aligned unit: moved back to 0x%08x\n", c->number, T->spn_stc_start,
                        T->spn_stc_start & ~0x1fu);
                 T->spn_stc_start &= ~0x1fu;
@@ -181,24 +181,24 @@ static int program_info(const BlurayFile *f, BlurayClip *c, uint32_t *off)
     int n;
 
     RD(o, 14, h);
-    av_freep(&p->streams);
+    dr_freep(&p->streams);
     p->nb_streams = 0;
-    p->spn_start  = AV_RB32(h + 6);
-    p->pmt_pid    = AV_RB16(h + 10);
+    p->spn_start  = dr_rb32(h + 6);
+    p->pmt_pid    = dr_rb16(h + 10);
     n = h[12];
-    if (n && !(p->streams = av_calloc(n, sizeof(*p->streams))))
-        return AVERROR(ENOMEM);
+    if (n && !(p->streams = dr_calloc(n, sizeof(*p->streams))))
+        return DR_ERR(ENOMEM);
     o += 14;
     for (int i = 0; i < n; i++) {
         BlurayClipStream *s = &p->streams[i];
         RD(o, 4, a);
-        s->pid = AV_RB16(a);
+        s->pid = dr_rb16(a);
         RD(o + 2, 2, b);
         s->coding_type = b[1];
         if (!b[0])
             return 0;
         s->info_len = b[0] - 1;
-        RD(o + 4, FFMIN(b[0] - 1, 32), s->info);
+        RD(o + 4, DR_MIN(b[0] - 1, 32), s->info);
         p->nb_streams = i + 1;
         o += 4 + (a[2] - 1);
     }
@@ -211,7 +211,7 @@ static int cpi_head(const BlurayFile *f, BlurayClip *c, uint32_t off)
     uint8_t h[6];
 
     RD(off, 6, h);
-    if (AV_RB32(h))
+    if (dr_rb32(h))
         c->cpi_type = h[5] & 0xf;
     return 1;
 }
@@ -231,20 +231,20 @@ int ff_bluray_clpi_parse(void *log, const BlurayFile *f, BlurayClip *c)
     RD(0, 8, h);
     ff_bluray_header(h, &c->hdr);
     if (c->hdr.type != TYPE_HDMV && c->hdr.type != TYPE_M2TS) {
-        av_log(log, AV_LOG_DEBUG, "Blu-ray: %s: not clip information\n", f->path);
+        dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: %s: not clip information\n", f->path);
         return 0;
     }
     RD(0, 0x28, h);
-    seq  = AV_RB32(h + 0x08);
-    prog = AV_RB32(h + 0x0c);
-    cpi  = AV_RB32(h + 0x10);
-    ext  = AV_RB32(h + 0x18);
+    seq  = dr_rb32(h + 0x08);
+    prog = dr_rb32(h + 0x0c);
+    cpi  = dr_rb32(h + 0x10);
+    ext  = dr_rb32(h + 0x18);
     if ((ret = clip_info(log, f, c)) <= 0 || (ret = sequence_info(log, f, c, seq)) <= 0)
         return ret;
     if (c->hdr.type == TYPE_HDMV && c->nb_atc > 1) {
-        av_log(log, AV_LOG_DEBUG, "Blu-ray: %s: %d further ATC sequences dropped\n", f->path, c->nb_atc - 1);
+        dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: %s: %d further ATC sequences dropped\n", f->path, c->nb_atc - 1);
         for (int k = 1; k < c->nb_atc; k++)
-            av_freep(&c->atc[k].stc);
+            dr_freep(&c->atc[k].stc);
         c->nb_atc = 1;
     }
     fix_sequences(log, f, c);
@@ -264,19 +264,19 @@ int ff_bluray_clpi_parse(void *log, const BlurayFile *f, BlurayClip *c)
         if (e->id2 == 4) {
             uint32_t n;
             RD(e->start, 8, b);
-            n = AV_RB32(b + 4);
-            if (AV_RB32(b) != n * 4 + 4) {
-                av_log(log, AV_LOG_DEBUG, "Blu-ray: %s: extent start points: length %u for %u entries\n",
-                       f->path, AV_RB32(b), n);
+            n = dr_rb32(b + 4);
+            if (dr_rb32(b) != n * 4 + 4) {
+                dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: %s: extent start points: length %u for %u entries\n",
+                       f->path, dr_rb32(b), n);
                 return 0;
             }
-            av_freep(&c->ss_extents);
+            dr_freep(&c->ss_extents);
             c->nb_ss_extents = 0;
-            if (n && !(c->ss_extents = av_malloc_array(n, sizeof(*c->ss_extents))))
-                return AVERROR(ENOMEM);
+            if (n && !(c->ss_extents = dr_malloc_array(n, sizeof(*c->ss_extents))))
+                return DR_ERR(ENOMEM);
             for (uint32_t k = 0; k < n; k++) {
                 RD(e->start + 8 + 4 * k, 4, b);
-                c->ss_extents[k] = AV_RB32(b);
+                c->ss_extents[k] = dr_rb32(b);
             }
             c->nb_ss_extents = n;
         } else if (e->id2 == 5) {
@@ -307,14 +307,14 @@ int ff_bluray_clip_stream_file(void *log, DiscIOFS *fs, BlurayClip *c)
         ret = fs->ops->open_file(fs, path, &file);
     }
     if (ret < 0) {
-        av_log(log, AV_LOG_DEBUG, "Blu-ray: clip %05u has no stream file\n", c->number);
+        dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: clip %05u has no stream file\n", c->number);
         c->stream_path[0] = 0;
         return 0;
     }
     snprintf(c->stream_path, sizeof(c->stream_path), "%s", path);
     c->stream_size = file->size;
     if (file->size != expected)
-        av_log(log, AV_LOG_DEBUG, "Blu-ray: %s is %"PRId64" sectors, its clip information says %"PRId64"\n",
+        dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: %s is %"PRId64" sectors, its clip information says %"PRId64"\n",
                path, file->size >> 11, expected >> 11);
     ff_discio_file_free(&file);
     return 1;
@@ -323,13 +323,13 @@ int ff_bluray_clip_stream_file(void *log, DiscIOFS *fs, BlurayClip *c)
 void ff_bluray_clip_free(BlurayClip *c)
 {
     for (int k = 0; k < c->nb_atc; k++)
-        av_freep(&c->atc[k].stc);
-    av_freep(&c->atc);
-    av_freep(&c->deltas);
-    av_freep(&c->program.streams);
-    av_freep(&c->ss_extents);
+        dr_freep(&c->atc[k].stc);
+    dr_freep(&c->atc);
+    dr_freep(&c->deltas);
+    dr_freep(&c->program.streams);
+    dr_freep(&c->ss_extents);
     ff_bluray_ext_free(&c->ext, &c->nb_ext);
-    av_freep(&c->pmt);
+    dr_freep(&c->pmt);
     c->pmt_len = c->pmt_tried = 0;
     c->nb_atc = c->nb_deltas = c->program.nb_streams = c->nb_ss_extents = 0;
 }

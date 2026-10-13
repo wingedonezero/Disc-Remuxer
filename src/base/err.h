@@ -7,6 +7,7 @@
 #ifndef DISC_BASE_ERR_H
 #define DISC_BASE_ERR_H
 
+#include <errno.h>
 #include <stddef.h>
 
 #ifdef __cplusplus

@@ -355,10 +355,14 @@ In five slices, one commit and one full test run each:
   return `DR_ERR_EOF`. Dropped as dead: the sub-demuxer's per-stream
   discard check (nothing ever set it; the `discarded` counts remain, at 0).
 - **7b — the format parts move** near-verbatim into
-  `src/disc/{dvd,hddvd,bluray}/`, keyed on an own disc context instead of
-  `AVFormatContext` (they use it only as a log handle and to reach their
-  private context); the disc layer, still in libavformat, calls them
-  through the same `DiscFormat` vtable.
+  `src/disc/{dvd,hddvd,bluray}/` (the `*dec.c` adapters stay in libavformat
+  until 7d and keep the `DiscFormat` vtable). Landed so far (rows 259–261):
+  the language codes (`disc/lang.c`, own ISO 639-2 table), the disc-info
+  model (`disc/info.h`, values pinned and asserted), and THE BLU-RAY PART
+  (`disc/bluray/`, FFmpeg-free: base utilities, own SHA / CRC-32 / UTF-8
+  read, libaacs + expat remain its libraries; errors as base values,
+  translated once at the seams — `part_err()` in discdec). HD DVD and DVD
+  follow the same recipe.
 - **7c — `discpass.c` and `disclang.c` move** (the pass on
   mux/parse/analyze; language names from our own ISO-639 table, the
   `avlanguage.c` link dropped).

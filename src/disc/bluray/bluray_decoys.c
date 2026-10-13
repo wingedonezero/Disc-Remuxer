@@ -38,11 +38,12 @@
  * disc info; the title list is not changed.
  */
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "libavutil/bprint.h"
-#include "libavutil/mem.h"
+#include "base/str.h"
+#include "base/mem.h"
 
 #include "bluray_internal.h"
 
@@ -87,17 +88,17 @@ static int same_file(void *log, const BlurayDisc *d, const BlurayClip *a, const 
 
     if ((ret = d->fs->ops->open_file(d->fs, a->stream_path, &fa)) < 0 ||
         (ret = d->fs->ops->open_file(d->fs, b->stream_path, &fb)) < 0) {
-        av_log(log, AV_LOG_WARNING, "Blu-ray: fake playlist check: %s cannot be opened (%s): left out of the "
-               "comparison\n", fa ? b->stream_path : a->stream_path, av_err2str(ret));
+        dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: fake playlist check: %s cannot be opened (%s): left out of the "
+               "comparison\n", fa ? b->stream_path : a->stream_path, dr_err_text(ret));
         goto end;
     }
     for (int64_t pos = 0; pos < a->stream_size; pos += CHUNK) {
-        int len = (int)FFMIN(CHUNK, a->stream_size - pos);
+        int len = (int)DR_MIN(CHUNK, a->stream_size - pos);
         const char *bad = a->stream_path;
         if ((ret = ff_discio_file_read(d->fs, fa, pos, buf, len)) < 0 ||
             (bad = b->stream_path, ret = ff_discio_file_read(d->fs, fb, pos, buf + CHUNK, len)) < 0) {
-            av_log(log, AV_LOG_WARNING, "Blu-ray: fake playlist check: %s cannot be read at byte %"PRId64" (%s): "
-                   "left out of the comparison\n", bad, pos, av_err2str(ret));
+            dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: fake playlist check: %s cannot be read at byte %"PRId64" (%s): "
+                   "left out of the comparison\n", bad, pos, dr_err_text(ret));
             goto end;
         }
         if (memcmp(buf, buf + CHUNK, len)) {
@@ -129,8 +130,8 @@ static int find_copies(void *log, const BlurayDisc *d, const uint8_t *used, int 
             if (!used[j] || copy[j] != j || !d->clips[j].stream_path[0] ||
                 d->clips[j].stream_size != d->clips[i].stream_size)
                 continue;
-            if (!buf && !(buf = av_malloc(2 * CHUNK)))
-                return AVERROR(ENOMEM);
+            if (!buf && !(buf = dr_malloc(2 * CHUNK)))
+                return DR_ERR(ENOMEM);
             compared++;
             if ((ret = same_file(log, d, &d->clips[j], &d->clips[i], buf)) > 0) {
                 copy[i] = j;
@@ -138,8 +139,8 @@ static int find_copies(void *log, const BlurayDisc *d, const uint8_t *used, int 
             }
         }
     }
-    av_free(buf);
-    av_log(log, AV_LOG_VERBOSE, "Blu-ray: fake playlist check: %d pair(s) of stream files of equal size compared\n",
+    dr_free(buf);
+    dr_vlog(log, DR_VLOG_VERBOSE, "Blu-ray: fake playlist check: %d pair(s) of stream files of equal size compared\n",
            compared);
     return 0;
 }
@@ -175,7 +176,7 @@ static int repeats(const BlurayDisc *d, const BlurayPlaylist *pl, const int *cop
 
 /* The copies a fake plays, as "00002, 00137, 00143 (one clip)": every clip
  * content it plays from more than one stream file. */
-static void copies_text(const BlurayDisc *d, const BlurayPlaylist *pl, const int *copy, AVBPrint *bp)
+static void copies_text(const BlurayDisc *d, const BlurayPlaylist *pl, const int *copy, DrStr *bp)
 {
     int groups = 0;
 
@@ -201,7 +202,7 @@ static void copies_text(const BlurayDisc *d, const BlurayPlaylist *pl, const int
         }
         if (files < 2)
             continue;
-        av_bprintf(bp, "%s%d times from %d copies of one clip (", groups++ ? "; " : "", plays, files);
+        dr_str_catf(bp, "%s%d times from %d copies of one clip (", groups++ ? "; " : "", plays, files);
         for (int j = i, n = 0; j < pl->nb_items; j++) {
             int cj = clip_index(d, pl->items[j].clip), seen = 0;
             if (cj < 0 || copy[cj] != copy[ci])
@@ -209,9 +210,9 @@ static void copies_text(const BlurayDisc *d, const BlurayPlaylist *pl, const int
             for (int k = i; k < j; k++)
                 seen |= !strcmp(pl->items[k].clip, pl->items[j].clip);
             if (!seen)
-                av_bprintf(bp, "%s%s", n++ ? ", " : "", pl->items[j].clip);
+                dr_str_catf(bp, "%s%s", n++ ? ", " : "", pl->items[j].clip);
         }
-        av_bprintf(bp, ")");
+        dr_str_catf(bp, ")");
     }
 }
 
@@ -251,21 +252,21 @@ int ff_bluray_decoys_check(void *log, BlurayDisc *d)
     uint8_t *used = NULL;
     int *copy = NULL, *any = NULL, *order = NULL, ret = 0;
     int64_t shortest = INT64_MAX;
-    AVBPrint bp;
+    DrStr bp;
 
-    av_freep(&d->pl_check);
-    av_freep(&d->pl_repeats);
+    dr_freep(&d->pl_check);
+    dr_freep(&d->pl_repeats);
     d->nb_fake = d->nb_real = d->fake_suspected = 0;
     if (d->bdav || !ff_bluray_has_bdj(d) || !d->nb_playlists)
         return 0;
-    used          = av_calloc(FFMAX(d->nb_clips, 1), sizeof(*used));
-    copy          = av_calloc(FFMAX(d->nb_clips, 1), sizeof(*copy));
-    any           = av_calloc(d->nb_playlists, sizeof(*any));
-    d->pl_check   = av_calloc(d->nb_playlists, sizeof(*d->pl_check));
-    d->pl_repeats = av_calloc(d->nb_playlists, sizeof(*d->pl_repeats));
-    order         = av_calloc(d->nb_playlists, sizeof(*order));
+    used          = dr_calloc(DR_MAX(d->nb_clips, 1), sizeof(*used));
+    copy          = dr_calloc(DR_MAX(d->nb_clips, 1), sizeof(*copy));
+    any           = dr_calloc(d->nb_playlists, sizeof(*any));
+    d->pl_check   = dr_calloc(d->nb_playlists, sizeof(*d->pl_check));
+    d->pl_repeats = dr_calloc(d->nb_playlists, sizeof(*d->pl_repeats));
+    order         = dr_calloc(d->nb_playlists, sizeof(*order));
     if (!used || !copy || !any || !d->pl_check || !d->pl_repeats || !order) {
-        ret = AVERROR(ENOMEM);
+        ret = DR_ERR(ENOMEM);
         goto end;
     }
     /* the findings are said in playlist number order */
@@ -291,7 +292,7 @@ int ff_bluray_decoys_check(void *log, BlurayDisc *d)
         int n = 0;
         if (copy[i] != i)
             continue;
-        av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
+        dr_str_init(&bp);
         for (uint32_t last = 0;;) {           /* in number order */
             int next = -1;
             for (int j = i; j < d->nb_clips; j++)
@@ -301,12 +302,12 @@ int ff_bluray_decoys_check(void *log, BlurayDisc *d)
             if (next < 0)
                 break;
             last = d->clips[next].number;
-            av_bprintf(&bp, "%s%05u", n++ ? ", " : "", last);
+            dr_str_catf(&bp, "%s%05u", n++ ? ", " : "", last);
         }
         if (n > 1)
-            av_log(log, AV_LOG_INFO, "Blu-ray: clips %s have byte-identical stream files (%"PRId64" bytes each)\n",
+            dr_vlog(log, DR_VLOG_INFO, "Blu-ray: clips %s have byte-identical stream files (%"PRId64" bytes each)\n",
                    bp.str, d->clips[i].stream_size);
-        av_bprint_finalize(&bp, NULL);
+        dr_str_free(&bp);
     }
     for (int p = 0; p < d->nb_playlists; p++) {
         const BlurayPlaylist *pl = &d->playlists[p];
@@ -317,58 +318,58 @@ int ff_bluray_decoys_check(void *log, BlurayDisc *d)
         if (d->pl_repeats[p]) {
             d->pl_check[p] = BLURAY_PL_FAKE;
             d->nb_fake++;
-            shortest = FFMIN(shortest, rest);
+            shortest = DR_MIN(shortest, rest);
         }
     }
     if (d->nb_fake) {
-        AVBPrint reals;
+        DrStr reals;
         char t[16];
-        av_bprint_init(&reals, 0, AV_BPRINT_SIZE_UNLIMITED);
+        dr_str_init(&reals);
         for (int o = 0; o < d->nb_playlists; o++) {
             int p = order[o];
             const BlurayPlaylist *pl = &d->playlists[p];
-            if (pl->bdav || d->pl_check[p] || any[p] || playlist_length(pl) < FFMAX(shortest, LONG_PLAYLIST))
+            if (pl->bdav || d->pl_check[p] || any[p] || playlist_length(pl) < DR_MAX(shortest, LONG_PLAYLIST))
                 continue;
             d->pl_check[p] = BLURAY_PL_REAL;
-            av_bprintf(&reals, "%s%05u", d->nb_real++ ? ", " : "", pl->number);
+            dr_str_catf(&reals, "%s%05u", d->nb_real++ ? ", " : "", pl->number);
         }
         hms(t, sizeof(t), shortest);
-        av_log(log, AV_LOG_WARNING, "Blu-ray: fake playlists: %d long playlist(s) play copies of one clip more than "
+        dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: fake playlists: %d long playlist(s) play copies of one clip more than "
                "once, a way to hide the main feature among fakes; likely real (no clip played twice, at least as "
                "long as the shortest fake without its repeated copies, %s): %s\n", d->nb_fake, t, d->nb_real ? reals.str : "none");
-        av_bprint_finalize(&reals, NULL);
+        dr_str_free(&reals);
         for (int o = 0; o < d->nb_playlists; o++) {
             int p = order[o];
             const BlurayPlaylist *pl = &d->playlists[p];
             hms(t, sizeof(t), playlist_length(pl));
             if (d->pl_check[p] == BLURAY_PL_FAKE) {
-                av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
+                dr_str_init(&bp);
                 copies_text(d, pl, copy, &bp);
-                av_log(log, AV_LOG_INFO, "Blu-ray: playlist %05u (%s): likely fake: plays %s\n", pl->number, t,
+                dr_vlog(log, DR_VLOG_INFO, "Blu-ray: playlist %05u (%s): likely fake: plays %s\n", pl->number, t,
                        bp.str);
-                av_bprint_finalize(&bp, NULL);
+                dr_str_free(&bp);
             } else if (d->pl_check[p] == BLURAY_PL_REAL)
-                av_log(log, AV_LOG_INFO, "Blu-ray: playlist %05u (%s): likely real\n", pl->number, t);
+                dr_vlog(log, DR_VLOG_INFO, "Blu-ray: playlist %05u (%s): likely real\n", pl->number, t);
         }
     } else {
         int orders = long_orders(d, copy);
         if (orders >= SUSPECT_ORDERS) {
             d->fake_suspected = 1;
-            av_log(log, AV_LOG_WARNING, "Blu-ray: %d different clip orders among the playlists of an hour or more, "
+            dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: %d different clip orders among the playlists of an hour or more, "
                    "but none plays a copy of a clip twice: possibly fake playlists of a kind not recognised "
                    "(LOOK INTO AGAIN LATER)\n", orders);
         } else
-            av_log(log, AV_LOG_VERBOSE, "Blu-ray: fake playlist check: none found (%d different clip orders "
+            dr_vlog(log, DR_VLOG_VERBOSE, "Blu-ray: fake playlist check: none found (%d different clip orders "
                    "among the playlists of an hour or more)\n", orders);
     }
 end:
-    av_free(used);
-    av_free(copy);
-    av_free(any);
-    av_free(order);
+    dr_free(used);
+    dr_free(copy);
+    dr_free(any);
+    dr_free(order);
     if (ret < 0) {
-        av_freep(&d->pl_check);
-        av_freep(&d->pl_repeats);
+        dr_freep(&d->pl_check);
+        dr_freep(&d->pl_repeats);
     }
     return ret;
 }

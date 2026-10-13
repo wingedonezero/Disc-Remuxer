@@ -52,16 +52,17 @@
  * doubt: a warning and nothing of the data is used.
  */
 
+#include <stdio.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "libavutil/avstring.h"
-#include "libavutil/bprint.h"
-#include "libavutil/common.h"
-#include "libavutil/intfloat.h"
-#include "libavutil/intreadwrite.h"
-#include "libavutil/mem.h"
+#include "base/mem.h"
+#include "base/str.h"
+#include "base/macros.h"
+#include "base/bytes.h"
+#include "base/bytes.h"
+#include "base/mem.h"
 
 #include "bluray_internal.h"
 
@@ -100,14 +101,14 @@ static int32_t rd_int(Reader *r)
         r->bad = 1;
         return 0;
     }
-    v = AV_RB32(r->p);
+    v = dr_rb32(r->p);
     r->p += 4;
     return v;
 }
 
 static float rd_float(Reader *r)
 {
-    return av_int2float(rd_int(r));
+    return dr_int2float(rd_int(r));
 }
 
 /* A count: not negative and not more than the bytes left could hold. */
@@ -120,8 +121,35 @@ static int rd_count(Reader *r)
     return r->bad ? 0 : n;
 }
 
-/* A string; *out (av_free()) when out is set. Modified UTF-8 must be valid
+/* A string; *out (dr_free()) when out is set. Modified UTF-8 must be valid
  * UTF-8 apart from its two-byte NUL. */
+/* One UTF-8 code point, accepted exactly as the processing library's
+ * reader accepted it (continuation bytes checked, overlong forms not
+ * rejected, 0xFE / 0xFF leads bad): 0 and *code, -1 bad. */
+static int utf8_code(const uint8_t **qp, const uint8_t *e, uint32_t *code)
+{
+    const uint8_t *q = *qp;
+    uint32_t val = q < e ? *q++ : 0;
+    uint32_t top = (val & 128) >> 1;
+
+    if ((val & 0xc0) == 0x80 || val >= 0xfe) {
+        *qp = q;
+        return -1;
+    }
+    while (val & top) {
+        uint32_t tmp = (uint32_t)(q < e ? *q++ : 0) - 128;
+        if (tmp >> 6) {
+            *qp = q;
+            return -1;
+        }
+        val = (val << 6) + tmp;
+        top <<= 5;
+    }
+    *code = val & ((top << 1) - 1);
+    *qp = q;
+    return 0;
+}
+
 static void rd_str(Reader *r, char **out)
 {
     const uint8_t *s, *e;
@@ -131,7 +159,7 @@ static void rd_str(Reader *r, char **out)
         r->bad = 1;
         return;
     }
-    len = AV_RB16(r->p);
+    len = dr_rb16(r->p);
     if (r->end - r->p - 2 < len) {
         r->bad = 1;
         return;
@@ -145,11 +173,14 @@ static void rd_str(Reader *r, char **out)
             q += 2;
             continue;
         }
-        GET_UTF8(code, q < e ? *q++ : 0, r->bad = 1; break;)
+        if (utf8_code(&q, e, &code)) {
+            r->bad = 1;
+            break;
+        }
         if (!code)
             r->bad = 1;
     }
-    if (!r->bad && out && !(*out = av_strndup(s, len)))
+    if (!r->bad && out && !(*out = dr_strndup((const char *)s, len)))
         r->bad = 2;
 }
 
@@ -240,27 +271,27 @@ static void project_free(Project *p)
 {
     for (int i = 0; i < p->nb_discs; i++) {
         for (int k = 0; k < p->discs[i].nb_pl; k++)
-            av_free(p->discs[i].pl[k].name);
-        av_free(p->discs[i].pl);
-        av_free(p->discs[i].name);
-        av_free(p->discs[i].id);
+            dr_free(p->discs[i].pl[k].name);
+        dr_free(p->discs[i].pl);
+        dr_free(p->discs[i].name);
+        dr_free(p->discs[i].id);
     }
-    av_free(p->discs);
-    av_free(p->name);
+    dr_free(p->discs);
+    dr_free(p->name);
     memset(p, 0, sizeof(*p));
 }
 
-/* The project in one layout: 0 read to its last byte, AVERROR_INVALIDDATA
- * not this layout, AVERROR(ENOMEM). */
+/* The project in one layout: 0 read to its last byte, DR_ERR_INVALID
+ * not this layout, DR_ERR(ENOMEM). */
 static int project_read(const BlurayFile *f, int v2, Project *p)
 {
-    Reader r = { f->data, f->data + f->size, v2 };
+    Reader r = { f->data, f->data + f->size, v2, 0 };
     int n;
 
     memset(p, 0, sizeof(*p));
     rd_str(&r, &p->name);
     n = rd_count(&r);
-    if (n && !r.bad && !(p->discs = av_calloc(n, sizeof(*p->discs))))
+    if (n && !r.bad && !(p->discs = dr_calloc(n, sizeof(*p->discs))))
         r.bad = 2;
     for (int i = 0; i < n && !r.bad; i++) {
         Disc *d = &p->discs[p->nb_discs++];
@@ -273,7 +304,7 @@ static int project_read(const BlurayFile *f, int v2, Project *p)
             rd_str(&r, NULL);
         }
         np = rd_count(&r);
-        if (np && !r.bad && !(d->pl = av_calloc(np, sizeof(*d->pl))))
+        if (np && !r.bad && !(d->pl = dr_calloc(np, sizeof(*d->pl))))
             r.bad = 2;
         for (int k = 0; k < np && !r.bad; k++)
             playlist(&r, &d->pl[d->nb_pl++]);
@@ -281,9 +312,9 @@ static int project_read(const BlurayFile *f, int v2, Project *p)
     if (v2 && !r.bad && r.end - r.p == 12)  /* the format version */
         r.p += 12;
     if (r.bad == 2 || (!r.bad && r.p == r.end))
-        return r.bad ? AVERROR(ENOMEM) : 0;
+        return r.bad ? DR_ERR(ENOMEM) : 0;
     project_free(p);
-    return AVERROR_INVALIDDATA;
+    return DR_ERR_INVALID;
 }
 
 /* The disc's entry: its id the disc ID of id.bdmv, else the only one. */
@@ -323,9 +354,9 @@ static int jar_dir(void *opaque, const char *name, int is_dir)
         return 0;
     ff_discio_file_free(&f);
     if (!s->n++)
-        av_strlcpy(s->found, name, sizeof(s->found));
+        dr_strlcpy(s->found, name, sizeof(s->found));
     else
-        av_log(s->log, AV_LOG_WARNING, "Blu-ray: menu project data in BDMV/JAR/%s as well as BDMV/JAR/%s: which one "
+        dr_vlog(s->log, DR_VLOG_WARNING, "Blu-ray: menu project data in BDMV/JAR/%s as well as BDMV/JAR/%s: which one "
                "the menu reads is not known: not used\n", name, s->found);
     return 0;
 }
@@ -356,7 +387,7 @@ int ff_bluray_menu_read(void *log, BlurayDisc *d)
     Project p = { 0 };
     const Disc *disc;
     char dir[128], **names = NULL;
-    AVBPrint missing;
+    DrStr missing;
     int ret, nb_missing = 0, named = 0, v2 = 0;
 
     ff_bluray_menu_free(d);
@@ -368,43 +399,43 @@ int ff_bluray_menu_read(void *log, BlurayDisc *d)
     if ((ret = ff_bluray_load(log, d->fs, "BDMV", dir, (const char *const[]){ FILE_NAME, NULL },
                               (const char *const[]){ "bin", NULL }, &f)) <= 0) {
         if (ret < 0)
-            av_log(log, AV_LOG_WARNING, "Blu-ray: BDMV/JAR/%s/" FILE_NAME ".bin cannot be read (%s): menu names "
-                   "not used\n", dirs.found, av_err2str(ret));
-        return ret == AVERROR(ENOMEM) ? ret : 0;
+            dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: BDMV/JAR/%s/" FILE_NAME ".bin cannot be read (%s): menu names "
+                   "not used\n", dirs.found, dr_err_text(ret));
+        return ret == DR_ERR(ENOMEM) ? ret : 0;
     }
     ret = project_read(&f, 0, &p);
-    if (ret == AVERROR_INVALIDDATA)
+    if (ret == DR_ERR_INVALID)
         ret = project_read(&f, v2 = 1, &p);
     ff_bluray_file_free(&f);
-    if (ret == AVERROR(ENOMEM))
+    if (ret == DR_ERR(ENOMEM))
         return ret;
     if (ret < 0) {
-        av_log(log, AV_LOG_WARNING, "Blu-ray: BDMV/JAR/%s/" FILE_NAME ".bin is not menu project data in a known "
+        dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: BDMV/JAR/%s/" FILE_NAME ".bin is not menu project data in a known "
                "layout: menu names not used\n", dirs.found);
         return 0;
     }
     if (!(disc = pick_disc(d, &p))) {
-        av_log(log, AV_LOG_WARNING, "Blu-ray: the menu project data has %d discs and none is this one (by its disc "
+        dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: the menu project data has %d discs and none is this one (by its disc "
                "ID): menu names not used\n", p.nb_discs);
         goto end;
     }
-    av_bprint_init(&missing, 0, AV_BPRINT_SIZE_UNLIMITED);
+    dr_str_init(&missing);
     for (int i = 0; i < disc->nb_pl; i++) {
         const Entry *e = &disc->pl[i];
         int k;
         if (e->id < 0 || e->id > 99999) {
-            av_log(log, AV_LOG_WARNING, "Blu-ray: the menu project data names playlist %d ('%s'), not a playlist "
+            dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: the menu project data names playlist %d ('%s'), not a playlist "
                    "number: menu names not used\n", e->id, e->name);
             goto bad;
         }
         for (int j = 0; j < i; j++)
             if (disc->pl[j].id == e->id) {
-                av_log(log, AV_LOG_WARNING, "Blu-ray: the menu project data names playlist %05d twice ('%s', "
+                dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: the menu project data names playlist %05d twice ('%s', "
                        "'%s'): menu names not used\n", e->id, disc->pl[j].name, e->name);
                 goto bad;
             }
         if ((k = playlist_index(d, e->id)) < 0) {
-            av_bprintf(&missing, "%s%05d '%s'", nb_missing++ ? ", " : "", e->id, e->name);
+            dr_str_catf(&missing, "%s%05d '%s'", nb_missing++ ? ", " : "", e->id, e->name);
             continue;
         }
         if (!plays_a_clip_twice(&d->playlists[k])) {
@@ -413,19 +444,19 @@ int ff_bluray_menu_read(void *log, BlurayDisc *d)
             for (int j = 0; j < pl->nb_items; j++)
                 len += (int64_t)pl->items[j].out_time - pl->items[j].in_time;
             if (fabs(len / 45000.0 - e->duration) > LENGTH_SLACK) {
-                av_log(log, AV_LOG_WARNING, "Blu-ray: the menu project data gives playlist %05d ('%s') %.1f s, the "
+                dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: the menu project data gives playlist %05d ('%s') %.1f s, the "
                        "playlist lasts %.1f s: the data may not name the playlists it seems to: menu names not used\n",
                        e->id, e->name, e->duration, len / 45000.0);
                 goto bad;
             }
         }
     }
-    if (!(names = av_calloc(d->nb_playlists, sizeof(*names))) || !(d->menu_name = av_strdup(p.name)))
+    if (!(names = dr_calloc(d->nb_playlists, sizeof(*names))) || !(d->menu_name = dr_strdup(p.name)))
         goto nomem;
     for (int i = 0; i < disc->nb_pl; i++) {
         int k = playlist_index(d, disc->pl[i].id);
         if (k >= 0) {
-            if (!(names[k] = av_strdup(disc->pl[i].name)))
+            if (!(names[k] = dr_strdup(disc->pl[i].name)))
                 goto nomem;
             named++;
         }
@@ -433,22 +464,22 @@ int ff_bluray_menu_read(void *log, BlurayDisc *d)
     d->pl_menu_name  = names;
     d->nb_menu_named = named;
     names = NULL;
-    av_log(log, AV_LOG_INFO, "Blu-ray: the menu project data (BDMV/JAR/%s/" FILE_NAME ".bin, %s layout, project '%s', "
+    dr_vlog(log, DR_VLOG_INFO, "Blu-ray: the menu project data (BDMV/JAR/%s/" FILE_NAME ".bin, %s layout, project '%s', "
            "disc '%s') names %d playlist(s): they are listed first, keep a title when they are one clip piece and "
            "carry their menu names\n", dirs.found, v2 ? "newer" : "older", p.name, disc->name, named);
     if (nb_missing)
-        av_log(log, AV_LOG_INFO, "Blu-ray: the menu project data names %d playlist(s) the disc does not have: %s\n",
+        dr_vlog(log, DR_VLOG_INFO, "Blu-ray: the menu project data names %d playlist(s) the disc does not have: %s\n",
                nb_missing, missing.str);
-    av_bprint_finalize(&missing, NULL);
+    dr_str_free(&missing);
     goto end;
 nomem:
-    av_bprint_finalize(&missing, NULL);
-    av_free(names);
+    dr_str_free(&missing);
+    dr_free(names);
     project_free(&p);
     ff_bluray_menu_free(d);
-    return AVERROR(ENOMEM);
+    return DR_ERR(ENOMEM);
 bad:
-    av_bprint_finalize(&missing, NULL);
+    dr_str_free(&missing);
 end:
     project_free(&p);
     return 0;
@@ -458,8 +489,8 @@ void ff_bluray_menu_free(BlurayDisc *d)
 {
     if (d->pl_menu_name)
         for (int i = 0; i < d->nb_playlists; i++)
-            av_free(d->pl_menu_name[i]);
-    av_freep(&d->pl_menu_name);
-    av_freep(&d->menu_name);
+            dr_free(d->pl_menu_name[i]);
+    dr_freep(&d->pl_menu_name);
+    dr_freep(&d->menu_name);
     d->nb_menu_named = 0;
 }

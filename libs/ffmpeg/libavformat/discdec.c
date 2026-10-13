@@ -45,12 +45,29 @@
 #include "disc.h"
 #include "discinfo.h"
 #include "io/discio.h"
+#include "base/err.h"
 #include "disc/lang.h"
 #include "timeline/disctl.h"
 #include "internal.h"
 #include "matroska.h"
 
 /* The format parts, by the disc kind the readers tell. */
+/* The format parts' results as the library's values: the moved parts
+ * return base errors (-errno values are already identical; the special
+ * conditions are translated here, once, at the vtable seam). */
+static int part_err(int ret)
+{
+    switch (ret) {
+    case DR_ERR_EOF:         return AVERROR_EOF;
+    case DR_ERR_INVALID:     return AVERROR_INVALIDDATA;
+    case DR_ERR_NOMEM:       return AVERROR(ENOMEM);
+    case DR_ERR_UNSUPPORTED: return AVERROR_PATCHWELCOME;
+    case DR_ERR_EXTERNAL:
+    case DR_ERR_BUG:         return AVERROR_BUG;
+    default:                 return ret;
+    }
+}
+
 static const DiscFormat *const parts[] = {
     &ff_disc_dvd,
     &ff_disc_hddvd,
@@ -474,11 +491,11 @@ static int titles_pass(AVFormatContext *s)
     for (int i = 0; i < n; i++) {
         const char *name = f->title_name(s, i);
         DiscPassSource src = { 0 };
-        int ret = f->title_probe ? f->title_probe(s, i) : 0, nb = 0, seg = 0;
+        int ret = f->title_probe ? part_err(f->title_probe(s, i)) : 0, nb = 0, seg = 0;
 
         if (ret >= 0)
-            ret = nb = f->title_tracks(s, i, tr, MAX_TITLE_TRACKS);
-        if (ret >= 0 && nb && (ret = seg = f->title_segment(s, i, &src)) > 0) {
+            ret = nb = part_err(f->title_tracks(s, i, tr, MAX_TITLE_TRACKS));
+        if (ret >= 0 && nb && (ret = seg = part_err(f->title_segment(s, i, &src))) > 0) {
             ret = ff_disc_stream_pass(s, name, &src, tr, &nb, details);
             if (f->segment_close)
                 f->segment_close(s, &src);
@@ -526,7 +543,7 @@ static int titles_info(AVFormatContext *s)
         DiscTitleInfo *dt = ff_disc_add_title(s);
         if (!dt)
             return AVERROR(ENOMEM);
-        if ((ret = d->fmt->title_info(s, i, dt)) < 0 ||
+        if ((ret = part_err(d->fmt->title_info(s, i, dt))) < 0 ||
             (ret = ff_disc_title_add_tracks(dt, d->title_tracks[i], d->nb_title_tracks[i])) < 0)
             return ret;
     }
@@ -557,7 +574,7 @@ static int open_title(AVFormatContext *s)
                d->nb_title_tracks[i] ? avcodec_get_name(d->title_tracks[i][0].info.codec) : "none");
         return AVERROR_PATCHWELCOME;
     }
-    if ((ret = f->open_title(s, i, d->opt_part, &both)) < 0)
+    if ((ret = part_err(f->open_title(s, i, d->opt_part, &both))) < 0)
         return ret;
     return ff_disc_open_tracks(s, name ? name : "?", d->title_tracks[i], d->nb_title_tracks[i], d->src.ts, both,
                                d->keep);
@@ -618,11 +635,11 @@ static int disc_read_header(AVFormatContext *s)
     d->info.udf_revision = d->fs->udf_revision;
     if (!(d->part = av_mallocz(d->fmt->priv_size)))
         return AVERROR(ENOMEM);
-    if ((ret = d->fmt->load(s)) < 0 ||
+    if ((ret = part_err(d->fmt->load(s))) < 0 ||
         (ret = d->market[0] ? ff_disc_add_prop(s, "Market language", "%s (%s)", d->market, d->market_from) :
                               ff_disc_add_prop(s, "Market language", "none named")) < 0 ||
         (ret = titles_pass(s)) < 0 ||
-        (d->fmt->disc_done && (ret = d->fmt->disc_done(s)) < 0) || (ret = titles_info(s)) < 0)
+        (d->fmt->disc_done && (ret = part_err(d->fmt->disc_done(s))) < 0) || (ret = titles_info(s)) < 0)
         return ret;
     if (d->opt_title < 0)               /* only the disc info, no title opened */
         return 0;

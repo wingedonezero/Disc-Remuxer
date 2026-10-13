@@ -40,11 +40,11 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "libavutil/avstring.h"
-#include "libavutil/bprint.h"
-#include "libavutil/intreadwrite.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
+#include "base/mem.h"
+#include "base/str.h"
+#include "base/bytes.h"
+#include "base/vlog.h"
+#include "base/mem.h"
 
 #include "bluray_internal.h"
 #include "disc/lang.h"
@@ -67,10 +67,10 @@ static int load_direct(void *log, DiscIOFS *fs, const char *path, BlurayFile *ou
 
     memset(out, 0, sizeof(*out));
     if ((ret = fs->ops->open_file(fs, path, &file)) < 0)
-        return ret == AVERROR(ENOENT) ? 0 : ret;
-    if (!(out->data = av_malloc(file->size + 1))) {
+        return ret == DR_ERR(ENOENT) ? 0 : ret;
+    if (!(out->data = dr_malloc(file->size + 1))) {
         ff_discio_file_free(&file);
-        return AVERROR(ENOMEM);
+        return DR_ERR(ENOMEM);
     }
     out->size = file->size;
     ret = ff_discio_file_read(fs, file, 0, out->data, file->size);
@@ -114,9 +114,9 @@ static int meta_entry(void *opaque, const char *name, int is_dir)
         (memcmp(name, "BDMT_", 5) && memcmp(name, "bdmt_", 5)) ||
         (memcmp(name + 8, ".XML", 4) && memcmp(name + 8, ".xml", 4)))
         return 0;
-    if (!(n = av_strdup(name)) || av_dynarray_add_nofree(&m->names, &m->nb, n) < 0) {
-        av_free(n);
-        return m->err = AVERROR(ENOMEM);
+    if (!(n = dr_strdup(name)) || dr_array_add_ptr(&m->names, &m->nb, n) < 0) {
+        dr_free(n);
+        return m->err = DR_ERR(ENOMEM);
     }
     return 0;
 }
@@ -178,13 +178,13 @@ static void card_name(void *log, BlurayDisc *d)
                 continue;
             v = line + 9;
             if ((q = memchr(v, '"', e - v)) && q - v <= 255) {
-                d->name = av_strndup(v, q - v);
+                d->name = dr_strndup(v, q - v);
                 break;
             }
         }
         ff_bluray_file_free(&f);
     } else if (has_file(d->parent_fs, "/.SonyVID")) {
-        d->name = av_strdup("SONY_AVCHD");
+        d->name = dr_strdup("SONY_AVCHD");
     }
 }
 
@@ -206,16 +206,16 @@ static int disc_name(void *log, BlurayDisc *d, const char *pref)
         ret = m.err;
         goto end;
     }
-    if (ret < 0 && ret != AVERROR(ENOENT)) {
-        av_log(log, AV_LOG_DEBUG, "Blu-ray: /BDMV/META/DL cannot be listed\n");
+    if (ret < 0 && ret != DR_ERR(ENOENT)) {
+        dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: /BDMV/META/DL cannot be listed\n");
         ret = 0;
         goto end;
     }
     ret = 0;
     for (int i = 0; i < m.nb; i++) {
         name_lang(m.names[i], l);
-        if (d->nb_meta_lang < FF_ARRAY_ELEMS(d->meta_lang))
-            av_strlcpy(d->meta_lang[d->nb_meta_lang++], l, sizeof(d->meta_lang[0]));
+        if (d->nb_meta_lang < (int)DR_ARRAY_ELEMS(d->meta_lang))
+            dr_strlcpy(d->meta_lang[d->nb_meta_lang++], l, sizeof(d->meta_lang[0]));
         if (!eng && strlen(l) >= 2 && same_lang(l, "eng"))
             eng = m.names[i];
         if (!chosen && same_lang(pref, l))
@@ -233,12 +233,12 @@ static int disc_name(void *log, BlurayDisc *d, const char *pref)
             if (!lang[0])
                 name_lang(chosen, lang);
             if (strlen(lang) <= 5 && (code = dr_disc_lang_code(lang)))
-                av_strlcpy(d->name_lang, code, sizeof(d->name_lang));
+                dr_strlcpy(d->name_lang, code, sizeof(d->name_lang));
             d->name = name;
         }
         if (d->name && chosen == eng) {
-            if (!(d->name_eng = av_strdup(d->name))) {
-                ret = AVERROR(ENOMEM);
+            if (!(d->name_eng = dr_strdup(d->name))) {
+                ret = DR_ERR(ENOMEM);
                 goto end;
             }
         } else if (eng && (ret = parse_meta(log, d, eng, &d->name_eng, lang)) < 0) {
@@ -250,8 +250,8 @@ static int disc_name(void *log, BlurayDisc *d, const char *pref)
         card_name(log, d);
 end:
     for (int i = 0; i < m.nb; i++)
-        av_free(m.names[i]);
-    av_free(m.names);
+        dr_free(m.names[i]);
+    dr_free(m.names);
     return ret;
 }
 
@@ -273,11 +273,11 @@ static void mount_card(void *log, BlurayDisc *d, const char *path)
         if (L >= s + 1 && !memcmp(path + L - s, suffixes[i], s))
             cut = L - s;
     }
-    if (!cut || !(root = av_strndup(path, cut)))
+    if (!cut || !(root = dr_strndup(path, cut)))
         return;
     if (ff_discio_folder_is_dir(root) && ff_discio_mount_folder(log, root, d->fs->src->attempts, &d->parent_fs) < 0)
         d->parent_fs = NULL;
-    av_free(root);
+    dr_free(root);
 }
 
 /* ---- the open ---- */
@@ -288,7 +288,7 @@ static int list(void *log, DiscIOFS *fs, const char *dir, const char *ext, const
     int ret = ff_bluray_list_numbered(log, fs, dir, ext, v, n);
 
     if (ret >= 0 && !*n && ext83) {
-        av_freep(v);
+        dr_freep(v);
         if ((ret = ff_bluray_list_numbered(log, fs, dir, ext83, v, n)) >= 0)
             ff_bluray_sort_numbers(*v, *n);
     }
@@ -308,13 +308,13 @@ int ff_bluray_disc_open(void *log, DiscIOFS *fs, const char *path, const char *l
     root      = d->bdav ? "BDAV" : "BDMV";
     if (path && ff_discio_folder_is_dir(path))
         mount_card(log, d, path);
-    av_log(log, AV_LOG_VERBOSE, "Blu-ray: a %s disc%s\n", d->bdav ? "BDAV (recordable)" : "BDMV",
+    dr_vlog(log, DR_VLOG_VERBOSE, "Blu-ray: a %s disc%s\n", d->bdav ? "BDAV (recordable)" : "BDMV",
            d->bdplus ? " with BD+" : "");
     /* BD+ repairs parts of the stream files that the disc carries damaged on
      * purpose; a decrypted copy may already be repaired and still keep the
      * BD+ files, which cannot be told from the files themselves. */
     if (d->bdplus)
-        av_log(log, AV_LOG_WARNING, "Blu-ray: the disc uses BD+ (/BDSVM/00000.svm), which is not supported: "
+        dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: the disc uses BD+ (/BDSVM/00000.svm), which is not supported: "
                "unless this copy was made with BD+ removed, parts of the video may be damaged\n");
 
     if ((ret = disc_name(log, d, lang)) < 0)
@@ -325,13 +325,13 @@ int ff_bluray_disc_open(void *log, DiscIOFS *fs, const char *path, const char *l
                     &ids, &n)) < 0)
         return ret;
     if (!n) {
-        av_free(ids);
-        av_log(log, AV_LOG_ERROR, "Blu-ray: the disc has no clip information files\n");
-        return AVERROR_INVALIDDATA;
+        dr_free(ids);
+        dr_vlog(log, DR_VLOG_ERROR, "Blu-ray: the disc has no clip information files\n");
+        return DR_ERR_INVALID;
     }
-    if (!(d->clips = av_calloc(n, sizeof(*d->clips)))) {
-        av_free(ids);
-        return AVERROR(ENOMEM);
+    if (!(d->clips = dr_calloc(n, sizeof(*d->clips)))) {
+        dr_free(ids);
+        return DR_ERR(ENOMEM);
     }
     for (int i = 0; i < n; i++) {
         static const char *const exts[] = { "clpi", "CPI", NULL };
@@ -352,13 +352,13 @@ int ff_bluray_disc_open(void *log, DiscIOFS *fs, const char *path, const char *l
         if (ret && ff_bluray_clip_stream_file(log, fs, c)) {
             d->nb_clips++;
         } else {
-            av_log(log, AV_LOG_WARNING, "Blu-ray: clip %05u %s: left out\n", ids[i],
+            dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: clip %05u %s: left out\n", ids[i],
                    ret ? "has no stream file" : "information cannot be read");
             ff_bluray_clip_free(c);
         }
         ret = 0;
     }
-    av_freep(&ids);
+    dr_freep(&ids);
     if (ret < 0)
         return ret;
 
@@ -366,9 +366,9 @@ int ff_bluray_disc_open(void *log, DiscIOFS *fs, const char *path, const char *l
     if ((ret = d->bdav ? list(log, fs, "/BDAV/PLAYLIST", ".rpls", NULL, &ids, &n)
                        : list(log, fs, "/BDMV/PLAYLIST", ".mpls", ".MPL", &ids, &n)) < 0)
         return ret;
-    if (n && !(d->playlists = av_calloc(n, sizeof(*d->playlists)))) {
-        av_free(ids);
-        return AVERROR(ENOMEM);
+    if (n && !(d->playlists = dr_calloc(n, sizeof(*d->playlists)))) {
+        dr_free(ids);
+        return DR_ERR(ENOMEM);
     }
     for (int i = 0; i < n; i++) {
         static const char *const mpls[] = { "mpls", "MPL", NULL }, *const rpls[] = { "rpls", NULL };
@@ -389,7 +389,7 @@ int ff_bluray_disc_open(void *log, DiscIOFS *fs, const char *path, const char *l
         if (ret) {
             d->nb_playlists++;
         } else {
-            av_log(log, AV_LOG_WARNING, "Blu-ray: playlist %05u cannot be read: left out\n", ids[i]);
+            dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: playlist %05u cannot be read: left out\n", ids[i]);
             ff_bluray_playlist_free(pl);
         }
         ret = 0;
@@ -422,7 +422,7 @@ int ff_bluray_disc_open(void *log, DiscIOFS *fs, const char *path, const char *l
         }
         d->has_index = ret;
         if (!ret)
-            av_log(log, AV_LOG_DEBUG, "Blu-ray: index.bdmv cannot be read\n");
+            dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: index.bdmv cannot be read\n");
         ff_bluray_file_free(&f);
         if (!fs->ops->find_dir(fs, "/CERTIFICATE")) {
             if ((ret = ff_bluray_load(log, fs, "CERTIFICATE", "", id_names, exts, &f)) < 0)
@@ -451,93 +451,93 @@ void ff_bluray_disc_free(BlurayDisc *d)
     ff_bluray_titles_free(d);
     for (int i = 0; i < d->nb_clips; i++)
         ff_bluray_clip_free(&d->clips[i]);
-    av_freep(&d->clips);
+    dr_freep(&d->clips);
     for (int i = 0; i < d->nb_playlists; i++)
         ff_bluray_playlist_free(&d->playlists[i]);
-    av_freep(&d->playlists);
-    av_freep(&d->playlist_ids);
-    av_freep(&d->bdjo);
-    av_freep(&d->jars);
-    av_freep(&d->pl_check);
-    av_freep(&d->pl_repeats);
+    dr_freep(&d->playlists);
+    dr_freep(&d->playlist_ids);
+    dr_freep(&d->bdjo);
+    dr_freep(&d->jars);
+    dr_freep(&d->pl_check);
+    dr_freep(&d->pl_repeats);
     ff_bluray_menu_free(d);
     ff_bluray_index_free(&d->index);
-    av_freep(&d->name);
-    av_freep(&d->name_eng);
+    dr_freep(&d->name);
+    dr_freep(&d->name_eng);
     ff_discio_fs_close(&d->parent_fs);
     d->nb_clips = d->nb_playlists = d->nb_playlist_ids = d->nb_bdjo = d->nb_jars = 0;
 }
 
 /* ---- the structure as text ---- */
 
-static void stn(AVBPrint *bp, const char *kind, const BlurayStnStream *s)
+static void stn(DrStr *bp, const char *kind, const BlurayStnStream *s)
 {
-    av_bprintf(bp, "    %s entry %u len %u [", kind, s->entry_type, s->entry_len);
-    for (int i = 0; i < FFMIN(s->entry_len, 8); i++)
-        av_bprintf(bp, "%s%02x", i ? " " : "", s->entry[i]);
-    av_bprintf(bp, "] coding 0x%02x len %u [", s->coding_type, s->attr_len);
-    for (int i = 0; i < FFMIN(s->attr_len, 32); i++)
-        av_bprintf(bp, "%s%02x", i ? " " : "", s->attr[i]);
-    av_bprintf(bp, "]\n");
+    dr_str_catf(bp, "    %s entry %u len %u [", kind, s->entry_type, s->entry_len);
+    for (int i = 0; i < DR_MIN(s->entry_len, 8); i++)
+        dr_str_catf(bp, "%s%02x", i ? " " : "", s->entry[i]);
+    dr_str_catf(bp, "] coding 0x%02x len %u [", s->coding_type, s->attr_len);
+    for (int i = 0; i < DR_MIN(s->attr_len, 32); i++)
+        dr_str_catf(bp, "%s%02x", i ? " " : "", s->attr[i]);
+    dr_str_catf(bp, "]\n");
 }
 
-void ff_bluray_disc_dump(const BlurayDisc *d, AVBPrint *bp)
+void ff_bluray_disc_dump(const BlurayDisc *d, DrStr *bp)
 {
-    av_bprintf(bp, "disc %s%s name '%s' lang '%s' english '%s' clips %d playlists %d jars %d bdjo %d\n",
+    dr_str_catf(bp, "disc %s%s name '%s' lang '%s' english '%s' clips %d playlists %d jars %d bdjo %d\n",
                d->bdav ? "BDAV" : "BDMV", d->bdplus ? " BD+" : "", d->name ? d->name : "", d->name_lang,
                d->name_eng ? d->name_eng : "", d->nb_clips, d->nb_playlists, d->nb_jars, d->nb_bdjo);
     if (d->has_index) {
-        av_bprintf(bp, "index version %04x first_play %u/%u top_menu %u/%u titles %d\n", d->index.hdr.version,
+        dr_str_catf(bp, "index version %04x first_play %u/%u top_menu %u/%u titles %d\n", d->index.hdr.version,
                    d->index.first_play.object_type, d->index.first_play.ref, d->index.top_menu.object_type,
                    d->index.top_menu.ref, d->index.nb_titles);
         for (int i = 0; i < d->index.nb_titles; i++)
-            av_bprintf(bp, "  title %d object %u ref %u access %u playback %u\n", i + 1,
+            dr_str_catf(bp, "  title %d object %u ref %u access %u playback %u\n", i + 1,
                        d->index.titles[i].object_type, d->index.titles[i].ref, d->index.titles[i].access_type,
                        d->index.titles[i].playback_type);
     }
     if (d->has_id) {
-        av_bprintf(bp, "id org %08x disc ", d->id.org_id);
+        dr_str_catf(bp, "id org %08x disc ", d->id.org_id);
         for (int i = 0; i < 16; i++)
-            av_bprintf(bp, "%02x", d->id.disc_id[i]);
-        av_bprintf(bp, "\n");
+            dr_str_catf(bp, "%02x", d->id.disc_id[i]);
+        dr_str_catf(bp, "\n");
     }
     for (int i = 0; i < d->nb_clips; i++) {
         const BlurayClip *c = &d->clips[i];
         char type[5] = { 0 };
-        AV_WB32(type, c->hdr.type);
-        av_bprintf(bp, "clip %05u type %.4s version %04x stream_type %u app_type %u rate %u packets %u "
+        dr_wb32((uint8_t *)type, c->hdr.type);
+        dr_str_catf(bp, "clip %05u type %.4s version %04x stream_type %u app_type %u rate %u packets %u "
                    "format '%.4s' cpi %u file %s %"PRId64"\n", c->number, type,
                    c->hdr.version, c->stream_type, c->app_type, c->rate, c->packets, c->format_id, c->cpi_type,
                    c->stream_path, c->stream_size);
         for (int k = 0; k < c->nb_atc; k++)
             for (int j = 0; j < c->atc[k].nb_stc; j++) {
                 const BlurayStc *t = &c->atc[k].stc[j];
-                av_bprintf(bp, "  atc %d stc %d pcr_pid 0x%04x spn %u start %u end %u\n", k, j, t->pcr_pid,
+                dr_str_catf(bp, "  atc %d stc %d pcr_pid 0x%04x spn %u start %u end %u\n", k, j, t->pcr_pid,
                            t->spn_stc_start, t->start, t->end);
             }
-        av_bprintf(bp, "  program spn %u pmt 0x%04x streams %d\n", c->program.spn_start, c->program.pmt_pid,
+        dr_str_catf(bp, "  program spn %u pmt 0x%04x streams %d\n", c->program.spn_start, c->program.pmt_pid,
                    c->program.nb_streams);
         for (int k = 0; k < c->program.nb_streams; k++) {
             const BlurayClipStream *s = &c->program.streams[k];
-            av_bprintf(bp, "    pid 0x%04x coding 0x%02x len %u [", s->pid, s->coding_type, s->info_len);
-            for (int b = 0; b < FFMIN(s->info_len, 32); b++)
-                av_bprintf(bp, "%s%02x", b ? " " : "", s->info[b]);
-            av_bprintf(bp, "]\n");
+            dr_str_catf(bp, "    pid 0x%04x coding 0x%02x len %u [", s->pid, s->coding_type, s->info_len);
+            for (int b = 0; b < DR_MIN(s->info_len, 32); b++)
+                dr_str_catf(bp, "%s%02x", b ? " " : "", s->info[b]);
+            dr_str_catf(bp, "]\n");
         }
     }
     for (int i = 0; i < d->nb_playlists; i++) {
         const BlurayPlaylist *pl = &d->playlists[i];
-        av_bprintf(bp, "playlist %05u version %04x playback %u items %d subpaths %d marks %d ext %d ext_subpath %d\n",
+        dr_str_catf(bp, "playlist %05u version %04x playback %u items %d subpaths %d marks %d ext %d ext_subpath %d\n",
                    pl->number, pl->hdr.version, pl->playback_type, pl->nb_items, pl->nb_subpaths, pl->nb_marks,
                    pl->nb_ext, pl->ext_subpath_type);
         for (int k = 0; k < pl->nb_items; k++) {
             const BlurayPlayItem *it = &pl->items[k];
-            av_bprintf(bp, "  item %d clip %.5s codec %.4s in %u out %u connection %u stc %u angles %d "
+            dr_str_catf(bp, "  item %d clip %.5s codec %.4s in %u out %u connection %u stc %u angles %d "
                        "audio %d pg %d ig %u ss %d\n", k, it->clip, it->codec, it->in_time, it->out_time,
                        it->connection, it->stc_id, it->nb_angles + (it->multi_angle ? 1 : 0), it->nb_audio,
                        it->nb_pg, it->nb_ig, it->ss.present);
             for (int a = 0; a < it->nb_angles; a++)
-                av_bprintf(bp, "    angle %d clip %.5s codec %.4s stc %u\n", a + 2, it->angles[a].clip,
+                dr_str_catf(bp, "    angle %d clip %.5s codec %.4s stc %u\n", a + 2, it->angles[a].clip,
                            it->angles[a].codec, it->angles[a].stc_id);
             if (!pl->bdav) {
                 stn(bp, "video", &it->video);
@@ -549,81 +549,81 @@ void ff_bluray_disc_dump(const BlurayDisc *d, AVBPrint *bp)
         }
         for (int k = 0; k < pl->nb_subpaths; k++) {
             const BluraySubPath *sp = &pl->subpaths[k];
-            av_bprintf(bp, "  subpath %d type %u items %d\n", k, sp->type, sp->nb_items);
+            dr_str_catf(bp, "  subpath %d type %u items %d\n", k, sp->type, sp->nb_items);
             for (int j = 0; j < sp->nb_items; j++)
-                av_bprintf(bp, "    subitem %d clip %.5s codec %.4s in %u out %u sync_item %u sync_pts %u\n", j,
+                dr_str_catf(bp, "    subitem %d clip %.5s codec %.4s in %u out %u sync_item %u sync_pts %u\n", j,
                            sp->items[j].clip, sp->items[j].codec, sp->items[j].in_time, sp->items[j].out_time,
                            sp->items[j].sync_play_item, sp->items[j].sync_start_pts);
         }
         for (int k = 0; k < pl->nb_marks; k++)
-            av_bprintf(bp, "  mark %d type %u item %u time %u pid 0x%04x duration %u\n", k, pl->marks[k].type,
+            dr_str_catf(bp, "  mark %d type %u item %u time %u pid 0x%04x duration %u\n", k, pl->marks[k].type,
                        pl->marks[k].play_item, pl->marks[k].time, pl->marks[k].pid, pl->marks[k].duration);
     }
     for (int i = 0; i < d->nb_titles; i++) {
         const BlurayTitle *t = &d->titles[i];
-        av_bprintf(bp, "title %d %s angle %d duration %"PRId64" size %"PRId64" segments ", i, t->name, t->angle,
+        dr_str_catf(bp, "title %d %s angle %d duration %"PRId64" size %"PRId64" segments ", i, t->name, t->angle,
                    ff_bluray_title_duration(t), ff_bluray_title_size(t));
         for (int k = 0; k < t->nb_segs; k++)
-            av_bprintf(bp, "%s%s%s", k ? "," : "", t->segs[k].desc, t->segs[k].interleaved ? "*" : "");
-        av_bprintf(bp, " marks");
+            dr_str_catf(bp, "%s%s%s", k ? "," : "", t->segs[k].desc, t->segs[k].interleaved ? "*" : "");
+        dr_str_catf(bp, " marks");
         for (int k = 0; k < t->nb_marks; k++)
-            av_bprintf(bp, "%s%"PRIu64, k ? "," : " ", t->marks[k]);
-        av_bprintf(bp, " pids");
+            dr_str_catf(bp, "%s%"PRIu64, k ? "," : " ", t->marks[k]);
+        dr_str_catf(bp, " pids");
         for (int k = 0; k < t->nb_pids; k++)
-            av_bprintf(bp, "%s0x%04x", k ? "," : " ", t->pids[k]);
+            dr_str_catf(bp, "%s0x%04x", k ? "," : " ", t->pids[k]);
         if (t->title_name)
-            av_bprintf(bp, " name '%s'", t->title_name);
+            dr_str_catf(bp, " name '%s'", t->title_name);
         if (t->alt_name)
-            av_bprintf(bp, " alt '%s'", t->alt_name);
+            dr_str_catf(bp, " alt '%s'", t->alt_name);
         if (t->year)
-            av_bprintf(bp, " recorded %04d-%02d-%02d %02d:%02d:%02d", t->year, t->month, t->day, t->hour, t->minute,
+            dr_str_catf(bp, " recorded %04d-%02d-%02d %02d:%02d:%02d", t->year, t->month, t->day, t->hour, t->minute,
                        t->second);
         for (int k = 0; k < t->nb_side; k++)
-            av_bprintf(bp, " text %s", t->side[k].seg.desc);
+            dr_str_catf(bp, " text %s", t->side[k].seg.desc);
         if (ff_bluray_title_parts(t, NULL) > 1) {
             /* each part: its first segment, duration and own marks */
-            int *first = av_calloc(t->nb_segs + 1, sizeof(*first)), n;
-            uint64_t *m = av_calloc(FFMAX(t->nb_marks, 1), sizeof(*m));
+            int *first = dr_calloc(t->nb_segs + 1, sizeof(*first)), n;
+            uint64_t *m = dr_calloc(DR_MAX(t->nb_marks, 1), sizeof(*m));
             if (first && m) {
                 n = ff_bluray_title_parts(t, first);
-                av_bprintf(bp, " parts");
+                dr_str_catf(bp, " parts");
                 for (int p = 0; p < n; p++) {
                     int nm = ff_bluray_segs_marks(t, first[p], first[p + 1], m);
-                    av_bprintf(bp, "%s%d:%"PRId64":", p ? "," : " ", first[p],
+                    dr_str_catf(bp, "%s%d:%"PRId64":", p ? "," : " ", first[p],
                                ff_bluray_segs_duration(t, first[p], first[p + 1]));
                     for (int k = 0; k < nm; k++)
-                        av_bprintf(bp, "%s%"PRIu64, k ? "+" : "", m[k]);
+                        dr_str_catf(bp, "%s%"PRIu64, k ? "+" : "", m[k]);
                 }
             }
-            av_free(first);
-            av_free(m);
+            dr_free(first);
+            dr_free(m);
         }
-        av_bprintf(bp, "\n");
+        dr_str_catf(bp, "\n");
         for (int k = 0; k < t->nb_tracks; k++) {
             const BlurayTrack *tk = &t->tracks[k];
-            av_bprintf(bp, "  track %d kind 0x%02x pid 0x%04x sel 0x%x 0x%x flags 0x%x lang '%s' stream %d from %d inner %d",
+            dr_str_catf(bp, "  track %d kind 0x%02x pid 0x%04x sel 0x%x 0x%x flags 0x%x lang '%s' stream %d from %d inner %d",
                        k, tk->code, tk->pid, tk->sel1, tk->sel2, tk->flags, tk->lang, tk->stream, tk->from_track,
                        tk->inner_track);
             if (tk->offset_seq >= 0)
-                av_bprintf(bp, " offset %d", tk->offset_seq);
+                dr_str_catf(bp, " offset %d", tk->offset_seq);
             if (tk->flags & BLURAY_TRACK_SIDE)
-                av_bprintf(bp, " clip %05u stc %d", tk->side_clip, tk->side_stc);
-            av_bprintf(bp, "\n");
+                dr_str_catf(bp, " clip %05u stc %d", tk->side_clip, tk->side_stc);
+            dr_str_catf(bp, "\n");
         }
     }
     /* the menu's project data */
     if (d->menu_name) {
-        av_bprintf(bp, "menu '%s' named %d\n", d->menu_name, d->nb_menu_named);
+        dr_str_catf(bp, "menu '%s' named %d\n", d->menu_name, d->nb_menu_named);
         for (int p = 0; p < d->nb_playlists; p++)
             if (d->pl_menu_name[p])
-                av_bprintf(bp, "menu %05u '%s'\n", d->playlists[p].number, d->pl_menu_name[p]);
+                dr_str_catf(bp, "menu %05u '%s'\n", d->playlists[p].number, d->pl_menu_name[p]);
     }
     /* the fake playlist check */
     if (d->pl_check) {
-        av_bprintf(bp, "fakes %d real %d suspected %d\n", d->nb_fake, d->nb_real, d->fake_suspected);
+        dr_str_catf(bp, "fakes %d real %d suspected %d\n", d->nb_fake, d->nb_real, d->fake_suspected);
         for (int p = 0; p < d->nb_playlists; p++)
             if (d->pl_check[p])
-                av_bprintf(bp, "check %05u %s repeats %d\n", d->playlists[p].number,
+                dr_str_catf(bp, "check %05u %s repeats %d\n", d->playlists[p].number,
                            d->pl_check[p] == BLURAY_PL_FAKE ? "fake" : "real", d->pl_repeats[p]);
     }
 }

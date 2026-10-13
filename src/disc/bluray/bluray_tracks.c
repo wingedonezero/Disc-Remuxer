@@ -52,9 +52,9 @@
 
 #include <string.h>
 
-#include "libavutil/intreadwrite.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
+#include "base/bytes.h"
+#include "base/vlog.h"
+#include "base/mem.h"
 
 #include "bluray_internal.h"
 
@@ -87,30 +87,30 @@ static int is_video(int code)    { return code >= 0x01 && code < 0x40; }
 static int is_audio(int code)    { return code >= 0x40 && code < 0xc0; }
 static int is_subtitle(int code) { return code >= 0xc0 && code < 0xca; }
 
-static enum AVCodecID codec_of(int code)
+static DRCodecID codec_of(int code)
 {
     switch (code) {
-    case K_MPEG2:      return AV_CODEC_ID_MPEG2VIDEO;
-    case K_VC1:        return AV_CODEC_ID_VC1;
+    case K_MPEG2:      return DR_CODEC_MPEG2VIDEO;
+    case K_VC1:        return DR_CODEC_VC1;
     case K_AVC:
-    case K_MVC:        return AV_CODEC_ID_H264;
-    case K_HEVC:       return AV_CODEC_ID_HEVC;
-    case K_MPA:        return AV_CODEC_ID_MP2;
-    case K_AC3:        return AV_CODEC_ID_AC3;
+    case K_MVC:        return DR_CODEC_H264;
+    case K_HEVC:       return DR_CODEC_HEVC;
+    case K_MPA:        return DR_CODEC_MP2;
+    case K_AC3:        return DR_CODEC_AC3;
     case K_DTS:
     case K_DTSHD:
-    case K_DTSHD_CORE: return AV_CODEC_ID_DTS;
-    case K_LPCM:       return AV_CODEC_ID_PCM_BLURAY;
-    case K_AAC:        return AV_CODEC_ID_AAC;
-    case K_TRUEHD:     return AV_CODEC_ID_TRUEHD;
+    case K_DTSHD_CORE: return DR_CODEC_DTS;
+    case K_LPCM:       return DR_CODEC_PCM_BLURAY;
+    case K_AAC:        return DR_CODEC_AAC;
+    case K_TRUEHD:     return DR_CODEC_TRUEHD;
     case K_EAC3:
-    case K_EAC3_CORE:  return AV_CODEC_ID_EAC3;
+    case K_EAC3_CORE:  return DR_CODEC_EAC3;
     case K_PGS:
-    case K_PGS_FORCED: return AV_CODEC_ID_HDMV_PGS_SUBTITLE;
+    case K_PGS_FORCED: return DR_CODEC_HDMV_PGS_SUBTITLE;
     case K_TEXT:
-    case K_TEXT_FORCED:return AV_CODEC_ID_HDMV_TEXT_SUBTITLE;
+    case K_TEXT_FORCED:return DR_CODEC_HDMV_TEXT_SUBTITLE;
     }
-    return AV_CODEC_ID_NONE;
+    return DR_CODEC_NONE;
 }
 
 /* A split stream: the main part and its core (E-AC-3 / DTS-HD: one part
@@ -269,10 +269,10 @@ static void offset_sequence(void *log, const BluraySegment *s, uint16_t pid, Des
         const BlurayStnStream *pg = &it->pg[i];
         int v;
         if (pg->entry_type != 1 || pg->entry_len <= 1) {
-            av_log(log, AV_LOG_DEBUG, "Blu-ray: PG stream %d of a 3-D PlayItem has no PID entry\n", i);
+            dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: PG stream %d of a 3-D PlayItem has no PID entry\n", i);
             continue;
         }
-        if (AV_RB16(pg->entry) != pid)
+        if (dr_rb16(pg->entry) != pid)
             continue;
         if ((v = it->ss.pg[i][0]) == 0xff)
             return;
@@ -312,7 +312,7 @@ static int stream_desc(void *log, const BlurayTitle *t, const BluraySegment *s, 
         uint16_t pid;
         if (r->entry->entry_type != 2 || r->entry->entry_len < 4)
             return 0;
-        pid = AV_RB16(r->entry->entry + 2);
+        pid = dr_rb16(r->entry->entry + 2);
         for (int i = 0; i < r->clip->program.nb_streams; i++)
             if (r->clip->program.streams[i].pid == pid) {
                 describe(&r->clip->program.streams[i], d);
@@ -325,7 +325,7 @@ static int stream_desc(void *log, const BlurayTitle *t, const BluraySegment *s, 
         *side_clip = r->clip->number;
         *side_stc  = stc_index(r->clip, r->stc);
         if (r->clip->nb_atc > 1)
-            av_log(log, AV_LOG_DEBUG, "Blu-ray: clip %05u of a text subtitle has %d ATC sequences\n",
+            dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: clip %05u of a text subtitle has %d ATC sequences\n",
                    r->clip->number, r->clip->nb_atc);
     } else {
         const BlurayClipStream *e = &c->program.streams[idx];
@@ -350,16 +350,16 @@ static int stream_desc(void *log, const BlurayTitle *t, const BluraySegment *s, 
 static int add_track(BlurayTitle *t, const Part *k, int stream, uint32_t side_clip, int side_stc,
                      int from_track)
 {
-    BlurayTrack *tk, *v = av_realloc_array(t->tracks, t->nb_tracks + 1, sizeof(*t->tracks));
+    BlurayTrack *tk, *v = dr_realloc_array(t->tracks, t->nb_tracks + 1, sizeof(*t->tracks));
 
     if (!v)
-        return AVERROR(ENOMEM);
+        return DR_ERR(ENOMEM);
     t->tracks = v;
     tk = &t->tracks[t->nb_tracks];
     memset(tk, 0, sizeof(*tk));
     tk->code   = k->code;
-    tk->type   = is_video(k->code) ? AVMEDIA_TYPE_VIDEO : is_audio(k->code) ? AVMEDIA_TYPE_AUDIO :
-                 AVMEDIA_TYPE_SUBTITLE;
+    tk->type   = is_video(k->code) ? DISC_MEDIA_VIDEO : is_audio(k->code) ? DISC_MEDIA_AUDIO :
+                 DISC_MEDIA_SUBTITLE;
     tk->codec  = codec_of(k->code);
     tk->pid    = k->pid;
     tk->sel1   = k->sel1;
@@ -419,14 +419,14 @@ static int probe_streams(void *log, DiscIOFS *fs, BlurayAACS *aacs, const Bluray
         } else {
             int k = i - nc + 1;
             if (!dep || k >= dep->program.nb_streams) {
-                av_log(log, AV_LOG_DEBUG, "Blu-ray: title %s: no dependent-view stream %d to probe\n", t->name, k);
+                dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: title %s: no dependent-view stream %d to probe\n", t->name, k);
                 continue;
             }
             e = &dep->program.streams[k];
         }
         describe(e, &d);
         if ((ret = ff_bluray_probe_stream(log, fs, aacs, s, c, e, d.n ? d.k[0].code : 0, d.n)) < 0) {
-            av_log(log, AV_LOG_WARNING, "Blu-ray: title %s: stream #%d cannot be probed\n", t->name, i);
+            dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: title %s: stream #%d cannot be probed\n", t->name, i);
             return ret;
         }
     }
@@ -442,10 +442,10 @@ int ff_bluray_title_tracks(void *log, DiscIOFS *fs, BlurayAACS *aacs, BlurayTitl
     uint32_t side_clip;
     int side_stc;
 
-    av_freep(&t->tracks);
+    dr_freep(&t->tracks);
     t->nb_tracks = 0;
     if (!t->nb_segs)
-        return AVERROR_INVALIDDATA;
+        return DR_ERR_INVALID;
     /* the largest segment (the first of equal ones) */
     for (int i = 0; i < t->nb_segs; i++) {
         int64_t size = 0;
@@ -465,11 +465,11 @@ int ff_bluray_title_tracks(void *log, DiscIOFS *fs, BlurayAACS *aacs, BlurayTitl
         if (stream_desc(log, t, s, i, three_d, &d, &side_clip, &side_stc) && d.n && is_video(d.k[0].code))
             video = i;
     if (video < 0) {
-        av_log(log, AV_LOG_WARNING, "Blu-ray: title %s has no video stream\n", t->name);
-        return AVERROR_INVALIDDATA;
+        dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: title %s has no video stream\n", t->name);
+        return DR_ERR_INVALID;
     }
     if (fs && (ret = probe_streams(log, fs, aacs, t, s, n)) < 0)
-        return ret == AVERROR(ENOMEM) ? ret : AVERROR_INVALIDDATA;
+        return ret == DR_ERR(ENOMEM) ? ret : DR_ERR_INVALID;
     stream_desc(log, t, s, video, three_d, &d, &side_clip, &side_stc);
     if ((ret = add_parts(log, t, &d, video, 0x01, 0x40, 0, 0, -1)) < 0)
         return ret;
@@ -492,14 +492,14 @@ int ff_bluray_title_tracks(void *log, DiscIOFS *fs, BlurayAACS *aacs, BlurayTitl
         for (int k = 0; k < d.n; k++)
             if ((d.k[k].flags & BLURAY_TRACK_SIDE) && is_subtitle(d.k[k].code) &&
                 d.k[k].code != K_TEXT && d.k[k].code != K_TEXT_FORCED) {
-                av_log(log, AV_LOG_DEBUG, "Blu-ray: title %s: stream #%d of a sub-path is no text subtitle: "
+                dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: title %s: stream #%d of a sub-path is no text subtitle: "
                        "left out\n", t->name, i);
                 d.k[k].code = 0;
             }
         if ((ret = add_parts(log, t, &d, i, 0xc0, 0xca, 1, side_clip, side_stc)) < 0)
             return ret;
     }
-    av_log(log, AV_LOG_DEBUG, "Blu-ray: title %s: %d tracks from segment %d (%d streams%s)\n", t->name,
+    dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: title %s: %d tracks from segment %d (%d streams%s)\n", t->name,
            t->nb_tracks, t->track_seg, n, three_d ? ", 3-D" : "");
     return 0;
 }

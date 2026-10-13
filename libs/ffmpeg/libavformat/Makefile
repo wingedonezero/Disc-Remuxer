@@ -272,7 +272,7 @@ OBJS-$(CONFIG_HASH_MUXER)                += hashenc.o
 OBJS-$(CONFIG_HCA_DEMUXER)               += hca.o
 OBJS-$(CONFIG_HCOM_DEMUXER)              += hcom.o pcm.o
 OBJS-$(CONFIG_DISC_DEMUXER)              += discdec.o discpass.o disctitle.o hddvddec.o dvddec.o dvd_disc.o dvd_ifo.o dvd_nav.o dvd_scan.o dvd_titles.o dvd_read.o \
-                                            bluraydec.o bluray_aacs.o bluray_hash.o bluray_disc.o bluray_decoys.o bluray_menu.o bluray_titles.o bluray_tracks.o bluray_probe.o bluray_files.o bluray_mpls.o bluray_rpls.o bluray_clpi.o bluray_index.o bluray_meta.o hddvd_vti.o hddvd_xpl.o \
+                                            bluraydec.o hddvd_vti.o hddvd_xpl.o \
                                                                                         hddvd_titles.o hddvd_aacs.o hddvd_tracks.o
 OBJS-$(CONFIG_HDS_MUXER)                 += hdsenc.o
 OBJS-$(CONFIG_HEVC_DEMUXER)              += hevcdec.o rawdec.o

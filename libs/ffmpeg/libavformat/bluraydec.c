@@ -35,8 +35,11 @@
 #include "libavutil/error.h"
 #include "libavutil/log.h"
 
+#include "base/err.h"
+#include "base/str.h"
+
 #include "avformat.h"
-#include "bluray_internal.h"
+#include "disc/bluray/bluray_internal.h"
 #include "disc.h"
 #include "timeline/disctl.h"
 #include "internal.h"
@@ -119,7 +122,7 @@ static int read_block(AVFormatContext *s, int k, uint32_t block, uint8_t *buf)
             ff_bluray_seg_reader_both(&c->seg);
     }
     ret = ff_bluray_seg_read(&c->seg, (int64_t)block * BLURAY_UNIT, buf);
-    return ret == AVERROR_EOF ? AVERROR(EIO) : ret < 0 ? ret : 1;
+    return ret == DR_ERR_EOF ? AVERROR(EIO) : ret < 0 ? ret : 1;
 }
 
 /* ---- text subtitle clips (a clip of their own per stream) ---- */
@@ -149,7 +152,7 @@ static int side_read(AVFormatContext *s, int k, uint32_t block, uint8_t *buf)
         c->side.hash = c->hash;
     }
     ret = ff_bluray_seg_read(&c->side, (int64_t)block * BLURAY_UNIT, buf);
-    return ret == AVERROR_EOF ? AVERROR(EIO) : ret < 0 ? ret : 1;
+    return ret == DR_ERR_EOF ? AVERROR(EIO) : ret < 0 ? ret : 1;
 }
 
 /* Where text subtitle clip k lies on the title (the reference program's
@@ -396,7 +399,7 @@ static void title_tracks(const BlurayTitle *t, DiscTrack *out)
 static int pass_read(void *opaque, uint32_t block, uint8_t *buf)
 {
     int ret = ff_bluray_seg_read(opaque, (int64_t)block * BLURAY_UNIT, buf);
-    return ret < 0 ? ret : 1;
+    return ret == DR_ERR_EOF ? AVERROR_EOF : ret < 0 ? ret : 1;
 }
 
 /* ---- the title entries (disc.h) ---- */
@@ -661,10 +664,10 @@ static int bluray_load(AVFormatContext *s)
     if ((ret = ff_bluray_disc_open(s, d->fs, s->url, NULL, b)) < 0)
         return ret;
     if (av_log_get_level() >= AV_LOG_DEBUG) {
-        AVBPrint bp;
-        av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
+        DrStr bp;
+        dr_str_init(&bp);
         ff_bluray_disc_dump(b, &bp);
-        if (av_bprint_is_complete(&bp)) {
+        if (dr_str_ok(&bp)) {
             /* line by line: a log message has a size limit */
             char *line = bp.str, *nl;
             av_log(s, AV_LOG_DEBUG, "Blu-ray structure:\n");
@@ -674,7 +677,7 @@ static int bluray_load(AVFormatContext *s)
                 av_log(s, AV_LOG_DEBUG, "%.*s\n", (int)(nl - line), line);
             }
         }
-        av_bprint_finalize(&bp, NULL);
+        dr_str_free(&bp);
     }
     if ((ret = ff_bluray_aacs_open(s, b, (const char *const *)d->opt_keydb, d->nb_opt_keydb, &c->aacs)) < 0)
         return ret;

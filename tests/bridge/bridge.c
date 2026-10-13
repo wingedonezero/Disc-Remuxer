@@ -28,7 +28,7 @@
 #include "libavutil/log.h"
 #include "libavutil/mem.h"
 
-#include "libavformat/bluray_internal.h"
+#include "disc/bluray/bluray_internal.h"
 #include "analyze/analyze.h"
 #include "timeline/disctl.h"
 #include "libavformat/dvd_internal.h"
@@ -264,7 +264,7 @@ static char *tb_bluray_dump(const char *path, const char *lang, int min_length, 
 {
     DiscIOFS *fs = NULL;
     BlurayDisc d;
-    AVBPrint bp;
+    DrStr bp;
     char *out = NULL;
 
     *err = ff_discio_mount_folder(NULL, path, 1, &fs);
@@ -278,11 +278,11 @@ static char *tb_bluray_dump(const char *path, const char *lang, int min_length, 
     if (*err >= 0 && min_length >= 0)
         *err = ff_bluray_decoys_check(NULL, &d);
     if (*err >= 0) {
-        av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
+        dr_str_init(&bp);
         ff_bluray_disc_dump(&d, &bp);
-        if (av_bprint_is_complete(&bp))
+        if (dr_str_ok(&bp))
             out = strdup(bp.str);
-        av_bprint_finalize(&bp, NULL);
+        dr_str_free(&bp);
     }
     ff_bluray_disc_free(&d);
     ff_discio_fs_close(&fs);

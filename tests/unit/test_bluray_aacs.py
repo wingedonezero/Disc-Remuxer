@@ -18,8 +18,8 @@ from synth.hddvd import aes_e, aes_g, hexs
 
 # a key is missing: ENOKEY (not NO_KEY, which says a file cannot be accessed)
 NO_KEY = -errno.ENOKEY
-INVALIDDATA = -0x41444E49
-PATCHWELCOME = -0x45574150
+INVALIDDATA = lib.DR_ERR_INVALID
+PATCHWELCOME = lib.DR_ERR_UNSUPPORTED
 
 KEY_UNKNOWN, KEY_NONE = -1, 0
 
