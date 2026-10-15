@@ -11,7 +11,8 @@ again**, the "disc" demuxer is gone, the program and GUI run on the typed
 disc API (disc/disc.h), the modules log straight into base/log.h with
 their own source names, and the processing library's lines come in through
 analyze's hook. Next: the step-7 gate (the corpus byte-compare + info
-compare, the user's), then step 8, the DVD lift.
+compare, the user's), then step 8, the DVD lift (D-8 decided, the slices
+planned — see step 8 below).
 Tests at every commit: 743 passed, 15 skipped (the disc-marked ones without a
 disc). Every move so far is behavior-preserving by construction and by test;
 the real-disc byte-compare against a main build is still owed (user runs it
@@ -407,15 +408,39 @@ In five slices, one commit and one full test run each:
 Gate: corpus byte-compare + info compare; the GUI must run (it still speaks
 engine.h v1 until step 9).
 
-### Step 8 — `src/dvd` (the DVD lift)
-What: up from libdvdread into `dvd/`: `title_list.c`, `stream_probe.c`, the
-policy half of `vob_read.c` (cell walk/trim, decoys, segments, chapters),
-keyed by an app-side disc context that replaces `dvd_reader_s.vob_css[100]`
-and the `ifo_handle_private_s` extensions; up from libdvdnav: `scan.c` (the
-driver; the VM patch set stays). The findings book is base's already; the
-report structs become app types both libraries' callbacks feed.
-libdvdread's remaining diff: `_rec` readers + instrumentation + fs hooks
-(or further slimming if the `_rec` readers come up too — decide there).
+### Step 8 — the DVD lift (D-8 DECIDED 2026-10-15: the full shape, in slices)
+The end state: the DVD libraries keep only what is a library's job — **table
+parsing and the navigation VM** — and everything else lives in
+`src/disc/dvd/`: the title-VOB placement, the sector reads on our io with
+the sector check, CSS through libdvdcss directly (the same pattern as the
+Blu-ray part's AACS: decryption under the format part), the damaged ranges,
+the VOBU records and map, the cell policy (walk/trim, checks, seamless
+angles), segments, chapters, the title list, the stream probe and the
+navigation-scan driver. No output byte passes through libdvdread then; the
+VM's own nav-only reads (menus, NAV packs — policy inputs) still do, by
+design. What stays in the libraries: libdvdread's `_rec` IFO readers with
+their checks and report channel (the VM shares the IFO parse; table parsing
+is a proper library job), the fs hooks, the NAV-packet checks; libdvdnav's
+VM patch set, untouched.
+
+In slices, one commit and one full test run each, behavior-preserving:
+- **8a** — the scan driver: libdvdnav's `scan.c` up into `dvd_scan.c` (app
+  logic already; everything is handed in).
+- **8b** — the title list: `title_list.c` up (policy over the disc
+  structure and the scan's recordings).
+- **8c** — the stream probe up.
+- **8d** — the cell policy + the app-side context: `vob_read.c`'s policy
+  half up, and the state leaves the library — `dvd_reader_s.vob_css[100]`,
+  the cell-check rng and the `ifo_handle_private_s` extensions become a
+  per-title-set context owned by the DVD part.
+- **8e** — the mechanical half up: placement, sector read + check, CSS via
+  libdvdcss, damage ranges, VOBU map — the format part reads like the
+  Blu-ray part does.
+- **8f** — settle the libraries: drop the emptied halves, re-measure both
+  diffs, update the docs.
+
+The detailed plan (inventory, seams, open sub-questions per slice) is in
+the maintainer's workspace, implementation/PLAN_dvd_lift_step8_2026-10-15.md.
 Gate: the 30-DVD title list/track comparisons re-run + corpus byte-compare.
 
 ### Step 9 — engine API v2 (GUI-first)
@@ -439,7 +464,9 @@ ports continue as before, and main gets the merge.
 - D-4c: pcm_dvd now (rule signature grows a format argument) or at 4d.
 - D-6: analyze/'s decode-vs-parse precedence when they disagree (today the
   decoder wins for decoded truths; keep, revisit per case).
-- D-8: how far libdvdread slims (policy-only lift vs `_rec` readers too).
+- D-8: DECIDED (2026-10-15) — the full slim, in slices (step 8 above): the
+  libraries keep table parsing (`_rec` readers) and the VM; reading, CSS
+  and policy come up. The `_rec` readers stay library-side.
 - D-10: libebml/libmatroska vs own EBML writer.
 - Merge points: the user merges to main when he has byte-compared real
   discs (earliest sensible: after 4d; safest: after 7).
