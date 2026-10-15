@@ -37,6 +37,7 @@
 #include "disc/dvd/dvd_stream_probe.h"
 #include "disc/hddvd/hddvd_internal.h"
 #include "disc/clip_demux.h"
+#include "parse/stock.h"
 #include "disc/lang.h"
 
 #include <dvdcss/dvdcss.h>
@@ -482,4 +483,96 @@ static int tb_dvd_titles_from(DVDDisc *d, dvd_nav_cells_t *res, int nb, int cell
         ret = AVERROR(ENOMEM);
     DVDFreeTitleList_rec(&list);
     return ret;
+}
+
+/* ---- the stock cutters against the processing library's parsers ----
+ * Both are fed the same bytes in the same pieces (each piece copied into a
+ * padded buffer, as the frame step feeds it), then flushed; every call's
+ * result is compared: bytes taken, the unit's bytes, its stream offset, the
+ * samples and rate. Returns -1 all equal, else the first differing call
+ * (tb_stock_why() says what). */
+static char tb_stock_why_buf[512];
+
+static const char *tb_stock_why(void)
+{
+    return tb_stock_why_buf;
+}
+
+static int tb_stock_one(AVCodecParserContext *pc, AVCodecContext *avctx, DrStock *st, const uint8_t *p,
+                        int left, int64_t pos, int call, int *used, int *got)
+{
+    uint8_t *of = NULL;
+    const uint8_t *os = NULL;
+    int nf = 0, ns = 0, ds = 0, rs = 0;
+    int64_t offs = 0;
+    int uf = av_parser_parse2(pc, avctx, &of, &nf, p, left, AV_NOPTS_VALUE, AV_NOPTS_VALUE, pos);
+    int us = dr_stock_parse(st, p, left, pos, &os, &ns, &offs, &ds, &rs);
+
+    *used = uf;
+    *got  = nf;
+    if (uf != us || nf != ns || (nf && memcmp(of, os, nf)) || pc->frame_offset != offs ||
+        pc->duration != ds || avctx->sample_rate != rs) {
+        snprintf(tb_stock_why_buf, sizeof(tb_stock_why_buf), "call %d (pos %lld, %d bytes in): used %d/%d, unit "
+                 "%d/%d bytes%s, offset %lld/%lld, samples %d/%d, rate %d/%d", call, (long long)pos, left, uf, us,
+                 nf, ns, nf == ns && nf && memcmp(of, os, nf) ? " (bytes differ)" : "",
+                 (long long)pc->frame_offset, (long long)offs, pc->duration, ds, avctx->sample_rate, rs);
+        return 1;
+    }
+    return 0;
+}
+
+static int tb_stock_compare(int ffmpeg_codec, int stock_codec, const uint8_t *data, int size,
+                            const int *chunks, int nb_chunks, int *calls)
+{
+    AVCodecParserContext *pc = av_parser_init(ffmpeg_codec);
+    AVCodecContext *avctx = avcodec_alloc_context3(NULL);
+    DrStock *st = dr_stock_new(stock_codec);
+    uint8_t *feed = av_malloc(size + AV_INPUT_BUFFER_PADDING_SIZE);
+    int64_t pos = 0;
+    int at = 0, call = 0, bad = -1;
+
+    tb_stock_why_buf[0] = 0;
+    if (!pc || !avctx || !st || !feed) {
+        snprintf(tb_stock_why_buf, sizeof(tb_stock_why_buf), "no memory");
+        bad = 0;
+        goto end;
+    }
+    avctx->codec_id   = ffmpeg_codec;
+    avctx->codec_type = avcodec_get_type(ffmpeg_codec);
+    for (int c = 0; c < nb_chunks && at < size && bad < 0; c++) {
+        int len = chunks[c] < size - at ? chunks[c] : size - at, left = len;
+        const uint8_t *p = feed;
+        memcpy(feed, data + at, len);
+        memset(feed + len, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+        at += len;
+        while (left > 0 && bad < 0) {
+            int used, got;
+            if (tb_stock_one(pc, avctx, st, p, left, pos, call, &used, &got))
+                bad = call;
+            call++;
+            pos  += used;
+            p    += used;
+            left -= used;
+        }
+    }
+    while (bad < 0) {
+        int used, got;
+        if (call > 4 * size + 1000) {
+            snprintf(tb_stock_why_buf, sizeof(tb_stock_why_buf), "no end after %d calls", call);
+            bad = call;
+            break;
+        }
+        if (tb_stock_one(pc, avctx, st, NULL, 0, pos, call, &used, &got))
+            bad = call;
+        call++;
+        if (!got)
+            break;
+    }
+end:
+    *calls = call;
+    av_parser_close(pc);
+    avcodec_free_context(&avctx);
+    dr_stock_free(&st);
+    av_free(feed);
+    return bad;
 }

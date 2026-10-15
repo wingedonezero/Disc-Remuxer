@@ -50,22 +50,11 @@ const char *ff_disctl_codec_id_name(DRCodecID id);
 /** A missing time. */
 #define DR_NOPTS_VALUE ((int64_t)UINT64_C(0x8000000000000000))
 
-/* ---- The host: what the timeline borrows from the processing library
- * until src/analyze takes it over (step 6): the stock frame parser for the
- * codecs without a rule of their own (MPEG video, E-AC-3), the LATM stream
- * header (one decoded frame) and the TrueHD / MLP end-of-stream decode.
- * Registered once by the program and the test bridge
- * (ff_disctl_set_host). ---- */
+/* ---- The host: the two answers the timeline asks the processing library
+ * for (src/analyze; no stream byte goes there): the LATM stream header (one
+ * decoded frame) and the TrueHD / MLP end-of-stream decode. Registered once
+ * by the program and the test bridge (ff_disctl_set_host). ---- */
 typedef struct DRTimelineHost {
-    /** The library's frame parser for codec, or NULL when it has none. */
-    void *(*parser_open)(DRCodecID codec);
-    /** Bytes in, at most one chunk out (*out / *out_size; *frame_offset its
-     *  stream offset, *duration / *rate what the parser read of it);
-     *  returns the bytes consumed. pos: the stream offset of data. */
-    int (*parser_parse)(void *p, const uint8_t *data, int size, int64_t pos,
-                        uint8_t **out, int *out_size, int64_t *frame_offset,
-                        int *duration, int *rate);
-    void (*parser_close)(void **p);
     /** One LATM / LOAS frame decoded: the stream's rate and samples. */
     int (*latm_header)(const uint8_t *data, int size, int *rate, int *samples);
     /** TrueHD / MLP: the n access units decoded in order (a major sync
@@ -252,7 +241,7 @@ typedef struct DRCodec {
     const DRVideoRules *video;
     /** The codec's own cut (the splitter, parse/split.h), which knows the
      *  reference's rule and says which of its chunks are no unit; 0 (MPEG
-     *  video, E-AC-3): cut by FFmpeg's stock parser. */
+     *  video, E-AC-3): cut by the stock cutters (parse/stock.h). */
     enum DrSplitCodec split;
     /** 1: the splitter gives each unit's picture values (type, key, display
      *  order, field periods, the frame rate): they come with the unit
@@ -319,8 +308,8 @@ typedef struct DRFrames DRFrames;
 
 /**
  * The frame step for one track of one segment: payloads in, units out, each
- * with its PES time. Units are cut by the codec's rule (FFmpeg's stock parser
- * for MPEG video and E-AC-3); a unit takes the time of a
+ * with its PES time. Units are cut by the codec's rule (the stock cutters for
+ * MPEG video and E-AC-3, parse/stock.h); a unit takes the time of a
  * payload when the unit's anchor (see DRCodec) is the first one that lies in
  * that payload's bytes (ISO/IEC 13818-1 2.4.3.7: a PES packet's PTS belongs
  * to the first access unit that starts in it).

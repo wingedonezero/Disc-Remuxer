@@ -5,8 +5,9 @@
  * lies in a payload takes its time, ISO/IEC 13818-1 2.4.3.7); units that do
  * not belong to the track (DRCodec.check) and bytes the splitter says are no
  * unit are left out, each run of left-out bytes said with what it is, where
- * it lies on the disc and what is done. A codec without a rule of its own
- * (DRCodec.split 0: MPEG video, E-AC-3) is cut by FFmpeg's stock parser.
+ * it lies on the disc and what is done. MPEG video and E-AC-3, which have
+ * no disc rule (DRCodec.split 0), are cut by the stock cutters
+ * (parse/stock.h: FFmpeg's parsers' cut, ported).
  */
 
 #include <string.h>
@@ -15,6 +16,7 @@
 #include "base/err.h"
 #include "parse/h264.h"
 #include "parse/split.h"
+#include "parse/stock.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -40,7 +42,7 @@ struct DRFrames {
     void                 *log;
     const DRCodec        *codec;
     DrSplit              *split;   /* the codec's own rule (DRCodec.split), or */
-    void                 *hp;      /* the host's stock parser */
+    DrStock              *hp;      /* the stock cutter */
     int64_t               hp_frame_offset;  /* of the chunk it last gave */
     int                   hp_duration, hp_rate;
     DRUnitCb              cb;
@@ -53,7 +55,7 @@ struct DRFrames {
 
     int      rate_num, rate_den;   /* the last frame rate a unit's stream said */
 
-    /* The stock parser's path: bytes not yet given out as part of a unit,
+    /* The stock cutter's path: bytes not yet given out as part of a unit,
      * for the check that every unit the parser returns is the stream's own
      * bytes at its offset. */
     uint8_t *win;
@@ -110,13 +112,14 @@ int ff_disctl_frames_open(DRFrames **frames, void *logctx, DRCodecID codec,
         *frames = c;
         return 0;
     }
-    {
-        const DRTimelineHost *host = ff_disctl_host();
-        if (!host || !host->parser_open || !(c->hp = host->parser_open(codec))) {
-            dr_vlog(logctx, DR_VLOG_ERROR, "Title timeline: FFmpeg has no parser for %s\n", c->codec->name);
-            ff_disctl_frames_close(&c);
-            return DR_ERR(ENOSYS);
-        }
+    if (codec != DR_CODEC_MPEG1VIDEO && codec != DR_CODEC_MPEG2VIDEO && codec != DR_CODEC_EAC3) {
+        dr_vlog(logctx, DR_VLOG_ERROR, "Title timeline: %s has no frame cutter\n", c->codec->name);
+        ff_disctl_frames_close(&c);
+        return DR_ERR(ENOSYS);
+    }
+    if (!(c->hp = dr_stock_new(codec == DR_CODEC_EAC3 ? DR_STOCK_AC3 : DR_STOCK_MPEGVIDEO))) {
+        ff_disctl_frames_close(&c);
+        return DR_ERR(ENOMEM);
     }
     *frames = c;
     return 0;
@@ -133,8 +136,7 @@ void ff_disctl_frames_close(DRFrames **frames)
                "with their picture (a badly muxed stream?): each takes the time of the packet with its picture\n",
                c->codec->name, c->split_units);
     dr_split_free(&c->split);
-    if (c->hp)
-        ff_disctl_host()->parser_close(&c->hp);
+    dr_stock_free(&c->hp);
     dr_freep(&c->rec);
     dr_freep(&c->blk);
     dr_freep(&c->win);
@@ -359,7 +361,7 @@ static int other_kind(const DRFrames *c, const uint8_t *data, int size)
 }
 
 /* One unit at stream offset off: check it, time it, give it out. pic: the
- * picture values the splitter gave; samples / rate: what the stock parser
+ * picture values the splitter gave; samples / rate: what the stock cutter
  * read (0 otherwise). */
 static int unit_take(DRFrames *c, const uint8_t *data, int size, int64_t off,
                      const DRPicture *pic, int samples, int rate)
@@ -463,7 +465,7 @@ static int drain(DRFrames *c)
     return 0;
 }
 
-/* The bytes up to stream offset end are given out (the stock parser's
+/* The bytes up to stream offset end are given out (the stock cutter's
  * window). */
 static void window_consume(DRFrames *c, int64_t end)
 {
@@ -474,7 +476,7 @@ static void window_consume(DRFrames *c, int64_t end)
     c->win_pos  = end;
 }
 
-/* One chunk from the host's stock parser. */
+/* One chunk from the stock cutter (parse/stock.h). */
 static int unit_out(DRFrames *c, const uint8_t *data, int size)
 {
     int64_t off = c->hp_frame_offset, rel = off - c->win_pos;
@@ -544,10 +546,13 @@ int ff_disctl_frames_write_at(DRFrames *c, const uint8_t *data, int size, int64_
     p    = c->feed;
     left = size;
     while (left > 0) {
-        uint8_t *out;
+        const uint8_t *out;
         int out_size;
-        int used = ff_disctl_host()->parser_parse(c->hp, p, left, c->in_pos, &out, &out_size,
-                                                  &c->hp_frame_offset, &c->hp_duration, &c->hp_rate);
+        int used = dr_stock_parse(c->hp, p, left, c->in_pos, &out, &out_size,
+                                  &c->hp_frame_offset, &c->hp_duration, &c->hp_rate);
+
+        if (used < 0)
+            return used;
 
         c->in_pos += used;
         p         += used;
@@ -569,11 +574,12 @@ int ff_disctl_frames_flush(DRFrames *c)
             return ret;
     }
     while (!c->split && c->hp) {
-        uint8_t *out;
+        const uint8_t *out;
         int out_size;
 
-        ff_disctl_host()->parser_parse(c->hp, NULL, 0, c->in_pos, &out, &out_size,
-                                       &c->hp_frame_offset, &c->hp_duration, &c->hp_rate);
+        if ((ret = dr_stock_parse(c->hp, NULL, 0, c->in_pos, &out, &out_size,
+                                  &c->hp_frame_offset, &c->hp_duration, &c->hp_rate)) < 0)
+            return ret;
         if (!out_size)
             break;
         if ((ret = unit_out(c, out, out_size)) < 0)

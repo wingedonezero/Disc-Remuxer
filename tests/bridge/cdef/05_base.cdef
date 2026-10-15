@@ -69,3 +69,9 @@ void log_title_reading(int on);
 void title_name(const char *tmpl, const char *name, const char *comment, const char *date, unsigned index,
                 char *out, int size);
 void clean_name(const char *s, int rule, char *out, int size);
+
+/* src/parse/stock.h through the bridge: the stock cutters run beside the
+ * processing library's parsers (codec: AV_CODEC_ID_*; stock: DR_STOCK_*). */
+int tb_stock_compare(int ffmpeg_codec, int stock_codec, const uint8_t *data, int size,
+                     const int *chunks, int nb_chunks, int *calls);
+const char *tb_stock_why(void);

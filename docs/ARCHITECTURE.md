@@ -22,10 +22,12 @@ change made to them: `libs/README.md`. The title timeline in detail:
 > degrade.
 
 FFmpeg is linked from one module only (`src/analyze/`), unmodified (see
-`libs/README.md`). One exception is left: MPEG-1/2 video and E-AC-3 have no
-frame cutter of our own yet; their frames are still found by FFmpeg's stock
-parsers, reached through analyze (`DRTimelineHost` in
-`src/timeline/disctl.h`). Every other codec is cut by `src/parse/`.
+`libs/README.md`). Every codec is cut by `src/parse/` (MPEG-1/2 video and
+E-AC-3, which never had a disc rule, by `parse/stock.c`: FFmpeg's own cut,
+ported). The timeline still asks analyze two questions (`DRTimelineHost` in
+`src/timeline/disctl.h`), on copies, no stream byte passing: an LATM
+stream's sample rate and frame length (one frame decoded), and at a TrueHD
+join the samples of a stream's last access unit (decoded).
 
 ## The modules
 
@@ -45,7 +47,8 @@ src/timeline/     the title timeline: frames timed, video grid, audio
    │              timing, joins, junction, subtitles, captions, chapters,
    │              the per-frame verify
 src/mux/          container splitters: MPEG-PS packs, MPEG-TS PES
-src/parse/        frame cutters: one rule set per codec, one splitter engine
+src/parse/        frame cutters: one rule set per codec, one splitter engine;
+                  the stock cutters (MPEG video, E-AC-3: FFmpeg's cut, ported)
 src/io/           readers: block reads with retries, ISO 9660, two UDF
                   readers (NetBSD- and Linux-based), disc folders, the
                   file-system choice, the disc format
@@ -173,8 +176,9 @@ a test run reaches.
 
 ## Open items
 
-- Frame cutters of our own for MPEG-1/2 video and E-AC-3 (the last codecs
-  cut by FFmpeg's parsers), so the one rule holds for every codec.
+- The two answers the timeline still asks analyze (an LATM stream's rate
+  and frame length; a TrueHD stream's last access unit's samples) could be
+  read from the stream headers instead of decoded.
 - The MKV writer (libebml / libmatroska or an own EBML writer: to decide).
 - Holes in a title (a damaged stretch left out): the stream files close the
   hole, the subtitles and chapters after it keep the disc's times — to

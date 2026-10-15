@@ -66,8 +66,8 @@ wait for it; none in those sectors fails the title.
 - Each payload is one record {byte position, length, PTS}. The payload goes
   to the track's frame cutter: its codec's rule in `src/parse/` run by the
   one splitter engine (`parse/split.h`); MPEG-1/2 video and E-AC-3, which
-  have no rule of their own yet, go to FFmpeg's stock parser through
-  analyze (its timestamp logic not used). The cutter finds the frames
+  have no disc rule, go to the stock cutters (`parse/stock.c`: FFmpeg's
+  parsers' cut, ported). The cutter finds the frames
   ("units").
 - A unit gets a record's PTS when it is the FIRST unit that starts inside
   that record's bytes. Every later unit of the same payload has no
@@ -89,7 +89,7 @@ logged with the reason; nothing is guessed.
 | entry | meaning |
 |---|---|
 | family | `timed` (duration and sync rule below) or `stream` (duration from the parser, never a sync unit) |
-| split | the codec's rule in `src/parse/` (none: FFmpeg's stock parser through analyze — MPEG-1/2 video, E-AC-3) |
+| split | the codec's rule in `src/parse/` (none: the stock cutters, `parse/stock.c` — MPEG-1/2 video, E-AC-3) |
 | duration | rule for each unit (e.g. AC-3: samples / rate from the stream's first header; TrueHD: per major-sync access unit) |
 | sync unit | whether a unit may start a drop / join (AC-3, E-AC-3, DTS: every frame; TrueHD: major-sync units only) |
 | filter | the core filter each unit goes through (`dr_eac3_core`: an AC-3 track taken out of E-AC-3; `dr_dca_core`: a DTS track taken out of a DTS-HD stream) |

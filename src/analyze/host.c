@@ -1,9 +1,7 @@
 /*
- * The title timeline's host (timeline/disctl.h DRTimelineHost): the stock
- * frame parser for the codecs without a rule of their own (MPEG video,
- * E-AC-3), the LATM stream header (one decoded frame) and the TrueHD / MLP
- * end-of-stream decode — the processing library answering questions on
- * copies of data. The program and the test bridge register it with
+ * The title timeline's host (timeline/disctl.h DRTimelineHost): the LATM
+ * stream header (one decoded frame) and the TrueHD / MLP end-of-stream
+ * decode — the processing library answering questions on copies of data. The program and the test bridge register it with
  * dr_analyze_use(). Here too: the build-time check that the timeline's
  * codec ids are the library's values.
  */
@@ -87,58 +85,6 @@ _Static_assert(DISC_CH_FRONT_LEFT == AV_CH_FRONT_LEFT && DISC_CH_FRONT_RIGHT == 
                DISC_CH_FRONT_CENTER == AV_CH_FRONT_CENTER && DISC_CH_LOW_FREQUENCY == AV_CH_LOW_FREQUENCY &&
                DISC_CH_LOW_FREQUENCY_2 == AV_CH_LOW_FREQUENCY_2, "channel bits");
 
-/* ---- the stock frame parser ---- */
-
-typedef struct HostParser {
-    AVCodecParserContext *parser;
-    AVCodecContext       *avctx;
-} HostParser;
-
-static void *host_parser_open(DRCodecID codec)
-{
-    HostParser *p = av_mallocz(sizeof(*p));
-
-    if (!p)
-        return NULL;
-    p->parser = av_parser_init(codec);
-    p->avctx  = avcodec_alloc_context3(NULL);
-    if (!p->parser || !p->avctx) {
-        av_parser_close(p->parser);
-        avcodec_free_context(&p->avctx);
-        av_free(p);
-        return NULL;
-    }
-    p->avctx->codec_id   = codec;
-    p->avctx->codec_type = avcodec_get_type(codec);
-    return p;
-}
-
-static int host_parser_parse(void *h, const uint8_t *data, int size, int64_t pos,
-                             uint8_t **out, int *out_size, int64_t *frame_offset,
-                             int *duration, int *rate)
-{
-    HostParser *p = h;
-    int used = av_parser_parse2(p->parser, p->avctx, out, out_size, data, size,
-                                AV_NOPTS_VALUE, AV_NOPTS_VALUE, pos);
-
-    *frame_offset = p->parser->frame_offset;
-    *duration     = p->parser->duration;
-    *rate         = p->avctx->sample_rate;
-    return used;
-}
-
-static void host_parser_close(void **h)
-{
-    HostParser *p = *h;
-
-    if (!p)
-        return;
-    av_parser_close(p->parser);
-    avcodec_free_context(&p->avctx);
-    av_free(p);
-    *h = NULL;
-}
-
 /* ---- one LATM / LOAS frame decoded: the stream's rate and samples ---- */
 
 static int host_latm_header(const uint8_t *data, int size, int *out_rate, int *out_samples)
@@ -206,9 +152,6 @@ end:
 }
 
 static const DRTimelineHost host = {
-    .parser_open        = host_parser_open,
-    .parser_parse       = host_parser_parse,
-    .parser_close       = host_parser_close,
     .latm_header        = host_latm_header,
     .mlp_last_au_samples = host_mlp_last_au_samples,
 };

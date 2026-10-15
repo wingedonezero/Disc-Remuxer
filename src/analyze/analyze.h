@@ -6,9 +6,8 @@
  * degrade.
  *
  * dr_analyze_use() registers it as the title timeline's host
- * (timeline/disctl.h DRTimelineHost): the stock frame parser for the codecs
- * without a rule of their own (MPEG video, E-AC-3), the LATM stream header
- * and the TrueHD / MLP end-of-stream decode.
+ * (timeline/disctl.h DRTimelineHost): the LATM stream header and the
+ * TrueHD / MLP end-of-stream decode.
  */
 
 #ifndef DISC_ANALYZE_ANALYZE_H
