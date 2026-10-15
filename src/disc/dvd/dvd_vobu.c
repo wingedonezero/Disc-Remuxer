@@ -4,7 +4,7 @@
  * an image together, by absolute sector); where VOBUs start and follow, by
  * the VOBU address map while it is trusted, else the maps of title sets
  * sharing the title VOBs, else the navigation packs. On the title set's own
- * reading of its title VOBs (libdvdread, vob_read.h); the findings go into
+ * reading of its title VOBs (dvd_vob.h); the findings go into
  * the disc's findings book, the lines into the log the way the DVD
  * libraries' do ("DVD: ").
  *
@@ -31,7 +31,7 @@
 #include <dvdread/dvd_reader.h>
 #include <dvdread/nav_read.h>
 #include <dvdread/nav_types.h>
-#include <dvdread/vob_read.h>
+#include "dvd_vob.h"
 
 #include "base/mem.h"
 
@@ -48,17 +48,17 @@ static uint32_t be32( const uint8_t *p )
 }
 
 /* Where title set t's title VOBs start on an image (0: not known), and their
- * length by the IFO (libdvdread's placement). */
+ * length by the IFO (dvd_vob.c's placement). */
 static int64_t title_start( const DVDDisc *d, int t )
 {
   uint32_t blocks;
-  return DVDTitleVOBPlace_rec( d->reader, t, &blocks );
+  return DVDTitleVOBPlace_rec( d, t, &blocks );
 }
 
 static uint32_t title_blocks( const DVDDisc *d, int t )
 {
   uint32_t blocks;
-  DVDTitleVOBPlace_rec( d->reader, t, &blocks );
+  DVDTitleVOBPlace_rec( d, t, &blocks );
   return blocks;
 }
 

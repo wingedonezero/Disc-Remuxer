@@ -90,7 +90,7 @@ int tb_dvd_titles_from(DVDDisc *d, dvd_nav_cells_t *res, int nb, int cell_mode, 
                        int min_length, char **dump);
 int ff_dvd_cell_check(DVDDisc *d, int vts, int pgcn, int cell, int mode);
 
-/* libdvdread (dvdread/vob_read.h): a title set's title VOBs read for
+/* disc/dvd/dvd_vob.h: a title set's title VOBs read for
  * ripping, each damaged range given back once */
 typedef enum { DVD_DAMAGE_NONE, DVD_DAMAGE_ZERO, DVD_DAMAGE_NO_PACK } dvd_damage_t;
 typedef struct dvd_vob_reader_s dvd_vob_reader_t;
@@ -118,7 +118,7 @@ int ff_dvd_title_vob_read(DVDDisc *d, int vts, dvd_vob_reader_t *vr, uint32_t se
 int ff_dvd_title_vob_sector(DVDDisc *d, int vts, uint32_t sector, uint8_t *buf);
 int ff_dvd_css_state(DVDDisc *d, int vts, uint8_t *key);
 int ff_dvd_map_trusted(const DVDDisc *d, int vts);
-/* VOBUs on libdvdread's records (dvd_read.c, vob_read.h) */
+/* VOBUs on the title set's records (dvd_read.c, dvd_vobu.h) */
 typedef struct {
     uint32_t vobu_s_ptm, vobu_e_ptm, vobu_ea, ilvu_ea, next_vobu;
     uint16_t category;

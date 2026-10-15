@@ -31,7 +31,7 @@
 
 #include <dvdread/dvd_reader.h>
 #include <dvdread/ifo_read.h>
-#include <dvdread/vob_read.h>
+#include "dvd_vob.h"
 
 #include "base/mem.h"
 #include "base/err.h"
@@ -55,7 +55,7 @@ int ff_dvd_disc_open(void *log, DiscIOFS *fs, const char *dir, int folder, const
     /* libdvdread reads and checks the disc */
     if ((ret = ff_dvd_reader_open(d)) < 0)
         return ret;
-    if (!(r = d->rec = DVDOpenDisc_rec(d->reader))) {
+    if (!(r = d->rec = DVDOpenDisc_rec(d->reader, ff_dvd_vob_place, d))) {
         ff_dvd_reports_log(d);
         dr_vlog(log, DR_VLOG_ERROR, "DVD: the disc cannot be read as DVD-Video (see the IFO check above)\n");
         return DR_ERR_INVALID;

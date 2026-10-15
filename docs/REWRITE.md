@@ -14,8 +14,8 @@ analyze's hook. Next: the step-7 gate (the corpus byte-compare + info
 compare, the user's: run once the whole rewrite is done, not per step), then
 step 8, the DVD lift (D-8 decided, the slices planned — see step 8 below);
 8a (the scan driver, row 266), 8b (the title list, row 267), 8c (the
-stream probe, row 268), 8d (the cell rules, row 269) and 8e-1 (the
-VOBUs, row 270) are in.
+stream probe, row 268), 8d (the cell rules, row 269), 8e-1 (the VOBUs,
+row 270) and 8e-2 (the reading, row 271) are in.
 Tests at every commit: 743 passed, 15 skipped (the disc-marked ones without a
 disc). Every move so far is behavior-preserving by construction and by test;
 the real-disc byte-compare against a main build is still owed (user runs it
@@ -455,9 +455,14 @@ In slices, one commit and one full test run each, behavior-preserving:
     map's trust, where VOBUs start and follow) on `DVDCells`; the map comes
     from the disc structure as read; placement and raw reads still asked of
     libdvdread.
-  - **8e-2**: placement, sector read + check, CSS via libdvdcss, damage
-    ranges, the file-view fallback — the format part reads like the Blu-ray
-    part does.
+  - **8e-2 — DONE (row 271)**: `vob_read.c` whole into `dvd_vob.c`
+    (placement, sector read + check, CSS via libdvdcss, damage ranges, the
+    file-view fallback) — the format part reads like the Blu-ray part
+    does. Placement is the DVD part's code, asked by `DVDOpenDisc_rec()`
+    through a callback at the moments it ran before (decided 2026-10-15:
+    log order and broken-title-set behaviour unchanged). The reads go
+    through the same file callbacks and lookup as libdvdread's reader
+    (dvd_nav.c, our io).
 - **8f** — settle the libraries: drop the emptied halves, re-measure both
   diffs, update the docs.
 

@@ -30,7 +30,6 @@
 #include "dvdread/dvd_filesystem.h"
 #include "dvdread/dvd_reader.h"
 #include "dvdread/ifo_read.h"
-#include "dvdread/vob_read.h"
 #include "dvdread_internal.h"
 #include "logger.h"
 
@@ -360,8 +359,9 @@ static int64_t file_size( dvd_reader_t *ctx, const char *name )
 }
 
 /* Information file index opened (ifoOpen_rec()), with where its files are
- * and where its VOBs start. -1 when it cannot be read. */
-static int load_ifo( dvd_reader_t *ctx, int index, dvd_ifo_rec_t *f )
+ * and where its VOBs start (asked of the application: place). -1 when it
+ * cannot be read. */
+static int load_ifo( dvd_reader_t *ctx, int index, dvd_ifo_rec_t *f, dvd_vob_place_f place, void *opaque )
 {
   uint8_t header[HEADER_SIZE];
   const uint8_t *cache;
@@ -382,7 +382,7 @@ static int load_ifo( dvd_reader_t *ctx, int index, dvd_ifo_rec_t *f )
     bup = file_sector( ctx, name );
     f->bup_sector = bup >= 0 ? bup : f->ifo_sector;
     f->title_vob_sectors = (uint32_t)(f->bup_sector - f->ifo_sector) - be32( header + TT_SRPT );
-    f->menu_vob_start = DVDMenuVOBStart_rec( f->ifo, index );
+    f->menu_vob_start = place ? place( opaque, f->ifo, index, 1 ) : 0;
   } else {
     int64_t bytes = 0, n;
     if( !index ) {
@@ -406,7 +406,7 @@ static int load_ifo( dvd_reader_t *ctx, int index, dvd_ifo_rec_t *f )
     return 0;
   }
   if( is_image( ctx ) )
-    f->title_vob_start = DVDTitleVOBStart_rec( f->ifo, index );
+    f->title_vob_start = place ? place( opaque, f->ifo, index, 0 ) : 0;
   return 0;
 }
 
@@ -511,8 +511,6 @@ end:
 
 static void close_ifo( dvd_ifo_rec_t *f )
 {
-  if( f->own )
-    DVDCloseTitleVOBs_rec( f->own );
   if( f->ifo )
     ifoClose( f->ifo );
   ifoFree_VTS_PGCIT_rec( &f->pgcit );
@@ -523,7 +521,7 @@ static void close_ifo( dvd_ifo_rec_t *f )
 
 /* ---- the disc ---- */
 
-dvd_disc_rec_t *DVDOpenDisc_rec( dvd_reader_t *ctx )
+dvd_disc_rec_t *DVDOpenDisc_rec( dvd_reader_t *ctx, dvd_vob_place_f place, void *opaque )
 {
   static const uint8_t name_items[] = { 0x30, 0x39, 0x38, 0x3a, 0x3b };
   dvd_disc_rec_t *d;
@@ -538,7 +536,7 @@ dvd_disc_rec_t *DVDOpenDisc_rec( dvd_reader_t *ctx )
   vmg = &d->ifos[0];
 
   /* the VMG */
-  if( load_ifo( ctx, 0, vmg ) < 0 || !ifoRead_rec_bytes( vmg->ifo, 0, header, sizeof(header) ) ) {
+  if( load_ifo( ctx, 0, vmg, place, opaque ) < 0 || !ifoRead_rec_bytes( vmg->ifo, 0, header, sizeof(header) ) ) {
     note( ctx, DVD_REPORT_ERROR, 0, NULL, -1, "VIDEO_TS.IFO cannot be read: no DVD-Video" );
     goto fail;
   }
@@ -552,7 +550,7 @@ dvd_disc_rec_t *DVDOpenDisc_rec( dvd_reader_t *ctx )
 
   /* every title set's information file */
   for( int i = 1; i <= d->nr_of_title_sets; i++ )
-    if( load_ifo( ctx, i, &d->ifos[i] ) < 0 ) {
+    if( load_ifo( ctx, i, &d->ifos[i], place, opaque ) < 0 ) {
       close_ifo( &d->ifos[i] );
       note( ctx, DVD_REPORT_ERROR, i, NULL, -1, "title set %d cannot be read: the disc is read without it", i );
     }
@@ -636,20 +634,6 @@ dvd_disc_rec_t *DVDOpenDisc_rec( dvd_reader_t *ctx )
 fail:
   DVDCloseDisc_rec( d );
   return NULL;
-}
-
-dvd_vob_reader_t *DVDDiscTitleVOBs_rec( dvd_disc_rec_t *d, int title )
-{
-  dvd_ifo_rec_t *f;
-
-  if( !d || title < 1 || title > d->nr_of_title_sets )
-    return NULL;
-  f = &d->ifos[title];
-  if( !f->own_opened && f->ifo ) {
-    f->own_opened = 1;
-    f->own = DVDOpenTitleVOBs_rec( f->ifo, title );
-  }
-  return f->own;
 }
 
 /* The title VOB sectors of title set title on the disc ([start, end)). */

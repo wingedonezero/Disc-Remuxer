@@ -2,12 +2,11 @@
  * DVD-Video: reading a title's segments sector by sector. A segment's
  * extents name sectors of its title set's title VOBs (the same title VOB
  * stream the navigation reads: an image's sectors from the IFO header's
- * title VOB start, a folder's VTS_nn_1..9.VOB joined). libdvdread reads
- * them (vob_read.h): it checks each sector (one that is no MPEG-2 pack
- * followed by a packet start code is left out, no packet of it reaches the
- * demuxer), says the damaged ranges, once each, to whoever reads, and
- * descrambles CSS with each title set's title key (looked for, checked and
- * kept by libdvdread).
+ * title VOB start, a folder's VTS_nn_1..9.VOB joined). dvd_vob.c reads
+ * them: it checks each sector (one that is no MPEG-2 pack followed by a
+ * packet start code is left out, no packet of it reaches the demuxer), says
+ * the damaged ranges, once each, to whoever reads, and descrambles CSS with
+ * each title set's title key (looked for, checked and kept per title set).
  *
  * This file is part of FFmpeg.
  *
@@ -43,7 +42,7 @@ dvd_vob_reader_t *ff_dvd_title_vobs_open(DVDDisc *d, int vts)
 
     if (ff_dvd_reader_open(d) < 0 || !f)
         return NULL;
-    return DVDOpenTitleVOBs_rec(f->ifo, vts);   /* when they cannot be opened, libdvdread says why */
+    return DVDOpenTitleVOBs_rec(d, f->ifo, vts);   /* when they cannot be opened, it is said why */
 }
 
 int ff_dvd_title_vob_read(DVDDisc *d, int vts, dvd_vob_reader_t *vr, uint32_t sector, uint8_t *buf,
@@ -59,7 +58,7 @@ int ff_dvd_title_vob_read(DVDDisc *d, int vts, dvd_vob_reader_t *vr, uint32_t se
 
 int ff_dvd_css_state(DVDDisc *d, int vts, uint8_t *key)
 {
-    return d->reader ? DVDTitleVOBKey_rec(d->reader, vts, key) : 0;
+    return d->reader ? DVDTitleVOBKey_rec(d, vts, key) : 0;
 }
 
 int ff_dvd_title_vob_sector(DVDDisc *d, int vts, uint32_t sector, uint8_t *buf)
@@ -146,8 +145,18 @@ int ff_dvd_segment_read(DVDDisc *d, const dvd_title_t *t, int seg, uint32_t bloc
 
 dvd_vob_reader_t *ff_dvd_own_reading(DVDDisc *d, int vts)
 {
-    /* when they cannot be opened libdvdread says why */
-    return DVDDiscTitleVOBs_rec(d->rec, vts);
+    const dvd_ifo_rec_t *f;
+    DVDCells *c;
+
+    if (!d->rec || vts < 1 || vts > d->rec->nr_of_title_sets)
+        return NULL;
+    f = &d->rec->ifos[vts];
+    c = &d->cells[vts];
+    if (!c->own_opened && f->ifo) {
+        c->own_opened = 1;
+        c->own = DVDOpenTitleVOBs_rec(d, f->ifo, vts);   /* when they cannot be opened, it is said why */
+    }
+    return c->own;
 }
 
 int ff_dvd_nav_read(DVDDisc *d, int vts, uint32_t sector, dvd_vobu_nav_t *n)

@@ -32,7 +32,7 @@
 #include <dvdnav/dvdnav.h>
 #include <dvdread/disc_read.h>
 #include <dvdread/ifo_types.h>
-#include <dvdread/vob_read.h>
+#include "dvd_vob.h"
 
 #include "io/discio.h"
 #include "disc/info.h"
@@ -69,6 +69,7 @@ typedef struct DVDDisc {
     int          folder;                /**< a disc folder (else an image) */
     char        *volume_name;           /**< the volume label, else the provider identifier */
     struct dvd_reader_s *reader;        /**< libdvdread on the disc's own files (ff_dvd_reader_open()) */
+    dvd_reader_filesystem_h *read_fs;   /**< the file callbacks it reads them with (dvd_nav.c; the reader's) */
     dvd_disc_rec_t *rec;                /**< the disc's structure as libdvdread read it (DVDOpenDisc_rec()) */
     DVDDiscFile  files[DVD_MAX_TITLE_SETS + 1][DVD_FILE_SLOTS];
     dvd_findings_t *findings;           /**< what libdvdread / libdvdnav found, each said once (both log into
@@ -142,9 +143,10 @@ void ff_dvd_lib_log(DVDDisc *d, int level, const char *fmt, ...) __attribute__((
  *  (its reader's logger: said once, counted). */
 void ff_dvd_report(DVDDisc *d, const dvd_report_t *r);
 
-/* ---- reading (dvd_read.c, on libdvdread, vob_read.h) ---- */
-/** Title set vts's own reading of its title VOBs (libdvdread's, kept with
- *  the disc: DVDDiscTitleVOBs_rec(); NULL: they cannot be read, said). */
+/* ---- reading (dvd_read.c, on dvd_vob.c) ---- */
+/** Title set vts's own reading of its title VOBs (opened the first time it
+ *  is asked for, kept with the disc: DVDCells.own; NULL: they cannot be
+ *  read, said). */
 dvd_vob_reader_t *ff_dvd_own_reading(DVDDisc *d, int vts);
 /** The NAV pack at title-VOB sector of title set vts, read by libdvdread
  *  (its checks report): 1 with *n; 0 when the sector is no (usable) NAV pack
@@ -223,14 +225,14 @@ int      ff_dvd_css_state(DVDDisc *d, int vts, uint8_t *key);
 int      ff_dvd_title_vob_sector(DVDDisc *d, int vts, uint32_t sector, uint8_t *buf);
 /** The sectors of a segment. */
 /** The VOB file holding block (from 0) of segment seg of title t and the
- *  byte offset there (libdvdread's reading vr names it); < 0 not known. */
+ *  byte offset there (the reading vr names it); < 0 not known. */
 int ff_dvd_segment_place(const dvd_title_t *t, const dvd_vob_reader_t *vr, int seg, uint32_t block, char *file,
                          int size, int64_t *offset);
 uint32_t ff_dvd_segment_blocks(const dvd_segment_t *g);
 /** Sector block of segment seg of title t, as ff_dvd_title_vob_read(). */
 int      ff_dvd_segment_read_vobs(DVDDisc *d, const dvd_title_t *t, dvd_vob_reader_t *vr, int seg, uint32_t block,
                                   uint8_t *buf, dvd_vob_damage_t *ended);
-/** The file view (vob_read.h) of reading vr for segment seg of title t, read
+/** The file view (dvd_vob.h) of reading vr for segment seg of title t, read
  *  next: 1 used when a read fails, 0 not, < 0 an error. */
 int      ff_dvd_segment_view(const dvd_title_t *t, dvd_vob_reader_t *vr, int seg);
 /** Sector block of segment seg of title t, as ff_dvd_title_vob_sector(). */

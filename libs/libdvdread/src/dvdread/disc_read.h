@@ -23,7 +23,6 @@
 
 #include "dvd_reader.h"
 #include "ifo_types.h"
-#include "vob_read.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -112,8 +111,6 @@ typedef struct
   int                nb_vobu_map;
   int                map_trusted;       /* its VOBU address map holds every cell (set when the tables were read) */
   uint32_t           menu_vobu_last;    /* the last VOBU start of the menus' VOBU address map */
-  dvd_vob_reader_t  *own;               /* its title VOBs' own reading (DVDDiscTitleVOBs_rec()) */
-  int                own_opened;
 } dvd_ifo_rec_t;
 
 typedef struct
@@ -130,21 +127,22 @@ typedef struct
 } dvd_disc_rec_t;
 
 /**
- * Reads the disc's structure (see above). NULL when it is no usable
- * DVD-Video disc (reported). Close with DVDCloseDisc_rec() before
- * DVDClose(): it closes the information files.
+ * Where an information file's menu VOBs (menu 1) or title VOBs (menu 0)
+ * start on a disc image (absolute sector, 0: none), decided by the
+ * application, which reads them; asked while the structure is read, for
+ * every information file on an image (the title VOBs of a title set with a
+ * program chain table): dvd_ifo_rec_t menu_vob_start / title_vob_start.
  */
-DVDREAD_API dvd_disc_rec_t *DVDOpenDisc_rec( dvd_reader_t * );
-DVDREAD_API void DVDCloseDisc_rec( dvd_disc_rec_t * );
+typedef int64_t (*dvd_vob_place_f)( void *opaque, ifo_handle_t *ifo, int title, int menu );
 
 /**
- * Title set title's own reading of its title VOBs (DVDOpenTitleVOBs_rec()),
- * opened the first time it is asked for and kept with the disc: the reading
- * the VOBU records, the cell checks and the stream probe of the title set
- * use. NULL when the title set was not read or its title VOBs cannot be
- * opened.
+ * Reads the disc's structure (see above); place (may be NULL: none) is
+ * asked where the VOBs start. NULL when it is no usable DVD-Video disc
+ * (reported). Close with DVDCloseDisc_rec() before DVDClose(): it closes the
+ * information files.
  */
-DVDREAD_API dvd_vob_reader_t *DVDDiscTitleVOBs_rec( dvd_disc_rec_t *, int title );
+DVDREAD_API dvd_disc_rec_t *DVDOpenDisc_rec( dvd_reader_t *, dvd_vob_place_f place, void *opaque );
+DVDREAD_API void DVDCloseDisc_rec( dvd_disc_rec_t * );
 
 /**
  * Title set title's title VOBs share sectors with another title set's: by

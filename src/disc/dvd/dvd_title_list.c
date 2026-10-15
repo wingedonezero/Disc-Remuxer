@@ -4,7 +4,7 @@
  * entry and program chain, the ones that should not be there left out,
  * their cells (CellWalk / CellTrim), lengths, segments, chapters, streams
  * and angles, duplicates removed), and each title's stream probe. The cell
- * rules, segments and chapter places it asks libdvdread for (vob_read.h);
+ * rules, segments and chapter places are dvd_cells.c's;
  * its lines go into the log the way the DVD libraries' do ("DVD: "); the
  * rest of the DVD format part uses its titles as they are.
  *
@@ -31,7 +31,7 @@
 
 #include <dvdread/disc_read.h>
 #include <dvdread/ifo_read.h>
-#include <dvdread/vob_read.h>
+#include "dvd_vob.h"
 
 #include "base/err.h"
 #include "base/mem.h"

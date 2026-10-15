@@ -1,33 +1,31 @@
 /*
- * This file is part of libdvdread.
+ * DVD-Video: title VOB sectors read for ripping (dvd_vob.c).
  *
- * libdvdread is free software; you can redistribute it and/or modify
+ * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * libdvdread is distributed in the hope that it will be useful,
+ * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with libdvdread; if not, write to the Free Software Foundation, Inc.,
+ * with this program; if not, write to the Free Software Foundation, Inc.,
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-#ifndef LIBDVDREAD_VOB_READ_H
-#define LIBDVDREAD_VOB_READ_H
+#ifndef DISC_DVD_DVD_VOB_H
+#define DISC_DVD_DVD_VOB_H
 
 #include <stdint.h>
 #include <stddef.h>
 
-#include "dvd_reader.h"
-#include "ifo_types.h"
+#include <dvdread/dvd_reader.h>
+#include <dvdread/ifo_types.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+struct DVDDisc;
 
 /**
  * A title set's title VOBs read sector by sector for ripping, on a reader
@@ -102,17 +100,17 @@ typedef struct
  * its IFO saying why: a missing first VOB file, no place for them in the
  * IFO header or on the image, ...).
  */
-DVDREAD_API dvd_vob_reader_t *DVDOpenTitleVOBs_rec( ifo_handle_t *ifo, int title );
+dvd_vob_reader_t *DVDOpenTitleVOBs_rec( struct DVDDisc *, ifo_handle_t *ifo, int title );
 
 /** The title VOBs' length in whole sectors. */
-DVDREAD_API uint32_t DVDTitleVOBSectors_rec( const dvd_vob_reader_t * );
+uint32_t DVDTitleVOBSectors_rec( const dvd_vob_reader_t * );
 
 /** The VOB file holding title VOB sector (name into file, 16 bytes) and the
  *  byte offset of the sector there (a folder's files one after the other,
  *  an image's files by the pieces they lie in): 1, or 0 when not known
  *  (file "", *offset -1). */
-DVDREAD_API int DVDTitleVOBSectorPlace_rec( const dvd_vob_reader_t *, uint32_t sector, char file[16],
-                                            int64_t *offset );
+int DVDTitleVOBSectorPlace_rec( const dvd_vob_reader_t *, uint32_t sector, char file[16],
+                                int64_t *offset );
 
 /**
  * Reads title VOB sector into buf (2048 bytes, descrambled): 1 the sector
@@ -121,17 +119,17 @@ DVDREAD_API int DVDTitleVOBSectorPlace_rec( const dvd_vob_reader_t *, uint32_t s
  * key. When this read ends a damaged range, the range is put in *ended
  * (nb_sectors 0: none); ended may be NULL.
  */
-DVDREAD_API int DVDReadTitleVOBSector_rec( dvd_vob_reader_t *, uint32_t sector, uint8_t *buf,
-                                           dvd_vob_damage_t *ended );
+int DVDReadTitleVOBSector_rec( dvd_vob_reader_t *, uint32_t sector, uint8_t *buf,
+                               dvd_vob_damage_t *ended );
 
 /** Ends the damaged range being read, if any (the reading stops or goes
  *  elsewhere): reported and put in *ended (nb_sectors 0: none). */
-DVDREAD_API void DVDEndTitleVOBDamage_rec( dvd_vob_reader_t *, dvd_vob_damage_t *ended );
+void DVDEndTitleVOBDamage_rec( dvd_vob_reader_t *, dvd_vob_damage_t *ended );
 
 /** Where title set title's title VOBs start on the image (absolute sector,
  *  decided once, see above); ifo: its ifoOpen_rec() handle. 0 on a folder or
  *  without title VOBs. */
-DVDREAD_API int64_t DVDTitleVOBStart_rec( ifo_handle_t *ifo, int title );
+int64_t DVDTitleVOBStart_rec( struct DVDDisc *, ifo_handle_t *ifo, int title );
 
 /**
  * The file view for the segment read next (n extents: title VOB sectors
@@ -141,38 +139,40 @@ DVDREAD_API int64_t DVDTitleVOBStart_rec( ifo_handle_t *ifo, int title );
  * of 3 or more, their last two must read the same through the file view
  * and at the start place, and every extent must lie in the file view).
  */
-DVDREAD_API int DVDUseTitleVOBView_rec( dvd_vob_reader_t *, const uint32_t *sectors, const uint32_t *counts,
-                                        int n );
+int DVDUseTitleVOBView_rec( dvd_vob_reader_t *, const uint32_t *sectors, const uint32_t *counts,
+                            int n );
 
 /** Title set title's CSS title key: 1 found (into key), 0 not looked for
  *  yet, -1 none. */
-DVDREAD_API int DVDTitleVOBKey_rec( dvd_reader_t *, int title, uint8_t key[5] );
+int DVDTitleVOBKey_rec( const struct DVDDisc *, int title, uint8_t key[5] );
 
 /** Where title set title's menu VOBs start on the image (absolute sector,
  *  title 0: the video manager's): decided once as the title VOBs' start,
  *  from vtsm_vobs / vmgm_vobs and the file system's VTS_nn_0.VOB /
  *  VIDEO_TS.VOB; neither place starting with a VOB's first navigation
  *  pack: the IFO header's. 0 on a folder or without menu VOBs. */
-DVDREAD_API int64_t DVDMenuVOBStart_rec( ifo_handle_t *ifo, int title );
+int64_t DVDMenuVOBStart_rec( struct DVDDisc *, ifo_handle_t *ifo, int title );
 
-/* ---- for the application's VOBU and cell rules ---- */
+/** Where an information file's menu VOBs (menu) or title VOBs start on an
+ *  image, for libdvdread while it reads the disc's structure
+ *  (DVDOpenDisc_rec()'s placement callback; opaque: the DVDDisc). */
+int64_t ff_dvd_vob_place( void *opaque, ifo_handle_t *ifo, int title, int menu );
+
+/* ---- for the VOBU and cell rules ---- */
 
 /** The title VOBs' length in sectors (by the IFO / the files). */
-DVDREAD_API uint32_t DVDTitleVOBBlocks_rec( const dvd_vob_reader_t * );
+uint32_t DVDTitleVOBBlocks_rec( const dvd_vob_reader_t * );
 
 /** A title VOB sector's bytes as they are (no check, no descrambling: what
  *  the navigation packs are read from): 0, -1 when they cannot be read. */
-DVDREAD_API int DVDReadTitleVOBRaw_rec( dvd_vob_reader_t *, uint32_t sector, uint8_t *buf );
+int DVDReadTitleVOBRaw_rec( dvd_vob_reader_t *, uint32_t sector, uint8_t *buf );
 
 /** Where title set title's title VOBs start on an image as decided so far
  *  (0: not known, a folder, none) and *blocks their length by the IFO (up
  *  to its BUP). */
-DVDREAD_API int64_t DVDTitleVOBPlace_rec( const dvd_reader_t *, int title, uint32_t *blocks );
+int64_t DVDTitleVOBPlace_rec( const struct DVDDisc *, int title, uint32_t *blocks );
 
 /** Closes the title VOBs; a damaged range still open is reported. */
-DVDREAD_API void DVDCloseTitleVOBs_rec( dvd_vob_reader_t * );
+void DVDCloseTitleVOBs_rec( dvd_vob_reader_t * );
 
-#ifdef __cplusplus
-};
-#endif
-#endif /* LIBDVDREAD_VOB_READ_H */
+#endif /* DISC_DVD_DVD_VOB_H */

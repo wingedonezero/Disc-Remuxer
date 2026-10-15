@@ -23,7 +23,7 @@
 #include <stdint.h>
 
 #include <dvdread/ifo_types.h>
-#include <dvdread/vob_read.h>
+#include "dvd_vob.h"
 
 #include "dvd_vobu.h"
 
@@ -79,6 +79,20 @@ struct DVDCells {
   int                nb_map;
   int                map_distrusted;
   DVDVobuStore       vobus;
+  /* its title VOBs (dvd_vob.c): the own reading (opened the first time
+   * asked), where they start on an image (placed: decided; start 0: none,
+   * a folder) and their length by the IFO up to its BUP, its menu VOBs'
+   * start (index 0: the video manager's), its CSS title key (key_state 0
+   * not looked for, 1 found, -1 none) */
+  dvd_vob_reader_t  *own;
+  int                own_opened;
+  int                placed;
+  int64_t            start;
+  uint32_t           start_blocks;
+  int                menu_placed;
+  int64_t            menu_start;
+  int                key_state;
+  uint8_t            key[5];
 };
 
 /** The cells' and VOBUs' state of every title set (at the disc's open): 0,

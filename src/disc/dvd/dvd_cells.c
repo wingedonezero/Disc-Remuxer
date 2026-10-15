@@ -2,8 +2,8 @@
  * DVD-Video: a title set's cells walked and checked (the cell checks, the
  * seamless-angle check, the program chain check), a title's cell list
  * (CellWalk, CellTrim), its segments and chapter places (dvd_cells.h). On
- * the title set's own reading of its title VOBs (libdvdread, vob_read.h:
- * the VOBU records, the VOBU address map, the navigation packs); what a
+ * the title set's VOBUs (dvd_vobu.h: the VOBU records, the VOBU address
+ * map, the navigation packs); what a
  * title set's cells found once is kept here (DVDCells), and the lines go
  * into the log the way the DVD libraries' do ("DVD: ").
  *
@@ -29,7 +29,7 @@
 
 #include <dvdread/dvd_reader.h>
 #include <dvdread/ifo_types.h>
-#include <dvdread/vob_read.h>
+#include "dvd_vob.h"
 
 #include "base/err.h"
 #include "base/mem.h"
@@ -94,6 +94,11 @@ int ff_dvd_cells_open( DVDDisc *d )
 
 void ff_dvd_cells_close( DVDDisc *d )
 {
+  /* the title VOBs' readings first (a damaged range still open is said) */
+  for( int t = 1; t <= DVD_MAX_TITLE_SETS; t++ ) {
+    DVDCloseTitleVOBs_rec( d->cells[t].own );
+    d->cells[t].own = NULL;
+  }
   for( int t = 1; t <= DVD_MAX_TITLE_SETS; t++ ) {
     DVDCells *c = &d->cells[t];
     for( int p = 0; c->cell_state && p < c->pgcit->nr_of_pgcs; p++ )

@@ -768,6 +768,7 @@ int ff_dvd_reader_open(DVDDisc *d)
         nav_close(&n->fs);
         return DR_ERR_EXTERNAL;
     }
+    d->read_fs = &n->fs;
     return 0;
 }
 

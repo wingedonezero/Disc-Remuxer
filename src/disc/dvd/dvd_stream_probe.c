@@ -1,8 +1,8 @@
 /*
  * DVD-Video: the packets of a title VOB sector and the stream probe of a
  * title (dvd_stream_probe.h: DVDPackPacket_rec(), DVDProbeTitleStreams_rec()),
- * its sectors read through libdvdread's reading of the title set's VOBs
- * (vob_read.h).
+ * its sectors read through the title set's own reading of its title VOBs
+ * (dvd_vob.h).
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -24,7 +24,7 @@
 #include <string.h>
 
 #include <dvdread/dvd_reader.h>
-#include <dvdread/vob_read.h>
+#include "dvd_vob.h"
 
 #include "base/mem.h"
 

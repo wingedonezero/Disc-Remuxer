@@ -1,25 +1,28 @@
 /*
- * Title VOB sectors read for ripping: the sector check, the damaged ranges
- * and CSS (dvdread/vob_read.h).
+ * DVD-Video: title VOB sectors read for ripping (dvd_vob.h): where an
+ * image's title and menu VOBs start, the title VOBs opened (an image's at
+ * their start place, a folder's files joined, the file view through the
+ * VOB files when a read fails), the sector check, the damaged ranges and
+ * CSS (the title key found and confirmed through libdvdcss, the sectors
+ * descrambled). The files are read through the file callbacks and the
+ * file lookup libdvdread reads the disc with (dvd_nav.c: our io); the
+ * findings go into the disc's findings book, the lines into the log the
+ * way the DVD libraries' do ("DVD: ").
  *
- * This file is part of libdvdread.
- *
- * libdvdread is free software; you can redistribute it and/or modify
+ * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * libdvdread is distributed in the hope that it will be useful,
+ * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with libdvdread; if not, write to the Free Software Foundation, Inc.,
+ * with this program; if not, write to the Free Software Foundation, Inc.,
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
-
-#include "config.h"
 
 #include <inttypes.h>
 #include <limits.h>
@@ -28,18 +31,16 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef HAVE_DVDCSS_DVDCSS_H
-# include <dvdcss/dvdcss.h>
-#endif
+#include <dvdcss/dvdcss.h>
 
-#include "dvdread/dvd_filesystem.h"
-#include "dvdread/dvd_reader.h"
-#include "dvdread/ifo_read.h"
-#include "dvdread/nav_read.h"
-#include "dvdread/nav_types.h"
-#include "dvdread/vob_read.h"
-#include "dvdread_internal.h"
-#include "logger.h"
+#include <dvdread/dvd_filesystem.h>
+#include <dvdread/dvd_reader.h>
+#include <dvdread/ifo_read.h>
+
+#include "base/mem.h"
+
+#include "dvd_internal.h"
+#include "dvd_vob.h"
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -49,6 +50,10 @@
 #define MAX_PARTS   9                  /* VTS_nn_1..9.VOB */
 #define CLEAR       0x80               /* CSS leaves the first 128 bytes of a sector clear */
 #define CHECK_LIMIT 8192               /* sectors after the key's start searched for one the key check can use */
+
+/* the lines, as libdvdread's details and debug lines */
+#define Log2( d, ... ) ff_dvd_lib_log( (d), DVD_LOGGER_LEVEL_INFO, __VA_ARGS__ )
+#define Log3( d, ... ) ff_dvd_lib_log( (d), DVD_LOGGER_LEVEL_DEBUG, __VA_ARGS__ )
 
 typedef struct {
   char     name[16];                  /* "VTS_01_1.VOB" */
@@ -68,7 +73,7 @@ typedef struct {
 } view_piece_t;
 
 struct dvd_vob_reader_s {
-  dvd_reader_t *ctx;
+  DVDDisc      *d;
   int           title;
   uint32_t      blocks;               /* the title VOBs' length in sectors by the IFO / the files (CSS) */
   int           mpeg2;                /* the title set's video is MPEG-2 (its video attributes) */
@@ -175,7 +180,7 @@ static void end_damage( dvd_vob_reader_t *v, dvd_vob_damage_t *ended )
   r.text       = text;
   r.nb_sectors = g->nb_sectors;
   r.damage     = g->kind;
-  DVDReadReport( v->ctx->priv, &v->ctx->logcb, &r );
+  ff_dvd_report( v->d, &r );
   if( ended )
     *ended = *g;
   memset( g, 0, sizeof(*g) );
@@ -228,8 +233,8 @@ static void css_report( dvd_vob_reader_t *v, dvd_report_level_t level, const cha
   va_start( list, fmt );
   vsnprintf( text + n, sizeof(text) - n, fmt, list );
   va_end( list );
-  DVDReadLog( v->ctx->priv, &v->ctx->logcb, level == DVD_REPORT_ERROR ? DVD_LOGGER_LEVEL_ERROR :
-              level == DVD_REPORT_WARN ? DVD_LOGGER_LEVEL_WARN : DVD_LOGGER_LEVEL_NOTICE, "%s", text );
+  ff_dvd_lib_log( v->d, level == DVD_REPORT_ERROR ? DVD_LOGGER_LEVEL_ERROR :
+                  level == DVD_REPORT_WARN ? DVD_LOGGER_LEVEL_WARN : DVD_LOGGER_LEVEL_NOTICE, "%s", text );
 }
 
 /* 1: the sector's packet is of a stream CSS scrambles (the video stream
@@ -326,7 +331,6 @@ static int key_check( const uint8_t *sec, int h, int mpeg2, int *what )
   return -1;
 }
 
-#ifdef HAVE_DVDCSS_DVDCSS_H
 /* The title VOBs as a stream for libdvdcss (it cracks the key from their
  * scrambled sectors). */
 typedef struct {
@@ -377,7 +381,7 @@ static int check_key( dvd_vob_reader_t *v, uint32_t sector, const uint8_t *key )
     if( (ok = key_check( b, h, v->mpeg2, &what )) < 0 )
       continue;
     if( ok )
-      Log2( v->ctx, "VTS_%02d: the CSS title key is right on sector %" PRIu32 " (%s)", v->title, s,
+      Log2( v->d, "VTS_%02d: the CSS title key is right on sector %" PRIu32 " (%s)", v->title, s,
             what == 1 ? "an AC-3 frame's CRC" : "an MPEG-2 sequence header's extension" );
     else
       css_report( v, DVD_REPORT_ERROR, "the CSS title key is wrong on sector %" PRIu32 " (%s)", s,
@@ -388,16 +392,15 @@ static int check_key( dvd_vob_reader_t *v, uint32_t sector, const uint8_t *key )
               "unchecked [untested on real discs]", CHECK_LIMIT, sector );
   return 1;
 }
-#endif
 
 /* The title set's title VOBs lie inside title set o's (the same sectors of
  * an image) and o has its key. */
-static int key_shared( const dvd_reader_t *ctx, int title, int o )
+static int key_shared( const DVDDisc *d, int title, int o )
 {
-  int64_t fb = ctx->vob_css[title].start, ob = ctx->vob_css[o].start;
-  uint32_t fn = ctx->vob_css[title].blocks, on = ctx->vob_css[o].blocks;
+  int64_t fb = d->cells[title].start, ob = d->cells[o].start;
+  uint32_t fn = d->cells[title].start_blocks, on = d->cells[o].start_blocks;
 
-  return o != title && ctx->vob_css[o].state > 0 && fb && ob &&
+  return o != title && d->cells[o].key_state > 0 && fb && ob &&
          (ob == fb || (ob < fb && fn + fb <= ob + on));
 }
 
@@ -405,19 +408,18 @@ static int key_shared( const dvd_reader_t *ctx, int title, int o )
  * (or taken), -1 none (never looked for again). */
 static int find_key( dvd_vob_reader_t *v, uint32_t sector )
 {
-  dvd_reader_t *ctx = v->ctx;
-  uint8_t *key = ctx->vob_css[v->title].key;
+  DVDDisc *d = v->d;
+  uint8_t *key = d->cells[v->title].key;
 
   for( int o = 1; o < 100; o++ )
-    if( key_shared( ctx, v->title, o ) ) {
-      memcpy( key, ctx->vob_css[o].key, 5 );
-      ctx->vob_css[v->title].state = 1;
-      Log2( ctx, "VTS_%02d: CSS title key taken from VTS_%02d (its title VOBs hold these)", v->title, o );
+    if( key_shared( d, v->title, o ) ) {
+      memcpy( key, d->cells[o].key, 5 );
+      d->cells[v->title].key_state = 1;
+      Log2( d, "VTS_%02d: CSS title key taken from VTS_%02d (its title VOBs hold these)", v->title, o );
       return 0;
     }
   css_report( v, DVD_REPORT_INFO, "sector %" PRIu32 " is scrambled: looking for the CSS title key", sector );
-  ctx->vob_css[v->title].state = -1;
-#ifdef HAVE_DVDCSS_DVDCSS_H
+  d->cells[v->title].key_state = -1;
   {
     key_stream_t ks = { v, 0 };
     dvdcss_stream_cb cb = { ks_seek, ks_read, ks_readv };
@@ -435,17 +437,13 @@ static int find_key( dvd_vob_reader_t *v, uint32_t sector )
                   ret < 0 ? "libdvdcss failed" : "no scrambled data from there on" );
       return -1;
     }
-    Log3( ctx, "VTS_%02d: CSS title key %02x %02x %02x %02x %02x", v->title, key[0], key[1], key[2], key[3], key[4] );
+    Log3( d, "VTS_%02d: CSS title key %02x %02x %02x %02x %02x", v->title, key[0], key[1], key[2], key[3], key[4] );
     if( !check_key( v, sector, key ) )
       return -1;
-    ctx->vob_css[v->title].state = 1;
+    d->cells[v->title].key_state = 1;
     css_report( v, DVD_REPORT_INFO, "CSS title key found" );
     return 0;
   }
-#else
-  css_report( v, DVD_REPORT_ERROR, "no CSS title key (built without libdvdcss): its scrambled sectors cannot be read" );
-  return -1;
-#endif
 }
 
 /* ---- where an image's title VOBs start ---- */
@@ -470,9 +468,9 @@ static int vob_first_nav( const uint8_t *b )
  * system has no single place for it; when they differ (reported), the one
  * holding its VOB's first navigation pack, the IFO header's first; neither:
  * the IFO header's. 0: none (the field 0). */
-static int64_t place_vobs( dvd_reader_t *ctx, ifo_handle_t *ifo, int title, int menu, void *image, int64_t ifo_at )
+static int64_t place_vobs( DVDDisc *d, ifo_handle_t *ifo, int title, int menu, void *image, int64_t ifo_at )
 {
-  dvd_reader_filesystem_h *fs = ctx->fs;
+  dvd_reader_filesystem_h *fs = d->read_fs;
   const char *what = menu ? "menu VOBs" : "title VOBs", *field = menu ? (title ? "vtsm_vobs" : "vmgm_vobs") :
                      "vtstt_vobs";
   char path[48], vob[16], name[16], text[320];
@@ -490,11 +488,11 @@ static int64_t place_vobs( dvd_reader_t *ctx, ifo_handle_t *ifo, int title, int 
   else
     snprintf( vob, sizeof(vob), "VIDEO_TS.VOB" );
   snprintf( path, sizeof(path), "/VIDEO_TS/%s", vob );
-  if( DVDStatFile_( ctx, path, &st ) >= 0 )
+  if( DVDStatFile_( d->reader, path, &st ) >= 0 )
     fs_at = st.sector;
   if( fs_at < 0 || fs_at == header ) {
     if( fs_at < 0 )
-      Log3( ctx, "%s: the file system has no single place for %s: the %s start where the IFO header puts them",
+      Log3( d, "%s: the file system has no single place for %s: the %s start where the IFO header puts them",
             title ? "VTS" : "VIDEO_TS", vob, what );
     return header;
   }
@@ -524,36 +522,34 @@ static int64_t place_vobs( dvd_reader_t *ctx, ifo_handle_t *ifo, int title, int 
   r.bytes    = raw;
   r.nb_bytes = 4;
   r.text     = text;
-  DVDReadReport( ctx->priv, &ctx->logcb, &r );
+  ff_dvd_report( d, &r );
   return chosen;
 }
 
 /* The title VOBs' start (decided once) and their length by the IFO (up to
  * its BUP, the IFO's place when the BUP has none of its own). */
-static int64_t place_title_vobs( dvd_reader_t *ctx, ifo_handle_t *ifo, int title, void *image, int64_t ifo_at )
+static int64_t place_title_vobs( DVDDisc *d, ifo_handle_t *ifo, int title, void *image, int64_t ifo_at )
 {
   char path[48];
   dvdstat_t bup;
   int64_t bup_at;
   uint8_t raw[4];
 
-  if( ctx->vob_css[title].placed )
-    return ctx->vob_css[title].start;
-  ctx->vob_css[title].placed = 1;
-  if( !(ctx->vob_css[title].start = place_vobs( ctx, ifo, title, 0, image, ifo_at )) ||
+  if( d->cells[title].placed )
+    return d->cells[title].start;
+  d->cells[title].placed = 1;
+  if( !(d->cells[title].start = place_vobs( d, ifo, title, 0, image, ifo_at )) ||
       !ifoRead_rec_bytes( ifo, 0xc4, raw, 4 ) )
-    return ctx->vob_css[title].start;
+    return d->cells[title].start;
   /* the length by the IFO header's vtstt_vobs, whichever start was chosen */
   snprintf( path, sizeof(path), "/VIDEO_TS/VTS_%02d_0.BUP", title );
-  bup_at = DVDStatFile_( ctx, path, &bup ) >= 0 && bup.sector >= 0 ? bup.sector : ifo_at;
-  ctx->vob_css[title].blocks = (uint32_t)(bup_at - ifo_at) - be32( raw );
-  return ctx->vob_css[title].start;
+  bup_at = DVDStatFile_( d->reader, path, &bup ) >= 0 && bup.sector >= 0 ? bup.sector : ifo_at;
+  d->cells[title].start_blocks = (uint32_t)(bup_at - ifo_at) - be32( raw );
+  return d->cells[title].start;
 }
 
-int64_t DVDTitleVOBStart_rec( ifo_handle_t *ifo, int title )
+int64_t DVDTitleVOBStart_rec( DVDDisc *d, ifo_handle_t *ifo, int title )
 {
-  struct ifo_handle_private_s *ifop;
-  dvd_reader_t *ctx;
   char path[48];
   dvdstat_t st;
   void *image;
@@ -561,44 +557,38 @@ int64_t DVDTitleVOBStart_rec( ifo_handle_t *ifo, int title )
 
   if( !ifo || title < 1 || title > 99 )
     return 0;
-  ifop = container_of( ifo, struct ifo_handle_private_s, handle );
-  ctx  = ifop->ctx;
-  if( ctx->vob_css[title].placed )
-    return ctx->vob_css[title].start;
+  if( d->cells[title].placed )
+    return d->cells[title].start;
   snprintf( path, sizeof(path), "/VIDEO_TS/VTS_%02d_0.IFO", title );
-  if( !ctx->fs || !ctx->fs->image_open || DVDStatFile_( ctx, path, &st ) < 0 || st.sector < 0 ||
-      !(image = ctx->fs->image_open( ctx->fs )) )
+  if( !d->read_fs || !d->read_fs->image_open || DVDStatFile_( d->reader, path, &st ) < 0 || st.sector < 0 ||
+      !(image = d->read_fs->image_open( d->read_fs )) )
     return 0;
-  start = place_title_vobs( ctx, ifo, title, image, st.sector );
-  ctx->fs->file_close( image );
+  start = place_title_vobs( d, ifo, title, image, st.sector );
+  d->read_fs->file_close( image );
   return start;
 }
 
-int64_t DVDMenuVOBStart_rec( ifo_handle_t *ifo, int title )
+int64_t DVDMenuVOBStart_rec( DVDDisc *d, ifo_handle_t *ifo, int title )
 {
-  struct ifo_handle_private_s *ifop;
-  dvd_reader_t *ctx;
   char path[48];
   dvdstat_t st;
   void *image;
 
   if( !ifo || title < 0 || title > 99 )
     return 0;
-  ifop = container_of( ifo, struct ifo_handle_private_s, handle );
-  ctx  = ifop->ctx;
-  if( ctx->vob_css[title].menu_placed )
-    return ctx->vob_css[title].menu_start;
+  if( d->cells[title].menu_placed )
+    return d->cells[title].menu_start;
   if( title )
     snprintf( path, sizeof(path), "/VIDEO_TS/VTS_%02d_0.IFO", title );
   else
     snprintf( path, sizeof(path), "/VIDEO_TS/VIDEO_TS.IFO" );
-  if( !ctx->fs || !ctx->fs->image_open || DVDStatFile_( ctx, path, &st ) < 0 || st.sector < 0 ||
-      !(image = ctx->fs->image_open( ctx->fs )) )
+  if( !d->read_fs || !d->read_fs->image_open || DVDStatFile_( d->reader, path, &st ) < 0 || st.sector < 0 ||
+      !(image = d->read_fs->image_open( d->read_fs )) )
     return 0;
-  ctx->vob_css[title].menu_placed = 1;
-  ctx->vob_css[title].menu_start  = place_vobs( ctx, ifo, title, 1, image, st.sector );
-  ctx->fs->file_close( image );
-  return ctx->vob_css[title].menu_start;
+  d->cells[title].menu_placed = 1;
+  d->cells[title].menu_start  = place_vobs( d, ifo, title, 1, image, st.sector );
+  d->read_fs->file_close( image );
+  return d->cells[title].menu_start;
 }
 
 /* ---- the file view: an image's title VOBs through its VOB files ---- */
@@ -611,7 +601,7 @@ int64_t DVDMenuVOBStart_rec( ifo_handle_t *ifo, int title )
  * start place to the end. 1 built, 0 none. */
 static int build_view( dvd_vob_reader_t *v )
 {
-  dvd_reader_filesystem_h *fs = v->ctx->fs;
+  dvd_reader_filesystem_h *fs = v->d->read_fs;
   uint32_t rem = v->blocks, off = 0;
   char path[48], full[PATH_MAX + 1];
 
@@ -622,18 +612,18 @@ static int build_view( dvd_vob_reader_t *v )
 
     if( !p ) {
       if( k < 3 ) {
-        Log3( v->ctx, "VTS_%02d: no file view: VTS_%02d_%d.VOB is missing", v->title, v->title, k );
+        Log3( v->d, "VTS_%02d: no file view: VTS_%02d_%d.VOB is missing", v->title, v->title, k );
         return 0;
       }
     } else {
       int64_t at = p->nb_pieces > 0 && p->pieces[0][0] > 0 ? p->pieces[0][0] : 0;
       if( (at && at != v->start + off) || p->size % SECTOR ) {
-        Log3( v->ctx, "VTS_%02d: no file view: %s %s", v->title, p->name,
+        Log3( v->d, "VTS_%02d: no file view: %s %s", v->title, p->name,
               p->size % SECTOR ? "is not whole sectors" : "does not start where the title VOBs have it" );
         return 0;
       }
       snprintf( path, sizeof(path), "/VIDEO_TS/%s", p->name );
-      if( !p->file && (DVDFindFile_( v->ctx, path, full ) < 0 || !(p->file = fs->file_open( fs, full ))) )
+      if( !p->file && (DVDFindFile_( v->d->reader, path, full ) < 0 || !(p->file = fs->file_open( fs, full ))) )
         return 0;
       piece.part = k - 1;
       piece.n    = n = (uint32_t)(p->size / SECTOR);
@@ -658,8 +648,8 @@ static int view_read( dvd_vob_reader_t *v, uint32_t s, uint8_t *buf )
     if( s < p->first || s - p->first >= p->n )
       continue;
     if( p->part < 0 )
-      return fs_read( v->ctx->fs, v->image, (v->start + s) * SECTOR, buf, SECTOR );
-    return fs_read( v->ctx->fs, v->parts[p->part].file, (int64_t)(s - p->first) * SECTOR, buf, SECTOR );
+      return fs_read( v->d->read_fs, v->image, (v->start + s) * SECTOR, buf, SECTOR );
+    return fs_read( v->d->read_fs, v->parts[p->part].file, (int64_t)(s - p->first) * SECTOR, buf, SECTOR );
   }
   return -1;
 }
@@ -671,7 +661,7 @@ static int same_two( dvd_vob_reader_t *v, uint32_t s )
   uint8_t a[2 * SECTOR], b[2 * SECTOR];
 
   return view_read( v, s, a ) == 0 && view_read( v, s + 1, a + SECTOR ) == 0 &&
-         fs_read( v->ctx->fs, v->image, (v->start + s) * SECTOR, b, sizeof(b) ) == 0 && !memcmp( a, b, sizeof(a) );
+         fs_read( v->d->read_fs, v->image, (v->start + s) * SECTOR, b, sizeof(b) ) == 0 && !memcmp( a, b, sizeof(a) );
 }
 
 /* An extent of the segment as the file view and the start place have it:
@@ -713,10 +703,8 @@ static dvd_vob_reader_t *opened( dvd_vob_reader_t *v, ifo_handle_t *ifo )
   return v;
 }
 
-dvd_vob_reader_t *DVDOpenTitleVOBs_rec( ifo_handle_t *ifo, int title )
+dvd_vob_reader_t *DVDOpenTitleVOBs_rec( DVDDisc *d, ifo_handle_t *ifo, int title )
 {
-  struct ifo_handle_private_s *ifop;
-  dvd_reader_t *ctx;
   dvd_vob_reader_t *v;
   char path[48], full[PATH_MAX + 1], why[96] = "";
   dvdstat_t st;
@@ -725,32 +713,30 @@ dvd_vob_reader_t *DVDOpenTitleVOBs_rec( ifo_handle_t *ifo, int title )
 
   if( !ifo || title < 1 || title > 99 )
     return NULL;
-  ifop = container_of( ifo, struct ifo_handle_private_s, handle );
-  ctx  = ifop->ctx;
-  if( !ctx->fs || !(v = calloc( 1, sizeof(*v) )) )
+  if( !d->read_fs || !(v = dr_calloc( 1, sizeof(*v) )) )
     return NULL;
-  v->ctx   = ctx;
+  v->d     = d;
   v->title = title;
 
   /* the title VOB files, up to the first missing one */
   for( int k = 1; k <= MAX_PARTS; k++ ) {
     vob_part_t *p = &v->parts[v->nb_parts];
     snprintf( path, sizeof(path), "/VIDEO_TS/VTS_%02d_%d.VOB", title, k );
-    if( DVDFindFile_( ctx, path, full ) < 0 )
+    if( DVDFindFile_( d->reader, path, full ) < 0 )
       break;
     st.sector = -1;
-    if( ctx->fs->stat( ctx->fs, full, &st ) < 0 )
+    if( d->read_fs->stat( d->read_fs, full, &st ) < 0 )
       break;
     snprintf( p->name, sizeof(p->name), "VTS_%02d_%d.VOB", title, k );
     p->size   = st.size;
     p->sector = st.sector;
     v->nb_parts++;
     /* where its pieces lie on an image */
-    if( ctx->fs->file_pieces ) {
-      int np = ctx->fs->file_pieces( ctx->fs, full, NULL, 0 );
-      if( np > 0 && (p->pieces = calloc( np, sizeof(*p->pieces) )) )
-        p->nb_pieces = ctx->fs->file_pieces( ctx->fs, full, p->pieces, np );
-    } else if( st.sector >= 0 && (p->pieces = calloc( 1, sizeof(*p->pieces) )) ) {
+    if( d->read_fs->file_pieces ) {
+      int np = d->read_fs->file_pieces( d->read_fs, full, NULL, 0 );
+      if( np > 0 && (p->pieces = dr_calloc( np, sizeof(*p->pieces) )) )
+        p->nb_pieces = d->read_fs->file_pieces( d->read_fs, full, p->pieces, np );
+    } else if( st.sector >= 0 && (p->pieces = dr_calloc( 1, sizeof(*p->pieces) )) ) {
       p->pieces[0][0] = st.sector;
       p->pieces[0][1] = (int64_t)((st.size + SECTOR - 1) / SECTOR);
       p->nb_pieces    = 1;
@@ -759,21 +745,21 @@ dvd_vob_reader_t *DVDOpenTitleVOBs_rec( ifo_handle_t *ifo, int title )
 
   /* an image: the title VOBs from where the IFO header puts them */
   snprintf( path, sizeof(path), "/VIDEO_TS/VTS_%02d_0.IFO", title );
-  if( ctx->fs->image_open && DVDStatFile_( ctx, path, &st ) >= 0 && st.sector >= 0 ) {
+  if( d->read_fs->image_open && DVDStatFile_( d->reader, path, &st ) >= 0 && st.sector >= 0 ) {
     int64_t size;
     if( !ifoRead_rec_bytes( ifo, 0xc4, b, 4 ) || !be32( b ) ) {   /* vtstt_vobs */
       snprintf( why, sizeof(why), "the IFO header gives no place for them (vtstt_vobs)" );
       goto fail;
     }
-    if( !(v->image = ctx->fs->image_open( ctx->fs )) ) {
+    if( !(v->image = d->read_fs->image_open( d->read_fs )) ) {
       snprintf( why, sizeof(why), "the image cannot be opened" );
       goto fail;
     }
-    if( !(v->start = place_title_vobs( ctx, ifo, title, v->image, st.sector )) ) {
+    if( !(v->start = place_title_vobs( d, ifo, title, v->image, st.sector )) ) {
       snprintf( why, sizeof(why), "where they start on the image cannot be found" );
       goto fail;
     }
-    if( (size = ctx->fs->file_seek( v->image, 0, SEEK_END )) < 0 ) {
+    if( (size = d->read_fs->file_seek( v->image, 0, SEEK_END )) < 0 ) {
       snprintf( why, sizeof(why), "the image's size cannot be read" );
       goto fail;
     }
@@ -783,7 +769,7 @@ dvd_vob_reader_t *DVDOpenTitleVOBs_rec( ifo_handle_t *ifo, int title )
                 v->start, v->image_sectors );
       goto fail;
     }
-    v->blocks = ctx->vob_css[title].blocks;
+    v->blocks = d->cells[title].start_blocks;
     return opened( v, ifo );
   }
 
@@ -792,7 +778,7 @@ dvd_vob_reader_t *DVDOpenTitleVOBs_rec( ifo_handle_t *ifo, int title )
   for( int i = 0; i < v->nb_parts; i++ ) {
     vob_part_t *p = &v->parts[i];
     snprintf( path, sizeof(path), "/VIDEO_TS/%s", p->name );
-    if( DVDFindFile_( ctx, path, full ) < 0 || !(p->file = ctx->fs->file_open( ctx->fs, full )) ) {
+    if( DVDFindFile_( d->reader, path, full ) < 0 || !(p->file = d->read_fs->file_open( d->read_fs, full )) ) {
       v->nb_parts = i;
       break;
     }
@@ -808,8 +794,12 @@ dvd_vob_reader_t *DVDOpenTitleVOBs_rec( ifo_handle_t *ifo, int title )
 fail:
   /* said, with why, to whoever asked for them (the title list, the scan, a rip) */
   snprintf( path, sizeof(path), "VTS_%02d_0.IFO", title );
-  DVDReadReportf( ctx->priv, &ctx->logcb, DVD_REPORT_ERROR, path, NULL, -1, "title set %d: its title VOBs cannot be "
-                  "opened: %s", title, why );
+  {
+    char text[512];
+    dvd_report_t r = { .level = DVD_REPORT_ERROR, .file = path, .offset = -1, .sector = -1, .text = text };
+    snprintf( text, sizeof(text), "title set %d: its title VOBs cannot be opened: %s", title, why );
+    ff_dvd_report( d, &r );
+  }
   DVDCloseTitleVOBs_rec( v );
   return NULL;
 }
@@ -836,7 +826,7 @@ uint32_t DVDTitleVOBSectors_rec( const dvd_vob_reader_t *v )
 /* The sector's bytes: 0, -1 when they cannot be read. */
 static int read_sector( dvd_vob_reader_t *v, uint32_t sector, uint8_t *buf )
 {
-  dvd_reader_filesystem_h *fs = v->ctx->fs;
+  dvd_reader_filesystem_h *fs = v->d->read_fs;
   int64_t pos = (int64_t)sector * SECTOR;
   size_t len = SECTOR;
 
@@ -848,7 +838,7 @@ static int read_sector( dvd_vob_reader_t *v, uint32_t sector, uint8_t *buf )
     if( fs_read( fs, v->image, (v->start + sector) * SECTOR, buf, SECTOR ) == 0 )
       return 0;
     if( v->view_on && view_read( v, sector, buf ) == 0 ) {
-      Log2( v->ctx, "VTS_%02d: title VOB sector %" PRIu32 " cannot be read where the title VOBs start: read "
+      Log2( v->d, "VTS_%02d: title VOB sector %" PRIu32 " cannot be read where the title VOBs start: read "
             "through the VOB files", v->title, sector );
       return 0;
     }
@@ -885,7 +875,7 @@ int DVDReadTitleVOBSector_rec( dvd_vob_reader_t *v, uint32_t sector, uint8_t *bu
     return -1;
   if( read_sector( v, sector, buf ) < 0 ) {
     end_damage( v, ended );
-    Log3( v->ctx, "VTS_%02d: title VOB sector %" PRIu32 " cannot be read", v->title, sector );
+    Log3( v->d, "VTS_%02d: title VOB sector %" PRIu32 " cannot be read", v->title, sector );
     return -1;
   }
   if( (kind = sector_kind( buf )) != DVD_DAMAGE_NONE ) {
@@ -896,24 +886,22 @@ int DVDReadTitleVOBSector_rec( dvd_vob_reader_t *v, uint32_t sector, uint8_t *bu
   /* CSS: a scrambled packet descrambled with the title set's key, the
    * scrambling bits cleared */
   if( css_kind( buf, &h ) == 1 ) {
-    int state = v->ctx->vob_css[v->title].state;
+    int state = v->d->cells[v->title].key_state;
     if( state < 0 || (!state && find_key( v, sector ) < 0) )
       return -2;
-#ifdef HAVE_DVDCSS_DVDCSS_H
-    dvdcss_descramble( v->ctx->vob_css[v->title].key, buf );
-#endif
+    dvdcss_descramble( v->d->cells[v->title].key, buf );
     buf[h + 6] &= 0xcf;
   }
   return 1;
 }
 
-int DVDTitleVOBKey_rec( dvd_reader_t *ctx, int title, uint8_t key[5] )
+int DVDTitleVOBKey_rec( const DVDDisc *d, int title, uint8_t key[5] )
 {
-  if( !ctx || title < 1 || title > 99 )
+  if( !d || title < 1 || title > 99 )
     return 0;
-  if( ctx->vob_css[title].state > 0 && key )
-    memcpy( key, ctx->vob_css[title].key, 5 );
-  return ctx->vob_css[title].state;
+  if( d->cells[title].key_state > 0 && key )
+    memcpy( key, d->cells[title].key, 5 );
+  return d->cells[title].key_state;
 }
 
 void DVDEndTitleVOBDamage_rec( dvd_vob_reader_t *v, dvd_vob_damage_t *ended )
@@ -924,8 +912,7 @@ void DVDEndTitleVOBDamage_rec( dvd_vob_reader_t *v, dvd_vob_damage_t *ended )
     end_damage( v, ended );
 }
 
-/* ---- for the application's VOBU and cell rules (until the title VOBs'
- * reading leaves too) ---- */
+/* ---- for the VOBU and cell rules ---- */
 
 uint32_t DVDTitleVOBBlocks_rec( const dvd_vob_reader_t *v )
 {
@@ -937,10 +924,10 @@ int DVDReadTitleVOBRaw_rec( dvd_vob_reader_t *v, uint32_t sector, uint8_t *buf )
   return read_sector( v, sector, buf );
 }
 
-int64_t DVDTitleVOBPlace_rec( const dvd_reader_t *ctx, int title, uint32_t *blocks )
+int64_t DVDTitleVOBPlace_rec( const DVDDisc *d, int title, uint32_t *blocks )
 {
-  *blocks = ctx->vob_css[title].blocks;
-  return ctx->vob_css[title].start;
+  *blocks = d->cells[title].start_blocks;
+  return d->cells[title].start;
 }
 
 void DVDCloseTitleVOBs_rec( dvd_vob_reader_t *v )
@@ -950,10 +937,17 @@ void DVDCloseTitleVOBs_rec( dvd_vob_reader_t *v )
   end_damage( v, NULL );
   for( int i = 0; i < MAX_PARTS; i++ ) {
     if( v->parts[i].file )
-      v->ctx->fs->file_close( v->parts[i].file );
-    free( v->parts[i].pieces );
+      v->d->read_fs->file_close( v->parts[i].file );
+    dr_free( v->parts[i].pieces );
   }
   if( v->image )
-    v->ctx->fs->file_close( v->image );
-  free( v );
+    v->d->read_fs->file_close( v->image );
+  dr_free( v );
+}
+
+/* ---- placement while libdvdread reads the disc's structure ---- */
+
+int64_t ff_dvd_vob_place( void *opaque, ifo_handle_t *ifo, int title, int menu )
+{
+  return menu ? DVDMenuVOBStart_rec( opaque, ifo, title ) : DVDTitleVOBStart_rec( opaque, ifo, title );
 }

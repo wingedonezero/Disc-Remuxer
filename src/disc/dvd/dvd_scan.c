@@ -33,7 +33,7 @@
 #include <dvdnav/dvdnav.h>
 #include <dvdread/disc_read.h>
 #include <dvdread/ifo_read.h>
-#include <dvdread/vob_read.h>
+#include "dvd_vob.h"
 
 #include "base/err.h"
 #include "base/mem.h"

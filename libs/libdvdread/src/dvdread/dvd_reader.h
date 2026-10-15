@@ -283,6 +283,15 @@ DVDREAD_API void DVDFindingsCount( const dvd_findings_t *, int *harmless, int *b
 DVDREAD_API void DVDReadReport( void *priv, const dvd_logger_cb *logcb, const dvd_report_t *report );
 
 /**
+ * A file of the disc ("/VIDEO_TS/VTS_01_1.VOB") through the reader's file
+ * system: its size and place (DVDStatFile_(); < 0 when there is none), its
+ * path there (DVDFindFile_(), full_path PATH_MAX + 1 bytes). For an
+ * application that reads the disc's files the way the reader finds them.
+ */
+DVDREAD_API int DVDStatFile_( dvd_reader_t *ctx, const char *filename, dvdstat_t *st );
+DVDREAD_API int DVDFindFile_( dvd_reader_t *ctx, const char *filename, char *full_path );
+
+/**
  *
  */
 typedef enum {

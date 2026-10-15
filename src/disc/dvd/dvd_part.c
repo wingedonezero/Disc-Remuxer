@@ -64,7 +64,7 @@ typedef struct DVDDemuxContext {
 
     /* the opened title, as the title reader gets it (DiscContext.src) */
     const dvd_title_t *title;
-    dvd_vob_reader_t *vobs;             /* libdvdread's reading of its title VOBs, for the title reader */
+    dvd_vob_reader_t *vobs;             /* a reading of its title VOBs (dvd_vob.c), for the title reader */
     dvd_vob_damage_t ended;             /* the damaged range its latest read ended (nb_sectors 0: none) */
     int             view_seg;           /* the segment its file view was set for (-1: none yet) */
     int64_t        *chapter_times;

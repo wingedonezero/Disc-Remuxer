@@ -22,7 +22,7 @@
 
 #include <stdint.h>
 
-#include <dvdread/vob_read.h>
+#include "dvd_vob.h"
 
 #include "dvd_cells.h"
 
