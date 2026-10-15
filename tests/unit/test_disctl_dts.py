@@ -1,6 +1,6 @@
 """DTS in the title timeline (disctl_codecs.c, ETSI TS 102 114): a core frame
 lasts its own npcmblocks x 32 samples; a DTS-HD unit (core + extension
-substream, kept together by FFmpeg's parser) is timed by its core; a
+substream, kept together by the DTS rule) is timed by its core; a
 core-only track keeps only the core frame; every unit is a sync unit. Core
 frames made by FFmpeg's DTS encoder (tests/data/README.md)."""
 

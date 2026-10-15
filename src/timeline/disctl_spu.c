@@ -1,9 +1,9 @@
 /*
- * The title timeline: sub-picture units (DVD-Video and HD DVD), as FFmpeg's
- * DVD subtitle parser finds them in disc mode: each unit's check, its
+ * The title timeline: sub-picture units (DVD-Video and HD DVD), as the
+ * sub-picture rule (src/parse/dvdsub_rule.c) finds them: each unit's check, its
  * duration from its display control sequences, and its time on the video
- * grid of its segment. Blu-ray PGS display sets, as FFmpeg's HDMV PGS
- * parser finds them in disc mode, the same way: each set lasts one video
+ * grid of its segment. Blu-ray PGS display sets, as the PGS rule
+ * (src/parse/pgs_rule.c) finds them, the same way: each set lasts one video
  * field period (the next set replaces or clears it); a forced-only track's
  * sets show only their forced objects (disctl_pgs.c).
  *

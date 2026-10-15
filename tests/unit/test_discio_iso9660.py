@@ -1,4 +1,4 @@
-"""libavformat/discio_iso9660.c: ISO 9660 / Joliet volumes, built here byte
+"""src/io/discio_iso9660.c: ISO 9660 / Joliet volumes, built here byte
 by byte (ECMA-119), and the corpus images when DISCIO_CORPUS names the
 folder holding them."""
 

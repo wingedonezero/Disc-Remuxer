@@ -1,5 +1,5 @@
-"""libavformat/disctl_frames.c: the title timeline's stage 1 (the frame step). Payloads are cut
-into units by FFmpeg's parser; a payload's time goes to the first unit whose
+"""src/timeline/disctl_frames.c: the title timeline's stage 1 (the frame step). Payloads are cut
+into units by the codec's rule; a payload's time goes to the first unit whose
 anchor (audio: the frame start; MPEG-2 video: the picture start code) lies
 in that payload's bytes (ISO/IEC 13818-1 2.4.3.7). Every expectation is
 computed here from the built stream's layout, independently of the code."""

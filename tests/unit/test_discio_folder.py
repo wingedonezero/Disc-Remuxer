@@ -1,4 +1,4 @@
-"""libavformat/discio_folder.c: a disc folder on the host as a file system
+"""src/io/discio_folder.c: a disc folder on the host as a file system
 (ff_discio_mount_folder): paths looked up below the folder as written, a
 file must be a regular file, directories listed in the host's order with
 "." and "..", each file read as a host file of its own; the disc format

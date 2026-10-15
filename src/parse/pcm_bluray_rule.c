@@ -2,9 +2,8 @@
  * Blu-ray LPCM: the unit cut rule (a 4-byte header and the payload it states; a header that
  * states no known format, or no payload, starts no unit)
  *
- * The rule the generic disc engine runs (today FFmpeg's parser.c disc
- * engine; the native splitter later). Moved out of our FFmpeg's
- * pcm_bluray_parser.c disc mode.
+ * The rule the splitter engine runs (parse/split.h); it was once a disc
+ * mode of ours in FFmpeg's pcm_bluray_parser.c.
  */
 
 #include <stdint.h>

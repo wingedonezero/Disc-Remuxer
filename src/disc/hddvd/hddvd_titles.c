@@ -51,8 +51,6 @@
 #include "base/vlog.h"
 #include "base/mem.h"
 
-#include "libavcodec/avcodec.h"
-
 #include "disc/lang.h"
 #include "hddvd_internal.h"
 

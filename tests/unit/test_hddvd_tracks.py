@@ -1,4 +1,4 @@
-"""libavformat/hddvd_tracks.c: the tracks of HD DVD titles. With
+"""src/disc/hddvd/hddvd_tracks.c: the tracks of HD DVD titles. With
 HDDVD_CORPUS (a folder of HD DVD images), HDDVD_TRACKS_REFERENCE (one
 <image name>.tracks.txt per image, every character but A-Z a-z 0-9 _ of the
 name replaced by _; one line per title: index|first EVO file|tracks, each
@@ -194,7 +194,7 @@ def test_coding_4_sub_pictures_are_drawn_on_1920x1080_on_any_video():
 
 def test_a_stream_with_the_codec_and_number_of_an_earlier_one_is_left_out(tmp_path):
     # the format part describes every stream; the disc layer's stream pass
-    # (discpass.c) leaves out the later one of the same codec and data (here
+    # (pass.c) leaves out the later one of the same codec and data (here
     # sub-picture stream 1 again, place 3 in the stream list)
     attr = attr_record([0x60, 0, 0x50], [0x00], [[0, 0x21, 0, 0, 0], [0x20, 0x21, 0, 0, 0], [0, 0x22, 0, 0, 0]],
                        PALETTE)

@@ -1,4 +1,4 @@
-"""HEVC in the title timeline: FFmpeg's HEVC parser in disc mode
+"""HEVC in the title timeline: the HEVC rule (src/parse/hevc_rule.c)
 (hevc/parser.c) cuts the disc reader's access units (the units in front of a
 picture's first slice segment, the picture's slice segments, the trailing
 suffix SEI / type 62 / 63 units) and gives each picture's type, random

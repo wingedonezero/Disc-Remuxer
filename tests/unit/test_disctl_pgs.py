@@ -1,4 +1,4 @@
-"""Blu-ray PGS in the title timeline: FFmpeg's HDMV PGS parser in disc mode
+"""Blu-ray PGS in the title timeline: the PGS rule (src/parse/pgs_rule.c)
 (hdmv_pgs_parser.c) cuts display sets (a presentation composition segment to
 the end segment) and leaves out what is none; the subtitle stage
 (disctl_spu.c, disctl_pgs.c) times each set at the video grid point nearest

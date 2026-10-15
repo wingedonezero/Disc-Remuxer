@@ -1,4 +1,4 @@
-"""FFmpeg's MPEG-TS demuxer in disc mode (libavformat/mpegts.c, option disc):
+"""The MPEG-TS clip demuxer (src/mux/ts_disc.c, through the clip demuxer):
 192-byte source packets read as the disc reader reads Blu-ray stream files:
 PES packets of the PIDs asked for put together with its rules, each payload
 piece given out as it arrives on the stream of its PID and PES stream key,

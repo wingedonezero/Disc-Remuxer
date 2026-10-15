@@ -1,4 +1,4 @@
-"""libavformat/discio_udf_linux.c: the UDF reader based on Linux fs/udf, on
+"""src/io/discio_udf_linux.c: the UDF reader based on Linux fs/udf, on
 small, fully valid images built here (volume recognition sequence, tag
 locations, CRC lengths) and their damaged variants; and the corpus images
 against reference dumps when DISCIO_UDF_REFERENCE names their folder."""

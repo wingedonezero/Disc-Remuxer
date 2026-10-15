@@ -1,4 +1,4 @@
-"""H.264 in the title timeline: FFmpeg's H.264 parser in disc mode
+"""H.264 in the title timeline: the H.264 rule (src/parse/h264_rule.c)
 (h264_parser.c) cuts the disc reader's access units (the units in front of a
 picture's first slice, the picture's slices, the trailing slice extensions)
 and gives each picture's type, recovery point, picture order count and field

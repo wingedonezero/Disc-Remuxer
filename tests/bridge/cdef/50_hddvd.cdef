@@ -1,4 +1,4 @@
-/* libavformat/hddvd_internal.h: the HD DVD title set information, the
+/* src/disc/hddvd/hddvd_internal.h: the HD DVD title set information, the
    playlists, the title plan, AACS and the tracks. */
 
 #define HDDVD_VTI_MAX_EVOBS ...

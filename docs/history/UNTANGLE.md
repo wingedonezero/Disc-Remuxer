@@ -1,5 +1,8 @@
 # UNTANGLE — what the current program is made of, and what it really depends on
 
+> History: the inventory made before the rewrite (2026-10), of how the code was mixed into FFmpeg.
+> Today's architecture: `docs/ARCHITECTURE.md`.
+
 Written 2026-10-13 from the code as it stands (main at 2f94869b). Every number is
 measured against each library's import commit (`git diff 7e3ad3ba... --stat`).
 

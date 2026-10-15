@@ -32,8 +32,6 @@
 #include "base/err.h"
 #include "base/vlog.h"
 #include "base/mem.h"
-#include "libavutil/dict.h"
-
 #include "disc/model.h"
 #include "disc/info.h"
 #include "io/discio.h"
@@ -64,7 +62,6 @@ typedef struct HDDVDDemuxContext {
     int64_t       *chapter_times;
     const char   **chapter_names;
 } HDDVDDemuxContext;
-
 
 static const char *clip_name(DrDisc *d, int k)
 {
@@ -118,7 +115,7 @@ static void hddvd_close(DrDisc *d)
     ff_hddvd_vti_free(&c->vti);
 }
 
-/* The id the disc sector reader (mpeg.c) gives a track's packets: video stream_id
+/* The id the disc sector reader (src/mux/ps_disc.c) gives a track's packets: video stream_id
  * 0xE0 (MPEG-2) / 0xE2 (AVC) / 0xFD with extension 0x55 (VC-1); private
  * stream 1 sub-streams AC-3 0x80+n, DTS 0x88+n, LPCM 0xA0+n, MLP 0xB0+n,
  * Dolby Digital Plus 0xC0+n, sub-pictures 0x20+n; MPEG audio stream_id

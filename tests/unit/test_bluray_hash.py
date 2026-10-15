@@ -1,5 +1,5 @@
 """Blu-ray: the stream files against an AACS disc's content hash tables
-(libavformat/bluray_hash.c): an encrypted disc built here (tests/synth/
+(src/disc/bluray/bluray_hash.c): an encrypted disc built here (tests/synth/
 bluray.py), read with its key, whose /AACS holds a content certificate and a
 content hash table: the last 8 bytes of the SHA-1 of every 196,608-byte hash
 unit of the stream file as it is on the disc (encrypted). A rip checks every

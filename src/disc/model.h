@@ -42,7 +42,7 @@ typedef struct DiscTsFeed {
 typedef struct DiscTrack {
     DiscStreamInfo  info;           /**< the disc info's stream (the stream details as far as known) */
     int             kind;           /**< DR_KIND_VIDEO / _AUDIO / _SUBTITLE / _CAPTION (disctl.h) */
-    int             id;             /**< program stream: the id mpeg.c gives its payloads; -1 none (a caption
+    int             id;             /**< program stream: the id the PS clip demuxer (src/mux/ps_disc.c) gives its payloads; -1 none (a caption
                                          track: carried in the video) */
     DiscTsFeed      feed;           /**< transport stream: its PID and PES stream keys */
     unsigned        flags;          /**< DISC_TRACK_* */
@@ -180,8 +180,8 @@ typedef struct DiscFormat {
     size_t                  priv_size;  /**< the part's own context, zeroed before load */
 
     /* The title entries, the same for every format; the disc layer runs
-     * the flow (discdec.c): load, each title's probe, tracks and stream
-     * pass (discpass.c), the titles left out, the disc info, the opened
+     * the flow (disc.c): load, each title's probe, tracks and stream
+     * pass (pass.c), the titles left out, the disc info, the opened
      * title. Titles are numbered from 0 in the part's current list. */
 
     /** Read the disc's structure from DiscContext.fs (its keys, the title
@@ -336,10 +336,10 @@ int  ff_disc_title_add_tracks(DiscTitleInfo *t, const DiscTrack *tracks, int nb_
 int  ff_disc_open_tracks(DrDisc *d, const char *title, const DiscTrack *tracks, int nb_tracks, int ts,
                          int second_view, const uint8_t *keep);
 
-/* ---- discpass.c ---- */
+/* ---- pass.c ---- */
 
 /** The stream pass of a title's tracks over src (its largest segment, see
- *  discpass.c): duplicates left out; with details, each video and audio
+ *  pass.c): duplicates left out; with details, each video and audio
  *  track's details from its stream; an audio track without data left out.
  *  AVERROR_INVALIDDATA: the video has no data (the title cannot be used);
  *  < 0 otherwise: a block cannot be read. */
@@ -347,7 +347,7 @@ int  ff_disc_stream_pass(DrDisc *d, const char *title, const DiscPassSource *src
                          int *nb_tracks, int details);
 void ff_disc_pass_cache_free(DiscPassCache **pc);
 
-/* ---- disctitle.c ---- */
+/* ---- title_reader.c ---- */
 
 /** The title reader (DrDisc.reader) over src: the title timeline for
  *  its tracks and chapters; reading starts at its first clip. */

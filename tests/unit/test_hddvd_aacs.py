@@ -1,4 +1,4 @@
-"""HD DVD AACS (libavformat/hddvd_aacs.c on our libaacs): keys from the key
+"""HD DVD AACS (src/disc/hddvd/hddvd_aacs.c on our libaacs): keys from the key
 files, title keys, navigation packs, decrypted packs, on built discs. With
 HDDVD_CORPUS (a folder of HD DVD images) and HDDVD_KEYDB (key files,
 comma-separated): the encrypted 300 images are opened, the feature's first

@@ -1,5 +1,5 @@
-"""libdvdread's title VOB reading for ripping (dvdread/vob_read.h, through
-libavformat/dvd_read.c): each sector is checked (no MPEG-2 pack followed by
+"""The title VOB reading for ripping (src/disc/dvd/dvd_vob.c, through
+src/disc/dvd/dvd_read.c): each sector is checked (no MPEG-2 pack followed by
 a packet start code: left out as damaged), and damaged sectors one after the
 other in reading order and of one kind make one damaged range, given back
 once when it ends (a sector not part of it is read, or the caller ends it)

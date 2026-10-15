@@ -1,5 +1,5 @@
 /* libdvdread (dvdread/ifo_types.h, disc_read.h): the disc's structure as
- * libdvdread reads it; libavformat/dvd_internal.h: the DVD part's disc. */
+ * libdvdread reads it; src/disc/dvd/dvd_internal.h: the DVD part's disc. */
 
 typedef struct {
     uint32_t     first_sector;
@@ -59,7 +59,7 @@ void ff_dvd_disc_free(DVDDisc *d);
 void ff_dvd_reports_log(DVDDisc *d);
 void ff_dvd_reports_count(const DVDDisc *d, int *harmless, int *breaks);
 
-/* libavformat/dvd_nav.c through the bridge: a navigator on the disc, one
+/* src/disc/dvd/dvd_nav.c through the bridge: a navigator on the disc, one
  * title played (dr_nav_play, 36_dvdnav.cdef). */
 int tb_dvd_nav_trace(DVDDisc *d, int title, unsigned opts, int max_steps,
                      dr_nav_event *ev, int max_events, dr_nav_result *res);
@@ -108,7 +108,7 @@ void DVDEndTitleVOBDamage_rec(dvd_vob_reader_t *v, dvd_vob_damage_t *ended);
 int DVDUseTitleVOBView_rec(dvd_vob_reader_t *v, const uint32_t *sectors, const uint32_t *counts, int n);
 void DVDCloseTitleVOBs_rec(dvd_vob_reader_t *v);
 
-/* libavformat/dvd_read.c: a title VOB sector through the checks (a reading
+/* src/disc/dvd/dvd_read.c: a title VOB sector through the checks (a reading
  * of its own: its damaged ranges given back); through the bridge: a title's
  * segment read through the checks */
 dvd_vob_reader_t *ff_dvd_title_vobs_open(DVDDisc *d, int vts);

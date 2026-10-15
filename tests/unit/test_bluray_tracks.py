@@ -1,4 +1,4 @@
-"""Blu-ray tracks (libavformat/bluray_tracks.c): disc folders built here
+"""Blu-ray tracks (src/disc/bluray/bluray_tracks.c): disc folders built here
 (tests/synth/bluray.py) and the tracks of their titles read through the
 structure dump: each stream's tracks by its coding type (cores, forced-only
 subtitle copies), languages, the title's PIDs only, video first, then audio,
@@ -115,7 +115,7 @@ def test_a_title_without_a_video_stream_has_no_tracks(tmp_path):
 
 def test_an_identical_audio_or_subtitle_stream_is_left_out(tmp_path):
     # both streams of a PID are described; the disc layer's stream pass
-    # (discpass.c) leaves out the later one of the same codec, PID and keys
+    # (pass.c) leaves out the later one of the same codec, PID and keys
     clip = [VIDEO, (0x1100, 0x81, b"\x61eng"), (0x1100, 0x81, b"\x61fra"),
             (0x1200, 0x90, b"eng"), (0x1200, 0x90, b"fra")]
     item = Item(audio=[Stream(0x1100, 0x81, b"\x61eng")], pg=[Stream(0x1200, 0x90, b"eng")])

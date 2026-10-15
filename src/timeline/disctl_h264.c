@@ -2,8 +2,8 @@
  * The title timeline: the rules for H.264 / AVC (ITU-T H.264, Annex B byte
  * stream) pictures.
  *
- * FFmpeg's H.264 parser cuts the access units in disc mode and gives each
- * picture's values (h264_parser.c): its type (the first slice's
+ * The H.264 rule (src/parse/h264_rule.c) cuts the access units and gives
+ * each picture's values: its type (the first slice's
  * slice_type), whether it is a random access point, its picture order count
  * (the display order, period 2^28) and its duration in field periods. The
  * key frames are the random access points: IDR pictures and pictures with a

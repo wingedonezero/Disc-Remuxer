@@ -1,4 +1,4 @@
-"""libavformat/disctl_spu.c: sub-picture units (DVD-Video, and the HD DVD
+"""src/timeline/disctl_spu.c: sub-picture units (DVD-Video, and the HD DVD
 form with 32-bit sizes) cut from the byte stream, each lasting until its
 stop command (STP_DSP delay x 1024 / 90000 s; one step when it has none),
 timed at the video grid point nearest to its PES time. The video grid comes

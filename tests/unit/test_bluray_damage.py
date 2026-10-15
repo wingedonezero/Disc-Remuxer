@@ -1,5 +1,5 @@
-"""Damaged Blu-ray stream data in the standard log (libavformat/mpegts.c
-disc mode, option disc_gaps; disctitle.c gaps_said; bluraydec.c
+"""Damaged Blu-ray stream data in the standard log (src/mux/ts_disc.c
+through the clip demuxer's gaps mode; title_reader.c; bluray_part.c
 block_place): each stretch of a stream file left out is one warning with
 the file and its bytes - a run of TS packets that cannot be read (one
 reason), a run of all-zero source packets, a PID's data from a PES packet

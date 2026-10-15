@@ -2,7 +2,7 @@
  * The title timeline: the rules for HEVC (ITU-T H.265, Annex B byte stream)
  * pictures.
  *
- * FFmpeg's HEVC parser cuts the access units in disc mode and gives each
+ * The HEVC rule (src/parse/hevc_rule.c) cuts the access units and gives each
  * picture's values (hevc/parser.c): its type (the first slice segment's
  * slice_type), whether it is a random access point, its picture order count
  * (the display order) and its duration in field periods. The key frames

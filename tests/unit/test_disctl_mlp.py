@@ -1,4 +1,4 @@
-"""libavformat/disctl_mlp.c: MLP / Dolby TrueHD access units (AUs) in the
+"""src/timeline/disctl_mlp.c: MLP / Dolby TrueHD access units (AUs) in the
 title timeline. An AU lasts the stream's samples per AU; only major-sync AUs are
 sync units and key frames; an AU that ends the stream (marker D2 34 at the
 end of its substreams) lasts the samples it decodes to; every AU carries the

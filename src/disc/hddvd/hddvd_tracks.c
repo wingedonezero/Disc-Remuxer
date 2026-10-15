@@ -19,7 +19,7 @@
  * The probe reads the EVOB's stream from its first block: the stream needs a
  * PES packet with a PTS as the first packet of one of its first 2000 packs;
  * then the stream's frames come through FFmpeg's MPEG-PS demuxer as disc
- * sectors and FFmpeg's AC-3 / DTS parser in disc mode (the disc reader's
+ * sectors and the AC-3 / DTS rules (src/parse; the disc reader's
  * frame rules, every variant of the codec); its first frame must be a valid
  * header;
  * 4 frames all E-AC-3 -> E-AC-3, all AC-3 -> AC-3, anything else (also fewer
@@ -65,7 +65,7 @@
 #define PTS_SCAN_PACKS  2000    /* packs searched for the stream's first PTS */
 #define PROBE_FRAMES    4
 
-/* ---- one pack of an EVOB: mpeg.c's disc sectors ---- */
+/* ---- one pack of an EVOB: the PS clip demuxer's disc sectors ---- */
 
 typedef MpegPsDiscPacket Pkt;
 
@@ -76,7 +76,7 @@ static int pack_packet(const uint8_t *s, int *off, Pkt *p, int lpcm5)
 
 /* ---- the stream probe ----
  * The clip is read from its start through FFmpeg's MPEG-PS demuxer as disc
- * sectors (mpeg.c, option disc: the disc reader's sector rules) and the
+ * sectors (src/mux/ps_disc.c: the disc reader's sector rules) and the
  * stream's payloads go to the splitter taking every variant of the codec
  * (dr_split_take_any: the disc reader's frame rules, AC-3 and E-AC-3 frames
  * alike, DTS frames with or without a DTS-HD extension). */

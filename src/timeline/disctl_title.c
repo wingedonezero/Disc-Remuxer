@@ -1,6 +1,6 @@
 /*
  * The title timeline: one title through all stages. Per segment each track
- * has a frame step (FFmpeg's parser) and a timing stage (video grid, audio durations, sub-pictures
+ * has a frame step (its codec's rule) and a timing stage (video grid, audio durations, sub-pictures
  * on the video grid); the joiner lays the segments end to end; each audio
  * output track then passes the junction (or the PCM strategy for linear
  * PCM); every output frame is checked and queued for the format demuxer.
@@ -1325,7 +1325,7 @@ static int layer_payload(DRTitle *t, Track *k, const uint8_t *data, int size, in
 }
 
 /* An HEVC second layer (a Dolby Vision enhancement layer): its access
- * units as FFmpeg's HEVC parser cuts them in disc mode (the base layer's
+ * units as the HEVC rule cuts them (the base layer's
  * rules), each with the time of the payload with its picture, cleaned as
  * the base layer's are, into the joiner. */
 static int layer_unit(void *opaque, const DRUnit *u)
@@ -1927,7 +1927,7 @@ static int title_payload(DRTitle *t, int track, const uint8_t *data, int size, i
         }
         if ((ret = ff_disctl_lpcm_header(&k->lpcm, t->log, data, h, t->cfg.lpcm_hd)) < 0)
             return ret;
-        /* the frame format for FFmpeg's LPCM parser (DVD-Video / HD DVD frames) */
+        /* the frame format for the LPCM rule (DVD-Video / HD DVD frames) */
         ff_disctl_frames_set_pcm_format(k->cut, k->lpcm.channels, k->lpcm.bits, k->lpcm.spf);
         data += h;
         size -= h;

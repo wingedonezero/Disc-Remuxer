@@ -1,216 +1,184 @@
 # Architecture
 
-Status: **plan agreed, being carried out** (the order of work is below;
-done: steps 1-5, step 6's title reader; DVD later). Each step moves a part to its place and is checked against
-the output from before the move.
+`disc-remuxer` reads DVD-Video, HD DVD, Blu-ray (with UHD and 3-D) sources —
+disc images and disc folders — and writes each title's streams as
+elementary-stream files with their chapters (Matroska output comes later).
+One engine, two front ends: the GUI (Qt 6) and the command line.
 
-## Words
+How the code got this shape (it was first built inside FFmpeg, then moved
+out module by module): `docs/history/REWRITE.md`. The libraries and every
+change made to them: `libs/README.md`. The title timeline in detail:
+`docs/TITLE_TIMELINE.md`.
 
-One name per job, used everywhere (code comments, logs, docs):
+## The one rule
 
-| Word | Job | Example |
-|---|---|---|
-| reader | gets bytes off the source: opens the image or folder, reads its file system, reads sectors with retries | `discio_*` |
-| decryption | makes encrypted sectors usable | libdvdcss (DVD), libaacs (HD DVD, Blu-ray) |
-| disc layer | opens a source once, tells which kind of disc it is, gives the disc info (every title, its streams and chapters), opens titles on it one after another (the disc read once) | `discdec.c`, `disc.h`, `discinfo.h` |
-| title reader | the disc layer's part that reads the opened title: its clips one after another through FFmpeg's line into the title timeline, the clip's time reference, the timeline's frames out as packets, chapters and track results at the end; the format part only says what the title is (clips, how a block is read, tracks, chapter marks, its own values) | `disctitle.c` |
-| disc info | the description of a disc for the caller's overview (not the streams a title is ripped from) | `discinfo.h` |
-| format part | knows one disc format's structure: titles, clips, tracks, chapters, keys; runs the line below for a title | DVD (`dvdvideo*`), HD DVD (`hddvd*`), Blu-ray (`bluray*`) |
-| demuxer | splits a container into packets, one pile per stream | FFmpeg's `mpeg.c` (VOB / EVOB packs), `mpegts.c` (Blu-ray) |
-| parser | finds where each frame of one stream starts and ends | FFmpeg's `*_parser.c` (disc mode: `PARSER_FLAG_DISC`) |
-| frame step | gives a track's payloads to its parser and the PES times to the frames | `disctl_frames.c` |
-| bitstream filter | changes frames that are already found (e.g. keeps only the DTS frame of a DTS-HD frame) | FFmpeg's `bsf/*.c` |
-| joiner | joins a title's clips into one timeline and fixes the joins (gaps, overlaps, frames at both sides) | `disctl_join.c`, `disctl_junction.c`, `disctl_pcm.c` |
-| title timeline | puts a title's frames on one timeline: clips joined, frame timing, audio gaps and overlaps, chapters, checks of the output | `disctl_*` (what remains of them, see below) |
-| decoder | turns frames into pictures and sound: not used to rip; only the end check reads our output back with it | FFmpeg's decoders |
-| writer | writes frames into files: stream files, Matroska | `src/disc-remuxer/writer.c` |
+> **Demuxing — every byte transformation from disc sector to output file —
+> is our own code, end to end. No byte that reaches an output file passes
+> through FFmpeg.**
+>
+> **FFmpeg is an analysis instrument.** It is handed copies of data and
+> answers questions ("what does this stream decode to?"). If it were
+> missing, every rip would be byte-identical; only reports and checks would
+> degrade.
 
-## The shape
+FFmpeg is linked from one module only (`src/analyze/`), unmodified (see
+`libs/README.md`). One exception is left: MPEG-1/2 video and E-AC-3 have no
+frame cutter of our own yet; their frames are still found by FFmpeg's stock
+parsers, reached through analyze (`DRTimelineHost` in
+`src/timeline/disctl.h`). Every other codec is cut by `src/parse/`.
+
+## The modules
 
 ```
-disc-remuxer (src/disc-remuxer)   command line + engine (settings, log, choice, writing files)
-  ▼
-disc layer                         one FFmpeg demuxer, "disc": open the source once,
-  │                                which kind of disc, title list (info), open a title
-  ├─ format parts                  DVD / HD DVD / Blu-ray: disc structure only
-  ├─ readers + decryption          discio_*, libdvdcss, libaacs, later libbluray
-  └─ title reader                  the opened title's clips through the line below,
-  ▼                                its frames out as packets
-FFmpeg's own line                  mpeg.c / mpegts.c -> parsers (FFmpeg's read loop runs them)
-                                   our fixes inside these files, behind disc options
-  ▼
-title timeline                     ours, one module for every format
+src/gui/         the GUI (C++, Qt 6 Widgets)          ─┐ front ends: the engine's
+src/disc-remuxer/main.c   the command line              ─┘ typed calls and events
+   │
+src/disc-remuxer/ the engine (libdisc-remuxer.a): settings in use, the open
+   │              disc, the selection, runs, the stream writer, the views
+   │              (what the front ends show), finding discs, typed events
+src/disc/         the disc layer: open once, disc kind, title list, the
+   │              stream pass (tracks and their details), the title reader
+   ├── dvd/ hddvd/ bluray/   format parts: structure, titles, tracks,
+   │              chapters, keys (libdvdcss, libaacs), "the next block of
+   │              this segment"
+src/timeline/     the title timeline: frames timed, video grid, audio
+   │              timing, joins, junction, subtitles, captions, chapters,
+   │              the per-frame verify
+src/mux/          container splitters: MPEG-PS packs, MPEG-TS PES
+src/parse/        frame cutters: one rule set per codec, one splitter engine
+src/io/           readers: block reads with retries, ISO 9660, two UDF
+                  readers (NetBSD- and Linux-based), disc folders, the
+                  file-system choice, the disc format
+src/base/         what everything may use: the log, messages, settings,
+                  errors, memory, buffers, byte readers, CRCs, SHA
+
+beside the path:
+src/analyze/      the one module that links FFmpeg: stream details, the end
+                  check of written files, the TrueHD seamless helper, small
+                  decode answers; FFmpeg's log lines into ours
+helpers           ccextractor (a separate process: captions to text)
 ```
 
-Rules:
+Dependencies point down only. `base` depends on libc alone; `io`, `mux` and
+`parse` on `base` only; `timeline` on `base` and `parse`. The build enforces it: those modules,
+the engine and the GUI compile without FFmpeg's include path, so an FFmpeg
+include there is a compile error. Each module is a static library
+(`mk/<module>.mk`).
 
-1. **FFmpeg's own files are fixed in place.** A behaviour discs need (the
-   reference's sector rules, frame rules, timestamp rules) goes into the
-   FFmpeg file that does that job, behind an option or flag that is off for
-   ordinary files, so FFmpeg behaves as upstream everywhere else. Every change
-   is listed in `libs/README.md` with its test. No copies of FFmpeg files
-   under a format prefix.
-2. **A format part knows only its disc's structure.** Packets, codecs and
-   timing are the line's job and live once, for every format.
-3. **Format details at the reading end, everything after shared.** E.g.
-   LPCM: the header in each packet differs (DVD 3 bytes, HD DVD 5, Blu-ray 4
-   with another layout) and is read by the demuxer; the samples on the
-   timeline are handled once by the title timeline.
-4. **The title timeline is the one module of ours beside FFmpeg's line**,
-   because FFmpeg has no place for it (its concat demuxer joins files, but
-   none of the timing). It takes the frames FFmpeg's line gives out.
+## The rip path
 
-## Today's files and where they go
+```
+source (image / folder)
+  io/       opens it, picks the file system, reads 2048-byte blocks with
+            the retry rules, says every attempt and damaged block
+  format    places the title's segments, decrypts (CSS per sector key,
+  part      AACS per aligned unit), answers "the next block of this segment"
+  mux/      PS: one sector = one pack | TS: 192-byte source packets, PES per
+            PID; payloads out with their PES times, stretches left out said
+  parse/    the codec's rule cuts payloads into frames; picture headers
+            read; core-only filters (E-AC-3 -> AC-3, DTS-HD -> DTS)
+  timeline/ times paired with frames; the video grid; audio durations; the
+            joiner puts segments on one timeline; the junction handles gaps
+            and overlaps at joins; chapters; the verify re-reads every frame
+            that leaves (CRCs, order, durations)
+  writer    elementary-stream files, WAVE, VobSub (.sub + .idx), SUP, SRT,
+            chapter XML (src/disc-remuxer/writer.c); then the end check
+            reads each written file back (analyze/)
+```
 
-| Today | Goes to |
-|---|---|
-| `discio_*.c`, `discio.h` | stay: the readers (`discio_folder.c`: a disc folder on the host as a file system) |
-| `disclang.c` | stays: language codes for every format part |
-| `discdec.c`, `disc.h` (step 1, done; one flow: unification step D) | the disc layer, the only disc demuxer the program opens; `disc.h` is what a format part gives it: the same title entries for every format (load the disc and its title list; a title's tracks, probe, largest segment, info; leave a title out; open a title, close it), and the disc layer runs the one flow: load, every title's stream pass, the titles left out, the disc info, the opened title. A title's tracks come from every format part in one shape (`DiscTrack`: what the disc info shows, where the data is, how the title reader takes it); the disc layer makes the disc info's streams and the opened title's streams and title-reader tracks from them (`ff_disc_title_add_tracks()`, `ff_disc_open_tracks()`) |
-| `discpass.c` (unification step B) | the stream pass of a title, the same for every format: its tracks against its largest segment's data, read as the title reader reads (the format's block reader, `mpeg.c` / `mpegts.c` in disc mode): duplicates left out, each video and audio track's details from FFmpeg's parser and decoder (the title list only), an audio track without data left out, a title whose video has none unusable; results kept per segment |
-| `disctitle.c` (step 6, done) | the disc layer's title reader: what `hddvddec.c` did that is not HD DVD (the clips through `mpeg.c`, the time reference, the payloads to the title timeline, its frames out, chapters, results); a format part fills `DiscTitleSource` (clips, block reading, tracks, chapter marks, LPCM header size). Blu-ray (B5a): clips of 6144-byte units through `mpegts.c` in disc mode, each track's PID and PES keys (`DiscTsFeed`), the segment's time reference found before it is read (the video's first PTS in its first 2000 units) |
-| `dvdvideodec.c` | FFmpeg's own DVD-Video demuxer, unchanged (upstream again since 2026-10-08, with libdvdread, libdvdnav and libdvdcss); not opened by the program. DVD is being rebuilt as a format part of the disc layer, step by step as Blu-ray was |
-| `dvddec.c`, `dvd_*.c` (now `src/disc/dvd/`) | the DVD format part (since the rewrite's step 8 the libraries keep only table parsing and the navigation VM): the disc's structure, read and checked by libdvdread (`disc_read.h`: every IFO with its BUP, the title table, the text data, each title set's tables and VOBU map trust; `dvd_disc.c` opens it and names the disc, `dvd_ifo.c` the disc's own files); the navigation scan `dvd_scan.c` on libdvdnav's navigators; the title list and its tracks `dvd_title_list.c`; the cell rules, segments and chapter places `dvd_cells.c`; the VOBUs `dvd_vobu.c`; the title VOB reading `dvd_vob.c` (placement on an image, asked by libdvdread through a callback while it reads the structure; sector reads and checks, through the VOB files when a read fails; the damaged ranges; CSS through libdvdcss); the stream probe `dvd_stream_probe.c` (captions, audio streams without data); the segments read `dvd_read.c`. Every DVD reader reports into libdvdread's findings book; the details, duplicates and data of every format's tracks: the disc layer's stream pass |
-| `hddvddec.c`, `hddvd_*.c` | the HD DVD format part `ff_disc_hddvd` (step 1, done: no demuxer of its own any more; step 6, done: only HD DVD's structure, the reading is the title reader's) |
-| `bluraydec.c`, `bluray_*.c` (Blu-ray step B1, done) | the Blu-ray format part `ff_disc_bluray` (BDMV, BDAV, AVCHD): the disc's structure and name (B1), its title list (B2, `bluray_titles.c`) AACS (B3, `bluray_aacs.c`: keys at the open, `ff_bluray_aacs_unit()` per aligned unit for the title reader) the tracks (B4a, `bluray_tracks.c`), the stream probes (B4b, `bluray_probe.c`) and the title checks (B4c: the stream-table repair, titles whose tracks cannot be taken skipped); the menu names (`bluray_menu.c`: a BD-J menu framework's project data, BDMV/JAR/<dir>/bluray_project.bin, read without running the menu; its playlists listed first, kept as titles when one clip piece, named in the disc info; any doubt: not used); the fake playlist check (`bluray_decoys.c`, discs with BD-J titles: playlists that play copies of one clip more than once marked likely fake, the long clean ones likely real; said in the log and the disc info, the title list unchanged); a title opened for the title reader (B5a: segments, PES keys per track kind); codecs read so far: AVC (`h264_parser.c` disc mode, `disctl_h264.c`), HEVC (`hevc/parser.c` disc mode, `disctl_hevc.c`; a Dolby Vision enhancement layer is a second layer of the title, merged into the video's frames (the single-track form) or, with option `dolby_vision=separate`, a stream of its own), MPEG-2 and VC-1 (the HD DVD rules unchanged), 3-D titles (the base view's stream files; with option `second_view` both views read interleaved and the MVC dependent view written as a second layer: `.mvc` next to the base view's `.h264`, each named by its eye from the playlist), AC-3, DTS / DTS-HD, TrueHD, PGS (`hdmv_pgs_parser.c`, `disctl_pgs.c`; `.sup` stream files; forced-only copies as a player shows them with subtitles off), text subtitles (HDMV TextST, from a clip of their own, read whole before the title's clips: `hdmv_pgs_parser.c` disc mode one segment per unit, `disctl_textst.c`; the clip placed by its SubPlayItem's IN time and sync start; `.textst` stream files in MKVToolNix's layout; no real disc yet), LPCM (`pcm_bluray_parser.c`: units = 4-byte header + payload; `disctl_lpcm.c`: the format of the first unit kept, each sample frame little-endian in the channel mask's order without the padding channel; `.wav`); the other tracks are left out until their step. Not supported yet: recordable discs' AACS, the segment keys of .fmts clips, BD+. Waiting for a disc that needs it (user): names recorded in the Japanese broadcast character code (ARIB STD-B24, BDAV discs recorded off Japanese TV) are not decoded yet |
-| `hddvd_tracks.c` | stays (stream table, languages); step 4, done: its content probe reads through the line (`mpeg.c` disc mode, FFmpeg's AC-3 / DTS parsers in disc mode) instead of its own pack reader and frame finding |
-| `discrip_pack.c`, `discrip_ps.c` (step 2, done) | moved into `mpeg.c`: option `disc` (one pack per 2048-byte sector, the sector rules) and `lpcm_header` (3 / 5 bytes, always LPCM) |
-| `discrip_units.c` (was the cutter; now `disctl_frames.c`, the frame step) | stays, shrunk to the time pairing (a packet's time goes to the first frame whose picture header lies in it, the MPEG rule FFmpeg's read loop does not have) in front of FFmpeg's parsers (decided in step 3: FFmpeg's read loop pairs times with where a frame begins and keeps only 4 packets' times) |
-| `disctl_mpv.c` | stays: picture rules for the video timing (FFmpeg's `mpegvideo_parser.c` already cuts the frames) |
-| `disctl_vc1.c` | step 3, done: the frame cutting rules are in `vc1_parser.c` (disc mode); the picture timing stays |
-| `disctl_mlp.c` | step 3, done: the access unit cutting is in `mlp_parser.c` (disc mode); the unit check, timing and the seamless join stay |
-| `disctl_spu.c` | step 3, done: the unit cutting is in `dvdsub_parser.c` (disc mode); the unit check and the units' times stay |
-| `disctl_lpcm.c` | stays: LPCM has no frames in the bitstream; the frame size (samples per output frame) is the title timeline's choice |
-| `disctl_codecs.c` (codec table) | stays: which frames belong to a track (the checks after the parser), durations, anchors, output checks; the frame cutting it named is in FFmpeg's parsers (`disc_parser`) |
-| `discrip_mix.c` (copied FFmpeg downmix) | step 5, done: replaced by libswresample (the seamless search's mono mix; the same numbers on every TrueHD layout) |
-| `disctl_cc.c`, `disctl_ccx.c` | stay with the title timeline (caption track; the caption converter is a helper program) |
-| `disctl_title.c`, `_join.c`, `_video.c`, `_audio.c`, `_junction.c`, `_pcm.c`, `_seamless.c`, `_chapters.c`, `_verify.c` | the title timeline (stay) |
-| `bluray.c` (FFmpeg's libbluray protocol) | removed (user, 2026-10-07: never used; libbluray is not part of the program); the Blu-ray format part takes the name: `bluraydec.c`, `bluray_*.c` |
+The info path: the format part reads the structure (every check reported
+with its file, table and byte offset) → the title list → the stream pass
+(mux + parse over the title's largest segment; duplicates left out; details
+through analyze) → the disc model (`src/disc/info.h`, `disc.h`) → the
+engine → the front ends.
 
-## Order of work
+## The disc interface (`src/disc/disc.h`, `info.h`)
 
-Each step ends with every test passing, the moved part's `libs/README.md`
-rows updated, and the same output as before the step: the corpus HD DVD
-titles ripped before and after and their files compared byte for byte (and
-their logs for changed warnings).
+`dr_disc_open()` opens a source once and gives the disc model: the disc
+(kind, name, file system, protection, properties with keys), its title list
+(name, length, size, the files and parts it plays, chapters, angles, marks
+such as a likely fake playlist) and each title's streams (kind, codec,
+language, details: picture size, frame rate, HDR and Dolby Vision, channels,
+layout, rate, bits; which stream is taken out of which: a DTS core, forced
+subtitles, a 3-D second view). Options are typed fields (`DrDiscOptions`:
+title, part, second view, Dolby Vision merged or separate, minimum length,
+the DVD cell mode, read attempts, the UDF reader, key files, the caption
+helper). `dr_disc_title_open()` opens one title (or one part of it) on the
+open disc; `dr_disc_read()` gives its frames in order, track by track, with
+their times; the title's chapters, damaged ranges and per-track results
+come at its end.
 
-0. **Baseline:** today's program kept, and its output for the corpus HD DVD
-   titles recorded, as the reference for every later comparison.
-1. **Disc layer (done):** `discdec.c` opens the source once, tells the disc
-   kind and opens a title through its format part; the program opens only
-   "disc"; HD DVD is the first format part. The disc info (`discinfo.h`: the
-   disc, every title, its streams and chapters) comes from one open; the
-   stream details in it (bit rate, channels, frame size, ...) are filled once
-   the start of each title is read for them.
-2. **Demuxer (done):** `mpeg.c` got the disc options; the HD DVD part feeds
-   it; `discrip_pack.c` and `discrip_ps.c` are gone.
-3. **Parsers (done):** the title timeline's own frame cutting is in FFmpeg's parsers,
-   behind `PARSER_FLAG_DISC` (`parser.c`'s disc cut under the parser
-   contract): sub-pictures (`dvdsub_parser.c`), VC-1 (`vc1_parser.c`), TrueHD
-   / MLP (`mlp_parser.c`); MPEG video and the audio codecs were already cut by
-   FFmpeg's parsers. Kept with the title timeline (decided): the time pairing,
-   the checks of which frames belong to a track, LPCM's frame size.
-4. **HD DVD track probe (done)** reads through the line (corpus track lists
-   equal). With it: FFmpeg's AC-3 and DTS parsers got the disc reader's own
-   frame rules (used when ripping too); `mpeg.c`'s disc mode splits an audio
-   payload at its first access unit, as the reader does.
-5. **Title timeline tidied (done):** what is left of `disctl_*` is the
-   timeline; codec table slimmed (leftovers of the cutter removed); downmix
-   through libswresample.
-6. **Title reader (done):** what the HD DVD part did that every format
-   needs moved into the disc layer (`disctitle.c`); the rules it holds are
-   the shared ones (the program-stream reader's time reference, the last
-   64 MiB of a clip), the format's own values come from the format part
-   (LPCM header size, audio lead-in tolerance). Then the rip core's files
-   were renamed to the title timeline's words (`disctl_`, done).
-   **DVD on the same line** (restarted 2026-10-08: the first DVD code and
-   our DVD library changes are reverted to upstream): a new DVD format part
-   filling `DiscTitleSource` (its segments, CSS, `lpcm_header` 3, its
-   tolerance), its titles through the title timeline, built step by step as
-   Blu-ray was.
-7. **Blu-ray** (TS demuxer decided there), then the **Matroska writer** once
-   every format's streams are right (user, 2026-10-06: Blu-ray adds many
-   pieces, e.g. more than one video stream and HDR, so the writer is built
-   once and tested on every format's streams). Blu-ray
-   items noted on the way: an E-AC-3 stream (Dolby Digital Plus, the improved
-   AC-3) that carries an AC-3 inside it gives two linked tracks, like DTS-HD
-   MA and its DTS: the E-AC-3 whole, and the AC-3 taken out of it (FFmpeg's
-   `eac3_core`; `inner_track` / `from_track`). HD DVD never gives that pair.
-   Also: the seamless search's mono mix leaves the height speakers (and the
-   wide, surround direct and second LFE channels) out, as the reference does;
-   test with them in and out on TrueHD that carries them and see whether the
-   chosen join changes.
+## Logging
 
-Points decided on the way: the parsers' disc flag is a new
-`PARSER_FLAG_DISC` bit (step 3); the title timeline's files, functions and
-log lines are named `disctl_` / `ff_disctl_` / "Title timeline:" (step 6,
-user; they were `discrip_` / "Rip core:", the "rip core"; the types keep
-their `DR` prefix).
+One log (`src/base/log.h`): levels error / warning / ok / info / detail,
+numbered program messages (`src/base/msg.h`: 1000s program and settings,
+2000s sources, 3000s titles, 5000s streams and checks, 6000s output), step
+headings, the run's log file and debug file, terminal colours or JSON
+records, and the front end's sink. The modules log through one hook
+(`src/base/vlog.h`, `dr_vlog(logctx, level, ...)`, the source named by
+`logctx`); the DVD libraries and libaacs through their callbacks into the
+same place; FFmpeg's lines through `analyze/log.c`. Nothing prints on its
+own. A library line already shown in the run is a detail line while a disc
+or a title is opened; while a title is read every line shows.
 
-## How a disc is read today (the order above part-way done)
+The standard log says every decision, finding, drop and damage; the debug
+log adds the mechanics.
 
-The program opens `disc`, which hands HD DVD images to the HD DVD part. The
-HD DVD part describes the disc and the opened title; the disc layer's title
-reader reads the title's blocks through the HD DVD part (readers and
-decryption), feeds them into FFmpeg's `mpeg.c` as disc sectors (option
-`disc`), and runs the packets through the title timeline (`disctl_*`): its frame step gives each
-track's payloads to the track's FFmpeg parser (in disc mode where the parser
-has the disc reader's rule: VC-1, TrueHD / MLP, sub-pictures, LPCM) and
-pairs PES times with the frames; then the timing, the joins and the checks. Blu-ray
-goes the same way through `mpegts.c`. FFmpeg's own DVD-Video demuxer is
-unchanged and not opened by the program; DVD gets a format part of its own.
+## The engine and its two front ends
 
-## The program (`src/disc-remuxer/`, C)
-
-Every file but `main.c` is the engine, built as `libdisc-remuxer.a`: the
-command line (`main.c`) and the GUI link it and call `engine.h`. FFmpeg and
-every library under it are linked into both as before.
+Every file of `src/disc-remuxer/` but `main.c` is the engine
+(`libdisc-remuxer.a`, `engine.h`). The GUI and the command line both use its
+typed API; neither has rules or wording of its own (parity: what the GUI
+can choose or show, the command line can choose or print, so a
+command-line test covers the GUI).
 
 | File | Part |
 |---|---|
-| `main.c` | the command line: commands (`info`, `demux`, `settings`, `version`), options (`--config`, `--set`, `--json`, `--split`, `--second-view`, `--tracks`, `-v`), the engine called |
-| `engine.c`, `engine.h` | the engine's calls: settings and log set up (the folders `keydb` and `.config` next to the program made), a disc opened once (`engine_disc_open()`), its overview, the choice of titles and tracks, a run (its folder: given, or `<output.folder>/<disc name>`, `output` next to the program by default; its log files; its titles; the summary), a stop (`engine_cancel()`, Ctrl+C on the command line); `engine_set_sink()` gives log lines, progress and records to a GUI |
-| `select.c` | the tracks of a title to rip (`--tracks`) |
-| `settings.c` | the settings registry and `disc-remuxer.toml` next to the program (written with every setting and its help; new settings added, unknown ones removed, values kept); the registry for the GUI's settings menu (`settings_get()`, `settings_store()`, `settings_save()`; a save keeps what the file holds but the values changed in the run). The one settings system: every setting is in the registry with when it is read (as a disc is opened, as a rip runs, by the GUI); the CLI and the GUI read the same file; the settings menu is made from the registry; `tests/unit/test_settings.py` checks every setting is read and every option of the disc reader comes from a setting or is a run's choice |
-| `writer.c` | opening a title and writing its stream files, chapters and VobSub pairs |
-| `check.c` | the end check: each written video / audio file is read back with FFmpeg's decoders and its stream details (format, profile, size, aspect, frame rate, scan, colour, HDR; audio format, channels, layout, rate, depth, ...) must equal those read from the disc's stream while ripping; a missing or different field fails the title |
-| `names.c` | file names from `output.file_name_template` |
-| `log.c` | the log: terminal (colours), `--json` records, a log file per disc in the output folder |
-| `msg.h` | the numbers of the program's own messages |
+| `engine.c`, `engine.h` | settings and the log set up; a disc opened once (`engine_disc_open()`); its overview (`info`); a run (its folder: given, or `<output.folder>/<disc name>`; its log files; its titles; the summary); a stop (`engine_cancel()`, Ctrl+C) |
+| `events.h`, `events.c`, `emit.h` | typed events on one sink (`engine_set_events()`): log lines, progress, the disc and its titles, title start, track result, title result, run result; without a sink, JSON records on the terminal (`--json`) |
+| `views.h`, `views.c` | what the front ends show, in the engine's words: details rows of the disc, a title, a track and the chapters; the queue's one-line texts; the queue's states while scanning and ripping (`info --details`, `demux --details` print them) |
+| `select.c`, `select.h` | the selection: titles ripped, written as parts, tracks kept (`--tracks`) |
+| `discs.c`, `discs.h` | finding discs in a folder and each disc's output folder (`find`, the GUI's queue) |
+| `writer.c`, `writer.h` | one title's stream files, chapters, VobSub pairs, WAVE files, and the end check |
+| `codecs.c`, `codecs.h` | codec, profile, layout and Matroska names as players show them |
+| `names.c`, `names.h` | file names from `output.file_name_template` |
+| `main.c` | the command line: `info`, `demux`, `find`, `settings`, `version`; options `--config`, `--set`, `--json`, `--details`, `--split`, `--second-view`, `--tracks`, `-v` |
 
-## The GUI (`src/gui/`, C++, Qt 6 Widgets)
+Settings: one registry (`src/base/settings.c`) and `disc-remuxer.toml` next
+to the program, shared by both front ends; every setting says when it is
+read (as a disc is opened, as a rip runs, by the GUI).
 
-`disc-remuxer-gui` links the engine like the command line and uses the same
-settings file; its own values are the settings group `gui` (the window's
-sizes are kept there, not shown in the settings menu). `MainWindow` (menus;
-the queue: columns Type, Description, Size, Status, Progress; each disc's
-titles with check boxes, each title's chapters and tracks under it (a track
-taken out of another one, a core, forced subtitles or a 3-D second view,
-under that track), an unchecked title's tracks greyed with their choice
-kept, the video always ripped; the details of the selected row as wrapping
-text, `DetailsPanel`;
-the run: discs one after another, progress, Stop; the output folder
-`<output.folder>/<added folder>/<folders>/<disc name>` with
-`gui.keep_folder_structure`; a menu per row: parts, output folder, log,
-scan again, remove), `QueueTree` (drops, discs put in another order by
-dragging), `DiscFinder` (images and disc folders in what is added, searched
-a few levels deep), `EngineWorker` (the engine on a thread of its own: scans
-and rips; `LogRelay` brings the engine's log, progress and JSON records
-back), `PrefsDialog` (every setting from the registry, one tab per group,
-with its help), `DetailsPanel`, `Console`. Built by `mk/gui.mk` with CMake
-against the host's Qt.
+### The GUI (`src/gui/`, C++, Qt 6 Widgets)
 
-The demuxer contract the program relies on: `docs/FORMATS.md`. Finding
-discs (searching folders, drag and drop), the queue and batches are the
-GUI's job; the engine handles one disc per run.
+`disc-remuxer-gui` links the engine like the command line. `MainWindow`: the
+queue (columns Type, Description, Size, Status, Progress; each disc's titles
+with check boxes, each title's chapters and tracks under it), the details
+of the selected row (`DetailsPanel`), the log (`Console`), the run (discs
+one after another, progress, Stop), a menu per row (parts, output folder,
+log, scan again, remove). `QueueTree` (drops, reordering), `DiscFinder`
+(the engine's finder), `EngineWorker` (scans and rips on a thread of its
+own; `LogRelay` turns the engine's events into Qt signals), `PrefsDialog`
+(every setting from the registry, one tab per group). Built by `mk/gui.mk`
+with CMake against the host's Qt.
 
 ## Tests (`tests/`, Python)
 
 `./build.sh test` builds the program and a bridge (cffi, compiled against
-our headers and linked with the static libraries of the mode), then runs
-pytest: `tests/unit/` calls our C code directly on data built byte by byte
-(`tests/synth/`, helpers in `tests/helpers/`); tests marked `disc` need a
-real disc named by an environment variable and show as skipped without one.
-`make coverage` and `tests/tools/coverage.py` show which lines a test run
-reaches.
+our headers and linked with the static libraries), then runs pytest:
+`tests/unit/` calls our C code directly and runs the program on discs built
+byte by byte (`tests/synth/`, helpers in `tests/helpers/`); tests marked
+`disc` need a real disc named by an environment variable and show as skipped
+without one. `make coverage` and `tests/tools/coverage.py` show which lines
+a test run reaches.
 
+## Open items
+
+- Frame cutters of our own for MPEG-1/2 video and E-AC-3 (the last codecs
+  cut by FFmpeg's parsers), so the one rule holds for every codec.
+- The MKV writer (libebml / libmatroska or an own EBML writer: to decide).
+- Holes in a title (a damaged stretch left out): the stream files close the
+  hole, the subtitles and chapters after it keep the disc's times — to
+  decide: shift them by what the video lost.
+- Forced-only PGS copies keep every display set (the non-forced ones
+  empty); trim them to the forced displays as MakeMKV does — to decide.
+- A caption cue's end can round 1 ms differently from MakeMKV's.

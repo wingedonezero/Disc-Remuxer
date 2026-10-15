@@ -218,7 +218,7 @@ static const DRAudioRules audio_eac3 = {
 
 /* ---- DTS (ETSI TS 102 114) ----
  * A core frame starts with the sync word 7F FE 80 01; a DTS-HD extension
- * substream (ETSI TS 102 114 7.4) with 64 58 20 25. FFmpeg's parser keeps a
+ * substream (ETSI TS 102 114 7.4) with 64 58 20 25. The DTS rule keeps a
  * core frame and the extension substream after it in one unit (DTS-HD); a
  * stream of extension substreams only (DTS Express / LBR) has no core. */
 
@@ -263,7 +263,7 @@ static int header_dts(DRAudio *a, const DRFrame *f, DRAudioHeader *out)
 }
 
 /* A unit with a core frame is timed by its core frame header (npcmblocks x
- * 32 samples). A unit without one is timed by FFmpeg's parser (extension
+ * 32 samples). A unit without one is timed by the DTS rule (extension
  * substream asset) and reviewed; a DTS track taken out of DTS-HD has no
  * such units. */
 static int duration_dts(DRAudio *a, DRFrame *f)

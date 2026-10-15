@@ -1,4 +1,4 @@
-"""libavformat/hddvd_titles.c and disclang.c: the HD DVD title plan. With
+"""src/disc/hddvd/hddvd_titles.c and lang.c: the HD DVD title plan. With
 HDDVD_CORPUS (a folder of HD DVD images) and HDDVD_TITLES_REFERENCE (one
 <image name>.titles.txt per image, every character but A-Z a-z 0-9 _ of the
 name replaced by _; one line per title: index|name|language|H:MM:SS|bytes|

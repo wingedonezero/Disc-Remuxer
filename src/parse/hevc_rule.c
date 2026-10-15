@@ -2,8 +2,8 @@
  * HEVC / H.265 (ISO/IEC 23008-2): the access-unit cut rule and the picture
  * values.
  *
- * Moved out of our FFmpeg's hevc/parser.c disc mode. The cut rule is the one
- * the generic disc engine runs; dr_hevc_picture() reads the unit just cut.
+ * It was once a disc mode of ours in FFmpeg's hevc/parser.c. The cut rule is
+ * the one the splitter engine runs; dr_hevc_picture() reads the unit just cut.
  * The header walks (VPS, SPS, PPS, the slice segment header through
  * slice_pic_order_cnt_lsb) are our own, written from the spec to read bit
  * for bit what the processing library's parser read, so every value and

@@ -1,4 +1,4 @@
-"""libavformat/discio_read.c: block reads with retries, the block-by-block
+"""src/io/discio_read.c: block reads with retries, the block-by-block
 fallback after the first retry, 0xFF padding of a last partial block, and
 reads at any offset."""
 

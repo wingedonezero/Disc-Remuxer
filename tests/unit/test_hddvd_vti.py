@@ -1,4 +1,4 @@
-"""libavformat/hddvd_vti.c: the HD DVD Advanced VTS information file
+"""src/disc/hddvd/hddvd_vti.c: the HD DVD Advanced VTS information file
 (HVDVD_TS/HVA00001.VTI), built byte by byte; with HDDVD_CORPUS (a folder of
 HD DVD images) every image's VTI is read through the disc readers and each
 EVOB record's size is compared with its EVO file."""

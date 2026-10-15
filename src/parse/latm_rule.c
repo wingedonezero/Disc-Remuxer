@@ -1,9 +1,8 @@
 /*
  * AAC LATM / LOAS: the disc reader's frame rules
  *
- * The rule the generic disc engine runs (today FFmpeg's parser.c disc
- * engine; the native splitter later). Moved out of our FFmpeg's
- * latm_parser.c disc mode.
+ * The rule the splitter engine runs (parse/split.h); it was once a disc
+ * mode of ours in FFmpeg's latm_parser.c.
  */
 
 #include <stdint.h>

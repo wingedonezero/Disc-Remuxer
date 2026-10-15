@@ -1,4 +1,4 @@
-"""Blu-ray AACS (libavformat/bluray_aacs.c on our libaacs): disc folders
+"""Blu-ray AACS (src/disc/bluray/bluray_aacs.c on our libaacs): disc folders
 built here with their AACS files and encrypted stream files (tests/synth/
 bluray.py), opened with the AACS step: the unit keys from the key files
 (volume unique key, media key + volume ID, unit-key list; files in order),

@@ -1,4 +1,4 @@
-"""Blu-ray menu names (libavformat/bluray_menu.c): a BD-J menu framework's
+"""Blu-ray menu names (src/disc/bluray/bluray_menu.c): a BD-J menu framework's
 project data (BDMV/JAR/<dir>/bluray_project.bin, built here in both layouts
 by tests/synth/bluray.py) names playlists; the named ones are listed first,
 keep a title when they are one clip piece and carry their names. Every

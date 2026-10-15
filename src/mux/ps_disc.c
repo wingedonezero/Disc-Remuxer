@@ -9,8 +9,9 @@
  * wrong is no time; an LPCM packet shorter than its audio frame header, or
  * whose first access unit starts inside it, fails).
  *
- * Extracted from our FFmpeg's mpeg.c disc mode (the demuxer there calls
- * this); the tests are tests/unit/test_dvd_pack.py and the disc-mode tests.
+ * Once a disc mode of ours in FFmpeg's mpeg.c; run by the clip demuxer
+ * (src/disc/clip_demux.c). Tests: tests/unit/test_dvd_pack.py,
+ * test_mpeg_disc.py.
  */
 
 #include <stddef.h>

@@ -1,4 +1,4 @@
-"""libavformat/disctl_ccx.c: closed captions to text. The CCExtractor
+"""src/timeline/disctl_ccx.c: closed captions to text. The CCExtractor
 helper (dist/<mode>/ccextractor) takes the caption blocks in its raw caption
 format on stdin and writes SRT, which is read back strictly into cues."""
 

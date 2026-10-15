@@ -2,9 +2,8 @@
  * HDMV presentation graphics (Blu-ray PGS) display-set cut rule, and the
  * text subtitle (TextST) one-segment frame rule.
  *
- * The rules the generic disc engine runs (today FFmpeg's parser.c disc
- * engine; the native splitter later). Moved out of our FFmpeg's
- * hdmv_pgs_parser.c disc mode; the cutting rules are described there.
+ * The rules the splitter engine runs (parse/split.h); they were once a disc
+ * mode of ours in FFmpeg's hdmv_pgs_parser.c.
  */
 
 #include <stddef.h>

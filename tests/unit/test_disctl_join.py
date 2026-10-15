@@ -1,4 +1,4 @@
-"""libavformat/disctl_join.c: the title timeline's joiner. Segment 0 starts the
+"""src/timeline/disctl_join.c: the title timeline's joiner. Segment 0 starts the
 title timeline at its first video time (the earliest of the video timing's
 first batch); segment k is placed where the video of segment k-1 really
 ended. Audio without a time takes where its track is; audio early by more

@@ -1,4 +1,4 @@
-"""libavformat/hddvd_xpl.c: the HD DVD playlists. The parsing rules on built
+"""src/disc/hddvd/hddvd_xpl.c: the HD DVD playlists. The parsing rules on built
 XML; the loader (file numbering, AACS header, files left out) on built ISO
 9660 images; with HDDVD_CORPUS (a folder of HD DVD images) and
 HDDVD_XPL_REFERENCE (dumps of their VPLST000.XPL made by an independent

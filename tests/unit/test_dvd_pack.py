@@ -1,5 +1,5 @@
 """The DVD part's packet reader for its stream probe (disc/dvd/dvd_stream_probe.h,
-DVDPackPacket_rec()) against the demuxer's (libavformat/mpeg.c,
+DVDPackPacket_rec()) against the demuxer's (src/mux/ps_disc.c,
 ff_mpegps_disc_packet(), with DVD-Video's 3-byte LPCM audio frame header):
 the same packets, offsets, keys and reasons on built sectors of every kind,
 on those sectors with damaged bytes, and on random bytes after a pack

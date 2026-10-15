@@ -9,8 +9,8 @@
  *   data (id, or PID and keys) and the same kind (taken out of another
  *   track or not, forced subtitles or not) as one before it is left out.
  * - Details (when asked for): each video and audio track's payloads go
- *   through FFmpeg's parser and decoder of its codec until one frame is
- *   decoded, within the first 64 MiB: picture size, aspect, frame rate,
+ *   through its codec's frame rule and FFmpeg's decoder (src/analyze) until
+ *   one frame is decoded, within the first 64 MiB: picture size, aspect, frame rate,
  *   profile and level, the MPEG-1/2 sequence header's bit rate; audio
  *   channels, layout, sample rate, bits and bit rate. VC-1 opens its
  *   decoder with its sequence header and entry point; a 3-D second view

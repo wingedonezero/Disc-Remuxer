@@ -1,5 +1,6 @@
-"""MPEG-PS demuxers run over bytes in memory (tb_ps_read) and the MPEG-TS
-demuxer in disc mode over bytes or a file (tb_ts_read)."""
+"""The clip demuxers (src/disc/clip_demux.c on src/mux) run over bytes in
+memory: MPEG-PS (tb_ps_read, or FFmpeg's own mpeg.c for an ordinary program
+stream) and MPEG-TS over bytes or a file (tb_ts_read)."""
 
 from helpers import ffi, extern, lib
 
@@ -10,9 +11,9 @@ def tb_py_ps_packet(opaque, id, codec, data, size, pts):
 
 
 def ps_read(stream, disc=True, lpcm_header=3):
-    """The packets FFmpeg's MPEG-PS demuxer (mpeg.c) gives over stream
-    (bytes): as disc sectors (option disc, with the LPCM header length) or as
-    an ordinary program stream. (return code or packet count, [(stream id,
+    """The packets over stream (bytes): as disc sectors (our PS clip demuxer,
+    src/mux/ps_disc.c, with the LPCM header length) or as an ordinary program
+    stream (FFmpeg's own mpeg.c, for comparison). (return code or packet count, [(stream id,
     codec id, payload, pts)])."""
     data = ffi.new("uint8_t[]", stream)
     out = []
@@ -30,8 +31,7 @@ NOPTS = -0x8000000000000000
 
 
 def ts_read(stream=None, pids=(), path=None, max_bytes=0):
-    """The payload pieces FFmpeg's MPEG-TS demuxer (mpegts.c) gives in disc
-    mode for pids over stream (bytes) or the first max_bytes of the file at
+    """The payload pieces our TS clip demuxer (src/mux/ts_disc.c) gives for pids over stream (bytes) or the first max_bytes of the file at
     path: (return code or piece count, [(stream id = PID | key << 16,
     payload, pts, pos)])."""
     out = []

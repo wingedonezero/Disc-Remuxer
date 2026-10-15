@@ -1,8 +1,11 @@
 # The rewrite: architecture and progress
 
+> History: the record of the rewrite (2026-10, steps 1-10) that moved the program out of FFmpeg.
+> Today's architecture: `docs/ARCHITECTURE.md`.
+
 Updated 2026-10-15, on branch `claude/disc-layer-ffmpeg-handoff-7ba7a7` (the
 rewrite branch since step 7c; `claude/rewrite-untangle-1c24ca` stopped at 7b;
-main still holds the pre-rewrite program and is the byte-compare reference). Inventory of what the old shape was made of: `docs/UNTANGLE.md`.
+main still holds the pre-rewrite program and is the byte-compare reference). Inventory of what the old shape was made of: `docs/history/UNTANGLE.md`.
 
 Status: **steps 1–9 DONE**: 7a (the clip demuxer), 7b (the format parts,
 rows 258–263), 7d (the disc model, row 264; 7c folded into it) and 7e (the
@@ -204,7 +207,7 @@ Every step: moved with history (`git mv` where whole files), gated by
 (rows 248–251).
 
 ### Step 1 — docs (c78f9627)
-`docs/UNTANGLE.md` (the measured inventory of the old shape) and this plan.
+`docs/history/UNTANGLE.md` (the measured inventory of the old shape) and this plan.
 
 ### Step 2 — `src/base` (f4f331d4)
 - MOVED: `log.c/h` (minus the FFmpeg hook), `msg.h`, `settings.c/h` (+

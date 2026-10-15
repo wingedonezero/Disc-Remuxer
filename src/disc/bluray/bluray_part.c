@@ -31,7 +31,6 @@
 
 #include "base/mem.h"
 #include "base/str.h"
-#include "libavutil/mathematics.h"
 #include "base/mem.h"
 #include "base/bytes.h"
 #include "base/err.h"
@@ -44,7 +43,6 @@
 #include "disc/bluray/bluray_internal.h"
 #include "disc/model.h"
 #include "timeline/disctl.h"
-
 
 typedef struct BlurayDemuxContext {
     BlurayDisc disc;

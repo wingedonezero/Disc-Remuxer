@@ -31,7 +31,7 @@
 
 /* Track codec ids. The values are the processing library's own, so the ids
  * the format parts and the tests pass cross this seam unchanged until the
- * disc model becomes ours (checked at build time in disctl_ffmpeg.c). */
+ * disc model becomes ours (checked at build time in src/analyze/host.c). */
 typedef enum DRCodecID {
     DR_CODEC_NONE               = 0,
     DR_CODEC_MPEG1VIDEO         = 1,
@@ -133,7 +133,7 @@ typedef struct DRFrame {
     int64_t      dur;      /**< ticks */
     int64_t      pos;      /**< byte offset of the unit in its track's stream */
     unsigned     flags;    /**< DR_F_* */
-    int          samples;  /**< samples FFmpeg's parser gave the unit, 0 = none */
+    int          samples;  /**< samples the frame cutter gave the unit, 0 = none */
     int          rate;     /**< and their sample rate */
     int64_t      src;      /**< from the joiner on: the frame's own time on the title timeline (its
                                 PES-derived time, before the joiner moves it or the junction shifts it) */
@@ -279,7 +279,7 @@ typedef struct DRCodec {
      *  checked. */
     int (*verify)(const uint8_t *data, int size);
 
-    /* What the disc layer's stream pass (discpass.c) needs to know. */
+    /* What the disc layer's stream pass (pass.c) needs to know. */
     /** 1: a stream of the codec is described without data (sub-pictures,
      *  PGS, caption text): its track stays when the stream has no packet. */
     int info_without_data;
@@ -312,7 +312,7 @@ typedef struct DRUnit {
     int            size;
     int64_t        time;   /**< ticks, or DR_NOPTS_VALUE */
     int64_t        pos;    /**< byte offset of the unit's first byte in the track's stream */
-    int            samples;/**< samples FFmpeg's parser gives the unit, 0 = none */
+    int            samples;/**< samples the frame cutter gives the unit, 0 = none */
     int            rate;   /**< and their sample rate */
     const DRPicture *pic;  /**< the picture values the parser gives (DRCodec.parser_picture), or NULL */
 } DRUnit;
@@ -334,9 +334,9 @@ typedef struct DRFramesStats {
 typedef struct DRFrames DRFrames;
 
 /**
- * The frame step for one track of one segment: payloads in, units out (found by
- * FFmpeg's parser, each with its PES time).
- * Units are cut by FFmpeg's parser for the codec; a unit takes the time of a
+ * The frame step for one track of one segment: payloads in, units out, each
+ * with its PES time. Units are cut by the codec's rule (FFmpeg's stock parser
+ * for MPEG video and E-AC-3); a unit takes the time of a
  * payload when the unit's anchor (see DRCodec) is the first one that lies in
  * that payload's bytes (ISO/IEC 13818-1 2.4.3.7: a PES packet's PTS belongs
  * to the first access unit that starts in it).
@@ -370,7 +370,7 @@ int ff_disctl_frames_flush(DRFrames *c);
 
 void ff_disctl_frames_stats(const DRFrames *c, DRFramesStats *stats);
 
-/** The stream carries an extension (DTS-HD): FFmpeg's parser takes every
+/** The stream carries an extension (DTS-HD): the DTS rule takes every
  *  variant of the codec (dr_split_take_any). */
 void ff_disctl_frames_take_any(DRFrames *c);
 
@@ -378,7 +378,7 @@ void ff_disctl_frames_take_any(DRFrames *c);
  *  rules (dr_split_dvd). */
 void ff_disctl_frames_dvd(DRFrames *c);
 
-/** Linear PCM: the frame format for FFmpeg's parser (from the packets'
+/** Linear PCM: the frame format for the LPCM rule (from the packets'
  *  audio frame headers): channels, coded bits per sample, samples per
  *  frame. */
 void ff_disctl_frames_set_pcm_format(DRFrames *c, int channels, int bits, int samples_per_frame);
@@ -947,8 +947,8 @@ void ff_disctl_pcm_close(DRPcm **p);
 /* ---- Linear PCM of DVD-Video, HD DVD and Blu-ray (disctl_lpcm.c) ----
  * DVD-Video / HD DVD: the packet source hands each PES packet's audio frame
  * header to ff_disctl_lpcm_header() before its payload goes to the frame
- * step (which gives the frame format to FFmpeg's LPCM parser). Blu-ray: the
- * header is part of each unit FFmpeg's parser cuts; the audio stage reads it
+ * step (which gives the frame format to the LPCM rule). Blu-ray: the
+ * header is part of each unit the LPCM rule cuts; the audio stage reads it
  * (ff_disctl_lpcm_bd_header()). The same DRLpcm is the state of the track's
  * audio stage. A unit is one frame; its samples become little-endian PCM
  * (16 bits, or 24 bits for 20- and 24-bit samples). */

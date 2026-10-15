@@ -1,9 +1,8 @@
 /*
  * VC-1 (SMPTE 421M Advanced Profile): the frame-unit cut rule
  *
- * The rule the generic disc engine runs (today FFmpeg's parser.c disc
- * engine; the native splitter later). Moved out of our FFmpeg's
- * vc1_parser.c disc mode.
+ * The rule the splitter engine runs (parse/split.h); it was once a disc
+ * mode of ours in FFmpeg's vc1_parser.c.
  */
 
 #include <stdint.h>
@@ -19,8 +18,8 @@
  *   [sequence header]* [sequence user data]* [entry point]*
  *   [sequence / entry-point user data]* frame [field / frame user data]*
  *   [field [field user data]* [end of sequence]*]
- * User data after the frame header stays with that frame (FFmpeg's parser
- * starts the next unit there), so does an end of sequence after a second
+ * User data after the frame header stays with that frame (FFmpeg's own
+ * parser would start the next unit there), so does an end of sequence after a second
  * field. Units without a frame take no time and are left out by the video
  * stage: an end of sequence without a second field before it, and headers
  * followed by another sequence header or an end of sequence instead of a

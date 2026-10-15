@@ -1,4 +1,4 @@
-"""Blu-ray structure (libavformat/bluray_*.c): disc folders built here byte
+"""Blu-ray structure (src/disc/bluray/bluray_*.c): disc folders built here byte
 by byte (tests/synth/bluray.py), read with ff_bluray_disc_open and checked
 through the structure dump: the file names and BACKUP copies, playlists and
 clip information with the reference program's rules, index and id, the disc

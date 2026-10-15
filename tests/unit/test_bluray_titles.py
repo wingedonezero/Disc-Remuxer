@@ -1,4 +1,4 @@
-"""Blu-ray titles (libavformat/bluray_titles.c) on disc folders built here
+"""Blu-ray titles (src/disc/bluray/bluray_titles.c) on disc folders built here
 (tests/synth/bluray.py): parts, seamless segments, merged and joined play
 items, trimmed repeats and runs, clip titles, duplicates, the minimum
 length, angles, refused titles, BDAV titles and stereoscopic (3-D)

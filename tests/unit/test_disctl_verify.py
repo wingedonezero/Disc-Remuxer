@@ -1,4 +1,4 @@
-"""libavformat/disctl_verify.c: the checks of a track's output. Units are
+"""src/timeline/disctl_verify.c: the checks of a track's output. Units are
 parsed again (AC-3 CRC, TrueHD length and major-sync checksum, MPEG-2 start
 codes); times are checked (audio in order, video without holes in display
 order); the audio sync error is measured as a stream file plays the frames

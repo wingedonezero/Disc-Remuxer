@@ -1,9 +1,8 @@
 /*
  * DVD / HD DVD sub-pictures: the unit cut rule
  *
- * The rule the generic disc engine runs (today FFmpeg's parser.c disc
- * engine; the native splitter later). Moved out of our FFmpeg's
- * dvdsub_parser.c disc mode.
+ * The rule the splitter engine runs (parse/split.h); it was once a disc
+ * mode of ours in FFmpeg's dvdsub_parser.c.
  */
 
 #include <stdint.h>

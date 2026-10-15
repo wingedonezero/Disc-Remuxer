@@ -1,7 +1,7 @@
 /*
  * The title timeline: Blu-ray text subtitles (HDMV TextST, read from a clip
- * of their own), as FFmpeg's HDMV parser cuts them in disc mode: one
- * segment per unit (libavcodec/hdmv_textst.h). The first unit must be the
+ * of their own), as the TextST rule (src/parse/pgs_rule.c) cuts them: one
+ * segment per unit (src/parse/hdmv_textst.h). The first unit must be the
  * dialog style segment: it styles every dialog and is the track's header
  * (without the 2 bytes after it on the disc, the number of dialogs). Each
  * dialog presentation segment is one frame: its time is its unit's (the

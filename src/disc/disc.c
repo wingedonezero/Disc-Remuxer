@@ -451,7 +451,7 @@ static int video_language(DrDisc *d, const char *name, DiscTrack *tr, int nb)
 }
 
 /* Every title's probe (the format's own), its tracks and the stream pass
- * over its largest segment (discpass.c: duplicates, details for the title
+ * over its largest segment (pass.c: duplicates, details for the title
  * list, data). A title whose pass fails is left out, said in the log (the
  * title list and a title's open alike: the titles' numbers must agree). */
 static int titles_pass(DrDisc *d)

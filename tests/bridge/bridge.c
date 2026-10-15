@@ -378,7 +378,7 @@ static char *tb_bluray_clean_title(const char *s)
     return out;
 }
 
-/* libavformat/dvd_nav.c: a navigator on the disc as the disc layer reads it,
+/* src/disc/dvd/dvd_nav.c: a navigator on the disc as the disc layer reads it,
  * one title played (dr_nav_play). */
 static int tb_dvd_nav_trace(DVDDisc *d, int title, unsigned opts, int max_steps,
                             dr_nav_event *ev, int max_events, dr_nav_result *res)
@@ -419,7 +419,7 @@ static int tb_dvd_titles(DVDDisc *d, int cell_mode, int cell_check, int min_leng
     return ret;
 }
 
-/* libavformat/dvd_read.c: the title list (scan as tb_dvd_titles), then
+/* src/disc/dvd/dvd_read.c: the title list (scan as tb_dvd_titles), then
  * segment seg of title t (both from 0) read sector by sector through the
  * checks into path (NULL: not written; sectors left out are not written);
  * *read / *left: sectors read and left out; the first read error ends it. */

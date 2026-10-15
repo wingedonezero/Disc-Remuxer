@@ -1,4 +1,4 @@
-"""The title reader leaves filler clips at a title's ends out (disctitle.c,
+"""The title reader leaves filler clips at a title's ends out (title_reader.c,
 the reference's rip does the same; LOOK INTO AGAIN LATER): a built DVD
 title of two segments, the MPEG-2 test stream with AC-3 audio, its last
 four GOPs a segment of its own (a cell starting a new timeline; their first

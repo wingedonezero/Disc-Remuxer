@@ -1,4 +1,4 @@
-"""libavformat/dvd_nav.c: libdvdnav on the disc as the disc layer reads it
+"""src/disc/dvd/dvd_nav.c: libdvdnav on the disc as the disc layer reads it
 (step D2). libdvdread reads a virtual VIDEO_TS folder served from the
 disc's structure: the IFOs as dvd_ifo.c read them (the BUP name gives the
 same bytes, reads past the IFO's size give zeros), the VOBs from the disc

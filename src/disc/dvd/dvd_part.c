@@ -7,7 +7,7 @@
  * structures: its label is the volume label (a folder: the VMG's provider
  * identifier), its name the text data's when it has one; its titles with
  * their tracks (from the title sets' attributes, after the probe) and the
- * disc layer's stream pass (discpass.c: duplicates, details, data). An
+ * disc layer's stream pass (pass.c: duplicates, details, data). An
  * opened title is read by the disc layer's title reader: its segments one
  * after another, each sector through libdvdread (dvd_read.c: the sector
  * check, CSS).

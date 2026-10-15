@@ -1,9 +1,9 @@
-"""libavformat/mpeg.c with the option disc: the disc formats' program
+"""The MPEG-PS clip demuxer (src/mux/ps_disc.c): the disc formats' program
 stream. The stream is read one 2048-byte sector (one pack) at a time with
 the pack rules of the reference's disc reader; payloads leave with FFmpeg's
 MPEG-PS stream ids and header cuts, except that a private stream 1
 sub-stream 0xA0-0xAF is always linear PCM with its audio frame header kept
-(mpeg.c without the option guesses MLP from the header's dynamic range byte
+(FFmpeg's own mpeg.c guesses MLP from the header's dynamic range byte
 and then cuts 6 more bytes). The sectors are built byte by byte."""
 
 import struct
