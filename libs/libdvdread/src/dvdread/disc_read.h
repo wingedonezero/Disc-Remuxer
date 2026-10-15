@@ -58,13 +58,13 @@ extern "C" {
  *   and its title VOBs' VOBU address map. A VOBU address map that cannot be
  *   read, or a cell whose first sector or last VOBU start is not on it,
  *   leaves the title set's VOBU starts untrusted (map_trusted). A program
- *   chain table or chapter table that
- *   cannot be read leaves the title set out (the VMG's: NULL);
+ *   chain table or chapter table that cannot be read leaves the title set
+ *   out (the VMG's: NULL);
  * - the video manager's copy of each title set's attributes against the
  *   title set's own (ifoCheckVtsAttributes_rec()), and every information
  *   file read once more by ifoOpen() for its own checks.
- * Where the menu VOBs and the title VOBs start on an image is decided here
- * too (DVDMenuVOBStart_rec(), DVDTitleVOBStart_rec()).
+ * Where the menu VOBs and the title VOBs start on an image is asked of the
+ * application while the files are read (DVDOpenDisc_rec()'s place).
  */
 
 /** A node of the text data: an item kind below 0x30 with the texts
@@ -101,8 +101,8 @@ typedef struct
   int64_t            bup_sector;        /* image: the BUP's place (the IFO's when the BUP is not one piece) */
   uint32_t           title_vob_sectors; /* the title VOBs' length (the VMG: its menu VOB's); image: by the
                                            places of the IFO and BUP, a folder: by the files */
-  int64_t            menu_vob_start;    /* image: where its menu VOBs start (DVDMenuVOBStart_rec()), 0 */
-  int64_t            title_vob_start;   /* image: where its title VOBs start (DVDTitleVOBStart_rec()), 0 */
+  int64_t            menu_vob_start;    /* image: where its menu VOBs start (the application's place), 0 */
+  int64_t            title_vob_start;   /* image: where its title VOBs start (the application's place), 0 */
   int                no_pgcit;          /* a title set without a program chain table */
   pgcit_rec_t       *pgcit;             /* its program chain table (freed with the disc), NULL */
   uint8_t           *ptt_srpt;          /* VTS_PTT_SRPT as recorded, NULL */

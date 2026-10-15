@@ -58,13 +58,7 @@ struct dvd_reader_s
 
 /* The read position of a file (bytes from its start). */
 int64_t DVDFileTell_( dvd_file_t *dvd_file );
-/* A file of the disc ("/VIDEO_TS/VTS_01_0.IFO") through the application's
- * file system (DVDOpenFiles()): its size and place; < 0 when there is none. */
-int DVDStatFile_( dvd_reader_t *ctx, const char *filename, dvdstat_t *st );
-/* The application file system's path of a file of the disc
- * ("/VIDEO_TS/VTS_01_1.VOB"), into full_path (PATH_MAX + 1 bytes); < 0 when
- * there is no such file. */
-int DVDFindFile_( dvd_reader_t *ctx, const char *filename, char *full_path );
+/* DVDStatFile_(), DVDFindFile_(): dvd_reader.h */
 
 struct ifo_handle_private_s
 {

@@ -139,8 +139,9 @@ typedef struct
 } dvd_report_t;
 
 /**
- * What a damaged range of title VOB sectors is (vob_read.h): sectors left
- * out because they hold no stream data the demuxer can use.
+ * What a damaged range of title VOB sectors is (reported by an application
+ * that reads them, dvd_report_t.damage): sectors left out because they hold
+ * no stream data the demuxer can use.
  */
 typedef enum
 {

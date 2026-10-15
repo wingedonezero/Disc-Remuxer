@@ -4,18 +4,17 @@ Updated 2026-10-15, on branch `claude/disc-layer-ffmpeg-handoff-7ba7a7` (the
 rewrite branch since step 7c; `claude/rewrite-untangle-1c24ca` stopped at 7b;
 main still holds the pre-rewrite program and is the byte-compare reference). Inventory of what the old shape was made of: `docs/UNTANGLE.md`.
 
-Status: **steps 1–7 DONE**: 7a (the clip demuxer), 7b (the format parts,
+Status: **steps 1–8 DONE**: 7a (the clip demuxer), 7b (the format parts,
 rows 258–263), 7d (the disc model, row 264; 7c folded into it) and 7e (the
 log flip, row 265) are in — **libs/ffmpeg is byte-for-byte the import
 again**, the "disc" demuxer is gone, the program and GUI run on the typed
 disc API (disc/disc.h), the modules log straight into base/log.h with
 their own source names, and the processing library's lines come in through
-analyze's hook. Next: the step-7 gate (the corpus byte-compare + info
-compare, the user's: run once the whole rewrite is done, not per step), then
-step 8, the DVD lift (D-8 decided, the slices planned — see step 8 below);
-8a (the scan driver, row 266), 8b (the title list, row 267), 8c (the
-stream probe, row 268), 8d (the cell rules, row 269), 8e-1 (the VOBUs,
-row 270) and 8e-2 (the reading, row 271) are in.
+analyze's hook. Step 8, the DVD lift, is in (rows 266–272): the DVD
+libraries keep only table parsing and the navigation VM; everything else
+of the DVD part is `src/disc/dvd/`. Next: step 9 (engine API v2, GUI-first),
+then step 10 (the MKV writer). The corpus byte-compare + info compare
+against a main build is the user's, run once the whole rewrite is done.
 Tests at every commit: 743 passed, 15 skipped (the disc-marked ones without a
 disc). Every move so far is behavior-preserving by construction and by test;
 the real-disc byte-compare against a main build is still owed (user runs it
@@ -463,12 +462,18 @@ In slices, one commit and one full test run each, behavior-preserving:
     log order and broken-title-set behaviour unchanged). The reads go
     through the same file callbacks and lookup as libdvdread's reader
     (dvd_nav.c, our io).
-- **8f** — settle the libraries: drop the emptied halves, re-measure both
-  diffs, update the docs.
+- **8f — DONE (row 272)** — the libraries settled: stale declarations
+  and comments out; libdvdnav keeps upstream's `searching.c` /
+  `read_cache.c` (unchanged upstream files; decided 2026-10-15). Measured
+  against the imports: libdvdread +2,483 / −156 (was +7,599: the `_rec`
+  IFO readers and checks, `disc_read.c`, the findings book, the NAV-packet
+  checks, the file hooks and lookup), libdvdnav +981 / −208 (was +2,449:
+  the VM changes only); `src/disc/dvd/` holds 8,967 lines.
 
 The detailed plan (inventory, seams, open sub-questions per slice) is in
 the maintainer's workspace, implementation/PLAN_dvd_lift_step8_2026-10-15.md.
-Gate: the 30-DVD title list/track comparisons re-run + corpus byte-compare.
+Gate: the 30-DVD title list/track comparisons re-run + corpus byte-compare
+(with the rest of the rewrite's, run by the user at the end).
 
 ### Step 9 — engine API v2 (GUI-first)
 What: `engine.h` v2 on `base/events.h`: the disc model exposed as typed
