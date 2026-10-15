@@ -14,6 +14,7 @@
 #include <stdint.h>
 
 #include "disc/info.h"
+#include "events.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -69,6 +70,35 @@ void engine_queue_line(int discs, int titles, int64_t bytes, int scanning, char 
  * once that can be told (a whole title of size bytes, secs into it):
  * "Writing 45% · 12.3 MB/s · 0:10:00 left". */
 void engine_progress_line(double done, int64_t size, double secs, int whole, char *buf, size_t bsize);
+
+/* The queue's state words at each moment of a scan or a rip (a disc's or a
+ * title's Status), and its notes in the window's log; demux --details
+ * prints the rip's as "Queue:" lines at the same moments. */
+typedef enum EngineState {
+    ENGINE_STATE_SCAN_WAITING,      /* "Waiting to scan…" */
+    ENGINE_STATE_SCANNING,          /* "Scanning…" */
+    ENGINE_STATE_UNREADABLE,        /* "Cannot be read (see the log)" */
+    ENGINE_STATE_RIP_WAITING,       /* "Waiting" */
+    ENGINE_STATE_RIPPING,           /* "Ripping…" */
+    ENGINE_NOTE_NOTHING_CHECKED,    /* "No title is checked: nothing to rip" */
+    ENGINE_NOTE_STOPPING,           /* "Stopping: the title being written ends now" */
+    ENGINE_NOTE_QUEUE_STOPPED,      /* "The queue was stopped" */
+    ENGINE_NOTE_QUEUE_DONE,         /* "The queue is done" */
+} EngineState;
+const char *engine_state_text(EngineState s);
+/* A title started (title ordinal of count in the run; part >= 0: that part
+ * of it): its state "Writing part 2…" and its disc's "Title #3 part 2 (1 of
+ * 4)". */
+void engine_title_start_state(int title, int part, int ordinal, int count, char *tstate, size_t tsize,
+                              char *dstate, size_t dsize);
+/* A title (part) ended: "Done", "Done part 2, 3 warning(s)", "Stopped: not
+ * complete", "Failed (see the log)". */
+void engine_title_result_state(int part, DrStatus status, int64_t warnings, char *buf, size_t size);
+/* A disc's rip ended: "Done", "Done with failures (see the log)", "Stopped". */
+const char *engine_disc_result_state(int failed, int stopped);
+/* "No disc found in <path>"; "Setting kept: <what>". */
+void engine_no_disc_note(const char *path, char *buf, size_t size);
+void engine_setting_kept_note(const char *what, char *buf, size_t size);
 
 /* Times and sizes as the front ends show them: "1:42:10" (to the second),
  * "0:12:01.250", "2.3 GB" (cut, not rounded). */

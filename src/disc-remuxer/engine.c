@@ -909,9 +909,9 @@ int engine_info(const char *source, const EngineChoice *c, int details)
 
 /* One disc's demux run (engine_demux()). */
 static int demux_one(const char *source, const char *titles, const char *out_dir, const char *split,
-                     const EngineChoice *c)
+                     const EngineChoice *c, int details)
 {
-    char folder[PATH_MAX], logp[PATH_MAX + 600];
+    char folder[PATH_MAX], logp[PATH_MAX + 600], name[512];
     EngineDisc *e;
     int count = 0, ret;
 
@@ -922,8 +922,14 @@ static int demux_one(const char *source, const char *titles, const char *out_dir
     }
     if (run_begin(source, out_dir, logp, sizeof(logp)))
         return 1;
+    /* --details: the queue's states as the GUI shows them */
+    engine_disc_name(source, name, sizeof(name));
+    engine_queue_details(details ? name : NULL);
+    if (details)
+        log_text(LOG_INFO, "Queue: %s | %s", name, engine_state_text(ENGINE_STATE_RIPPING));
     /* the disc is read once: every title is opened on it */
     if (engine_disc_open(source, c, &e) < 0) {
+        engine_queue_details(NULL);
         log_close_files();
         return 1;
     }
@@ -932,11 +938,13 @@ static int demux_one(const char *source, const char *titles, const char *out_dir
     if ((count = engine_select_titles(e, titles)) <= 0 || (split && engine_split_titles(e, split) < 0)) {
         if (!count)
             log_msg(MSG_TITLE_SELECTION, LOG_ERROR, "No title selected");
+        engine_queue_details(NULL);
         engine_disc_close(&e);
         log_close_files();
         return 2;
     }
     ret = run_titles(e, out_dir, logp);
+    engine_queue_details(NULL);
     engine_disc_close(&e);
     return ret;
 }
@@ -989,7 +997,9 @@ int engine_find(const char *path)
     if (engine_find_discs(path, 5, &l) < 0)
         return 1;
     if (!l.nb) {
-        log_msg(MSG_SOURCE, LOG_WARNING, "No disc found in %s", path);
+        char note[PATH_MAX + 64];
+        engine_no_disc_note(path, note, sizeof(note));
+        log_msg(MSG_SOURCE, LOG_WARNING, "%s", note);
         return 1;
     }
     for (int i = 0; i < l.nb; i++) {
@@ -1006,7 +1016,7 @@ int engine_find(const char *path)
 }
 
 int engine_demux(const char *source, const char *titles, const char *out_dir, const char *split,
-                 const EngineChoice *c)
+                 const EngineChoice *c, int details)
 {
     EngineFoundList l = { 0 };
     char folder[PATH_MAX], base[PATH_MAX];
@@ -1014,7 +1024,7 @@ int engine_demux(const char *source, const char *titles, const char *out_dir, co
 
     /* a disc (image or folder): one run */
     if ((n = disc_folder(source, &l)) <= 0)
-        return demux_one(source, titles, out_dir, split, c);
+        return demux_one(source, titles, out_dir, split, c, details);
     /* a folder of discs: each one in turn into its own folder, as the GUI's
      * queue rips them (out_dir: the main output folder for them) */
     for (int i = 0; i < n && !engine_cancelled(); i++) {
@@ -1023,7 +1033,7 @@ int engine_demux(const char *source, const char *titles, const char *out_dir, co
         log_step("=== Disc %d/%d: %s ===", i + 1, n, f->name);
         engine_found_folder(f, out_dir, base, sizeof(base));
         engine_unique_folder(base, folder, sizeof(folder));
-        r = demux_one(f->path, titles, folder, split, c);
+        r = demux_one(f->path, titles, folder, split, c, details);
         failed += r != 0;
         ret = r > ret ? r : ret;
     }

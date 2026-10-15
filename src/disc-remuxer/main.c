@@ -45,7 +45,8 @@ static void usage(FILE *f)
           "  --set group.key=val  change a setting for this run only (repeatable)\n"
           "  --json               JSON records on stdout, one per line, instead of text\n"
           "  --details            info: also every detail the GUI shows (its queue lines and its details\n"
-          "                       panel's rows for the disc, each title, track and chapter)\n"
+          "                       panel's rows for the disc, each title, track and chapter); demux: the\n"
+          "                       queue's states as the GUI shows them while it rips\n"
           "  --second-view <titles>  demux: also write the second view of these 3-D titles (the .mvc\n"
           "                       next to the base view); setting bluray.second_view does it for every title\n"
           "  --tracks [<title>:]<steps>  which tracks: every one to start with, then steps left to right,\n"
@@ -139,7 +140,7 @@ int main(int argc, char **argv)
     } else if (!strcmp(argv[i], "find") && i + 1 < argc) {
         ret = engine_find(argv[i + 1]);
     } else if (!strcmp(argv[i], "demux") && i + 2 < argc) {
-        ret = engine_demux(argv[i + 1], argv[i + 2], i + 3 < argc ? argv[i + 3] : NULL, split, &c);
+        ret = engine_demux(argv[i + 1], argv[i + 2], i + 3 < argc ? argv[i + 3] : NULL, split, &c, details);
     } else {
         fprintf(stderr, "disc-remuxer: unknown command or missing arguments: %s\n\n", argv[i]);
         usage(stderr);

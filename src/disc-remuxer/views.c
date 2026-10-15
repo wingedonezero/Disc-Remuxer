@@ -565,3 +565,70 @@ void engine_progress_line(double done, int64_t size, double secs, int whole, cha
                  engine_hms((int64_t)((1 - done) / done * secs * 1e6), left, sizeof(left)));
     }
 }
+
+/* ---- the queue's states and notes ---- */
+
+const char *engine_state_text(EngineState s)
+{
+    switch (s) {
+    case ENGINE_STATE_SCAN_WAITING:   return "Waiting to scan\u2026";
+    case ENGINE_STATE_SCANNING:       return "Scanning\u2026";
+    case ENGINE_STATE_UNREADABLE:     return "Cannot be read (see the log)";
+    case ENGINE_STATE_RIP_WAITING:    return "Waiting";
+    case ENGINE_STATE_RIPPING:        return "Ripping\u2026";
+    case ENGINE_NOTE_NOTHING_CHECKED: return "No title is checked: nothing to rip";
+    case ENGINE_NOTE_STOPPING:        return "Stopping: the title being written ends now";
+    case ENGINE_NOTE_QUEUE_STOPPED:   return "The queue was stopped";
+    case ENGINE_NOTE_QUEUE_DONE:      return "The queue is done";
+    }
+    return "";
+}
+
+/* " part 2" for a part of a title, "" for the whole title */
+static const char *part_text(int part, char *buf, size_t size)
+{
+    buf[0] = 0;
+    if (part >= 0)
+        snprintf(buf, size, " part %d", part + 1);
+    return buf;
+}
+
+void engine_title_start_state(int title, int part, int ordinal, int count, char *tstate, size_t tsize,
+                              char *dstate, size_t dsize)
+{
+    char pt[32];
+
+    part_text(part, pt, sizeof(pt));
+    snprintf(tstate, tsize, "Writing%s\u2026", pt);
+    snprintf(dstate, dsize, "Title #%d%s (%d of %d)", title, pt, ordinal, count);
+}
+
+void engine_title_result_state(int part, DrStatus status, int64_t warnings, char *buf, size_t size)
+{
+    char pt[32];
+
+    part_text(part, pt, sizeof(pt));
+    if (status == DR_STATUS_OK && warnings)
+        snprintf(buf, size, "Done%s, %"PRId64" warning(s)", pt, warnings);
+    else if (status == DR_STATUS_OK)
+        snprintf(buf, size, "Done%s", pt);
+    else if (status == DR_STATUS_STOPPED)
+        snprintf(buf, size, "Stopped%s: not complete", pt);
+    else
+        snprintf(buf, size, "Failed%s (see the log)", pt);
+}
+
+const char *engine_disc_result_state(int failed, int stopped)
+{
+    return stopped ? "Stopped" : failed ? "Done with failures (see the log)" : "Done";
+}
+
+void engine_no_disc_note(const char *path, char *buf, size_t size)
+{
+    snprintf(buf, size, "No disc found in %s", path);
+}
+
+void engine_setting_kept_note(const char *what, char *buf, size_t size)
+{
+    snprintf(buf, size, "Setting kept: %s", what);
+}

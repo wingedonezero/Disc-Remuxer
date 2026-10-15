@@ -287,7 +287,7 @@ void MainWindow::newBar(QTreeWidgetItem *item, int value)
 void MainWindow::queueScan(Job &job)
 {
     job.scanning = true;
-    job.item->setText(C_STATUS, "Waiting to scan…");
+    job.item->setText(C_STATUS, QString::fromUtf8(engine_state_text(ENGINE_STATE_SCAN_WAITING)));
     newBar(job.item, -1);
     pendingScans++;
     emit scanRequested(job.id, job.found.path);
@@ -297,8 +297,11 @@ void MainWindow::addPaths(const QStringList &paths)
 {
     for (const QString &p : paths) {
         const QList<FoundDisc> found = findDiscs(p);
-        if (found.isEmpty())
-            console->addLine(LOG_WARNING, 0, QString(), QString("No disc found in %1").arg(p), false);
+        if (found.isEmpty()) {
+            QByteArray path = p.toUtf8(), note(path.size() + 64, 0);
+            engine_no_disc_note(path.constData(), note.data(), note.size());
+            console->addLine(LOG_WARNING, 0, QString(), QString::fromUtf8(note.constData()), false);
+        }
         for (const FoundDisc &f : found) {
             Job job;
             job.id = nextId++;
@@ -321,7 +324,7 @@ void MainWindow::addPaths(const QStringList &paths)
 void MainWindow::scanStarted(quint64 id)
 {
     if (Job *j = jobById(id))
-        j->item->setText(C_STATUS, "Scanning…");
+        j->item->setText(C_STATUS, QString::fromUtf8(engine_state_text(ENGINE_STATE_SCANNING)));
 }
 
 void MainWindow::scanned(quint64 id, quintptr handle)
@@ -339,7 +342,7 @@ void MainWindow::scanned(quint64 id, quintptr handle)
         if (disc) {
             fillDisc(*j);
         } else {
-            j->item->setText(C_STATUS, "Cannot be read (see the log)");
+            j->item->setText(C_STATUS, QString::fromUtf8(engine_state_text(ENGINE_STATE_UNREADABLE)));
             updating = true;
             j->item->setData(C_NAME, Qt::CheckStateRole, QVariant());
             updating = false;
@@ -704,8 +707,11 @@ void MainWindow::openPrefs()
 
     while (dlg.exec() == QDialog::Accepted) {
         if (dlg.apply(&changed, &reading)) {
-            for (const QString &c : changed)
-                console->addLine(LOG_INFO, 0, QString(), "Setting kept: " + c, false);
+            for (const QString &c : changed) {
+                QByteArray what = c.toUtf8(), note(what.size() + 64, 0);
+                engine_setting_kept_note(what.constData(), note.data(), note.size());
+                console->addLine(LOG_INFO, 0, QString(), QString::fromUtf8(note.constData()), false);
+            }
             if (reading && !running && !jobs.isEmpty() &&
                 QMessageBox::question(this, "Preferences", "These settings change how a disc is read. Scan the "
                                                            "discs in the queue again so they use them?") ==
@@ -748,11 +754,12 @@ void MainWindow::startQueue()
         if (!j || !j->disc || !engine_titles_ripped(j->disc))
             continue;
         run.append({ j->id, j->disc, outputFolder(*j) });
-        j->item->setText(C_STATUS, "Waiting");
+        j->item->setText(C_STATUS, QString::fromUtf8(engine_state_text(ENGINE_STATE_RIP_WAITING)));
         newBar(j->item, 0);
     }
     if (run.isEmpty()) {
-        console->addLine(LOG_WARNING, 0, QString(), "No title is checked: nothing to rip", false);
+        console->addLine(LOG_WARNING, 0, QString(), QString::fromUtf8(engine_state_text(ENGINE_NOTE_NOTHING_CHECKED)),
+                         false);
         return;
     }
     running = true;
@@ -771,7 +778,7 @@ void MainWindow::stopQueue()
         return;
     stopping = true;
     worker->stop();
-    console->addLine(LOG_WARNING, 0, QString(), "Stopping: the title being written ends now", false);
+    console->addLine(LOG_WARNING, 0, QString(), QString::fromUtf8(engine_state_text(ENGINE_NOTE_STOPPING)), false);
     updateControls();
 }
 
@@ -784,7 +791,7 @@ void MainWindow::ripStarted(quint64 id, QString folder)
     if (!j)
         return;
     j->outDir = folder;
-    j->item->setText(C_STATUS, "Ripping…");
+    j->item->setText(C_STATUS, QString::fromUtf8(engine_state_text(ENGINE_STATE_RIPPING)));
 }
 
 int MainWindow::titles(const Job &j)
@@ -799,17 +806,11 @@ MainWindow::Job *MainWindow::ripping()
     return j && running && j->disc ? j : nullptr;
 }
 
-// " part 2" for a part of a title, "" for the whole title
-static QString partText(int part)
-{
-    return part >= 0 ? QString(" part %1").arg(part + 1) : QString();
-}
-
 void MainWindow::onTitleStarted(TitleStart s)
 {
     Job *j = ripping();
     QTreeWidgetItem *title = j && s.title >= 0 && s.title < j->item->childCount() ? j->item->child(s.title) : nullptr;
-    QString part = partText(s.part);
+    char tstate[128], dstate[128];
 
     if (!title)
         return;
@@ -817,24 +818,21 @@ void MainWindow::onTitleStarted(TitleStart s)
     ripOrdinal = s.ordinal;
     ripCount = s.count;
     titleClock.start();
-    title->setText(C_STATUS, "Writing" + part + "…");
-    j->item->setText(C_STATUS, QString("Title #%1%2 (%3 of %4)").arg(s.title).arg(part).arg(ripOrdinal).arg(ripCount));
+    engine_title_start_state(s.title, s.part, s.ordinal, s.count, tstate, sizeof(tstate), dstate, sizeof(dstate));
+    title->setText(C_STATUS, QString::fromUtf8(tstate));
+    j->item->setText(C_STATUS, QString::fromUtf8(dstate));
 }
 
 void MainWindow::onTitleDone(TitleResult r)
 {
     Job *j = ripping();
     QTreeWidgetItem *title = j && r.title >= 0 && r.title < j->item->childCount() ? j->item->child(r.title) : nullptr;
-    QString part = partText(r.part);
+    char state[128];
 
     if (!title)
         return;
-    if (r.status == DR_STATUS_OK)
-        title->setText(C_STATUS, "Done" + part + (r.warnings ? QString(", %1 warning(s)").arg(r.warnings) : ""));
-    else if (r.status == DR_STATUS_STOPPED)
-        title->setText(C_STATUS, "Stopped" + part + ": not complete");
-    else
-        title->setText(C_STATUS, "Failed" + part + " (see the log)");
+    engine_title_result_state(r.part, r.status, r.warnings, state, sizeof(state));
+    title->setText(C_STATUS, QString::fromUtf8(state));
 }
 
 void MainWindow::onRunResult(RunResult r)
@@ -864,7 +862,7 @@ void MainWindow::ripDone(quint64 id, int result, bool stopped)
 
     if (!j)
         return;
-    j->item->setText(C_STATUS, stopped ? "Stopped" : result ? "Done with failures (see the log)" : "Done");
+    j->item->setText(C_STATUS, QString::fromUtf8(engine_disc_result_state(result != 0, stopped)));
     if (QProgressBar *bar = barOf(j->item))
         bar->setValue(stopped ? bar->value() : 100);
     ripId = 0;
@@ -881,8 +879,9 @@ void MainWindow::runDone(bool stopped)
             showTitleChecks(j, t);
             j.item->child(t)->setText(C_STATUS, keep);     // the run's result stays shown
         }
-    console->addLine(stopped ? LOG_WARNING : LOG_OK, 0, QString(), stopped ? "The queue was stopped" :
-                     "The queue is done", true);
+    console->addLine(stopped ? LOG_WARNING : LOG_OK, 0, QString(),
+                     QString::fromUtf8(engine_state_text(stopped ? ENGINE_NOTE_QUEUE_STOPPED : ENGINE_NOTE_QUEUE_DONE)),
+                     true);
     updateControls();
     if (!snapshot.isEmpty() && !test.isEmpty()) {
         grab().save(snapshot);

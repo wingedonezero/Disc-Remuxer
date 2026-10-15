@@ -50,10 +50,11 @@ int  engine_info(const char *source, const EngineChoice *c, int details);
 /* The demux command: titles ("all": the titles not shorter than the
  * minimum length; "3", "1,3-5") into out_dir, NULL: a folder named after
  * the disc in the main output folder (engine_output_folder()); split: the
- * titles written as parts, or NULL. 0, 1 (a title failed), 2 (bad
+ * titles written as parts, or NULL; details: the queue's states as the GUI
+ * shows them ("Queue:" lines, views.h). 0, 1 (a title failed), 2 (bad
  * arguments). */
 int  engine_demux(const char *source, const char *titles, const char *out_dir, const char *split,
-                  const EngineChoice *c);
+                  const EngineChoice *c, int details);
 /* The find command: the discs found at or below path (discs.h), each with
  * its name, place and output folder, as the GUI's queue takes them. 0, 1
  * (none found). A folder of discs given to engine_demux() is ripped disc by
