@@ -38,6 +38,7 @@
 #include "base/str.h"
 
 #include "dvd_internal.h"
+#include "dvd_stream_probe.h"
 #include "dvd_title_list.h"
 
 /* the list's lines: what a user should see, details, warnings, debug lines */

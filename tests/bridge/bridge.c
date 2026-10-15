@@ -32,6 +32,7 @@
 #include "analyze/analyze.h"
 #include "timeline/disctl.h"
 #include "disc/dvd/dvd_internal.h"
+#include "disc/dvd/dvd_stream_probe.h"
 #include "disc/hddvd/hddvd_internal.h"
 #include "disc/clip_demux.h"
 #include "disc/lang.h"

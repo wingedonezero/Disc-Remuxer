@@ -1,32 +1,34 @@
 /*
- * The packets of a title VOB sector and the stream probe of a title
- * (dvdread/vob_read.h: DVDPackPacket_rec(), DVDProbeTitleStreams_rec()).
+ * DVD-Video: the packets of a title VOB sector and the stream probe of a
+ * title (dvd_stream_probe.h: DVDPackPacket_rec(), DVDProbeTitleStreams_rec()),
+ * its sectors read through libdvdread's reading of the title set's VOBs
+ * (vob_read.h).
  *
- * This file is part of libdvdread.
- *
- * libdvdread is free software; you can redistribute it and/or modify
+ * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * libdvdread is distributed in the hope that it will be useful,
+ * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with libdvdread; if not, write to the Free Software Foundation, Inc.,
+ * with this program; if not, write to the Free Software Foundation, Inc.,
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
-
-#include "config.h"
 
 #include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "dvdread/dvd_reader.h"
-#include "dvdread/vob_read.h"
+#include <dvdread/dvd_reader.h>
+#include <dvdread/vob_read.h>
+
+#include "base/mem.h"
+
+#include "dvd_stream_probe.h"
 
 #define SECTOR      DVD_VIDEO_LB_LEN
 #define ZONE0       (200LL << 20)       /* the segment's start; longer segments get the two zones below */
@@ -263,7 +265,7 @@ static int add_key( probe_t *g, uint16_t k )
   if( has_key( g, k ) )
     return 0;
   if( g->nb_keys == g->alloc_keys ) {
-    uint16_t *n = realloc( g->keys, (g->alloc_keys + 16) * sizeof(*n) );
+    uint16_t *n = dr_realloc( g->keys, (g->alloc_keys + 16) * sizeof(*n) );
     if( !n )
       return -1;
     g->keys = n;
@@ -375,7 +377,7 @@ static uint16_t audio_key( int stream, int coding )
 int DVDProbeTitleStreams_rec( dvd_vob_reader_t *v, const dvd_extent_t *extents, int nb_extents,
                               dvd_probe_audio_t *audio, int nb_audio, int *captions, uint32_t *failed_block )
 {
-  probe_t g = { v, extents, nb_extents };
+  probe_t g = { .v = v, .extents = extents, .nb_extents = nb_extents };
   const dvd_extent_t *e = nb_extents ? &extents[nb_extents - 1] : NULL;
   int64_t size = e ? (int64_t)(e->logical + e->count) * SECTOR : 0;
   int ret = 0;
@@ -422,6 +424,6 @@ int DVDProbeTitleStreams_rec( dvd_vob_reader_t *v, const dvd_extent_t *extents, 
 end:
   if( ret < -1 )
     *failed_block = g.failed;
-  free( g.keys );
+  dr_free( g.keys );
   return ret;
 }

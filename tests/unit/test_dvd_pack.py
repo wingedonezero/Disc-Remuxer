@@ -1,4 +1,4 @@
-"""libdvdread's packet reader for its stream probe (dvdread/vob_read.h,
+"""The DVD part's packet reader for its stream probe (disc/dvd/dvd_stream_probe.h,
 DVDPackPacket_rec()) against the demuxer's (libavformat/mpeg.c,
 ff_mpegps_disc_packet(), with DVD-Video's 3-byte LPCM audio frame header):
 the same packets, offsets, keys and reasons on built sectors of every kind,

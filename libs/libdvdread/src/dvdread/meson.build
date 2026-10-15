@@ -14,7 +14,6 @@ dvdread_api_headers = files(
     'nav_read.h',
     'vob_read.h',
     'disc_read.h',
-    'title_list.h',
     'nav_types.h',
 )
 

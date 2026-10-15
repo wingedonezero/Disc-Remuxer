@@ -13,7 +13,8 @@ their own source names, and the processing library's lines come in through
 analyze's hook. Next: the step-7 gate (the corpus byte-compare + info
 compare, the user's: run once the whole rewrite is done, not per step), then
 step 8, the DVD lift (D-8 decided, the slices planned — see step 8 below);
-8a (the scan driver, row 266) and 8b (the title list, row 267) are in.
+8a (the scan driver, row 266), 8b (the title list, row 267) and 8c (the
+stream probe, row 268) are in.
 Tests at every commit: 743 passed, 15 skipped (the disc-marked ones without a
 disc). Every move so far is behavior-preserving by construction and by test;
 the real-disc byte-compare against a main build is still owed (user runs it
@@ -177,7 +178,7 @@ different rip.
   report instrumentation and fs hooks keep their value; the policy half
   (title list, stream probe, cell heuristics, the `vob_css[100]` state
   block) comes up into `dvd/` as an app-side disc context (the title list
-  is up since 8b).
+  is up since 8b, the stream probe since 8c).
 - **libdvdcss** (+59) and **libaacs** (+941, cleanly additive incl. HD DVD)
   stay as they are. expat, tomlc17, CCExtractor (helper process) unchanged.
 
@@ -434,7 +435,9 @@ In slices, one commit and one full test run each, behavior-preserving:
   `dvd_title_list.c` (policy over the disc structure and the scan's
   recordings), with the title's stream step; on the DVD part's disc, its
   lines through `ff_dvd_lib_vlog()`.
-- **8c** — the stream probe up.
+- **8c — DONE (row 268)** — the stream probe up (`dvd_stream_probe.c`,
+  with the sector's packet reader); its sectors still come through
+  libdvdread's title-VOB reading until 8e.
 - **8d** — the cell policy + the app-side context: `vob_read.c`'s policy
   half up, and the state leaves the library — `dvd_reader_s.vob_css[100]`,
   the cell-check rng and the `ifo_handle_private_s` extensions become a

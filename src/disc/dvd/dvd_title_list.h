@@ -171,8 +171,8 @@ int DVDTitleList_rec( struct DVDDisc *, const dvd_nav_cells_t *scan, int nb_scan
 void DVDFreeTitle_rec( dvd_title_t * );
 
 /**
- * The stream probe of title t (libdvdread's DVDProbeTitleStreams_rec() on
- * its largest segment, the first of the largest, on its title set's own reading): its
+ * The stream probe of title t (DVDProbeTitleStreams_rec(), dvd_stream_probe.h,
+ * on its largest segment, the first of the largest, on its title set's own reading): its
  * captions and the audio streams it leaves out (t->captions,
  * t->audio_dropped), each audio stream by its stream number, its attributes'
  * coding mode and whether audio_control lists it by its place in the title's
