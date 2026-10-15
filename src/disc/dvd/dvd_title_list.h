@@ -1,36 +1,35 @@
 /*
- * This file is part of libdvdread.
+ * DVD-Video: the title list (dvd_title_list.c).
  *
- * libdvdread is free software; you can redistribute it and/or modify
+ * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * libdvdread is distributed in the hope that it will be useful,
+ * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with libdvdread; if not, write to the Free Software Foundation, Inc.,
+ * with this program; if not, write to the Free Software Foundation, Inc.,
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-#ifndef LIBDVDREAD_TITLE_LIST_H
-#define LIBDVDREAD_TITLE_LIST_H
+#ifndef DISC_DVD_DVD_TITLE_LIST_H
+#define DISC_DVD_DVD_TITLE_LIST_H
 
 #include <stdint.h>
 
-#include "disc_read.h"
-#include "vob_read.h"
+#include <dvdread/disc_read.h>
+#include <dvdread/vob_read.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+struct DVDDisc;
 
 /**
- * The title list of a disc (dvd_disc_rec_t), from its structure and the
- * navigation scan's recordings (libdvdnav's dvdnav_scan_run(), handed in).
+ * The title list of a disc (its structure, dvd_disc_rec_t, read by
+ * libdvdread), from the structure and the navigation scan's recordings
+ * (dvd_scan.c, handed in).
  *
  * Order. With the scan's cell lists in use, the titles the navigation
  * reached come first, then the others, each group in the order of the title
@@ -75,8 +74,9 @@ extern "C" {
  * Duplicates. A title playing an earlier one's sectors with no more streams
  * and chapters is left out; the search starts over after each.
  *
- * What the list finds and decides it says in the disc reader's log as it
- * happens (decisions and steps a user should see as notices).
+ * What the list finds and decides it says in the log as it happens, the
+ * way the DVD libraries' lines go ("DVD: "; decisions and steps a user
+ * should see as notices).
  */
 
 /** A recording of the navigation scan: the cells (from 1) the navigation
@@ -166,13 +166,13 @@ typedef struct
  * them, 0: the scan failed or did not run); they must outlive the list.
  * 0, -1 no memory (*out empty). Free with DVDFreeTitleList_rec().
  */
-DVDREAD_API int DVDTitleList_rec( dvd_disc_rec_t *, const dvd_nav_cells_t *scan, int nb_scan,
-                                  const dvd_title_options_t *, dvd_title_list_t *out );
-DVDREAD_API void DVDFreeTitle_rec( dvd_title_t * );
+int DVDTitleList_rec( struct DVDDisc *, const dvd_nav_cells_t *scan, int nb_scan, const dvd_title_options_t *,
+                      dvd_title_list_t *out );
+void DVDFreeTitle_rec( dvd_title_t * );
 
 /**
- * The stream probe of title t (DVDProbeTitleStreams_rec() on its largest
- * segment, the first of the largest, on its title set's own reading): its
+ * The stream probe of title t (libdvdread's DVDProbeTitleStreams_rec() on
+ * its largest segment, the first of the largest, on its title set's own reading): its
  * captions and the audio streams it leaves out (t->captions,
  * t->audio_dropped), each audio stream by its stream number, its attributes'
  * coding mode and whether audio_control lists it by its place in the title's
@@ -182,10 +182,7 @@ DVDREAD_API void DVDFreeTitle_rec( dvd_title_t * );
  * -1 no memory, -2 a sector cannot be read, -3 it is scrambled without a
  * title key (said; the title cannot be used).
  */
-DVDREAD_API int DVDTitleStreams_rec( dvd_disc_rec_t *, dvd_title_t *t );
-DVDREAD_API void DVDFreeTitleList_rec( dvd_title_list_t * );
+int DVDTitleStreams_rec( struct DVDDisc *, dvd_title_t *t );
+void DVDFreeTitleList_rec( dvd_title_list_t * );
 
-#ifdef __cplusplus
-};
-#endif
-#endif /* LIBDVDREAD_TITLE_LIST_H */
+#endif /* DISC_DVD_DVD_TITLE_LIST_H */

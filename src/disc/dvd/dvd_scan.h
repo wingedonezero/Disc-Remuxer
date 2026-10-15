@@ -21,7 +21,7 @@
 
 #include <stdint.h>
 
-#include <dvdread/title_list.h>
+#include "dvd_title_list.h"
 
 /**
  * The navigation scan: the disc's navigation played the way a viewer would
@@ -73,7 +73,7 @@
  * scan.
  */
 
-/** The recordings in libdvdread's form (dvd_nav_cells_t, title_list.h:
+/** The recordings in the title list's form (dvd_nav_cells_t, dvd_title_list.h:
  *  the cells the navigation played in a title / program chain and the name
  *  of the path that played them), handed to DVDTitleList_rec() as they are. */
 typedef struct

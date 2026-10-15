@@ -396,7 +396,7 @@ static int tb_dvd_scan(DVDDisc *d, void (*trace)(void *, const char *), dvdnav_s
     return ff_dvd_scan(d, trace, NULL, out);
 }
 
-/* libavformat/dvd_titles.c: the navigation scan, then the title list built
+/* disc/dvd/dvd_title_list.c: the navigation scan, then the title list built
  * from it, as ff_dvd_titles_dump() text (*dump, av_free() it); scan_ret:
  * the scan's return value. */
 static int tb_dvd_titles(DVDDisc *d, int cell_mode, int cell_check, int min_length, int *scan_ret, char **dump)

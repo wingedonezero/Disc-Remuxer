@@ -160,8 +160,8 @@ int  ff_dvd_vobu_start_check(DVDDisc *d, int vts, uint32_t sector);
  *  (dvdnav_scan_free_results()); the VOBU records are left on the disc. */
 int  ff_dvd_scan(DVDDisc *d, void (*trace)(void *opaque, const char *line), void *opaque, dvdnav_scan_results_t *out);
 
-/* ---- dvd_titles.c: the title list is libdvdread's (dvdread/title_list.h:
- * dvd_title_list_t, dvd_title_t, its segments dvd_segment_t, chapters
+/* ---- dvd_title_list.c: the title list (dvd_title_list.h: dvd_title_list_t,
+ * dvd_title_t, its segments dvd_segment_t (libdvdread's), chapters
  * dvd_title_chapter_t, streams dvd_stream_ref_t) ---- */
 
 #define DVD_VTS_VIDEO_ATTR  0x200       /* VTSI_MAT vts_video_attr (2 bytes) */
@@ -184,7 +184,7 @@ typedef struct DVDTitleOptions {
 } DVDTitleOptions;
 
 /** The title list from the disc's structure and the navigation scan (a
- *  failed scan: no results), libdvdread's (DVDFreeTitleList_rec()). */
+ *  failed scan: no results); free it with DVDFreeTitleList_rec(). */
 int   ff_dvd_titles_build(DVDDisc *d, const dvdnav_scan_results_t *scan, const DVDTitleOptions *o,
                           dvd_title_list_t *out);
 /** The full cell check of cell (1-based) of program chain pgcn of title

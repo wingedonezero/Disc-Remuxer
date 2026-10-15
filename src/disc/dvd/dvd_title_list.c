@@ -1,24 +1,27 @@
 /*
- * The title list of a DVD-Video disc (dvdread/title_list.h).
+ * DVD-Video: the title list (dvd_title_list.h: from the disc's structure
+ * and the navigation scan's recordings, the titles of every title table
+ * entry and program chain, the ones that should not be there left out,
+ * their cells (CellWalk / CellTrim), lengths, segments, chapters, streams
+ * and angles, duplicates removed), and each title's stream probe. The cell
+ * rules, segments and chapter places it asks libdvdread for (vob_read.h);
+ * its lines go into the log the way the DVD libraries' do ("DVD: "); the
+ * rest of the DVD format part uses its titles as they are.
  *
- * This file is part of libdvdread.
- *
- * libdvdread is free software; you can redistribute it and/or modify
+ * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * libdvdread is distributed in the hope that it will be useful,
+ * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with libdvdread; if not, write to the Free Software Foundation, Inc.,
+ * with this program; if not, write to the Free Software Foundation, Inc.,
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
-
-#include "config.h"
 
 #include <inttypes.h>
 #include <stdarg.h>
@@ -26,12 +29,16 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "dvdread/disc_read.h"
-#include "dvdread/ifo_read.h"
-#include "dvdread/title_list.h"
-#include "dvdread/vob_read.h"
-#include "dvdread_internal.h"
-#include "logger.h"
+#include <dvdread/disc_read.h>
+#include <dvdread/ifo_read.h>
+#include <dvdread/vob_read.h>
+
+#include "base/err.h"
+#include "base/mem.h"
+#include "base/str.h"
+
+#include "dvd_internal.h"
+#include "dvd_title_list.h"
 
 /* the list's lines: what a user should see, details, warnings, debug lines */
 enum { DVD_NOTE_INFO, DVD_NOTE_DETAIL, DVD_NOTE_WARN, DVD_NOTE_DEBUG, DVD_NOTE_ERROR };
@@ -57,6 +64,7 @@ enum { DVD_NOTE_INFO, DVD_NOTE_DETAIL, DVD_NOTE_WARN, DVD_NOTE_DEBUG, DVD_NOTE_E
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
 typedef struct {
+  DVDDisc                   *d;                 /* its log */
   dvd_disc_rec_t            *disc;
   const dvd_nav_cells_t     *scan;
   int                        nb_scan;
@@ -69,21 +77,27 @@ typedef struct {
   const char                *no_cells;         /* the last title built: why it has no cells (NULL: it has) */
 } titles_t;
 
-/* A line of the list in the disc reader's log. */
+static void lib_say( DVDDisc *d, int level, const char *fmt, ... )
+{
+  va_list va;
+
+  va_start( va, fmt );
+  ff_dvd_lib_vlog( d, level, fmt, va );
+  va_end( va );
+}
+
+/* A line of the list in the log, as the DVD libraries' lines go. */
 static void note( titles_t *T, int level, const char *fmt, ... )
 {
   static const dvd_logger_level_t levels[] = { DVD_LOGGER_LEVEL_NOTICE, DVD_LOGGER_LEVEL_INFO, DVD_LOGGER_LEVEL_WARN,
                                                DVD_LOGGER_LEVEL_DEBUG, DVD_LOGGER_LEVEL_ERROR };
-  dvd_reader_t *ctx = T->disc->ctx;
   char text[512];
   va_list va;
 
-  if( !ctx )
-    return;
   va_start( va, fmt );
   vsnprintf( text, sizeof(text), fmt, va );
   va_end( va );
-  DVDReadLog( ctx->priv, &ctx->logcb, levels[level], "%s", text );
+  lib_say( T->d, levels[level], "%s", text );
 }
 
 static uint16_t rb16( const uint8_t *p )
@@ -116,7 +130,7 @@ static int grow( void **p, int *alloc, int n, size_t elem )
   if( n < *alloc )
     return 0;
   cap = MAX( 16, *alloc * 2 );
-  if( !(q = realloc( *p, (size_t)cap * elem )) )
+  if( !(q = dr_realloc( *p, (size_t)cap * elem )) )
     return -1;
   *p = q;
   *alloc = cap;
@@ -132,7 +146,7 @@ static const uint8_t *header( titles_t *T, unsigned vtsn )
 
   if( vtsn > (unsigned)T->disc->nr_of_title_sets || !(f = &T->disc->ifos[vtsn])->ifo )
     return NULL;
-  if( !T->headers[vtsn] && (T->headers[vtsn] = malloc( HEADER_SIZE )) &&
+  if( !T->headers[vtsn] && (T->headers[vtsn] = dr_malloc( HEADER_SIZE )) &&
       !ifoRead_rec_bytes( f->ifo, 0, T->headers[vtsn], HEADER_SIZE ) )
     memset( T->headers[vtsn], 0, HEADER_SIZE );
   return T->headers[vtsn];
@@ -214,7 +228,7 @@ static int cells_room( titles_t *T, dvd_title_t *t )
 
   t->nb_cells = 0;
   if( t->alloc_cells < n ) {
-    if( !(c = realloc( t->cells, MAX( n, 1 ) * sizeof(*c) )) )
+    if( !(c = dr_realloc( t->cells, MAX( n, 1 ) * sizeof(*c) )) )
       return -1;
     t->cells       = c;
     t->alloc_cells = MAX( n, 1 );
@@ -275,12 +289,12 @@ static int cell_trim( titles_t *T, dvd_title_t *t )
 /* Each segment's cell runs as text. */
 static int cell_maps( dvd_title_t *t )
 {
-  if( t->segs.nb_segments && !(t->cell_maps = calloc( t->segs.nb_segments, sizeof(*t->cell_maps) )) )
+  if( t->segs.nb_segments && !(t->cell_maps = dr_calloc( t->segs.nb_segments, sizeof(*t->cell_maps) )) )
     return -1;
   for( int k = 0; k < t->segs.nb_segments; k++ ) {
     const dvd_segment_t *g = &t->segs.segments[k];
     size_t size = 3 + (size_t)g->nb_runs * 12, at = 0;
-    char *s = malloc( size );
+    char *s = dr_malloc( size );
 
     if( !s )
       return -1;
@@ -310,14 +324,14 @@ static int shared_cells( titles_t *T, dvd_title_t *t )
 
   if( t->nr_of_angles < 2 || !p || !p->cells )
     return 0;
-  if( !(s = malloc( size )) )
+  if( !(s = dr_malloc( size )) )
     return -1;
   s[0] = 0;
   for( int i = 0; i < t->nb_cells; i++ )
     if( t->cells[i] < p->nr_of_cells && (p->cells[t->cells[i]].category[0] >> 4 & 3) != 1 )
       at += snprintf( s + at, size - at, "%s%d", at ? ", " : "", t->cells[i] + 1 );
   if( !at ) {
-    free( s );
+    dr_free( s );
     return 0;
   }
   t->shared_cells = s;
@@ -339,7 +353,7 @@ static int place_chapters( titles_t *T, dvd_title_t *t, dvd_vob_reader_t *vr )
         t->chapters[k].cell = angle_cell( T, t->vtsn, p, t->chapters[k].cell, t->angle, t->nr_of_angles );
   if( !t->nb_chapters )
     return 0;
-  if( !(pl = malloc( t->nb_chapters * sizeof(*pl) )) )
+  if( !(pl = dr_malloc( t->nb_chapters * sizeof(*pl) )) )
     return -1;
   for( int k = 0; k < t->nb_chapters; k++ )
     pl[k].cell = t->chapters[k].cell;
@@ -352,7 +366,7 @@ static int place_chapters( titles_t *T, dvd_title_t *t, dvd_vob_reader_t *vr )
       ch->time   = pl[k].time;
     }
   }
-  free( pl );
+  dr_free( pl );
   n = t->nb_chapters;
   if( n > 2 ) {
     while( t->chapters[0].segment == DVD_TITLE_CHAPTER_NONE ) {
@@ -532,20 +546,20 @@ void DVDFreeTitle_rec( dvd_title_t *t )
   if( !t )
     return;
   for( int k = 0; t->cell_maps && k < t->segs.nb_segments; k++ )
-    free( t->cell_maps[k] );
-  free( t->cell_maps );
-  free( t->shared_cells );
+    dr_free( t->cell_maps[k] );
+  dr_free( t->cell_maps );
+  dr_free( t->shared_cells );
   DVDFreeTitleSegments_rec( &t->segs );
-  free( t->chapters );
-  free( t->cells );
-  free( t );
+  dr_free( t->chapters );
+  dr_free( t->cells );
+  dr_free( t );
 }
 
 void DVDFreeTitleList_rec( dvd_title_list_t *l )
 {
   for( int i = 0; i < l->nb_titles; i++ )
     DVDFreeTitle_rec( l->titles[i] );
-  free( l->titles );
+  dr_free( l->titles );
   l->titles    = NULL;
   l->nb_titles = 0;
 }
@@ -663,7 +677,7 @@ static int title_init( titles_t *T, dvd_title_t *t, int idx, unsigned vtsn, cons
   t->angle = angle;
   t->vtsn  = vtsn;
   t->pgcn  = p->number;
-  if( !(t->chapters = malloc( MAX( nb_ch, 1 ) * sizeof(*t->chapters) )) )
+  if( !(t->chapters = dr_malloc( MAX( nb_ch, 1 ) * sizeof(*t->chapters) )) )
     return -1;
   memcpy( t->chapters, ch, nb_ch * sizeof(*ch) );
   t->nb_chapters = nb_ch;
@@ -686,7 +700,7 @@ static int title_init( titles_t *T, dvd_title_t *t, int idx, unsigned vtsn, cons
 
 static int list_add( dvd_title_list_t *l, dvd_title_t *t )
 {
-  dvd_title_t **a = realloc( l->titles, (l->nb_titles + 1) * sizeof(*a) );
+  dvd_title_t **a = dr_realloc( l->titles, (l->nb_titles + 1) * sizeof(*a) );
   if( !a )
     return -1;
   a[l->nb_titles++] = t;
@@ -741,7 +755,7 @@ static int add_pgc_titles( titles_t *T, int idx, unsigned vtsn, const pgc_rec_t 
 
   if( !nb_ch )
     return 0;
-  if( !(t = calloc( 1, sizeof(*t) )) )
+  if( !(t = dr_calloc( 1, sizeof(*t) )) )
     return -1;
   if( k )
     snprintf( t->name, sizeof(t->name), "%d/%d", idx + 1, k );
@@ -806,7 +820,7 @@ static int add_pgc_titles( titles_t *T, int idx, unsigned vtsn, const pgc_rec_t 
   if( t->nr_of_angles > 1 )
     main_angle_note( T, t );
   for( int a = 1; a < t->nr_of_angles; a++ ) {
-    dvd_title_t *ta = calloc( 1, sizeof(*ta) );
+    dvd_title_t *ta = dr_calloc( 1, sizeof(*ta) );
     if( !ta )
       return -1;
     memcpy( ta->name, t->name, sizeof(ta->name) );
@@ -880,7 +894,7 @@ static int title_chapters( titles_t *T, int idx, unsigned f, dvd_title_chapter_t
         continue;
       }
       if( grow( (void **)&ch, &alloc, nb, sizeof(*ch) ) < 0 ) {
-        free( ch );
+        dr_free( ch );
         return -1;
       }
       ch[nb++] = (dvd_title_chapter_t){ .pgcn = q, .pgn = g, .cell = cell - 1, .segment = DVD_TITLE_CHAPTER_NONE };
@@ -966,7 +980,7 @@ static int add_title( titles_t *T, int idx )
   if( (ret = title_chapters( T, idx, vtsn, &ch, &nb )) <= 0 )
     return ret;
   /* the program chains the chapters use, ascending */
-  if( !(pgcns = malloc( MAX( nb, 1 ) * sizeof(*pgcns) )) || !(sub = malloc( MAX( nb, 1 ) * sizeof(*sub) )) ) {
+  if( !(pgcns = dr_malloc( MAX( nb, 1 ) * sizeof(*pgcns) )) || !(sub = dr_malloc( MAX( nb, 1 ) * sizeof(*sub) )) ) {
     ret = -1;
     goto end;
   }
@@ -1001,9 +1015,9 @@ static int add_title( titles_t *T, int idx )
       goto end;
   }
 end:
-  free( pgcns );
-  free( sub );
-  free( ch );
+  dr_free( pgcns );
+  dr_free( sub );
+  dr_free( ch );
   return ret;
 }
 
@@ -1069,10 +1083,11 @@ static void remove_duplicates( titles_t *T )
   }
 }
 
-int DVDTitleList_rec( dvd_disc_rec_t *disc, const dvd_nav_cells_t *scan, int nb_scan, const dvd_title_options_t *o,
+int DVDTitleList_rec( DVDDisc *d, const dvd_nav_cells_t *scan, int nb_scan, const dvd_title_options_t *o,
                       dvd_title_list_t *out )
 {
-  titles_t T = { disc, scan, nb_scan, o, out };
+  dvd_disc_rec_t *disc = d->rec;
+  titles_t T = { .d = d, .disc = disc, .scan = scan, .nb_scan = nb_scan, .o = o, .out = out };
   unsigned n = disc->tt_srpt && disc->tt_srpt_size >= 2 ? rb16( disc->tt_srpt ) : 0;
   int ret = 0;
 
@@ -1098,16 +1113,16 @@ end:
   if( ret < 0 )
     DVDFreeTitleList_rec( out );
   for( int i = 0; i < 100; i++ )
-    free( T.headers[i] );
+    dr_free( T.headers[i] );
   return ret < 0 ? -1 : 0;
 }
 
 /* ---- the stream probe of a title ---- */
 
-int DVDTitleStreams_rec( dvd_disc_rec_t *disc, dvd_title_t *t )
+int DVDTitleStreams_rec( DVDDisc *d, dvd_title_t *t )
 {
   dvd_title_options_t none = { 0 };
-  titles_t T = { disc, NULL, 0, &none, NULL };
+  titles_t T = { .d = d, .disc = d->rec, .o = &none };
   dvd_probe_audio_t audio[8] = { { 0 } };
   const dvd_segment_t *g;
   const uint8_t *h;
@@ -1175,6 +1190,65 @@ int DVDTitleStreams_rec( dvd_disc_rec_t *disc, dvd_title_t *t )
   }
   ret = 1;
 end:
-  free( T.headers[t->vtsn] );
+  dr_free( T.headers[t->vtsn] );
   return ret;
+}
+
+/* ---- the title list on the disc ---- */
+
+int ff_dvd_title_vobs_overlap(const DVDDisc *d, int vts)
+{
+    return DVDDiscTitleVOBsOverlap_rec(d->rec, vts);
+}
+
+int ff_dvd_titles_build(DVDDisc *d, const dvdnav_scan_results_t *scan, const DVDTitleOptions *o,
+                        dvd_title_list_t *out)
+{
+    dvd_title_options_t lo = { o->cell_mode, o->cell_check, dr_random_seed(), o->min_length };
+
+    return DVDTitleList_rec(d, scan->results, scan->nb_results, &lo, out) < 0 ? DR_ERR(ENOMEM) : 0;
+}
+
+int ff_dvd_cell_check(DVDDisc *d, int vts, int pgcn, int cell, int mode)
+{
+    const dvd_ifo_rec_t *f = vts > 0 ? ff_dvd_set(d, vts) : NULL;
+    const pgc_rec_t *p = f && f->pgcit && pgcn > 0 && pgcn <= f->pgcit->nr_of_pgcs ? f->pgcit->pgcs[pgcn - 1] : NULL;
+    dvd_vob_reader_t *vr;
+
+    if (!p || cell < 1 || cell > p->nr_of_cells)
+        return DR_ERR(EINVAL);
+    DVDSetCellCheck_rec(d->reader, (dvd_cell_check_t)mode, dr_random_seed());
+    vr = ff_dvd_own_reading(d, vts);
+    return !vr || DVDCellCheckFailed_rec(vr, p->number, cell - 1);
+}
+
+char *ff_dvd_titles_dump(const dvd_title_list_t *l)
+{
+    DrStr bp;
+
+    dr_str_init(&bp);
+    for (int i = 0; i < l->nb_titles; i++) {
+        const dvd_title_t *t = l->titles[i];
+        int64_t size = 0;
+        dr_str_catf(&bp, "title %d name %s ttn %d vts %d pgc %d angle %d/%d", i, t->name, t->title + 1, t->vtsn,
+                   t->pgcn + 1, t->angle + 1, t->nr_of_angles);
+        if (t->nr_of_angles > 1)
+            dr_str_catf(&bp, " main %d", t->main_angle);
+        dr_str_catf(&bp, " cells %d chapters %d length %"PRIu32" real %"PRIu32" segments %d", t->nb_cells,
+                   t->nb_chapters, t->declared, t->measured, t->segs.nb_segments);
+        for (int k = 0; k < t->segs.nb_segments; k++)
+            size += t->segs.segments[k].size;
+        dr_str_catf(&bp, " size %"PRId64" map ", size);
+        for (int k = 0; k < t->segs.nb_segments; k++)
+            dr_str_catf(&bp, "%s%s", k ? "," : "", t->cell_maps[k]);
+        if (!t->segs.nb_segments)
+            dr_str_catf(&bp, "-");
+        dr_str_catf(&bp, " scan %s tracks V", t->scan ? t->scan->name : "-");
+        for (int k = 0; k < t->nb_audio; k++)
+            dr_str_catf(&bp, ",A%u.%u", t->audio[k].stream, t->audio[k].attr);
+        for (int k = 0; k < t->nb_subp; k++)
+            dr_str_catf(&bp, ",S%u.%u", t->subp[k].stream, t->subp[k].attr);
+        dr_str_catf(&bp, "\n");
+    }
+    return dr_str_take(&bp, 1);
 }

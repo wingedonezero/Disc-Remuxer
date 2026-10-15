@@ -65,7 +65,7 @@ int tb_dvd_nav_trace(DVDDisc *d, int title, unsigned opts, int max_steps,
                      dr_nav_event *ev, int max_events, dr_nav_result *res);
 
 /* disc/dvd/dvd_scan.c: the navigation scan (dvd_scan.h, on libdvdnav's
- * navigators; its recordings in libdvdread's dvd_nav_cells_t) */
+ * navigators; its recordings as dvd_title_list.h's dvd_nav_cells_t) */
 typedef struct {
     char      name[16];
     uint8_t   title, pgc;
@@ -84,7 +84,7 @@ void dvdnav_scan_free_results(dvdnav_scan_results_t *s);
 extern "Python" void tb_py_scan_line(void *opaque, const char *line);
 int tb_dvd_scan(DVDDisc *d, void (*trace)(void *, const char *), dvdnav_scan_results_t *out);
 
-/* libavformat/dvd_titles.c through the bridge: scan + title list as text */
+/* disc/dvd/dvd_title_list.c through the bridge: scan + title list as text */
 int tb_dvd_titles(DVDDisc *d, int cell_mode, int cell_check, int min_length, int *scan_ret, char **dump);
 int tb_dvd_titles_from(DVDDisc *d, dvd_nav_cells_t *res, int nb, int cell_mode, int cell_check,
                        int min_length, char **dump);

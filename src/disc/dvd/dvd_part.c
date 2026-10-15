@@ -3,7 +3,7 @@
  * (libdvdread, libdvdnav) reads and checks the disc, plays its navigation,
  * builds its title list and probes each title's streams, and says what it
  * finds in the program's log; this part asks for it (dvd_disc.c,
- * dvd_scan.c, dvd_titles.c) and describes the disc from the engine's own
+ * dvd_scan.c, dvd_title_list.c) and describes the disc from the engine's own
  * structures: its label is the volume label (a folder: the VMG's provider
  * identifier), its name the text data's when it has one; its titles with
  * their tracks (from the title sets' attributes, after the probe) and the
@@ -58,7 +58,7 @@ typedef struct PassRead {
 typedef struct DVDDemuxContext {
     DVDDisc      disc;
     dvdnav_scan_results_t scan;
-    dvd_title_list_t titles;    /* libdvdread's */
+    dvd_title_list_t titles;    /* dvd_title_list.c's */
     char        (*sources)[96]; /* per title what it is made from, for the disc info */
     PassRead     pass;          /* the stream pass's segment */
 
@@ -304,7 +304,7 @@ static const char *title_name(DrDisc *d, int i)
 static int title_probe(DrDisc *d, int i)
 {
     DVDDemuxContext *c = ff_disc_part(d);
-    int ret = DVDTitleStreams_rec(c->disc.rec, c->titles.titles[i]);
+    int ret = DVDTitleStreams_rec(&c->disc, c->titles.titles[i]);
     return ret == -1 ? DR_ERR(ENOMEM) : ret == -3 ? DR_ERR_INVALID : ret < 0 ? DR_ERR(EIO) : 0;
 }
 
