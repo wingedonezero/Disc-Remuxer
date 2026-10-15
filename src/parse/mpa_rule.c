@@ -3,6 +3,10 @@
  * Moved out of our FFmpeg's mpegaudio_parser.c disc mode; the header decode
  * and the Layer II allocation tables are our own copies of the
  * specification's values.
+ *
+ * The Layer II allocation tables are laid out as in FFmpeg's
+ * libavcodec/mpegaudiodata.c, copyright (c) 2002 Fabrice Bellard;
+ * LGPL-2.1-or-later.
  */
 
 #include <stdint.h>

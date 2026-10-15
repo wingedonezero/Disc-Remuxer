@@ -3,6 +3,9 @@
  * bound: exact when the reduced pair fits, else the best approximation by
  * continued fractions — the same procedure the processing library uses, so
  * the rates the rules report stay value-identical across the migration.
+ *
+ * The procedure follows FFmpeg's libavutil/rational.c (av_reduce),
+ * Copyright (c) 2003 Michael Niedermayer; LGPL-2.1-or-later.
  */
 
 #ifndef DISC_PARSE_RATIONAL_H

@@ -8,6 +8,11 @@
  * slice_pic_order_cnt_lsb) are our own, written from the spec to read bit
  * for bit what the processing library's parser read, so every value and
  * every finding stays identical across the move.
+ *
+ * The picture order count's MSB step follows FFmpeg's libavcodec/hevc/ps.c
+ * (ff_hevc_compute_poc2), Copyright (C) 2012 - 2013 Guillaume Martres,
+ * Mickael Raulet, Gildas Cocherel, (C) 2013 Vittorio Giovara;
+ * LGPL-2.1-or-later.
  */
 
 #include <errno.h>

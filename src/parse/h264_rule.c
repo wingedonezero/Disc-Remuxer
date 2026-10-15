@@ -7,6 +7,10 @@
  * decoded reference picture marking) are our own, written from the spec to
  * read bit for bit what the processing library's parser read, so every
  * value and every finding stays identical across the move.
+ *
+ * The picture order count (init_poc() below) follows FFmpeg's
+ * libavcodec/h264_parse.c (ff_h264_init_poc), part of FFmpeg,
+ * LGPL-2.1-or-later.
  */
 
 #include <errno.h>
