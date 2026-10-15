@@ -15,9 +15,8 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <libavformat/avformat.h>
-#include <libavutil/avutil.h>
 
+#include "analyze/analyze.h"
 #include "engine.h"
 #include "base/settings.h"
 
@@ -74,9 +73,9 @@ static void on_interrupt(int sig)
 
 static void cmd_version(void)
 {
-    unsigned v = avformat_version();
+    char ff[256];
     printf("disc-remuxer %s\n", DISC_REMUXER_VERSION);
-    printf("FFmpeg %s (libavformat %u.%u.%u)\n", av_version_info(), v >> 16, v >> 8 & 0xff, v & 0xff);
+    printf("%s\n", dr_analyze_version(ff, sizeof(ff)));
 }
 
 int main(int argc, char **argv)

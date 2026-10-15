@@ -5,6 +5,8 @@
  */
 
 #include <errno.h>
+#include <inttypes.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <limits.h>
 #include <stdio.h>
@@ -12,13 +14,12 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#include <libavutil/avstring.h>
-#include <libavutil/avutil.h>
-#include <libavutil/bprint.h>
 
 #include "base/err.h"
 #include "base/log.h"
+#include "base/macros.h"
 #include "base/mem.h"
+#include "base/str.h"
 #include "disc/disc.h"
 #include "analyze/analyze.h"
 #include "base/msg.h"
@@ -165,24 +166,38 @@ const char *engine_track_extension(const DiscStreamInfo *k)
 /* A title's angle for the detail line: "; angle 3 (main); the disc plays
  * angles 3, 1, 2 in that order; cell 1 shared by all angles" or "; angle 1,
  * main is angle 3 (#18)". */
+/* fmt's text appended to buf (cut at size). */
+static void cat(char *buf, size_t size, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+static void cat(char *buf, size_t size, const char *fmt, ...)
+{
+    size_t n = strlen(buf);
+    va_list vl;
+
+    if (n + 1 >= size)
+        return;
+    va_start(vl, fmt);
+    vsnprintf(buf + n, size - n, fmt, vl);
+    va_end(vl);
+}
+
 static void angle_text(const DiscTitleInfo *t, char *buf, size_t size)
 {
     snprintf(buf, size, "; angle %d", t->angle);
     if (t->main_angle == t->angle) {
-        av_strlcat(buf, " (main)", size);
+        cat(buf, size, " (main)");
         if (t->angle_order[0] && t->angle_order[1]) {
-            av_strlcat(buf, "; the disc plays angles ", size);
+            cat(buf, size, "; the disc plays angles ");
             for (int k = 0; k < 9 && t->angle_order[k]; k++)
-                av_strlcatf(buf, size, "%s%d", k ? ", " : "", t->angle_order[k]);
-            av_strlcat(buf, " in that order", size);
+                cat(buf, size, "%s%d", k ? ", " : "", t->angle_order[k]);
+            cat(buf, size, " in that order");
         }
     } else if (t->main_angle) {
-        av_strlcatf(buf, size, ", main is angle %d", t->main_angle);
+        cat(buf, size, ", main is angle %d", t->main_angle);
         if (t->main_title >= 0)
-            av_strlcatf(buf, size, " (#%d)", t->main_title);
+            cat(buf, size, " (#%d)", t->main_title);
     }
     if (t->shared_cells)
-        av_strlcatf(buf, size, "; cell%s %s shared by all angles", strchr(t->shared_cells, ',') ? "s" : "",
+        cat(buf, size, "; cell%s %s shared by all angles", strchr(t->shared_cells, ',') ? "s" : "",
                     t->shared_cells);
 }
 
@@ -250,9 +265,8 @@ static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *ke
 void engine_title_json(const DiscTitleInfo *t, const uint8_t *keep)
 {
     char files[2048] = "", js[512], jl[16], extra[512] = "";
-    AVBPrint streams, parts;
+    DrStr streams = DR_STR_INIT, parts = DR_STR_INIT;
 
-    av_bprint_init(&streams, 0, AV_BPRINT_SIZE_UNLIMITED);
     for (int i = 0; i < t->nb_streams; i++) {
         const DiscStreamInfo *k = &t->streams[i];
         char jc[64], jsl[16], n1[24], n2[24], n3[24], n4[24], n5[24], n6[24], ji[24], jf[24], jo[24];
@@ -260,7 +274,7 @@ void engine_title_json(const DiscTitleInfo *t, const uint8_t *keep)
         char lm[24], rl[128], jn[96], jm[48], je[16], an[32], jan[48], jh[32], jco[128], jma[320], nc1[24], nc2[24];
         const char *lname = k->language[0] ? disc_language_name(k->language) : NULL, *mkv = disc_mkv_codec_id(k);
         (void)dv; (void)fr;
-        av_bprintf(&streams,
+        dr_str_catf(&streams,
                  "%s{\"index\":%d,\"kind\":\"%s\",\"codec\":%s,\"language\":%s,\"inner_track\":%s,"
                  "\"from_track\":%s,\"forced\":%s,\"second_view\":%s,\"second_layer\":%s,\"offset_sequence\":%s,\"width\":%s,"
                  "\"height\":%s,\"channels\":%s,\"sample_rate\":%s,\"bits\":%s,\"bit_rate\":%s,"
@@ -329,31 +343,30 @@ void engine_title_json(const DiscTitleInfo *t, const uint8_t *keep)
         }
     }
     /* parts: the part number (from 1) as --split names its files, where it starts in the title */
-    av_bprint_init(&parts, 0, AV_BPRINT_SIZE_UNLIMITED);
     for (int p = 0; p < t->nb_parts; p++) {
         const DiscPartInfo *q = &t->parts[p];
-        av_bprintf(&parts, "%s{\"part\":%d,\"start\":%.3f,\"duration\":%.3f,\"chapters\":%d,\"files\":[",
-                   p ? "," : ",\"parts\":[", p + 1, q->start / (double)AV_TIME_BASE,
-                   q->duration / (double)AV_TIME_BASE, q->nb_chapters);
+        dr_str_catf(&parts, "%s{\"part\":%d,\"start\":%.3f,\"duration\":%.3f,\"chapters\":%d,\"files\":[",
+                   p ? "," : ",\"parts\":[", p + 1, q->start / (double)1000000.0,
+                   q->duration / (double)1000000.0, q->nb_chapters);
         for (int f = 0; f < q->nb_files; f++) {
             char jf[300];
-            av_bprintf(&parts, "%s%s", f ? "," : "", json_str(jf, sizeof(jf), t->files[q->first_file + f]));
+            dr_str_catf(&parts, "%s%s", f ? "," : "", json_str(jf, sizeof(jf), t->files[q->first_file + f]));
         }
-        av_bprintf(&parts, "]}%s", p + 1 == t->nb_parts ? "]" : "");
+        dr_str_catf(&parts, "]}%s", p + 1 == t->nb_parts ? "]" : "");
     }
     /* what the format part tells more of the title */
     for (int p = 0; p < t->nb_props; p++) {
         char jn[128], jv[512];
-        av_bprintf(&parts, "%s%s:%s%s", p ? "," : ",\"properties\":{", json_str(jn, sizeof(jn), t->props[p].name),
+        dr_str_catf(&parts, "%s%s:%s%s", p ? "," : ",\"properties\":{", json_str(jn, sizeof(jn), t->props[p].name),
                    json_str(jv, sizeof(jv), t->props[p].value), p + 1 == t->nb_props ? "}" : "");
     }
     log_json("title", "\"index\":%d,\"name\":%s,\"duration\":%.3f,\"chapters\":%d,\"size\":%"PRId64",\"language\":%s,"
              "\"selected\":%s,\"files\":[%s],\"tracks\":[%s]%s%s", t->index,
-             json_str(js, sizeof(js), t->name ? t->name : ""), t->duration / (double)AV_TIME_BASE, t->nb_chapters,
+             json_str(js, sizeof(js), t->name ? t->name : ""), t->duration / (double)1000000.0, t->nb_chapters,
              t->size, json_str(jl, sizeof(jl), t->language), t->selected ? "true" : "false", files, streams.str, extra,
              parts.str);
-    av_bprint_finalize(&streams, NULL);
-    av_bprint_finalize(&parts, NULL);
+    dr_str_free(&streams);
+    dr_str_free(&parts);
 }
 
 struct EngineDisc {
@@ -751,7 +764,7 @@ static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
             log_msg(MSG_TITLE_SELECTION, LOG_INFO, "Title #%d has no parts (it plays no whole stream files back to "
                     "back): written whole", t);
     if (setting_bool("output.split_joined_titles"))
-        memset(spl, 1, (size_t)FFMAX(nb, 0));
+        memset(spl, 1, (size_t)DR_MAX(nb, 0));
     for (int t = 0; t < nb; t++) {
         int parts = spl[t] ? di->titles[t].nb_parts : 0, part_failed = 0, part_stopped = 0;
         if (!sel[t])

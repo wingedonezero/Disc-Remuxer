@@ -8,9 +8,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <libavcodec/avcodec.h>
 
 #include "base/mem.h"
+#include "timeline/disctl.h"
 #include "codecs.h"
 #include "engine.h"
 #include "views.h"
@@ -167,10 +167,10 @@ static const char *conversion_text(const DiscStreamInfo *k)
     if (k->second_view)
         return "the 3-D second view (MVC), as on the disc";
     switch (k->codec) {
-    case AV_CODEC_ID_PCM_DVD:
-    case AV_CODEC_ID_PCM_BLURAY:   return "LPCM written as PCM in a WAVE file (lossless)";
-    case AV_CODEC_ID_EIA_608:      return "closed captions made into SRT text";
-    case AV_CODEC_ID_DVD_SUBTITLE: return "VobSub (.sub with its .idx), as on the disc";
+    case DR_CODEC_PCM_DVD:
+    case DR_CODEC_PCM_BLURAY:   return "LPCM written as PCM in a WAVE file (lossless)";
+    case DR_CODEC_EIA_608:      return "closed captions made into SRT text";
+    case DR_CODEC_DVD_SUBTITLE: return "VobSub (.sub with its .idx), as on the disc";
     default:                       return "as on the disc (copied, lossless)";
     }
 }
@@ -258,11 +258,11 @@ static int track_rows(const DiscTitleInfo *t, int i, const uint8_t *keep, Engine
     /* TrueHD / MLP: variable; the peak rate their header states reads far too
      * low on real discs (look into again later), so none is shown. DTS-HD:
      * the rate is its DTS core's. */
-    if (k->codec == AV_CODEC_ID_TRUEHD || k->codec == AV_CODEC_ID_MLP) {
+    if (k->codec == DR_CODEC_TRUEHD || k->codec == DR_CODEC_MLP) {
         if (FIELD(r, level, "Bit rate", "variable (lossless)") < 0)
             return -1;
     } else if (k->bit_rate && *bit_rate_text(k->bit_rate, buf, sizeof(buf))) {
-        if (FIELD(r, level, "Bit rate", "%s%s", buf, k->codec == AV_CODEC_ID_DTS && k->inner_track >= 0 ?
+        if (FIELD(r, level, "Bit rate", "%s%s", buf, k->codec == DR_CODEC_DTS && k->inner_track >= 0 ?
                   " (its DTS core's)" : "") < 0)
             return -1;
     }

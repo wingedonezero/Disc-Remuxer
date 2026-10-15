@@ -40,6 +40,45 @@ static inline const char *disc_media_name(int type)
 #define DISC_PROFILE_UNKNOWN (-99)
 #define DISC_LEVEL_UNKNOWN   (-99)
 
+/* The profiles the names depend on (DiscStreamInfo.profile; pinned like the
+ * rest). H.264 (profile_idc, with constraint_set1 / set3 as bits 9 / 11)
+ * and H.265 (general_profile_idc) give their profile's name. */
+#define DISC_PROFILE_DTS_HD_HRA              50
+#define DISC_PROFILE_DTS_HD_MA               60
+#define DISC_PROFILE_DTS_HD_MA_X             61
+#define DISC_PROFILE_DTS_HD_MA_X_IMAX        62
+#define DISC_PROFILE_DTS_EXPRESS             70
+#define DISC_PROFILE_TRUEHD_ATMOS            30
+#define DISC_PROFILE_H264_CONSTRAINED        (1 << 9)
+#define DISC_PROFILE_H264_INTRA              (1 << 11)
+#define DISC_PROFILE_H264_BASELINE           66
+#define DISC_PROFILE_H264_MAIN               77
+#define DISC_PROFILE_H264_EXTENDED           88
+#define DISC_PROFILE_H264_HIGH               100
+#define DISC_PROFILE_H264_HIGH_10            110
+#define DISC_PROFILE_H264_MULTIVIEW_HIGH     118
+#define DISC_PROFILE_H264_HIGH_422           122
+#define DISC_PROFILE_H264_STEREO_HIGH        128
+#define DISC_PROFILE_H264_HIGH_444           144
+#define DISC_PROFILE_H264_HIGH_444_PREDICTIVE 244
+#define DISC_PROFILE_H264_CAVLC_444          44
+#define DISC_PROFILE_HEVC_MAIN               1
+#define DISC_PROFILE_HEVC_MAIN_10            2
+#define DISC_PROFILE_HEVC_MAIN_STILL_PICTURE 3
+#define DISC_PROFILE_HEVC_REXT               4
+#define DISC_PROFILE_HEVC_MULTIVIEW_MAIN     6
+#define DISC_PROFILE_HEVC_SCC                9
+
+/* Channel bits of DiscStreamInfo.layout (pinned): bit n is speaker n of
+ * the list in codecs.c (FL FR FC LFE BL BR ...). */
+#define DISC_CH_FRONT_LEFT       0x1ULL
+#define DISC_CH_FRONT_RIGHT      0x2ULL
+#define DISC_CH_FRONT_CENTER     0x4ULL
+#define DISC_CH_LOW_FREQUENCY    0x8ULL
+#define DISC_CH_LOW_FREQUENCY_2  0x800000000ULL
+#define DISC_CH_LAYOUT_MONO      (DISC_CH_FRONT_CENTER)
+#define DISC_CH_LAYOUT_STEREO    (DISC_CH_FRONT_LEFT | DISC_CH_FRONT_RIGHT)
+
 /** A ratio (an aspect, a frame rate): num / den; 0 / 0 when not known. */
 typedef struct DrRational {
     int num, den;

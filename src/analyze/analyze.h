@@ -14,6 +14,8 @@
 #ifndef DISC_ANALYZE_ANALYZE_H
 #define DISC_ANALYZE_ANALYZE_H
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -31,6 +33,10 @@ void dr_analyze_log_install(void);
  * reading that file, not about the disc. details_of_file() sets it around
  * its read. */
 void dr_analyze_log_detail(int on);
+
+/* The processing library's version in buf: "FFmpeg <version> (libavformat
+ * <major>.<minor>.<micro>)"; returns buf. */
+const char *dr_analyze_version(char *buf, size_t size);
 
 /* internal: the stream pass's details probe (host.c registers it too) */
 void dr_analyze_use_probe(void);
