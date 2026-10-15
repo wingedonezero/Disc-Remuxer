@@ -20,8 +20,6 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include <string.h>
-
 #include "libavutil/common.h"
 #include "libavutil/mem.h"
 
@@ -53,7 +51,6 @@ typedef struct HEVCParserContext {
 
     int poc;
     int pocTid0;
-
 } HEVCParserContext;
 
 static int hevc_parse_slice_header(AVCodecParserContext *s, H2645NAL *nal,

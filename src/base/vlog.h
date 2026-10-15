@@ -20,11 +20,16 @@ enum DrVlogLevel {
     DR_VLOG_VERBOSE, DR_VLOG_DEBUG, DR_VLOG_TRACE,
 };
 
-typedef void (*DrVlogFn)(void *logctx, int level, const char *fmt, va_list vl);
+typedef void (*DrVlogFn)(const void *logctx, int level, const char *fmt, va_list vl);
+/** Whether lines of level would be kept (modules skip building expensive
+ *  dumps otherwise); without one, every level is wanted. */
+typedef int (*DrVlogWantsFn)(int level);
 
 void dr_vlog_set(DrVlogFn fn);
+void dr_vlog_set_wants(DrVlogWantsFn fn);
+int  dr_vlog_wants(int level);
 
-void dr_vlog(void *logctx, int level, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+void dr_vlog(const void *logctx, int level, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
 
 #ifdef __cplusplus
 }

@@ -42,9 +42,7 @@ typedef struct MLPParseContext
     int in_sync;
 
     int num_substreams;
-
 } MLPParseContext;
-
 
 static av_cold int mlp_init(AVCodecParserContext *s)
 {
@@ -207,17 +205,10 @@ lost_sync:
     return 1;
 }
 
-static av_cold void mlp_parse_close(AVCodecParserContext *s)
-{
-    MLPParseContext *mp = s->priv_data;
-
-    ff_parse_close(s);
-}
-
 const FFCodecParser ff_mlp_parser = {
     PARSER_CODEC_LIST(AV_CODEC_ID_MLP, AV_CODEC_ID_TRUEHD),
     .priv_data_size = sizeof(MLPParseContext),
     .init           = mlp_init,
     .parse          = mlp_parse,
-    .close          = mlp_parse_close,
+    .close          = ff_parse_close,
 };

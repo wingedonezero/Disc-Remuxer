@@ -12,13 +12,13 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#include <libavformat/avformat.h>
-#include <libavformat/discinfo.h>
 #include <libavutil/avstring.h>
 #include <libavutil/avutil.h>
 #include <libavutil/bprint.h>
 
+#include "base/err.h"
 #include "base/log.h"
+#include "disc/disc.h"
 #include "log_ffmpeg.h"
 #include "base/msg.h"
 #include "names.h"
@@ -52,11 +52,6 @@ static void hms(char *buf, size_t size, int64_t us)
     int64_t t = (us + 500000) / 1000000;
     snprintf(buf, size, "%d:%02d:%02d", (int)(t / 3600), (int)(t / 60 % 60), (int)(t % 60));
 }
-
-/* The disc demuxer: it tells the kind of disc and follows the contract of
- * docs/FORMATS.md (the disc info, each track's result at the end, read
- * progress as an option). */
-#define DISC_FORMAT "disc"
 
 /* A linked stream's index for JSON, or null (-1: none). */
 static const char *json_index(char *buf, size_t size, int v)
@@ -97,7 +92,7 @@ void engine_track_parts(const DiscTitleInfo *t, int i, char *codec, size_t csize
     const DiscStreamInfo *k = &t->streams[i];
     char extra[160] = "", link[96] = "", det[160] = "", a[24], r[48], l[64], b[24];
 
-    if (k->type == AVMEDIA_TYPE_SUBTITLE && k->width)
+    if (k->type == DISC_MEDIA_SUBTITLE && k->width)
         snprintf(extra, sizeof(extra), "  %dx%d", k->width, k->height);
     if (k->forced)
         snprintf(link, sizeof(link), "  (forced subtitles of track %d)", k->from_track);
@@ -118,10 +113,10 @@ void engine_track_parts(const DiscTitleInfo *t, int i, char *codec, size_t csize
         snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "  3-D offset sequence %d",
                  k->offset_sequence);
     /* what the stream is: its codec in full, then its details */
-    if (k->type == AVMEDIA_TYPE_VIDEO && k->width && !k->forced)
+    if (k->type == DISC_MEDIA_VIDEO && k->width && !k->forced)
         snprintf(det, sizeof(det), "  %dx%d %s %s", k->width, k->height, aspect_text(k, a, sizeof(a)),
                  frame_rate_text(k, r, sizeof(r)));
-    if (k->type == AVMEDIA_TYPE_AUDIO && k->channels) {
+    if (k->type == DISC_MEDIA_AUDIO && k->channels) {
         snprintf(det, sizeof(det), "  %s %d Hz", layout_text(k, l, sizeof(l)), k->sample_rate);
         if (k->bits && codec_lossless(k))
             snprintf(det + strlen(det), sizeof(det) - strlen(det), " %d-bit", k->bits);
@@ -193,9 +188,9 @@ static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *ke
         char lm[24], rl[128], jn[96], jm[48], je[16], an[32], jan[48], jh[32], jco[128], jma[320], nc1[24], nc2[24];
         const char *lname = k->language[0] ? disc_language_name(k->language) : NULL, *mkv = disc_mkv_codec_id(k);
         (void)dv; (void)fr;
-        nv += k->type == AVMEDIA_TYPE_VIDEO;
-        na += k->type == AVMEDIA_TYPE_AUDIO;
-        ns += k->type == AVMEDIA_TYPE_SUBTITLE;
+        nv += k->type == DISC_MEDIA_VIDEO;
+        na += k->type == DISC_MEDIA_AUDIO;
+        ns += k->type == DISC_MEDIA_SUBTITLE;
         av_bprintf(&streams,
                  "%s{\"index\":%d,\"kind\":\"%s\",\"codec\":%s,\"language\":%s,\"inner_track\":%s,"
                  "\"from_track\":%s,\"forced\":%s,\"second_view\":%s,\"second_layer\":%s,\"offset_sequence\":%s,\"width\":%s,"
@@ -204,7 +199,7 @@ static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *ke
                  "\"layout\":%s,\"layout_mask\":%s,\"roles\":[%s],\"selected\":%s,\"language_name\":%s,"
                  "\"codec_id\":%s,\"file_type\":%s,\"name\":%s,\"hdr\":%s,\"colour\":%s,\"mastering\":%s,"
                  "\"max_cll\":%s,\"max_fall\":%s}",
-                 i ? "," : "", i, av_get_media_type_string(k->type),
+                 i ? "," : "", i, disc_media_name(k->type),
                  json_str(jc, sizeof(jc), codec_short(k)),
                  json_str(jsl, sizeof(jsl), k->language), json_index(ji, sizeof(ji), k->inner_track),
                  json_index(jf, sizeof(jf), k->from_track), k->forced ? "true" : "false",
@@ -260,7 +255,7 @@ static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *ke
         for (int i = 0; i < t->nb_streams; i++) {
             const DiscStreamInfo *k = &t->streams[i];
             char line[512];
-            log_text(LOG_INFO, "       %-2d %-8s %-3s %s", i, av_get_media_type_string(k->type),
+            log_text(LOG_INFO, "       %-2d %-8s %-3s %s", i, disc_media_name(k->type),
                      k->language[0] ? k->language : "   ", engine_track_text(t, i, keep[i], line, sizeof(line)));
         }
         for (int p = 0; p < t->nb_parts; p++) {
@@ -332,7 +327,7 @@ static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *ke
 }
 
 struct EngineDisc {
-    AVFormatContext *ctx;
+    DrDisc          *disc;
     const DiscInfo  *info;
     char             source[PATH_MAX];
     uint8_t        **keeps;      /* each title's tracks to rip */
@@ -394,17 +389,17 @@ static void free_keeps(uint8_t **keeps, int nb)
 int engine_disc_open(const char *source, const EngineChoice *c, EngineDisc **out)
 {
     EngineDisc *e = calloc(1, sizeof(*e));
-    int ret = AVERROR(ENOMEM);
+    int ret = DR_ERR(ENOMEM);
 
     *out = NULL;
-    if (!e || (ret = open_disc(DISC_FORMAT, source, &e->ctx)) < 0 || !(e->info = disc_info(e->ctx))) {
-        if (ret == AVERROR(ENOKEY))
+    if (!e || (ret = open_disc(source, &e->disc)) < 0 || !(e->info = dr_disc_info(e->disc))) {
+        if (ret == DR_ERR(ENOKEY))
             log_msg(MSG_SOURCE_UNSUPPORTED, LOG_ERROR, "%s is encrypted (AACS) and the key files have no key for "
                     "it (its disc ID is in the AACS line above): add its key to a KEYDB.cfg (setting "
                     "aacs.key_files)", source);
         else
             log_msg(MSG_SOURCE_UNSUPPORTED, LOG_ERROR, "%s cannot be read as a disc this program supports (%s); "
-                    "DVD-Video, HD DVD and Blu-ray are supported", source, av_err2str(ret < 0 ? ret : AVERROR_BUG));
+                    "DVD-Video, HD DVD and Blu-ray are supported", source, dr_err_text(ret < 0 ? ret : DR_ERR_BUG));
         engine_disc_close(&e);
         return -1;
     }
@@ -435,7 +430,7 @@ void engine_disc_close(EngineDisc **pd)
         return;
     if (d->info)
         free_keeps(d->keeps, d->info->nb_titles);
-    avformat_close_input(&d->ctx);
+    dr_disc_close(&d->disc);
     free(d);
     *pd = NULL;
 }
@@ -664,7 +659,7 @@ static int run_titles(EngineDisc *e, const char *sel, const char *split, const c
         for (int p = parts ? 0 : -1; p < parts && !engine_cancelled(); p++) {
             /* the second view: read when one of its tracks is selected */
             /* stream files: every title, and each part as a title of its own, in a folder of its name */
-            TitleJob job = { e->ctx, t, p, parts, 1, e->keeps[t], ordinal, count, out_dir, 1 };
+            TitleJob job = { e->disc, t, p, parts, 1, e->keeps[t], ordinal, count, out_dir, 1 };
             TitleOutcome res;
             demux_title(&job, &res);
             if (res.damaged_ranges) {
@@ -791,7 +786,7 @@ int engine_demux(const char *source, const char *titles, const char *out_dir, co
     return ret;
 }
 
-const char *engine_codec_label(enum AVCodecID id, int profile)
+const char *engine_codec_label(int id, int profile)
 {
     return codec_label(id, profile);
 }

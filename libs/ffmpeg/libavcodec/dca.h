@@ -215,7 +215,6 @@ int avpriv_dca_convert_bitstream(const uint8_t *src, int src_size, uint8_t *dst,
  */
 int avpriv_dca_parse_core_frame_header(DCACoreFrameHeader *h, const uint8_t *buf, int size);
 
-
 /**
  * Parse and validate core frame header
  * @param[out] h   Pointer to struct where header info is written.

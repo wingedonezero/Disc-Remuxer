@@ -13,9 +13,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <libavformat/discinfo.h>
-
 #include "base/log.h"
+#include "disc/info.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -84,7 +83,19 @@ const char *engine_track_extension(const DiscStreamInfo *k);
  * than one title. */
 void engine_title_file_name(const DiscTitleInfo *t, char *out, size_t size);
 /* The short codec name the file names use (Mpeg2, DD, DTS-HD MA, ...). */
-const char *engine_codec_label(enum AVCodecID id, int profile);
+const char *engine_codec_label(int codec, int profile);
+
+/* The ISO 639-2 bibliographic code the disc info uses for a language code
+ * (2 or 3 letters, either ISO 639-2 form), NULL when not known. */
+const char *disc_language(const char *code);
+/* The English name of a language code ("eng": "English"), NULL when not
+ * known. */
+const char *disc_language_name(const char *code);
+/* The Matroska codec ID a stream is stored with in a Matroska file
+ * ("V_MPEG2", "A_AC3", "S_HDMV/PGS", ...): LPCM as PCM ("A_PCM/INT/LIT"),
+ * closed captions as text ("S_TEXT/UTF8"), a 3-D second view as
+ * "V_MPEG4/ISO/MVC"; NULL when Matroska has none. */
+const char *disc_mkv_codec_id(const DiscStreamInfo *k);
 
 /* An open disc: read once, its titles ripped from it. */
 typedef struct EngineDisc EngineDisc;

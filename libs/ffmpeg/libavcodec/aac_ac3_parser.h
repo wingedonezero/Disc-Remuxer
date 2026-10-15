@@ -26,7 +26,6 @@
 #include <stdint.h>
 #include "libavutil/crc.h"
 #include "avcodec.h"
-#include "parser_internal.h"
 #include "parser.h"
 
 typedef struct AACAC3ParseContext {
@@ -40,7 +39,6 @@ typedef struct AACAC3ParseContext {
 
     int need_next_header;
     int frame_number;
-
 } AACAC3ParseContext;
 
 int ff_aac_ac3_parse(AVCodecParserContext *s1,

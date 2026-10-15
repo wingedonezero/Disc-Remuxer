@@ -2,8 +2,6 @@ NAME = avformat
 DESC = FFmpeg container format library
 
 HEADERS = avformat.h                                                    \
-          discinfo.h                                                    \
-          discprobe.h                                                   \
           avio.h                                                        \
           version.h                                                     \
           version_major.h                                               \
@@ -271,7 +269,6 @@ OBJS-$(CONFIG_H264_MUXER)                += rawenc.o
 OBJS-$(CONFIG_HASH_MUXER)                += hashenc.o
 OBJS-$(CONFIG_HCA_DEMUXER)               += hca.o
 OBJS-$(CONFIG_HCOM_DEMUXER)              += hcom.o pcm.o
-OBJS-$(CONFIG_DISC_DEMUXER)              += discdec.o discpass.o disctitle.o hddvddec.o dvddec.o bluraydec.o
 OBJS-$(CONFIG_HDS_MUXER)                 += hdsenc.o
 OBJS-$(CONFIG_HEVC_DEMUXER)              += hevcdec.o rawdec.o
 OBJS-$(CONFIG_HEVC_MUXER)                += rawenc.o
@@ -686,6 +683,7 @@ OBJS-$(CONFIG_VAPOURSYNTH_DEMUXER)       += vapoursynth.o
 # protocols I/O
 OBJS-$(CONFIG_ANDROID_CONTENT_PROTOCOL)  += file.o
 OBJS-$(CONFIG_ASYNC_PROTOCOL)            += async.o
+OBJS-$(CONFIG_BLURAY_PROTOCOL)           += bluray.o
 OBJS-$(CONFIG_CACHE_PROTOCOL)            += cache.o
 OBJS-$(CONFIG_CONCAT_PROTOCOL)           += concat.o
 OBJS-$(CONFIG_CONCATF_PROTOCOL)          += concat.o

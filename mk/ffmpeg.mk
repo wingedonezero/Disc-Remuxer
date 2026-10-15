@@ -1,27 +1,19 @@
 # FFmpeg (libs/ffmpeg, our copy): its own configure + make, out of tree,
-# static, with our DVD libraries, expat and libaacs found through the .pc
-# files above. FFmpeg's own make is run every time (it rebuilds only what
-# changed); configure only when its arguments change, or the lists configure
-# reads the components from (a new parser, demuxer, filter ...).
+# static, with our DVD libraries found through the .pc files above (its
+# stock dvdvideo demuxer; the disc layer itself is ours, src/disc, and
+# FFmpeg no longer compiles or links any of it). FFmpeg's own make is run
+# every time (it rebuilds only what changed); configure only when its
+# arguments change, or the lists configure reads the components from (a new
+# parser, demuxer, filter ...).
 
 FFMPEG_SRC := $(LIBS)/ffmpeg
 FFMPEG     := $(BUILD)/ffmpeg/install
-FFMPEG_PCS := $(PC)/dvdread.pc $(PC)/dvdnav.pc $(PC)/expat.pc $(PC)/libaacs.pc
+FFMPEG_PCS := $(PC)/dvdread.pc $(PC)/dvdnav.pc
 
-FFMPEG_ARGS := --prefix=$(FFMPEG) --enable-gpl --enable-libdvdnav --enable-libdvdread --enable-libexpat \
-  --enable-libaacs --disable-autodetect --enable-static --disable-shared --enable-pic --disable-doc \
+FFMPEG_ARGS := --prefix=$(FFMPEG) --enable-gpl --enable-libdvdnav --enable-libdvdread \
+  --disable-autodetect --enable-static --disable-shared --enable-pic --disable-doc \
   --disable-ffplay --pkg-config=pkg-config --pkg-config-flags=--static \
-  --extra-cflags=-I$(ROOT)/src \
-  --extra-libs="$(DISC_LIB) $(TIMELINE_LIB) $(IO_LIB) $(MUX_LIB) $(PARSE_LIB) $(BASE_LIB) \
-    -L$(BUILD)/aacs/install/lib -laacs -L$(BUILD)/gcrypt/install/lib -lgcrypt \
-    -L$(BUILD)/gpg-error/install/lib -lgpg-error -L$(BUILD)/expat -lexpat \
-    -L$(BUILD)/dvdnav -ldvdnav -L$(BUILD)/dvdread -ldvdread -L$(BUILD)/dvdcss -ldvdcss"
-# --extra-libs lands AFTER the libraries configure adds, so the format
-# parts' own needs (libaacs with its gcrypt chain, expat, the DVD
-# libraries) are named again behind libdisc-disc.a
-# the readers live in src/io (libdisc-io.a, on libdisc-base.a): the disc
-# demuxer inside libavformat calls them, so FFmpeg compiles with src/ on its
-# include path and links the two libraries
+  --extra-libs="-L$(BUILD)/dvdnav -ldvdnav -L$(BUILD)/dvdread -ldvdread -L$(BUILD)/dvdcss -ldvdcss"
 ifeq ($(MODE),debug)
 FFMPEG_ARGS += --disable-stripping
 endif
@@ -34,13 +26,13 @@ FFMPEG_LISTS := $(FFMPEG_SRC)/libavcodec/parsers.c $(FFMPEG_SRC)/libavcodec/allc
   $(FFMPEG_SRC)/libavcodec/bitstream_filters.c $(FFMPEG_SRC)/libavformat/allformats.c \
   $(FFMPEG_SRC)/libavformat/protocols.c
 
-$(BUILD)/ffmpeg/build/ffbuild/config.mak: $(BUILD)/ffmpeg/args $(FFMPEG_PCS) $(DISC_LIB) $(TIMELINE_LIB) $(IO_LIB) $(MUX_LIB) $(PARSE_LIB) $(BASE_LIB) $(FFMPEG_SRC)/configure $(FFMPEG_LISTS)
+$(BUILD)/ffmpeg/build/ffbuild/config.mak: $(BUILD)/ffmpeg/args $(FFMPEG_PCS) $(FFMPEG_SRC)/configure $(FFMPEG_LISTS)
 	@mkdir -p $(BUILD)/ffmpeg/build
 	cd $(BUILD)/ffmpeg/build && PKG_CONFIG_PATH=$(PC) PKG_CONFIG_LIBDIR=$(PC) $(FFMPEG_SRC)/configure $(FFMPEG_ARGS)
 	touch $@
 
 .PHONY: ffmpeg-make
-ffmpeg-make: $(BUILD)/ffmpeg/build/ffbuild/config.mak $(DISC_LIB) $(TIMELINE_LIB) $(IO_LIB) $(MUX_LIB) $(PARSE_LIB) $(BASE_LIB)
+ffmpeg-make: $(BUILD)/ffmpeg/build/ffbuild/config.mak
 	$(MAKE) -C $(BUILD)/ffmpeg/build -j$(JOBS)
 
 # installed headers and libraries (for our programs), and the programs

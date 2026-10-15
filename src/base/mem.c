@@ -120,6 +120,18 @@ size_t dr_strlcatf(char *dst, size_t size, const char *fmt, ...)
     return used + (n < 0 ? 0 : (size_t)n);
 }
 
+char *dr_asprintf_str(const char *fmt, ...)
+{
+    char *out;
+    va_list vl;
+    int n;
+
+    va_start(vl, fmt);
+    n = vasprintf(&out, fmt, vl);
+    va_end(vl);
+    return n < 0 ? NULL : out;
+}
+
 char *dr_strndup(const char *s, size_t n)
 {
     size_t len = 0;

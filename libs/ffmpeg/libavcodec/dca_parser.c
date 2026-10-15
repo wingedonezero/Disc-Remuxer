@@ -22,8 +22,6 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include "libavutil/intreadwrite.h"
-
 #include "dca.h"
 #include "dca_core.h"
 #include "dca_exss.h"
@@ -41,7 +39,6 @@ typedef struct DCAParseContext {
     unsigned int startpos;
     DCAExssParser exss;
     unsigned int sr_code;
-
 } DCAParseContext;
 
 #define IS_CORE_MARKER(state) \
@@ -308,7 +305,6 @@ static int dca_parse_params(DCAParseContext *pc1, const uint8_t *buf,
     return 0;
 }
 
-
 static int dca_parse(AVCodecParserContext *s, AVCodecContext *avctx,
                      const uint8_t **poutbuf, int *poutbuf_size,
                      const uint8_t *buf, int buf_size)
@@ -349,17 +345,10 @@ static int dca_parse(AVCodecParserContext *s, AVCodecContext *avctx,
     return next;
 }
 
-static av_cold void dca_parse_close(AVCodecParserContext *s)
-{
-    DCAParseContext *pc1 = s->priv_data;
-
-    ff_parse_close(s);
-}
-
 const FFCodecParser ff_dca_parser = {
     PARSER_CODEC_LIST(AV_CODEC_ID_DTS),
     .priv_data_size = sizeof(DCAParseContext),
     .init           = dca_parse_init,
     .parse          = dca_parse,
-    .close          = dca_parse_close,
+    .close          = ff_parse_close,
 };

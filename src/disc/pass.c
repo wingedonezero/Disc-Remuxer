@@ -45,35 +45,22 @@
  */
 
 #include <inttypes.h>
+#include <stdio.h>
 #include <string.h>
 
-#include "libavcodec/avcodec.h"
-#include "libavutil/avstring.h"
-#include "libavutil/error.h"
-#include "libavutil/log.h"
-#include "libavutil/mem.h"
-
-#include "avformat.h"
+#include "base/mem.h"
 #include "base/err.h"
-#include "disc.h"
-#include "discprobe.h"
+#include "base/macros.h"
+#include "base/vlog.h"
+#include "base/mem.h"
+
+#include "base/err.h"
+#include "disc/model.h"
+#include "disc/probe.h"
 
 #include "disc/clip_demux.h"
 #include "timeline/disctl.h"
 
-/* The clip demuxer's errors as FFmpeg's values, so nothing above sees a
- * change (the block reader's own values pass through as they are). */
-static int clip_err(int ret)
-{
-    switch (ret) {
-    case DR_ERR_EOF:      return AVERROR_EOF;
-    case DR_ERR_INVALID:  return AVERROR_INVALIDDATA;
-    case DR_ERR_NOMEM:    return AVERROR(ENOMEM);
-    case DR_ERR_EXTERNAL:
-    case DR_ERR_BUG:      return AVERROR_BUG;
-    default:              return ret;
-    }
-}
 
 #define DETAILS_LIMIT (64LL << 20)
 #define DISC_BLOCK    2048
@@ -82,13 +69,13 @@ static int clip_err(int ret)
 enum { P_TRACK, P_MVC, P_LAYER };       /* a track's own data, a 3-D second view, a Dolby Vision layer */
 
 /* One probe: a track's data (or its Dolby Vision enhancement layer); the
- * details themselves are the analysis module's (discprobe.h). */
+ * details themselves are the analysis module's (disc/probe.h). */
 typedef struct Probe {
     DiscTrack            *k;
     int                   kind;         /* P_* */
     int                   ps_id;        /* program stream: the id */
     DiscTsFeed            feed;         /* transport stream: PID and keys */
-    enum AVCodecID        codec;
+    DRCodecID        codec;
     const DRCodec        *tc;           /* its codec table entry, or NULL */
     int                   seen;         /* a packet of it was read */
     int                   done;         /* its details are known (or cannot be) */
@@ -96,7 +83,7 @@ typedef struct Probe {
     DiscDetailsProbe     *dp;           /* the analysis module's probe, or NULL */
 } Probe;
 
-/* The details probe the analysis module registered (discprobe.h). */
+/* The details probe the analysis module registered (disc/probe.h). */
 static const DiscProbeOps *probe_ops;
 
 void ff_disc_set_probe(const DiscProbeOps *ops)
@@ -125,8 +112,8 @@ struct DiscPassCache {
 void ff_disc_pass_cache_free(DiscPassCache **pc)
 {
     if (*pc)
-        av_freep(&(*pc)->c);
-    av_freep(pc);
+        dr_freep(&(*pc)->c);
+    dr_freep(pc);
 }
 
 static int same_feed(const DiscTsFeed *a, const DiscTsFeed *b)
@@ -147,9 +134,9 @@ static int cache_add(DiscPassCache *c, uint64_t seg, const Probe *p, int details
 {
     if (c->n == c->cap) {
         int cap = c->cap ? 2 * c->cap : 64;
-        Cached *n = av_realloc_array(c->c, cap, sizeof(*n));
+        Cached *n = dr_realloc_array(c->c, cap, sizeof(*n));
         if (!n)
-            return AVERROR(ENOMEM);
+            return DR_ERR(ENOMEM);
         c->c   = n;
         c->cap = cap;
     }
@@ -180,7 +167,7 @@ static void cache_take(const Cached *k, Probe *p, int details)
     ds->sample_rate = k->ds.sample_rate;
     ds->bits        = k->ds.bits;
     ds->bit_rate    = k->ds.bit_rate;
-    if (ds->type == AVMEDIA_TYPE_VIDEO) {
+    if (ds->type == DISC_MEDIA_VIDEO) {
         ds->width    = k->ds.width;
         ds->height   = k->ds.height;
         ds->max_cll  = k->ds.max_cll;
@@ -214,7 +201,7 @@ static int dovi_level(const DiscStreamInfo *ds)
     int64_t fps = ds->frame_rate.den ? (ds->frame_rate.num + ds->frame_rate.den / 2) / ds->frame_rate.den : 0;
     int64_t rate = (int64_t)ds->width * ds->height * fps;
 
-    for (int i = 0; i < FF_ARRAY_ELEMS(max_rate); i++)
+    for (int i = 0; i < (int)DR_ARRAY_ELEMS(max_rate); i++)
         if (rate <= max_rate[i])
             return i + 1;
     return 0;
@@ -250,7 +237,7 @@ static int same_data(const DiscTrack *a, const DiscTrack *b, int ts)
 
 /* The duplicates: an audio or subtitle track like one before it (each
  * judged as described, before any is taken out; dup: room for n). */
-static void duplicates(AVFormatContext *s, const char *fmt, DiscTrack *tracks, int *n, int ts, int *dup)
+static void duplicates(DrDisc *d, const char *fmt, DiscTrack *tracks, int *n, int ts, int *dup)
 {
     int nb = 0;
 
@@ -263,7 +250,7 @@ static void duplicates(AVFormatContext *s, const char *fmt, DiscTrack *tracks, i
             if (o->kind == k->kind && !(o->flags & DISC_TRACK_SIDE) && o->info.codec == k->info.codec &&
                 same_data(o, k, ts) && o->info.forced == k->info.forced &&
                 (o->info.from_track >= 0) == (k->info.from_track >= 0)) {
-                av_log(s, AV_LOG_WARNING, "%s: %s stream #%d is identical to stream #%d and was skipped\n", fmt,
+                dr_vlog(d->log, DR_VLOG_WARNING, "%s: %s stream #%d is identical to stream #%d and was skipped\n", fmt,
                        k->kind == DR_KIND_AUDIO ? "Audio" : "Subtitle", k->number, o->number);
                 dup[nb++] = i;
                 break;
@@ -289,10 +276,10 @@ static int pass_read(void *opaque, uint8_t *buf, int size)
     int ret;
 
     if (size < r->bs)
-        return AVERROR(EINVAL);
+        return DR_ERR(EINVAL);
     for (;;) {
         ret = r->src->read(r->src->opaque, r->block, buf);
-        if (ret == AVERROR_EOF)
+        if (ret == DR_ERR_EOF)
             return DR_ERR_EOF;
         if (ret < 0) {
             r->err = ret;
@@ -320,25 +307,24 @@ static int probe_wants(const Probe *p, int ts, int id)
     return 0;
 }
 
-int ff_disc_stream_pass(AVFormatContext *s, const char *title, const DiscPassSource *src, DiscTrack *tracks,
+int ff_disc_stream_pass(DrDisc *d, const char *title, const DiscPassSource *src, DiscTrack *tracks,
                         int *nb_tracks, int details)
 {
-    DiscContext *d = s->priv_data;
     const char *fmt = d->fmt->log_name;
     Probe *p;
     int np = 0, ret = 0, open = 0, unseen = 0, *pids = NULL, nb_pids = 0, *drop = NULL, nb_drop = 0;
     Reader r = { src, 0, src->ts ? TS_UNIT : DISC_BLOCK, 0 };
     DrClipDemux *dm = NULL;
 
-    if (!(drop = av_calloc(*nb_tracks + 1, sizeof(*drop)))) {
-        ret = AVERROR(ENOMEM);
+    if (!(drop = dr_calloc(*nb_tracks + 1, sizeof(*drop)))) {
+        ret = DR_ERR(ENOMEM);
         goto end;
     }
-    duplicates(s, fmt, tracks, nb_tracks, src->ts, drop);
-    if (!(p = av_calloc(2 * *nb_tracks + 1, sizeof(*p))) ||
-        (src->ts && !(pids = av_calloc(2 * *nb_tracks + 1, sizeof(*pids)))) ||
-        (src->key && !d->pass_cache && !(d->pass_cache = av_mallocz(sizeof(*d->pass_cache))))) {
-        ret = AVERROR(ENOMEM);
+    duplicates(d, fmt, tracks, nb_tracks, src->ts, drop);
+    if (!(p = dr_calloc(2 * *nb_tracks + 1, sizeof(*p))) ||
+        (src->ts && !(pids = dr_calloc(2 * *nb_tracks + 1, sizeof(*pids)))) ||
+        (src->key && !d->pass_cache && !(d->pass_cache = dr_mallocz(sizeof(*d->pass_cache))))) {
+        ret = DR_ERR(ENOMEM);
         goto end;
     }
     /* the probes: every track with data of its own (not a caption track in
@@ -352,7 +338,7 @@ int ff_disc_stream_pass(AVFormatContext *s, const char *title, const DiscPassSou
                            .feed = k->feed, .codec = k->info.codec, .tc = ff_disctl_codec(k->info.codec) };
         if (k->flags & DISC_TRACK_LAYER2)
             p[np++] = (Probe){ .k = k, .kind = P_LAYER, .ps_id = -1, .feed = k->layer_feed,
-                               .codec = AV_CODEC_ID_HEVC, .tc = ff_disctl_codec(AV_CODEC_ID_HEVC) };
+                               .codec = DR_CODEC_HEVC, .tc = ff_disctl_codec(DR_CODEC_HEVC) };
     }
     /* what titles before found already; a codec FFmpeg cannot open stays
      * without details */
@@ -366,20 +352,20 @@ int ff_disc_stream_pass(AVFormatContext *s, const char *title, const DiscPassSou
         }
         /* LPCM with another header than DVD-Video's 3 bytes (HD DVD's 5):
          * FFmpeg's decoder reads DVD-Video's */
-        if (want && p[i].codec == AV_CODEC_ID_PCM_DVD && src->lpcm_header != 3) {
-            av_log(s, AV_LOG_VERBOSE, "%s: title %s: LPCM with a %d-byte header: its details are not read "
+        if (want && p[i].codec == DR_CODEC_PCM_DVD && src->lpcm_header != 3) {
+            dr_vlog(d->log, DR_VLOG_VERBOSE, "%s: title %s: LPCM with a %d-byte header: its details are not read "
                    "[untested on real discs]\n", fmt, title, src->lpcm_header);
             want = 0;
         }
         p[i].done = !want;
         if (want && p[i].kind != P_MVC) {
             ret = probe_ops ? probe_ops->open(&p[i].dp, p[i].codec, p[i].tc, p[i].kind == P_LAYER, &p[i].k->info)
-                            : AVERROR_DECODER_NOT_FOUND;
+                            : DR_ERR_UNSUPPORTED;
             if (ret < 0) {
-                if (ret == AVERROR(ENOMEM))
+                if (ret == DR_ERR(ENOMEM))
                     goto end;
-                av_log(s, AV_LOG_VERBOSE, "%s: title %s: %s: no decoder: its details are not known\n", fmt, title,
-                       avcodec_get_name(p[i].codec));
+                dr_vlog(d->log, DR_VLOG_VERBOSE, "%s: title %s: %s: no decoder: its details are not known\n", fmt, title,
+                       ff_disctl_codec_id_name(p[i].codec));
                 p[i].done = 1;
                 ret = 0;
             }
@@ -398,9 +384,9 @@ int ff_disc_stream_pass(AVFormatContext *s, const char *title, const DiscPassSou
                 if (!have)
                     pids[nb_pids++] = p[i].feed.pid;
             }
-            ret = clip_err(dr_clip_ts_open(&dm, s, pids, nb_pids, 0, 0, pass_read, &r));
+            ret = (dr_clip_ts_open(&dm, (void *)d->log, pids, nb_pids, 0, 0, pass_read, &r));
         } else {
-            ret = clip_err(dr_clip_ps_open(&dm, s, src->lpcm_header, pass_read, &r));
+            ret = (dr_clip_ps_open(&dm, (void *)d->log, src->lpcm_header, pass_read, &r));
         }
         if (ret < 0)
             goto end;
@@ -424,7 +410,7 @@ int ff_disc_stream_pass(AVFormatContext *s, const char *title, const DiscPassSou
             }
             if (!more && !(details_on && open))
                 break;
-            if ((ret = clip_err(dr_clip_read(dm, &pkt))) < 0)
+            if ((ret = (dr_clip_read(dm, &pkt))) < 0)
                 break;
             for (int i = 0; i < np; i++) {
                 if (!probe_wants(&p[i], src->ts, pkt.id))
@@ -443,12 +429,12 @@ int ff_disc_stream_pass(AVFormatContext *s, const char *title, const DiscPassSou
             }
         }
         if (r.err) {
-            av_log(s, AV_LOG_ERROR, "%s: title %s: block %"PRIu32" of segment %d cannot be read: its streams' data "
+            dr_vlog(d->log, DR_VLOG_ERROR, "%s: title %s: block %"PRIu32" of segment %d cannot be read: its streams' data "
                    "cannot be found\n", fmt, title, r.block, src->index + 1);
             ret = r.err;
             goto end;
         }
-        if (ret != AVERROR_EOF && ret < 0)
+        if (ret != DR_ERR_EOF && ret < 0)
             goto end;
         ret = 0;
         /* the end of a short segment: its last frames */
@@ -461,8 +447,8 @@ int ff_disc_stream_pass(AVFormatContext *s, const char *title, const DiscPassSou
     }
     for (int i = 0; i < np && details; i++)
         if (!p[i].done)
-            av_log(s, AV_LOG_VERBOSE, "%s: title %s: %s%s: no frame decoded in the first %d MiB: its details are not "
-                   "known\n", fmt, title, avcodec_get_name(p[i].codec),
+            dr_vlog(d->log, DR_VLOG_VERBOSE, "%s: title %s: %s%s: no frame decoded in the first %d MiB: its details are not "
+                   "known\n", fmt, title, ff_disctl_codec_id_name(p[i].codec),
                    p[i].kind == P_LAYER ? " (Dolby Vision layer)" : "", (int)(DETAILS_LIMIT >> 20));
     /* the 3-D second view shows the base view's picture size and rate */
     for (int i = 0; i < *nb_tracks && details; i++) {
@@ -485,15 +471,15 @@ int ff_disc_stream_pass(AVFormatContext *s, const char *title, const DiscPassSou
     for (int i = 0; i < np; i++)
         if (p[i].kind == P_LAYER && p[i].k->info.dolby_vision[0] == 'B') {
             char type[16];
-            av_strlcpy(type, p[i].k->info.dolby_vision, sizeof(type));
+            dr_strlcpy(type, p[i].k->info.dolby_vision, sizeof(type));
             snprintf(p[i].k->info.dolby_vision, sizeof(p[i].k->info.dolby_vision), "dvhe.07.%02d %s",
                      dovi_level(&p[i].k->info), type);
         }
     /* the data */
     if (np && p[0].k == &tracks[0] && !p[0].seen) {
-        av_log(s, AV_LOG_ERROR, "%s: title %s: its segment %d has no video packet: the title cannot be used\n", fmt,
+        dr_vlog(d->log, DR_VLOG_ERROR, "%s: title %s: its segment %d has no video packet: the title cannot be used\n", fmt,
                title, src->index + 1);
-        ret = AVERROR_INVALIDDATA;
+        ret = DR_ERR_INVALID;
         goto end;
     }
     for (int i = 0; i < np; i++) {
@@ -501,13 +487,13 @@ int ff_disc_stream_pass(AVFormatContext *s, const char *title, const DiscPassSou
         if (p[i].kind != P_TRACK || p[i].seen)
             continue;
         if (needs_data(&p[i])) {
-            av_log(s, AV_LOG_WARNING, "%s: title %s: %s stream %d has no packet in segment %d: left out\n", fmt,
-                   title, av_get_media_type_string(k->info.type), k->stream, src->index + 1);
+            dr_vlog(d->log, DR_VLOG_WARNING, "%s: title %s: %s stream %d has no packet in segment %d: left out\n", fmt,
+                   title, disc_media_name(k->info.type), k->stream, src->index + 1);
             drop[nb_drop++] = k - tracks;
         } else if (src->read_all) {
             /* said for every title (the rip's track list says it again for the titles it rips) */
-            av_log(s, AV_LOG_INFO, "%s: title %s: %s stream %d has no packet in segment %d: its track is "
-                   "empty\n", fmt, title, k->info.codec == AV_CODEC_ID_DVD_SUBTITLE ? "sub-picture" : "subtitle",
+            dr_vlog(d->log, DR_VLOG_INFO, "%s: title %s: %s stream %d has no packet in segment %d: its track is "
+                   "empty\n", fmt, title, k->info.codec == DR_CODEC_DVD_SUBTITLE ? "sub-picture" : "subtitle",
                    k->stream, src->index + 1);
         }
     }
@@ -524,8 +510,8 @@ end:
         if (p[i].dp)
             probe_ops->close(&p[i].dp);
     dr_clip_close(&dm);
-    av_free(pids);
-    av_free(drop);
-    av_free(p);
+    dr_free(pids);
+    dr_free(drop);
+    dr_free(p);
     return ret;
 }

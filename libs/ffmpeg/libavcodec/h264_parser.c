@@ -28,7 +28,6 @@
 #define UNCHECKED_BITSTREAM_READER 1
 
 #include <stdint.h>
-#include <string.h>
 
 #include "libavutil/attributes.h"
 #include "libavutil/avutil.h"

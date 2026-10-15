@@ -192,3 +192,36 @@ const char *audio_name(const DiscStreamInfo *k, char *buf, size_t size)
     }
     return buf;
 }
+
+/* The Matroska codec IDs of the codecs that leave a disc (the values the
+ * library's Matroska table gives them). */
+const char *disc_mkv_codec_id(const DiscStreamInfo *k)
+{
+    if (k->second_view)
+        return "V_MPEG4/ISO/MVC";
+    switch (k->codec) {
+    case AV_CODEC_ID_PCM_DVD:
+    case AV_CODEC_ID_PCM_BLURAY:   return "A_PCM/INT/LIT";    /* written as PCM */
+    case AV_CODEC_ID_EIA_608:      return "S_TEXT/UTF8";      /* made into text */
+    case AV_CODEC_ID_MPEG1VIDEO:   return "V_MPEG1";
+    case AV_CODEC_ID_MPEG2VIDEO:   return "V_MPEG2";
+    case AV_CODEC_ID_H264:         return "V_MPEG4/ISO/AVC";
+    case AV_CODEC_ID_HEVC:         return "V_MPEGH/ISO/HEVC";
+    case AV_CODEC_ID_AC3:          return "A_AC3";
+    case AV_CODEC_ID_EAC3:         return "A_EAC3";
+    case AV_CODEC_ID_TRUEHD:       return "A_TRUEHD";
+    case AV_CODEC_ID_MLP:          return "A_MLP";
+    case AV_CODEC_ID_DTS:          return "A_DTS";
+    case AV_CODEC_ID_MP1:          return "A_MPEG/L1";
+    case AV_CODEC_ID_MP2:          return "A_MPEG/L2";
+    case AV_CODEC_ID_MP3:          return "A_MPEG/L3";
+    case AV_CODEC_ID_AAC:          return "A_AAC";
+    case AV_CODEC_ID_PCM_S16LE:
+    case AV_CODEC_ID_PCM_S24LE:    return "A_PCM/INT/LIT";
+    case AV_CODEC_ID_DVD_SUBTITLE: return "S_VOBSUB";
+    case AV_CODEC_ID_HDMV_PGS_SUBTITLE:  return "S_HDMV/PGS";
+    case AV_CODEC_ID_HDMV_TEXT_SUBTITLE: return "S_HDMV/TEXTST";
+    case AV_CODEC_ID_SUBRIP:       return "S_TEXT/UTF8";
+    default:                       return NULL;                /* Matroska has none (VC-1) */
+    }
+}

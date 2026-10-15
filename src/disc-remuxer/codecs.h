@@ -8,7 +8,7 @@
 
 #include <stddef.h>
 
-#include <libavformat/discinfo.h>
+#include "disc/info.h"
 
 /** The codec's full name with its profile, level and Dolby Vision type (base: a
  *  3-D second view's base view, else NULL). */

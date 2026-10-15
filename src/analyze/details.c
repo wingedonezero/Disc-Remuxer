@@ -17,6 +17,7 @@
 #include <libavutil/stereo3d.h>
 
 #include "analyze/details.h"
+#include "disc/disc.h"
 
 #define PROBE_PACKETS 600   /* packets a decoder gets to give its first frame */
 
@@ -25,6 +26,7 @@ struct DetailsProbe {
     AVCodecParameters *par;         /* until the decoder is open */
     AVCodecContext    *avctx;
     AVFrame           *frame;
+    AVPacket          *tmp;         /* details_probe_data(): the bytes as a packet */
     Details            d;
     int                done, packets;
 };
@@ -223,6 +225,35 @@ fail:
     return ret;
 }
 
+/* The codec and (as far as the track knows it) audio format of a disc
+ * title's track as codec parameters: what the former stream carried. */
+static int par_of_track(AVCodecParameters *par, const struct DrDiscTrack *t)
+{
+    par->codec_type            = t->type;
+    par->codec_id              = t->codec;
+    par->sample_rate           = t->sample_rate;
+    par->bits_per_coded_sample = t->bits;
+    if (t->layout)
+        return av_channel_layout_from_mask(&par->ch_layout, t->layout);
+    if (t->channels)
+        av_channel_layout_default(&par->ch_layout, t->channels);
+    return 0;
+}
+
+int details_probe_open_track(DetailsProbe **pp, const struct DrDiscTrack *t)
+{
+    AVCodecParameters *par = avcodec_parameters_alloc();
+    int ret;
+
+    *pp = NULL;
+    if (!par)
+        return AVERROR(ENOMEM);
+    if ((ret = par_of_track(par, t)) >= 0)
+        ret = details_probe_open(pp, par);
+    avcodec_parameters_free(&par);
+    return ret;
+}
+
 int details_probe_packet(DetailsProbe *p, const AVPacket *pkt)
 {
     if (p->done)
@@ -238,6 +269,24 @@ int details_probe_packet(DetailsProbe *p, const AVPacket *pkt)
         p->done = 1;
     }
     return p->done;
+}
+
+int details_probe_data(DetailsProbe *p, const uint8_t *data, int size)
+{
+    int ret;
+
+    if (p->done)
+        return 1;
+    if (!p->tmp && !(p->tmp = av_packet_alloc())) {
+        p->done = 1;
+        return 1;
+    }
+    p->tmp->data = (uint8_t *)data;
+    p->tmp->size = size;
+    ret = details_probe_packet(p, p->tmp);
+    p->tmp->data = NULL;
+    p->tmp->size = 0;
+    return ret;
 }
 
 void details_probe_get(DetailsProbe *p, Details *d)
@@ -258,6 +307,7 @@ void details_probe_close(DetailsProbe **pp)
     av_frame_free(&p->frame);
     avcodec_free_context(&p->avctx);
     avcodec_parameters_free(&p->par);
+    av_packet_free(&p->tmp);
     av_freep(pp);
 }
 
@@ -332,6 +382,7 @@ int details_compare(const Details *disc, const Details *file, char *diff, size_t
 struct DrLayoutProbe {
     AVCodecContext *avctx;
     AVFrame        *frame;
+    AVPacket       *tmp;            /* dr_layout_probe_data(): the bytes as a packet */
     int             done;
 };
 
@@ -354,6 +405,20 @@ int dr_layout_probe_open(DrLayoutProbe **pp, const AVCodecParameters *par)
     return 0;
 }
 
+int dr_layout_probe_open_track(DrLayoutProbe **pp, const struct DrDiscTrack *t)
+{
+    AVCodecParameters *par = avcodec_parameters_alloc();
+    int ret;
+
+    *pp = NULL;
+    if (!par)
+        return AVERROR(ENOMEM);
+    if ((ret = par_of_track(par, t)) >= 0)
+        ret = dr_layout_probe_open(pp, par);
+    avcodec_parameters_free(&par);
+    return ret;
+}
+
 int dr_layout_probe_packet(DrLayoutProbe *p, const AVPacket *pkt)
 {
     if (!p->done && avcodec_send_packet(p->avctx, pkt) >= 0 &&
@@ -362,9 +427,35 @@ int dr_layout_probe_packet(DrLayoutProbe *p, const AVPacket *pkt)
     return p->done;
 }
 
+int dr_layout_probe_data(DrLayoutProbe *p, const uint8_t *data, int size)
+{
+    int ret;
+
+    if (p->done)
+        return 1;
+    if (!p->tmp && !(p->tmp = av_packet_alloc()))
+        return 0;
+    p->tmp->data = (uint8_t *)data;
+    p->tmp->size = size;
+    ret = dr_layout_probe_packet(p, p->tmp);
+    p->tmp->data = NULL;
+    p->tmp->size = 0;
+    return ret;
+}
+
 const AVChannelLayout *dr_layout_probe_layout(const DrLayoutProbe *p)
 {
     return p && p->done && p->frame->ch_layout.nb_channels ? &p->frame->ch_layout : NULL;
+}
+
+int dr_layout_probe_name(const DrLayoutProbe *p, char *buf, size_t size)
+{
+    const AVChannelLayout *cl = dr_layout_probe_layout(p);
+
+    if (!cl)
+        return 0;
+    av_channel_layout_describe(cl, buf, size);
+    return 1;
 }
 
 int dr_layout_probe_profile(const DrLayoutProbe *p, int fallback)
@@ -380,5 +471,27 @@ void dr_layout_probe_close(DrLayoutProbe **pp)
         return;
     av_frame_free(&p->frame);
     avcodec_free_context(&p->avctx);
+    av_packet_free(&p->tmp);
     av_freep(pp);
+}
+
+uint64_t dr_layout_of(uint64_t layout, int channels, char *buf, size_t size)
+{
+    AVChannelLayout cl = { 0 };
+
+    if (buf && size)
+        *buf = 0;
+    if (layout) {
+        if (av_channel_layout_from_mask(&cl, layout) < 0)
+            return 0;
+    } else if (channels) {
+        av_channel_layout_default(&cl, channels);
+    } else {
+        return 0;
+    }
+    if (buf)
+        av_channel_layout_describe(&cl, buf, size);
+    layout = cl.order == AV_CHANNEL_ORDER_NATIVE ? cl.u.mask : 0;
+    av_channel_layout_uninit(&cl);
+    return layout;
 }

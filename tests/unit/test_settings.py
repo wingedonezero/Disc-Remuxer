@@ -1,6 +1,6 @@
 """The settings are one system (src/base/settings.c): every setting of
 the registry is read by the program (the engine, or the GUI for its own),
-and every option of the disc reader (the disc demuxer, discdec.c) is set
+and every option of the disc layer (DrDiscOptions, src/disc/disc.h) is set
 from a setting or is a choice of the run, so nothing the user may want to
 change sits outside the settings file."""
 
@@ -10,16 +10,17 @@ from helpers import ROOT
 
 SRC = ROOT / "src"
 SETTINGS = (SRC / "base" / "settings.c").read_text()
-DISCDEC = (ROOT / "libs" / "ffmpeg" / "libavformat" / "discdec.c").read_text()
+DISC_H = (SRC / "disc" / "disc.h").read_text()
 WRITER = (SRC / "disc-remuxer" / "writer.c").read_text()
 
-# options of the disc reader that are a run's choice, not a setting
+# options of the disc layer that are a run's choice, not a setting
 RUN_CHOICES = {
-    "part": "a part of a title: disc_title_open() (--split, the GUI's row menu)",
-    "second_view": "a 3-D title's second view: disc_title_open(), from the tracks chosen",
+    "title": "the disc info only here: the titles are opened one by one (dr_disc_title_open())",
+    "part": "a part of a title: dr_disc_title_open() (--split, the GUI's row menu)",
+    "second_view": "a 3-D title's second view: dr_disc_title_open(), from the tracks chosen",
     "details": "the title list reads each track's details: always on for the program",
-    "progress": "exported: how far a title is read, read back by the writer",
     "cc_helper": "the caption converter: the one next to the program",
+    "nb_keydb": "the key file count, with keydb",
 }
 
 
@@ -58,16 +59,18 @@ def test_every_setting_is_read_by_the_program():
             assert any(not p.endswith(".cpp") for p in users), f"{group}.{key}: the engine does not read it"
 
 
-def test_every_option_of_the_disc_reader_is_a_setting_or_a_run_choice():
-    options = re.findall(r'\{"(\w+)",\s+"[^"]*",\s+OFFSET\(', DISCDEC)
+def test_every_option_of_the_disc_layer_is_a_setting_or_a_run_choice():
+    block = DISC_H[DISC_H.index("typedef struct DrDiscOptions"):]
+    block = block[:block.index("} DrDiscOptions;")]
+    options = re.findall(r'^\s+(?:const char \*const \*|const char \*|int64_t|int)\s*(\w+);', block, re.M)
     opened = WRITER[WRITER.index("int open_disc("):]
     opened = opened[:opened.index("\n}\n")]
-    set_there = set(re.findall(r'av_dict_set(?:_int)?\(&opts, "(\w+)"', opened))
-    assert "title" in options and "udf_reader" in options
+    set_there = set(re.findall(r'\bo\.(\w+)\s*=', opened))
+    assert "title" in options and "udf_reader" in options and len(options) >= 12
     for o in options:
-        assert o in set_there or o in RUN_CHOICES, f"disc reader option {o}: no setting sets it"
-    # and what open_disc sets comes from a setting (the title: the disc info only)
-    for o in set_there - {"title", "keydb"}:
-        line = next(l for l in opened.splitlines() if f'"{o}"' in l)
+        assert o in set_there or o in RUN_CHOICES, f"disc layer option {o}: no setting sets it"
+    # and what open_disc sets comes from a setting (or is a run's choice)
+    for o in set_there - {"keydb", "nb_keydb"} - set(RUN_CHOICES):
+        line = next(l for l in opened.splitlines() if re.search(rf"\bo\.{o}\s*=", l))
         assert "setting_" in line, line
-    assert "key_files(&bp)" in opened     # keydb: setting aacs.key_files, or the keydb folder
+    assert "key_files(&keydb" in opened     # keydb: setting aacs.key_files, or the keydb folder

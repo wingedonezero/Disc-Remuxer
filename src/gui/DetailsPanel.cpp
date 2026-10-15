@@ -3,6 +3,7 @@
 #include <QLocale>
 
 extern "C" {
+#include <libavcodec/avcodec.h>
 #include <libavutil/avutil.h>
 #include "codecs.h"
 }

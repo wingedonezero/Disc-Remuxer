@@ -43,22 +43,6 @@ static int aac_sync(uint64_t state, int *need_next_header, int *new_frame_start)
     return size;
 }
 
-
-static int aac_parse(AVCodecParserContext *s1, AVCodecContext *avctx, const uint8_t **poutbuf, int *poutbuf_size,
-                     const uint8_t *buf, int buf_size)
-{
-    AACAC3ParseContext *s = s1->priv_data;
-
-    return ff_aac_ac3_parse(s1, avctx, poutbuf, poutbuf_size, buf, buf_size);
-}
-
-static av_cold void aac_parse_close(AVCodecParserContext *s1)
-{
-    AACAC3ParseContext *s = s1->priv_data;
-
-    ff_parse_close(s1);
-}
-
 static av_cold int aac_parse_init(AVCodecParserContext *s1)
 {
     AACAC3ParseContext *s = s1->priv_data;
@@ -72,6 +56,6 @@ const FFCodecParser ff_aac_parser = {
     PARSER_CODEC_LIST(AV_CODEC_ID_AAC),
     .priv_data_size = sizeof(AACAC3ParseContext),
     .init           = aac_parse_init,
-    .parse          = aac_parse,
-    .close          = aac_parse_close,
+    .parse          = ff_aac_ac3_parse,
+    .close          = ff_parse_close,
 };

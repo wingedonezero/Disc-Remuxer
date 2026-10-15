@@ -4,10 +4,14 @@ Updated 2026-10-13, on branch `claude/rewrite-untangle-1c24ca` (the rewrite
 branch; main still holds the pre-rewrite program and is the byte-compare
 reference). Inventory of what the old shape was made of: `docs/UNTANGLE.md`.
 
-Status: **steps 1–6 done**, step 7 under way: 7a (the clip demuxer) and 7b
-(the format parts out of FFmpeg, rows 258–263) are in; next 7d, the disc
-model (7c folded into it), then 7e, the deferred log flip.
-Tests at every commit: 735 passed, 15 skipped (the disc-marked ones without a
+Status: **steps 1–6 done, step 7 done but for 7e's remainder**: 7a (the
+clip demuxer), 7b (the format parts, rows 258–263) and 7d (the disc model,
+row 264; 7c folded into it) are in — **libs/ffmpeg is byte-for-byte the
+import again**, the "disc" demuxer is gone, the program and GUI run on the
+typed disc API (disc/disc.h). Of 7e only the FFmpeg-line hook's move into
+analyze/ remains: the modules' lines already carry their own source names
+(a string log context through base/vlog.h).
+Tests at every commit: 743 passed, 15 skipped (the disc-marked ones without a
 disc). Every move so far is behavior-preserving by construction and by test;
 the real-disc byte-compare against a main build is still owed (user runs it
 when the demux side is complete).
@@ -114,11 +118,13 @@ analyze) → the disc model (`DrDisc`/`DrTitle`/`DrTrack`) → GUI/CLI.
   caller's sink (today `EngineSink`, v2 `DrSink`), dedup of repeated library
   lines, error/warning counts.
 - `base/vlog.h` is the ONE hook the extracted modules log through
-  (`dr_vlog(logctx, level, fmt, ...)`). During migration the program and the
-  test bridge point it at FFmpeg's `av_vlog`, so every line keeps its exact
-  text AND its source attribution (the AVClass of the caller). When the disc
-  layer leaves FFmpeg (step 7), the hook points at `base/log.h` directly and
-  `log_ffmpeg.c` moves into `analyze/`.
+  (`dr_vlog(logctx, level, fmt, ...)`); since 7d logctx is the module's
+  source-name string (`dr_disc_open()`'s log name, "disc" by default), and
+  the program's hook formats the line and hands it to `log_library_line()`
+  with that source — no AVClass anywhere on the disc path. The
+  `dr_vlog_wants(level)` check lets modules skip building expensive debug
+  dumps that would be dropped. 7e's remainder: `log_ffmpeg.c` (the hook
+  for FFmpeg's own lines, analyze's decoders) moves into `analyze/`.
 - The DVD libraries already log through their callback structs into the same
   funnel; libaacs through its handler. Nothing prints on its own.
 
@@ -365,19 +371,33 @@ In five slices, one commit and one full test run each:
   (row 262) and THE DVD PART closed it (row 263) — all three format parts
   live under `src/disc/`, and libavformat keeps only the disc layer
   (discdec / discpass / disctitle) and the three thin adapters. 7b DONE.
-- **7c — `discpass.c` and `disclang.c` move** (the pass on
-  mux/parse/analyze; language names from our own ISO-639 table, the
-  `avlanguage.c` link dropped).
-- **7d — the disc model**: `discdec.c`/`disc.h`/`discinfo.h` → our own
-  disc model (no AVFormatContext/AVStream/AVOption/metadata dicts: typed
-  structs end to end), `disctitle.c` moves, the program (engine, writer,
-  CLI) and the test bridge switch to the new API, options come typed from
-  settings; the "disc" AVInputFormat dies — **libs/ffmpeg returns to
-  ~upstream** (the one historical fix, parser.c timestamp lookup #1, died
-  at 4d).
-- **7e — the deferred log flip**: `dr_vlog` → `base/log.h` directly, the
-  moved modules carry their own source names, `log_ffmpeg.c` moves into
-  `analyze/`.
+- **7d — DONE (row 264; 7c folded in): the disc model.** The whole disc
+  layer left libavformat: `discdec.c` → `src/disc/disc.c` with the typed
+  public API `disc/disc.h` (`DrDisc` / `DrDiscOptions` / `DrDiscTrack` /
+  `DrDiscFrame` / `DrDiscChapter`: no AVFormatContext / AVStream /
+  AVOption / metadata dicts — the former stream metadata and dictionary
+  results are fields), `disc.h` → `disc/model.h`, `disctitle.c` →
+  `disc/title_reader.c` (frames out as `DrDiscFrame`, `DrBuf` references),
+  `discpass.c` → `disc/pass.c`, `discprobe.h` → `disc/probe.h` (analyze's
+  registration), the three `*dec.c` adapters → `src/disc/*/*_part.c`;
+  `disclang.c`'s `avlanguage.c` link died with `disc/lang.c`. The program
+  switched whole: the writer reads `dr_disc_read()` frames and takes the
+  typed track results, options come typed from the settings
+  (`DrDiscOptions`, key files as a list), `disc_mkv_codec_id` is the
+  engine's own table (codecs.c), analyze grew track-based probe entry
+  points (`details_probe_open_track` / `dr_layout_probe_open_track` and
+  byte feeds), `engine.h` carries `disc/info.h`. The "disc" AVInputFormat
+  died — **libs/ffmpeg is byte-for-byte the import commit again** (the
+  upstream bluray protocol restored; the one historical fix, parser.c
+  timestamp lookup #1, died at 4d); FFmpeg builds without `src/` on its
+  include path and links none of our libraries.
+- **7e — the log flip's remainder**: the modules already log with their
+  own source names (logctx = a source-name string through `base/vlog.h`;
+  the program's hook formats their lines directly — flipped at 7d, since
+  no AVClass context is left on the disc path). What remains:
+  `log_ffmpeg.c` (now only FFmpeg's own lines, i.e. analyze's decoders)
+  moves into `analyze/`, and `dr_vlog` can point at `base/log.h` without
+  the program's mediation.
 
 Gate: corpus byte-compare + info compare; the GUI must run (it still speaks
 engine.h v1 until step 9).

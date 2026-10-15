@@ -21,13 +21,9 @@
  */
 
 #include "parser.h"
-#include "get_bits.h"
-#include "mpegaudio.h"
-#include "mpegaudiodata.h"
 #include "mpegaudiodecheader.h"
 #include "parser_internal.h"
 #include "libavutil/common.h"
-#include "libavutil/intreadwrite.h"
 #include "libavformat/apetag.h" // for APE tag.
 #include "libavformat/id3v1.h" // for ID3v1_TAG_SIZE
 
@@ -44,7 +40,6 @@ typedef struct MpegAudioParseContext {
 /* header + layer + freq + lsf/mpeg25 */
 #define SAME_HEADER_MASK \
    (0xffe00000 | (3 << 17) | (3 << 10) | (3 << 19))
-
 
 static int mpegaudio_parse(AVCodecParserContext *s1,
                            AVCodecContext *avctx,
@@ -142,17 +137,10 @@ static int mpegaudio_parse(AVCodecParserContext *s1,
 }
 
 
-static av_cold void mpegaudio_close(AVCodecParserContext *s1)
-{
-    MpegAudioParseContext *s = s1->priv_data;
-
-    ff_parse_close(s1);
-}
-
 const FFCodecParser ff_mpegaudio_parser = {
     PARSER_CODEC_LIST(AV_CODEC_ID_MP1, AV_CODEC_ID_MP2,
                       AV_CODEC_ID_MP3, AV_CODEC_ID_MP3ADU),
     .priv_data_size = sizeof(MpegAudioParseContext),
     .parse          = mpegaudio_parse,
-    .close          = mpegaudio_close,
+    .close          = ff_parse_close,
 };

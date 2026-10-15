@@ -44,6 +44,8 @@ size_t dr_strlcatf(char *dst, size_t size, const char *fmt, ...) __attribute__((
 /* asprintf: *out set (caller frees), the length returned; negative =
  * failure, *out NULL. */
 int dr_asprintf(char **out, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+/* As dr_asprintf, the string returned (NULL on failure). */
+char *dr_asprintf_str(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 /* Append item to the pointer array (pass the address of a T* array): the
  * array grows (geometrically); 0, or DR_ERR_NOMEM with the array as it

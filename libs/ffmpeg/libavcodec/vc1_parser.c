@@ -27,7 +27,6 @@
 
 #include "libavutil/attributes.h"
 #include "libavutil/avassert.h"
-#include "libavutil/log.h"
 #include "parser.h"
 #include "parser_internal.h"
 #include "vc1.h"
@@ -125,7 +124,6 @@ static void vc1_extract_header(AVCodecParserContext *s, AVCodecContext *avctx,
         s->coded_height = FFALIGN(avctx->coded_height, 16);
     }
 }
-
 
 static int vc1_parse(AVCodecParserContext *s,
                            AVCodecContext *avctx,
@@ -274,17 +272,10 @@ static av_cold int vc1_parse_init(AVCodecParserContext *s)
     return 0;
 }
 
-static av_cold void vc1_parse_close(AVCodecParserContext *s)
-{
-    VC1ParseContext *vpc = s->priv_data;
-
-    ff_parse_close(s);
-}
-
 const FFCodecParser ff_vc1_parser = {
     PARSER_CODEC_LIST(AV_CODEC_ID_VC1),
     .priv_data_size = sizeof(VC1ParseContext),
     .init           = vc1_parse_init,
     .parse          = vc1_parse,
-    .close          = vc1_parse_close,
+    .close          = ff_parse_close,
 };

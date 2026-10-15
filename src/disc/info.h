@@ -24,6 +24,19 @@ enum DiscMediaKind {
     DISC_MEDIA_SUBTITLE = 3,
 };
 
+/** The kind in words ("video", "audio", "subtitle", "data"), as the
+ *  processing library names its media types. */
+static inline const char *disc_media_name(int type)
+{
+    switch (type) {
+    case DISC_MEDIA_VIDEO:    return "video";
+    case DISC_MEDIA_AUDIO:    return "audio";
+    case DISC_MEDIA_SUBTITLE: return "subtitle";
+    case DISC_MEDIA_DATA:     return "data";
+    }
+    return "?";
+}
+
 #define DISC_PROFILE_UNKNOWN (-99)
 #define DISC_LEVEL_UNKNOWN   (-99)
 

@@ -1,35 +1,24 @@
 /*
- * The disc layer (discdec.c) and its format parts: the disc layer opens a
- * source once (disc readers), tells which kind of disc it is and hands it to
- * that kind's format part, which reads the disc's structure, opens the
- * chosen title and gives its packets.
- *
- * This file is part of FFmpeg.
- *
- * FFmpeg is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * FFmpeg is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with FFmpeg; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
+ * The disc layer's inner model (the public face is disc/disc.h): the disc
+ * context, the format parts' vtable and what a format part tells the title
+ * reader of an opened title. The disc layer opens a source once (disc
+ * readers), tells which kind of disc it is and hands it to that kind's
+ * format part, which reads the disc's structure, opens the chosen title and
+ * gives its blocks.
  */
 
-#ifndef AVFORMAT_DISC_H
-#define AVFORMAT_DISC_H
+#ifndef DISC_DISC_MODEL_H
+#define DISC_DISC_MODEL_H
 
 #include <stddef.h>
 #include <stdint.h>
 
-#include "discinfo.h"
-#include "avformat.h"
+#include "disc/disc.h"
+#include "disc/info.h"
 #include "io/discio.h"
+#include "timeline/disctl.h"
+
+typedef struct DrDisc DrDisc;
 
 struct DRTitleTrack;
 
@@ -48,7 +37,8 @@ typedef struct DiscTsFeed {
 /** A track of a title as its format part describes it: one shape for every
  *  format. What the disc info shows of it, where its data is and how the
  *  title reader takes it; the disc layer makes the disc info's stream and,
- *  for the opened title, its AVStream and title-reader track from it. */
+ *  for the opened title, its public track (disc/disc.h) and title-reader
+ *  track from it. */
 typedef struct DiscTrack {
     DiscStreamInfo  info;           /**< the disc info's stream (the stream details as far as known) */
     int             kind;           /**< DR_KIND_VIDEO / _AUDIO / _SUBTITLE / _CAPTION (disctl.h) */
@@ -91,7 +81,7 @@ typedef struct DiscPassSource {
     uint64_t  key;                  /**< the segment's identity: titles with the same key share its results;
                                          0: none */
     /** Block of the segment into buf: 1 read, 0 not usable (left out),
-     *  AVERROR_EOF the end, < 0 cannot be read. */
+     *  DR_ERR_EOF the end, < 0 cannot be read. */
     int     (*read)(void *opaque, uint32_t block, uint8_t *buf);
     void     *opaque;
 } DiscPassSource;
@@ -114,41 +104,40 @@ enum {
 /** What the title reader needs of the opened title; the format part fills
  *  DiscContext.src in its open (the arrays and strings stay its own until
  *  its close). Track i is stream i; track 0 is the video. Program-stream
- *  clips (ts 0): 2048-byte sectors through FFmpeg's MPEG-PS demuxer; a
- *  track takes the payloads mpeg.c gives the id of its stream (the start
- *  code 0x1xx of an MPEG stream, the sub-stream id of a private stream 1
- *  stream, 0xFD55 for VC-1). Blu-ray clips (ts 1): 6144-byte units of
- *  192-byte source packets through FFmpeg's MPEG-TS demuxer in disc mode;
- *  a track takes what its feed says. */
+ *  clips (ts 0): 2048-byte sectors through the clip demuxer; a track takes
+ *  the payloads it gives the id of its stream (the start code 0x1xx of an
+ *  MPEG stream, the sub-stream id of a private stream 1 stream, 0xFD55 for
+ *  VC-1). Blu-ray clips (ts 1): 6144-byte units of 192-byte source packets
+ *  through the clip demuxer; a track takes what its feed says. */
 typedef struct DiscTitleSource {
     int          nb_clips;
     const char  *clip_kind;                                  /**< for the log: "EVOB" */
-    const char *(*clip_name)(AVFormatContext *s, int clip);
-    uint32_t    (*clip_blocks)(AVFormatContext *s, int clip);  /**< blocks of the clip (2048 / 6144 bytes) */
+    const char *(*clip_name)(DrDisc *d, int clip);
+    uint32_t    (*clip_blocks)(DrDisc *d, int clip);  /**< blocks of the clip (2048 / 6144 bytes) */
     /** Block of the clip into buf (decrypted): 1 read, 0 not usable (left
      *  out), < 0 cannot be read (the rest of the clip is not read). */
-    int         (*read_block)(AVFormatContext *s, int clip, uint32_t block, uint8_t *buf);
+    int         (*read_block)(DrDisc *d, int clip, uint32_t block, uint8_t *buf);
     /** Where block of the clip lies on the disc, for the log: the file
      *  (name into file, room for size) and the byte offset in it; < 0 not
      *  known. NULL: none. */
-    int         (*block_place)(AVFormatContext *s, int clip, uint32_t block, char *file, int size,
+    int         (*block_place)(DrDisc *d, int clip, uint32_t block, char *file, int size,
                                int64_t *offset);
     /** The disc's own reader names the damaged ranges (DVD: libdvdread):
      *  the range the latest read_block of the clip ended (flush: the clip's
      *  reading ends, the range being read ends too) into *out; 1 one given,
      *  0 none. NULL: the title reader finds the ranges itself (blocks left
      *  out one after the other and of one kind, block_place). */
-    int         (*damage)(AVFormatContext *s, int clip, int flush, DiscDamage *out);
+    int         (*damage)(DrDisc *d, int clip, int flush, DiscDamage *out);
     /** Where the disc's own structure starts the clip: its first presentation
      *  time (90 kHz, on the clip's clock), checked against the first picture
      *  read from it; AV_NOPTS_VALUE when the structure gives none. NULL: no
      *  check. */
-    int64_t     (*clip_start)(AVFormatContext *s, int clip);
+    int64_t     (*clip_start)(DrDisc *d, int clip);
     const char  *clip_start_name;   /**< for the log: "the playlist's IN time" */
     /** The disc's own check of the stream data read (Blu-ray: its AACS
      *  content hashes), at the title's end: logged; returns the damaged
      *  units found (each logged as a warning). NULL: none. */
-    int64_t     (*integrity)(AVFormatContext *s);
+    int64_t     (*integrity)(DrDisc *d);
 
     int          ts;                /**< Blu-ray stream data (6144-byte units, MPEG-TS) */
     const int   *pids;              /**< ts: the PIDs read */
@@ -172,15 +161,15 @@ typedef struct DiscTitleSource {
      *  before the title's clips; a track whose feed names one (feed.side)
      *  takes its payloads from it. */
     int          nb_sides;
-    const char *(*side_name)(AVFormatContext *s, int side);       /**< for the log: "text subtitle clip ..." */
-    uint32_t    (*side_blocks)(AVFormatContext *s, int side);
+    const char *(*side_name)(DrDisc *d, int side);       /**< for the log: "text subtitle clip ..." */
+    uint32_t    (*side_blocks)(DrDisc *d, int side);
     /** Block of the side clip into buf (decrypted): 1 read, 0 not usable
      *  (left out), < 0 cannot be read (the rest of the clip is not read). */
-    int         (*side_read)(AVFormatContext *s, int side, uint32_t block, uint8_t *buf);
+    int         (*side_read)(DrDisc *d, int side, uint32_t block, uint8_t *buf);
     /** How far the side clip's clock lies ahead of the clock of the title's
      *  clip first (the first clip read): *offset in ticks; 1 as the disc
      *  says, 0 not placed that way (*offset 0; the format part says why). */
-    int         (*side_offset)(AVFormatContext *s, int side, int first, int64_t *offset);
+    int         (*side_offset)(DrDisc *d, int side, int first, int64_t *offset);
 } DiscTitleSource;
 
 /** One disc format's part. */
@@ -198,46 +187,47 @@ typedef struct DiscFormat {
     /** Read the disc's structure from DiscContext.fs (its keys, the title
      *  list with each title's tracks by the format's own rules); the disc
      *  info's disc-wide fields (name, label, encrypted). */
-    int  (*load)(AVFormatContext *s);
-    int  (*nb_titles)(AVFormatContext *s);
+    int  (*load)(DrDisc *d);
+    int  (*nb_titles)(DrDisc *d);
     /** Title i's name for the log. */
-    const char *(*title_name)(AVFormatContext *s, int i);
+    const char *(*title_name)(DrDisc *d, int i);
     /** Title i's own probe before its stream pass, or NULL: < 0 the title
      *  cannot be used. */
-    int  (*title_probe)(AVFormatContext *s, int i);
+    int  (*title_probe)(DrDisc *d, int i);
     /** Title i's tracks into out (room for out_size): their count, < 0
      *  error. */
-    int  (*title_tracks)(AVFormatContext *s, int i, DiscTrack *out, int out_size);
+    int  (*title_tracks)(DrDisc *d, int i, DiscTrack *out, int out_size);
     /** The segment title i's stream pass reads (its largest) into src: 1,
      *  0 none (no pass), < 0 error. Released with segment_close (may be
      *  NULL). */
-    int  (*title_segment)(AVFormatContext *s, int i, DiscPassSource *src);
-    void (*segment_close)(AVFormatContext *s, DiscPassSource *src);
+    int  (*title_segment)(DrDisc *d, int i, DiscPassSource *src);
+    void (*segment_close)(DrDisc *d, DiscPassSource *src);
     /** Title i left out of the part's list (the titles after it move up). */
-    void (*remove_title)(AVFormatContext *s, int i);
+    void (*remove_title)(DrDisc *d, int i);
     /** The disc info's disc-wide fields known once every title's stream
      *  pass has read (what protection the reading met), or NULL. */
-    int  (*disc_done)(AVFormatContext *s);
+    int  (*disc_done)(DrDisc *d);
     /** Title i's disc info but its streams: name, length, size, files,
      *  chapters, parts. */
-    int  (*title_info)(AVFormatContext *s, int i, DiscTitleInfo *dt);
+    int  (*title_info)(DrDisc *d, int i, DiscTitleInfo *dt);
     /** Open title i (with part >= 0: that part of it alone): DiscContext.src
      *  but its tracks (clips, block reader, chapters, LPCM header, ts),
      *  s->duration; *second_view: the second view of a 3-D
      *  title is read. */
-    int  (*open_title)(AVFormatContext *s, int i, int part, int *second_view);
+    int  (*open_title)(DrDisc *d, int i, int part, int *second_view);
     /** The opened title's own state given back (another title can be
      *  opened after it); also after a failed open_title. */
-    void (*close_title)(AVFormatContext *s);
+    void (*close_title)(DrDisc *d);
     /** Also after a failed load (the context as far as it came). */
-    void (*close)(AVFormatContext *s);
+    void (*close)(DrDisc *d);
 } DiscFormat;
 
 typedef struct DiscTitleReader DiscTitleReader;
 
-/** The disc demuxer's context (AVFormatContext.priv_data). */
-typedef struct DiscContext {
-    const AVClass    *class;
+/** The disc context (the public face's handle). */
+struct DrDisc {
+    const char       *source;           /**< the path the disc was opened at */
+    const char       *log;              /**< the source name its log lines carry (base/vlog.h) */
 
     /* options, for every format part */
     int               opt_read_attempts;
@@ -277,6 +267,7 @@ typedef struct DiscContext {
     DiscTitleSource   src;              /**< filled by the format part (nb_clips 0: no title); its tracks, feeds
                                              and PIDs by ff_disc_open_tracks() */
     struct DRTitleTrack *tracks;        /**< src.tracks, the disc layer's own */
+    int              *track_ids;        /**< per track: PS its stream id, TS PID | key << 16 */
     DiscTsFeed       *feeds;            /**< src.feeds */
     int              *pids;             /**< src.pids */
     DiscPassCache    *pass_cache;       /**< the stream pass's results per segment */
@@ -285,18 +276,30 @@ typedef struct DiscContext {
     int              *nb_title_tracks;
     int               nb_title_slots;   /**< the arrays' size */
     DiscTitleReader  *reader;
-} DiscContext;
 
-/** The format part's context of s. */
-static inline void *ff_disc_part(AVFormatContext *s)
+    /* the opened title's public face (disc/disc.h): track i of the title
+     * reader is out_tracks[i]; the results fill at the title's end */
+    DrDiscTrack      *out_tracks;
+    int               nb_out_tracks;
+    uint8_t         **track_extradata;  /**< what out_tracks' extradata points at (owned) */
+    DrDiscChapter    *chapters;         /**< after the title was read (names: the format part's records) */
+    int               nb_chapters;
+    int64_t           duration;         /**< the read title's length (ticks) */
+    int64_t           damaged_ranges, damaged_bytes;
+    char             *damage;           /**< the damaged ranges in words, one per line (owned), NULL none */
+    int64_t           untested_total;   /**< untested features met (the timeline's + the tracks') */
+};
+
+/** The format part's context of d. */
+static inline void *ff_disc_part(DrDisc *d)
 {
-    return ((DiscContext *)s->priv_data)->part;
+    return d->part;
 }
 
 /** A new title at the end of the disc info (zeroed but for its index);
  *  NULL: out of memory. Strings are the format part's, kept until close;
  *  a title is finished before the next one is added. */
-DiscTitleInfo *ff_disc_add_title(AVFormatContext *s);
+DiscTitleInfo *ff_disc_add_title(DrDisc *d);
 /** A new stream (zeroed, no linked streams) / chapter / file at the end of
  *  title t; NULL / < 0: out of memory. */
 DiscStreamInfo *ff_disc_title_add_stream(DiscTitleInfo *t);
@@ -306,16 +309,16 @@ int ff_disc_title_add_file(DiscTitleInfo *t, const char *name);
 /** A property of title t (DiscTitleInfo.props): name kept as given (a
  *  string that lives until close), the value formatted; < 0: out of
  *  memory. */
-int ff_disc_title_add_prop(DiscTitleInfo *t, const char *name, const char *fmt, ...) av_printf_format(3, 4);
+int ff_disc_title_add_prop(DiscTitleInfo *t, const char *name, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
 /** The disc's market language (DiscContext.market) from the languages its
  *  format names for the disc itself (Blu-ray: its disc library files; DVD:
  *  its menus; HD DVD: its title sets' default language), ISO 639 codes:
  *  one language: that one; several: the first as the disc lists them
  *  (ordered), else (an unordered list) English when it is among them, else
  *  the first. from: where they come from (for the disc info). */
-void ff_disc_set_market(AVFormatContext *s, const char (*codes)[4], int n, int ordered, const char *from);
+void ff_disc_set_market(DrDisc *d, const char (*codes)[4], int n, int ordered, const char *from);
 /** A property of the disc (DiscInfo.props), as ff_disc_title_add_prop(). */
-int ff_disc_add_prop(AVFormatContext *s, const char *name, const char *fmt, ...) av_printf_format(3, 4);
+int ff_disc_add_prop(DrDisc *d, const char *name, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
 /** A stream as ff_disc_title_add_stream() starts it: zeroed, no linked
  *  streams, no offset sequence, profile and level unknown. */
 void ff_disc_stream_init(DiscStreamInfo *k);
@@ -330,7 +333,7 @@ int  ff_disc_title_add_tracks(DiscTitleInfo *t, const DiscTrack *tracks, int nb_
  *  transport stream; second_view: the second view of a 3-D video is read;
  *  keep: NULL every track, else keep[i] 0: track i not selected (track 0,
  *  the video, and a video with a Dolby Vision layer are always read). */
-int  ff_disc_open_tracks(AVFormatContext *s, const char *title, const DiscTrack *tracks, int nb_tracks, int ts,
+int  ff_disc_open_tracks(DrDisc *d, const char *title, const DiscTrack *tracks, int nb_tracks, int ts,
                          int second_view, const uint8_t *keep);
 
 /* ---- discpass.c ---- */
@@ -340,22 +343,22 @@ int  ff_disc_open_tracks(AVFormatContext *s, const char *title, const DiscTrack 
  *  track's details from its stream; an audio track without data left out.
  *  AVERROR_INVALIDDATA: the video has no data (the title cannot be used);
  *  < 0 otherwise: a block cannot be read. */
-int  ff_disc_stream_pass(AVFormatContext *s, const char *title, const DiscPassSource *src, DiscTrack *tracks,
+int  ff_disc_stream_pass(DrDisc *d, const char *title, const DiscPassSource *src, DiscTrack *tracks,
                          int *nb_tracks, int details);
 void ff_disc_pass_cache_free(DiscPassCache **pc);
 
 /* ---- disctitle.c ---- */
 
-/** The title reader (DiscContext.reader) over src: the title timeline for
+/** The title reader (DrDisc.reader) over src: the title timeline for
  *  its tracks and chapters; reading starts at its first clip. */
-int  ff_disc_title_reader_open(AVFormatContext *s, const DiscTitleSource *src);
-/** The next packet: a frame of the title timeline; at the end (AVERROR_EOF)
- *  the chapters, s->duration and each stream's result are set. */
-int  ff_disc_title_reader_packet(AVFormatContext *s, AVPacket *pkt);
+int  ff_disc_title_reader_open(DrDisc *d, const DiscTitleSource *src);
+/** The next frame of the title timeline; at the end (DR_ERR_EOF) the
+ *  chapters, the duration and each track's result are set. */
+int  ff_disc_title_reader_frame(DrDisc *d, DrDiscFrame *f);
 void ff_disc_title_reader_close(DiscTitleReader **reader);
 
 extern const DiscFormat ff_disc_dvd;
 extern const DiscFormat ff_disc_hddvd;
 extern const DiscFormat ff_disc_bluray;
 
-#endif /* AVFORMAT_DISC_H */
+#endif /* DISC_DISC_MODEL_H */

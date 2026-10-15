@@ -23,8 +23,6 @@
 #include "config_components.h"
 
 #include "libavutil/channel_layout.h"
-#include "libavutil/crc.h"
-#include "libavutil/intreadwrite.h"
 #include "libavutil/mem.h"
 #include "parser.h"
 #include "ac3defs.h"
@@ -478,7 +476,6 @@ static av_cold int ac3_parse_init(AVCodecParserContext *s1)
     s->sync = ac3_sync;
     return 0;
 }
-
 
 
 const FFCodecParser ff_ac3_parser = {

@@ -167,7 +167,6 @@ int av_parser_parse2(AVCodecParserContext *s, AVCodecContext *avctx,
         s->last_pos        = s->pos;
         ff_fetch_timestamp(s, 0, 0, 0);
     }
-
     /* WARNING: the returned index can be negative */
     index = ffcodecparser(s->parser)->parse(s, avctx, (const uint8_t **) poutbuf,
                                             poutbuf_size, buf, buf_size);
@@ -201,7 +200,7 @@ int av_parser_parse2(AVCodecParserContext *s, AVCodecContext *avctx,
     return index;
 }
 
-void av_parser_close(AVCodecParserContext *s)
+av_cold void av_parser_close(AVCodecParserContext *s)
 {
     if (s) {
         if (ffcodecparser(s->parser)->close)

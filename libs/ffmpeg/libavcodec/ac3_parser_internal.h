@@ -102,7 +102,6 @@ typedef enum {
  */
 int ff_ac3_parse_header(GetBitContext *gbc, AC3HeaderInfo *hdr);
 
-
 int avpriv_ac3_parse_header(AC3HeaderInfo **hdr, const uint8_t *buf,
                             size_t size);
 

@@ -9,6 +9,7 @@
 #ifndef DISC_BASE_STR_H
 #define DISC_BASE_STR_H
 
+#include <stdarg.h>
 #include <stddef.h>
 
 #ifdef __cplusplus
@@ -28,6 +29,7 @@ void dr_str_init(DrStr *s);
 
 /** Append the formatted text (nothing on a failed buffer). */
 void dr_str_catf(DrStr *s, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+void dr_str_vcatf(DrStr *s, const char *fmt, va_list ap);
 
 /** Append len bytes as they are. */
 void dr_str_cat_data(DrStr *s, const char *data, size_t len);

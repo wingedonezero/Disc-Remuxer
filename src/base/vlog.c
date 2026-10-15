@@ -14,7 +14,19 @@ void dr_vlog_set(DrVlogFn fn)
     vlog = fn;
 }
 
-void dr_vlog(void *logctx, int level, const char *fmt, ...)
+static DrVlogWantsFn wants;
+
+void dr_vlog_set_wants(DrVlogWantsFn fn)
+{
+    wants = fn;
+}
+
+int dr_vlog_wants(int level)
+{
+    return wants ? wants(level) : 1;
+}
+
+void dr_vlog(const void *logctx, int level, const char *fmt, ...)
 {
     va_list vl;
 

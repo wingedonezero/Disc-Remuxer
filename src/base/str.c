@@ -39,21 +39,30 @@ static int room(DrStr *s, size_t more)
     return 1;
 }
 
-void dr_str_catf(DrStr *s, const char *fmt, ...)
+void dr_str_vcatf(DrStr *s, const char *fmt, va_list ap)
 {
-    va_list ap, ap2;
+    va_list ap2;
     int n;
 
-    va_start(ap, fmt);
     va_copy(ap2, ap);
-    n = vsnprintf(NULL, 0, fmt, ap);
+    n = vsnprintf(NULL, 0, fmt, ap2);
+    va_end(ap2);
     if (n >= 0 && room(s, n)) {
+        va_copy(ap2, ap);
         vsnprintf(s->str + s->len, n + 1, fmt, ap2);
+        va_end(ap2);
         s->len += n;
     } else if (n < 0) {
         s->failed = 1;
     }
-    va_end(ap2);
+}
+
+void dr_str_catf(DrStr *s, const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    dr_str_vcatf(s, fmt, ap);
     va_end(ap);
 }
 

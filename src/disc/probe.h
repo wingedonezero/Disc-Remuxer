@@ -23,12 +23,12 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#ifndef AVFORMAT_DISCPROBE_H
-#define AVFORMAT_DISCPROBE_H
+#ifndef DISC_DISC_PROBE_H
+#define DISC_DISC_PROBE_H
 
 #include <stdint.h>
 
-#include "libavcodec/codec_id.h"
+#include "timeline/disctl.h"
 
 struct DRCodec;
 struct DiscStreamInfo;
@@ -38,14 +38,14 @@ typedef struct DiscDetailsProbe DiscDetailsProbe;
 typedef struct DiscProbeOps {
     /** A probe over one track's payloads (tc: its codec table entry or
      *  NULL; layer: a Dolby Vision enhancement layer, only its metadata is
-     *  read; ds: where the values go): 0, AVERROR(ENOMEM), or another
+     *  read; ds: where the values go): 0, DR_ERR(ENOMEM), or another
      *  error when the codec has no decoder. */
-    int  (*open)(DiscDetailsProbe **p, enum AVCodecID codec, const struct DRCodec *tc,
+    int  (*open)(DiscDetailsProbe **p, DRCodecID codec, const struct DRCodec *tc,
                  int layer, struct DiscStreamInfo *ds);
-    /** A payload: 0, or AVERROR(ENOMEM). */
+    /** A payload: 0, or DR_ERR(ENOMEM). */
     int  (*feed)(DiscDetailsProbe *p, const uint8_t *data, int size);
     /** The end of the data read for details (the parser's last frame, the
-     *  decoder's delayed one): 0, or AVERROR(ENOMEM). */
+     *  decoder's delayed one): 0, or DR_ERR(ENOMEM). */
     int  (*flush)(DiscDetailsProbe *p);
     /** 1 once the details are known (or cannot be). */
     int  (*done)(const DiscDetailsProbe *p);
@@ -55,4 +55,4 @@ typedef struct DiscProbeOps {
 void ff_disc_set_probe(const DiscProbeOps *ops);
 const DiscProbeOps *ff_disc_probe(void);
 
-#endif /* AVFORMAT_DISCPROBE_H */
+#endif /* DISC_DISC_PROBE_H */

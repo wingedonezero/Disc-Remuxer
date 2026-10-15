@@ -1,8 +1,8 @@
 /*
- * The stream pass's details probe (libavformat/discprobe.h): a track's
+ * The stream pass's details probe (disc/probe.h): a track's
  * payloads through the library's parser and decoder of its codec until one
  * frame is decoded, within the pass's limit; the values go into the track's
- * DiscStreamInfo. Moved out of the disc layer's discpass.c: the library
+ * DiscStreamInfo. Moved out of the disc layer's pass: the library
  * answering questions on copies of data.
  */
 
@@ -15,8 +15,8 @@
 #include "libavutil/mastering_display_metadata.h"
 #include "libavutil/mem.h"
 #include "libavutil/pixdesc.h"
-#include "libavformat/discinfo.h"
-#include "libavformat/discprobe.h"
+#include "disc/info.h"
+#include "disc/probe.h"
 
 #include "analyze/analyze.h"
 #include "timeline/disctl.h"
@@ -278,9 +278,9 @@ static int probe_flush(DiscDetailsProbe *p)
 }
 
 
-/* ---- the ops the disc layer calls (libavformat/discprobe.h) ---- */
+/* ---- the ops the disc layer calls (disc/probe.h) ---- */
 
-static int ops_open(DiscDetailsProbe **pp, enum AVCodecID codec, const struct DRCodec *tc,
+static int ops_open(DiscDetailsProbe **pp, DRCodecID codec, const struct DRCodec *tc,
                     int layer, struct DiscStreamInfo *ds)
 {
     DiscDetailsProbe *p = av_mallocz(sizeof(*p));

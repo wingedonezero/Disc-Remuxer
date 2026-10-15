@@ -33,7 +33,6 @@ typedef struct DVDSubParseContext {
     int packet_index;
 } DVDSubParseContext;
 
-
 static int dvdsub_parse(AVCodecParserContext *s,
                         AVCodecContext *avctx,
                         const uint8_t **poutbuf, int *poutbuf_size,
