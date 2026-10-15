@@ -143,11 +143,11 @@ const DrDiscChapter *dr_disc_chapter(const DrDisc *d, int i);
 int64_t dr_disc_title_duration(const DrDisc *d);
 /** Untested features met reading the title (said in the log). */
 int64_t dr_disc_untested(const DrDisc *d);
-/** Damaged data left out: the ranges, their bytes, and the ranges in words
- *  (one per line; "" none). */
+/** Damaged data left out: the ranges, their bytes, and range i (from 0,
+ *  below dr_disc_damaged_ranges()) in words ("" none). */
 int64_t     dr_disc_damaged_ranges(const DrDisc *d);
 int64_t     dr_disc_damaged_bytes(const DrDisc *d);
-const char *dr_disc_damage(const DrDisc *d);
+const char *dr_disc_damage(const DrDisc *d, int i);
 
 #ifdef __cplusplus
 }

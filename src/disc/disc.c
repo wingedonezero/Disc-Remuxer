@@ -380,7 +380,10 @@ static void title_close(DrDisc *d)
     d->nb_out_tracks = 0;
     dr_freep(&d->chapters);
     d->nb_chapters = 0;
+    for (int i = 0; i < d->nb_damage; i++)
+        dr_freep(&d->damage[i]);
     dr_freep(&d->damage);
+    d->nb_damage = 0;
     d->damaged_ranges = d->damaged_bytes = 0;
     d->untested_total = 0;
     d->duration = 0;
@@ -747,9 +750,9 @@ int64_t dr_disc_damaged_bytes(const DrDisc *d)
     return d->damaged_bytes;
 }
 
-const char *dr_disc_damage(const DrDisc *d)
+const char *dr_disc_damage(const DrDisc *d, int i)
 {
-    return d->damage ? d->damage : "";
+    return i >= 0 && i < d->nb_damage ? d->damage[i] : "";
 }
 
 int dr_disc_open(DrDisc **disc, const char *source, const DrDiscOptions *o, const char *log)

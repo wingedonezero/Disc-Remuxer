@@ -28,6 +28,7 @@
 
 #include "base/err.h"
 #include "base/log.h"
+#include "base/mem.h"
 #include "io/discio.h"
 #include "base/msg.h"
 #include "names.h"
@@ -734,6 +735,14 @@ static void hms(char *buf, size_t size, double s)
     snprintf(buf, size, "%d:%02d:%02d", (int)(t / 3600), (int)(t / 60 % 60), (int)(t % 60));
 }
 
+void title_outcome_free(TitleOutcome *out)
+{
+    for (int i = 0; i < out->nb_damage; i++)
+        dr_freep(&out->damage[i]);
+    dr_freep(&out->damage);
+    out->nb_damage = 0;
+}
+
 int demux_title(const TitleJob *job, TitleOutcome *res)
 {
     DrDisc *d = job->disc;
@@ -1032,7 +1041,13 @@ end:
         /* damaged data the reader left out (each range a warning above) */
         res->damaged_ranges = dr_disc_damaged_ranges(d);
         res->damaged_bytes  = dr_disc_damaged_bytes(d);
-        snprintf(res->damage, sizeof(res->damage), "%s", dr_disc_damage(d));
+        for (int i = 0; i < res->damaged_ranges; i++) {
+            char *text = dr_strdup(dr_disc_damage(d, i));
+            if (!text || dr_array_add_ptr(&res->damage, &res->nb_damage, text) < 0) {
+                dr_free(text);
+                break;
+            }
+        }
         log_msg(MSG_CHAPTERS, LOG_DETAIL, "Chapters: %u", (unsigned)nb_chapters);
         /* the warning lines the title gave, as the run's summary counts them */
         {

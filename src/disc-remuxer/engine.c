@@ -18,6 +18,7 @@
 
 #include "base/err.h"
 #include "base/log.h"
+#include "base/mem.h"
 #include "disc/disc.h"
 #include "analyze/analyze.h"
 #include "base/msg.h"
@@ -733,13 +734,13 @@ static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
     int nb = di->nb_titles, count = 0, ordinal = 0, failed = 0, done = 0, disk_full = 0, errors, warnings;
     int64_t damaged = 0, damaged_bytes = 0;
     char *spl = calloc(nb ? nb : 1, 1);
-    AVBPrint damage;                    /* every title's damaged ranges, for the summary */
+    char **ranges = NULL;               /* every title's damaged ranges, for the summary */
+    int nb_ranges = 0;
 
     if (!spl) {
         log_close_files();
         return 1;
     }
-    av_bprint_init(&damage, 0, AV_BPRINT_SIZE_UNLIMITED);
     for (int t = 0; t < nb; t++) {
         count += !!sel[t];
         spl[t] = split && split[t];
@@ -764,21 +765,16 @@ static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
             TitleJob job = { e->disc, t, p, parts, 1, e->keeps[t], ordinal, count, out_dir, 1 };
             TitleOutcome res;
             demux_title(&job, &res);
-            if (res.damaged_ranges) {
-                /* each range under the title's (part's) number */
-                const char *line = res.damage;
-                damaged       += res.damaged_ranges;
-                damaged_bytes += res.damaged_bytes;
-                while (*line) {
-                    const char *nl = strchr(line, '\n');
-                    int len = nl ? (int)(nl - line) : (int)strlen(line);
-                    if (p >= 0)
-                        av_bprintf(&damage, "\n  Title #%d part %d: %.*s", t, p + 1, len, line);
-                    else
-                        av_bprintf(&damage, "\n  Title #%d: %.*s", t, len, line);
-                    line += len + !!nl;
-                }
+            /* each range under the title's (part's) number */
+            damaged       += res.damaged_ranges;
+            damaged_bytes += res.damaged_bytes;
+            for (int i = 0; i < res.nb_damage; i++) {
+                char *l = p >= 0 ? dr_asprintf_str("Title #%d part %d: %s", t, p + 1, res.damage[i]) :
+                                   dr_asprintf_str("Title #%d: %s", t, res.damage[i]);
+                if (!l || dr_array_add_ptr(&ranges, &nb_ranges, l) < 0)
+                    dr_free(l);
             }
+            title_outcome_free(&res);
             /* a title stopped as asked is not written, not failed */
             part_stopped += res.stopped;
             part_failed  += res.failed && !res.stopped;
@@ -807,10 +803,15 @@ static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
             warnings == 1 ? "" : "s", errors, errors == 1 ? "" : "s");
     if (damaged) {
         char dz[32];
-        log_msg(MSG_SUMMARY, LOG_INFO, "Damaged data left out: %"PRId64" range%s (%s)%s", damaged,
-                damaged == 1 ? "" : "s", size_text(dz, sizeof(dz), damaged_bytes), damage.str);
+        log_msg(MSG_SUMMARY, LOG_INFO, "Damaged data left out: %"PRId64" range%s (%s)", damaged,
+                damaged == 1 ? "" : "s", size_text(dz, sizeof(dz), damaged_bytes));
+        /* each range a line of its own (no line is cut, however many) */
+        for (int i = 0; i < nb_ranges; i++)
+            log_msg(MSG_SUMMARY, LOG_INFO, "  %s", ranges[i]);
     }
-    av_bprint_finalize(&damage, NULL);
+    for (int i = 0; i < nb_ranges; i++)
+        dr_free(ranges[i]);
+    dr_free(ranges);
     log_msg(MSG_LOG_FILE, LOG_INFO, "Log: %s", logp);
     {
         DrEvent ev = { .kind = DR_EVENT_RUN_RESULT };

@@ -1503,21 +1503,29 @@ static int damage_where(DrDisc *d, const DamageRange *g, char *file0, char *file
            src->block_place(d, g->clip, g->last, file1, size, off1) >= 0;
 }
 
+/* A damaged range in words to the caller's list (d->damage). */
+static int add_damage(DrDisc *d, char *text)
+{
+    if (!text || dr_array_add_ptr(&d->damage, &d->nb_damage, text) < 0) {
+        dr_free(text);
+        return DR_ERR_NOMEM;
+    }
+    return 0;
+}
+
 /* The damaged ranges of the title, one line each (where they lie on the
  * disc, what they are, where the title passes them), for the caller too:
- * metadata damaged_ranges, damaged_bytes and damage (the lines). */
+ * damaged_ranges, damaged_bytes and damage (each range in words). */
 static int report_damage(DrDisc *d)
 {
     DiscTitleReader *r = reader_of(d);
     const DiscTitleSource *src = r->src;
     const char *unit = r->bs == DISC_BLOCK ? "sector" : "unit";
     int64_t bytes = 0;
-    DrStr all;
     int ret = 0;
 
     if (!r->nb_damage && !r->nb_gap_lines)
         return 0;
-    dr_str_init(&all);
     for (int i = 0; i < r->nb_damage; i++) {
         const DamageRange *g = &r->damage[i];
         int64_t n = (int64_t)g->last - g->first + 1, off0, off1, at;
@@ -1554,8 +1562,9 @@ static int report_damage(DrDisc *d)
             dr_vlog(d->log, DR_VLOG_VERBOSE, "Damaged: %s %s blocks %"PRIu32"-%"PRIu32" = %s byte %"PRId64" to %s byte %"
                    PRId64"\n", src->clip_kind, src->clip_name(d, g->clip), g->first, g->last, file0, off0, file1,
                    off1 + r->bs - 1);
-        dr_str_catf(&all, "%s%s (%"PRId64" %s%s, %.1f MB): %s%s", i ? "\n" : "", where, n, unit, n == 1 ? "" : "s",
-                   mb(n * r->bs), g->zeros ? "every byte is zero" : "no MPEG data", when);
+        if (ret >= 0)
+            ret = add_damage(d, dr_asprintf_str("%s (%"PRId64" %s%s, %.1f MB): %s%s", where, n, unit, n == 1 ? "" : "s",
+                                                mb(n * r->bs), g->zeros ? "every byte is zero" : "no MPEG data", when));
     }
     if (r->nb_damage > DAMAGE_REPORTS)
         dr_vlog(d->log, DR_VLOG_WARNING, "Damaged: %d more range(s), in the detail lines\n", r->nb_damage - DAMAGE_REPORTS);
@@ -1563,19 +1572,14 @@ static int report_damage(DrDisc *d)
     if (r->nb_gap_lines) {
         dr_vlog(d->log, DR_VLOG_WARNING, "Damaged: %d stretch%s of the stream files left out, %.3f MB in all (see the "
                "warnings above)\n", r->nb_gap_lines, r->nb_gap_lines == 1 ? "" : "es", mb(r->gap_bytes));
-        for (int i = 0; i < r->nb_gap_lines; i++)
-            dr_str_catf(&all, "%s%s", r->nb_damage || i ? "\n" : "", r->gap_lines[i]);
+        for (int i = 0; i < r->nb_gap_lines && ret >= 0; i++)
+            ret = add_damage(d, dr_strdup(r->gap_lines[i]));
         bytes += r->gap_bytes;
     }
-    if (!dr_str_ok(&all))
-        ret = DR_ERR_NOMEM;
     if (ret >= 0) {
         d->damaged_ranges = r->nb_damage + r->nb_gap_lines;
         d->damaged_bytes  = bytes;
-        if (!(d->damage = dr_str_take(&all, 1)))
-            ret = DR_ERR_NOMEM;
     }
-    dr_str_free(&all);
     return ret;
 }
 

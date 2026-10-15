@@ -286,7 +286,8 @@ struct DrDisc {
     int               nb_chapters;
     int64_t           duration;         /**< the read title's length (ticks) */
     int64_t           damaged_ranges, damaged_bytes;
-    char             *damage;           /**< the damaged ranges in words, one per line (owned), NULL none */
+    char            **damage;           /**< the damaged ranges in words, one each (owned) */
+    int               nb_damage;
     int64_t           untested_total;   /**< untested features met (the timeline's + the tracks') */
 };
 
