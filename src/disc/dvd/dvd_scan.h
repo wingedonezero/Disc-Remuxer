@@ -1,33 +1,27 @@
 /*
- * This file is part of libdvdnav, a DVD navigation library.
+ * DVD-Video: the navigation scan (dvd_scan.c).
  *
- * libdvdnav is free software; you can redistribute it and/or modify
+ * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * libdvdnav is distributed in the hope that it will be useful,
+ * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License along
- * with libdvdnav; if not, write to the Free Software Foundation, Inc.,
+ * with this program; if not, write to the Free Software Foundation, Inc.,
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
-#ifndef LIBDVDNAV_SCAN_H
-#define LIBDVDNAV_SCAN_H
+#ifndef DISC_DVD_DVD_SCAN_H
+#define DISC_DVD_DVD_SCAN_H
 
 #include <stdint.h>
 
-#include <dvdnav/dvdnav.h>
-#include <dvdread/disc_read.h>
 #include <dvdread/title_list.h>
-
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 /**
  * The navigation scan: the disc's navigation played the way a viewer would
@@ -42,15 +36,15 @@ extern "C" {
  * title-VOB sector the navigators read is recorded as a VOBU in its title
  * set's own reading (DVDDiscTitleVOBs_rec(), DVDNoteVobuSector_rec()).
  *
- * Navigators. The first is the one the application opened on the disc for
- * the scan (dvdnav_scan_run()); it gets no read-ahead, navigation-only
+ * Navigators (libdvdnav). The first is the one opened on the disc for the
+ * scan (dvd_nav.c, ff_dvd_nav_open()); it gets no read-ahead, navigation-only
  * reading, title play following the title's pre-command jumps and the C
  * library's rand() sequence (glibc, seed 1) for the Rnd operation; every
  * other one is a copy of an earlier one (dvdnav_dup()), kept to the end.
  * Stepping one returns its next event; finite stills and waits are skipped
  * right away, an endless still is returned again until a button is
- * pressed. The application hands every VOB sector its navigators read to
- * dvdnav_scan_sector() (its file callbacks see them).
+ * pressed. Every VOB sector the navigators read comes back to the scan
+ * through the navigator's file callbacks (dvdnav_scan_sector()).
  *
  * Reads. Every VOB sector the navigators read is looked at once (later reads
  * of it come from the first): a NAV pack of a menu VOB, or of title VOBs with
@@ -78,7 +72,6 @@ extern "C" {
  * navigation read the region register (SPRM 20). Any failure fails the
  * scan.
  */
-typedef struct dvdnav_scan_s dvdnav_scan_t;
 
 /** The recordings in libdvdread's form (dvd_nav_cells_t, title_list.h:
  *  the cells the navigation played in a title / program chain and the name
@@ -91,32 +84,7 @@ typedef struct
                                              when the scan failed) */
 } dvdnav_scan_results_t;
 
-/**
- * A scan of disc. Its lines go to logcb (with priv; may be NULL); trace
- * (may be NULL) receives every navigator command, event, sector read and
- * path line. NULL on no memory.
- */
-DVDNAV_API dvdnav_scan_t *dvdnav_scan_new( dvd_disc_rec_t *disc, void *priv, const dvdnav_logger_cb *logcb,
-                                           void (*trace)( void *opaque, const char *line ), void *opaque );
+/** Frees what a scan handed out (ff_dvd_scan(), dvd_internal.h). */
+void dvdnav_scan_free_results( dvdnav_scan_results_t * );
 
-/**
- * A VOB sector a navigator of the scan read: of information file set (0: the
- * VMG), its menu VOB or its title VOBs, sector relative to them. < 0 makes
- * the read fail.
- */
-DVDNAV_API int dvdnav_scan_sector( dvdnav_scan_t *, int set, int menu, uint32_t sector, const uint8_t *data );
-
-/**
- * Runs the scan on nav (the navigator opened on the disc for it, its reads
- * handed to dvdnav_scan_sector(); the scan closes it). 0 with *out, -1 the
- * scan failed, -2 no memory. Free *out with dvdnav_scan_free_results().
- */
-DVDNAV_API int dvdnav_scan_run( dvdnav_scan_t *, dvdnav_t *nav, dvdnav_scan_results_t *out );
-
-DVDNAV_API void dvdnav_scan_free_results( dvdnav_scan_results_t * );
-DVDNAV_API void dvdnav_scan_close( dvdnav_scan_t * );
-
-#ifdef __cplusplus
-}
-#endif
-#endif /* LIBDVDNAV_SCAN_H */
+#endif /* DISC_DVD_DVD_SCAN_H */

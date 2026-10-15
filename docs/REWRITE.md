@@ -1,8 +1,8 @@
 # The rewrite: architecture and progress
 
-Updated 2026-10-13, on branch `claude/rewrite-untangle-1c24ca` (the rewrite
-branch; main still holds the pre-rewrite program and is the byte-compare
-reference). Inventory of what the old shape was made of: `docs/UNTANGLE.md`.
+Updated 2026-10-15, on branch `claude/disc-layer-ffmpeg-handoff-7ba7a7` (the
+rewrite branch since step 7c; `claude/rewrite-untangle-1c24ca` stopped at 7b;
+main still holds the pre-rewrite program and is the byte-compare reference). Inventory of what the old shape was made of: `docs/UNTANGLE.md`.
 
 Status: **steps 1–7 DONE**: 7a (the clip demuxer), 7b (the format parts,
 rows 258–263), 7d (the disc model, row 264; 7c folded into it) and 7e (the
@@ -11,8 +11,9 @@ again**, the "disc" demuxer is gone, the program and GUI run on the typed
 disc API (disc/disc.h), the modules log straight into base/log.h with
 their own source names, and the processing library's lines come in through
 analyze's hook. Next: the step-7 gate (the corpus byte-compare + info
-compare, the user's), then step 8, the DVD lift (D-8 decided, the slices
-planned — see step 8 below).
+compare, the user's: run once the whole rewrite is done, not per step), then
+step 8, the DVD lift (D-8 decided, the slices planned — see step 8 below);
+8a (the scan driver, row 266) is in.
 Tests at every commit: 743 passed, 15 skipped (the disc-marked ones without a
 disc). Every move so far is behavior-preserving by construction and by test;
 the real-disc byte-compare against a main build is still owed (user runs it
@@ -171,7 +172,7 @@ different rip.
 - **libdvdnav**: vendored with the VM patch set (~1,100 lines: asserts →
   recorded failures, deterministic random/shuffle, playback clock, GPRM
   counter semantics, nav-only skipping, `open_files`, working `dup`). The
-  scan driver (`scan.c`) moves UP into `dvd/` at step 8.
+  scan driver moved UP into `dvd/dvd_scan.c` at step 8a.
 - **libdvdread**: slims toward upstream at step 8. The `_rec` IFO readers,
   report instrumentation and fs hooks keep their value; the policy half
   (title list, stream probe, cell heuristics, the `vob_css[100]` state
@@ -424,8 +425,10 @@ is a proper library job), the fs hooks, the NAV-packet checks; libdvdnav's
 VM patch set, untouched.
 
 In slices, one commit and one full test run each, behavior-preserving:
-- **8a** — the scan driver: libdvdnav's `scan.c` up into `dvd_scan.c` (app
-  logic already; everything is handed in).
+- **8a — DONE (row 266)** — the scan driver: libdvdnav's `scan.c` up into
+  `dvd_scan.c` (app logic already; everything is handed in). Its lines go
+  through `ff_dvd_lib_vlog()`, the "DVD: " voice the libraries' callbacks
+  use (texts and levels unchanged); libdvdnav's diff is the VM patch set.
 - **8b** — the title list: `title_list.c` up (policy over the disc
   structure and the scan's recordings).
 - **8c** — the stream probe up.

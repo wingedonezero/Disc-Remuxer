@@ -649,8 +649,9 @@ static int setup_set(DVDDisc *d, NavSet *s, int set)
 /* ---- what libdvdread and libdvdnav say: one log ---- */
 
 /* Their lines into the log, as the DVD engine's ("DVD: "); both libraries
- * share the levels INFO (details), ERROR, WARN, DEBUG and NOTICE. */
-static void lib_log(DVDDisc *d, int level, const char *fmt, va_list va)
+ * share the levels INFO (details), ERROR, WARN, DEBUG and NOTICE. The
+ * navigation scan speaks the same way (dvd_scan.c). */
+void ff_dvd_lib_vlog(DVDDisc *d, int level, const char *fmt, va_list va)
 {
     static const int levels[] = { DR_VLOG_VERBOSE, DR_VLOG_ERROR, DR_VLOG_WARNING, DR_VLOG_DEBUG, DR_VLOG_INFO };
     char line[1024];
@@ -665,12 +666,12 @@ static void lib_log(DVDDisc *d, int level, const char *fmt, va_list va)
 
 static void nav_log(void *priv, dvdnav_logger_level_t level, const char *fmt, va_list va)
 {
-    lib_log(priv, level, fmt, va);
+    ff_dvd_lib_vlog(priv, level, fmt, va);
 }
 
 static void read_log(void *priv, dvd_logger_level_t level, const char *fmt, va_list va)
 {
-    lib_log(priv, level, fmt, va);
+    ff_dvd_lib_vlog(priv, level, fmt, va);
 }
 
 static void findings_say(void *priv, dvd_logger_level_t level, const char *line)

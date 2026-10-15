@@ -24,18 +24,20 @@
 #ifndef AVFORMAT_DVD_INTERNAL_H
 #define AVFORMAT_DVD_INTERNAL_H
 
+#include <stdarg.h>
 #include <stdint.h>
 
 #include "base/str.h"
 
 #include <dvdnav/dvdnav.h>
-#include <dvdnav/scan.h>
 #include <dvdread/disc_read.h>
 #include <dvdread/ifo_types.h>
 #include <dvdread/vob_read.h>
 
 #include "io/discio.h"
 #include "disc/info.h"
+
+#include "dvd_scan.h"
 
 #define DVD_SECTOR          2048
 #define DVD_MAX_TITLE_SETS  99
@@ -127,6 +129,9 @@ void ff_dvd_reports_count(const DVDDisc *d, int *harmless, int *breaks);
 /** The logger the DVD engine's navigators use (the program's log, the
  *  disc's findings book). < 0 on no memory. */
 int  ff_dvd_nav_logger(DVDDisc *d, dvdnav_logger_cb *cb);
+/** A line into the log the way the DVD libraries' lines go ("DVD: ", one
+ *  trailing newline dropped); level: the libraries' logger level. */
+void ff_dvd_lib_vlog(DVDDisc *d, int level, const char *fmt, va_list va);
 
 /* ---- reading (dvd_read.c, on libdvdread, vob_read.h) ---- */
 /** Title set vts's own reading of its title VOBs (libdvdread's, kept with
@@ -151,7 +156,7 @@ int  ff_dvd_vobu_start_check(DVDDisc *d, int vts, uint32_t sector);
  *  the cells played per title / program chain recorded. trace (may be
  *  NULL) receives every navigator command, event, sector read and path
  *  line. < 0 when the scan failed (no results: the titles keep the order
- *  of the title table). The results are libdvdnav's
+ *  of the title table). The results are dvd_scan.h's
  *  (dvdnav_scan_free_results()); the VOBU records are left on the disc. */
 int  ff_dvd_scan(DVDDisc *d, void (*trace)(void *opaque, const char *line), void *opaque, dvdnav_scan_results_t *out);
 

@@ -130,7 +130,7 @@ def stopped(res, events):
 
 
 
-# ---- the navigation scan (libavformat/dvd_scan.c) ----
+# ---- the navigation scan (disc/dvd/dvd_scan.c) ----
 
 from helpers import extern  # noqa: E402
 

@@ -1,4 +1,4 @@
-"""libavformat/dvd_scan.c: the navigation scan (step D2). Built disc
+"""disc/dvd/dvd_scan.c: the navigation scan (step D2). Built disc
 folders: the disc is played from its start (its first-play chain jumps to
 a last, one-cell title) and then title by title; what each title's program
 chains play is recorded. With DVD_SCAN_REFERENCE (a folder of <disc>.expected
