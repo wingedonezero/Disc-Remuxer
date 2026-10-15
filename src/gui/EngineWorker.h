@@ -95,12 +95,11 @@ signals:
     void runResult(RunResult r);
 };
 
-// One disc of a run: what to rip of it and where.
+// One disc of a run: the open disc (what it rips: its selection, the
+// engine's) and where.
 struct RipJob {
     quint64     id;
     EngineDisc *disc;
-    QByteArray  sel;       // per title: 1 rip
-    QByteArray  split;     // per title: 1 as parts
     QString     folder;    // the disc's output folder before _001, _002, ... (engine_unique_folder())
 };
 

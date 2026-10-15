@@ -394,14 +394,14 @@ void MainWindow::showTitleChecks(Job &job, int t)
     QTreeWidgetItem *title = job.item->child(t);
     const uint8_t *keep = engine_disc_tracks(job.disc, t);
     const DiscTitleInfo *ti = &engine_disc_info(job.disc)->titles[t];
-    bool on = job.sel[t];
+    bool on = engine_title_rip(job.disc, t);
     QBrush grey = tree->palette().brush(QPalette::Disabled, QPalette::Text);
 
     updating = true;
     title->setCheckState(C_NAME, on ? Qt::Checked : Qt::Unchecked);
     // its state (the engine's words) and the fake playlist check's mark
     char state[512], why[1024];
-    int mark = engine_title_state(ti, job.split[t], state, sizeof(state), why, sizeof(why));
+    int mark = engine_title_state(ti, engine_title_split(job.disc, t), state, sizeof(state), why, sizeof(why));
     title->setIcon(C_STATUS, QIcon());
     if (mark != DISC_PLAYLIST_NOT_MARKED)
         title->setIcon(C_STATUS, style()->standardIcon(mark == DISC_PLAYLIST_LIKELY_FAKE ? QStyle::SP_MessageBoxWarning
@@ -421,10 +421,10 @@ void MainWindow::showTitleChecks(Job &job, int t)
 void MainWindow::showDiscCheck(Job &job)
 {
     const DiscInfo *d = engine_disc_info(job.disc);
-    int n = job.sel.size(), c = 0;
+    int n = titles(job), c = 0;
     int64_t bytes = 0;
     for (int t = 0; t < n; t++)
-        if (job.sel[t]) {
+        if (engine_title_rip(job.disc, t)) {
             c++;
             bytes += d->titles[t].size;
         }
@@ -462,8 +462,6 @@ void MainWindow::fillDisc(Job &job)
     job.item->setText(C_STATUS, QString::fromUtf8(state));
     job.item->setIcon(C_STATUS, notes ? style()->standardIcon(QStyle::SP_MessageBoxWarning) : QIcon());
     job.item->setToolTip(C_STATUS, QString::fromUtf8(why));
-    job.sel.fill(0, d->nb_titles);
-    job.split.fill(0, d->nb_titles);
     job.tracks.clear();
     job.tracks.resize(d->nb_titles);
     for (int t = 0; t < d->nb_titles; t++) {
@@ -480,7 +478,6 @@ void MainWindow::fillDisc(Job &job)
         title->setData(C_NAME, R_TITLE, t);
         title->setData(C_NAME, R_TRACK, -1);
         title->setFlags((title->flags() | Qt::ItemIsUserCheckable) & ~(Qt::ItemIsDragEnabled | Qt::ItemIsDropEnabled));
-        job.sel[t] = ti->selected;
         // its chapters
         if (ti->nb_chapters) {
             auto *chapters = new QTreeWidgetItem(title, QStringList{ "Chapters" });
@@ -536,21 +533,22 @@ void MainWindow::itemChanged(QTreeWidgetItem *item, int column)
 
     if (running) {
         // the choice of a disc in the run stays as it was
-        for (int k = 0; k < j->sel.size(); k++)
+        for (int k = 0; k < titles(*j); k++)
             showTitleChecks(*j, k);
         showDiscCheck(*j);
         return;
     }
     if (i >= 0) {
-        // a track: what the engine rips of its title
-        engine_disc_tracks(j->disc, t)[i] = on;
+        // a track: what the engine rips of its title (the video it keeps)
+        if (engine_set_track_kept(j->disc, t, i, on) < 0)
+            showTitleChecks(*j, t);
     } else if (t >= 0) {
-        j->sel[t] = on;
+        engine_set_title_rip(j->disc, t, on);
         showTitleChecks(*j, t);
     } else {
         // the disc: all its titles on or off
-        for (int k = 0; k < j->sel.size(); k++) {
-            j->sel[k] = on;
+        for (int k = 0; k < titles(*j); k++) {
+            engine_set_title_rip(j->disc, k, on);
             showTitleChecks(*j, k);
         }
     }
@@ -610,11 +608,11 @@ void MainWindow::contextMenu(const QPoint &pos)
         int parts = engine_disc_info(j->disc)->titles[t].nb_parts;
         QAction *a = menu.addAction(QString("Write as %1 Parts (One per Stream File)").arg(parts));
         a->setCheckable(true);
-        a->setChecked(j->split[t]);
+        a->setChecked(engine_title_split(j->disc, t));
         a->setEnabled(!running);
         connect(a, &QAction::toggled, this, [this, id = j->id, t](bool on) {
-            if (Job *x = jobById(id)) {
-                x->split[t] = on;
+            if (Job *x = jobById(id); x && x->disc) {
+                engine_set_title_split(x->disc, t, on);
                 showTitleChecks(*x, t);
             }
         });
@@ -691,8 +689,6 @@ void MainWindow::rescanSelected()
     qDeleteAll(item->takeChildren());
     item->setData(C_NAME, Qt::CheckStateRole, QVariant());
     updating = false;
-    j->sel.clear();
-    j->split.clear();
     j->tracks.clear();
     details->clear();
     queueScan(*j);
@@ -757,10 +753,9 @@ void MainWindow::startQueue()
         return;
     for (int r = 0; r < tree->topLevelItemCount(); r++) {
         Job *j = jobOf(tree->topLevelItem(r));
-        if (!j || !j->disc || !j->sel.contains(1))
+        if (!j || !j->disc || !engine_titles_ripped(j->disc))
             continue;
-        run.append({ j->id, j->disc, QByteArray(j->sel.constData(), j->sel.size()),
-                     QByteArray(j->split.constData(), j->split.size()), outputFolder(*j) });
+        run.append({ j->id, j->disc, outputFolder(*j) });
         j->item->setText(C_STATUS, "Waiting");
         newBar(j->item, 0);
     }
@@ -772,7 +767,7 @@ void MainWindow::startQueue()
     stopping = false;
     tree->reorderable = false;
     for (Job &j : jobs)
-        for (int t = 0; j.disc && t < j.sel.size(); t++)
+        for (int t = 0; t < titles(j); t++)
             showTitleChecks(j, t);
     updateControls();
     QMetaObject::invokeMethod(worker, [w = worker, run] { w->rip(run); }, Qt::QueuedConnection);
@@ -798,6 +793,11 @@ void MainWindow::ripStarted(quint64 id, QString folder)
         return;
     j->outDir = folder;
     j->item->setText(C_STATUS, "Ripping…");
+}
+
+int MainWindow::titles(const Job &j)
+{
+    return j.disc ? engine_disc_info(j.disc)->nb_titles : 0;
 }
 
 // the disc being ripped, NULL when none
@@ -861,7 +861,7 @@ void MainWindow::onProgress(int t, double done)
     QString text = QString("Writing %1%").arg(int(done * 100));
     double secs = titleClock.elapsed() / 1000.0;
     // speed and time left from the title's size (a whole title only)
-    if (secs > 2 && done > 0.001 && !j->split[t]) {
+    if (secs > 2 && done > 0.001 && !engine_title_split(j->disc, t)) {
         double rate = done * ti->size / secs;
         text += QString(" · %1 MB/s · %2 left").arg(rate / (1 << 20), 0, 'f', 1)
                     .arg(hms(int64_t((1 - done) / done * secs * 1e6)));
@@ -889,7 +889,7 @@ void MainWindow::runDone(bool stopped)
     stopping = false;
     tree->reorderable = true;
     for (Job &j : jobs)
-        for (int t = 0; j.disc && t < j.sel.size(); t++) {
+        for (int t = 0; t < titles(j); t++) {
             QString keep = j.item->child(t)->text(C_STATUS);
             showTitleChecks(j, t);
             j.item->child(t)->setText(C_STATUS, keep);     // the run's result stays shown
@@ -927,8 +927,8 @@ void MainWindow::updateQueueLabel()
         if (!j.disc)
             continue;
         const DiscInfo *d = engine_disc_info(j.disc);
-        for (int t = 0; t < j.sel.size() && t < d->nb_titles; t++)
-            if (j.sel[t]) {
+        for (int t = 0; t < d->nb_titles; t++)
+            if (engine_title_rip(j.disc, t)) {
                 bytes += d->titles[t].size;
                 titles++;
             }

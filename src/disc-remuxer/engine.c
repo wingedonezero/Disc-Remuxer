@@ -359,6 +359,8 @@ struct EngineDisc {
     const DiscInfo  *info;
     char             source[PATH_MAX];
     uint8_t        **keeps;      /* each title's tracks to rip */
+    char            *rip;        /* per title: 1 ripped (the selection) */
+    char            *split;      /* per title: 1 written as parts (as chosen; the setting adds to it) */
 };
 
 static int parse_titles(const char *spec, const DiscInfo *d, int only_selected, char *sel);
@@ -436,7 +438,83 @@ int engine_disc_open(const char *source, const EngineChoice *c, EngineDisc **out
         engine_disc_close(&e);
         return -1;
     }
+    /* the selection to start with: every title but the angles other than
+     * the main one; none written as parts */
+    if (!(e->rip = calloc(e->info->nb_titles ? e->info->nb_titles : 1, 1)) ||
+        !(e->split = calloc(e->info->nb_titles ? e->info->nb_titles : 1, 1))) {
+        engine_disc_close(&e);
+        return -1;
+    }
+    for (int t = 0; t < e->info->nb_titles; t++)
+        e->rip[t] = e->info->titles[t].selected;
     *out = e;
+    return 0;
+}
+
+/* ---- the selection ---- */
+
+static int title_ok(const EngineDisc *d, int t)
+{
+    return d && t >= 0 && t < d->info->nb_titles;
+}
+
+int engine_title_rip(const EngineDisc *d, int t)
+{
+    return title_ok(d, t) && d->rip[t];
+}
+
+int engine_set_title_rip(EngineDisc *d, int t, int on)
+{
+    if (!title_ok(d, t))
+        return -1;
+    d->rip[t] = !!on;
+    return 0;
+}
+
+int engine_titles_ripped(const EngineDisc *d)
+{
+    int n = 0;
+
+    for (int t = 0; d && t < d->info->nb_titles; t++)
+        n += d->rip[t];
+    return n;
+}
+
+int engine_select_titles(EngineDisc *d, const char *spec)
+{
+    return parse_titles(spec, d->info, 1, d->rip);
+}
+
+int engine_title_split(const EngineDisc *d, int t)
+{
+    return title_ok(d, t) && d->split[t];
+}
+
+int engine_set_title_split(EngineDisc *d, int t, int on)
+{
+    if (!title_ok(d, t))
+        return -1;
+    d->split[t] = !!on;
+    return 0;
+}
+
+int engine_split_titles(EngineDisc *d, const char *spec)
+{
+    return parse_titles(spec, d->info, 0, d->split);
+}
+
+int engine_track_kept(const EngineDisc *d, int t, int i)
+{
+    return title_ok(d, t) && i >= 0 && i < d->info->titles[t].nb_streams && d->keeps[t][i];
+}
+
+int engine_set_track_kept(EngineDisc *d, int t, int i, int on)
+{
+    if (!title_ok(d, t) || i < 0 || i >= d->info->titles[t].nb_streams)
+        return -1;
+    if (i == 0)                         /* the video is always ripped */
+        return on ? 0 : -1;
+    d->keeps[t][i] = !!on;
     return 0;
 }
 
@@ -445,9 +523,9 @@ const DiscInfo *engine_disc_info(const EngineDisc *d)
     return d->info;
 }
 
-uint8_t *engine_disc_tracks(EngineDisc *d, int t)
+const uint8_t *engine_disc_tracks(const EngineDisc *d, int t)
 {
-    return t >= 0 && t < d->info->nb_titles ? d->keeps[t] : NULL;
+    return title_ok(d, t) ? d->keeps[t] : NULL;
 }
 
 void engine_disc_close(EngineDisc **pd)
@@ -458,6 +536,8 @@ void engine_disc_close(EngineDisc **pd)
         return;
     if (d->info)
         free_keeps(d->keeps, d->info->nb_titles);
+    free(d->rip);
+    free(d->split);
     dr_disc_close(&d->disc);
     free(d);
     *pd = NULL;
@@ -662,10 +742,12 @@ static int run_begin(const char *source, const char *out_dir, char *logp, size_t
     return 0;
 }
 
-/* The run's titles (sel; spl: as parts, may be NULL) from the open disc,
- * then the summary; the log files closed. 0, or 1 (a title failed). */
-static int run_titles(EngineDisc *e, const char *sel, const char *split, const char *out_dir, const char *logp)
+/* The run's titles (the disc's selection: those ripped, those written as
+ * parts) from the open disc, then the summary; the log files closed. 0, or
+ * 1 (a title failed). */
+static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
 {
+    const char *sel = e->rip, *split = e->split;
     const DiscInfo *di = e->info;
     int nb = di->nb_titles, count = 0, ordinal = 0, failed = 0, done = 0, disk_full = 0, errors, warnings;
     int64_t damaged = 0, damaged_bytes = 0;
@@ -758,7 +840,7 @@ static int run_titles(EngineDisc *e, const char *sel, const char *split, const c
     return failed || engine_cancelled() ? 1 : 0;
 }
 
-int engine_disc_rip(EngineDisc *e, const char *sel, const char *split, const char *out_dir)
+int engine_disc_rip(EngineDisc *e, const char *out_dir)
 {
     char folder[PATH_MAX], logp[PATH_MAX + 600];
 
@@ -770,7 +852,7 @@ int engine_disc_rip(EngineDisc *e, const char *sel, const char *split, const cha
     if (run_begin(e->source, out_dir, logp, sizeof(logp)))
         return 1;
     engine_disc_overview(e, 0);
-    return run_titles(e, sel, split, out_dir, logp);
+    return run_titles(e, out_dir, logp);
 }
 
 /* Details rows as lines: a heading in brackets, a sub-heading and
@@ -847,9 +929,9 @@ int engine_info(const char *source, const EngineChoice *c, int details)
 int engine_demux(const char *source, const char *titles, const char *out_dir, const char *split,
                  const EngineChoice *c)
 {
-    char folder[PATH_MAX], logp[PATH_MAX + 600], *sel = NULL, *spl = NULL;
+    char folder[PATH_MAX], logp[PATH_MAX + 600];
     EngineDisc *e;
-    int nb, count = 0, ret;
+    int count = 0, ret;
 
     atomic_store(&cancelled, 0);
     if (!out_dir) {
@@ -864,22 +946,15 @@ int engine_demux(const char *source, const char *titles, const char *out_dir, co
         return 1;
     }
     engine_disc_overview(e, 0);
-    nb  = e->info->nb_titles;
-    sel = calloc(nb ? nb : 1, 1);
-    spl = calloc(nb ? nb : 1, 1);
-    if (!sel || !spl || (count = parse_titles(titles, e->info, 1, sel)) <= 0 ||
-        (split && parse_titles(split, e->info, 0, spl) < 0)) {
-        if (sel && spl && !count)
+    /* the choice as the GUI makes it: through the selection's calls */
+    if ((count = engine_select_titles(e, titles)) <= 0 || (split && engine_split_titles(e, split) < 0)) {
+        if (!count)
             log_msg(MSG_TITLE_SELECTION, LOG_ERROR, "No title selected");
-        free(sel);
-        free(spl);
         engine_disc_close(&e);
         log_close_files();
         return 2;
     }
-    ret = run_titles(e, sel, spl, out_dir, logp);
-    free(sel);
-    free(spl);
+    ret = run_titles(e, out_dir, logp);
     engine_disc_close(&e);
     return ret;
 }

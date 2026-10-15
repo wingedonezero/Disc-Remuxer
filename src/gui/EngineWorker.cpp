@@ -143,7 +143,7 @@ void EngineWorker::rip(QList<RipJob> jobs)
             break;
         engine_unique_folder(j.folder.toUtf8().constData(), folder, sizeof(folder));
         emit ripStarted(j.id, QString::fromUtf8(folder));
-        ret = engine_disc_rip(j.disc, j.sel.constData(), j.split.constData(), folder);
+        ret = engine_disc_rip(j.disc, folder);
         emit ripDone(j.id, ret, stopping);
     }
     emit runDone(stopping);

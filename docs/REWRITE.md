@@ -517,8 +517,16 @@ In slices, one commit each, the suite green, the command line's output
   and `info --details` prints the same rows and lines. Gate besides the
   suite and the command-line comparison: every disc the suite builds
   snapshotted by the old and the new GUI, compared byte for byte.
-- **9c — selection in the engine**: titles, splits, tracks, second view
-  through engine calls both front ends use.
+- **9c — DONE — the selection is the engine's.** The open disc keeps what
+  a rip writes: each title ripped (to start with every title but the
+  angles other than the main one), each title written as parts, each track
+  kept (a 3-D title's second view is a track of its own); both front ends
+  change it only through `engine_set_title_rip()`, `engine_select_titles()`
+  (a titles spec), `engine_set_title_split()`, `engine_split_titles()`,
+  `engine_set_track_kept()` (track 0, the video, refused) and read it back
+  the same way; `engine_disc_rip(disc, out_dir)` rips the selection. The
+  command line's titles spec and `--split` go through those calls; the
+  GUI's own per-title arrays are gone.
 - **9d — the parity pass**: every GUI action and view gets its engine call
   and its command-line form (per-track results, damage ranges, chapters).
 - **9e — the GUI shows the new data** (the user's wishes, asked first).

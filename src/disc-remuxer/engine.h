@@ -110,9 +110,30 @@ typedef struct EngineDisc EngineDisc;
  * c chose them. 0, or -1. */
 int  engine_disc_open(const char *source, const EngineChoice *c, EngineDisc **d);
 const DiscInfo *engine_disc_info(const EngineDisc *d);
-/* Title t's tracks to rip, one per stream of its disc info (1 rip, 0 not;
- * the caller may change them; track 0 is always ripped). */
-uint8_t *engine_disc_tracks(EngineDisc *d, int t);
+/* The selection: what a rip of the open disc writes. Both front ends change
+ * it only through these calls, so its rules are the engine's.
+ * - A title ripped (to start with: every title but the angles other than
+ *   the main one); engine_select_titles(): exactly the titles of spec
+ *   ("all": every title but those angles; "3", "1,3-5"), their count, < 0
+ *   (a title that does not exist: logged).
+ * - A title written as parts, one per stream file it plays (to start with:
+ *   none; setting output.split_joined_titles adds every title at the rip);
+ *   engine_split_titles(): the titles of spec, < 0 as above.
+ * - A track kept (1 ripped; to start with: as --tracks / the settings chose;
+ *   a 3-D title's second view is a track of its own); track 0, the video,
+ *   is always ripped: turning it off is refused (-1).
+ * Setters: 0, < 0 no such title / track. */
+int  engine_title_rip(const EngineDisc *d, int t);
+int  engine_set_title_rip(EngineDisc *d, int t, int on);
+int  engine_titles_ripped(const EngineDisc *d);
+int  engine_select_titles(EngineDisc *d, const char *spec);
+int  engine_title_split(const EngineDisc *d, int t);
+int  engine_set_title_split(EngineDisc *d, int t, int on);
+int  engine_split_titles(EngineDisc *d, const char *spec);
+int  engine_track_kept(const EngineDisc *d, int t, int i);
+int  engine_set_track_kept(EngineDisc *d, int t, int i, int on);
+/* Title t's tracks kept, one per stream of its disc info (1 rip, 0 not). */
+const uint8_t *engine_disc_tracks(const EngineDisc *d, int t);
 /* The disc line and its titles in the log (detail: each title's files and
  * tracks too) with the JSON disc and title records. */
 void engine_disc_overview(const EngineDisc *d, int detail);
@@ -120,10 +141,10 @@ void engine_disc_overview(const EngineDisc *d, int detail);
  * in the log: its queue lines (the disc, each title with its state, its
  * chapters and tracks) and its details panel's rows (views.h). */
 void engine_details(const EngineDisc *d, const char *source);
-/* Rips the titles with sel[t] set (split[t]: as parts; split may be NULL)
- * into out_dir (NULL: engine_output_folder()), with the run's log files
- * there. 0, 1 (a title failed). */
-int  engine_disc_rip(EngineDisc *d, const char *sel, const char *split, const char *out_dir);
+/* Rips the selection (the titles ripped, those as parts, their tracks) into
+ * out_dir (NULL: engine_output_folder()), with the run's log files there.
+ * 0, 1 (a title failed). */
+int  engine_disc_rip(EngineDisc *d, const char *out_dir);
 void engine_disc_close(EngineDisc **d);
 
 #ifdef __cplusplus
