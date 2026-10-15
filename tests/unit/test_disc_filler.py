@@ -13,6 +13,8 @@ from synth import dvd
 from synth.dvd import S, flags
 from test_dvd_streams import put
 from test_dvd_titles import ac3, info
+import json
+import re
 import subprocess
 
 M2V = (DATA / "testsrc_1200.m2v").read_bytes()
@@ -66,3 +68,17 @@ def test_a_trailing_segment_with_audio_stays(tmp_path):
     assert "filler" not in log, log
     video = next((tmp_path / "out").rglob("*.m2v")).read_bytes()
     assert video == M2V
+
+
+def test_the_filler_check_s_lines_name_their_source(tmp_path):
+    # the frame cutter of the filler check logs as the disc does ("disc"),
+    # not with the disc's object read as a name
+    folder, _ = two_segments(tmp_path, False)
+    p = subprocess.run([*PROGRAM, "--json", "-v", "demux", str(folder), "0", str(tmp_path / "out")],
+                       capture_output=True, text=True)
+    recs = [json.loads(l) for l in p.stdout.splitlines() if l.startswith("{")]
+    msgs = [r for r in recs if r.get("type") == "message"]
+    assert all(re.fullmatch(r"[A-Za-z0-9_ .-]+", r["source"]) for r in msgs), \
+        sorted({r["source"] for r in msgs})
+    cut = [r for r in msgs if re.match(r"Title timeline: mpeg2video: \d+ bytes", r["text"])]
+    assert cut and {r["source"] for r in cut} == {"disc"}, cut

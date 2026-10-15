@@ -811,7 +811,7 @@ static int filler_clip(DrDisc *d, int k, int at_end, int *filler, int64_t *len)
         if (src->tracks[i].kind == DR_KIND_CAPTION || src->tracks[i].kind == DR_KIND_LAYER ||
             src->tracks[i].codec == DR_CODEC_PCM_DVD || src->tracks[i].codec == DR_CODEC_PCM_BLURAY)
             continue;                    /* captions: in the video; LPCM: any payload is a frame */
-        if (ff_disctl_frames_open(&t[i].fr, d, src->tracks[i].codec, filler_unit, &t[i]) < 0)
+        if (ff_disctl_frames_open(&t[i].fr, (void *)d->log, src->tracks[i].codec, filler_unit, &t[i]) < 0)
             t[i].fr = NULL;              /* no parser: any payload is a frame */
     }
     if (!t[0].fr) {
@@ -963,7 +963,7 @@ static int side_unit(void *opaque, uint8_t *buf, int size)
         uint32_t b = sr->block++;
         int ret = src->side_read(sr->d, sr->side, b, buf);
         if (ret < 0) {
-            dr_vlog(sr->d, DR_VLOG_WARNING, "%s: unit %"PRIu32" of %"PRIu32" cannot be read (%s): the rest of it is "
+            dr_vlog(sr->d->log, DR_VLOG_WARNING, "%s: unit %"PRIu32" of %"PRIu32" cannot be read (%s): the rest of it is "
                    "not read\n", src->side_name(sr->d, sr->side), b, sr->nb_blocks, dr_err_text(ret));
             sr->block = sr->nb_blocks;
             break;
