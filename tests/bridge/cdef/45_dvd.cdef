@@ -34,7 +34,7 @@ typedef struct {
     int64_t      menu_vob_start;
     int64_t      title_vob_start;
     int          no_pgcit;
-    const pgcit_rec_t *pgcit;
+    pgcit_rec_t *pgcit;
     int          nb_vobu_map;
     int          map_trusted;
     ...;

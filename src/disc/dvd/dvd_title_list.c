@@ -179,16 +179,16 @@ static int overlap( const titles_t *T, int vtsn )
 
 /* ---- VOBUs of a cell, cell checks: the title set's own reading ---- */
 
-static dvd_vob_reader_t *reading( titles_t *T, int vtsn )
+static DVDCells *reading( titles_t *T, int vtsn )
 {
-  return DVDDiscTitleVOBs_rec( T->disc, vtsn );
+  return ff_dvd_cells( T->d, vtsn );
 }
 
 /* The cell of the title's angle in the angle block starting at cell i
  * (a cell in no block: itself); -1 when the block is broken. */
 static int angle_cell( titles_t *T, int vtsn, const pgc_rec_t *p, int i, int angle, int angles )
 {
-  dvd_vob_reader_t *vr = reading( T, vtsn );
+  DVDCells *vr = reading( T, vtsn );
   return vr ? DVDAngleCell_rec( vr, p->number, i, angle, angles ) : -1;
 }
 
@@ -196,7 +196,7 @@ static int angle_cell( titles_t *T, int vtsn, const pgc_rec_t *p, int i, int ang
  * first VOBU's start. */
 static int cell_duration( titles_t *T, int vtsn, const pgc_rec_t *p, int i, uint64_t *dur, int read_anyway )
 {
-  dvd_vob_reader_t *vr = reading( T, vtsn );
+  DVDCells *vr = reading( T, vtsn );
   return vr && DVDCellDuration_rec( vr, p->number, i, dur, read_anyway );
 }
 
@@ -204,7 +204,7 @@ static int cell_duration( titles_t *T, int vtsn, const pgc_rec_t *p, int i, uint
  * passes. */
 static int pgc_rejected( titles_t *T, int vtsn, const pgc_rec_t *p )
 {
-  dvd_vob_reader_t *vr = reading( T, vtsn );
+  DVDCells *vr = reading( T, vtsn );
   return vr ? DVDPgcRejected_rec( vr, p->number, overlap( T, vtsn ) ) : 0;
 }
 
@@ -243,7 +243,7 @@ static int cell_walk( titles_t *T, dvd_title_t *t )
 {
   const dvd_nav_cells_t *e = t->scan;
   const pgc_rec_t *p = title_pgc( T, t );
-  dvd_vob_reader_t *vr = reading( T, t->vtsn );
+  DVDCells *vr = reading( T, t->vtsn );
   int first = -1, last = -1, ret;
 
   if( !e || !vr )
@@ -266,7 +266,7 @@ static int cell_walk( titles_t *T, dvd_title_t *t )
  * left), 0 failed, -1 no memory. */
 static int cell_trim( titles_t *T, dvd_title_t *t )
 {
-  dvd_vob_reader_t *vr = reading( T, t->vtsn );
+  DVDCells *vr = reading( T, t->vtsn );
   int first = t->nb_chapters ? t->chapters[0].cell : -1;
   int mid   = t->nb_chapters ? t->chapters[t->nb_chapters / 2].cell : -1, ret;
   dvd_cell_trim_t res;
@@ -342,7 +342,7 @@ static int shared_cells( titles_t *T, dvd_title_t *t )
 /* The chapters' places in the segments; unplaced ones dropped, a leading
  * one that cannot be placed dropped or (the next one not at the start) put
  * at the start. */
-static int place_chapters( titles_t *T, dvd_title_t *t, dvd_vob_reader_t *vr )
+static int place_chapters( titles_t *T, dvd_title_t *t, DVDCells *vr )
 {
   const pgc_rec_t *p = title_pgc( T, t );
   dvd_chapter_place_t *pl;
@@ -397,7 +397,7 @@ static int place_chapters( titles_t *T, dvd_title_t *t, dvd_vob_reader_t *vr )
  * 1 done, 0 failed, -1 no memory. */
 static int build_segments( titles_t *T, dvd_title_t *t )
 {
-  dvd_vob_reader_t *vr = reading( T, t->vtsn );
+  DVDCells *vr = reading( T, t->vtsn );
   dvd_title_segments_t o;
   int ret;
 
@@ -1095,7 +1095,7 @@ int DVDTitleList_rec( DVDDisc *d, const dvd_nav_cells_t *scan, int nb_scan, cons
   memset( out, 0, sizeof(*out) );
   /* the full cell check's VOBUs */
   if( disc->ctx )
-    DVDSetCellCheck_rec( disc->ctx, (dvd_cell_check_t)o->cell_check, o->seed );
+    DVDSetCellCheck_rec( d, (dvd_cell_check_t)o->cell_check, o->seed );
   if( o->cell_mode < DVD_CELL_MODE_TRIM_REC ) {
     /* the titles the navigation reached, then the others */
     for( unsigned i = 0; i < n; i++ )
@@ -1127,7 +1127,7 @@ int DVDTitleStreams_rec( DVDDisc *d, dvd_title_t *t )
   dvd_probe_audio_t audio[8] = { { 0 } };
   const dvd_segment_t *g;
   const uint8_t *h;
-  dvd_vob_reader_t *vr;
+  DVDCells *vr;
   uint32_t failed = 0;
   int64_t best = -1;
   int seg = 0, captions = 0, ret, n = t->nb_audio < 8 ? t->nb_audio : 8;
@@ -1154,7 +1154,7 @@ int DVDTitleStreams_rec( DVDDisc *d, dvd_title_t *t )
   if( !(vr = reading( &T, t->vtsn )) )
     ret = -2;
   else
-    ret = DVDProbeTitleStreams_rec( vr, g->extents, g->nb_extents, audio, n, &captions, &failed );
+    ret = DVDProbeTitleStreams_rec( vr->r, g->extents, g->nb_extents, audio, n, &captions, &failed );
   if( ret < -1 ) {
     note( &T, DVD_NOTE_ERROR, "title %s: sector %" PRIu32 " of segment %d cannot be read: the title's streams "
           "cannot be found", t->name, failed, seg + 1 );
@@ -1214,12 +1214,12 @@ int ff_dvd_cell_check(DVDDisc *d, int vts, int pgcn, int cell, int mode)
 {
     const dvd_ifo_rec_t *f = vts > 0 ? ff_dvd_set(d, vts) : NULL;
     const pgc_rec_t *p = f && f->pgcit && pgcn > 0 && pgcn <= f->pgcit->nr_of_pgcs ? f->pgcit->pgcs[pgcn - 1] : NULL;
-    dvd_vob_reader_t *vr;
+    DVDCells *vr;
 
     if (!p || cell < 1 || cell > p->nr_of_cells)
         return DR_ERR(EINVAL);
-    DVDSetCellCheck_rec(d->reader, (dvd_cell_check_t)mode, dr_random_seed());
-    vr = ff_dvd_own_reading(d, vts);
+    DVDSetCellCheck_rec(d, (dvd_cell_check_t)mode, dr_random_seed());
+    vr = ff_dvd_cells(d, vts);
     return !vr || DVDCellCheckFailed_rec(vr, p->number, cell - 1);
 }
 

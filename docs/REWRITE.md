@@ -13,8 +13,8 @@ their own source names, and the processing library's lines come in through
 analyze's hook. Next: the step-7 gate (the corpus byte-compare + info
 compare, the user's: run once the whole rewrite is done, not per step), then
 step 8, the DVD lift (D-8 decided, the slices planned — see step 8 below);
-8a (the scan driver, row 266), 8b (the title list, row 267) and 8c (the
-stream probe, row 268) are in.
+8a (the scan driver, row 266), 8b (the title list, row 267), 8c (the
+stream probe, row 268) and 8d (the cell rules, row 269) are in.
 Tests at every commit: 743 passed, 15 skipped (the disc-marked ones without a
 disc). Every move so far is behavior-preserving by construction and by test;
 the real-disc byte-compare against a main build is still owed (user runs it
@@ -178,7 +178,7 @@ different rip.
   report instrumentation and fs hooks keep their value; the policy half
   (title list, stream probe, cell heuristics, the `vob_css[100]` state
   block) comes up into `dvd/` as an app-side disc context (the title list
-  is up since 8b, the stream probe since 8c).
+  is up since 8b, the stream probe since 8c, the cell rules since 8d).
 - **libdvdcss** (+59) and **libaacs** (+941, cleanly additive incl. HD DVD)
   stay as they are. expat, tomlc17, CCExtractor (helper process) unchanged.
 
@@ -438,10 +438,15 @@ In slices, one commit and one full test run each, behavior-preserving:
 - **8c — DONE (row 268)** — the stream probe up (`dvd_stream_probe.c`,
   with the sector's packet reader); its sectors still come through
   libdvdread's title-VOB reading until 8e.
-- **8d** — the cell policy + the app-side context: `vob_read.c`'s policy
-  half up, and the state leaves the library — `dvd_reader_s.vob_css[100]`,
-  the cell-check rng and the `ifo_handle_private_s` extensions become a
-  per-title-set context owned by the DVD part.
+- **8d — DONE (row 269)** — the cell rules + the app-side context:
+  `vob_read.c`'s rules half up into `dvd_cells.c` (cell checks, seamless
+  angles, the program chain check, cell list / CellWalk / CellTrim,
+  segments, chapter places), on `DVDCells`, a per-title-set context the DVD
+  part's disc owns (with the cell check's mode and random sample); the
+  program chain table belongs to libdvdread's disc structure. The
+  `ifo_handle_private_s` extensions stay: they are the IFO table reader's.
+  Until 8e the rules ask libdvdread's reading for VOBUs (two small
+  accessors, `DVDTitleVOBBlocks_rec()` / `DVDVobuMap_rec()`).
 - **8e** — the mechanical half up: placement, sector read + check, CSS via
   libdvdcss, damage ranges, VOBU map — the format part reads like the
   Blu-ray part does.

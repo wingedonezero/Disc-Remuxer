@@ -37,6 +37,7 @@
 #include "io/discio.h"
 #include "disc/info.h"
 
+#include "dvd_cells.h"
 #include "dvd_scan.h"
 
 #define DVD_SECTOR          2048
@@ -72,6 +73,9 @@ typedef struct DVDDisc {
     DVDDiscFile  files[DVD_MAX_TITLE_SETS + 1][DVD_FILE_SLOTS];
     dvd_findings_t *findings;           /**< what libdvdread / libdvdnav found, each said once (both log into
                                              the program's log; dvd_nav.c) */
+    DVDCells     cells[DVD_MAX_TITLE_SETS + 1];   /**< each title set's cells (dvd_cells.c; 0 unused) */
+    int          cell_check;            /**< dvd_cell_check_t: the VOBUs the full cell check reads */
+    uint64_t     cell_rng;              /**< the full cell check's random sample */
 } DVDDisc;
 
 /** The information files: the VMG and the title sets. */

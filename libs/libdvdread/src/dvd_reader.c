@@ -863,12 +863,6 @@ void DVDClose( dvd_reader_t *dvd )
     for( int t = 0; t < 100; t++ ) {
       free( dvd->vob_css[t].map );
       free( dvd->vob_css[t].vobus.recs );
-      if( dvd->vob_css[t].pgcit ) {
-        for( int p = 0; p < dvd->vob_css[t].pgcit->nr_of_pgcs; p++ )
-          free( dvd->vob_css[t].cell_state ? dvd->vob_css[t].cell_state[p] : NULL );
-        free( dvd->vob_css[t].cell_state );
-        ifoFree_VTS_PGCIT_rec( &dvd->vob_css[t].pgcit );
-      }
     }
     free( dvd->vobus.recs );
     if( dvd->rd ) {

@@ -60,6 +60,9 @@ int ff_dvd_disc_open(void *log, DiscIOFS *fs, const char *dir, int folder, const
         dr_vlog(log, DR_VLOG_ERROR, "DVD: the disc cannot be read as DVD-Video (see the IFO check above)\n");
         return DR_ERR_INVALID;
     }
+    /* what the cell checks find once per cell */
+    if ((ret = ff_dvd_cells_open(d)) < 0)
+        return ret;
 
     /* its name: the volume label, else the provider identifier */
     if (label && !(d->volume_name = dr_strdup(label)))
@@ -81,7 +84,9 @@ int ff_dvd_disc_open(void *log, DiscIOFS *fs, const char *dir, int folder, const
 
 void ff_dvd_disc_free(DVDDisc *d)
 {
-    /* libdvdread's handles, then libdvdread (its callbacks read the files below) */
+    /* the cells' state, libdvdread's handles, then libdvdread (its callbacks
+     * read the files below) */
+    ff_dvd_cells_close(d);
     DVDCloseDisc_rec(d->rec);           /* its information files and title VOB readings */
     d->rec = NULL;
     if (d->reader)

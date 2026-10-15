@@ -72,14 +72,7 @@ struct dvd_reader_s
       int      nb_map;
       int      map_distrusted;
       struct dvd_vobu_store_s { struct dvd_vobu_rec_s *recs; int nb, alloc; } vobus;
-      /* its program chain table (ifoRead_VTS_PGCIT_rec()) and per cell what
-       * was found once (seamless angle checked / its result) */
-      pgcit_rec_t *pgcit;
-      uint8_t    **cell_state;
     } vob_css[100];
-    /* the full cell check: which VOBUs it reads, and the random sample's state */
-    int      cell_check;
-    uint64_t cell_rng;
     /* the VOBU records of title sets at a known place of an image */
     struct dvd_vobu_store_s vobus;
 };

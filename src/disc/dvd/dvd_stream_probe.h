@@ -24,6 +24,8 @@
 
 #include <dvdread/vob_read.h>
 
+#include "dvd_cells.h"
+
 /**
  * A packet of a title VOB sector by the program stream rules the stream
  * probe uses: at *off of the sector (0: the pack header first, 14 bytes plus

@@ -105,7 +105,7 @@ typedef struct
   int64_t            menu_vob_start;    /* image: where its menu VOBs start (DVDMenuVOBStart_rec()), 0 */
   int64_t            title_vob_start;   /* image: where its title VOBs start (DVDTitleVOBStart_rec()), 0 */
   int                no_pgcit;          /* a title set without a program chain table */
-  const pgcit_rec_t *pgcit;             /* its program chain table (the reader keeps it), NULL */
+  pgcit_rec_t       *pgcit;             /* its program chain table (freed with the disc), NULL */
   uint8_t           *ptt_srpt;          /* VTS_PTT_SRPT as recorded, NULL */
   uint32_t           ptt_srpt_size;
   uint32_t          *vobu_map;          /* VTS_VOBU_ADMAP: the VOBU starts, sorted, each once */

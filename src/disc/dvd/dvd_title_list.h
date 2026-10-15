@@ -24,6 +24,8 @@
 #include <dvdread/disc_read.h>
 #include <dvdread/vob_read.h>
 
+#include "dvd_cells.h"
+
 struct DVDDisc;
 
 /**

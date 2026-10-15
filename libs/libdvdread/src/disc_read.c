@@ -489,12 +489,8 @@ static int load_tables( dvd_reader_t *ctx, int index, dvd_ifo_rec_t *f )
     f->no_pgcit = 1;
     goto end;
   }
-  /* the table to the reader, which walks and checks the cells, and checked
+  /* the table kept (the application walks and checks the cells), checked
    * against the cell address table */
-  if( DVDKeepPGCIT_rec( ctx, index, pgcit ) < 0 ) {
-    ifoFree_VTS_PGCIT_rec( &pgcit );
-    return -2;
-  }
   f->pgcit = pgcit;
   ifoCheckCellAddresses_rec( h, pgcit );
   /* the chapter table as recorded */
@@ -521,6 +517,7 @@ static void close_ifo( dvd_ifo_rec_t *f )
     DVDCloseTitleVOBs_rec( f->own );
   if( f->ifo )
     ifoClose( f->ifo );
+  ifoFree_VTS_PGCIT_rec( &f->pgcit );
   free( f->ptt_srpt );
   free( f->vobu_map );
   memset( f, 0, sizeof(*f) );
