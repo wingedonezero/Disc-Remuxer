@@ -102,12 +102,67 @@ typedef struct DiscPartInfo {
     int              nb_chapters;    /**< its own chapters (from its own start) */
 } DiscPartInfo;
 
-/** Something more the format part tells of a title (for the caller's
- *  details): its name and value in words. */
+/** What a property (DiscPropertyInfo) is: its words, its group and how its
+ *  value reads come from the key (disc_prop_name() and the others below),
+ *  so nothing is ever matched by its English words. */
+typedef enum DiscPropKey {
+    DISC_PROP_KIND,
+    DISC_PROP_MARKET_LANGUAGE,
+    DISC_PROP_REGION,
+    DISC_PROP_IFO_CHECK,
+    DISC_PROP_MENU_NAMES,
+    DISC_PROP_FAKE_PLAYLISTS,
+    DISC_PROP_NAME_LANGUAGE,
+    DISC_PROP_ENGLISH_NAME,
+    DISC_PROP_CONTENT_HASH_CHECK,
+    DISC_PROP_PLAYLISTS,
+    DISC_PROP_CLIPS,
+    DISC_PROP_BDJ_ARCHIVES,
+    DISC_PROP_CSS,
+    DISC_PROP_AACS,
+    DISC_PROP_AACS2,
+    DISC_PROP_AACS_DISC_ID,
+    DISC_PROP_BDPLUS,
+    DISC_PROP_BUS_ENCRYPTION,
+    DISC_PROP_TITLE_ON_DISC,
+    DISC_PROP_TITLE_SET,
+    DISC_PROP_PROGRAM_CHAIN,
+    DISC_PROP_NAVIGATION,
+    DISC_PROP_ANGLES,
+    DISC_PROP_CELLS,
+    DISC_PROP_LENGTH_MEASURED,
+    DISC_PROP_OTHER_NAME,
+    DISC_PROP_RECORDED,
+    DISC_PROP_SIDE_CLIPS,
+    DISC_PROP_FAKE_PLAYLIST_CHECK,
+    DISC_PROP_FROM,
+    DISC_PROP_TRACKS_FROM,
+    DISC_PROP_NB
+} DiscPropKey;
+
+/** Where a property belongs in a disc's details. */
+typedef enum DiscPropGroup {
+    DISC_PROP_GENERAL,
+    DISC_PROP_PROTECTION,              /**< a block of its own, "Protection" */
+} DiscPropGroup;
+
+/** Something more the format part tells of a disc or a title (for the
+ *  caller's details): what it is (key; its words: name) and its value in
+ *  words. */
 typedef struct DiscPropertyInfo {
-    const char      *name;           /**< e.g. "Title set" */
+    DiscPropKey      key;
+    const char      *name;           /**< disc_prop_name(key), e.g. "Title set" */
     char            *value;          /**< e.g. "VTS_03, its title 2" */
 } DiscPropertyInfo;
+
+/** A property's name ("Protection: CSS"), its group, its label within its
+ *  group ("CSS"), and whether its value names a language. */
+const char   *disc_prop_name(DiscPropKey key);
+DiscPropGroup disc_prop_group(DiscPropKey key);
+const char   *disc_prop_label(DiscPropKey key);
+int           disc_prop_language(DiscPropKey key);
+/** The property of key among n props, NULL when there is none. */
+const DiscPropertyInfo *disc_prop_find(const DiscPropertyInfo *props, int n, DiscPropKey key);
 
 /** A title's mark from a disc's fake playlist check (DiscTitleInfo.playlist_check). */
 enum DiscPlaylistCheck {

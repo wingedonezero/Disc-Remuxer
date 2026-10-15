@@ -415,13 +415,13 @@ static int title_info(DrDisc *d, int i, DiscTitleInfo *dt)
     else
         snprintf(source, sizeof(c->sources[i]), "VTS_%02d program chain %d, cells", t->vtsn, t->pgcn + 1);
     dt->source = source;
-    if (ff_disc_title_add_prop(dt, "Title on the disc", "%s", t->name) < 0 ||
-        ff_disc_title_add_prop(dt, "Title set", "VTS_%02d, its title %d", t->vtsn, t->vts_ttn) < 0 ||
-        ff_disc_title_add_prop(dt, "Program chain", "%d", t->pgcn + 1) < 0 ||
-        ff_disc_title_add_prop(dt, "Navigation", "%s", t->scan ? t->scan->name : "not reached (cells trimmed)") < 0 ||
-        (t->nr_of_angles > 1 && ff_disc_title_add_prop(dt, "Angles", "%d", t->nr_of_angles) < 0) ||
-        ff_disc_title_add_prop(dt, "Cells", "%d", t->nb_cells) < 0 ||
-        ff_disc_title_add_prop(dt, "Length measured", "%u:%02u:%02u (the program chain says %u:%02u:%02u)",
+    if (ff_disc_title_add_prop(dt, DISC_PROP_TITLE_ON_DISC, "%s", t->name) < 0 ||
+        ff_disc_title_add_prop(dt, DISC_PROP_TITLE_SET, "VTS_%02d, its title %d", t->vtsn, t->vts_ttn) < 0 ||
+        ff_disc_title_add_prop(dt, DISC_PROP_PROGRAM_CHAIN, "%d", t->pgcn + 1) < 0 ||
+        ff_disc_title_add_prop(dt, DISC_PROP_NAVIGATION, "%s", t->scan ? t->scan->name : "not reached (cells trimmed)") < 0 ||
+        (t->nr_of_angles > 1 && ff_disc_title_add_prop(dt, DISC_PROP_ANGLES, "%d", t->nr_of_angles) < 0) ||
+        ff_disc_title_add_prop(dt, DISC_PROP_CELLS, "%d", t->nb_cells) < 0 ||
+        ff_disc_title_add_prop(dt, DISC_PROP_LENGTH_MEASURED, "%u:%02u:%02u (the program chain says %u:%02u:%02u)",
                                t->measured / 3600, t->measured / 60 % 60, t->measured % 60, t->declared / 3600,
                                t->declared / 60 % 60, t->declared % 60) < 0)
         return DR_ERR(ENOMEM);
@@ -566,13 +566,13 @@ static int add_region(DrDisc *d, DVDDisc *disc)
         return 0;
     mask = ff_dvd_header32(vmg, DVD_VMG_CATEGORY) >> 16 & 0xff;
     if (!mask)
-        return ff_disc_add_prop(d, "Region", "all (region free)");
+        return ff_disc_add_prop(d, DISC_PROP_REGION, "all (region free)");
     if (mask == 0xff)
-        return ff_disc_add_prop(d, "Region", "none (every region locked out)");
+        return ff_disc_add_prop(d, DISC_PROP_REGION, "none (every region locked out)");
     for (int r = 1; r <= 8; r++)
         if (!(mask & 1 << (r - 1)))
             dr_strlcatf(list, sizeof(list), "%s%d", list[0] ? ", " : "", r);
-    return ff_disc_add_prop(d, "Region", "%s", list);
+    return ff_disc_add_prop(d, DISC_PROP_REGION, "%s", list);
 }
 
 /* Protection: CSS when a title set's scrambled sectors were met while the
@@ -589,12 +589,12 @@ static int disc_done(DrDisc *d)
     {
         int harmless, breaks;
         ff_dvd_reports_count(&c->disc, &harmless, &breaks);
-        if ((ret = !harmless && !breaks ? ff_disc_add_prop(d, "IFO and navigation check", "passed") :
-                   ff_disc_add_prop(d, "IFO and navigation check", "%d finding(s) that break the DVD-Video rules, "
+        if ((ret = !harmless && !breaks ? ff_disc_add_prop(d, DISC_PROP_IFO_CHECK, "passed") :
+                   ff_disc_add_prop(d, DISC_PROP_IFO_CHECK, "%d finding(s) that break the DVD-Video rules, "
                                     "%d harmless", breaks, harmless)) < 0)
             return ret;
     }
-    if ((ret = ff_disc_add_prop(d, "Protection: CSS", "%s", css ? "yes" :
+    if ((ret = ff_disc_add_prop(d, DISC_PROP_CSS, "%s", css ? "yes" :
                                 "no (no scrambled sector in what was read)")) < 0)
         return ret;
     return add_region(d, &c->disc);

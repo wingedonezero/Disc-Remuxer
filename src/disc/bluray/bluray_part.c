@@ -479,10 +479,10 @@ static int title_info(DrDisc *d, int i, DiscTitleInfo *dt)
     dt->size     = ff_bluray_title_size(t);
     dt->selected = dt->angle <= 1;
     dr_strlcpy(dt->language, b->name_lang, sizeof(dt->language));
-    if ((t->alt_name && ff_disc_title_add_prop(dt, "Other name", "%s", t->alt_name) < 0) ||
-        (t->year && ff_disc_title_add_prop(dt, "Recorded", "%04d-%02d-%02d %02d:%02d:%02d", t->year, t->month,
+    if ((t->alt_name && ff_disc_title_add_prop(dt, DISC_PROP_OTHER_NAME, "%s", t->alt_name) < 0) ||
+        (t->year && ff_disc_title_add_prop(dt, DISC_PROP_RECORDED, "%04d-%02d-%02d %02d:%02d:%02d", t->year, t->month,
                                            t->day, t->hour, t->minute, t->second) < 0) ||
-        (t->nb_side && ff_disc_title_add_prop(dt, "Side clips (text subtitles)", "%d", t->nb_side) < 0))
+        (t->nb_side && ff_disc_title_add_prop(dt, DISC_PROP_SIDE_CLIPS, "%d", t->nb_side) < 0))
         return DR_ERR(ENOMEM);
     if (b->pl_menu_name && t->pl)
         dt->menu_name = b->pl_menu_name[t->pl - b->playlists];
@@ -490,12 +490,12 @@ static int title_info(DrDisc *d, int i, DiscTitleInfo *dt)
         int p = t->pl - b->playlists;
         if (b->pl_check[p] == BLURAY_PL_FAKE) {
             dt->playlist_check = DISC_PLAYLIST_LIKELY_FAKE;
-            if (ff_disc_title_add_prop(dt, "Fake playlist check", "likely fake: %d item(s) play a copy of a clip "
+            if (ff_disc_title_add_prop(dt, DISC_PROP_FAKE_PLAYLIST_CHECK, "likely fake: %d item(s) play a copy of a clip "
                                        "it played before", b->pl_repeats[p]) < 0)
                 return DR_ERR(ENOMEM);
         } else if (b->pl_check[p] == BLURAY_PL_REAL) {
             dt->playlist_check = DISC_PLAYLIST_LIKELY_REAL;
-            if (ff_disc_title_add_prop(dt, "Fake playlist check", "likely real: no clip played twice, as long as "
+            if (ff_disc_title_add_prop(dt, DISC_PROP_FAKE_PLAYLIST_CHECK, "likely real: no clip played twice, as long as "
                                        "the fakes") < 0)
                 return DR_ERR(ENOMEM);
         }
@@ -694,37 +694,37 @@ static int bluray_load(DrDisc *d)
     d->info.bdplus    = b->bdplus;
     if ((ret = ff_bluray_decoys_check((void *)d->log, b)) < 0)
         return ret;
-    if (b->menu_name && ff_disc_add_prop(d, "Menu names", "%d playlists named by the menu's project data "
+    if (b->menu_name && ff_disc_add_prop(d, DISC_PROP_MENU_NAMES, "%d playlists named by the menu's project data "
                                          "(project '%s')", b->nb_menu_named, b->menu_name) < 0)
         return DR_ERR(ENOMEM);
     d->info.fake_playlists  = b->nb_fake;
     d->info.fakes_suspected = b->fake_suspected;
-    if ((b->nb_fake && ff_disc_add_prop(d, "Fake playlists", "%d likely fake, %d likely real (the titles are marked)",
+    if ((b->nb_fake && ff_disc_add_prop(d, DISC_PROP_FAKE_PLAYLISTS, "%d likely fake, %d likely real (the titles are marked)",
                                         b->nb_fake, b->nb_real) < 0) ||
-        (b->fake_suspected && ff_disc_add_prop(d, "Fake playlists", "possibly (many different long clip orders, "
+        (b->fake_suspected && ff_disc_add_prop(d, DISC_PROP_FAKE_PLAYLISTS, "possibly (many different long clip orders, "
                                                "no known kind of fake)") < 0))
         return DR_ERR(ENOMEM);
     d->info.name      = b->name;
     ff_disc_set_market(d, (const char (*)[4])b->meta_lang, b->nb_meta_lang, 0, "its disc library files");
-    if (ff_disc_add_prop(d, "Kind", "%s", b->parent_fs ? "AVCHD" : b->bdav ? "BDAV (recorded)" : "BDMV") < 0 ||
-        (b->name && b->name_lang[0] && ff_disc_add_prop(d, "Name's language", "%s", b->name_lang) < 0) ||
+    if (ff_disc_add_prop(d, DISC_PROP_KIND, "%s", b->parent_fs ? "AVCHD" : b->bdav ? "BDAV (recorded)" : "BDMV") < 0 ||
+        (b->name && b->name_lang[0] && ff_disc_add_prop(d, DISC_PROP_NAME_LANGUAGE, "%s", b->name_lang) < 0) ||
         (b->name_eng && (!b->name || strcmp(b->name_eng, b->name)) &&
-         ff_disc_add_prop(d, "English name", "%s", b->name_eng) < 0) ||
-        ff_disc_add_prop(d, "Protection: AACS", "%s", b->aacs ? "yes" : "no") < 0 ||
-        (c->aacs && ff_disc_add_prop(d, "Content hash check", "%s", c->hash ? "yes: the stream files read are "
+         ff_disc_add_prop(d, DISC_PROP_ENGLISH_NAME, "%s", b->name_eng) < 0) ||
+        ff_disc_add_prop(d, DISC_PROP_AACS, "%s", b->aacs ? "yes" : "no") < 0 ||
+        (c->aacs && ff_disc_add_prop(d, DISC_PROP_CONTENT_HASH_CHECK, "%s", c->hash ? "yes: the stream files read are "
                                      "checked against the disc's content hashes" : "no table") < 0) ||
-        ff_disc_add_prop(d, "Protection: AACS 2.0", "not checked yet") < 0 ||
-        ff_disc_add_prop(d, "Protection: BD+", "%s", b->bdplus ? "yes (not supported yet)" : "no") < 0 ||
-        ff_disc_add_prop(d, "Protection: bus encryption", "not checked yet") < 0 ||
-        ff_disc_add_prop(d, "Playlists", "%d", b->nb_playlists) < 0 ||
-        ff_disc_add_prop(d, "Clips", "%d", b->nb_clips) < 0 ||
-        (b->nb_jars && ff_disc_add_prop(d, "BD-J archives", "%d", b->nb_jars) < 0))
+        ff_disc_add_prop(d, DISC_PROP_AACS2, "not checked yet") < 0 ||
+        ff_disc_add_prop(d, DISC_PROP_BDPLUS, "%s", b->bdplus ? "yes (not supported yet)" : "no") < 0 ||
+        ff_disc_add_prop(d, DISC_PROP_BUS_ENCRYPTION, "not checked yet") < 0 ||
+        ff_disc_add_prop(d, DISC_PROP_PLAYLISTS, "%d", b->nb_playlists) < 0 ||
+        ff_disc_add_prop(d, DISC_PROP_CLIPS, "%d", b->nb_clips) < 0 ||
+        (b->nb_jars && ff_disc_add_prop(d, DISC_PROP_BDJ_ARCHIVES, "%d", b->nb_jars) < 0))
         return DR_ERR(ENOMEM);
     if (b->has_disc_id) {
         char id[41];
         for (int i = 0; i < 20; i++)
             snprintf(id + 2 * i, 3, "%02X", b->disc_id[i]);
-        if (ff_disc_add_prop(d, "Protection: AACS disc ID", "%s", id) < 0)
+        if (ff_disc_add_prop(d, DISC_PROP_AACS_DISC_ID, "%s", id) < 0)
             return DR_ERR(ENOMEM);
     }
     d->info.encrypted = has_dir(d->fs, "/AACS") || has_dir(d->fs, "/AACS_bd") ||

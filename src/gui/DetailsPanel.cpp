@@ -98,23 +98,22 @@ void DetailsPanel::showDisc(const QString &source, const DiscInfo *d)
     h.row("Titles found", QString::number(d->nb_titles));
     if (d->menu_name)
         h.row("Menu name", QString::fromUtf8(d->menu_name) + " (the project name in the disc's menu data)");
-    // the format part's own details; "Protection: X" ones in a block of their own
+    // the format part's own details; the protection ones in a block of their own
     bool protection = false;
     for (int p = 0; p < d->nb_props; p++) {
-        QString name = QString::fromUtf8(d->props[p].name), v = QString::fromUtf8(d->props[p].value);
-        if (name.contains("language"))
-            v = languageText(d->props[p].value);
-        if (!name.startsWith("Protection: "))
-            h.row(name, v);
+        const DiscPropertyInfo *q = &d->props[p];
+        QString v = disc_prop_language(q->key) ? languageText(q->value) : QString::fromUtf8(q->value);
+        if (disc_prop_group(q->key) != DISC_PROP_PROTECTION)
+            h.row(QString::fromUtf8(q->name), v);
     }
     for (int p = 0; p < d->nb_props; p++) {
-        QString name = QString::fromUtf8(d->props[p].name);
-        if (!name.startsWith("Protection: "))
+        const DiscPropertyInfo *q = &d->props[p];
+        if (disc_prop_group(q->key) != DISC_PROP_PROTECTION)
             continue;
         if (!protection)
             h.head("Protection");
         protection = true;
-        h.row(name.mid(12), QString::fromUtf8(d->props[p].value));
+        h.row(QString::fromUtf8(disc_prop_label(q->key)), QString::fromUtf8(q->value));
     }
     setHtml(h.s);
 }

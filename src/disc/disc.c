@@ -121,7 +121,7 @@ int ff_disc_title_add_file(DiscTitleInfo *t, const char *name)
     return dr_array_add_ptr(&t->files, &t->nb_files, (void *)name);
 }
 
-static int add_prop(DiscPropertyInfo **props, int *nb, const char *name, const char *fmt, va_list vl)
+static int add_prop(DiscPropertyInfo **props, int *nb, DiscPropKey key, const char *fmt, va_list vl)
 {
     DiscPropertyInfo *p = dr_array_add(props, nb, sizeof(*p), NULL);
     DrStr bp;
@@ -129,31 +129,32 @@ static int add_prop(DiscPropertyInfo **props, int *nb, const char *name, const c
     if (!p)
         return DR_ERR(ENOMEM);
 
-    p->name = name;
+    p->key  = key;
+    p->name = disc_prop_name(key);
     dr_str_init(&bp);
     dr_str_vcatf(&bp, fmt, vl);
     p->value = dr_str_take(&bp, 1);
     return p->value ? 0 : DR_ERR(ENOMEM);
 }
 
-int ff_disc_title_add_prop(DiscTitleInfo *t, const char *name, const char *fmt, ...)
+int ff_disc_title_add_prop(DiscTitleInfo *t, DiscPropKey key, const char *fmt, ...)
 {
     va_list vl;
     int ret;
 
     va_start(vl, fmt);
-    ret = add_prop(&t->props, &t->nb_props, name, fmt, vl);
+    ret = add_prop(&t->props, &t->nb_props, key, fmt, vl);
     va_end(vl);
     return ret;
 }
 
-int ff_disc_add_prop(DrDisc *d, const char *name, const char *fmt, ...)
+int ff_disc_add_prop(DrDisc *d, DiscPropKey key, const char *fmt, ...)
 {
     va_list vl;
     int ret;
 
     va_start(vl, fmt);
-    ret = add_prop(&d->info.props, &d->info.nb_props, name, fmt, vl);
+    ret = add_prop(&d->info.props, &d->info.nb_props, key, fmt, vl);
     va_end(vl);
     return ret;
 }
@@ -607,8 +608,8 @@ static int disc_read_header(DrDisc *d)
     if (!(d->part = dr_mallocz(d->fmt->priv_size)))
         return DR_ERR(ENOMEM);
     if ((ret = (d->fmt->load(d))) < 0 ||
-        (ret = d->market[0] ? ff_disc_add_prop(d, "Market language", "%s (%s)", d->market, d->market_from) :
-                              ff_disc_add_prop(d, "Market language", "none named")) < 0 ||
+        (ret = d->market[0] ? ff_disc_add_prop(d, DISC_PROP_MARKET_LANGUAGE, "%s (%s)", d->market, d->market_from) :
+                              ff_disc_add_prop(d, DISC_PROP_MARKET_LANGUAGE, "none named")) < 0 ||
         (ret = titles_pass(d)) < 0 ||
         (d->fmt->disc_done && (ret = (d->fmt->disc_done(d))) < 0) || (ret = titles_info(d)) < 0)
         return ret;

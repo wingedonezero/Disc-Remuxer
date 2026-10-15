@@ -414,9 +414,8 @@ void MainWindow::showTitleChecks(Job &job, int t)
         state.prepend(fake ? "likely fake" : "likely real");
         title->setIcon(C_STATUS, style()->standardIcon(fake ? QStyle::SP_MessageBoxWarning
                                                             : QStyle::SP_DialogApplyButton));
-        for (int p = 0; p < ti->nb_props; p++)
-            if (!strcmp(ti->props[p].name, "Fake playlist check"))
-                title->setToolTip(C_STATUS, QString::fromUtf8(ti->props[p].value));
+        if (const DiscPropertyInfo *why = disc_prop_find(ti->props, ti->nb_props, DISC_PROP_FAKE_PLAYLIST_CHECK))
+            title->setToolTip(C_STATUS, QString::fromUtf8(why->value));
     }
     title->setText(C_STATUS, state.join("; "));
     for (int i = 0; i < job.tracks[t].size(); i++) {

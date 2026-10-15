@@ -255,10 +255,10 @@ static int title_info(DrDisc *d, int i, DiscTitleInfo *dt)
     dt->selected = 1;
     if (t->lang)
         dr_strlcpy(dt->language, t->lang, sizeof(dt->language));
-    if (ff_disc_title_add_prop(dt, "From", "%s", t->from_playlist ? "a title of the playlist" :
+    if (ff_disc_title_add_prop(dt, DISC_PROP_FROM, "%s", t->from_playlist ? "a title of the playlist" :
                                "an EVOB no playlist title plays") < 0 ||
         (t->segment >= 0 && t->segment < t->nb_clips &&
-         ff_disc_title_add_prop(dt, "Tracks described from", "%s", t->clips[t->segment]->evob->name) < 0))
+         ff_disc_title_add_prop(dt, DISC_PROP_TRACKS_FROM, "%s", t->clips[t->segment]->evob->name) < 0))
         return DR_ERR(ENOMEM);
     for (int k = 0; k < t->nb_clips; k++)
         if (ff_disc_title_add_file(dt, t->clips[k]->evob->name) < 0)
@@ -322,7 +322,7 @@ static int hddvd_load(DrDisc *d)
                                   c->nb_xpls, &c->aacs)) < 0)
         return ret;
     d->info.encrypted = c->aacs != NULL;
-    if (ff_disc_add_prop(d, "Protection: AACS", "%s", c->aacs ? "yes" : "no") < 0)
+    if (ff_disc_add_prop(d, DISC_PROP_AACS, "%s", c->aacs ? "yes" : "no") < 0)
         return DR_ERR(ENOMEM);
     if ((ret = ff_hddvd_titles_plan((void *)d->log, c->fs, c->vti, c->xpls, c->nb_xpls, d->opt_min_length, &c->plan)) < 0)
         return ret;

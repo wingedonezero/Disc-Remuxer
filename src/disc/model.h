@@ -306,10 +306,9 @@ DiscStreamInfo *ff_disc_title_add_stream(DiscTitleInfo *t);
 DiscChapterInfo *ff_disc_title_add_chapter(DiscTitleInfo *t);
 DiscPartInfo *ff_disc_title_add_part(DiscTitleInfo *t);
 int ff_disc_title_add_file(DiscTitleInfo *t, const char *name);
-/** A property of title t (DiscTitleInfo.props): name kept as given (a
- *  string that lives until close), the value formatted; < 0: out of
- *  memory. */
-int ff_disc_title_add_prop(DiscTitleInfo *t, const char *name, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+/** A property of title t (DiscTitleInfo.props): what it is (key, its name
+ *  disc_prop_name(key)), the value formatted; < 0: out of memory. */
+int ff_disc_title_add_prop(DiscTitleInfo *t, DiscPropKey key, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
 /** The disc's market language (DiscContext.market) from the languages its
  *  format names for the disc itself (Blu-ray: its disc library files; DVD:
  *  its menus; HD DVD: its title sets' default language), ISO 639 codes:
@@ -318,7 +317,7 @@ int ff_disc_title_add_prop(DiscTitleInfo *t, const char *name, const char *fmt, 
  *  the first. from: where they come from (for the disc info). */
 void ff_disc_set_market(DrDisc *d, const char (*codes)[4], int n, int ordered, const char *from);
 /** A property of the disc (DiscInfo.props), as ff_disc_title_add_prop(). */
-int ff_disc_add_prop(DrDisc *d, const char *name, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+int ff_disc_add_prop(DrDisc *d, DiscPropKey key, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
 /** A stream as ff_disc_title_add_stream() starts it: zeroed, no linked
  *  streams, no offset sequence, profile and level unknown. */
 void ff_disc_stream_init(DiscStreamInfo *k);
