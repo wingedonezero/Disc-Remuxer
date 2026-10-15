@@ -33,7 +33,6 @@
 #include "names.h"
 #include "analyze/details.h"
 #include "disc/disc.h"
-#include "log_ffmpeg.h"
 #include "engine.h"
 #include "base/settings.h"
 #include "writer.h"
@@ -174,9 +173,7 @@ static void end_check(const DrDiscTrack *t, EsOut *o)
         snprintf(o->problems, sizeof(o->problems), "the disc stream's first frame could not be decoded");
         return;
     }
-    log_ffmpeg_detail(1);
     ret_file = details_of_file(o->name, t->type, &file);
-    log_ffmpeg_detail(0);
     if (ret_file < 0 || !file.valid) {
         o->checked = -1;
         snprintf(o->problems, sizeof(o->problems), "the written file cannot be read back");

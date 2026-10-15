@@ -1,6 +1,8 @@
 /*
- * The log (see log.h). FFmpeg's lines reach it through the hook in
- * src/disc-remuxer/log_ffmpeg.c (log_library_line()).
+ * The log (see log.h). The modules' lines (base/vlog.h) come in through
+ * the hook log_init() installs below; the processing library's own lines
+ * through the analyze module's hook (src/analyze/log.c) — both end in
+ * log_library_line().
  */
 
 #define _GNU_SOURCE     /* vasprintf, asprintf (log_json) */
@@ -15,6 +17,7 @@
 #include <unistd.h>
 
 #include "base/log.h"
+#include "base/vlog.h"
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static int  json_mode, verbose, color;
@@ -170,6 +173,64 @@ static int seen_before(const char *text)
     return 0;
 }
 
+/* ---- the modules' lines (base/vlog.h) ----
+ * logctx is the module's source name (or NULL: "disc"); lines arrive whole
+ * or in pieces, kept until the newline. ERROR / WARNING / INFO keep their
+ * level; VERBOSE and DEBUG are detail lines (kept with -v or a debug
+ * file); TRACE only with -vv. */
+
+static pthread_mutex_t vlog_lock = PTHREAD_MUTEX_INITIALIZER;
+static char vlog_pending[4096];
+static size_t vlog_pending_len;
+static enum LogLevel vlog_pending_level;
+static const char *vlog_pending_source;
+
+/* Whether lines of a module level would be kept (modules skip building
+ * expensive dumps otherwise). */
+static int vlog_wants(int level)
+{
+    if (level >= DR_VLOG_TRACE && verbose < 2)
+        return 0;
+    return level < DR_VLOG_VERBOSE || debug_file || verbose;
+}
+
+static void vlog_line(const void *logctx, int level, const char *fmt, va_list vl)
+{
+    static const enum LogLevel map[] = { LOG_ERROR, LOG_WARNING, LOG_INFO,
+                                         LOG_DETAIL, LOG_DETAIL, LOG_DETAIL };
+    const char *source = logctx ? logctx : "disc";
+    char piece[4096];
+    int n;
+
+    if (!vlog_wants(level))
+        return;
+    n = vsnprintf(piece, sizeof(piece), fmt, vl);
+    if (n < 0)
+        return;
+    if (n >= (int)sizeof(piece))
+        n = sizeof(piece) - 1;
+    pthread_mutex_lock(&vlog_lock);
+    if (!vlog_pending_len) {
+        vlog_pending_level  = map[level];
+        vlog_pending_source = source;
+    }
+    for (int i = 0; i < n; i++) {
+        if (piece[i] == '\n') {
+            vlog_pending[vlog_pending_len] = 0;
+            if (vlog_pending_len)
+                log_library_line(vlog_pending_level, vlog_pending_source, vlog_pending);
+            vlog_pending_len = 0;
+            if (i + 1 < n) {
+                vlog_pending_level  = map[level];
+                vlog_pending_source = source;
+            }
+        } else if (vlog_pending_len < sizeof(vlog_pending) - 1) {
+            vlog_pending[vlog_pending_len++] = piece[i];
+        }
+    }
+    pthread_mutex_unlock(&vlog_lock);
+}
+
 void log_init(int json, int verbosity)
 {
     const char *nc = getenv("NO_COLOR");
@@ -177,6 +238,8 @@ void log_init(int json, int verbosity)
     json_mode = json;
     verbose   = verbosity;
     color     = !json && isatty(STDOUT_FILENO) && !(nc && *nc);
+    dr_vlog_set(vlog_line);
+    dr_vlog_set_wants(vlog_wants);
 }
 
 int log_open_files(const char *path, const char *debug_path)

@@ -20,6 +20,18 @@ extern "C" {
 
 void dr_analyze_use(void);
 
+/* Routes the processing library's own log lines into ours (base/log.h,
+ * log_init() first): the source named from the library context, one call
+ * to log_library_line() per line. The test bridge installs its own
+ * callback instead. */
+void dr_analyze_log_install(void);
+
+/* While on, the library's lines below error level are detail lines: what
+ * it says while a written file is read back (the end check) is about
+ * reading that file, not about the disc. details_of_file() sets it around
+ * its read. */
+void dr_analyze_log_detail(int on);
+
 /* internal: the stream pass's details probe (host.c registers it too) */
 void dr_analyze_use_probe(void);
 

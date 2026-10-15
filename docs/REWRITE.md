@@ -4,13 +4,14 @@ Updated 2026-10-13, on branch `claude/rewrite-untangle-1c24ca` (the rewrite
 branch; main still holds the pre-rewrite program and is the byte-compare
 reference). Inventory of what the old shape was made of: `docs/UNTANGLE.md`.
 
-Status: **steps 1–6 done, step 7 done but for 7e's remainder**: 7a (the
-clip demuxer), 7b (the format parts, rows 258–263) and 7d (the disc model,
-row 264; 7c folded into it) are in — **libs/ffmpeg is byte-for-byte the
-import again**, the "disc" demuxer is gone, the program and GUI run on the
-typed disc API (disc/disc.h). Of 7e only the FFmpeg-line hook's move into
-analyze/ remains: the modules' lines already carry their own source names
-(a string log context through base/vlog.h).
+Status: **steps 1–7 DONE**: 7a (the clip demuxer), 7b (the format parts,
+rows 258–263), 7d (the disc model, row 264; 7c folded into it) and 7e (the
+log flip, row 265) are in — **libs/ffmpeg is byte-for-byte the import
+again**, the "disc" demuxer is gone, the program and GUI run on the typed
+disc API (disc/disc.h), the modules log straight into base/log.h with
+their own source names, and the processing library's lines come in through
+analyze's hook. Next: the step-7 gate (the corpus byte-compare + info
+compare, the user's), then step 8, the DVD lift.
 Tests at every commit: 743 passed, 15 skipped (the disc-marked ones without a
 disc). Every move so far is behavior-preserving by construction and by test;
 the real-disc byte-compare against a main build is still owed (user runs it
@@ -118,13 +119,16 @@ analyze) → the disc model (`DrDisc`/`DrTitle`/`DrTrack`) → GUI/CLI.
   caller's sink (today `EngineSink`, v2 `DrSink`), dedup of repeated library
   lines, error/warning counts.
 - `base/vlog.h` is the ONE hook the extracted modules log through
-  (`dr_vlog(logctx, level, fmt, ...)`); since 7d logctx is the module's
-  source-name string (`dr_disc_open()`'s log name, "disc" by default), and
-  the program's hook formats the line and hands it to `log_library_line()`
-  with that source — no AVClass anywhere on the disc path. The
+  (`dr_vlog(logctx, level, fmt, ...)`); logctx is the module's source-name
+  string (`dr_disc_open()`'s log name, "disc" by default). `log_init()`
+  installs base's own sink for it (`base/log.c`): the line is formatted
+  and handed to `log_library_line()` with that source — no AVClass
+  anywhere on the disc path, no program mediation. The
   `dr_vlog_wants(level)` check lets modules skip building expensive debug
-  dumps that would be dropped. 7e's remainder: `log_ffmpeg.c` (the hook
-  for FFmpeg's own lines, analyze's decoders) moves into `analyze/`.
+  dumps that would be dropped. The processing library's own lines
+  (analyze's decoders) come in through `analyze/log.c`
+  (`dr_analyze_log_install()`), with the end check's detail demotion
+  toggled by `details_of_file()` itself.
 - The DVD libraries already log through their callback structs into the same
   funnel; libaacs through its handler. Nothing prints on its own.
 
@@ -391,13 +395,14 @@ In five slices, one commit and one full test run each:
   upstream bluray protocol restored; the one historical fix, parser.c
   timestamp lookup #1, died at 4d); FFmpeg builds without `src/` on its
   include path and links none of our libraries.
-- **7e — the log flip's remainder**: the modules already log with their
-  own source names (logctx = a source-name string through `base/vlog.h`;
-  the program's hook formats their lines directly — flipped at 7d, since
-  no AVClass context is left on the disc path). What remains:
-  `log_ffmpeg.c` (now only FFmpeg's own lines, i.e. analyze's decoders)
-  moves into `analyze/`, and `dr_vlog` can point at `base/log.h` without
-  the program's mediation.
+- **7e — DONE (row 265): the log flip.** The modules log with their own
+  source names (logctx = a source-name string through `base/vlog.h`;
+  flipped at 7d, since no AVClass context is left on the disc path), and
+  the hook is base's own: `log_init()` installs it (`vlog_line()` in
+  `base/log.c` — no program mediation). The FFmpeg-line hook became
+  `analyze/log.c` (`dr_analyze_log_install()`); the end check's detail
+  demotion is `details_of_file()`'s own (`dr_analyze_log_detail()`), so
+  the writer stopped toggling it; `log_ffmpeg.c/.h` died.
 
 Gate: corpus byte-compare + info compare; the GUI must run (it still speaks
 engine.h v1 until step 9).

@@ -19,7 +19,7 @@
 #include "base/err.h"
 #include "base/log.h"
 #include "disc/disc.h"
-#include "log_ffmpeg.h"
+#include "analyze/analyze.h"
 #include "base/msg.h"
 #include "names.h"
 #include "base/settings.h"
@@ -801,8 +801,9 @@ int engine_check_choice(const EngineChoice *c)
 
 int engine_init(const char *config, const char *const *sets, int nb_sets, int json, int verbose)
 {
-    log_init(json, verbose);
-    log_ffmpeg_install();
+    log_init(json, verbose);                /* installs the modules' log hook (base/vlog.h) */
+    dr_analyze_log_install();               /* the processing library's lines into ours */
+    dr_analyze_use();
     if (settings_load(config) < 0)
         return 1;
     for (int k = 0; k < nb_sets; k++)

@@ -16,6 +16,7 @@
 #include <libavutil/pixdesc.h>
 #include <libavutil/stereo3d.h>
 
+#include "analyze/analyze.h"
 #include "analyze/details.h"
 #include "disc/disc.h"
 
@@ -323,6 +324,9 @@ int details_of_file(const char *path, enum AVMediaType type, Details *d)
     memset(d, 0, sizeof(*d));
     if (!pkt)
         return AVERROR(ENOMEM);
+    /* what the library says here is about reading the written file back,
+     * not about the disc: detail lines */
+    dr_analyze_log_detail(1);
     /* room for enough pictures of a 2160p stream to measure its rate (the
      * default 5 MB holds a few dozen) */
     av_dict_set(&opts, "probesize", "67108864", 0);
@@ -350,6 +354,7 @@ int details_of_file(const char *path, enum AVMediaType type, Details *d)
     details_probe_get(p, d);
     ret = 0;
 end:
+    dr_analyze_log_detail(0);
     details_probe_close(&p);
     av_packet_free(&pkt);
     avformat_close_input(&fc);
