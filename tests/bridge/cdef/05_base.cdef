@@ -53,3 +53,14 @@ void dr_sha_init(DrSha *s, int bits);
 void dr_sha_update(DrSha *s, const uint8_t *data, size_t len);
 void dr_sha_final(DrSha *s, uint8_t *out);
 uint32_t dr_crc32_mpeg(uint32_t crc, const uint8_t *data, size_t len);
+
+/* base/log.h: the log's sink and its library lines (the repeat filter). */
+enum LogLevel { LOG_ERROR, LOG_WARNING, LOG_OK, LOG_INFO, LOG_DETAIL };
+typedef struct LogSink {
+    void (*line)(void *opaque, int level, int code, const char *source, const char *text, int heading);
+    void (*progress)(void *opaque, int title, double done);
+    void  *opaque;
+} LogSink;
+void log_set_sink(const LogSink *sink);
+void log_library_line(enum LogLevel level, const char *source, const char *text);
+void log_title_reading(int on);

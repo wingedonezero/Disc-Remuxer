@@ -4,7 +4,7 @@ Updated 2026-10-15, on branch `claude/disc-layer-ffmpeg-handoff-7ba7a7` (the
 rewrite branch since step 7c; `claude/rewrite-untangle-1c24ca` stopped at 7b;
 main still holds the pre-rewrite program and is the byte-compare reference). Inventory of what the old shape was made of: `docs/UNTANGLE.md`.
 
-Status: **steps 1–8 DONE**: 7a (the clip demuxer), 7b (the format parts,
+Status: **steps 1–9 DONE**: 7a (the clip demuxer), 7b (the format parts,
 rows 258–263), 7d (the disc model, row 264; 7c folded into it) and 7e (the
 log flip, row 265) are in — **libs/ffmpeg is byte-for-byte the import
 again**, the "disc" demuxer is gone, the program and GUI run on the typed
@@ -12,8 +12,9 @@ disc API (disc/disc.h), the modules log straight into base/log.h with
 their own source names, and the processing library's lines come in through
 analyze's hook. Step 8, the DVD lift, is in (rows 266–272): the DVD
 libraries keep only table parsing and the navigation VM; everything else
-of the DVD part is `src/disc/dvd/`. Next: step 9 (engine API v2, GUI-first),
-then step 10 (the MKV writer). The corpus byte-compare + info compare
+of the DVD part is `src/disc/dvd/`. Step 9, engine API v2 (GUI-first), is
+in (9a–9e): one engine, the GUI and the command line equal front ends on its
+typed API. Next: step 10 (the MKV writer). The corpus byte-compare + info compare
 against a main build is the user's, run once the whole rewrite is done.
 Tests at every commit: 743 passed, 15 skipped (the disc-marked ones without a
 disc). Every move so far is behavior-preserving by construction and by test;
@@ -544,7 +545,21 @@ In slices, one commit each, the suite green, the command line's output
   the log, show the source, remove / clear / reorder the queue) stay in the
   GUI: they decide nothing. Per-track results and damage ranges reach the
   GUI as events already; showing them is 9e.
-- **9e — the GUI shows the new data** (the user's wishes, asked first).
+- **9e — DONE — the last seams.** The user wants no new GUI views (the log
+  window shows the issues; the queue the progress and the end), only the
+  front ends on one engine, so 9e closed what was left. 9e-1: the queue's
+  state words (scanning, waiting, writing, done / stopped / failed for a
+  title and a disc) and the window's notes are the engine's
+  (`engine_state_text()`, `engine_title_start_state()`,
+  `engine_title_result_state()`, `engine_disc_result_state()`); `demux
+  --details` prints the rip's states as "Queue:" lines at the moments the
+  GUI shows them. 9e-2: a title's damaged ranges are a list from the disc
+  layer to the summary (`dr_disc_damage(d, i)`, `TitleOutcome.damage[]`),
+  no 4 KiB text: the summary lists every range, each a line of its own (in
+  JSON mode a record each). 9e-3: the log's repeat filter decides by when,
+  not by English words: repeats are hidden only while a disc or a title is
+  opened; while a title is read (`log_title_reading()`) every line is the
+  title's own and shown.
 
 Gate: the suite + a before/after comparison of the command line on every
 test that drives it (the same arguments to the old and the new program:

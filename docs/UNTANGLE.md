@@ -113,6 +113,14 @@ SUP, SRT, chapter XML, elementary streams) is already hand-written stdio.
   dedup). The design is sound; only the ownership (FFmpeg's callback as the
   transport) changes in a rewrite.
 
+Status (2026-10-15, rewrite step 9): every item above is gone. The engine
+header carries our own disc model (step 7d); rip results are typed events
+(9a); details, queue texts and property keys are the engine's (9b); the
+damaged ranges are a list (9e-2); the repeat filter decides by when a line
+comes, not by its words (9e-3); settings reach our own modules directly
+(steps 4–7); the processing library's lines come through analyze's one hook
+(step 7e).
+
 ## 5. What is already clean (keep as-is)
 
 - The writer's hand-rolled output containers; the names template engine

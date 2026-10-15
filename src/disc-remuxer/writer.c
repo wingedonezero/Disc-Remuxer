@@ -776,6 +776,8 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         res->failed = 1;
         return ret;
     }
+    /* from here every line is this title's own (no repeat hidden) */
+    log_title_reading(1);
     title_name(setting_text("output.file_name_template"), tname, NULL, NULL, job->title, base, sizeof(base));
     /* a part's files: the title's name + _p<n>, in the title's folder */
     if (job->part >= 0)
@@ -1102,5 +1104,6 @@ end:
     av_free(out);
     av_free(chap);
     dr_disc_title_close(d);
+    log_title_reading(0);
     return ret;
 }

@@ -17,7 +17,7 @@ BASE_CFLAGS := -O0 -g --coverage
 else
 BASE_CFLAGS := -O2
 endif
-BASE_CFLAGS += -std=gnu17 -Wall -Wextra -Wno-unused-parameter -I$(ROOT)/src -I$(LIBS)/tomlc17
+BASE_CFLAGS += -fPIC -std=gnu17 -Wall -Wextra -Wno-unused-parameter -I$(ROOT)/src -I$(LIBS)/tomlc17
 
 $(BASE_OBJ)/%.o: $(BASE_SRC)/%.c
 	@mkdir -p $(BASE_OBJ)

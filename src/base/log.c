@@ -147,22 +147,26 @@ static void emit(enum LogLevel level, int code, const char *source, const char *
     }
 }
 
-/* Library lines already shown in this run (a title opened again repeats
- * the disc's messages): a repeat is a detail line. The lines of a title's
- * rip (the title timeline's findings and checks) are each title's own and
- * always shown. */
+/* Library lines already shown in this run while a disc or a title was
+ * opened (a title opened again repeats the disc's messages): a repeat is a
+ * detail line. While a title is read (log_title_reading()) every line is
+ * that title's own: always shown, and not kept as seen. */
 #define SEEN_MAX 1024
 static unsigned long seen[SEEN_MAX];
 static int nb_seen;
+static int title_reading;
+
+void log_title_reading(int on)
+{
+    pthread_mutex_lock(&lock);
+    title_reading = on;
+    pthread_mutex_unlock(&lock);
+}
 
 static int seen_before(const char *text)
 {
-    static const char *const own[] = { "Title check: ", "Title timeline: ", "Track ", "Captions: " };
     unsigned long h = 5381;
 
-    for (int i = 0; i < (int)(sizeof(own) / sizeof(*own)); i++)
-        if (!strncmp(text, own[i], strlen(own[i])))
-            return 0;
     for (const unsigned char *p = (const unsigned char *)text; *p; p++)
         h = h * 33 + *p;
     for (int i = 0; i < nb_seen; i++)
@@ -371,7 +375,7 @@ void log_line(enum LogLevel level, int code, const char *source, const char *tex
 void log_library_line(enum LogLevel level, const char *source, const char *text)
 {
     pthread_mutex_lock(&lock);
-    if ((level == LOG_WARNING || level == LOG_INFO) && seen_before(text))
+    if (!title_reading && (level == LOG_WARNING || level == LOG_INFO) && seen_before(text))
         level = LOG_DETAIL;
     emit(level, 0, source, text, 0);
     pthread_mutex_unlock(&lock);

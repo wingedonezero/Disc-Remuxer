@@ -58,10 +58,13 @@ void log_text(enum LogLevel level, const char *fmt, ...) __attribute__((format(p
  * came from (NULL: ours). */
 void log_line(enum LogLevel level, int code, const char *source, const char *text, int heading);
 
-/* A library's line: a repeat of one already shown this run (a title opened
- * again repeats the disc's messages) is demoted to a detail line, except
- * lines that are a title's own (the title timeline's findings and checks). */
+/* A library's line: while a disc or a title is opened, a repeat of one
+ * already shown this run (a title opened again repeats the disc's
+ * messages) is demoted to a detail line; while a title is read, every line
+ * is the title's own and shown. */
 void log_library_line(enum LogLevel level, const char *source, const char *text);
+/* A title is read from now on (on), or no longer (off). */
+void log_title_reading(int on);
 
 /* What a library hook may ask before building a line: the verbosity log_init
  * was given, and whether a debug file is open (detail lines kept). */
