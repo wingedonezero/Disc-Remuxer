@@ -860,11 +860,6 @@ dvd_reader_t *DVDOpenFiles( void *priv, const dvd_logger_cb *logcb,
 void DVDClose( dvd_reader_t *dvd )
 {
   if( dvd ) {
-    for( int t = 0; t < 100; t++ ) {
-      free( dvd->vob_css[t].map );
-      free( dvd->vob_css[t].vobus.recs );
-    }
-    free( dvd->vobus.recs );
     if( dvd->rd ) {
       if( dvd->rd->dev ) dvdinput_close( dvd->rd->dev );
       if( dvd->rd->path_root ) free( dvd->rd->path_root );

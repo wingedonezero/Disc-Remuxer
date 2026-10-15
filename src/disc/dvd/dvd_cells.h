@@ -25,6 +25,8 @@
 #include <dvdread/ifo_types.h>
 #include <dvdread/vob_read.h>
 
+#include "dvd_vobu.h"
+
 struct DVDDisc;
 
 /* ---- cells ----
@@ -32,8 +34,8 @@ struct DVDDisc;
  * A title set's program chain table as libdvdread's ifoRead_VTS_PGCIT_rec()
  * read it (kept with the disc's structure); its cells (pgcn: the program
  * chain's search pointer index, cell: the cell's index, both from 0) are
- * walked and checked, on the title set's own reading of its title VOBs
- * (libdvdread, vob_read.h: its VOBU records, map and navigation packs):
+ * walked and checked, on the title set's VOBUs (dvd_vobu.h: their records,
+ * the VOBU address map, the navigation packs):
  *
  * - inside a cell the VOBU address map gives the next VOBU (a cell neither
  *   in an angle block nor interleaved; with the seamless-angle flag only
@@ -58,23 +60,29 @@ typedef enum
     DVD_CHECK_RANDOM,                   /* 50 VOBUs at random (all of fewer) */
 } dvd_cell_check_t;
 
-/** A title set's cells as the DVD part walks and checks them: the disc
- *  (its log, the full check's mode and random sample), the title set's own
- *  reading of its title VOBs (libdvdread), its number and title VOBs'
- *  length, its program chain table and per cell what was found once
- *  (seamless angle checked / its result). One per title set, kept by the
- *  disc (DVDDisc.cells). */
-typedef struct DVDCells {
+/** A title set's cells and VOBUs as the DVD part walks and checks them:
+ *  the disc (its log, the full check's mode and random sample), the title
+ *  set's own reading of its title VOBs (libdvdread), its number and title
+ *  VOBs' length, its program chain table and per cell what was found once
+ *  (seamless angle checked / its result), its VOBU address map (the disc
+ *  structure's) and whether it is still trusted, its VOBU records when it
+ *  keeps them alone (dvd_vobu.c). One per title set, kept by the disc
+ *  (DVDDisc.cells). */
+struct DVDCells {
   struct DVDDisc    *d;
   dvd_vob_reader_t  *r;
   int                title;
   uint32_t           blocks;
   const pgcit_rec_t *pgcit;
   uint8_t          **cell_state;
-} DVDCells;
+  const uint32_t    *map;
+  int                nb_map;
+  int                map_distrusted;
+  DVDVobuStore       vobus;
+};
 
-/** The cells' state of every title set with a program chain table (at the
- *  disc's open): 0, < 0 no memory. */
+/** The cells' and VOBUs' state of every title set (at the disc's open): 0,
+ *  < 0 no memory. */
 int  ff_dvd_cells_open( struct DVDDisc *d );
 void ff_dvd_cells_close( struct DVDDisc *d );
 /** Title set vts's cells on its own reading of the title VOBs; NULL when

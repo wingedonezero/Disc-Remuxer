@@ -54,12 +54,12 @@ extern "C" {
  *   the sum of the sets before it by their headers), against the title
  *   table;
  * - each information file's tables: the menus' VOBU address map; of a title
- *   set its program chain table (ifoRead_VTS_PGCIT_rec(), kept by the
- *   reader: DVDKeepPGCIT_rec(), checked against the cell address table), its
- *   chapter table as recorded and its title VOBs' VOBU address map. A VOBU
- *   address map that cannot be read, or a cell whose first sector or last
- *   VOBU start is not on it, leaves the title set's VOBU starts untrusted
- *   (DVDSetVobuMap_rec()). A program chain table or chapter table that
+ *   set its program chain table (ifoRead_VTS_PGCIT_rec(), kept here,
+ *   checked against the cell address table), its chapter table as recorded
+ *   and its title VOBs' VOBU address map. A VOBU address map that cannot be
+ *   read, or a cell whose first sector or last VOBU start is not on it,
+ *   leaves the title set's VOBU starts untrusted (map_trusted). A program
+ *   chain table or chapter table that
  *   cannot be read leaves the title set out (the VMG's: NULL);
  * - the video manager's copy of each title set's attributes against the
  *   title set's own (ifoCheckVtsAttributes_rec()), and every information
@@ -110,7 +110,7 @@ typedef struct
   uint32_t           ptt_srpt_size;
   uint32_t          *vobu_map;          /* VTS_VOBU_ADMAP: the VOBU starts, sorted, each once */
   int                nb_vobu_map;
-  int                map_trusted;       /* its VOBU address map holds every cell (as set by DVDSetVobuMap_rec()) */
+  int                map_trusted;       /* its VOBU address map holds every cell (set when the tables were read) */
   uint32_t           menu_vobu_last;    /* the last VOBU start of the menus' VOBU address map */
   dvd_vob_reader_t  *own;               /* its title VOBs' own reading (DVDDiscTitleVOBs_rec()) */
   int                own_opened;

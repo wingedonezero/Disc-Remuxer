@@ -378,7 +378,7 @@ static int dvdnav_scan_sector( dvdnav_scan_t *s, int set, int menu, uint32_t sec
               menu ? "menu VOB" : "title VOBs", set, sector );
   }
   if( !menu && set ) {
-    dvd_vob_reader_t *own = DVDDiscTitleVOBs_rec( s->disc, set );
+    DVDCells *own = ff_dvd_cells( s->d, set );
     if( own && DVDNoteVobuSector_rec( own, sector, b ) < 0 )
       return -1;
   }
@@ -914,7 +914,7 @@ static int walk( dvdnav_scan_t *s )
         hit  = pci_find( s, (menu ? 0x100 : 0) | ev.vtsn, ev.vobu, NULL );
         rec  = hit;
         if( !rec && !menu && ev.vtsn && ev.vtsn < nb_sets( s ) ) {
-          dvd_vob_reader_t *own = DVDDiscTitleVOBs_rec( s->disc, ev.vtsn );
+          DVDCells *own = ff_dvd_cells( s->d, ev.vtsn );
           const dvd_vobu_rec_t *v = own ? DVDFindVobu_rec( own, ev.vobu, NULL ) : NULL;
           if( v ) {
             memset( &local, 0, sizeof(local) );

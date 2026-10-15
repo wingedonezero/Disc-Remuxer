@@ -141,7 +141,8 @@ int ff_dvd_segment_read(DVDDisc *d, const dvd_title_t *t, int seg, uint32_t bloc
     return ff_dvd_segment_read_vobs(d, t, NULL, seg, block, buf, NULL);
 }
 
-/* ---- VOBUs: libdvdread's records on the title set's own reading ---- */
+/* ---- VOBUs: the title set's (dvd_vobu.c) on its own reading of the title
+ * VOBs (libdvdread's) ---- */
 
 dvd_vob_reader_t *ff_dvd_own_reading(DVDDisc *d, int vts)
 {
@@ -151,17 +152,17 @@ dvd_vob_reader_t *ff_dvd_own_reading(DVDDisc *d, int vts)
 
 int ff_dvd_nav_read(DVDDisc *d, int vts, uint32_t sector, dvd_vobu_nav_t *n)
 {
-    dvd_vob_reader_t *vr = ff_dvd_own_reading(d, vts);
+    DVDCells *vr = ff_dvd_cells(d, vts);
     return vr ? DVDReadVobuNav_rec(vr, sector, n) : 0;
 }
 
 int ff_dvd_map_trusted(const DVDDisc *d, int vts)
 {
-    return DVDVobuMapTrusted_rec(d->reader, vts);
+    return d->reader && DVDVobuMapTrusted_rec(d, vts);
 }
 
 int ff_dvd_vobu_start_check(DVDDisc *d, int vts, uint32_t sector)
 {
-    dvd_vob_reader_t *vr = ff_dvd_own_reading(d, vts);
+    DVDCells *vr = ff_dvd_cells(d, vts);
     return vr ? DVDVobuStart_rec(vr, sector) : 0;
 }

@@ -503,10 +503,8 @@ static int load_tables( dvd_reader_t *ctx, int index, dvd_ifo_rec_t *f )
                      &trusted ) > 0 )
     check_cells( ctx, f, index, pgcit, &trusted );
 end:
-  /* the VOBU address map and whether it is trusted, to the reader (which
-   * answers the VOBU questions from here on) */
-  if( index && DVDSetVobuMap_rec( ctx, index, f->vobu_map, f->nb_vobu_map, trusted ) < 0 )
-    ret = -2;
+  /* the VOBU address map and whether it is trusted (the application answers
+   * the VOBU questions from it) */
   f->map_trusted = trusted;
   return ret;
 }

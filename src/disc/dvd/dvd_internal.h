@@ -76,6 +76,7 @@ typedef struct DVDDisc {
     DVDCells     cells[DVD_MAX_TITLE_SETS + 1];   /**< each title set's cells (dvd_cells.c; 0 unused) */
     int          cell_check;            /**< dvd_cell_check_t: the VOBUs the full cell check reads */
     uint64_t     cell_rng;              /**< the full cell check's random sample */
+    DVDVobuStore vobus;                 /**< the VOBU records of title sets at a known place of an image */
 } DVDDisc;
 
 /** The information files: the VMG and the title sets. */
@@ -136,6 +137,10 @@ int  ff_dvd_nav_logger(DVDDisc *d, dvdnav_logger_cb *cb);
 /** A line into the log the way the DVD libraries' lines go ("DVD: ", one
  *  trailing newline dropped); level: the libraries' logger level. */
 void ff_dvd_lib_vlog(DVDDisc *d, int level, const char *fmt, va_list va);
+void ff_dvd_lib_log(DVDDisc *d, int level, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+/** A finding into the disc's findings book the way libdvdread reports one
+ *  (its reader's logger: said once, counted). */
+void ff_dvd_report(DVDDisc *d, const dvd_report_t *r);
 
 /* ---- reading (dvd_read.c, on libdvdread, vob_read.h) ---- */
 /** Title set vts's own reading of its title VOBs (libdvdread's, kept with

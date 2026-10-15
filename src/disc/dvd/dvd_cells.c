@@ -39,18 +39,9 @@
 
 #define SECTOR      DVD_VIDEO_LB_LEN
 
-static void lib_say( DVDDisc *d, int level, const char *fmt, ... )
-{
-  va_list va;
-
-  va_start( va, fmt );
-  ff_dvd_lib_vlog( d, level, fmt, va );
-  va_end( va );
-}
-
 /* a title set's cells' lines, as libdvdread's warning and debug lines */
-#define Log1( v, ... ) lib_say( (v)->d, DVD_LOGGER_LEVEL_WARN, __VA_ARGS__ )
-#define Log3( v, ... ) lib_say( (v)->d, DVD_LOGGER_LEVEL_DEBUG, __VA_ARGS__ )
+#define Log1( v, ... ) ff_dvd_lib_log( (v)->d, DVD_LOGGER_LEVEL_WARN, __VA_ARGS__ )
+#define Log3( v, ... ) ff_dvd_lib_log( (v)->d, DVD_LOGGER_LEVEL_DEBUG, __VA_ARGS__ )
 
 /* The first of the map's VOBU starts at or after sector. */
 static int map_lower( const uint32_t *m, int nb, uint32_t sector )
@@ -71,8 +62,17 @@ static int map_lower( const uint32_t *m, int nb, uint32_t sector )
 int ff_dvd_cells_open( DVDDisc *d )
 {
   for( int t = 1; t < ff_dvd_nb_sets( d ) && t <= DVD_MAX_TITLE_SETS; t++ ) {
-    const pgcit_rec_t *pgcit = d->rec->ifos[t].pgcit;
+    const dvd_ifo_rec_t *f = &d->rec->ifos[t];
+    const pgcit_rec_t *pgcit = f->pgcit;
     uint8_t **state = NULL;
+
+    /* its VOBU address map as libdvdread read and checked it (a title set
+     * that could not be read: none, trusted) */
+    if( f->ifo ) {
+      d->cells[t].map            = f->vobu_map;
+      d->cells[t].nb_map         = f->nb_vobu_map;
+      d->cells[t].map_distrusted = !f->map_trusted;
+    }
 
     if( pgcit && pgcit->nr_of_pgcs ) {
       if( !(state = dr_calloc( pgcit->nr_of_pgcs, sizeof(*state) )) )
@@ -99,8 +99,11 @@ void ff_dvd_cells_close( DVDDisc *d )
     for( int p = 0; c->cell_state && p < c->pgcit->nr_of_pgcs; p++ )
       dr_free( c->cell_state[p] );
     dr_free( c->cell_state );
+    dr_free( c->vobus.recs );
     memset( c, 0, sizeof(*c) );
   }
+  dr_freep( &d->vobus.recs );
+  d->vobus.nb = d->vobus.alloc = 0;
 }
 
 DVDCells *ff_dvd_cells( DVDDisc *d, int vts )
@@ -173,8 +176,8 @@ int DVDCellNavNextVobu_rec( DVDCells *v, int pgcn, int cell, uint32_t s, uint32_
 
   if( !c )
     return 0;
-  if( !(r = DVDFindVobu_rec( v->r, s, NULL )) ) {
-    if( !DVDReadVobuNav_rec( v->r, s, &n ) || !DVDRegisterVobu_rec( v->r, &n, s, 1, next, len ) ) {
+  if( !(r = DVDFindVobu_rec( v, s, NULL )) ) {
+    if( !DVDReadVobuNav_rec( v, s, &n ) || !DVDRegisterVobu_rec( v, &n, s, 1, next, len ) ) {
       Log3( v, "VTS_%02d: no VOBU at sector %" PRIu32, v->title, s );
       return 0;
     }
@@ -232,18 +235,18 @@ int DVDCellNextVobu_rec( DVDCells *v, int pgcn, int cell, uint32_t s, uint32_t *
 
   if( !c )
     return 0;
-  if( !DVDVobuStart_rec( v->r, s ) ) {
+  if( !DVDVobuStart_rec( v, s ) ) {
     Log3( v, "VTS_%02d: sector %" PRIu32 " starts no VOBU", v->title, s );
     return 0;
   }
-  trusted = DVDVobuMapTrusted_rec( v->d->reader, v->title );
+  trusted = DVDVobuMapTrusted_rec( v->d, v->title );
   if( s < c->last_vobu_start_sector && !(CELL_FLAGS( c ) & 0xf4) ) {
     int ok;
     if( !(CELL_FLAGS( c ) & 1) )
-      ok = DVDNextVobu_rec( v->r, s, &n );
+      ok = DVDNextVobu_rec( v, s, &n );
     else
-      ok = trusted && DVDCellSeamlessAngleOk_rec( v, pgcn, cell ) && DVDNextVobu_rec( v->r, s, &n );
-    if( ok && DVDVobuMapTrusted_rec( v->d->reader, v->title ) ) {
+      ok = trusted && DVDCellSeamlessAngleOk_rec( v, pgcn, cell ) && DVDNextVobu_rec( v, s, &n );
+    if( ok && DVDVobuMapTrusted_rec( v->d, v->title ) ) {
       *next = n;
       *len  = n - s;
       return 1;
@@ -255,7 +258,7 @@ int DVDCellNextVobu_rec( DVDCells *v, int pgcn, int cell, uint32_t s, uint32_t *
 int DVDCellVobuTimes_rec( DVDCells *v, int pgcn, int cell, uint32_t s, uint32_t *sp, uint32_t *ep,
                           int read_anyway )
 {
-  const dvd_vobu_rec_t *r = DVDFindVobu_rec( v->r, s, NULL );
+  const dvd_vobu_rec_t *r = DVDFindVobu_rec( v, s, NULL );
   dvd_vobu_nav_t n;
   uint32_t next, len;
 
@@ -263,7 +266,7 @@ int DVDCellVobuTimes_rec( DVDCells *v, int pgcn, int cell, uint32_t s, uint32_t 
       DVDCellCheckFailed_rec( v, pgcn, cell ) )
     return 0;
   if( !r )
-    r = DVDFindVobu_rec( v->r, s, NULL );
+    r = DVDFindVobu_rec( v, s, NULL );
   if( r ) {
     if( r->next == DVD_VOBU_NO_NAV )
       return 0;
@@ -271,11 +274,11 @@ int DVDCellVobuTimes_rec( DVDCells *v, int pgcn, int cell, uint32_t s, uint32_t 
     *ep = r->vobu_e_ptm;
     return 1;
   }
-  if( !DVDReadVobuNav_rec( v->r, s, &n ) )
+  if( !DVDReadVobuNav_rec( v, s, &n ) )
     return 0;
   *sp = n.vobu_s_ptm;
   *ep = n.vobu_e_ptm;
-  DVDRegisterVobu_rec( v->r, &n, s, 1, &next, &len );
+  DVDRegisterVobu_rec( v, &n, s, 1, &next, &len );
   return 1;
 }
 
@@ -299,7 +302,7 @@ static int cell_has_bad_vobu( DVDCells *v, const cell_rec_t *c )
   uint32_t s = c->first_sector;
   do {
     int64_t nk;
-    const dvd_vobu_rec_t *r = DVDFindVobu_rec( v->r, s, &nk );
+    const dvd_vobu_rec_t *r = DVDFindVobu_rec( v, s, &nk );
     if( r && r->next == DVD_VOBU_NO_NAV )
       return 1;
     s = (uint32_t)nk;
@@ -322,8 +325,8 @@ int DVDCellCheckFailed_rec( DVDCells *v, int pgcn, int cell )
 
   if( !c || c->last_vobu_start_sector < c->first_sector || cell_has_bad_vobu( v, c ) )
     return 1;
-  if( DVDVobuBad_rec( v->r, c->first_sector ) ||
-      (c->last_vobu_start_sector != c->first_sector && DVDVobuBad_rec( v->r, c->last_vobu_start_sector )) )
+  if( DVDVobuBad_rec( v, c->first_sector ) ||
+      (c->last_vobu_start_sector != c->first_sector && DVDVobuBad_rec( v, c->last_vobu_start_sector )) )
     return 1;
   for( s = c->first_sector; s < c->last_vobu_start_sector; ) {
     if( nb == alloc ) {
@@ -333,16 +336,16 @@ int DVDCellCheckFailed_rec( DVDCells *v, int pgcn, int cell )
       list = l;
     }
     list[nb++] = s;
-    if( !DVDNextVobu_rec( v->r, s, &s ) )
+    if( !DVDNextVobu_rec( v, s, &s ) )
       goto end;
   }
   if( nb < CHECK_SAMPLE || mode == DVD_CHECK_ALL ) {
     for( int k = 0; k < nb; k++ )
-      if( DVDVobuBad_rec( v->r, list[k] ) )
+      if( DVDVobuBad_rec( v, list[k] ) )
         goto end;
   } else if( mode == DVD_CHECK_SPREAD ) {
     for( int k = 0; k < CHECK_SAMPLE; k++ )
-      if( DVDVobuBad_rec( v->r, list[(int64_t)k * nb / CHECK_SAMPLE] ) )
+      if( DVDVobuBad_rec( v, list[(int64_t)k * nb / CHECK_SAMPLE] ) )
         goto end;
   } else {
     uint32_t pick[CHECK_SAMPLE];
@@ -355,7 +358,7 @@ int DVDCellCheckFailed_rec( DVDCells *v, int pgcn, int cell )
     }
     qsort( pick, CHECK_SAMPLE, sizeof(*pick), cmp_u32 );
     for( int k = 0; k < CHECK_SAMPLE; k++ )
-      if( DVDVobuBad_rec( v->r, pick[k] ) )
+      if( DVDVobuBad_rec( v, pick[k] ) )
         goto end;
   }
   if( DVDCellVobuTimes_rec( v, pgcn, cell, c->first_sector, &s1, &e1, 1 ) &&
@@ -377,7 +380,7 @@ static int single_cell_fake( DVDCells *v, const cell_rec_t *c )
 
   if( bcd_seconds( c->playback_time ) <= 1799 || first == c->last_vobu_start_sector )
     return 0;
-  if( !DVDNextVobu_rec( v->r, first, &n ) )
+  if( !DVDNextVobu_rec( v, first, &n ) )
     return 1;
   size = n - first;
   if( size >= 12 )
@@ -386,7 +389,7 @@ static int single_cell_fake( DVDCells *v, const cell_rec_t *c )
   if( s == c->last_vobu_start_sector || s > c->last_sector )
     return 0;
   do {
-    if( !DVDNextVobu_rec( v->r, s, &s ) )
+    if( !DVDNextVobu_rec( v, s, &s ) )
       return 1;
     count++;
     steps += 9;
@@ -395,7 +398,7 @@ static int single_cell_fake( DVDCells *v, const cell_rec_t *c )
     return 0;
   s = first;
   for( unsigned k = steps / 10; k; k-- ) {
-    if( !DVDNextVobu_rec( v->r, s, &n ) )
+    if( !DVDNextVobu_rec( v, s, &n ) )
       break;
     if( n - s != size )
       return 0;
@@ -450,11 +453,11 @@ int DVDIlvuWalk_rec( DVDCells *v, uint32_t from, uint32_t to )
   while( from != to ) {
     const dvd_vobu_rec_t *r;
     uint32_t u, next, len;
-    if( to < from || !DVDVobuStart_rec( v->r, from ) )
+    if( to < from || !DVDVobuStart_rec( v, from ) )
       return 0;
-    if( !(r = DVDFindVobu_rec( v->r, from, NULL )) ) {
+    if( !(r = DVDFindVobu_rec( v, from, NULL )) ) {
       dvd_vobu_nav_t n;
-      if( !DVDReadVobuNav_rec( v->r, from, &n ) || !DVDRegisterVobu_rec( v->r, &n, from, 0, &next, &len ) ||
+      if( !DVDReadVobuNav_rec( v, from, &n ) || !DVDRegisterVobu_rec( v, &n, from, 0, &next, &len ) ||
           (~n.category & 0x6000) || n.ilvu_ea > 0x7ffffffe )
         return 0;
       u = n.ilvu_ea;
@@ -464,14 +467,14 @@ int DVDIlvuWalk_rec( DVDCells *v, uint32_t from, uint32_t to )
       u = r->ilvu_ea;
     }
     from = from + 1 + u;
-    if( DVDVobuMap_rec( v->r, &map, &nb_map ) ) {
+    if( DVDVobuMap_rec( v, &map, &nb_map ) ) {
       /* the last VOBU of the unit just crossed, by the map: recorded */
       int at = map_lower( map, nb_map, from );
       if( at < nb_map && map[at] == from && at ) {
         uint32_t q = map[at - 1];
         dvd_vobu_nav_t n;
-        if( !DVDFindVobu_rec( v->r, q, NULL ) && DVDReadVobuNav_rec( v->r, q, &n ) )
-          DVDRegisterVobu_rec( v->r, &n, q, 1, &next, &len );
+        if( !DVDFindVobu_rec( v, q, NULL ) && DVDReadVobuNav_rec( v, q, &n ) )
+          DVDRegisterVobu_rec( v, &n, q, 1, &next, &len );
       }
     }
   }
@@ -1184,7 +1187,7 @@ static uint32_t segment_last_vobu( DVDCells *v, int pgcn, const dvd_segment_t *g
   const uint32_t *map;
   int nb_map;
 
-  if( DVDVobuMap_rec( v->r, &map, &nb_map ) ) {
+  if( DVDVobuMap_rec( v, &map, &nb_map ) ) {
     int at = map_lower( map, nb_map, x );
     if( at < nb_map && at )
       return map[at - 1];
@@ -1207,7 +1210,7 @@ static uint32_t segment_last_vobu( DVDCells *v, int pgcn, const dvd_segment_t *g
 /* The presentation start / end of the VOBU at s (recorded, else read). */
 static int vobu_times( DVDCells *v, uint32_t s, uint32_t *sp, uint32_t *ep )
 {
-  const dvd_vobu_rec_t *r = DVDFindVobu_rec( v->r, s, NULL );
+  const dvd_vobu_rec_t *r = DVDFindVobu_rec( v, s, NULL );
   dvd_vobu_nav_t n;
   uint32_t next, len;
 
@@ -1218,11 +1221,11 @@ static int vobu_times( DVDCells *v, uint32_t s, uint32_t *sp, uint32_t *ep )
     *ep = r->vobu_e_ptm;
     return 1;
   }
-  if( !DVDReadVobuNav_rec( v->r, s, &n ) )
+  if( !DVDReadVobuNav_rec( v, s, &n ) )
     return 0;
   *sp = n.vobu_s_ptm;
   *ep = n.vobu_e_ptm;
-  DVDRegisterVobu_rec( v->r, &n, s, 1, &next, &len );
+  DVDRegisterVobu_rec( v, &n, s, 1, &next, &len );
   return 1;
 }
 
@@ -1257,9 +1260,9 @@ static int vobu_needs_scan( DVDCells *v, int pgcn, int cell, uint32_t s )
 
   if( s < c->last_vobu_start_sector && !(CELL_FLAGS( c ) & 0xf4) ) {
     if( CELL_FLAGS( c ) & 1 )
-      return !(DVDVobuMapTrusted_rec( v->d->reader, v->title ) && DVDCellSeamlessAngleOk_rec( v, pgcn, cell ) &&
-               DVDNextVobu_rec( v->r, s, &n ));
-    DVDNextVobu_rec( v->r, s, &n );
+      return !(DVDVobuMapTrusted_rec( v->d, v->title ) && DVDCellSeamlessAngleOk_rec( v, pgcn, cell ) &&
+               DVDNextVobu_rec( v, s, &n ));
+    DVDNextVobu_rec( v, s, &n );
     return 0;
   }
   return 1;
@@ -1317,11 +1320,11 @@ int DVDTitleSegments_rec( DVDCells *v, int pgcn, const int *cells, int nb_cells,
     uint32_t s = c->first_sector, n;
     if( s < c->last_vobu_start_sector && !(CELL_FLAGS( c ) & 0xf4) ) {
       if( !(CELL_FLAGS( c ) & 1) ) {
-        DVDNextVobu_rec( v->r, s, &n );
+        DVDNextVobu_rec( v, s, &n );
         continue;
       }
-      if( DVDVobuMapTrusted_rec( v->d->reader, v->title ) && DVDCellSeamlessAngleOk_rec( v, pgcn, cells[i] ) &&
-          DVDNextVobu_rec( v->r, s, &n ) )
+      if( DVDVobuMapTrusted_rec( v->d, v->title ) && DVDCellSeamlessAngleOk_rec( v, pgcn, cells[i] ) &&
+          DVDNextVobu_rec( v, s, &n ) )
         continue;
     }
     if( s >= v->blocks )
@@ -1331,8 +1334,8 @@ int DVDTitleSegments_rec( DVDCells *v, int pgcn, const int *cells, int nb_cells,
       o->vobus_to_scan += vobu_needs_scan( v, pgcn, cells[i], s );
       if( s == c->last_vobu_start_sector || s > c->last_sector )
         break;
-      if( !DVDNextVobu_rec( v->r, s, &n ) ) {
-        DVDNextVobu_rec( v->r, s, &n );
+      if( !DVDNextVobu_rec( v, s, &n ) ) {
+        DVDNextVobu_rec( v, s, &n );
         Log3( v, "VTS_%02d program chain %d: no VOBU after sector %" PRIu32, v->title, pgcn + 1, s );
         return 0;
       }
@@ -1376,8 +1379,8 @@ int DVDTitleSegments_rec( DVDCells *v, int pgcn, const int *cells, int nb_cells,
         goto outside;
       vobu_needs_scan( v, pgcn, ci, s );
       if( il ) {
-        const dvd_vobu_rec_t *e = DVDFindVobu_rec( v->r, s, NULL );
-        if( e && DVDVobuMap_rec( v->r, &map, &nb_map ) ) {
+        const dvd_vobu_rec_t *e = DVDFindVobu_rec( v, s, NULL );
+        if( e && DVDVobuMap_rec( v, &map, &nb_map ) ) {
           uint32_t len0 = e->ilvu_ea + 1, target = s + len0, n2, l2;
           int at = map_lower( map, nb_map, target );
           if( at < nb_map && map[at] == target && at ) {

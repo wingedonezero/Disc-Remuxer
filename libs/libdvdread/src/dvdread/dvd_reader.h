@@ -275,6 +275,14 @@ DVDREAD_API void DVDFindingsSummary( dvd_findings_t *, void ( *say )( void *priv
 DVDREAD_API void DVDFindingsCount( const dvd_findings_t *, int *harmless, int *breaks );
 
 /**
+ * A report through logcb the way the library reports its own: with
+ * logcb->findings, into the findings book (said once, counted; damaged data
+ * as a debug line), else to pf_report and the log. For an application that
+ * reads what the library used to and reports it the same way.
+ */
+DVDREAD_API void DVDReadReport( void *priv, const dvd_logger_cb *logcb, const dvd_report_t *report );
+
+/**
  *
  */
 typedef enum {

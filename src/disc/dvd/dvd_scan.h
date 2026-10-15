@@ -34,7 +34,7 @@
  * The disc's structure comes from libdvdread (dvd_disc_rec_t: the title
  * table, the program chains, the regions, where the title VOBs start); every
  * title-VOB sector the navigators read is recorded as a VOBU in its title
- * set's own reading (DVDDiscTitleVOBs_rec(), DVDNoteVobuSector_rec()).
+ * set's VOBUs (ff_dvd_cells(), DVDNoteVobuSector_rec(), dvd_vobu.h).
  *
  * Navigators (libdvdnav). The first is the one opened on the disc for the
  * scan (dvd_nav.c, ff_dvd_nav_open()); it gets no read-ahead, navigation-only

@@ -664,6 +664,15 @@ void ff_dvd_lib_vlog(DVDDisc *d, int level, const char *fmt, va_list va)
     dr_vlog(d->log, levels[DR_MIN((unsigned)level, 4)], "DVD: %s\n", line);
 }
 
+void ff_dvd_lib_log(DVDDisc *d, int level, const char *fmt, ...)
+{
+    va_list va;
+
+    va_start(va, fmt);
+    ff_dvd_lib_vlog(d, level, fmt, va);
+    va_end(va);
+}
+
 static void nav_log(void *priv, dvdnav_logger_level_t level, const char *fmt, va_list va)
 {
     ff_dvd_lib_vlog(priv, level, fmt, va);
@@ -678,6 +687,14 @@ static void findings_say(void *priv, dvd_logger_level_t level, const char *line)
 {
     DVDDisc *d = priv;
     dr_vlog(d->log, level == DVD_LOGGER_LEVEL_NOTICE ? DR_VLOG_INFO : DR_VLOG_VERBOSE, "DVD: %s\n", line);
+}
+
+void ff_dvd_report(DVDDisc *d, const dvd_report_t *r)
+{
+    /* the reader's own logger (ff_dvd_reader_open()) */
+    dvd_logger_cb logcb = { read_log, NULL, d->findings };
+
+    DVDReadReport(d, &logcb, r);
 }
 
 void ff_dvd_reports_count(const DVDDisc *d, int *harmless, int *breaks)
