@@ -64,3 +64,8 @@ typedef struct LogSink {
 void log_set_sink(const LogSink *sink);
 void log_library_line(enum LogLevel level, const char *source, const char *text);
 void log_title_reading(int on);
+
+/* src/disc-remuxer/names.h: a title's output name from the template. */
+void title_name(const char *tmpl, const char *name, const char *comment, const char *date, unsigned index,
+                char *out, int size);
+void clean_name(const char *s, int rule, char *out, int size);

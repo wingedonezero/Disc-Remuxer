@@ -19,7 +19,7 @@ TOOL_CFLAGS := -O0 -g --coverage
 else
 TOOL_CFLAGS := -O2
 endif
-TOOL_CFLAGS += -std=gnu17 -Wall -Wextra -Wno-unused-parameter -I$(ROOT)/src \
+TOOL_CFLAGS += -fPIC -std=gnu17 -Wall -Wextra -Wno-unused-parameter -I$(ROOT)/src \
                -DDISC_REMUXER_VERSION='"$(TOOL_VERSION)"'
 
 $(TOOL_OBJ)/%.o: $(TOOL_SRC)/%.c $(BUILD)/ffmpeg/.installed

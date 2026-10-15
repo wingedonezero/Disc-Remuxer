@@ -38,7 +38,6 @@ See `docs/ARCHITECTURE.md` and `libs/README.md`.
 - `libs/` — FFmpeg and every library, edited directly
 - `mk/` — the build rules (`Makefile`, `build.sh`)
 - `tests/` — unit tests (`unit/`), test data builders (`synth/`), helpers, the cffi bridge (`bridge/`)
-- `legacy/rust/` — the Rust crates the program replaced, kept until their last tests are ported (`TODO.md`)
 
 ## Commits
 

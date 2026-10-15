@@ -214,5 +214,3 @@ real disc named by an environment variable and show as skipped without one.
 `make coverage` and `tests/tools/coverage.py` show which lines a test run
 reaches.
 
-The Rust crates that came before the C program, and the tests still to port
-from them, are in `legacy/rust/` (see its `TODO.md`).

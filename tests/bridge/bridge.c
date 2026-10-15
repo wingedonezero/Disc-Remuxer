@@ -15,6 +15,7 @@
 #include "io/discio.h"
 #include "base/err.h"
 #include "base/log.h"
+#include "disc-remuxer/names.h"
 #include "base/mem.h"
 #include "base/crc32.h"
 #include "base/sha.h"

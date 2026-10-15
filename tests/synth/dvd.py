@@ -433,17 +433,19 @@ def _sector(stream_id, head, payload):
     return bytes(s)
 
 
-def mux_vobus(m2v, pics, lbn, audio=(), dts0=0):
+def mux_vobus(m2v, pics, lbn, audio=(), dts0=0, subs=()):
     """Title VOB sectors for the pictures pics (helpers.disctl.pictures
     entries of m2v, from a GOP start, each with its PTS: (payload start, end,
     display index, type, pts)) and audio [(AC-3 frame, pts)]: one VOBU per
     GOP (a NAV pack, then its packs), each picture from a pack of its own
     whose PES carries its PTS, the audio frames (private stream 1 sub-stream
     0x80, one per pack) before the picture whose decode time (dts0 + 3003 per
-    picture) they do not pass. Returns (sectors, navs), lbn the first
-    sector's number in the title VOBs."""
-    sectors, navs, gop_pics, ai = [], [], [], 0
-    audio = list(audio)
+    picture) they do not pass; subs [(sub-picture unit, pts)] likewise
+    (sub-stream 0x20, a unit over as many packs as it needs, the PTS in the
+    first). Returns (sectors, navs), lbn the first sector's number in the
+    title VOBs."""
+    sectors, navs, gop_pics, ai, si = [], [], [], 0, 0
+    audio, subs = list(audio), list(subs)
     for k, (a, b, disp, typ, pts) in enumerate(pics):
         data = m2v[a:b]
         if b"\x00\x00\x01\xb8" in data[:64] or not navs:
@@ -455,6 +457,15 @@ def mux_vobus(m2v, pics, lbn, audio=(), dts0=0):
             frame, apts = audio[ai]
             sectors.append(_sector(0xbd, _pts(apts), bytes([0x80, 1, 0, 1]) + frame))
             ai += 1
+        while si < len(subs) and subs[si][1] <= dts0 + k * 3003:
+            unit, spts = subs[si]
+            first = True
+            while unit:
+                cap = S - 14 - 6 - 3 - (5 if first else 0) - 1 - 6
+                chunk, unit = unit[:cap], unit[cap:]
+                sectors.append(_sector(0xbd, _pts(spts) if first else b"", bytes([0x20]) + chunk))
+                first = False
+            si += 1
         first = True
         while data:
             cap = S - 14 - 6 - 3 - (5 if first else 0) - 6
