@@ -41,6 +41,8 @@ static void usage(FILE *f)
           "  --config <file>      settings file to use (default: disc-remuxer.toml next to the program)\n"
           "  --set group.key=val  change a setting for this run only (repeatable)\n"
           "  --json               JSON records on stdout, one per line, instead of text\n"
+          "  --details            info: also every detail the GUI shows (its queue lines and its details\n"
+          "                       panel's rows for the disc, each title, track and chapter)\n"
           "  --second-view <titles>  demux: also write the second view of these 3-D titles (the .mvc\n"
           "                       next to the base view); setting bluray.second_view does it for every title\n"
           "  --tracks [<title>:]<steps>  which tracks: every one to start with, then steps left to right,\n"
@@ -77,12 +79,14 @@ int main(int argc, char **argv)
 {
     const char *config = NULL, *split = NULL, *second = NULL, **sets = calloc(argc, sizeof(char *));
     const char **tracks = calloc(argc, sizeof(char *));
-    int json = 0, verbose = 0, nb_sets = 0, nb_tracks = 0, i, ret;
+    int json = 0, verbose = 0, details = 0, nb_sets = 0, nb_tracks = 0, i, ret;
     EngineChoice c;
 
     for (i = 1; i < argc && argv[i][0] == '-'; i++) {
         if (!strcmp(argv[i], "--json"))
             json = 1;
+        else if (!strcmp(argv[i], "--details"))
+            details = 1;
         else if (!strcmp(argv[i], "-v"))
             verbose = 1;
         else if (!strcmp(argv[i], "-vv"))
@@ -128,7 +132,7 @@ int main(int argc, char **argv)
             settings_show();
         ret = 0;
     } else if (!strcmp(argv[i], "info") && i + 1 < argc) {
-        ret = engine_info(argv[i + 1], &c);
+        ret = engine_info(argv[i + 1], &c, details);
     } else if (!strcmp(argv[i], "demux") && i + 2 < argc) {
         ret = engine_demux(argv[i + 1], argv[i + 2], i + 3 < argc ? argv[i + 3] : NULL, split, &c);
     } else {

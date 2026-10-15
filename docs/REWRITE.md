@@ -504,9 +504,19 @@ In slices, one commit each, the suite green, the command line's output
   sink (`LogSink`, `log_set_sink()`) keeps lines and progress only. The
   GUI's `LogRelay` copies each event into Qt values and the window takes
   typed signals (`onRecord`'s JSON parsing gone).
-- **9b — the typed disc model**: property keys and track fields; the
-  wording the GUI built itself (a track's row, what it converts to, the
-  audio's name) moves into the engine, so `info` shows it too.
+- **9b — DONE — what the front ends show is the engine's.** 9b-1: every
+  disc / title property has a key (`DiscPropKey`, `src/disc/props.c`: its
+  name, group, label, language kind), so nothing is matched by English
+  words. 9b-2: the engine builds the details (rows: heading, sub-heading,
+  "label: value" at a depth; `views.h` / `views.c`: `engine_disc_rows()`,
+  `engine_title_rows()`, `engine_track_rows()`, `engine_chapters_rows()`)
+  and the queue's one-line texts (`engine_disc_line()`,
+  `engine_title_line()`, `engine_title_state()`, `engine_track_line()`,
+  `engine_chapter_line()`, times and sizes); the GUI's details panel and
+  queue only lay them out (its own wording, rules and FFmpeg headers gone),
+  and `info --details` prints the same rows and lines. Gate besides the
+  suite and the command-line comparison: every disc the suite builds
+  snapshotted by the old and the new GUI, compared byte for byte.
 - **9c — selection in the engine**: titles, splits, tracks, second view
   through engine calls both front ends use.
 - **9d — the parity pass**: every GUI action and view gets its engine call

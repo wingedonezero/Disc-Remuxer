@@ -89,7 +89,8 @@ static const char *roles_text(int roles, const char *sep, int quoted, char *buf,
     return buf;
 }
 
-void engine_track_parts(const DiscTitleInfo *t, int i, char *codec, size_t csize, char *rest, size_t rsize)
+void engine_track_pieces(const DiscTitleInfo *t, int i, char *codec, size_t csize, char *body, size_t bsize,
+                         char *link_out, size_t lsize)
 {
     const DiscStreamInfo *k = &t->streams[i];
     char extra[160] = "", link[96] = "", det[160] = "", a[24], r[48], l[64], b[24];
@@ -126,7 +127,16 @@ void engine_track_parts(const DiscTitleInfo *t, int i, char *codec, size_t csize
             snprintf(det + strlen(det), sizeof(det) - strlen(det), " %s", b);
     }
     codec_description(k, k->second_view && k->from_track >= 0 ? &t->streams[k->from_track] : NULL, codec, csize);
-    snprintf(rest, rsize, "%s%s%s", det, extra, link);
+    snprintf(body, bsize, "%s%s", det, extra);
+    snprintf(link_out, lsize, "%s", link);
+}
+
+void engine_track_parts(const DiscTitleInfo *t, int i, char *codec, size_t csize, char *rest, size_t rsize)
+{
+    char body[512], link[96];
+
+    engine_track_pieces(t, i, codec, csize, body, sizeof(body), link, sizeof(link));
+    snprintf(rest, rsize, "%s%s", body, link);
 }
 
 const char *engine_track_text(const DiscTitleInfo *t, int i, int kept, char *buf, size_t size)
@@ -763,7 +773,64 @@ int engine_disc_rip(EngineDisc *e, const char *sel, const char *split, const cha
     return run_titles(e, sel, split, out_dir, logp);
 }
 
-int engine_info(const char *source, const EngineChoice *c)
+/* Details rows as lines: a heading in brackets, a sub-heading and
+ * "label: value" indented by their level. */
+static void log_rows(EngineRows *r)
+{
+    for (int i = 0; i < r->nb; i++) {
+        const EngineRow *w = &r->rows[i];
+        int indent = 2 + 2 * w->level;
+        if (w->kind == ENGINE_ROW_HEAD)
+            log_text(LOG_INFO, "[%s]", w->label);
+        else if (w->kind == ENGINE_ROW_SUB)
+            log_text(LOG_INFO, "%*s-- %s", indent, "", w->label);
+        else
+            log_text(LOG_INFO, "%*s%s: %s", indent, "", w->label, w->value);
+    }
+    engine_rows_free(r);
+}
+
+void engine_details(const EngineDisc *e, const char *source)
+{
+    const DiscInfo *d = e->info;
+    char what[1024], state[512], why[2048];
+    EngineRows rows = { 0 };
+
+    log_step("=== Details (what the GUI shows) ===");
+    engine_disc_line(d, what, sizeof(what), state, sizeof(state), why, sizeof(why));
+    log_text(LOG_INFO, "Queue: %s | %s", what, state);
+    for (char *w = why, *nl; *w; w = nl ? nl + 1 : w + strlen(w)) {
+        nl = strchr(w, '\n');
+        log_text(LOG_INFO, "  why: %.*s", nl ? (int)(nl - w) : (int)strlen(w), w);
+    }
+    if (engine_disc_rows(d, source, &rows) >= 0)
+        log_rows(&rows);
+    else
+        engine_rows_free(&rows);
+    for (int t = 0; t < d->nb_titles; t++) {
+        const DiscTitleInfo *ti = &d->titles[t];
+        char name[64], desc[2048], tstate[512], twhy[1024];
+        engine_title_line(ti, name, sizeof(name), desc, sizeof(desc));
+        engine_title_state(ti, 0, tstate, sizeof(tstate), twhy, sizeof(twhy));
+        log_text(LOG_INFO, "Queue: %s  %s | %s", name, desc, tstate);
+        if (*twhy)
+            log_text(LOG_INFO, "  why: %s", twhy);
+        for (int c = 0; c < ti->nb_chapters; c++) {
+            engine_chapter_line(ti, c, desc, sizeof(desc));
+            log_text(LOG_INFO, "Queue:   Chapter %d  %s", c + 1, desc);
+        }
+        for (int i = 0; i < ti->nb_streams; i++) {
+            engine_track_line(ti, i, name, sizeof(name), desc, sizeof(desc));
+            log_text(LOG_INFO, "Queue:   %s  %s", name, desc);
+        }
+        if (engine_title_rows(ti, e->keeps[t], &rows) >= 0)
+            log_rows(&rows);
+        else
+            engine_rows_free(&rows);
+    }
+}
+
+int engine_info(const char *source, const EngineChoice *c, int details)
 {
     EngineDisc *e;
 
@@ -771,6 +838,8 @@ int engine_info(const char *source, const EngineChoice *c)
     if (engine_disc_open(source, c, &e) < 0)
         return 1;
     engine_disc_overview(e, 1);
+    if (details)
+        engine_details(e, source);
     engine_disc_close(&e);
     return 0;
 }

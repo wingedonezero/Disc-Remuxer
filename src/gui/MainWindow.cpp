@@ -29,8 +29,6 @@
 #include "QueueTree.h"
 
 extern "C" {
-#include <libavutil/avutil.h>
-#include "codecs.h"
 #include "base/log.h"
 #include "base/settings.h"
 }
@@ -401,23 +399,15 @@ void MainWindow::showTitleChecks(Job &job, int t)
 
     updating = true;
     title->setCheckState(C_NAME, on ? Qt::Checked : Qt::Unchecked);
-    QStringList state;
-    if (!ti->selected)
-        state << "not the main angle";
-    if (job.split[t])
-        state = QStringList{ QString("written as %1 parts").arg(ti->nb_parts) };
-    // the fake playlist check's mark (only on a disc where fakes were found)
+    // its state (the engine's words) and the fake playlist check's mark
+    char state[512], why[1024];
+    int mark = engine_title_state(ti, job.split[t], state, sizeof(state), why, sizeof(why));
     title->setIcon(C_STATUS, QIcon());
-    title->setToolTip(C_STATUS, QString());
-    if (ti->playlist_check != DISC_PLAYLIST_NOT_MARKED) {
-        bool fake = ti->playlist_check == DISC_PLAYLIST_LIKELY_FAKE;
-        state.prepend(fake ? "likely fake" : "likely real");
-        title->setIcon(C_STATUS, style()->standardIcon(fake ? QStyle::SP_MessageBoxWarning
-                                                            : QStyle::SP_DialogApplyButton));
-        if (const DiscPropertyInfo *why = disc_prop_find(ti->props, ti->nb_props, DISC_PROP_FAKE_PLAYLIST_CHECK))
-            title->setToolTip(C_STATUS, QString::fromUtf8(why->value));
-    }
-    title->setText(C_STATUS, state.join("; "));
+    if (mark != DISC_PLAYLIST_NOT_MARKED)
+        title->setIcon(C_STATUS, style()->standardIcon(mark == DISC_PLAYLIST_LIKELY_FAKE ? QStyle::SP_MessageBoxWarning
+                                                                                       : QStyle::SP_DialogApplyButton));
+    title->setToolTip(C_STATUS, QString::fromUtf8(why));
+    title->setText(C_STATUS, QString::fromUtf8(state));
     for (int i = 0; i < job.tracks[t].size(); i++) {
         QTreeWidgetItem *track = job.tracks[t][i];
         bool changeable = on && i != 0 && !running;
@@ -464,53 +454,25 @@ void MainWindow::fillDisc(Job &job)
 
     updating = true;
     job.item->setFlags(job.item->flags() | Qt::ItemIsUserCheckable);
-    QString what = QString::fromUtf8(d->kind);
-    if (d->name || d->label)
-        what += "  " + QString::fromUtf8(d->name ? d->name : d->label);
-    job.item->setText(C_DESC, what);
-    job.item->setToolTip(C_DESC, what);
-    // what the disc's checks found (nothing shown when they found nothing)
-    QStringList notes, why;
-    if (d->bdplus) {
-        notes << "BD+";
-        why << "The disc uses BD+, which is not supported: unless this copy was made with BD+ removed, parts of the "
-               "video may be damaged.";
-    }
-    if (d->fake_playlists) {
-        notes << QString("%1 fake playlists").arg(d->fake_playlists);
-        why << QString("%1 playlists are likely fakes that hide the main feature; the titles marked likely real are "
-                       "the ones to rip.").arg(d->fake_playlists);
-    } else if (d->fakes_suspected) {
-        notes << "possibly fake playlists";
-        why << "Many long playlists are made from the same clips in different orders: possibly fakes of a kind not "
-               "recognised (see the log).";
-    }
-    job.item->setText(C_STATUS, QString("%1 title%2").arg(d->nb_titles).arg(d->nb_titles == 1 ? "" : "s") +
-                                    (notes.isEmpty() ? QString() : " – " + notes.join(", ")));
-    job.item->setIcon(C_STATUS, notes.isEmpty() ? QIcon() : style()->standardIcon(QStyle::SP_MessageBoxWarning));
-    job.item->setToolTip(C_STATUS, why.join("\n"));
+    // what it is, and what the disc's checks found (the engine's words)
+    char what[1024], state[512], why[2048];
+    bool notes = engine_disc_line(d, what, sizeof(what), state, sizeof(state), why, sizeof(why));
+    job.item->setText(C_DESC, QString::fromUtf8(what));
+    job.item->setToolTip(C_DESC, QString::fromUtf8(what));
+    job.item->setText(C_STATUS, QString::fromUtf8(state));
+    job.item->setIcon(C_STATUS, notes ? style()->standardIcon(QStyle::SP_MessageBoxWarning) : QIcon());
+    job.item->setToolTip(C_STATUS, QString::fromUtf8(why));
     job.sel.fill(0, d->nb_titles);
     job.split.fill(0, d->nb_titles);
     job.tracks.clear();
     job.tracks.resize(d->nb_titles);
     for (int t = 0; t < d->nb_titles; t++) {
         const DiscTitleInfo *ti = &d->titles[t];
-        // name – chapters, duration, what it is made of (source)
-        QStringList made;
-        made << QString("%1 chapter%2").arg(ti->nb_chapters).arg(ti->nb_chapters == 1 ? "" : "s") << hms(ti->duration);
-        if (ti->nb_files > 1)
-            made << QString("%1 segments").arg(ti->nb_files);
-        if (ti->angle)
-            made << QString("angle %1%2").arg(ti->angle).arg(ti->angle == ti->main_angle ? " (main)" : "");
-        if (ti->nb_parts)
-            made << QString("%1 parts").arg(ti->nb_parts);
-        QString name = ti->name && *ti->name ? QString::fromUtf8(ti->name) : QString();
-        if (ti->menu_name)          // the name the disc's menu gives it, after the title's name
-            name += (name.isEmpty() ? "[" : " [") + QString::fromUtf8(ti->menu_name) + "]";
-        QString desc = (name.isEmpty() ? QString() : name + " – ") + made.join(", ");
-        if (ti->source)
-            desc += QString(" (%1)").arg(QString::fromUtf8(ti->source));
-        auto *title = new QTreeWidgetItem(job.item, QStringList{ QString("Title #%1").arg(t) });
+        // "Title #3", name – chapters, duration, what it is made of (source)
+        char tname[64], tdesc[2048];
+        engine_title_line(ti, tname, sizeof(tname), tdesc, sizeof(tdesc));
+        QString desc = QString::fromUtf8(tdesc);
+        auto *title = new QTreeWidgetItem(job.item, QStringList{ QString::fromUtf8(tname) });
         title->setText(C_DESC, desc);
         title->setToolTip(C_DESC, desc);
         title->setText(C_SIZE, sizeText(ti->size));
@@ -525,9 +487,10 @@ void MainWindow::fillDisc(Job &job)
             chapters->setText(C_DESC, QString("%1 chapter%2").arg(ti->nb_chapters).arg(ti->nb_chapters == 1 ? "" : "s"));
             chapterRow(chapters, job.id, t);
             for (int c = 0; c < ti->nb_chapters; c++) {
+                char cdesc[512];
                 auto *ch = new QTreeWidgetItem(chapters, QStringList{ QString("Chapter %1").arg(c + 1) });
-                ch->setText(C_DESC, hmsMs(ti->chapters[c].start) +
-                                        (ti->chapters[c].name ? "  " + QString::fromUtf8(ti->chapters[c].name) : ""));
+                engine_chapter_line(ti, c, cdesc, sizeof(cdesc));
+                ch->setText(C_DESC, QString::fromUtf8(cdesc));
                 chapterRow(ch, job.id, t);
             }
         }
@@ -535,36 +498,12 @@ void MainWindow::fillDisc(Job &job)
         job.tracks[t].resize(ti->nb_streams);
         for (int i = 0; i < ti->nb_streams; i++) {
             const DiscStreamInfo *k = &ti->streams[i];
-            char codec[96], rest[512], an[32];
-            engine_track_parts(ti, i, codec, sizeof(codec), rest, sizeof(rest));
-            QString more = QString::fromUtf8(rest);
-            // how it is linked to another track (the end of the text) the tree
-            // shows by where the row is: a short word instead
-            for (const char *link : { "  (forced subtitles of track", "  (3-D second view of track",
-                                      "  (taken out of track", "  (track " }) {
-                int at = more.lastIndexOf(QString::fromUtf8(link));
-                if (at >= 0)
-                    more.truncate(at);
-            }
-            more = more.trimmed();
-            if (k->forced)
-                more += "  forced only";
-            else if (k->second_view)
-                more += "  second view";
-            else if (k->from_track >= 0)
-                more += "  core";
-            // the audio's name ("Surround 5.1"), the video's HDR first
-            if (*audio_name(k, an, sizeof(an)))
-                more = QString::fromUtf8(an) + "  " + more;
-            if (k->hdr[0] && k->hdr[0] != 'S')
-                more = QString::fromUtf8(k->hdr) + (k->dolby_vision[0] ? " + Dolby Vision" : "") + "  " + more;
-            const char *lang = k->language[0] ? disc_language_name(k->language) : nullptr;
-            QString desc = QString("%1  %2").arg(QString::fromUtf8(codec), more).trimmed();
-            if (lang)
-                desc += "  " + QString::fromUtf8(lang);
+            char kname[64], kdesc[2048];
+            engine_track_line(ti, i, kname, sizeof(kname), kdesc, sizeof(kdesc));
+            QString desc = QString::fromUtf8(kdesc);
             // a track taken out of another one goes under it
             QTreeWidgetItem *parent = k->from_track >= 0 && k->from_track < i ? job.tracks[t][k->from_track] : title;
-            auto *track = new QTreeWidgetItem(parent, QStringList{ QString("%1 #%2").arg(kindText(k)).arg(i) });
+            auto *track = new QTreeWidgetItem(parent, QStringList{ QString::fromUtf8(kname) });
             track->setText(C_DESC, desc);
             track->setToolTip(C_DESC, desc);
             track->setData(C_NAME, R_JOB, job.id);

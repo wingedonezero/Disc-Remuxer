@@ -1,7 +1,6 @@
-// What the selected disc, title or track is, from the engine's disc info:
-// every field the disc info has (what makemkvcon's info lists, and what the
-// format part tells more), as text that wraps to the panel's width: a
-// heading per block, then "Name: value" lines.
+// What the selected disc, title or track is: the engine's details of it
+// (views.h, the rows info --details prints), as text that wraps to the
+// panel's width: a heading per block, then "Name: value" lines.
 #pragma once
 
 #include <QTextBrowser>
@@ -22,11 +21,8 @@ public:
     void showChapters(const DiscTitleInfo *t);
 };
 
+// the engine's words for a time and a size (views.h)
 QString hms(int64_t us);
 // h:mm:ss.mmm (a chapter's start: the disc's time, to the millisecond)
 QString hmsMs(int64_t us);
 QString sizeText(int64_t bytes);
-// "eng (English)", "eng", or "none"
-QString languageText(const char *code);
-// "Video", "Audio", "Subtitle"
-QString kindText(const DiscStreamInfo *k);

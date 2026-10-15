@@ -15,6 +15,7 @@
 
 #include "base/log.h"
 #include "disc/info.h"
+#include "views.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -42,8 +43,9 @@ typedef struct EngineChoice {
 /* Checks the --tracks values; 0, or -1 (logged). */
 int  engine_check_choice(const EngineChoice *c);
 
-/* The info command: the disc and every title with its tracks. 0, 1. */
-int  engine_info(const char *source, const EngineChoice *c);
+/* The info command: the disc and every title with its tracks; details:
+ * then everything the GUI shows of them (engine_details()). 0, 1. */
+int  engine_info(const char *source, const EngineChoice *c, int details);
 /* The demux command: titles ("all": the titles not shorter than the
  * minimum length; "3", "1,3-5") into out_dir, NULL: a folder named after
  * the disc in the main output folder (engine_output_folder()); split: the
@@ -76,6 +78,10 @@ const char *engine_track_text(const DiscTitleInfo *t, int i, int kept, char *buf
 /* Track i of title t as info lists it, in two pieces: its codec in full
  * (codec), then its details, links and roles (rest, may be ""). */
 void engine_track_parts(const DiscTitleInfo *t, int i, char *codec, size_t csize, char *rest, size_t rsize);
+/* The same in three pieces: its codec in full, its details and roles
+ * (body), and how it is linked to another track (link, "" none). */
+void engine_track_pieces(const DiscTitleInfo *t, int i, char *codec, size_t csize, char *body, size_t bsize,
+                         char *link, size_t lsize);
 /* The extension of the stream file a track becomes (m2v, ac3, sub, wav, ...). */
 const char *engine_track_extension(const DiscStreamInfo *k);
 /* The name title t's files take (setting output.file_name_template): its
@@ -110,6 +116,10 @@ uint8_t *engine_disc_tracks(EngineDisc *d, int t);
 /* The disc line and its titles in the log (detail: each title's files and
  * tracks too) with the JSON disc and title records. */
 void engine_disc_overview(const EngineDisc *d, int detail);
+/* Everything the GUI shows of the open disc (source: as the user named it),
+ * in the log: its queue lines (the disc, each title with its state, its
+ * chapters and tracks) and its details panel's rows (views.h). */
+void engine_details(const EngineDisc *d, const char *source);
 /* Rips the titles with sel[t] set (split[t]: as parts; split may be NULL)
  * into out_dir (NULL: engine_output_folder()), with the run's log files
  * there. 0, 1 (a title failed). */
