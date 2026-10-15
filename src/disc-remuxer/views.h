@@ -62,6 +62,14 @@ void engine_track_line(const DiscTitleInfo *t, int i, char *name, size_t nsize, 
 /* A chapter: "0:12:01.250  Name". */
 void engine_chapter_line(const DiscTitleInfo *t, int c, char *desc, size_t dsize);
 
+/* The queue in one line: "Queue: 2 discs, 5 titles checked (40.1 GB)", with
+ * " — scanning 1 disc…" while discs are scanned. */
+void engine_queue_line(int discs, int titles, int64_t bytes, int scanning, char *buf, size_t size);
+/* A title being written: "Writing 45%", with its speed and the time left
+ * once that can be told (a whole title of size bytes, secs into it):
+ * "Writing 45% · 12.3 MB/s · 0:10:00 left". */
+void engine_progress_line(double done, int64_t size, double secs, int whole, char *buf, size_t bsize);
+
 /* Times and sizes as the front ends show them: "1:42:10" (to the second),
  * "0:12:01.250", "2.3 GB" (cut, not rounded). */
 const char *engine_hms(int64_t us, char *buf, size_t size);

@@ -527,8 +527,23 @@ In slices, one commit each, the suite green, the command line's output
   the same way; `engine_disc_rip(disc, out_dir)` rips the selection. The
   command line's titles spec and `--split` go through those calls; the
   GUI's own per-title arrays are gone.
-- **9d — the parity pass**: every GUI action and view gets its engine call
-  and its command-line form (per-track results, damage ranges, chapters).
+- **9d — DONE — the parity pass.** What the GUI still decided alone moved
+  into the engine: finding discs in what the user names (`discs.h` /
+  `discs.c`: `engine_find_discs()`, the same folders, depth, name order and
+  hidden entries left out as the GUI's finder had) and the folder a disc's
+  output goes to (`engine_found_folder()`, with setting
+  `output.keep_folder_structure`, moved from `gui.keep_folder_structure`:
+  a settings file's old value is taken over, said once); a disc's name for
+  its folder and log is the finder's for both front ends (an `.img` image's
+  name loses its extension on the command line too). The command line gets
+  the GUI's queue: `find <folder>` lists the discs found with their output
+  folders, and `demux` of a folder of discs rips each one in turn into its
+  own folder. The queue's line and a title's progress line (speed, time
+  left) are the engine's words (`engine_queue_line()`,
+  `engine_progress_line()`). Window-only actions (open the output folder or
+  the log, show the source, remove / clear / reorder the queue) stay in the
+  GUI: they decide nothing. Per-track results and damage ranges reach the
+  GUI as events already; showing them is 9e.
 - **9e — the GUI shows the new data** (the user's wishes, asked first).
 
 Gate: the suite + a before/after comparison of the command line on every

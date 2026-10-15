@@ -60,6 +60,10 @@ static const Setting registry[] = {
       "file holds it. Off: such a title is one timeline (the audio's overlaps "
       "at the joins are evened out by dropping whole frames). The demux option --split <titles> turns it on "
       "for chosen titles of one run.", 0, SET_AT_RIP },
+    { "output", "keep_folder_structure", SET_BOOL, "true", 0, 0, NULL,
+      "A disc found in a folder of discs (the GUI's added folder, demux / find of a folder) keeps the folders "
+      "from that folder down to it under the main output folder (<main output folder>/<the folder>/<folders>/"
+      "<disc name>); off: <main output folder>/<disc name>.", 0, SET_AT_RIP },
     { "bluray", "second_view", SET_BOOL, "false", 0, 0, NULL,
       "3-D titles: also write the second view (the MVC dependent view, a .mvc file next to the base view's "
       ".h264; each file names its eye, from the playlist). Off: a 3-D title is written in 2-D. The demux "
@@ -80,10 +84,6 @@ static const Setting registry[] = {
       "cell) or random (50 at random, a different choice on each run).", 0, SET_AT_OPEN },
     { "log", "debug_file", SET_BOOL, "false", 0, 0, NULL,
       "Also write a debug log with every detail into the output folder, next to the log.", 0, SET_AT_RIP },
-    { "gui", "keep_folder_structure", SET_BOOL, "true", 0, 0, NULL,
-      "GUI: a disc found in an added folder keeps the folders from that folder down to it under the main output "
-      "folder (<main output folder>/<added folder>/<folders>/<disc name>); off: <main output folder>/<disc name>.",
-      0, SET_IN_GUI },
     { "gui", "window", SET_TEXT, "", 0, 0, NULL, "Kept by the GUI: its window's place and size.", 1, SET_IN_GUI },
     { "gui", "columns", SET_LIST, "", 0, 0, NULL, "Kept by the GUI: the widths of the queue's columns.",
       1, SET_IN_GUI },
@@ -128,6 +128,20 @@ const char *program_dir(void)
 const char *settings_path(void)
 {
     return path_buf;
+}
+
+/* Settings that moved to another name: a settings file's value under the
+ * old name is taken for the new one. */
+static const struct { const char *from_group, *from_key, *to; } moved[] = {
+    { "gui", "keep_folder_structure", "output.keep_folder_structure" },
+};
+
+static int was_moved(const char *group, const char *key)
+{
+    for (size_t m = 0; m < sizeof(moved) / sizeof(*moved); m++)
+        if (!strcmp(group, moved[m].from_group) && !strcmp(key, moved[m].from_key))
+            return 1;
+    return 0;
 }
 
 static int find(const char *name)
@@ -387,8 +401,28 @@ int settings_load(const char *path)
             toml_datum_t g = toml_get(r.toptab, s->group), d;
             char err[256];
             if (g.type != TOML_TABLE || (d = toml_get(g, s->key)).type == TOML_UNKNOWN) {
-                log_msg(MSG_SETTING_ADDED, LOG_INFO, "Settings file: %s.%s added (default %s)", s->group, s->key,
-                        *s->def ? s->def : "empty");
+                /* a setting that moved: its value under the old name */
+                int found = 0;
+                for (size_t m = 0; m < sizeof(moved) / sizeof(*moved) && !found; m++) {
+                    char name[256];
+                    toml_datum_t og, od;
+                    snprintf(name, sizeof(name), "%s.%s", s->group, s->key);
+                    if (strcmp(name, moved[m].to) || (og = toml_get(r.toptab, moved[m].from_group)).type != TOML_TABLE ||
+                        (od = toml_get(og, moved[m].from_key)).type == TOML_UNKNOWN)
+                        continue;
+                    found = 1;
+                    if ((values[i].file = from_toml(s, od)) && !check(s, values[i].file, err, sizeof(err))) {
+                        log_msg(MSG_SETTING_MOVED, LOG_INFO, "Settings file: %s.%s is now %s (its value kept)",
+                                moved[m].from_group, moved[m].from_key, name);
+                    } else {
+                        free(values[i].file);
+                        values[i].file = NULL;
+                        found = 0;
+                    }
+                }
+                if (!found)
+                    log_msg(MSG_SETTING_ADDED, LOG_INFO, "Settings file: %s.%s added (default %s)", s->group, s->key,
+                            *s->def ? s->def : "empty");
                 changed = 1;
                 continue;
             }
@@ -412,7 +446,9 @@ int settings_load(const char *path)
             for (int k = 0; k < t.u.tab.size; k++) {
                 char name[256];
                 snprintf(name, sizeof(name), "%s.%s", gname, t.u.tab.key[k]);
-                if (find(name) < 0) {
+                if (find(name) < 0 && was_moved(gname, t.u.tab.key[k])) {
+                    changed = 1;
+                } else if (find(name) < 0) {
                     log_msg(MSG_SETTING_REMOVED, LOG_WARNING, "Settings file: %s is no setting of this program: "
                             "removed", name);
                     changed = 1;

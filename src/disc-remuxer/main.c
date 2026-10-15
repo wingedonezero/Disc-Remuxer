@@ -29,7 +29,10 @@ static void usage(FILE *f)
           "  info  <source>                        the titles and tracks of a disc\n"
           "  demux <source> <titles> [<out folder>]  the titles' tracks as stream files, chapters, a log;\n"
           "                                        no out folder: <main output folder>/<disc name>\n"
-          "                                        (setting output.folder; empty: output next to the program)\n"
+          "                                        (setting output.folder; empty: output next to the program);\n"
+          "                                        a folder of discs: each disc in turn into its own folder\n"
+          "                                        (the out folder: the main output folder for them)\n"
+          "  find  <folder>                        the discs in a folder (as the GUI's queue takes them)\n"
           "  settings [show|path]                  the settings in effect / where the settings file is\n"
           "  version                               program and library versions\n"
           "\n"
@@ -133,6 +136,8 @@ int main(int argc, char **argv)
         ret = 0;
     } else if (!strcmp(argv[i], "info") && i + 1 < argc) {
         ret = engine_info(argv[i + 1], &c, details);
+    } else if (!strcmp(argv[i], "find") && i + 1 < argc) {
+        ret = engine_find(argv[i + 1]);
     } else if (!strcmp(argv[i], "demux") && i + 2 < argc) {
         ret = engine_demux(argv[i + 1], argv[i + 2], i + 3 < argc ? argv[i + 3] : NULL, split, &c);
     } else {

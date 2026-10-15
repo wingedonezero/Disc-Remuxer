@@ -24,6 +24,7 @@
 #include "names.h"
 #include "base/settings.h"
 #include "codecs.h"
+#include "discs.h"
 #include "emit.h"
 #include "engine.h"
 #include "events.h"
@@ -648,26 +649,6 @@ bad:
     return -1;
 }
 
-/* The disc's name for its folder and log: the image's or folder's name (a
- * VIDEO_TS or BDMV folder: the folder holding it). */
-static void disc_name(const char *source, char *out, size_t size)
-{
-    char tmp[PATH_MAX], *base, *dot;
-    size_t n;
-
-    snprintf(tmp, sizeof(tmp), "%s", source);
-    while ((n = strlen(tmp)) > 1 && tmp[n - 1] == '/')
-        tmp[n - 1] = 0;
-    base = strrchr(tmp, '/') ? strrchr(tmp, '/') + 1 : tmp;
-    if ((!strcasecmp(base, "VIDEO_TS") || !strcasecmp(base, "BDMV")) && base > tmp + 1) {
-        base[-1] = 0;
-        base = strrchr(tmp, '/') ? strrchr(tmp, '/') + 1 : tmp;
-    }
-    if ((dot = strrchr(base, '.')) && !strcasecmp(dot, ".iso"))
-        *dot = 0;
-    clean_name(base, 0, out, size);
-}
-
 static int mkdirs(const char *path)
 {
     char tmp[PATH_MAX];
@@ -712,7 +693,7 @@ void engine_output_folder(const char *source, char *out, size_t size)
 {
     char name[512], root[PATH_MAX], base[PATH_MAX + 520];
 
-    disc_name(source, name, sizeof(name));
+    engine_disc_name(source, name, sizeof(name));
     engine_output_root(root, sizeof(root));
     snprintf(base, sizeof(base), "%s/%s", root, name);
     engine_unique_folder(base, out, size);
@@ -728,7 +709,7 @@ static int run_begin(const char *source, const char *out_dir, char *logp, size_t
         log_msg(MSG_OUTPUT_FOLDER, LOG_ERROR, "The output folder %s cannot be created: %s", out_dir, strerror(errno));
         return 1;
     }
-    disc_name(source, name, sizeof(name));
+    engine_disc_name(source, name, sizeof(name));
     snprintf(logp, size, "%s/%s.log", out_dir, name);
     snprintf(dbgp, sizeof(dbgp), "%s/%s_debug.log", out_dir, name);
     if (log_open_files(logp, setting_bool("log.debug_file") ? dbgp : NULL) < 0) {
@@ -926,8 +907,9 @@ int engine_info(const char *source, const EngineChoice *c, int details)
     return 0;
 }
 
-int engine_demux(const char *source, const char *titles, const char *out_dir, const char *split,
-                 const EngineChoice *c)
+/* One disc's demux run (engine_demux()). */
+static int demux_one(const char *source, const char *titles, const char *out_dir, const char *split,
+                     const EngineChoice *c)
 {
     char folder[PATH_MAX], logp[PATH_MAX + 600];
     EngineDisc *e;
@@ -984,4 +966,70 @@ int engine_init(const char *config, const char *const *sets, int nb_sets, int js
             return 2;
     config_dirs();
     return 0;
+}
+
+/* ---- folders of discs: the GUI's queue on the command line ---- */
+
+/* The discs in path when it is a folder holding discs (not a disc itself),
+ * else none. */
+static int disc_folder(const char *path, EngineFoundList *l)
+{
+    if (engine_find_discs(path, 5, l) < 0)
+        return -1;
+    if (l->nb == 1 && !strcmp(l->discs[0].relative, "."))
+        engine_found_free(l);
+    return l->nb;
+}
+
+int engine_find(const char *path)
+{
+    EngineFoundList l = { 0 };
+    char folder[PATH_MAX];
+
+    if (engine_find_discs(path, 5, &l) < 0)
+        return 1;
+    if (!l.nb) {
+        log_msg(MSG_SOURCE, LOG_WARNING, "No disc found in %s", path);
+        return 1;
+    }
+    for (int i = 0; i < l.nb; i++) {
+        const EngineFound *f = &l.discs[i];
+        engine_found_folder(f, NULL, folder, sizeof(folder));
+        log_text(LOG_INFO, "Disc %d: %s", i + 1, f->name);
+        log_text(LOG_INFO, "  source: %s", f->path);
+        log_text(LOG_INFO, "  below:  %s", f->relative);
+        log_text(LOG_INFO, "  output: %s", folder);
+    }
+    log_msg(MSG_SOURCE, LOG_INFO, "%d disc%s found in %s", l.nb, l.nb == 1 ? "" : "s", path);
+    engine_found_free(&l);
+    return 0;
+}
+
+int engine_demux(const char *source, const char *titles, const char *out_dir, const char *split,
+                 const EngineChoice *c)
+{
+    EngineFoundList l = { 0 };
+    char folder[PATH_MAX], base[PATH_MAX];
+    int n, ret = 0, failed = 0;
+
+    /* a disc (image or folder): one run */
+    if ((n = disc_folder(source, &l)) <= 0)
+        return demux_one(source, titles, out_dir, split, c);
+    /* a folder of discs: each one in turn into its own folder, as the GUI's
+     * queue rips them (out_dir: the main output folder for them) */
+    for (int i = 0; i < n && !engine_cancelled(); i++) {
+        const EngineFound *f = &l.discs[i];
+        int r;
+        log_step("=== Disc %d/%d: %s ===", i + 1, n, f->name);
+        engine_found_folder(f, out_dir, base, sizeof(base));
+        engine_unique_folder(base, folder, sizeof(folder));
+        r = demux_one(f->path, titles, folder, split, c);
+        failed += r != 0;
+        ret = r > ret ? r : ret;
+    }
+    log_step("=== Discs ===");
+    log_msg(MSG_SUMMARY, failed ? LOG_ERROR : LOG_OK, "%d disc%s of %d ripped without failures%s", n - failed,
+            n - failed == 1 ? "" : "s", n, engine_cancelled() ? " (stopped as asked)" : "");
+    engine_found_free(&l);
+    return ret;
 }

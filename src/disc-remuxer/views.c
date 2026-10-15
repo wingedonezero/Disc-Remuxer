@@ -542,3 +542,26 @@ void engine_chapter_line(const DiscTitleInfo *t, int c, char *desc, size_t dsize
     snprintf(desc, dsize, "%s%s%s", engine_hms_ms(t->chapters[c].start, tm, sizeof(tm)),
              t->chapters[c].name ? "  " : "", t->chapters[c].name ? t->chapters[c].name : "");
 }
+
+void engine_queue_line(int discs, int titles, int64_t bytes, int scanning, char *buf, size_t size)
+{
+    char sz[32];
+
+    snprintf(buf, size, "Queue: %d disc%s, %d title%s checked (%s)", discs, discs == 1 ? "" : "s", titles,
+             titles == 1 ? "" : "s", bytes ? engine_size(bytes, sz, sizeof(sz)) : "0 MB");
+    if (scanning)
+        snprintf(buf + strlen(buf), size - strlen(buf), " \u2014 scanning %d disc%s\u2026", scanning,
+                 scanning == 1 ? "" : "s");
+}
+
+void engine_progress_line(double done, int64_t size, double secs, int whole, char *buf, size_t bsize)
+{
+    snprintf(buf, bsize, "Writing %d%%", (int)(done * 100));
+    /* speed and time left from the title's size (a whole title only) */
+    if (secs > 2 && done > 0.001 && whole) {
+        double rate = done * size / secs;
+        char left[48];
+        snprintf(buf + strlen(buf), bsize - strlen(buf), " \u00b7 %.1f MB/s \u00b7 %s left", rate / (1 << 20),
+                 engine_hms((int64_t)((1 - done) / done * secs * 1e6), left, sizeof(left)));
+    }
+}

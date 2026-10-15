@@ -16,6 +16,7 @@
 #include "base/log.h"
 #include "disc/info.h"
 #include "views.h"
+#include "discs.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -53,6 +54,11 @@ int  engine_info(const char *source, const EngineChoice *c, int details);
  * arguments). */
 int  engine_demux(const char *source, const char *titles, const char *out_dir, const char *split,
                   const EngineChoice *c);
+/* The find command: the discs found at or below path (discs.h), each with
+ * its name, place and output folder, as the GUI's queue takes them. 0, 1
+ * (none found). A folder of discs given to engine_demux() is ripped disc by
+ * disc the same way (out_dir: the main output folder for them). */
+int  engine_find(const char *path);
 
 /* The folder a disc's output goes to by default: <main output folder (setting
  * output.folder; empty: "output" next to the program)>/<the disc's name>,

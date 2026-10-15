@@ -723,26 +723,18 @@ void MainWindow::openPrefs()
 
 // ---- the run ----
 
-// <main output folder>/<the disc's name>; with gui.keep_folder_structure a
-// disc found below an added folder: <main>/<added folder>/<folders>/<name>.
+// The engine's folder rule (discs.h, the one demux of a folder uses):
+// <main output folder>/<the disc's name>; with output.keep_folder_structure
+// a disc found below an added folder: <main>/<added folder>/<folders>/<name>.
 QString MainWindow::outputFolder(const Job &job) const
 {
-    char root[4096], clean[1024];
-    QString path;
+    QByteArray path = job.found.path.toUtf8(), name = job.found.name.toUtf8(), rel = job.found.relative.toUtf8(),
+               root = job.found.dropRoot.toUtf8();
+    EngineFound f = { path.data(), name.data(), rel.data(), root.data() };
+    char folder[4096];
 
-    engine_output_root(root, sizeof(root));
-    path = QString::fromUtf8(root);
-    if (setting_bool("gui.keep_folder_structure") && job.found.relative != ".") {
-        QStringList parts = job.found.relative.split('/', Qt::SkipEmptyParts);
-        parts.removeLast();     // the disc itself: its name below
-        parts.prepend(QFileInfo(job.found.dropRoot).fileName());
-        for (const QString &p : parts) {
-            engine_clean_name(p.toUtf8().constData(), clean, sizeof(clean));
-            path += "/" + QString::fromUtf8(clean);
-        }
-    }
-    engine_clean_name(job.found.name.toUtf8().constData(), clean, sizeof(clean));
-    return path + "/" + QString::fromUtf8(clean);
+    engine_found_folder(&f, nullptr, folder, sizeof(folder));
+    return QString::fromUtf8(folder);
 }
 
 void MainWindow::startQueue()
@@ -858,15 +850,10 @@ void MainWindow::onProgress(int t, double done)
     if (!j || !running || !j->disc || t != ripTitle || t >= j->item->childCount())
         return;
     const DiscTitleInfo *ti = &engine_disc_info(j->disc)->titles[t];
-    QString text = QString("Writing %1%").arg(int(done * 100));
-    double secs = titleClock.elapsed() / 1000.0;
-    // speed and time left from the title's size (a whole title only)
-    if (secs > 2 && done > 0.001 && !engine_title_split(j->disc, t)) {
-        double rate = done * ti->size / secs;
-        text += QString(" · %1 MB/s · %2 left").arg(rate / (1 << 20), 0, 'f', 1)
-                    .arg(hms(int64_t((1 - done) / done * secs * 1e6)));
-    }
-    j->item->child(t)->setText(C_STATUS, text);
+    char text[256];
+    engine_progress_line(done, ti->size, titleClock.elapsed() / 1000.0, !engine_title_split(j->disc, t), text,
+                         sizeof(text));
+    j->item->child(t)->setText(C_STATUS, QString::fromUtf8(text));
     if (QProgressBar *bar = barOf(j->item))
         bar->setValue(int(100 * ((ripOrdinal - 1) + done) / qMax(1, ripCount)));
 }
@@ -933,10 +920,7 @@ void MainWindow::updateQueueLabel()
                 titles++;
             }
     }
-    QString text = QString("Queue: %1 disc%2, %3 title%4 checked (%5)").arg(jobs.size())
-                       .arg(jobs.size() == 1 ? "" : "s").arg(titles).arg(titles == 1 ? "" : "s")
-                       .arg(bytes ? sizeText(bytes) : "0 MB");
-    if (pendingScans)
-        text += QString(" — scanning %1 disc%2…").arg(pendingScans).arg(pendingScans == 1 ? "" : "s");
-    queueLabel->setText(text);
+    char text[256];
+    engine_queue_line(jobs.size(), titles, bytes, pendingScans, text, sizeof(text));
+    queueLabel->setText(QString::fromUtf8(text));
 }
