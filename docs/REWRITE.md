@@ -143,7 +143,7 @@ analyze) → the disc model (`DrDisc`/`DrTitle`/`DrTrack`) → GUI/CLI.
   limit, cancelled, external). Where our values reach FFmpeg-side consumers
   during migration, the wrapper translates at the edge (`DR_ERR_INVALID` ->
   `AVERROR_INVALIDDATA`), so tests and messages see no change.
-- Events: `base/events.h` — the engine-v2 contract. One `DrEvent` union
+- Events: `src/disc-remuxer/events.h` (was `base/events.h`; step 9a) — the engine-v2 contract. One `DrEvent` union
   (line, progress, title start, track result, title result with a damage
   range ARRAY, run result) on one `DrSink`. The GUI consumes structs; JSON
   becomes a rendering by the CLI, never the transport. Adopted at step 9;
@@ -476,14 +476,47 @@ Gate: the 30-DVD title list/track comparisons re-run + corpus byte-compare
 (with the rest of the rewrite's, run by the user at the end).
 
 ### Step 9 — engine API v2 (GUI-first)
-What: `engine.h` v2 on `base/events.h`: the disc model exposed as typed
-structs with enum property keys (nothing matched by English names), rip
-results as events (damage as arrays, not text blobs), selection written
-into the model, display strings built from fields (the GUI's reverse-
-parsing of `engine_track_parts()` and its QJsonDocument re-parsing go),
-`TitleOutcome` crosses the boundary typed, JSON rendered only by the CLI.
-The warts list to burn down is UNTANGLE.md §4, item by item.
-Gate: GUI feature parity by hand + the suite; no rip-path change.
+What: `engine.h` v2 on the engine's events (`src/disc-remuxer/events.h`;
+it began as `base/events.h`, but its disc and title events carry the disc
+model, which base may not see): the disc model exposed as typed structs
+with enum property keys (nothing matched by English names), rip results
+as events (damage as arrays, not text blobs), selection written into the
+model, display strings built from fields (the GUI's reverse-parsing of
+`engine_track_parts()` and its QJsonDocument re-parsing go), `TitleOutcome`
+crosses the boundary typed, JSON rendered only by the CLI. The warts list
+to burn down is UNTANGLE.md §4, item by item.
+
+The rule (user, 2026-10-15): ONE engine, two equal front ends in the same
+program — the GUI (what the user works with) and the command line (what
+tests and checks drive). Both speak the engine's typed API; no JSON or
+text feeding, no external-UI protocol. PARITY: everything the GUI can
+choose or see, the command line can choose or print, so a command-line
+test covers what the GUI does; no rule or wording lives only in the GUI.
+
+In slices, one commit each, the suite green, the command line's output
+(text and `--json`) byte-identical unless a slice says otherwise:
+- **9a — the events.** One emit point (`engine_event()`, `emit.h`): the
+  six places that wrote JSON records build typed events (disc, title,
+  title start, track result, title result, run result); the log's lines
+  and progress become events too. A front end's sink (`engine_set_events()`)
+  gets the structs; without one, JSON mode renders each event as the
+  record it was (the same code, moved beside the event). The base log's
+  sink (`LogSink`, `log_set_sink()`) keeps lines and progress only. The
+  GUI's `LogRelay` copies each event into Qt values and the window takes
+  typed signals (`onRecord`'s JSON parsing gone).
+- **9b — the typed disc model**: property keys and track fields; the
+  wording the GUI built itself (a track's row, what it converts to, the
+  audio's name) moves into the engine, so `info` shows it too.
+- **9c — selection in the engine**: titles, splits, tracks, second view
+  through engine calls both front ends use.
+- **9d — the parity pass**: every GUI action and view gets its engine call
+  and its command-line form (per-track results, damage ranges, chapters).
+- **9e — the GUI shows the new data** (the user's wishes, asked first).
+
+Gate: the suite + a before/after comparison of the command line on every
+test that drives it (the same arguments to the old and the new program:
+stdout, stderr, exit code and every written file); GUI feature parity by
+hand; no rip-path change.
 
 ### Step 10 — the MKV writer, then retirement
 The writer once every format's streams pass (decision D4: libebml/

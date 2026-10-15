@@ -2,8 +2,9 @@
  * The log: the one funnel for the program and every library under it. A
  * line goes to the terminal (coloured by level when it is one), to the
  * job's log file (plain), and in JSON mode as one JSON record per line on
- * stdout instead of the terminal text — or, when a sink is installed (a
- * GUI), to the sink's callbacks instead of the terminal.
+ * stdout instead of the terminal text — or, when a sink is installed (the
+ * engine's, for a GUI: disc-remuxer/events.h), to the sink instead of the
+ * terminal.
  *
  * Levels: error, warning, ok (a step that went fine), info, detail (only in
  * the debug log and with -v). Library lines come in through each library's
@@ -24,16 +25,15 @@ enum LogLevel { LOG_ERROR, LOG_WARNING, LOG_OK, LOG_INFO, LOG_DETAIL };
 /* Where the log goes besides the run's log files: NULL members print to the
  * terminal (text, or JSON records with json). level: LOG_* above; code: the
  * message number (msg.h), 0 none; source: the library a line comes from,
- * NULL ours; heading: a step's heading. record: one JSON record. */
-typedef struct EngineSink {
+ * NULL ours; heading: a step's heading. */
+typedef struct LogSink {
     void (*line)(void *opaque, int level, int code, const char *source, const char *text, int heading);
     void (*progress)(void *opaque, int title, double done);
-    void (*record)(void *opaque, const char *json);
     void  *opaque;
-} EngineSink;
+} LogSink;
 
-/* Log lines, progress and records to sink (NULL: the terminal again). */
-void engine_set_sink(const EngineSink *sink);
+/* Log lines and progress to sink (NULL: the terminal again). */
+void log_set_sink(const LogSink *sink);
 
 /* json: JSON records on stdout instead of the terminal text; verbose:
  * detail lines on the terminal too (2: trace lines from the libraries). */
@@ -76,6 +76,8 @@ void log_progress(int title, double done);
  * is printf-formatted JSON members ("\"index\":%d,\"name\":%s"; strings
  * through json_str). */
 void log_json(const char *type, const char *fields, ...) __attribute__((format(printf, 2, 3)));
+/* Whether the log is in JSON mode (log_init()). */
+int  log_json_mode(void);
 
 /* Errors and warnings logged since the counters were reset (for summaries). */
 void log_counts(int *errors, int *warnings);

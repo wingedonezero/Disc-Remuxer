@@ -60,7 +60,9 @@ private slots:
     void ripStarted(quint64 id, QString folder);
     void ripDone(quint64 id, int result, bool stopped);
     void runDone(bool stopped);
-    void onRecord(QString json);
+    void onTitleStarted(TitleStart s);
+    void onTitleDone(TitleResult r);
+    void onRunResult(RunResult r);
     void onProgress(int title, double done);
 
 private:
@@ -77,6 +79,7 @@ private:
         QString          logFile;
     };
     Job *jobOf(QTreeWidgetItem *item);
+    Job *ripping();
     Job *jobById(quint64 id);
     void queueScan(Job &job);
     void fillDisc(Job &job);

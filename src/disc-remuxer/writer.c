@@ -33,7 +33,9 @@
 #include "names.h"
 #include "analyze/details.h"
 #include "disc/disc.h"
+#include "emit.h"
 #include "engine.h"
+#include "events.h"
 #include "base/settings.h"
 #include "writer.h"
 
@@ -646,13 +648,12 @@ int open_disc(const char *source, DrDisc **disc)
 /* A video track's details from the disc layer: line-21 caption data taken
  * out of the video and not kept (a format without caption tracks), with
  * the disc's caption marks. A warning when the data carried caption text. */
-static void video_detail(const DrDiscTrack *t, char *json, size_t size)
+static void video_detail(const DrDiscTrack *t, DrEventTrackResult *e)
 {
     const char *l21 = t->line21;
     /* the caption track left out as asked: its data is not lost by mistake */
     int asked = t->caption_left;
     int64_t blocks = t->cc_blocks, text = t->cc_text;
-    char jl[64];
 
     if (blocks)
         log_text(text && !asked ? LOG_WARNING : LOG_INFO, "      line-21 caption data taken out of the video, not "
@@ -661,34 +662,38 @@ static void video_detail(const DrDiscTrack *t, char *json, size_t size)
                  l21 ? l21 : "", l21 ? ")" : "");
     else if (l21)
         log_text(LOG_INFO, "      the disc marks line-21 captions on %s, but the video carries none", l21);
-    if (blocks || l21)
-        snprintf(json, size, ",\"line21\":%s,\"cc_blocks\":%"PRId64",\"cc_text\":%"PRId64,
-                 json_str(jl, sizeof(jl), l21 ? l21 : ""), blocks, text);
+    if (blocks || l21) {
+        e->has_line21 = 1;
+        e->line21     = l21 ? l21 : "";
+        e->cc_blocks  = blocks;
+        e->cc_text    = text;
+    }
 }
 
 /* A subtitle track's details from the demuxer: what the units are, the
  * canvas they are drawn on and whether every unit fits it, and how many had
  * no stop time (shown until the next one). One line in the log; the same
- * as JSON fields appended to the track's record (json, starting with a comma). */
-static void subtitle_detail(const DrDiscTrack *t, int opened, char *json, size_t size)
+ * in the track's result (e). */
+static void subtitle_detail(const DrDiscTrack *t, int opened, DrEventTrackResult *e)
 {
     if (t->caption) {
         int64_t blocks = t->cc_blocks, cues = t->cues, lost = t->cc_lost;
-        char jp[256], jl[96] = "";
         log_text(blocks && !cues ? LOG_INFO : LOG_DETAIL, "      %s; %"PRId64" caption blocks -> %"PRId64" cues%s",
                  t->caption, blocks, cues,
                  blocks && !cues ? " (the caption data carries no caption text)" : "");
         if (lost) {
             log_text(LOG_INFO, "      %"PRId64" caption(s) still shown at the end of a segment left out", lost);
-            snprintf(jl, sizeof(jl), ",\"cc_lost\":%"PRId64, lost);
+            e->has_cc_lost = 1;
+            e->cc_lost     = lost;
         }
-        snprintf(json, size, ",\"caption\":%s,\"cc_blocks\":%"PRId64",\"cues\":%"PRId64"%s",
-                 json_str(jp, sizeof(jp), t->caption), blocks, cues, jl);
+        e->sub       = DR_SUB_CAPTIONS;
+        e->caption   = t->caption;
+        e->cc_blocks = blocks;
+        e->cues      = cues;
         return;
     }
     int64_t no_stop = t->no_stop, outside = t->outside;
     int w = t->width, h = t->height;
-    char jp[256];
     AVBPrint b;
 
     av_bprint_init(&b, 0, AV_BPRINT_SIZE_AUTOMATIC);
@@ -706,8 +711,12 @@ static void subtitle_detail(const DrDiscTrack *t, int opened, char *json, size_t
         av_bprintf(&b, "; %"PRId64" forced object%s", t->forced_objects, t->forced_objects == 1 ? "" : "s");
     log_text(outside ? LOG_WARNING : LOG_DETAIL, "      %s", b.str);
     av_bprint_finalize(&b, NULL);
-    snprintf(json, size, ",\"picture\":%s,\"width\":%d,\"height\":%d,\"no_stop\":%"PRId64",\"outside\":%"PRId64,
-             json_str(jp, sizeof(jp), t->picture ? t->picture : ""), w, h, no_stop, outside);
+    e->sub     = DR_SUB_PICTURES;
+    e->picture = t->picture ? t->picture : "";
+    e->width   = w;
+    e->height  = h;
+    e->no_stop = no_stop;
+    e->outside = outside;
 }
 
 const char *size_text(char *buf, size_t size, int64_t bytes)
@@ -732,7 +741,7 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     const char *tname;
     EsOut *out = NULL;
     int nb_tracks = 0;
-    char dir[4096], prefix[4200], dur[32], js[4300], who[64], base[512], jpart[32] = "";
+    char dir[4096], prefix[4200], dur[32], who[64], base[512];
     char *chap = NULL;          /* the chapter file, and why it could not be written */
     int ret, r, chap_err = 0, errors0, warnings0;
 
@@ -742,7 +751,6 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     /* "Title #8", or "Title #8 part 2/7" for a part of a title */
     if (job->part >= 0) {
         snprintf(who, sizeof(who), "Title #%d part %d/%d", job->title, job->part + 1, job->nb_parts);
-        snprintf(jpart, sizeof(jpart), ",\"part\":%d", job->part + 1);
     } else
         snprintf(who, sizeof(who), "Title #%d", job->title);
     /* the heading first: what opening the title says belongs under it */
@@ -765,8 +773,11 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         snprintf(res->name, sizeof(res->name), "%.500s_p%d", base, job->part + 1);
     else
         snprintf(res->name, sizeof(res->name), "%s", base);
-    log_json("title_start", "\"title\":%d%s,\"name\":%s,\"ordinal\":%d,\"count\":%d", job->title, jpart,
-             json_str(js, sizeof(js), res->name), job->ordinal, job->count);
+    {
+        DrEvent ev = { .kind = DR_EVENT_TITLE_START };
+        ev.u.title_start = (DrEventTitleStart){ job->title, job->part, res->name, job->ordinal, job->count };
+        engine_event(&ev);
+    }
 
     /* a part is written as a title of its own: its own folder, like every title's */
     snprintf(dir, sizeof(dir), "%s%s%s", job->out_dir, job->sub_folder ? "/" : "", job->sub_folder ? res->name : "");
@@ -963,7 +974,9 @@ end:
             const DrDiscTrack *t = dr_disc_track(d, i);
             EsOut *o = &out[i];
             int64_t frames = t->frames, warn = t->warnings;
-            char what[160], state[96], delay[48] = "", jc[64], jl[32], jy[96], jf[4300], extra[2048] = "";
+            char what[160], state[96], delay[48] = "";
+            DrEvent ev = { .kind = DR_EVENT_TRACK_RESULT };
+            DrEventTrackResult *e = &ev.u.track;
             const char *unit = t->type == DISC_MEDIA_SUBTITLE ? "subtitles" : "frames";
             int empty_cc = !o->opened && t->caption;
 
@@ -986,24 +999,28 @@ end:
                      "  %02d  %-30s %8"PRId64" %-9s  %s%s",
                      t->number, what, frames, unit, state, delay);
             if (t->type == DISC_MEDIA_SUBTITLE)
-                subtitle_detail(t, o->opened, extra, sizeof(extra));
+                subtitle_detail(t, o->opened, e);
             else if (t->type == DISC_MEDIA_VIDEO)
-                video_detail(t, extra, sizeof(extra));
+                video_detail(t, e);
             if (o->checked < 0)
                 log_text(LOG_ERROR, "      the file's stream details differ from the disc stream's: %s", o->problems);
             if (o->checked) {
-                char jp[1100];
-                size_t l = strlen(extra);
-                snprintf(extra + l, sizeof(extra) - l, ",\"details_check\":\"%s\",\"details\":%s",
-                         o->checked > 0 ? "pass" : "fail", json_str(jp, sizeof(jp), o->problems));
+                e->details_check = o->checked > 0 ? 1 : -1;
+                e->details       = o->problems;
             }
             if (o->opened)
                 log_text(LOG_DETAIL, "      %s", o->name);
-            log_json("track", "\"title\":%d%s,\"index\":%d,\"codec\":%s,\"language\":%s,\"layout\":%s,"
-                     "\"frames\":%"PRId64",\"warnings\":%"PRId64",\"delay_ms\":%"PRId64",\"file\":%s%s", job->title,
-                     jpart, t->number, json_str(jc, sizeof(jc), stream_label(t, o->opened ? o->profile : t->profile)),
-                     json_str(jl, sizeof(jl), o->st.lang), json_str(jy, sizeof(jy), o->layout), frames, warn,
-                     o->st.delay_ms, json_str(jf, sizeof(jf), o->opened ? o->name : ""), extra);
+            e->title    = job->title;
+            e->part     = job->part;
+            e->index    = t->number;
+            e->codec    = stream_label(t, o->opened ? o->profile : t->profile);
+            e->language = o->st.lang;
+            e->layout   = o->layout;
+            e->frames   = frames;
+            e->warnings = warn;
+            e->delay_ms = o->st.delay_ms;
+            e->file     = o->opened ? o->name : "";
+            engine_event(&ev);
         }
         if (checked)
             log_text(check_failed ? LOG_ERROR : LOG_DETAIL, "Stream details (read back from the files): %d of %d "
@@ -1050,10 +1067,14 @@ end:
             log_msg(MSG_TITLE_DONE, LOG_OK, "%s: done, all checks passed %s", who, made);
         }
     }
-    log_json("title_result", "\"title\":%d%s,\"status\":\"%s\",\"warnings\":%"PRId64",\"damaged_ranges\":%"PRId64
-             ",\"damaged_bytes\":%"PRId64",\"folder\":%s", job->title, jpart,
-             res->stopped ? "stopped" : res->failed ? "failed" : "ok", res->warnings, res->damaged_ranges,
-             res->damaged_bytes, json_str(js, sizeof(js), dir));
+    {
+        DrEvent ev = { .kind = DR_EVENT_TITLE_RESULT };
+        ev.u.title_result = (DrEventTitleResult){ job->title, job->part,
+                                                  res->stopped ? DR_STATUS_STOPPED : res->failed ? DR_STATUS_FAILED :
+                                                  DR_STATUS_OK, res->warnings, res->damaged_ranges,
+                                                  res->damaged_bytes, dir };
+        engine_event(&ev);
+    }
     for (int i = 0; out && i < nb_tracks; i++) {
         EsOut *o = &out[i];
         for (int k = 0; k < o->nb_hold; k++)

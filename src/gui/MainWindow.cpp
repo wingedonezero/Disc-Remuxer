@@ -11,8 +11,6 @@
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
-#include <QJsonDocument>
-#include <QJsonObject>
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
@@ -149,7 +147,9 @@ MainWindow::MainWindow(LogRelay *r) : relay(r)
 
     // the engine's log into the console; scans and rips on the engine's thread
     connect(relay, &LogRelay::line, console, &Console::addLine);
-    connect(relay, &LogRelay::record, this, &MainWindow::onRecord);
+    connect(relay, &LogRelay::titleStarted, this, &MainWindow::onTitleStarted);
+    connect(relay, &LogRelay::titleDone, this, &MainWindow::onTitleDone);
+    connect(relay, &LogRelay::runResult, this, &MainWindow::onRunResult);
     connect(relay, &LogRelay::progress, this, &MainWindow::onProgress);
     worker = new EngineWorker;
     worker->moveToThread(&engineThread);
@@ -862,37 +862,55 @@ void MainWindow::ripStarted(quint64 id, QString folder)
     j->item->setText(C_STATUS, "Ripping…");
 }
 
-void MainWindow::onRecord(QString json)
+// the disc being ripped, NULL when none
+MainWindow::Job *MainWindow::ripping()
 {
-    QJsonObject r = QJsonDocument::fromJson(json.toUtf8()).object();
-    QString type = r.value("type").toString();
     Job *j = jobById(ripId);
+    return j && running && j->disc ? j : nullptr;
+}
 
-    if (!j || !running || !j->disc)
+// " part 2" for a part of a title, "" for the whole title
+static QString partText(int part)
+{
+    return part >= 0 ? QString(" part %1").arg(part + 1) : QString();
+}
+
+void MainWindow::onTitleStarted(TitleStart s)
+{
+    Job *j = ripping();
+    QTreeWidgetItem *title = j && s.title >= 0 && s.title < j->item->childCount() ? j->item->child(s.title) : nullptr;
+    QString part = partText(s.part);
+
+    if (!title)
         return;
-    int t = r.value("title").toInt(-1);
-    QTreeWidgetItem *title = t >= 0 && t < j->item->childCount() ? j->item->child(t) : nullptr;
-    QString part = r.contains("part") ? QString(" part %1").arg(r.value("part").toInt()) : QString();
+    ripTitle = s.title;
+    ripOrdinal = s.ordinal;
+    ripCount = s.count;
+    titleClock.start();
+    title->setText(C_STATUS, "Writing" + part + "…");
+    j->item->setText(C_STATUS, QString("Title #%1%2 (%3 of %4)").arg(s.title).arg(part).arg(ripOrdinal).arg(ripCount));
+}
 
-    if (type == "result") {
-        j->logFile = r.value("log").toString();
-    } else if (type == "title_start" && title) {
-        ripTitle = t;
-        ripOrdinal = r.value("ordinal").toInt();
-        ripCount = r.value("count").toInt();
-        titleClock.start();
-        title->setText(C_STATUS, "Writing" + part + "…");
-        j->item->setText(C_STATUS, QString("Title #%1%2 (%3 of %4)").arg(t).arg(part).arg(ripOrdinal).arg(ripCount));
-    } else if (type == "title_result" && title) {
-        QString st = r.value("status").toString();
-        int warnings = r.value("warnings").toInt();
-        if (st == "ok")
-            title->setText(C_STATUS, "Done" + part + (warnings ? QString(", %1 warning(s)").arg(warnings) : ""));
-        else if (st == "stopped")
-            title->setText(C_STATUS, "Stopped" + part + ": not complete");
-        else
-            title->setText(C_STATUS, "Failed" + part + " (see the log)");
-    }
+void MainWindow::onTitleDone(TitleResult r)
+{
+    Job *j = ripping();
+    QTreeWidgetItem *title = j && r.title >= 0 && r.title < j->item->childCount() ? j->item->child(r.title) : nullptr;
+    QString part = partText(r.part);
+
+    if (!title)
+        return;
+    if (r.status == DR_STATUS_OK)
+        title->setText(C_STATUS, "Done" + part + (r.warnings ? QString(", %1 warning(s)").arg(r.warnings) : ""));
+    else if (r.status == DR_STATUS_STOPPED)
+        title->setText(C_STATUS, "Stopped" + part + ": not complete");
+    else
+        title->setText(C_STATUS, "Failed" + part + " (see the log)");
+}
+
+void MainWindow::onRunResult(RunResult r)
+{
+    if (Job *j = ripping())
+        j->logFile = r.log;
 }
 
 void MainWindow::onProgress(int t, double done)

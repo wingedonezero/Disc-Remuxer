@@ -24,7 +24,9 @@
 #include "names.h"
 #include "base/settings.h"
 #include "codecs.h"
+#include "emit.h"
 #include "engine.h"
+#include "events.h"
 #include "select.h"
 #include "writer.h"
 
@@ -172,63 +174,20 @@ static void angle_text(const DiscTitleInfo *t, char *buf, size_t size)
                     t->shared_cells);
 }
 
+/* The title as info lists it: its line (and with detail its files, tracks
+ * and parts), then its record (DR_EVENT_TITLE). */
 static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *keep)
 {
-    char dur[32], size[32], files[2048] = "", js[512], jl[16], extra[512] = "", pt[192] = "";
-    AVBPrint streams, parts;
+    char dur[32], size[32], pt[192] = "";
     int nv = 0, na = 0, ns = 0;
 
     hms(dur, sizeof(dur), t->duration);
     size_text(size, sizeof(size), t->size);
-    av_bprint_init(&streams, 0, AV_BPRINT_SIZE_UNLIMITED);
     for (int i = 0; i < t->nb_streams; i++) {
         const DiscStreamInfo *k = &t->streams[i];
-        char jc[64], jsl[16], n1[24], n2[24], n3[24], n4[24], n5[24], n6[24], ji[24], jf[24], jo[24];
-        char d[96], jd[128], pl[48], jp[64], fr[48], jr[64], as[24], ja[32], lt[64], jl2[96], dv[48], jv[64], fq[32];
-        char lm[24], rl[128], jn[96], jm[48], je[16], an[32], jan[48], jh[32], jco[128], jma[320], nc1[24], nc2[24];
-        const char *lname = k->language[0] ? disc_language_name(k->language) : NULL, *mkv = disc_mkv_codec_id(k);
-        (void)dv; (void)fr;
         nv += k->type == DISC_MEDIA_VIDEO;
         na += k->type == DISC_MEDIA_AUDIO;
         ns += k->type == DISC_MEDIA_SUBTITLE;
-        av_bprintf(&streams,
-                 "%s{\"index\":%d,\"kind\":\"%s\",\"codec\":%s,\"language\":%s,\"inner_track\":%s,"
-                 "\"from_track\":%s,\"forced\":%s,\"second_view\":%s,\"second_layer\":%s,\"offset_sequence\":%s,\"width\":%s,"
-                 "\"height\":%s,\"channels\":%s,\"sample_rate\":%s,\"bits\":%s,\"bit_rate\":%s,"
-                 "\"description\":%s,\"profile\":%s,\"dolby_vision\":%s,\"frame_rate\":%s,\"aspect\":%s,"
-                 "\"layout\":%s,\"layout_mask\":%s,\"roles\":[%s],\"selected\":%s,\"language_name\":%s,"
-                 "\"codec_id\":%s,\"file_type\":%s,\"name\":%s,\"hdr\":%s,\"colour\":%s,\"mastering\":%s,"
-                 "\"max_cll\":%s,\"max_fall\":%s}",
-                 i ? "," : "", i, disc_media_name(k->type),
-                 json_str(jc, sizeof(jc), codec_short(k)),
-                 json_str(jsl, sizeof(jsl), k->language), json_index(ji, sizeof(ji), k->inner_track),
-                 json_index(jf, sizeof(jf), k->from_track), k->forced ? "true" : "false",
-                 k->second_view ? "true" : "false", k->second_layer ? "true" : "false",
-                 json_index(jo, sizeof(jo), k->offset_sequence),
-                 json_num(n1, sizeof(n1), k->width),
-                 json_num(n2, sizeof(n2), k->height), json_num(n3, sizeof(n3), k->channels),
-                 json_num(n4, sizeof(n4), k->sample_rate), json_num(n5, sizeof(n5), k->bits),
-                 json_num(n6, sizeof(n6), k->bit_rate),
-                 json_str(jd, sizeof(jd), codec_description(k, k->second_view && k->from_track >= 0 ? &t->streams[k->from_track] : NULL, d, sizeof(d))),
-                 *codec_profile_level(k, pl, sizeof(pl)) ? json_str(jp, sizeof(jp), pl) : "null",
-                 k->dolby_vision[0] ? json_str(jv, sizeof(jv), k->dolby_vision) : "null",
-                 k->frame_rate.num > 0 ? (snprintf(fq, sizeof(fq), "%d/%d", k->frame_rate.num, k->frame_rate.den),
-                                          json_str(jr, sizeof(jr), fq)) : "null",
-                 *aspect_text(k, as, sizeof(as)) ? json_str(ja, sizeof(ja), as) : "null",
-                 *layout_text(k, lt, sizeof(lt)) && k->layout ? json_str(jl2, sizeof(jl2), lt) : "null",
-                 json_num(lm, sizeof(lm), (int64_t)k->layout), roles_text(k->roles, ",", 1, rl, sizeof(rl)),
-                 keep[i] ? "true" : "false", lname ? json_str(jn, sizeof(jn), lname) : "null",
-                 mkv ? json_str(jm, sizeof(jm), mkv) : "null", json_str(je, sizeof(je), track_extension(k)),
-                 *audio_name(k, an, sizeof(an)) ? json_str(jan, sizeof(jan), an) : "null",
-                 k->hdr[0] ? json_str(jh, sizeof(jh), k->hdr) : "null",
-                 k->colour[0] ? json_str(jco, sizeof(jco), k->colour) : "null",
-                 k->mastering[0] ? json_str(jma, sizeof(jma), k->mastering) : "null",
-                 json_num(nc1, sizeof(nc1), k->max_cll), json_num(nc2, sizeof(nc2), k->max_fall));
-    }
-    for (int i = 0; i < t->nb_files; i++) {
-        char jf[300];
-        snprintf(files + strlen(files), sizeof(files) - strlen(files), "%s%s", i ? "," : "",
-                 json_str(jf, sizeof(jf), t->files[i]));
     }
     if (t->nb_parts)
         snprintf(pt, sizeof(pt), ", %d parts", t->nb_parts);
@@ -268,6 +227,65 @@ static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *ke
             log_text(LOG_INFO, "       part %-2d at %s  %9s  %s, %d chapter%s", p + 1, ps, pd, pl, q->nb_chapters,
                      q->nb_chapters == 1 ? "" : "s");
         }
+    }
+    {
+        DrEvent ev = { .kind = DR_EVENT_TITLE };
+        ev.u.title = (DrEventTitle){ t, keep };
+        engine_event(&ev);
+    }
+}
+
+void engine_title_json(const DiscTitleInfo *t, const uint8_t *keep)
+{
+    char files[2048] = "", js[512], jl[16], extra[512] = "";
+    AVBPrint streams, parts;
+
+    av_bprint_init(&streams, 0, AV_BPRINT_SIZE_UNLIMITED);
+    for (int i = 0; i < t->nb_streams; i++) {
+        const DiscStreamInfo *k = &t->streams[i];
+        char jc[64], jsl[16], n1[24], n2[24], n3[24], n4[24], n5[24], n6[24], ji[24], jf[24], jo[24];
+        char d[96], jd[128], pl[48], jp[64], fr[48], jr[64], as[24], ja[32], lt[64], jl2[96], dv[48], jv[64], fq[32];
+        char lm[24], rl[128], jn[96], jm[48], je[16], an[32], jan[48], jh[32], jco[128], jma[320], nc1[24], nc2[24];
+        const char *lname = k->language[0] ? disc_language_name(k->language) : NULL, *mkv = disc_mkv_codec_id(k);
+        (void)dv; (void)fr;
+        av_bprintf(&streams,
+                 "%s{\"index\":%d,\"kind\":\"%s\",\"codec\":%s,\"language\":%s,\"inner_track\":%s,"
+                 "\"from_track\":%s,\"forced\":%s,\"second_view\":%s,\"second_layer\":%s,\"offset_sequence\":%s,\"width\":%s,"
+                 "\"height\":%s,\"channels\":%s,\"sample_rate\":%s,\"bits\":%s,\"bit_rate\":%s,"
+                 "\"description\":%s,\"profile\":%s,\"dolby_vision\":%s,\"frame_rate\":%s,\"aspect\":%s,"
+                 "\"layout\":%s,\"layout_mask\":%s,\"roles\":[%s],\"selected\":%s,\"language_name\":%s,"
+                 "\"codec_id\":%s,\"file_type\":%s,\"name\":%s,\"hdr\":%s,\"colour\":%s,\"mastering\":%s,"
+                 "\"max_cll\":%s,\"max_fall\":%s}",
+                 i ? "," : "", i, disc_media_name(k->type),
+                 json_str(jc, sizeof(jc), codec_short(k)),
+                 json_str(jsl, sizeof(jsl), k->language), json_index(ji, sizeof(ji), k->inner_track),
+                 json_index(jf, sizeof(jf), k->from_track), k->forced ? "true" : "false",
+                 k->second_view ? "true" : "false", k->second_layer ? "true" : "false",
+                 json_index(jo, sizeof(jo), k->offset_sequence),
+                 json_num(n1, sizeof(n1), k->width),
+                 json_num(n2, sizeof(n2), k->height), json_num(n3, sizeof(n3), k->channels),
+                 json_num(n4, sizeof(n4), k->sample_rate), json_num(n5, sizeof(n5), k->bits),
+                 json_num(n6, sizeof(n6), k->bit_rate),
+                 json_str(jd, sizeof(jd), codec_description(k, k->second_view && k->from_track >= 0 ? &t->streams[k->from_track] : NULL, d, sizeof(d))),
+                 *codec_profile_level(k, pl, sizeof(pl)) ? json_str(jp, sizeof(jp), pl) : "null",
+                 k->dolby_vision[0] ? json_str(jv, sizeof(jv), k->dolby_vision) : "null",
+                 k->frame_rate.num > 0 ? (snprintf(fq, sizeof(fq), "%d/%d", k->frame_rate.num, k->frame_rate.den),
+                                          json_str(jr, sizeof(jr), fq)) : "null",
+                 *aspect_text(k, as, sizeof(as)) ? json_str(ja, sizeof(ja), as) : "null",
+                 *layout_text(k, lt, sizeof(lt)) && k->layout ? json_str(jl2, sizeof(jl2), lt) : "null",
+                 json_num(lm, sizeof(lm), (int64_t)k->layout), roles_text(k->roles, ",", 1, rl, sizeof(rl)),
+                 keep[i] ? "true" : "false", lname ? json_str(jn, sizeof(jn), lname) : "null",
+                 mkv ? json_str(jm, sizeof(jm), mkv) : "null", json_str(je, sizeof(je), track_extension(k)),
+                 *audio_name(k, an, sizeof(an)) ? json_str(jan, sizeof(jan), an) : "null",
+                 k->hdr[0] ? json_str(jh, sizeof(jh), k->hdr) : "null",
+                 k->colour[0] ? json_str(jco, sizeof(jco), k->colour) : "null",
+                 k->mastering[0] ? json_str(jma, sizeof(jma), k->mastering) : "null",
+                 json_num(nc1, sizeof(nc1), k->max_cll), json_num(nc2, sizeof(nc2), k->max_fall));
+    }
+    for (int i = 0; i < t->nb_files; i++) {
+        char jf[300];
+        snprintf(files + strlen(files), sizeof(files) - strlen(files), "%s%s", i ? "," : "",
+                 json_str(jf, sizeof(jf), t->files[i]));
     }
     if (t->source) {
         char jsrc[96];
@@ -435,23 +453,10 @@ void engine_disc_close(EngineDisc **pd)
     *pd = NULL;
 }
 
-void engine_disc_overview(const EngineDisc *e, int detail)
+void engine_disc_json(const DiscInfo *d)
 {
-    const DiscInfo *d = e->info;
-    char revs[32] = "", js1[64], js2[256], js3[64], js4[1024], jname[1100 + 16 * 300];
+    char js1[64], js2[256], js3[64], js4[1024], jname[1100 + 16 * 300];
 
-    if (d->udf_revision)
-        snprintf(revs, sizeof(revs), " %x.%02x", (unsigned)(d->udf_revision >> 8), (unsigned)(d->udf_revision & 0xff));
-    log_msg(MSG_SOURCE, LOG_INFO, "Disc: %s '%s', %s%s, %s, %d title%s", d->kind, d->label ? d->label : "",
-            d->filesystem ? d->filesystem : "?", revs, d->encrypted ? "encrypted" : "not encrypted",
-            d->nb_titles, d->nb_titles == 1 ? "" : "s");
-    if (d->name)
-        log_msg(MSG_SOURCE, LOG_INFO, "Disc name: %s", d->name);
-    if (d->menu_name)
-        log_msg(MSG_SOURCE, LOG_INFO, "Disc menu name: %s", d->menu_name);
-    /* what the format part tells more of the disc (region, protection, checks, ...) */
-    for (int p = 0; p < d->nb_props; p++)
-        log_msg(MSG_SOURCE, LOG_INFO, "Disc %s: %s", d->props[p].name, d->props[p].value);
     jname[0] = 0;
     if (d->name)
         snprintf(jname, sizeof(jname), ",\"name\":%s", json_str(js4, sizeof(js4), d->name));
@@ -472,6 +477,30 @@ void engine_disc_overview(const EngineDisc *e, int detail)
              json_str(js1, sizeof(js1), d->kind), json_str(js2, sizeof(js2), d->label ? d->label : ""),
              json_str(js3, sizeof(js3), d->filesystem ? d->filesystem : ""), d->encrypted ? "true" : "false",
              d->nb_titles, jname);
+}
+
+void engine_disc_overview(const EngineDisc *e, int detail)
+{
+    const DiscInfo *d = e->info;
+    char revs[32] = "";
+
+    if (d->udf_revision)
+        snprintf(revs, sizeof(revs), " %x.%02x", (unsigned)(d->udf_revision >> 8), (unsigned)(d->udf_revision & 0xff));
+    log_msg(MSG_SOURCE, LOG_INFO, "Disc: %s '%s', %s%s, %s, %d title%s", d->kind, d->label ? d->label : "",
+            d->filesystem ? d->filesystem : "?", revs, d->encrypted ? "encrypted" : "not encrypted",
+            d->nb_titles, d->nb_titles == 1 ? "" : "s");
+    if (d->name)
+        log_msg(MSG_SOURCE, LOG_INFO, "Disc name: %s", d->name);
+    if (d->menu_name)
+        log_msg(MSG_SOURCE, LOG_INFO, "Disc menu name: %s", d->menu_name);
+    /* what the format part tells more of the disc (region, protection, checks, ...) */
+    for (int p = 0; p < d->nb_props; p++)
+        log_msg(MSG_SOURCE, LOG_INFO, "Disc %s: %s", d->props[p].name, d->props[p].value);
+    {
+        DrEvent ev = { .kind = DR_EVENT_DISC };
+        ev.u.disc = (DrEventDisc){ d };
+        engine_event(&ev);
+    }
     for (int t = 0; t < d->nb_titles; t++)
         title_overview(&d->titles[t], detail, e->keeps[t]);
 }
@@ -711,9 +740,9 @@ static int run_titles(EngineDisc *e, const char *sel, const char *split, const c
     av_bprint_finalize(&damage, NULL);
     log_msg(MSG_LOG_FILE, LOG_INFO, "Log: %s", logp);
     {
-        char jl[PATH_MAX + 700];
-        log_json("result", "\"written\":%d,\"failed\":%d,\"warnings\":%d,\"errors\":%d,\"stopped\":%s,\"log\":%s",
-                 done, failed, warnings, errors, engine_cancelled() ? "true" : "false", json_str(jl, sizeof(jl), logp));
+        DrEvent ev = { .kind = DR_EVENT_RUN_RESULT };
+        ev.u.run = (DrEventRunResult){ done, failed, warnings, errors, engine_cancelled(), logp };
+        engine_event(&ev);
     }
     log_close_files();
     return failed || engine_cancelled() ? 1 : 0;

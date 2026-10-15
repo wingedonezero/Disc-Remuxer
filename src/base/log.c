@@ -24,7 +24,7 @@ static int  json_mode, verbose, color;
 static FILE *log_file, *debug_file;
 static int  progress_shown;
 static int  n_errors, n_warnings;
-static EngineSink sink;            /* the caller's (a GUI's); members NULL: the terminal */
+static LogSink sink;            /* the caller's (a GUI's); members NULL: the terminal */
 
 static const char *const word[] = { "ERROR", "WARNING", "OK", "INFO", "DETAIL" };
 
@@ -336,7 +336,7 @@ void log_json(const char *type, const char *fields, ...)
     va_list vl;
     int n;
 
-    if (!json_mode && !sink.record)
+    if (!json_mode)
         return;
     va_start(vl, fields);
     n = vasprintf(&body, fields, vl);   /* a record of any length (a title with many tracks) */
@@ -344,15 +344,8 @@ void log_json(const char *type, const char *fields, ...)
     if (n < 0)
         return;
     pthread_mutex_lock(&lock);
-    if (sink.record) {
-        char *rec = NULL;
-        if (asprintf(&rec, "{\"type\":\"%s\"%s%s}", type, *body ? "," : "", body) >= 0)
-            sink.record(sink.opaque, rec);
-        free(rec);
-    } else {
-        printf("{\"type\":\"%s\"%s%s}\n", type, *body ? "," : "", body);
-        fflush(stdout);
-    }
+    printf("{\"type\":\"%s\"%s%s}\n", type, *body ? "," : "", body);
+    fflush(stdout);
     pthread_mutex_unlock(&lock);
     free(body);
 }
@@ -394,7 +387,12 @@ int log_debug_file_open(void)
     return debug_file != NULL;
 }
 
-void engine_set_sink(const EngineSink *s)
+int log_json_mode(void)
+{
+    return json_mode;
+}
+
+void log_set_sink(const LogSink *s)
 {
     pthread_mutex_lock(&lock);
     if (s)
