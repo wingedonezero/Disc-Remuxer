@@ -124,3 +124,11 @@ def test_a_video_that_says_full_colour_range_is_said(tmp_path, full):
     line = ("Blu-ray: title 00001.m2ts: video stream 0 says full colour range (disc video is limited range): kept as "
             "on the disc")
     assert (line in p.stdout) == bool(full), p.stdout
+
+
+def test_a_disc_folder_has_no_label_to_say(tmp_path):
+    """A disc folder has no volume label: the disc line names none (no empty quotes)."""
+    d = avc_disc(tmp_path, (45, 36), 2, b"\x23\x20")
+    p = subprocess.run([*PROGRAM, "--set", "titles.min_length=0", "info", str(d)], capture_output=True, text=True)
+    line = next(l for l in p.stdout.splitlines() if l.startswith("Disc: "))
+    assert line.startswith("Disc: Blu-ray, folder, ") and "'" not in line, line

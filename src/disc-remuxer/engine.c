@@ -587,11 +587,14 @@ void engine_disc_json(const DiscInfo *d)
 void engine_disc_overview(const EngineDisc *e, int detail)
 {
     const DiscInfo *d = e->info;
-    char revs[32] = "";
+    char revs[32] = "", label[256] = "";
 
     if (d->udf_revision)
         snprintf(revs, sizeof(revs), " %x.%02x", (unsigned)(d->udf_revision >> 8), (unsigned)(d->udf_revision & 0xff));
-    log_msg(MSG_SOURCE, LOG_INFO, "Disc: %s '%s', %s%s, %s, %d title%s", d->kind, d->label ? d->label : "",
+    /* a disc folder has no volume label: none is said */
+    if (d->label && *d->label)
+        snprintf(label, sizeof(label), " '%s'", d->label);
+    log_msg(MSG_SOURCE, LOG_INFO, "Disc: %s%s, %s%s, %s, %d title%s", d->kind, label,
             d->filesystem ? d->filesystem : "?", revs, d->encrypted ? "encrypted" : "not encrypted",
             d->nb_titles, d->nb_titles == 1 ? "" : "s");
     if (d->name)
