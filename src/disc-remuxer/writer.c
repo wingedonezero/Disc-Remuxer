@@ -940,9 +940,10 @@ end:
         if (o->idx && (r = out_close(o, &o->idx)) < 0 && ret >= 0)
             ret = r;
         /* a forced-only subtitle track that shows nothing is empty: no file
-         * (as an MKV leaves such a track out) */
-        if (ret >= 0 && o->opened && t->forced && t->has_forced_objects && !t->forced_objects) {
-            if (remove(o->name) < 0)
+         * (as an MKV leaves such a track out); it may have given no set at
+         * all (none shows a forced subtitle) */
+        if (ret >= 0 && t->forced && t->has_forced_objects && !t->forced_objects) {
+            if (o->opened && remove(o->name) < 0)
                 ret = DR_ERR(errno);
             o->opened = 0;
             o->no_forced = 1;
