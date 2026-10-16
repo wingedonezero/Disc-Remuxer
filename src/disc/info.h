@@ -115,6 +115,7 @@ typedef struct DiscStreamInfo {
                                           description and metadata, "" not known */
     char             colour[96];     /**< video: its colour description (primaries, transfer, matrix, range), ""
                                           not stated */
+    int              full_range;     /**< video: its first picture says full colour range (disc video is limited) */
     char             mastering[192]; /**< video: the mastering display's luminance (and primaries), "" none */
     int              max_cll, max_fall;/**< video: content light level (cd/m²), 0 none */
     int              channels;       /**< audio */

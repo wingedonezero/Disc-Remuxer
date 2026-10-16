@@ -258,6 +258,10 @@ typedef struct DRCodec {
      *  fails; state: DR_VERIFY_STATE zero bytes, the track's (what earlier
      *  units said). NULL: none. Nothing is changed or left out. */
     int (*verify_sums)(void *state, const uint8_t *data, int size, const char **why);
+    /** Audio: the format an output unit's headers state (channels, rate) as
+     *  text: 1 written to out, 0 the unit states none. A change within a
+     *  track is a stage-5 finding (DR_EV_VERIFY_FORMAT). NULL: not read. */
+    int (*format)(const uint8_t *data, int size, char *out, int out_size);
 
     /* What the disc layer's stream pass (pass.c) needs to know. */
     /** 1: a stream of the codec is described without data (sub-pictures,
@@ -465,6 +469,8 @@ enum DREventKind {
     DR_EV_VERIFY_ORDER,    /**< a unit without a duration, or (audio, subtitles) not after the one before it */
     DR_EV_VERIFY_HOLE,     /**< video in display order: no picture for dur from pos (count = placeholders in it) */
     DR_EV_VERIFY_OVERLAP,  /**< video in display order: a picture starts dur before the one before it ends */
+    DR_EV_VERIFY_FORMAT,   /**< audio: a unit states another format (channels, rate) than the units before it
+                                (pos = its time, dur = its segment); bytes unchanged */
     DR_EV_PCM_SILENCE,     /**< PCM: a gap filled with silence (pos = the output time, dur = the gap in ticks,
                                 count = samples) */
     DR_EV_PCM_SKIP,        /**< PCM: a start 5 s or more after the video skipped on the output clock (dur ticks,
@@ -876,6 +882,7 @@ typedef struct DRVerifyStats {
     int64_t order_errors;      /**< units without a duration; audio / subtitles: not after the one before */
     int64_t holes, hole_dur;   /**< video in display order: gaps and their total (ticks) */
     int64_t overlaps, overlap_dur; /**< frames starting before the one before them ends; the largest (ticks) */
+    int64_t format_changes;    /**< audio: units stating another format than the units before them */
     int64_t delay;             /**< audio: the first frame's output time (a stream file's start delay) */
     int64_t es_err_max, es_err_at; /**< audio: stream-file position - own time, the largest by size (signed), and
                                         the own time where it is */

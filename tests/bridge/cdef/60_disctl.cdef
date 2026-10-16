@@ -145,6 +145,7 @@ enum DREventKind {
     DR_EV_VERIFY_ORDER,
     DR_EV_VERIFY_HOLE,
     DR_EV_VERIFY_OVERLAP,
+    DR_EV_VERIFY_FORMAT,
     DR_EV_PCM_SILENCE,
     DR_EV_PCM_SKIP,
     DR_EV_PCM_TIMECODE,
@@ -330,6 +331,7 @@ typedef struct DRVerifyStats {
     int64_t order_errors;
     int64_t holes, hole_dur;
     int64_t overlaps, overlap_dur;
+    int64_t format_changes;
     int64_t delay;
     int64_t es_err_max, es_err_at;
     int64_t es_err_end;

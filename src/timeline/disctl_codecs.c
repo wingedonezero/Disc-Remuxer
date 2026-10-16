@@ -7,6 +7,7 @@
 
 
 #include "base/crc16.h"
+#include "parse/bits.h"
 #include "parse/rules.h"
 
 #include <errno.h>
@@ -488,6 +489,186 @@ static const DRAudioRules audio_lpcm = {
 
 /* MPEG video: the unit starts with a start code and holds a picture start
  * code. VC-1: a start code and a frame start code. */
+/* ---- the format a unit's headers state (stage 5: a change within a track
+ * is a finding) ----
+ * Channels as "main.LFE" (dual mono "1+1") and the sample rate; each reads
+ * the codec's own header fields only. 1 written, 0 the unit states none. */
+
+static void fmt_text(char *out, int out_size, int main, int lfe, int rate, const char *more)
+{
+    if (main < 0)
+        snprintf(out, out_size, "1+1 %d Hz%s", rate, more);
+    else if (main)
+        snprintf(out, out_size, "%d.%d %d Hz%s", main, lfe, rate, more);
+    else
+        snprintf(out, out_size, "%d Hz%s", rate, more);
+}
+
+/* A/52 5.4.2.3 acmod: main channels (-1: 1+1 dual mono). */
+static const int acmod_channels[8] = { -1, 1, 2, 3, 3, 4, 4, 5 };
+
+/* The audio coding mode and LFE of the AC-3 / E-AC-3 syncframe at d (A/52
+ * 5.4.2, Annex E E.1.2.2): 0, or -1. */
+static int ac3_channels(const uint8_t *d, int size, const DrAc3Header *h, int *acmod, int *lfe)
+{
+    DrBits b;
+
+    if (dr_bits_init8(&b, d, size) < 0)
+        return -1;
+    if (is_eac3(h)) {
+        dr_bits_skip(&b, 16 + 2 + 3 + 11);             /* syncword, strmtyp, substreamid, frmsiz */
+        dr_bits_skip(&b, 2 + 2);                       /* fscod, fscod2 or numblkscod */
+        *acmod = dr_bits_get(&b, 3);
+        *lfe   = dr_bits_get1(&b);
+    } else {
+        dr_bits_skip(&b, 16 + 16 + 8 + 5 + 3);         /* syncword, crc1, fscod + frmsizecod, bsid, bsmod */
+        *acmod = dr_bits_get(&b, 3);
+        if ((*acmod & 1) && *acmod != 1)
+            dr_bits_skip(&b, 2);                       /* cmixlev */
+        if (*acmod & 4)
+            dr_bits_skip(&b, 2);                       /* surmixlev */
+        if (*acmod == 2)
+            dr_bits_skip(&b, 2);                       /* dsurmod */
+        *lfe = dr_bits_get1(&b);
+    }
+    return dr_bits_left(&b) < 0 ? -1 : 0;
+}
+
+/* AC-3 / E-AC-3: the first (independent) frame's channels and rate; frames
+ * after it in the unit (E-AC-3 dependent substreams) are named with theirs. */
+static int format_ac3(const uint8_t *d, int size, char *out, int out_size)
+{
+    char more[64] = "";
+    int main = 0, lfe = 0, rate = 0, n = 0;
+
+    for (int o = 0; o < size; n++) {
+        DrAc3Header h;
+        int acmod, l;
+        if (ac3_header(d + o, size - o, &h) < 0 || h.frame_size < 7 || h.frame_size > size - o ||
+            ac3_channels(d + o, size - o, &h, &acmod, &l) < 0)
+            return 0;
+        if (!n) {
+            main = acmod_channels[acmod];
+            lfe  = l;
+            rate = h.rate;
+        } else {
+            size_t k = strlen(more);
+            if (acmod_channels[acmod] < 0)
+                snprintf(more + k, sizeof(more) - k, " + a dependent substream (1+1)");
+            else
+                snprintf(more + k, sizeof(more) - k, " + a dependent substream (%d.%d)", acmod_channels[acmod], l);
+        }
+        o += h.frame_size;
+    }
+    if (!n || !rate)
+        return 0;
+    fmt_text(out, out_size, main, lfe, rate, more);
+    return 1;
+}
+
+/* DTS core (ETSI TS 102 114 5.3.1): AMODE channels (-1: dual mono; 0 above
+ * 9, user defined) and SFREQ rates. */
+static const int dts_amode_channels[16] = { 1, -1, 2, 2, 2, 3, 3, 4, 4, 5, 6, 6, 6, 7, 8, 8 };
+
+/* DTS: the core's channels, LFE and rate, and whether an extension
+ * substream (DTS-HD) follows it; a unit of the extension substream alone:
+ * its rate. */
+static int format_dts(const uint8_t *d, int size, char *out, int out_size)
+{
+    DrDcaHeader h;
+    DrBits b;
+    int amode, lff;
+
+    if (dts_core(d, size, &h) < 0) {
+        int code = -1, rate = 0, samples = 0;
+        if (!dts_exss_sync(d, size) || dr_dca_exss_timing(d, size, &code, &rate, &samples) < 0 || !rate)
+            return 0;
+        fmt_text(out, out_size, 0, 0, rate, " (an extension substream without a core)");
+        return 1;
+    }
+    if (dr_bits_init8(&b, d, size) < 0)
+        return 0;
+    dr_bits_skip(&b, 32 + 1 + 5 + 1 + 7 + 14);       /* sync, FTYPE, SHORT, CPF, NBLKS, FSIZE */
+    amode = dr_bits_get(&b, 6);
+    dr_bits_skip(&b, 4 + 5 + 1 + 1 + 1 + 1 + 1 + 3 + 1 + 1);   /* SFREQ .. ASPF */
+    lff = dr_bits_get(&b, 2);
+    if (dr_bits_left(&b) < 0)
+        return 0;
+    fmt_text(out, out_size, amode < 16 ? dts_amode_channels[amode] : 0, lff == 1 || lff == 2, h.rate,
+             h.frame_size < size && dts_exss_sync(d + h.frame_size, size - h.frame_size) ?
+             " + an extension substream (DTS-HD)" : "");
+    return 1;
+}
+
+/* TrueHD (format sync 0xF8726FBA at byte 4 of a major-sync AU): the rate
+ * code and the 8-channel presentation's channel assignment (the 6-channel
+ * one when that is 0); channels per assignment bit as the processing
+ * library counts them, bits 2 and 12 being LFE. MLP and AUs without a major
+ * sync state none. */
+static int format_truehd(const uint8_t *d, int size, char *out, int out_size)
+{
+    static const int per_bit[13] = { 2, 1, 1, 2, 2, 2, 2, 1, 1, 2, 2, 1, 1 };
+    static const int rates[16] = { 48000, 96000, 192000, 0, 0, 0, 0, 0, 44100, 88200, 176400 };
+    uint32_t info;
+    int assign, main = 0, lfe = 0, rate;
+
+    if (size < 12 || dr_rb32(d + 4) != 0xF8726FBA)
+        return 0;
+    info   = dr_rb32(d + 8);
+    rate   = rates[info >> 28];
+    assign = info & 0x1FFF;                         /* 8ch_presentation_channel_assignment */
+    if (!assign)
+        assign = (info >> 15) & 0x1F;               /* 6ch_presentation_channel_assignment */
+    if (!rate || !assign)
+        return 0;
+    for (int i = 0; i < 13; i++)
+        if (assign >> i & 1) {
+            if (i == 2 || i == 12)
+                lfe++;
+            else
+                main += per_bit[i];
+        }
+    fmt_text(out, out_size, main, lfe, rate, "");
+    return 1;
+}
+
+/* MPEG audio (ISO/IEC 11172-3 2.4.2.3): mode 3 single channel, else two. */
+static int format_mpa(const uint8_t *d, int size, char *out, int out_size)
+{
+    DrMpaHeader h;
+
+    if (dr_mpa_header(d, size, &h) < 0 || size < 4 || !h.rate)
+        return 0;
+    fmt_text(out, out_size, (d[3] >> 6) == 3 ? 1 : 2, 0, h.rate, (d[3] >> 6) == 2 ? " (dual channel)" : "");
+    return 1;
+}
+
+/* ADTS (ISO/IEC 13818-7 6.2): channel configuration (0: set in a program
+ * config element, not read here) and sampling frequency index. */
+static int format_adts(const uint8_t *d, int size, char *out, int out_size)
+{
+    static const int main_of[8] = { 0, 1, 2, 3, 4, 5, 5, 7 };
+    int cfg;
+
+    if (!check_adts(d, size))
+        return 0;
+    cfg = ((d[2] & 1) << 2) | (d[3] >> 6);
+    fmt_text(out, out_size, main_of[cfg], cfg >= 6, aac_rates[(d[2] >> 2) & 0xF],
+             cfg ? "" : " (channels in a program config element)");
+    return 1;
+}
+
+/* LATM: the rate its StreamMuxConfig gives (frames without one state none). */
+static int format_latm(const uint8_t *d, int size, char *out, int out_size)
+{
+    int rate = 0, samples = 0;
+
+    if (!loas(d, size) || dr_latm_header(d, size, &rate, &samples) < 0 || !rate)
+        return 0;
+    fmt_text(out, out_size, 0, 0, rate, "");
+    return 1;
+}
+
 static int verify_mpegvideo(const uint8_t *d, int size)
 {
     return size >= 4 && !d[0] && !d[1] && d[2] == 1 && anchor_mpegvideo(d, size) >= 0 ? DR_UNIT_OK : DR_UNIT_BAD;
@@ -634,31 +815,31 @@ static const DRCodec codecs[] = {
     { .id = DR_CODEC_HEVC, .name = "hevc", .anchor = anchor_hevc, .video = &ff_disctl_video_hevc,
       .verify = verify_hevc, .split = DR_SPLIT_HEVC, .parser_picture = 1 },
     { .id = DR_CODEC_AC3, .name = "ac3", .check = check_ac3, .audio = &audio_ac3,
-      .verify = verify_ac3, .split = DR_SPLIT_AC3 },
+      .verify = verify_ac3, .format = format_ac3, .split = DR_SPLIT_AC3 },
     { .id = DR_CODEC_EAC3, .name = "eac3", .check = check_eac3, .audio = &audio_eac3,
-      .verify = verify_ac3 },
+      .verify = verify_ac3, .format = format_ac3 },
     { .id = DR_CODEC_TRUEHD, .name = "truehd", .check = ff_disctl_mlp_check,
       .audio = &ff_disctl_audio_mlp, .split = DR_SPLIT_MLP,
-      .verify = ff_disctl_mlp_verify, .verify_sums = ff_disctl_mlp_checksums },
+      .verify = ff_disctl_mlp_verify, .verify_sums = ff_disctl_mlp_checksums, .format = format_truehd },
     { .id = DR_CODEC_MLP, .name = "mlp", .check = ff_disctl_mlp_check,
       .audio = &ff_disctl_audio_mlp, .split = DR_SPLIT_MLP,
       .verify = ff_disctl_mlp_verify, .verify_sums = ff_disctl_mlp_checksums },
     { .id = DR_CODEC_DTS, .name = "dts", .check = check_dts, .audio = &audio_dts,
-      .verify = verify_dts, .verify_sums = sums_dts, .split = DR_SPLIT_DTS },
+      .verify = verify_dts, .verify_sums = sums_dts, .format = format_dts, .split = DR_SPLIT_DTS },
     { .id = DR_CODEC_PCM_DVD, .name = "pcm_dvd", .audio = &audio_lpcm,
       .split = DR_SPLIT_PCM_DVD, .bits_coded = 1 },
     { .id = DR_CODEC_PCM_BLURAY, .name = "pcm_bluray", .audio = &audio_lpcm,
       .split = DR_SPLIT_PCM_BLURAY, .bits_coded = 1 },
     { .id = DR_CODEC_MP1, .name = "mp1", .check = check_mpa, .audio = &audio_mpa,
-      .verify = verify_mpa, .split = DR_SPLIT_MPA },
+      .verify = verify_mpa, .format = format_mpa, .split = DR_SPLIT_MPA },
     { .id = DR_CODEC_MP2, .name = "mp2", .check = check_mpa, .audio = &audio_mpa,
-      .verify = verify_mpa, .split = DR_SPLIT_MPA },
+      .verify = verify_mpa, .format = format_mpa, .split = DR_SPLIT_MPA },
     { .id = DR_CODEC_MP3, .name = "mp3", .check = check_mpa, .audio = &audio_mpa,
-      .verify = verify_mpa, .split = DR_SPLIT_MPA },
+      .verify = verify_mpa, .format = format_mpa, .split = DR_SPLIT_MPA },
     { .id = DR_CODEC_AAC, .name = "aac", .check = check_adts, .audio = &audio_adts,
-      .verify = verify_adts, .split = DR_SPLIT_ADTS },
+      .verify = verify_adts, .format = format_adts, .split = DR_SPLIT_ADTS },
     { .id = DR_CODEC_AAC_LATM, .name = "aac_latm", .check = loas, .audio = &audio_latm,
-      .verify = verify_latm, .split = DR_SPLIT_LATM },
+      .verify = verify_latm, .format = format_latm, .split = DR_SPLIT_LATM },
     { .id = DR_CODEC_DVD_SUBTITLE, .name = "dvd_subtitle",
       .check = ff_disctl_spu_check, .split = DR_SPLIT_DVDSUB,
       .verify = ff_disctl_spu_verify, .info_without_data = 1 },

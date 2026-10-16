@@ -158,6 +158,7 @@ static void cache_take(const Cached *k, Probe *p, int details)
         ds->max_fall = k->ds.max_fall;
         memcpy(ds->hdr, k->ds.hdr, sizeof(ds->hdr));
         memcpy(ds->colour, k->ds.colour, sizeof(ds->colour));
+        ds->full_range = k->ds.full_range;
         memcpy(ds->mastering, k->ds.mastering, sizeof(ds->mastering));
     }
 }
@@ -459,6 +460,12 @@ int ff_disc_stream_pass(DrDisc *d, const char *title, const DiscPassSource *src,
             snprintf(p[i].k->info.dolby_vision, sizeof(p[i].k->info.dolby_vision), "dvhe.07.%02d %s",
                      dovi_level(&p[i].k->info), type);
         }
+    /* a video that says full colour range: disc video is limited range
+     * (16-235); the bytes are kept as they are */
+    for (int i = 0; i < np && details; i++)
+        if (p[i].kind == P_TRACK && p[i].k->info.type == DISC_MEDIA_VIDEO && p[i].k->info.full_range)
+            dr_vlog(d->log, DR_VLOG_WARNING, "%s: title %s: video stream %d says full colour range (disc video is "
+                   "limited range): kept as on the disc\n", fmt, title, p[i].k->stream);
     /* the data */
     if (np && p[0].k == &tracks[0] && !p[0].seen) {
         dr_vlog(d->log, DR_VLOG_ERROR, "%s: title %s: its segment %d has no video packet: the title cannot be used\n", fmt,

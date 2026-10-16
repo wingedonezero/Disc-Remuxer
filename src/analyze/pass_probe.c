@@ -159,6 +159,8 @@ static void take(DiscDetailsProbe *p, const AVFrame *f)
                       1 << 30);
         ds->frame_rate = (DrRational){ d->framerate.num, d->framerate.den };
         hdr_text(ds, f);
+        ds->full_range = (f->color_range != AVCOL_RANGE_UNSPECIFIED ? f->color_range : d->color_range) ==
+                         AVCOL_RANGE_JPEG;
         /* the sequence header's (MPEG-2: its maximum), else none */
         ds->bit_rate   = !p->tc ? 0 : p->tc->video_bit_rate == DR_RATE_MAX ? d->rc_max_rate :
                          p->tc->video_bit_rate == DR_RATE_STATED ? d->bit_rate : 0;

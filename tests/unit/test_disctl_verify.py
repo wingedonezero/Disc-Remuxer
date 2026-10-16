@@ -227,3 +227,68 @@ def test_video_overlaps_and_bad_units():
 def test_a_codec_without_a_unit_check_is_counted():
     st, _ = check("pcm_dvd", AUDIO, [fi(bytes(64), 0, MS, 0, F_KEY)])
     assert st.unchecked == 1
+
+
+# ---- the format the units state (channels, rate): a change is a finding ----
+
+def changed_format(codec, frames, at, change):
+    """frames from k = at on carry change(bytearray) (checksums are not
+    fixed: the format is read from every unit that parses)."""
+    from helpers import install_log, LOG
+    out = []
+    for k, d in enumerate(frames):
+        if k >= at:
+            d = bytearray(d)
+            change(d)
+            d = bytes(d)
+        out.append(fi(d, k * AC3_DUR, AC3_DUR, k * AC3_DUR, F_KEY))
+    install_log(lib.AV_LOG_WARNING)
+    st, ev = check(codec, AUDIO, out)
+    return st, ev, [l for l in LOG if "format changes" in l]
+
+
+def test_an_ac3_track_whose_channels_change_is_said():
+    def to_51(d):                       # acmod 2 (2/0) -> 7 (3/2), lfeon set
+        d[6] = (7 << 5) | (d[6] & 0x1F) | 0x01
+    st, ev, said = changed_format("ac3", ac3_frames(), 3, to_51)
+    assert st.format_changes == 1 and kinds(ev).count(lib.DR_EV_VERIFY_FORMAT) == 1, (st.format_changes, kinds(ev))
+    assert said == ["Title timeline: check: track 1 (ac3): the format changes at 96.000 ms (segment 1) from 2.0 48000 "
+                    "Hz to 5.1 48000 Hz (bytes kept; a player or muxer may keep the first)"], said
+
+
+def test_a_dts_track_whose_channels_change_is_said():
+    dts = (DATA / "sine_5120.dts").read_bytes()
+    frames = [dts[i:i + 1884] for i in range(0, len(dts), 1884)]
+
+    def to_mono(d):                     # AMODE (6 bits after 32 + 28) 2 -> 0
+        v = int.from_bytes(d[4:12], "big")
+        v &= ~(0x3F << (64 - 28 - 6))
+        d[4:12] = v.to_bytes(8, "big")
+    st, ev, said = changed_format("dts", frames, 5, to_mono)
+    assert st.format_changes == 1, kinds(ev)
+    assert said and "from 2.0 48000 Hz to 1.0 48000 Hz" in said[0], said
+
+
+def test_a_truehd_track_whose_channels_change_at_a_major_sync_is_said():
+    st, ev = check("truehd", AUDIO, [fi(d, k * MS, MS, k * MS, F_KEY) for k, d in enumerate(thd_units())])
+    assert st.format_changes == 0, "the same format at every major sync"
+    units = thd_units()
+    majors = [k for k, u in enumerate(units) if u[4:8] == b"\xf8\x72\x6f\xba"]
+
+    def to_51(d):                       # 8ch assignment: L/R, C, LFE, Ls/Rs
+        if d[4:8] == b"\xf8\x72\x6f\xba":
+            v = int.from_bytes(d[8:12], "big") & ~0x1FFF | 0x000F
+            d[8:12] = v.to_bytes(4, "big")
+    from helpers import install_log, LOG
+    install_log(lib.AV_LOG_WARNING)
+    frames = []
+    for k, u in enumerate(units):
+        if k >= majors[3]:
+            u = bytearray(u)
+            to_51(u)
+            u = bytes(u)
+        frames.append(fi(u, k * MS, MS, k * MS, F_KEY))
+    st, ev = check("truehd", AUDIO, frames)
+    said = [l for l in LOG if "format changes" in l]
+    assert st.format_changes == 1, kinds(ev)
+    assert said and "from 2.0 48000 Hz to 5.1 48000 Hz" in said[0], said

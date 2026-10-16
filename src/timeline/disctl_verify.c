@@ -45,7 +45,9 @@ struct DRVerify {
     int64_t       *ph;           /* video placeholders' times */
     int            nb_v, cap_v, nb_ph, cap_ph;
 
-    int            logged[DR_EV_VERIFY_OVERLAP - DR_EV_VERIFY_UNIT + 1];
+    int            logged[DR_EV_VERIFY_FORMAT - DR_EV_VERIFY_UNIT + 1];
+    char           format[96];   /* audio: the format the units so far state ("" none yet) */
+    char           first_format[96];
     int            sums[DR_VERIFY_STATE / sizeof(int)];   /* the codec's verify_sums state */
     DRVerifyStats  st;
 
@@ -191,6 +193,21 @@ int ff_disctl_verify_frame(DRVerify *v, const DRFrame *f)
             finding(v, DR_EV_VERIFY_CRC, f->time, 0, 1, "the unit at %.3f ms fails its checksum%s%s%s", ms(f->time),
                     why ? " (" : "", why ? why : "", why ? ")" : "");
         }
+        /* the format the unit states against the units before it */
+        if (r != DR_UNIT_BAD && v->codec->format) {
+            char fmt[sizeof(v->format)];
+            if (v->codec->format(f->data, f->size, fmt, sizeof(fmt)) > 0) {
+                if (v->format[0] && strcmp(fmt, v->format)) {
+                    v->st.format_changes++;
+                    finding(v, DR_EV_VERIFY_FORMAT, f->time, f->seg, 1, "the format changes at %.3f ms (segment "
+                            "%d) from %s to %s (bytes kept; a player or muxer may keep the first)", ms(f->time),
+                            f->seg + 1, v->format, fmt);
+                }
+                if (!v->first_format[0])
+                    memcpy(v->first_format, fmt, sizeof(fmt));
+                memcpy(v->format, fmt, sizeof(fmt));
+            }
+        }
     }
     if (f->dur <= 0) {
         v->st.order_errors++;
@@ -279,6 +296,10 @@ int ff_disctl_verify_finish(DRVerify *v)
         video_order(v);
     if (v->kind == DR_KIND_AUDIO)
         sync_segment_end(v);
+    if (v->first_format[0])
+        dr_vlog(v->log, DR_VLOG_VERBOSE, "Title timeline: check: track %d (%s): the format its frames state: %s%s%s\n",
+               v->track, v->codec->name, v->first_format, s->format_changes ? ", last " : "",
+               s->format_changes ? v->format : "");
     /* the summary goes to the debug log; every finding was a warning already */
     dr_vlog(v->log, DR_VLOG_VERBOSE,
            "Title timeline: check: track %d (%s): %"PRId64" frames, %"PRId64" units that do not parse, %"PRId64

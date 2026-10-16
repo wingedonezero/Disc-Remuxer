@@ -221,6 +221,7 @@ static const char *const event_names[] = {
     [DR_EV_VERIFY_ORDER]         = "verify_order",
     [DR_EV_VERIFY_HOLE]          = "verify_hole",
     [DR_EV_VERIFY_OVERLAP]       = "verify_overlap",
+    [DR_EV_VERIFY_FORMAT]        = "verify_format",
     [DR_EV_PCM_SILENCE]          = "pcm_silence",
     [DR_EV_PCM_SKIP]             = "pcm_skip",
     [DR_EV_PCM_TIMECODE]         = "pcm_timecode",
@@ -418,7 +419,7 @@ static void on_event(void *opaque, const DREvent *e)
         dr_vlog(t->log, DR_VLOG_DEBUG, "Title timeline: event %s track=%d pos=%"PRId64" dur=%"PRId64" skew=%"PRId64
                " count=%"PRId64"\n", ff_disctl_event_name(e->kind), e->track, e->pos, e->dur, e->skew, e->count);
     event_text(t, e);
-    if (e->kind >= DR_EV_VERIFY_UNIT && e->kind <= DR_EV_VERIFY_OVERLAP && e->track >= 0 &&
+    if (e->kind >= DR_EV_VERIFY_UNIT && e->kind <= DR_EV_VERIFY_FORMAT && e->track >= 0 &&
         e->track < t->cfg.nb_tracks)
         t->t[e->track].warnings++;
     if (t->cfg.event)
@@ -1614,6 +1615,10 @@ static void title_summary(DRTitle *t)
                " holes%s%s\n", i, ff_disctl_codec_id_name(k->cfg.codec), st.frames - st.markers, st.bad_units,
                st.crc_errors, st.order_errors, st.holes, st.unchecked ? " (units of this codec are not checked)" : "",
                issues ? "" : ": PASS");
+        if (st.format_changes)
+            dr_vlog(t->log, DR_VLOG_WARNING, "Title check: track %d (%s): the format its frames state changes %"PRId64
+                   " time(s) (the lines above say where; bytes kept)\n", i, ff_disctl_codec_id_name(k->cfg.codec),
+                   st.format_changes);
         if (k->cfg.kind == DR_KIND_AUDIO && st.frames > st.markers)
             dr_vlog(t->log, st.sync_segments ? DR_VLOG_WARNING : DR_VLOG_VERBOSE, "Title check: track %d: as a stream "
                    "file (start delay %s ms) the audio is %s %s ms of its time on the disc%s%s\n", i,
