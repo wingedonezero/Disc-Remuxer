@@ -6,6 +6,7 @@
  */
 
 #include <stdint.h>
+#include <string.h>
 
 #include "base/bytes.h"
 #include "base/err.h"
@@ -326,4 +327,326 @@ int dr_dca_core(const uint8_t *data, int size, int *off, int *out_size)
             *out_size = core_size;
     }
     return 0;
+}
+
+/* ---- DTS-HD without a core (DTS Express, a lossless-only stream) ----
+ * The disc says a stream has no core substream: each frame is one extension
+ * substream frame (64 58 20 25, as long as its header's frame size), valid
+ * when its header reads through the first asset's descriptor (as an
+ * extension substream after a core frame). Where no frame starts, the kept
+ * bytes are given up. */
+
+static int disc_exss_sync(void *ctx, const uint8_t *b, int len)
+{
+    return disc_extss_sync(b, len);
+}
+
+static int disc_exss_size(void *ctx, const uint8_t *b, int len)
+{
+    DiscExtSS h;
+    DrBits r;
+    int idx, blong;
+
+    if (len < 10 || !disc_extss_start(&h, &r, b, len, &idx, &blong))
+        return -1;
+    return h.frame_size;
+}
+
+static int disc_exss_check(void *ctx, const uint8_t *b, int len)
+{
+    DiscExtSS h;
+
+    return disc_extss_header(&h, b, len) && h.frame_size <= len;
+}
+
+const DrFrameRule dr_dts_exss_frames = {
+    disc_exss_sync, disc_exss_size, disc_exss_check, disc_give_up, 0x14000,
+};
+
+/* ---- A core-less frame's timing ----
+ * Ported from FFmpeg 9.0.2's libavcodec/dca_exss.c (ff_dca_exss_parse,
+ * parse_descriptor, set_exss_offsets: the first asset's component offsets)
+ * and dca_parser.c (dca_parse_params: the LBR and XLL headers' rate and
+ * frame length), with the tables of dca.c. */
+
+enum {
+    EXSS_CORE = 0x010, EXSS_XBR = 0x020, EXSS_XXCH = 0x040, EXSS_X96 = 0x080,
+    EXSS_LBR  = 0x100, EXSS_XLL = 0x200, EXSS_RSV1 = 0x400, EXSS_RSV2 = 0x800,
+};
+
+static const uint32_t sampling_freqs[16] = {
+      8000,  16000, 32000, 64000, 128000, 22050,  44100,  88200,
+    176400, 352800, 12000, 24000,  48000, 96000, 192000, 384000,
+};
+
+static const uint8_t freq_ranges[16] = { 0, 1, 2, 3, 4, 1, 2, 3, 4, 4, 0, 1, 2, 3, 4, 4 };
+
+/* ff_dca_count_chs_for_mask */
+static int count_chs_for_mask(unsigned mask)
+{
+    return __builtin_popcount((mask & 0xffff) | ((mask & 0xae66) << 16));
+}
+
+/* ff_dca_seek_bits: to bit p, not back and not past the end */
+static int seek_bits(DrBits *g, int p)
+{
+    if (p < g->pos || p > g->size_bits)
+        return -1;
+    g->pos = p;
+    return 0;
+}
+
+typedef struct ExssAsset {
+    int offset, size;
+    unsigned mask;
+    int max_sample_rate;
+    int core_size, xbr_size, xxch_size, x96_size, lbr_size, xll_size;
+    int lbr_offset, xll_offset;
+} ExssAsset;
+
+static void lbr_parameters(DrBits *g, ExssAsset *a)
+{
+    a->lbr_size = dr_bits_get(g, 14) + 1;
+    if (dr_bits_get1(g))                    /* LBR sync word present */
+        dr_bits_skip(g, 2);
+}
+
+static void xll_parameters(DrBits *g, ExssAsset *a, int size_nbits)
+{
+    a->xll_size = dr_bits_get(g, size_nbits) + 1;
+    if (dr_bits_get1(g)) {                  /* XLL sync word present */
+        int delay_nbits;
+        dr_bits_skip(g, 4);                 /* peak bit rate smoothing buffer size */
+        delay_nbits = dr_bits_get(g, 5) + 1;
+        dr_bits_skip(g, delay_nbits);       /* initial decoding delay */
+        dr_bits_skip(g, size_nbits);        /* offset to the XLL sync */
+    }
+}
+
+/* The extension substream header through the first asset's descriptor and
+ * its components' offsets: 0, or -1 when the processing library would not
+ * read it (more than one presentation or asset, sizes out of bounds). */
+static int exss_first_asset(const uint8_t *b, int len, ExssAsset *a)
+{
+    DrBits g;
+    int idx, wide, header_size, size_nbits, exss_size, stat, mix = 0, nmixout = 0, nmixoutchs[4] = { 0 };
+    int nch = 0, estereo = 0, e6 = 0, drc, descr_pos, descr_size, offs, left;
+
+    memset(a, 0, sizeof(*a));
+    if (dr_bits_init8(&g, b, len) < 0)
+        return -1;
+    dr_bits_skip(&g, 32 + 8);               /* sync word, user defined bits */
+    idx         = dr_bits_get(&g, 2);
+    wide        = dr_bits_get1(&g);
+    header_size = dr_bits_get(&g, 8 + 4 * wide) + 1;
+    size_nbits  = 16 + 4 * wide;
+    exss_size   = dr_bits_get(&g, size_nbits) + 1;
+    if (exss_size > len)
+        return -1;
+    if ((stat = dr_bits_get1(&g))) {        /* static fields */
+        int npresents, nassets, active[8];
+        dr_bits_skip(&g, 2 + 3);            /* reference clock, frame duration */
+        if (dr_bits_get1(&g))
+            dr_bits_skip(&g, 36);           /* timecode */
+        if ((npresents = dr_bits_get(&g, 3) + 1) > 1)
+            return -1;
+        if ((nassets = dr_bits_get(&g, 3) + 1) > 1)
+            return -1;
+        for (int i = 0; i < npresents; i++)
+            active[i] = dr_bits_get(&g, idx + 1);
+        for (int i = 0; i < npresents; i++)
+            dr_bits_skip(&g, __builtin_popcount(active[i]) * 8);
+        if ((mix = dr_bits_get1(&g))) {
+            int mask_nbits;
+            dr_bits_skip(&g, 2);
+            mask_nbits = (dr_bits_get(&g, 2) + 1) << 2;
+            nmixout = dr_bits_get(&g, 2) + 1;
+            for (int i = 0; i < nmixout; i++)
+                nmixoutchs[i] = count_chs_for_mask(dr_bits_get(&g, mask_nbits));
+        }
+    }
+    a->offset = header_size;
+    a->size   = dr_bits_get(&g, size_nbits) + 1;
+    if (a->offset + a->size > exss_size)
+        return -1;
+
+    /* the asset descriptor */
+    descr_pos  = g.pos;
+    descr_size = dr_bits_get(&g, 9) + 1;
+    dr_bits_skip(&g, 3);                    /* asset index */
+    if (stat) {
+        if (dr_bits_get1(&g))
+            dr_bits_skip(&g, 4);            /* asset type */
+        if (dr_bits_get1(&g))
+            dr_bits_skip(&g, 24);           /* language */
+        if (dr_bits_get1(&g)) {             /* additional text */
+            int text = dr_bits_get(&g, 10) + 1;
+            if (dr_bits_left(&g) < text * 8)
+                return -1;
+            dr_bits_skip(&g, text * 8);
+        }
+        dr_bits_skip(&g, 5);                /* PCM bit resolution */
+        a->max_sample_rate = sampling_freqs[dr_bits_get(&g, 4)];
+        nch = dr_bits_get(&g, 8) + 1;
+        if (dr_bits_get1(&g)) {             /* one-to-one channel to speaker map */
+            int mask_nbits = 0, nsets, nspeakers[8];
+            estereo = nch > 2 && dr_bits_get1(&g);
+            e6      = nch > 6 && dr_bits_get1(&g);
+            if (dr_bits_get1(&g)) {         /* speaker mask */
+                mask_nbits = (dr_bits_get(&g, 2) + 1) << 2;
+                dr_bits_skip(&g, mask_nbits);
+            }
+            if ((nsets = dr_bits_get(&g, 3)) && !mask_nbits)
+                return -1;
+            for (int i = 0; i < nsets; i++)
+                nspeakers[i] = count_chs_for_mask(dr_bits_get(&g, mask_nbits));
+            for (int i = 0; i < nsets; i++) {
+                int nch_remap = dr_bits_get(&g, 5) + 1;
+                for (int j = 0; j < nspeakers[i]; j++)
+                    dr_bits_skip(&g, __builtin_popcount(dr_bits_get(&g, nch_remap)) * 5);
+            }
+        } else {
+            dr_bits_skip(&g, 3);            /* representation type */
+        }
+    }
+    drc = dr_bits_get1(&g);
+    if (drc)
+        dr_bits_skip(&g, 8);
+    if (dr_bits_get1(&g))
+        dr_bits_skip(&g, 5);                /* dialog normalization */
+    if (drc && estereo)
+        dr_bits_skip(&g, 8);
+    if (mix && dr_bits_get1(&g)) {          /* mixing metadata */
+        int ndmix;
+        dr_bits_skip(&g, 1 + 6);
+        if (dr_bits_get(&g, 2) == 3)
+            dr_bits_skip(&g, 8);
+        else
+            dr_bits_skip(&g, 3);
+        if (dr_bits_get1(&g))
+            for (int i = 0; i < nmixout; i++)
+                dr_bits_skip(&g, 6 * nmixoutchs[i]);
+        else
+            dr_bits_skip(&g, 6 * nmixout);
+        ndmix = nch + (e6 ? 6 : 0) + (estereo ? 2 : 0);
+        for (int i = 0; i < nmixout; i++) {
+            if (!nmixoutchs[i])
+                return -1;
+            for (int j = 0; j < ndmix; j++)
+                dr_bits_skip(&g, __builtin_popcount(dr_bits_get(&g, nmixoutchs[i])) * 6);
+        }
+    }
+    switch (dr_bits_get(&g, 2)) {           /* coding mode */
+    case 0:                                 /* components */
+        a->mask = dr_bits_get(&g, 12);
+        if (a->mask & EXSS_CORE) {
+            a->core_size = dr_bits_get(&g, 14) + 1;
+            if (dr_bits_get1(&g))
+                dr_bits_skip(&g, 2);
+        }
+        if (a->mask & EXSS_XBR)
+            a->xbr_size = dr_bits_get(&g, 14) + 1;
+        if (a->mask & EXSS_XXCH)
+            a->xxch_size = dr_bits_get(&g, 14) + 1;
+        if (a->mask & EXSS_X96)
+            a->x96_size = dr_bits_get(&g, 12) + 1;
+        if (a->mask & EXSS_LBR)
+            lbr_parameters(&g, a);
+        if (a->mask & EXSS_XLL)
+            xll_parameters(&g, a, size_nbits);
+        if (a->mask & EXSS_RSV1)
+            dr_bits_skip(&g, 16);
+        if (a->mask & EXSS_RSV2)
+            dr_bits_skip(&g, 16);
+        break;
+    case 1:                                 /* lossless only */
+        a->mask = EXSS_XLL;
+        xll_parameters(&g, a, size_nbits);
+        break;
+    case 2:                                 /* low bit rate */
+        a->mask = EXSS_LBR;
+        lbr_parameters(&g, a);
+        break;
+    case 3:                                 /* auxiliary */
+        a->mask = 0;
+        dr_bits_skip(&g, 14 + 8);
+        if (dr_bits_get1(&g))
+            dr_bits_skip(&g, 3);
+        break;
+    }
+    if (a->mask & EXSS_XLL)
+        dr_bits_skip(&g, 3);                /* DTS-HD stream id */
+    if (seek_bits(&g, descr_pos + descr_size * 8) < 0)
+        return -1;
+
+    /* the components' places in the asset (set_exss_offsets) */
+    offs = a->offset;
+    left = a->size;
+#define PLACE(bit, sz, at)              \
+    if (a->mask & (bit)) {              \
+        at = offs;                      \
+        if ((sz) > left)                \
+            return -1;                  \
+        offs += (sz);                   \
+        left -= (sz);                   \
+    }
+    {
+        int unused;
+        PLACE(EXSS_CORE, a->core_size, unused)
+        PLACE(EXSS_XBR, a->xbr_size, unused)
+        PLACE(EXSS_XXCH, a->xxch_size, unused)
+        PLACE(EXSS_X96, a->x96_size, unused)
+        (void)unused;
+    }
+    PLACE(EXSS_LBR, a->lbr_size, a->lbr_offset)
+    PLACE(EXSS_XLL, a->xll_size, a->xll_offset)
+#undef PLACE
+    return seek_bits(&g, header_size * 8) < 0 ? -1 : 0;
+}
+
+int dr_dca_exss_timing(const uint8_t *buf, int size, int *lbr_rate_code, int *rate, int *samples)
+{
+    ExssAsset a;
+    DrBits g;
+
+    if (size < 4 || dr_rb32(buf) != 0x64582025U || exss_first_asset(buf, size, &a) < 0)
+        return DR_ERR_INVALID;
+
+    if (a.mask & EXSS_LBR) {
+        if (dr_bits_init8(&g, buf + a.lbr_offset, a.lbr_size) < 0 || dr_bits_get(&g, 32) != 0x0A801921U)
+            return DR_ERR_INVALID;
+        switch (dr_bits_get(&g, 8)) {
+        case 2:                             /* decoder init: the rate code */
+            *lbr_rate_code = dr_bits_get(&g, 8);
+            break;
+        case 1:                             /* sync only: the last rate code */
+            break;
+        default:
+            return DR_ERR_INVALID;
+        }
+        if (*lbr_rate_code < 0 || *lbr_rate_code >= 16 || dr_bits_left(&g) < 0)
+            return DR_ERR_INVALID;
+        *rate    = sampling_freqs[*lbr_rate_code];
+        *samples = 1024 << freq_ranges[*lbr_rate_code];
+        return DR_DCA_EXSS_LBR;
+    }
+
+    if (a.mask & EXSS_XLL) {
+        int nsamples_log2;
+        if (dr_bits_init8(&g, buf + a.xll_offset, a.xll_size) < 0 || dr_bits_get(&g, 32) != 0x41A29547U)
+            return DR_ERR_INVALID;
+        if (dr_bits_get(&g, 4))             /* version */
+            return DR_ERR_INVALID;
+        dr_bits_skip(&g, 8);                /* header size */
+        dr_bits_skip(&g, dr_bits_get(&g, 5) + 1);
+        dr_bits_skip(&g, 4);
+        nsamples_log2 = dr_bits_get(&g, 4);
+        nsamples_log2 += dr_bits_get(&g, 4);
+        if (nsamples_log2 > 24 || dr_bits_left(&g) < 0 || !a.max_sample_rate)
+            return DR_ERR_INVALID;
+        *rate    = a.max_sample_rate;
+        *samples = (1 + (*rate > 96000)) << nsamples_log2;
+        return DR_DCA_EXSS_XLL;
+    }
+    return DR_ERR_INVALID;
 }

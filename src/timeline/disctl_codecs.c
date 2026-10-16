@@ -27,7 +27,7 @@ enum {
     REVIEW_FRAME_LENGTH = 1,   /* frame length or rate changes within the stream */
     REVIEW_DEPENDENT,          /* E-AC-3 dependent substream (extra channels) */
     REVIEW_SUBSTREAM,          /* E-AC-3 second program (independent substream > 0) */
-    REVIEW_DTS_SUBSTREAM_ONLY, /* DTS-HD substream without a core (DTS Express / LBR) */
+    REVIEW_DTS_SUBSTREAM_ONLY, /* DTS-HD substream without a core, lossless only (XLL) */
     REVIEW_MPEG_AUDIO,         /* any MPEG audio track (user rule: look at it) */
     REVIEW_AAC_MPEG4_ADTS,     /* ADTS with the MPEG-4 ID */
     REVIEW_AAC_LATM,           /* any LATM / LOAS track */
@@ -229,6 +229,18 @@ static int check_dts(const uint8_t *data, int size)
     return dts_core(data, size, &h) >= 0 || dts_exss_sync(data, size);
 }
 
+/* A frame of a DTS-HD stream without a core (DR_AUDIO_EXT_ONLY): its rate
+ * and samples from its LBR (DTS Express) or XLL header; the track's last LBR
+ * rate code is the audio stage's state. DR_DCA_EXSS_LBR / _XLL, or < 0. */
+static int exss_timing(DRAudio *a, const DRFrame *f, int *rate, int *samples)
+{
+    int *lbr_code = ff_disctl_audio_state(a);
+
+    if (!(ff_disctl_audio_flags(a) & DR_AUDIO_EXT_ONLY) || !lbr_code)
+        return DR_ERR_INVALID;
+    return dr_dca_exss_timing(f->data, f->size, lbr_code, rate, samples);
+}
+
 static int header_dts(DRAudio *a, const DRFrame *f, DRAudioHeader *out)
 {
     DrDcaHeader h;
@@ -238,33 +250,30 @@ static int header_dts(DRAudio *a, const DRFrame *f, DRAudioHeader *out)
         out->samples = h.samples;
         return 0;
     }
-    if (dts_exss_sync(f->data, f->size) && f->samples > 0 && f->rate > 0) {
-        out->rate    = f->rate;
-        out->samples = f->samples;
+    if (exss_timing(a, f, &out->rate, &out->samples) > 0)
         return 0;
-    }
     return -1;
 }
 
 /* A unit with a core frame is timed by its core frame header (npcmblocks x
- * 32 samples). A unit without one is timed by the DTS rule (extension
- * substream asset) and reviewed; a DTS track taken out of DTS-HD has no
- * such units. */
+ * 32 samples). A stream without a core (DR_AUDIO_EXT_ONLY) has extension
+ * substream frames only, each timed by its LBR (DTS Express) or XLL header;
+ * no other track takes such a unit. */
 static int duration_dts(DRAudio *a, DRFrame *f)
 {
     const DRAudioHeader *s = ff_disctl_audio_header(a);
     DrDcaHeader h;
-    int rate, samples;
+    int rate, samples, kind;
 
     if (dts_core(f->data, f->size, &h) >= 0) {
         rate    = h.rate;
         samples = h.samples;
-    } else if (dts_exss_sync(f->data, f->size) && !(ff_disctl_audio_flags(a) & DR_AUDIO_EXTRACTED) &&
-               f->samples > 0 && f->rate > 0) {
-        ff_disctl_audio_review(a, REVIEW_DTS_SUBSTREAM_ONLY, "DTS-HD extension substream without a core "
-                                "(DTS Express / LBR), timed by FFmpeg's parser");
-        rate    = f->rate;
-        samples = f->samples;
+    } else if ((kind = exss_timing(a, f, &rate, &samples)) > 0) {
+        /* DTS Express (LBR) is checked on real discs; a lossless-only
+         * stream (XLL without a core) is not yet */
+        if (kind == DR_DCA_EXSS_XLL)
+            ff_disctl_audio_review(a, REVIEW_DTS_SUBSTREAM_ONLY, "DTS-HD lossless stream without a core, each "
+                                    "frame timed by its XLL header");
     } else
         return DR_ERR_INVALID;
     if (rate != s->rate || samples != s->samples)

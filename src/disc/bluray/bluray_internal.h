@@ -404,6 +404,7 @@ typedef struct BlurayTrack {
 #define BLURAY_TRACK_3D_BASE   0x2000   /**< the base view of a stereoscopic (3-D) video */
 #define BLURAY_TRACK_3D_PLANE  0x8000   /**< a 3-D subtitle with an offset sequence (offset_seq) */
 #define BLURAY_TRACK_LAYER2    0x10000  /**< HEVC read with its second layer (PID sel1) */
+#define BLURAY_TRACK_NO_CORE   0x20000  /**< DTS-HD without a core substream (BLURAY_PROBE_NO_CORE) */
 #define BLURAY_TRACK_SIDE      0x1000000/**< read from its own clip (text subtitle) */
 
 typedef struct BlurayTitle {

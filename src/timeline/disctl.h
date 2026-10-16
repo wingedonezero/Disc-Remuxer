@@ -347,6 +347,10 @@ void ff_disctl_frames_stats(const DRFrames *c, DRFramesStats *stats);
  *  variant of the codec (dr_split_take_any). */
 void ff_disctl_frames_take_any(DRFrames *c);
 
+/** The track is DTS-HD without a core: extension substream frames only
+ *  (dr_split_ext_only). */
+void ff_disctl_frames_ext_only(DRFrames *c);
+
 /** The track is a DVD-Video disc's: its parser follows the DVD's frame
  *  rules (dr_split_dvd). */
 void ff_disctl_frames_dvd(DRFrames *c);
@@ -364,6 +368,8 @@ void ff_disctl_frames_close(DRFrames **frames);
 #define DR_AUDIO_EXTENDED  0x0002  /**< the stream carries an extension (DTS-HD): its frames are found
                                         with the extension's rules (the track whose stream it is, and
                                         the one taken out of it) */
+#define DR_AUDIO_EXT_ONLY  0x0008  /**< DTS-HD without a core (DTS Express, lossless only): its frames
+                                        are extension substreams, each timed by its LBR / XLL header */
 #define DR_AUDIO_EXTRACTED 0x0001  /**< the track is a stream taken out of another one (DTS out of
                                         DTS-HD): the codec's filter keeps only its frames */
 
@@ -969,7 +975,7 @@ int ff_disctl_lpcm_convert(const DRLpcm *p, const uint8_t *in, int size, uint8_t
 typedef struct DRTitleTrack {
     DRCodecID codec;
     int            kind;           /**< DRTrackKind */
-    int            audio_flags;    /**< DR_AUDIO_EXTRACTED, DR_AUDIO_EXTENDED */
+    int            audio_flags;    /**< DR_AUDIO_EXTRACTED, DR_AUDIO_EXTENDED, DR_AUDIO_EXT_ONLY */
     int            width, height;  /**< sub-pictures: the canvas they are drawn on (0 x 0: not known) */
     int            sub_flags;      /**< DR_SUB_FORCED_ONLY */
     int            layer_flags;    /**< DR_LAYER_MERGED */

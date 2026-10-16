@@ -56,3 +56,121 @@ def test_a_dts_track_taken_out_of_dts_hd_keeps_only_the_dts_frames():
     for o, f in zip(r.outs, frames()):
         assert o.bytes == f
     assert r.audio.cut_bytes == 10 * 600
+
+
+# ---- DTS-HD without a core: DTS Express (LBR), lossless only (XLL) ----
+
+class Bits:
+    def __init__(self):
+        self.v, self.n = 0, 0
+
+    def put(self, value, n):
+        self.v = (self.v << n) | (value & ((1 << n) - 1))
+        self.n += n
+
+    def pad_to(self, n):
+        self.put(0, n - self.n)
+
+    def bytes(self):
+        return (self.v << (-self.n % 8)).to_bytes((self.n + 7) // 8, "big")
+
+
+def coreless(kind, body, rate_index=12, xll_log2=(4, 5)):
+    """One extension substream frame with one presentation and one asset
+    (ETSI TS 102 114 7.4-7.5): static fields, an asset descriptor in coding
+    mode 2 (LBR: body after its sync word 0A 80 19 21) or 1 (lossless only:
+    body after an XLL header, sync 41 A2 95 47)."""
+    if kind == "lbr":
+        comp = bytes.fromhex("0A801921") + body
+    else:
+        x = Bits()
+        x.put(0x41A29547, 32); x.put(0, 4); x.put(15, 8); x.put(0, 5); x.put(0, 1)   # version, header size, 1 bit
+        x.put(0, 4); x.put(xll_log2[0], 4); x.put(xll_log2[1], 4)
+        comp = x.bytes() + body
+    for header_size in range(16, 64):
+        b = Bits()
+        b.put(0x64582025, 32); b.put(0, 8)
+        b.put(0, 2); b.put(0, 1)                                    # substream 0, short sizes
+        b.put(header_size - 1, 8); b.put(header_size + len(comp) - 1, 16)
+        b.put(1, 1)                                                 # static fields
+        b.put(0, 2); b.put(0, 3); b.put(0, 1)                       # clock, frame duration, no time code
+        b.put(0, 3); b.put(0, 3)                                    # one presentation, one asset
+        b.put(1, 1); b.put(1, 8)                                    # substream 0 active, asset 0 active
+        b.put(0, 1)                                                 # no mixing metadata
+        b.put(len(comp) - 1, 16)                                    # the asset's size
+        d = Bits()
+        d.put(0, 3)                                                 # asset index
+        d.put(0, 1); d.put(0, 1); d.put(0, 1)                       # no type, language, text
+        d.put(23, 5); d.put(rate_index, 4); d.put(1, 8)             # 24 bits, max rate, 2 channels
+        d.put(0, 1); d.put(0, 3)                                    # no one-to-one map, representation
+        d.put(0, 1); d.put(0, 1)                                    # no DRC, no dialog normalization
+        if kind == "lbr":
+            d.put(2, 2); d.put(len(comp) - 1, 14); d.put(0, 1)
+        else:
+            d.put(1, 2); d.put(len(comp) - 1, 16); d.put(0, 1); d.put(0, 3)
+        size = (9 + d.n + 7) // 8                                   # the descriptor, its size field too
+        d0 = b.n
+        if d0 + size * 8 > header_size * 8:
+            continue
+        b.put(size - 1, 9); b.put(d.v, d.n)
+        b.pad_to(d0 + size * 8)
+        b.pad_to(header_size * 8)
+        return b.bytes() + comp
+    raise AssertionError("header does not fit")
+
+
+def express(n, rate_code=12, every=4):
+    """n DTS Express frames: a decoder-init LBR header (with the rate code)
+    every `every` frames, sync-only headers between."""
+    out = []
+    for k in range(n):
+        body = bytes([2, rate_code]) if k % every == 0 else bytes([1])
+        out.append(coreless("lbr", body + bytes([k]) * (200 + k % 7)))
+    return out
+
+
+def test_dts_express_frames_are_cut_one_by_one_and_timed_by_their_lbr_header():
+    fs = express(12)
+    r = run("dts", [(b"".join(fs[:5]), 1), (b"".join(fs[5:]), 2)], flags=lib.DR_AUDIO_EXT_ONLY)
+    assert [o.bytes for o in r.outs] == fs
+    assert all(o.dur == dur(4096, 48000) for o in r.outs)                 # 1024 << 2 samples, 85.33 ms
+    assert all(o.flags == F_KEY | F_SYNC for o in r.outs)
+    assert (r.audio.header.rate, r.audio.header.samples) == (48000, 4096)
+    assert r.audio.review == 0 and r.frames.skipped == 0
+
+
+def test_dts_express_takes_the_rate_code_of_the_last_decoder_init_header():
+    r = run("dts", [(b"".join(express(8, rate_code=11)), 1)], flags=lib.DR_AUDIO_EXT_ONLY)
+    assert len(r.outs) == 8 and all(o.dur == dur(2048, 24000) for o in r.outs)   # 24 kHz: 1024 << 1
+
+
+def test_dts_express_frames_before_the_first_decoder_init_header_take_its_rate():
+    # a title that starts on sync-only frames: the stream's rate is known
+    # from its first decoder-init header, and the frames before are timed by it
+    fs = express(9)[1:]
+    r = run("dts", [(b"".join(fs), 1)], flags=lib.DR_AUDIO_EXT_ONLY)
+    assert [o.bytes for o in r.outs] == fs
+    assert all(o.dur == dur(4096, 48000) for o in r.outs)
+
+
+def test_a_lossless_only_stream_is_timed_by_its_xll_header_and_reviewed():
+    fs = [coreless("xll", bytes([k]) * 300) for k in range(6)]
+    r = run("dts", [(b"".join(fs), 1)], flags=lib.DR_AUDIO_EXT_ONLY)
+    assert [o.bytes for o in r.outs] == fs
+    assert all(o.dur == dur(512, 48000) for o in r.outs)                 # 1 << (4 + 5)
+    assert r.audio.review != 0
+
+
+def test_core_less_frames_are_not_taken_by_a_dts_or_dts_hd_track():
+    # the rule applies only where the disc says the stream has no core
+    fs = express(6)
+    for flags in (0, lib.DR_AUDIO_EXTENDED, lib.DR_AUDIO_EXTRACTED | lib.DR_AUDIO_EXTENDED):
+        r = run("dts", [(b"".join(fs), 1)], flags=flags)
+        assert not r.outs
+
+
+def test_a_track_without_a_core_keeps_no_core_frame():
+    # core frames in a stream the disc says has none are not its frames
+    fs = express(4)
+    r = run("dts", [(b"".join(fs) + frames()[0] + b"".join(express(4)), 1)], flags=lib.DR_AUDIO_EXT_ONLY)
+    assert all(o.bytes[:4] == bytes.fromhex("64582025") for o in r.outs)

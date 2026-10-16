@@ -353,6 +353,8 @@ static void title_tracks(const BlurayTitle *t, DiscTrack *out)
         o->feed.nb_keys = ff_bluray_track_keys(tk, bdav, o->feed.key);
         if (second_view(tk))
             o->flags |= DISC_TRACK_SECOND_VIEW;
+        if (tk->flags & BLURAY_TRACK_NO_CORE)
+            o->flags |= DISC_TRACK_EXT_ONLY;
         /* Dolby Vision: the enhancement layer (with its metadata) on its
          * own PID, sel1 */
         if (tk->flags & BLURAY_TRACK_LAYER2) {

@@ -127,6 +127,10 @@ def run(codec, payloads, marker=None, flags=0):
     assert lib.ff_disctl_frames_open(c, ffi.NULL, cid, fn("ff_disctl_audio_unit"), a[0]) == 0
     if flags & lib.DR_AUDIO_EXTENDED:
         lib.ff_disctl_frames_take_any(c[0])
+    if flags & lib.DR_AUDIO_EXT_ONLY:                   # as the title does: the last LBR rate code is the track's
+        lbr_code = ffi.new("int *", -1)
+        lib.ff_disctl_frames_ext_only(c[0])
+        lib.ff_disctl_audio_set_state(a[0], lbr_code)
     if flags & lib.DR_AUDIO_DVD:
         lib.ff_disctl_frames_dvd(c[0])
     for data, time in payloads:

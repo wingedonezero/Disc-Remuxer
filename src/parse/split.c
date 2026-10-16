@@ -33,7 +33,7 @@ struct DrSplit {
     } actx;
     DrH264 *h264;
     DrHevc *hevc;
-    int take_any, dvd;
+    int take_any, dvd, ext_only;
     int started;                /* the first bytes came: the options are fixed */
 
     uint8_t *win;               /* the bytes not yet decided */
@@ -124,6 +124,11 @@ void dr_split_take_any(DrSplit *s)
     s->take_any = 1;
 }
 
+void dr_split_ext_only(DrSplit *s)
+{
+    s->ext_only = 1;
+}
+
 void dr_split_dvd(DrSplit *s)
 {
     s->dvd = 1;
@@ -147,7 +152,9 @@ static void start(DrSplit *s)
         break;
     case DR_SPLIT_DTS:
         s->actx.dca.undecided = 1;
-        if (s->take_any)
+        if (s->ext_only)
+            s->frames = &dr_dts_exss_frames;
+        else if (s->take_any)
             s->frames = &dr_dts_hd_frames;
         break;
     case DR_SPLIT_MPA:

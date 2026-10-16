@@ -69,6 +69,9 @@ typedef struct DiscTrack {
 /** Read from a clip of its own (Blu-ray text subtitles): not in the stream
  *  pass. */
 #define DISC_TRACK_SIDE        0x0004
+/** DTS-HD without a core substream (the stream pass found none): DTS
+ *  Express or a lossless-only stream. */
+#define DISC_TRACK_EXT_ONLY    0x0008
 
 /** The segment a title's stream pass reads (its largest), as its format
  *  part reads it. */

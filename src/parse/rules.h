@@ -78,6 +78,8 @@ extern const DrFrameRule dr_textst_frames;    /**< TextST segments (one per unit
 extern const DrFrameRule dr_ac3_frames;       /**< AC-3 / E-AC-3 syncframes (ctx: DrAc3RuleCtx) */
 extern const DrFrameRule dr_dts_frames;       /**< DTS core frames (ctx: DrDcaRuleCtx) */
 extern const DrFrameRule dr_dts_hd_frames;    /**< DTS-HD: core + extension substream (ctx: DrDcaRuleCtx) */
+extern const DrFrameRule dr_dts_exss_frames;  /**< DTS-HD without a core (DTS Express, lossless only):
+                                                   extension substream frames */
 extern const DrFrameRule dr_mpa_frames;       /**< MPEG audio frames (ctx: DrMpaRuleCtx) */
 
 /** The stream header from an AC-3 / E-AC-3 frame: E-AC-3 bitstream
@@ -118,6 +120,17 @@ typedef struct DrDcaHeader {
 
 /** The header of the core frame at buf: 0, or DR_ERR_INVALID. */
 int dr_dca_core_header(const uint8_t *buf, int size, DrDcaHeader *h);
+
+/** What times a DTS-HD extension substream frame without a core. */
+enum { DR_DCA_EXSS_LBR = 1, DR_DCA_EXSS_XLL = 2 };
+
+/** A DTS-HD extension substream frame without a core: the sample rate and
+ *  the samples of its first asset's LBR (DTS Express) or XLL (lossless)
+ *  component, as the processing library's DTS parser reads them.
+ *  *lbr_rate_code: the LBR rate code of the last frame that gave one (its
+ *  decoder-init header), the caller's to keep across frames (-1 none yet).
+ *  DR_DCA_EXSS_LBR or DR_DCA_EXSS_XLL, or DR_ERR_INVALID. */
+int dr_dca_exss_timing(const uint8_t *buf, int size, int *lbr_rate_code, int *rate, int *samples);
 
 /** The core of a DTS track's unit: a unit starting with a core frame is cut
  *  to the core frame's size (the DTS-HD extension substream after it goes);

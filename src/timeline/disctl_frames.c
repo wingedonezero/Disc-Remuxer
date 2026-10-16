@@ -76,10 +76,19 @@ struct DRFrames {
     DRPlaceCb place;
     void    *place_opaque;
 
+    /* a run of bytes with no frame start, said once where it ends: its
+     * first stream offset, bytes, pieces, the places of its first and last
+     * piece */
+    int64_t  ns_off, ns_bytes;
+    int      ns_pieces;
+    char     ns_first[256], ns_last[256];
+
     DRFramesStats st;
     int64_t  split_units;      /* H.264 / HEVC: frames whose first bytes lie in an earlier payload than their
                                   anchor (a delimiter or SEI muxed into the packet before) */
 };
+
+static void no_start_say(DRFrames *c);
 
 int ff_disctl_frames_open(DRFrames **frames, void *logctx, DRCodecID codec,
                            DRUnitCb cb, void *opaque)
@@ -131,6 +140,7 @@ void ff_disctl_frames_close(DRFrames **frames)
 
     if (!c)
         return;
+    no_start_say(c);
     if (c->split_units)
         dr_vlog(c->log, DR_VLOG_WARNING, "Title timeline: %s: %"PRId64" frames begin in the packet before the one "
                "with their picture (a badly muxed stream?): each takes the time of the packet with its picture\n",
@@ -163,6 +173,12 @@ void ff_disctl_frames_take_any(DRFrames *c)
 {
     if (c->split)
         dr_split_take_any(c->split);
+}
+
+void ff_disctl_frames_ext_only(DRFrames *c)
+{
+    if (c->split)
+        dr_split_ext_only(c->split);
 }
 
 void ff_disctl_frames_dvd(DRFrames *c)
@@ -205,12 +221,62 @@ static void place_of(DRFrames *c, int64_t off, char *buf, int size)
         buf[0] = '\0';
 }
 
+/* The run of bytes with no frame start, if any, said: one piece as it
+ * came, pieces one after another (a stream with no frame this cutter knows)
+ * as one line. */
+static void no_start_say(DRFrames *c)
+{
+    char at[600] = "";
+
+    if (!c->ns_pieces)
+        return;
+    if (c->ns_pieces == 1) {
+        if (c->ns_first[0])
+            snprintf(at, sizeof(at), " (%s)", c->ns_first);
+        dr_vlog(c->log, DR_VLOG_WARNING, "%s: %"PRId64" bytes at stream offset %"PRId64" with no frame start in "
+               "them (damaged or cut data): left out%s\n", c->label, c->ns_bytes, c->ns_off, at);
+    } else {
+        if (c->ns_first[0] && c->ns_last[0])
+            snprintf(at, sizeof(at), " (the first %s; the last %s)", c->ns_first, c->ns_last);
+        else if (c->ns_first[0])
+            snprintf(at, sizeof(at), " (the first %s)", c->ns_first);
+        dr_vlog(c->log, DR_VLOG_WARNING, "%s: %"PRId64" bytes from stream offset %"PRId64" on, given in %d pieces, "
+               "with no frame start in them (damaged or cut data, or a stream this cutter does not know): left "
+               "out%s\n", c->label, c->ns_bytes, c->ns_off, c->ns_pieces, at);
+    }
+    c->ns_pieces = 0;
+    c->ns_bytes  = 0;
+}
+
+/* k bytes at stream offset off with no frame start: added to the run they
+ * continue, or a new run. */
+static void no_start_add(DRFrames *c, int64_t off, int k)
+{
+    if (c->ns_pieces && off != c->ns_off + c->ns_bytes)
+        no_start_say(c);
+    place_of(c, off, c->ns_last, sizeof(c->ns_last));
+    if (!c->ns_pieces) {
+        c->ns_off = off;
+        memcpy(c->ns_first, c->ns_last, sizeof(c->ns_first));
+    }
+    c->ns_bytes += k;
+    c->ns_pieces++;
+    c->st.skipped++;
+    c->st.skipped_bytes += k;
+}
+
 /* k bytes at stream offset off are left out: said every time, with what
- * they are, where they lie and what is done. */
+ * they are, where they lie and what is done (bytes with no frame start: once
+ * per run of them). */
 static void left_out(DRFrames *c, int64_t off, int k, int what)
 {
     char where[256], at[272] = "";
 
+    if (what == LEFT_NO_START) {
+        no_start_add(c, off, k);
+        return;
+    }
+    no_start_say(c);
     place_of(c, off, where, sizeof(where));
     if (where[0])
         snprintf(at, sizeof(at), " (%s)", where);
@@ -226,10 +292,6 @@ static void left_out(DRFrames *c, int64_t off, int k, int what)
     case LEFT_REFUSED:
         dr_vlog(c->log, DR_VLOG_WARNING, "%s: a frame of %d bytes at stream offset %"PRId64" fails its check "
                "(damaged data): left out%s\n", c->label, k, off, at);
-        break;
-    case LEFT_NO_START:
-        dr_vlog(c->log, DR_VLOG_WARNING, "%s: %d bytes at stream offset %"PRId64" with no frame start in them "
-               "(damaged or cut data): left out%s\n", c->label, k, off, at);
         break;
     case LEFT_END:
         dr_vlog(c->log, DR_VLOG_INFO, "%s: the %s ends inside a frame: its last %d bytes are the start of a frame it "
@@ -369,6 +431,7 @@ static int unit_take(DRFrames *c, const uint8_t *data, int size, int64_t off,
     int64_t time = DR_NOPTS_VALUE;
     int unit, a, ret;
 
+    no_start_say(c);
     unit = !c->codec->check || c->codec->check(data, size);
     if (!unit && other_kind(c, data, size)) {
         /* a frame of the stream's other kind (an AC-3 core track's E-AC-3
@@ -414,6 +477,7 @@ static void not_a_unit(DRFrames *c, const DrSplitChunk *ch)
 
     if (ch->note) {
         char where[256], at[272] = "";
+        no_start_say(c);
         place_of(c, ch->offset, where, sizeof(where));
         if (where[0])
             snprintf(at, sizeof(at), " (%s)", where);
@@ -444,6 +508,7 @@ static int drain(DRFrames *c)
             continue;
         }
         /* what the splitter found about the frame, said with its place */
+        no_start_say(c);
         if (ch.note) {
             char where[256], at[272] = "";
             place_of(c, ch.offset, where, sizeof(where));
@@ -593,6 +658,7 @@ int ff_disctl_frames_flush(DRFrames *c)
         left_out(c, c->win_pos, c->win_len, LEFT_REST);
         window_consume(c, c->win_pos + c->win_len);
     }
+    no_start_say(c);
     dr_vlog(c->log, DR_VLOG_DEBUG, "Title timeline: %s: %"PRId64" bytes, %"PRId64" timed payloads -> %"PRId64
            " units (%"PRId64" timed), %"PRId64" payload times belong to no unit\n", c->codec->name,
            c->st.bytes, c->st.records, c->st.units, c->st.timed, c->st.records_unused);

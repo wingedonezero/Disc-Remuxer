@@ -69,6 +69,7 @@ void     dr_split_free(DrSplit **ps);
 
 /* Options, before the first write: */
 void dr_split_take_any(DrSplit *s);     /**< AC-3: both kinds; DTS: with the extension substream */
+void dr_split_ext_only(DrSplit *s);     /**< DTS: a stream without a core: extension substreams only */
 void dr_split_dvd(DrSplit *s);          /**< MPEG audio: a DVD-Video disc's stream */
 /** DVD / HD DVD LPCM: the frame format (any time; until set the bytes are kept). */
 void dr_split_pcm_format(DrSplit *s, int channels, int bits, int samples_per_frame);

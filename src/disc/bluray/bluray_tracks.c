@@ -112,6 +112,8 @@ static void split(Desc *d, const BlurayClipStream *e, int main, int core, int al
     } else {
         d->n = 1;
         d->k[0] = (Part){ .code = alone, .sel1 = 0x72, .flags = secondary ? BLURAY_TRACK_SECONDARY : 0 };
+        if (alone == K_DTSHD)
+            d->k[0].flags |= BLURAY_TRACK_NO_CORE;
     }
 }
 

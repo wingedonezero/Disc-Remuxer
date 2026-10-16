@@ -36,6 +36,7 @@ typedef struct Track {
     int           index;
     DRTitleTrack  cfg;
     DRLpcm        lpcm;          /* linear PCM: the headers seen (the frame step's format and the audio stage) */
+    int           dts_lbr_code;  /* DTS without a core: the last LBR rate code (-1 none yet) */
 
     /* the current segment */
     DRFrames     *cut;
@@ -1732,6 +1733,10 @@ static int seg_open(DRTitle *t)
         }
         if (k->cfg.kind == DR_KIND_AUDIO && (k->cfg.audio_flags & DR_AUDIO_EXTENDED))
             ff_disctl_frames_take_any(k->cut);
+        if (k->cfg.kind == DR_KIND_AUDIO && (k->cfg.audio_flags & DR_AUDIO_EXT_ONLY)) {
+            ff_disctl_frames_ext_only(k->cut);
+            ff_disctl_audio_set_state(k->audio, &k->dts_lbr_code);
+        }
         if (k->cfg.kind == DR_KIND_AUDIO && (k->cfg.audio_flags & DR_AUDIO_DVD))
             ff_disctl_frames_dvd(k->cut);
         if (k->cfg.kind == DR_KIND_VIDEO)
@@ -1831,6 +1836,7 @@ int ff_disctl_title_open(DRTitle **tp, void *logctx, const DRTitleConfig *cfg)
         k->title    = t;
         k->index    = i;
         k->cfg      = cfg->tracks[i];
+        k->dts_lbr_code = -1;
         k->lpcm.hd  = cfg->lpcm_hd;
         kinds[i]    = k->cfg.kind == DR_KIND_CAPTION ? DR_KIND_SUBTITLE : k->cfg.kind;  /* each keeps its time */
         if (k->cfg.kind == DR_KIND_CAPTION) {

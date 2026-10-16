@@ -90,7 +90,7 @@ logged with the reason; nothing is guessed.
 |---|---|
 | family | `timed` (duration and sync rule below) or `stream` (duration from the parser, never a sync unit) |
 | split | the codec's rule in `src/parse/` (none: the stock cutters, `parse/stock.c` — MPEG-1/2 video, E-AC-3) |
-| duration | rule for each unit (e.g. AC-3: samples / rate from the stream's first header; TrueHD: per major-sync access unit) |
+| duration | rule for each unit (e.g. AC-3: samples / rate from the stream's first header; TrueHD: per major-sync access unit; DTS: the core frame's, or for a stream the disc says has no core (DTS Express, lossless only) each extension substream's LBR / XLL header) |
 | sync unit | whether a unit may start a drop / join (AC-3, E-AC-3, DTS: every frame; TrueHD: major-sync units only) |
 | filter | the core filter each unit goes through (`dr_eac3_core`: an AC-3 track taken out of E-AC-3; `dr_dca_core`: a DTS track taken out of a DTS-HD stream) |
 | video only | units per frame (2 = fields), frame-rate source, display-order number and its wrap period |
