@@ -124,8 +124,8 @@ static void sync_segment_end(DRVerify *v)
 {
     if (v->seg_at == DR_NOPTS_VALUE)
         return;
-    dr_vlog(v->log, DR_VLOG_VERBOSE, "Title timeline: check: track %d (%s): segment %d: sync error as a stream file "
-           "%+.3f ms at its largest (at %.3f ms)\n", v->track, v->codec->name, v->seg + 1, ms(v->seg_err),
+    dr_vlog(v->log, DR_VLOG_VERBOSE, "Title timeline: check: track %d (%s): segment %d: drift as a stream file "
+           "(where it plays vs its time on the disc) %+.3f ms at its largest (at %.3f ms)\n", v->track, v->codec->name, v->seg + 1, ms(v->seg_err),
            ms(v->seg_at));
     if (DR_ABS(v->seg_err) > DR_SYNC_LIMIT) {
         v->st.sync_segments++;
@@ -308,9 +308,9 @@ int ff_disctl_verify_finish(DRVerify *v)
            s->order_errors, s->holes, ms(s->hole_dur), s->overlaps, ms(s->overlap_dur),
            s->unchecked ? ", units not checked (no check for this codec)" : "");
     if (v->kind == DR_KIND_AUDIO && v->have_prev) {
-        dr_vlog(v->log, DR_VLOG_VERBOSE, "Title timeline: check: track %d (%s): start delay %.3f ms; sync error as a stream "
-               "file %+.3f ms at its largest (at %.3f ms), %+.3f ms at the end; by the output times %+.3f ms at "
-               "its largest (at %.3f ms)\n", v->track, v->codec->name, ms(s->delay), ms(s->es_err_max),
+        dr_vlog(v->log, DR_VLOG_VERBOSE, "Title timeline: check: track %d (%s): start delay %.3f ms; drift as a stream file "
+               "(where it plays vs its time on the disc) %+.3f ms at its largest (at %.3f ms), %+.3f ms at the end; "
+               "by the output times %+.3f ms at its largest (at %.3f ms)\n", v->track, v->codec->name, ms(s->delay), ms(s->es_err_max),
                ms(s->es_err_at), ms(s->es_err_end), ms(s->mkv_err_max), ms(s->mkv_err_at));
     }
     return 0;
