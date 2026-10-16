@@ -77,13 +77,15 @@ source (image / folder)
   format    places the title's segments, decrypts (CSS per sector key,
   part      AACS per aligned unit), answers "the next block of this segment"
   mux/      PS: one sector = one pack | TS: 192-byte source packets, PES per
-            PID; payloads out with their PES times, stretches left out said
+            PID; payloads out with their PES times, stretches left out said,
+            continuity counters checked (missing packets said, duplicates
+            left out)
   parse/    the codec's rule cuts payloads into frames; picture headers
             read; core-only filters (E-AC-3 -> AC-3, DTS-HD -> DTS)
   timeline/ times paired with frames; the video grid; audio durations; the
             joiner puts segments on one timeline; the junction handles gaps
             and overlaps at joins; chapters; the verify re-reads every frame
-            that leaves (CRCs, order, durations)
+            that leaves (CRCs, order, durations, the audio format it states)
   writer    elementary-stream files, WAVE, VobSub (.sub + .idx), SUP, SRT,
             chapter XML (src/disc-remuxer/writer.c); then the end check
             reads each written file back (analyze/)
