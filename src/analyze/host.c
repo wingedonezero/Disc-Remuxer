@@ -1,7 +1,7 @@
 /*
- * The title timeline's host (timeline/disctl.h DRTimelineHost): the LATM
- * stream header (one decoded frame) and the TrueHD / MLP end-of-stream
- * decode — the processing library answering questions on copies of data. The program and the test bridge register it with
+ * The title timeline's host (timeline/disctl.h DRTimelineHost): the
+ * TrueHD / MLP end-of-stream decode — the processing library answering a
+ * question on copies of data. The program and the test bridge register it with
  * dr_analyze_use(). Here too: the build-time check that the timeline's
  * codec ids are the library's values.
  */
@@ -85,31 +85,6 @@ _Static_assert(DISC_CH_FRONT_LEFT == AV_CH_FRONT_LEFT && DISC_CH_FRONT_RIGHT == 
                DISC_CH_FRONT_CENTER == AV_CH_FRONT_CENTER && DISC_CH_LOW_FREQUENCY == AV_CH_LOW_FREQUENCY &&
                DISC_CH_LOW_FREQUENCY_2 == AV_CH_LOW_FREQUENCY_2, "channel bits");
 
-/* ---- one LATM / LOAS frame decoded: the stream's rate and samples ---- */
-
-static int host_latm_header(const uint8_t *data, int size, int *out_rate, int *out_samples)
-{
-    const AVCodec *dec = avcodec_find_decoder(AV_CODEC_ID_AAC_LATM);
-    AVCodecContext *ctx = dec ? avcodec_alloc_context3(dec) : NULL;
-    AVPacket *pkt = av_packet_alloc();
-    AVFrame *fr = av_frame_alloc();
-    int ret = -1;
-
-    if (ctx && pkt && fr && avcodec_open2(ctx, dec, NULL) >= 0 && av_new_packet(pkt, size) >= 0) {
-        memcpy(pkt->data, data, size);
-        if (avcodec_send_packet(ctx, pkt) >= 0 && avcodec_receive_frame(ctx, fr) >= 0 &&
-            fr->nb_samples > 0 && fr->sample_rate > 0) {
-            *out_rate    = fr->sample_rate;
-            *out_samples = fr->nb_samples;
-            ret = 0;
-        }
-    }
-    avcodec_free_context(&ctx);
-    av_packet_free(&pkt);
-    av_frame_free(&fr);
-    return ret;
-}
-
 /* ---- TrueHD / MLP: the access units decoded in order ---- */
 
 static int host_mlp_last_au_samples(void *logctx, const uint8_t *const *aus, const int *sizes,
@@ -152,7 +127,6 @@ end:
 }
 
 static const DRTimelineHost host = {
-    .latm_header        = host_latm_header,
     .mlp_last_au_samples = host_mlp_last_au_samples,
 };
 

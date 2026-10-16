@@ -50,13 +50,12 @@ const char *ff_disctl_codec_id_name(DRCodecID id);
 /** A missing time. */
 #define DR_NOPTS_VALUE ((int64_t)UINT64_C(0x8000000000000000))
 
-/* ---- The host: the two answers the timeline asks the processing library
- * for (src/analyze; no stream byte goes there): the LATM stream header (one
- * decoded frame) and the TrueHD / MLP end-of-stream decode. Registered once
+/* ---- The host: the answer the timeline asks the processing library for
+ * (src/analyze; no stream byte goes there): the TrueHD / MLP end-of-stream
+ * decode (the samples of a stream's last access unit depend on its coded
+ * blocks). Registered once
  * by the program and the test bridge (ff_disctl_set_host). ---- */
 typedef struct DRTimelineHost {
-    /** One LATM / LOAS frame decoded: the stream's rate and samples. */
-    int (*latm_header)(const uint8_t *data, int size, int *rate, int *samples);
     /** TrueHD / MLP: the n access units decoded in order (a major sync
      *  leads); *count = the samples of the last one. Logs its own failures
      *  (debug). */

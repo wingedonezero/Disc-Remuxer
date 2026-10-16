@@ -480,3 +480,6 @@ int ff_disctl_mlp_checksums(void *state, const uint8_t *data, int size, const ch
 #define WAV_ROOM_FROM ...
 int writer_wav_header(uint8_t *out, int channels, int rate, int bits, int valid, uint64_t mask, int64_t data,
                       int room);
+
+/* LATM stream values from the StreamMuxConfig (src/parse/rules.h) */
+int dr_latm_header(const uint8_t *buf, int size, int *rate, int *samples);

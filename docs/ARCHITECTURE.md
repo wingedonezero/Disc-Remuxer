@@ -24,10 +24,10 @@ change made to them: `libs/README.md`. The title timeline in detail:
 FFmpeg is linked from one module only (`src/analyze/`), unmodified (see
 `libs/README.md`). Every codec is cut by `src/parse/` (MPEG-1/2 video and
 E-AC-3, which never had a disc rule, by `parse/stock.c`: FFmpeg's own cut,
-ported). The timeline still asks analyze two questions (`DRTimelineHost` in
-`src/timeline/disctl.h`), on copies, no stream byte passing: an LATM
-stream's sample rate and frame length (one frame decoded), and at a TrueHD
-join the samples of a stream's last access unit (decoded).
+ported). The timeline still asks analyze one question (`DRTimelineHost` in
+`src/timeline/disctl.h`), on copies, no stream byte passing: at a TrueHD
+join, the samples of a stream's last access unit (decoded: they depend on
+its coded blocks, which only a decoder walks).
 
 ## The modules
 
@@ -176,9 +176,6 @@ a test run reaches.
 
 ## Open items
 
-- The two answers the timeline still asks analyze (an LATM stream's rate
-  and frame length; a TrueHD stream's last access unit's samples) could be
-  read from the stream headers instead of decoded.
 - The MKV writer (libebml / libmatroska or an own EBML writer: to decide).
 - Holes in a title (a damaged stretch left out): the stream files close the
   hole, the subtitles and chapters after it keep the disc's times — to

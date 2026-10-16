@@ -82,6 +82,14 @@ extern const DrFrameRule dr_dts_exss_frames;  /**< DTS-HD without a core (DTS Ex
                                                    extension substream frames */
 extern const DrFrameRule dr_mpa_frames;       /**< MPEG audio frames (ctx: DrMpaRuleCtx) */
 
+/** The output sample rate and samples per frame of the LOAS frame at buf
+ *  from its StreamMuxConfig's AudioSpecificConfig (AAC Main / LC / SSR /
+ *  LTP / ER LC: 1024 or 960, ER LD / ELD: 512 or 480; SBR signalled at twice
+ *  the core rate: twice the samples at that rate), as the processing
+ *  library's LATM decoder sets them up. 0, or DR_ERR_INVALID (no config in
+ *  the frame, more than one program or layer, a kind not timed). */
+int dr_latm_header(const uint8_t *buf, int size, int *rate, int *samples);
+
 /** The stream header from an AC-3 / E-AC-3 frame: E-AC-3 bitstream
  *  information up to the channel map (the frame must hold it; a dependent
  *  stream's channel map must give the channels its audio coding mode and

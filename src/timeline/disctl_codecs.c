@@ -411,11 +411,7 @@ static int sync_latm(const uint8_t *d, int size)
 
 static int header_latm(DRAudio *a, const DRFrame *f, DRAudioHeader *out)
 {
-    const DRTimelineHost *host = ff_disctl_host();
-
-    if (!host || !host->latm_header ||
-        host->latm_header(f->data, f->size, &out->rate, &out->samples) < 0 ||
-        out->samples <= 0 || out->rate <= 0)
+    if (dr_latm_header(f->data, f->size, &out->rate, &out->samples) < 0 || out->samples <= 0 || out->rate <= 0)
         return -1;
     return 0;
 }
