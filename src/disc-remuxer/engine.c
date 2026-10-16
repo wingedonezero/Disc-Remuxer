@@ -963,10 +963,6 @@ static int demux_one(const char *source, const char *titles, const char *out_dir
     return ret;
 }
 
-const char *engine_codec_label(int id, int profile)
-{
-    return codec_label(id, profile);
-}
 
 int engine_check_choice(const EngineChoice *c)
 {

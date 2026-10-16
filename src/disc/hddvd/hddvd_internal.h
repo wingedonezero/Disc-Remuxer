@@ -177,9 +177,6 @@ int ff_hddvd_xpl_load(void *logctx, DiscIOFS *fs, HDDVDXpl ***out, int *nb_out);
 void ff_hddvd_xpl_free(HDDVDXpl **xpl);
 void ff_hddvd_xpl_free_all(HDDVDXpl ***xpls, int nb);
 
-/** Name of an element type, e.g. "PrimaryAudioVideoClip". */
-const char *ff_hddvd_xpl_class_name(int cls);
-
 /** The value of attribute name of n (string attributes), NULL when n's type has none. */
 const char *ff_hddvd_xpl_str(const HDDVDXplNode *n, const char *name);
 

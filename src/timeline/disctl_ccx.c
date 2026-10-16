@@ -411,7 +411,7 @@ int ff_disctl_ccx_finish(DRCcx *c, DRCue **cues, int *nb_cues)
         return 0;
     if ((ret = ff_disctl_srt_parse(c->log, c->out_text.s ? c->out_text.s : "", c->out_text.len, cues, nb_cues)) < 0)
         return ret;
-    dr_vlog(c->log, DR_VLOG_VERBOSE, "Captions: the converter gave %d cue(s) (%u bytes of SRT)\n", *nb_cues,
+    dr_vlog(c->log, DR_VLOG_VERBOSE, "Captions: the converter gave %d cue(s) (%zu bytes of SRT)\n", *nb_cues,
            c->out_text.len);
     return 0;
 }

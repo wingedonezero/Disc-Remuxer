@@ -136,8 +136,6 @@ dvd_vob_reader_t *ff_dvd_own_reading(DVDDisc *d, int vts);
  *  (its checks report): 1 with *n; 0 when the sector is no (usable) NAV pack
  *  or cannot be read (recorded as such). */
 int  ff_dvd_nav_read(DVDDisc *d, int vts, uint32_t sector, dvd_vobu_nav_t *n);
-/** Title set vts's title VOBs share sectors with another title set's. */
-int  ff_dvd_title_vobs_overlap(const DVDDisc *d, int vts);
 /** Whether title set vts's VOBU address map is trusted (libdvdread). */
 int  ff_dvd_map_trusted(const DVDDisc *d, int vts);
 /** sector starts a VOBU: by the VOBU address map while it is trusted (a

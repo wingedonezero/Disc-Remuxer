@@ -1197,11 +1197,6 @@ end:
 
 /* ---- the title list on the disc ---- */
 
-int ff_dvd_title_vobs_overlap(const DVDDisc *d, int vts)
-{
-    return DVDDiscTitleVOBsOverlap_rec(d->rec, vts);
-}
-
 int ff_dvd_titles_build(DVDDisc *d, const dvdnav_scan_results_t *scan, const DVDTitleOptions *o,
                         dvd_title_list_t *out)
 {

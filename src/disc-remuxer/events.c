@@ -25,10 +25,6 @@ void engine_queue_details(const char *name)
     snprintf(queue_name, sizeof(queue_name), "%s", name ? name : "");
 }
 
-const char *engine_queue_details_name(void)
-{
-    return queue_name[0] ? queue_name : NULL;
-}
 
 /* The states the GUI's queue shows for an event, as "Queue:" lines. */
 static void queue_lines(const DrEvent *ev)

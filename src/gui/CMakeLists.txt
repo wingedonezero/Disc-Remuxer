@@ -13,7 +13,7 @@ find_package(PkgConfig REQUIRED)
 # our FFmpeg and the disc layer's libraries only (static, all ours)
 set(ENV{PKG_CONFIG_PATH} "${FFMPEG_PKGCONFIG}")
 set(ENV{PKG_CONFIG_LIBDIR} "${FFMPEG_PKGCONFIG}")
-pkg_check_modules(FF REQUIRED libavformat libavcodec libswresample libavutil)
+pkg_check_modules(FF REQUIRED libavformat libavcodec libavutil)
 pkg_check_modules(DISCDEPS REQUIRED libaacs expat dvdnav dvdread)
 
 add_executable(disc-remuxer-gui

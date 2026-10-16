@@ -95,8 +95,6 @@ const char *engine_track_extension(const DiscStreamInfo *k);
  * files are <name>_<track>_..., in a folder <name> when a run writes more
  * than one title. */
 void engine_title_file_name(const DiscTitleInfo *t, char *out, size_t size);
-/* The short codec name the file names use (Mpeg2, DD, DTS-HD MA, ...). */
-const char *engine_codec_label(int codec, int profile);
 
 /* The ISO 639-2 bibliographic code the disc info uses for a language code
  * (2 or 3 letters, either ISO 639-2 form), NULL when not known. */

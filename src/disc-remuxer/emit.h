@@ -17,7 +17,6 @@ void engine_event(const DrEvent *ev);
 /* demux --details: the queue's states of a rip as "Queue:" lines at the
  * moments the GUI shows them, the disc's under name (NULL: none). */
 void engine_queue_details(const char *name);
-const char *engine_queue_details_name(void);
 
 /* The disc and one title (keep: its tracks ripped) as JSON records. */
 void engine_disc_json(const DiscInfo *d);

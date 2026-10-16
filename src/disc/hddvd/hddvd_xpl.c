@@ -198,11 +198,6 @@ static const ClassDef classes[HDDVD_XPL_NB_CLASSES] = {
         (const AttrDef[]){ S("description", ""), B("selectable", 1), S("track", ""), END }, NO_KIDS },
 };
 
-const char *ff_hddvd_xpl_class_name(int cls)
-{
-    return cls >= 0 && cls < HDDVD_XPL_NB_CLASSES ? classes[cls].name : "(unknown)";
-}
-
 static int attr_index(int cls, const char *name)
 {
     const AttrDef *a = classes[cls].attrs;

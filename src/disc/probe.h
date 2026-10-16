@@ -37,6 +37,5 @@ typedef struct DiscProbeOps {
 } DiscProbeOps;
 
 void ff_disc_set_probe(const DiscProbeOps *ops);
-const DiscProbeOps *ff_disc_probe(void);
 
 #endif /* DISC_DISC_PROBE_H */

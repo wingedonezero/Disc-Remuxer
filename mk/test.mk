@@ -8,7 +8,7 @@
 VENV   := $(ROOT)/build/venv
 PY     := $(VENV)/bin/python
 BRIDGE := $(BUILD)/pytest
-BRIDGE_PKGS := libavformat libavcodec libswresample libavutil
+BRIDGE_PKGS := libavformat libavcodec libavutil
 
 $(VENV)/.installed: $(ROOT)/tests/requirements.txt
 	python3 -m venv $(VENV)

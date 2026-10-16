@@ -156,11 +156,6 @@ static void ps_read_add(DiscTitleReader *r)
 
 /* A frame's bytes (a base buffer) wrapped for the packet: the packet owns
  * one reference. */
-static void drbuf_packet_free(void *opaque, uint8_t *data)
-{
-    DrBuf *b = opaque;
-    dr_buf_unref(&b);
-}
 
 static DiscTitleReader *reader_of(DrDisc *d)
 {

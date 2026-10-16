@@ -75,10 +75,6 @@ void ff_disc_set_probe(const DiscProbeOps *ops)
     probe_ops = ops;
 }
 
-const DiscProbeOps *ff_disc_probe(void)
-{
-    return probe_ops;
-}
 
 /* A finished probe, kept per segment and data. */
 typedef struct Cached {

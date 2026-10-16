@@ -1145,7 +1145,7 @@ static int part_segments(void *log, BlurayDisc *d, BlurayPlaylist *pl, int part,
             na = DR_MAX(na, ac + 1);
         a = ac + 1 > angle ? angle : 0;
         if (!item_record(log, d, pl, idx, a, &rec, why, sizeof(why))) {
-            char ang[16] = "", left[16], at[16];
+            char ang[24] = "", left[16], at[16];
             uint64_t rest = 0;
             for (int j = idx; j < s + L; j++)
                 if (pl->items[j].out_time > pl->items[j].in_time)
