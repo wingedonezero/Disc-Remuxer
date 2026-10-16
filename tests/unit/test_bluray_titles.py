@@ -65,7 +65,7 @@ def test_seamless_items_are_one_segment(tmp_path):
     ts = titles(disc(tmp_path, [1, 2], {1: pl}))
     assert names(ts) == ["00001.mpls"]
     assert field(ts[0], "segments") == "(1,2)"
-    assert field(ts[0], "size") == str(2 * 192), "each STC sequence to the end of its (192-byte) stream file"
+    assert field(ts[0], "size") == str(2 * 1024 * 192), "each STC sequence to the end of its (1024-packet) stream file"
     assert field(ts[0], "duration") == str(2 * 90000), "whole STC sequences count"
 
 

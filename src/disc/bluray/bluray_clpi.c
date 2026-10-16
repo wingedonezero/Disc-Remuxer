@@ -297,9 +297,16 @@ int ff_bluray_clip_stream_file(void *log, DiscIOFS *fs, BlurayClip *c)
     }
     snprintf(c->stream_path, sizeof(c->stream_path), "%s", path);
     c->stream_size = file->size;
-    if (file->size != expected)
-        dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: %s is %"PRId64" sectors, its clip information says %"PRId64"\n",
-               path, file->size >> 11, expected >> 11);
+    /* number_of_source_packets x 192 is the stream file's size: a shorter
+     * file is an incomplete copy (the titles that play it end early) */
+    if (file->size < expected)
+        dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: clip %05u: its stream file %s is %"PRId64" bytes shorter than its "
+               "clip information says (%"PRId64" of %"PRIu32" source packets): an incomplete copy? The titles that "
+               "play it end early\n", c->number, path, expected - file->size, file->size / 192, c->packets);
+    else if (file->size > expected)
+        dr_vlog(log, DR_VLOG_INFO, "Blu-ray: clip %05u: its stream file %s is %"PRId64" bytes longer than its clip "
+               "information says (%"PRIu32" source packets): the rest is read as part of the clip\n", c->number,
+               path, file->size - expected, c->packets);
     ff_discio_file_free(&file);
     return 1;
 }

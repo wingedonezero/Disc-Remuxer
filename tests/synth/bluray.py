@@ -233,7 +233,10 @@ def bdmv(clips=None, playlists=None, extra=None, stream_files=True, root="BDMV")
     for n, d in clips.items():
         f[f"{root}/CLIPINF/{n:05d}.clpi"] = d
         if stream_files:
-            f[f"{root}/STREAM/{n:05d}.m2ts"] = bytes(192)
+            # as long as the clip information says (number_of_source_packets
+            # x 192, ClipInfo at 0x28), one packet when it cannot be read
+            packets = int.from_bytes(d[0x38:0x3c], "big") if len(d) >= 0x3c else 1
+            f[f"{root}/STREAM/{n:05d}.m2ts"] = bytes(192 * packets)
     for n, d in playlists.items():
         f[f"{root}/PLAYLIST/{n:05d}.mpls"] = d
     f.update(extra or {})
