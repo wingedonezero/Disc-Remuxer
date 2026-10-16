@@ -267,6 +267,12 @@ The rules above are the default policy. Around them:
     failures are findings: nothing is changed or left out);
     sub-pictures their size and control sequences; a codec without a check
     is counted as unchecked (LPCM so far);
+  - audio: the format each unit's headers state (channels with LFE and the
+    sample rate: AC-3 / E-AC-3 with any dependent substream, the DTS core
+    with any extension substream, TrueHD at each major sync, MPEG audio,
+    ADTS, LATM's rate); a unit stating another format than the units before
+    it is a warning (`DR_EV_VERIFY_FORMAT`), the summary counts them, the
+    detail log names each track's format;
   - per track: durations > 0; audio / subtitles: each frame after the one
     before it (overlaps counted with the largest); video in display order:
     each picture starts where the one before it ends (within the 1-tick

@@ -57,8 +57,8 @@ src/base/         what everything may use: the log, messages, settings,
 
 beside the path:
 src/analyze/      the one module that links FFmpeg: stream details, the end
-                  check of written files, the TrueHD seamless helper, small
-                  decode answers; FFmpeg's log lines into ours
+                  check of written files, the TrueHD end-of-stream decode
+                  (the timeline's one question); FFmpeg's log lines into ours
 helpers           ccextractor (a separate process: captions to text)
 ```
 
