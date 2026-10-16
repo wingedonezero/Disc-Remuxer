@@ -37,6 +37,7 @@
 #include "codecs.h"
 #include "timeline/disctl.h"
 #include "writer.h"
+#include "mkvout.h"
 
 /* A time on the title timeline (DR_TICKS_PER_SECOND ticks) in units of
  * 1 / per_second, rounded to the nearest (halves away from 0). */
@@ -806,6 +807,11 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     char *chap = NULL;          /* the chapter file, and why it could not be written */
     int ret, r, chap_err = 0, errors0, warnings0;
     int64_t title_us = 0;
+    /* output.format = mkv: the title goes into one Matroska file (mkvout.c) */
+    int mkv = !strcmp(setting_text("output.format"), "mkv");
+    MkvOut *mo = NULL;
+    char *mkv_path = NULL;
+    int64_t mkv_bytes = 0;
 
     memset(res, 0, sizeof(*res));
     /* the title's warnings: every warning line from here to its last line */
@@ -886,7 +892,16 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         }
     }
 
-    for (int i = 0; i < nb_tracks; i++) {
+    if (mkv) {
+        if (!(mkv_path = dr_asprintf_str("%s.mkv", prefix))) {
+            ret = DR_ERR(ENOMEM);
+            goto end;
+        }
+        if ((ret = mkvout_open(&mo, d, mkv_path, job->title, job->part)) < 0)
+            goto end;
+        log_text(LOG_DETAIL, "File: %s", mkv_path);
+    }
+    for (int i = 0; i < nb_tracks && !mkv; i++) {
         const DrDiscTrack *t = dr_disc_track(d, i);
         if (t->second_view) {
             log_text(LOG_DETAIL, "Track %d: the second view of a 3-D video: its details are not checked (its "
@@ -913,7 +928,7 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         const DrDiscTrack *t = dr_disc_track(d, fr.track);
         EsOut *o = &out[fr.track];
 
-        if (o->probe_late) {
+        if (o->probe_late && !mkv) {
             o->probe_late = 0;
             if (details_probe_open_track(&o->probe, t) < 0)
                 log_text(LOG_DETAIL, "Track %d: no decoder for %s: its details are not checked", t->number,
@@ -930,6 +945,11 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
             if (o->st.first_ms == DR_NOPTS_VALUE)
                 o->st.first_ms = ms;
             o->st.end_ms = DR_MAX(o->st.end_ms, end);
+        }
+        if (mkv) {
+            if ((ret = mkvout_frame(mo, d, &fr)) < 0)
+                goto end;
+            continue;
         }
         if (!o->opened && o->hold) {
             if (!o->layout_done && dr_layout_probe_data(o->lp, fr.data, fr.size))
@@ -953,9 +973,22 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     }
     if (ret == DR_ERR_EOF)
         ret = 0;
-    for (int i = 0; ret >= 0 && i < nb_tracks; i++)
+    if (mkv && ret >= 0) {
+        /* the file is finished (its chapters are known now); its tracks count as written */
+        for (int i = 0; i < nb_tracks; i++) {
+            const DrDiscTrack *t = dr_disc_track(d, i);
+            if (mkvout_has_track(mo, i) && out[i].st.packets) {
+                out[i].opened = 1;
+                out[i].name   = dr_strdup(mkv_path);
+                if (t->type == DISC_MEDIA_AUDIO)
+                    out[i].st.delay_ms = ticks_in(t->delay_ticks, 1000);
+            }
+        }
+        ret = mkvout_close(&mo, d, 0, &mkv_bytes);
+    }
+    for (int i = 0; ret >= 0 && !mkv && i < nb_tracks; i++)
         ret = es_flush_hold(dr_disc_track(d, i), &out[i], prefix);
-    if (ret >= 0) {
+    if (ret >= 0 && !mkv) {
         if (!(chap = dr_asprintf_str("%s_chapters.xml", prefix)))
             ret = DR_ERR(ENOMEM);
         else if ((ret = write_chapters(d, chap)) < 0 && ret != DR_ERR(ENOMEM))
@@ -963,6 +996,8 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     }
 
 end:
+    if (mo)
+        mkvout_close(&mo, d, 1, NULL);
     for (int i = 0; out && i < nb_tracks; i++) {
         const DrDiscTrack *t = dr_disc_track(d, i);
         EsOut *o = &out[i];
@@ -1017,6 +1052,11 @@ end:
                 werr  = out[i].write_err;
                 wfile = out[i].name;
             }
+        /* the MKV file: the writer's error is the file's */
+        if (!werr && mkv && mkv_path && (ret == DR_ERR(ENOSPC) || ret == DR_ERR(EDQUOT) || ret == DR_ERR(EIO))) {
+            werr  = -ret;
+            wfile = mkv_path;
+        }
         if (werr == ENOSPC || werr == EDQUOT) {
             log_msg(MSG_DISK_FULL, LOG_ERROR, "%s failed: the disk is full (no space left writing %s)", who,
                     wfile ? wfile : "its files");
@@ -1040,7 +1080,7 @@ end:
             end_check(t, &out[i]);
             checked      += out[i].checked != 0;
             check_failed += out[i].checked < 0;
-            unchecked    += out[i].opened && !out[i].probe &&
+            unchecked    += !mkv && out[i].opened && !out[i].probe &&
                             (t->type == DISC_MEDIA_VIDEO || t->type == DISC_MEDIA_AUDIO) && !t->second_view;
         }
         log_text(LOG_INFO, "Tracks:");
@@ -1123,6 +1163,8 @@ end:
         /* what was written, for the title's last line */
         for (int i = 0; i < nb_tracks; i++)
             written += out[i].opened ? out[i].st.bytes : 0;
+        if (mkv)
+            written = mkv_bytes;
         snprintf(made, sizeof(made), "(%u chapter%s, %s)", (unsigned)nb_chapters, nb_chapters == 1 ? "" : "s",
                  size_text(sz, sizeof(sz), written));
         if (check_failed) {
@@ -1166,6 +1208,7 @@ end:
     }
     dr_free(out);
     dr_free(chap);
+    dr_free(mkv_path);
     dr_disc_title_close(d);
     log_title_reading(0);
     return ret;

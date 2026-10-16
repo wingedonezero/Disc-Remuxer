@@ -20,6 +20,7 @@ static const char *const udf_readers[]  = { "netbsd", "linux", NULL };
 static const char *const dv_layers[]    = { "merged", "separate", NULL };
 static const char *const cell_modes[]   = { "auto", "walk", "trim", "walk_trim", NULL };
 static const char *const cell_checks[]  = { "all", "spread", "random", NULL };
+static const char *const out_formats[]  = { "streams", "mkv", NULL };
 
 static const Setting registry[] = {
     { "read", "attempts", SET_INT, "5", 1, 99, NULL,
@@ -43,6 +44,10 @@ static const Setting registry[] = {
       "The main output folder: a disc's files go into a folder of the disc's name in it (its image's or "
       "folder's name; _001, _002, ... when that exists), when demux is given no output folder and in the GUI. "
       "Empty: the folder output next to the program.", 0, SET_AT_RIP },
+    { "output", "format", SET_CHOICE, "streams", 0, 0, out_formats,
+      "What each title is written as: streams (a file per track: the elementary stream, WAVE, subtitles, "
+      "and the chapters as XML) or mkv (one Matroska file holding every track and the chapters, written the "
+      "way mkvmerge writes one).", 0, SET_AT_RIP },
     { "output", "file_name_template", SET_TEXT, "", 0, 0, NULL,
       "How a title's output files are named. {NAME1} the title's name, {CMNT1} its comment, {DT} its "
       "date, {N2} its number with two digits; {prefix:VAR} writes the prefix only after other text. "

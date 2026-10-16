@@ -27,6 +27,7 @@ static void usage(FILE *f)
           "commands:\n"
           "  info  <source>                        the titles and tracks of a disc\n"
           "  demux <source> <titles> [<out folder>]  the titles' tracks as stream files, chapters, a log;\n"
+          "                                        or each title as one MKV file (setting output.format = mkv);\n"
           "                                        no out folder: <main output folder>/<disc name>\n"
           "                                        (setting output.folder; empty: output next to the program);\n"
           "                                        a folder of discs: each disc in turn into its own folder\n"

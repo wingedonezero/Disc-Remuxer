@@ -31,9 +31,9 @@ $(ENGINE_LIB): $(ENGINE_OBJS)
 	rm -f $@
 	$(AR) rcs $@ $(ENGINE_OBJS)
 
-$(BUILD)/bin/disc-remuxer: $(TOOL_OBJ)/main.o $(ENGINE_LIB) $(ANALYZE_LIB) $(DISC_LIB) $(TIMELINE_LIB) $(IO_LIB) $(MUX_LIB) $(PARSE_LIB) $(BASE_LIB) $(BUILD)/ffmpeg/.installed
+$(BUILD)/bin/disc-remuxer: $(TOOL_OBJ)/main.o $(ENGINE_LIB) $(MKV_LIB) $(ANALYZE_LIB) $(DISC_LIB) $(TIMELINE_LIB) $(IO_LIB) $(MUX_LIB) $(PARSE_LIB) $(BASE_LIB) $(BUILD)/ffmpeg/.installed
 	@mkdir -p $(BUILD)/bin
-	$(CC) $(COV_LDFLAGS) -o $@ $(TOOL_OBJ)/main.o $(ENGINE_LIB) $(ANALYZE_LIB) $$($(TOOL_PC) pkg-config --static --libs libavformat libavcodec libavutil) $(DISC_LIB) $(TIMELINE_LIB) $(IO_LIB) $(MUX_LIB) $(PARSE_LIB) $(BASE_LIB) $$($(TOOL_PC) pkg-config --static --libs libaacs expat dvdnav) -lpthread
+	$(CC) $(COV_LDFLAGS) -o $@ $(TOOL_OBJ)/main.o $(ENGINE_LIB) $(MKV_LINK) $(ANALYZE_LIB) $$($(TOOL_PC) pkg-config --static --libs libavformat libavcodec libavutil) $(DISC_LIB) $(TIMELINE_LIB) $(IO_LIB) $(MUX_LIB) $(PARSE_LIB) $(BASE_LIB) $$($(TOOL_PC) pkg-config --static --libs libaacs expat dvdnav) -lpthread
 ifeq ($(MODE),release)
 	strip $@
 endif
