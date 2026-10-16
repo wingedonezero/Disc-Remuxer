@@ -830,6 +830,8 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         hms(dur, sizeof(dur), title_us > 0 ? title_us / 1000000.0 : 0);
     }
     log_step("=== Title %d/%d: %s %s (%s) ===", job->ordinal, job->count, who + 6, tname ? tname : "", dur);
+    dr_disc_set_chapter_rule(d, !setting_bool("chapters.snap"), (int)setting_int("chapters.before_ms"),
+                             (int)setting_int("chapters.after_ms"));
     if ((ret = dr_disc_title_open(d, job->title, job->part, job->second_view, job->keep)) < 0) {
         log_msg(MSG_TITLE_OPEN_FAILED, LOG_ERROR, "%s cannot be opened: %s", who, dr_err_text(ret));
         res->failed = 1;

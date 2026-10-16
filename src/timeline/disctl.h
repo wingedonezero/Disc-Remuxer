@@ -78,7 +78,6 @@ const DRTimelineHost *ff_disctl_host(void);
 #define DR_F_SYNC     0x0002   /**< a unit at which audio may be dropped or joined */
 #define DR_F_MARKER   0x0004   /**< empty marker: carries a time, no bytes */
 #define DR_F_DISCARD  0x0008   /**< not referenced (B picture) */
-#define DR_F_CHAPTER  0x0010   /**< a chapter starts here */
 #define DR_F_BATCH    0x0040   /**< video: the last frame of a batch the video timing handed on */
 #define DR_F_NO_STOP  0x0080   /**< sub-picture: shows a picture but has no stop time: out of
                                     its stage it lasts one delay step; the title pipeline makes
@@ -590,6 +589,17 @@ enum DRTrackKind { DR_KIND_VIDEO = 1, DR_KIND_AUDIO = 2, DR_KIND_SUBTITLE = 3, D
 /** Hands a joined frame of a track on (taken over). */
 typedef int (*DRJoinOutCb)(void *opaque, int track, DRFrame *frame);
 
+/** Where a chapter mark puts its chapter, stage by stage (the first that
+ *  applies): 1. a video key frame at the mark: the mark; 2. the nearest key
+ *  frame before it, within before_ms; 3. the nearest key frame after it,
+ *  within after_ms; 4. the mark itself. exact: the marks as they are (no
+ *  stages). set 0: the default (stages on, 400 ms before, none after). */
+typedef struct DRChapterRule {
+    int set;
+    int exact;
+    int before_ms, after_ms;     /**< 0: that stage off */
+} DRChapterRule;
+
 typedef struct DRJoinConfig {
     int            nb_tracks;
     const int     *kinds;        /**< DRTrackKind per track; track 0 must be video */
@@ -597,6 +607,7 @@ typedef struct DRJoinConfig {
     int            nb_marks;
     int64_t       *open_marks;   /**< the same marks when some get their time from a DR_F_POSITION frame
                                       (those are INT64_MAX until then), or NULL */
+    DRChapterRule  chapter_rule; /**< how a mark finds its chapter's frame (zero: the default rule) */
     DRJoinOutCb    out;   void *out_opaque;
     DREventCb      event; void *event_opaque;
 } DRJoinConfig;
@@ -621,7 +632,8 @@ void ff_disctl_join_stats(const DRJoin *j, DRJoinStats *st);
 /** Segment seg's start (its first video time, ticks, its own clock) once
  *  placed; DR_ERR(EAGAIN) before. */
 int  ff_disctl_join_segment_start(const DRJoin *j, int seg, int64_t *start);
-/** The times of the frames marked as chapter starts so far (valid until
+/** The chapters' start times, placed by the chapter rule when the title
+ *  is finished (ff_disctl_join_finish; valid until
  *  the joiner is closed); returns their number. */
 int  ff_disctl_join_chapters(const DRJoin *j, const int64_t **starts);
 void ff_disctl_join_close(DRJoin **j);
@@ -1027,6 +1039,7 @@ typedef struct DRTitleConfig {
     const int64_t      *marks;     /**< chapter marks (DRChapterPlan.marks) or NULL */
     int                 nb_marks;
     int64_t            *open_marks;/**< the marks again when some are positions (DRJoinConfig.open_marks) */
+    DRChapterRule       chapter_rule;/**< how the marks find their frames (DRJoinConfig.chapter_rule) */
     DREventCb           event; void *event_opaque;   /**< every event (also logged at debug level) */
     const char         *cc_helper; /**< the caption converter program (for a DR_KIND_CAPTION track) */
     int                 nb_segments; /**< the segments the title is read in (0: not known) */
@@ -1077,6 +1090,9 @@ int  ff_disctl_title_place(DRTitle *t);
 /** Place p's time on the title timeline (ticks): the end of the pictures
  *  given out before it; 0, or < 0 while not known (no picture after it). */
 int  ff_disctl_title_place_time(const DRTitle *t, int p, int64_t *time);
+/** After finish: the chapters' start times as the chapter rule placed
+ *  them (ff_disctl_join_chapters); returns their number. */
+int  ff_disctl_title_chapter_starts(const DRTitle *t, const int64_t **starts);
 /** After finish: the chapters of the plan the marks came from (*out freed
  *  with dr_free()). */
 int  ff_disctl_title_chapters(const DRTitle *t, const DRChapterPlan *plan, DRChapter **out, int *nb_out);

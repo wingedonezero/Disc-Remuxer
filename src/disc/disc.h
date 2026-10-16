@@ -112,6 +112,13 @@ void dr_disc_close(DrDisc **disc);
 /** The disc info; valid until the disc is closed. */
 const DiscInfo *dr_disc_info(const DrDisc *d);
 
+/** Where the next titles opened put their chapters (the chapter marks'
+ *  stages, DRChapterRule in timeline/disctl.h): exact = the disc's marks as
+ *  they are; else a mark on a key frame keeps it, else the nearest key frame
+ *  before it within before_ms, else the nearest after it within after_ms,
+ *  else the mark (0 ms: that stage off). */
+void dr_disc_set_chapter_rule(DrDisc *d, int exact, int before_ms, int after_ms);
+
 /** Opens title `title` (part >= 0: only that part) for reading; a title
  *  open before is closed first. The disc stays loaded. second_view: a 3-D
  *  title's second view is read too (when one of its tracks is kept). keep:

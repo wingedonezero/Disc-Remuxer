@@ -1874,7 +1874,7 @@ int ff_disctl_title_open(DRTitle **tp, void *logctx, const DRTitleConfig *cfg)
     {
         DRJoinConfig jc = {
             .nb_tracks = cfg->nb_tracks, .kinds = kinds, .marks = cfg->marks, .nb_marks = cfg->nb_marks,
-            .open_marks = cfg->open_marks,
+            .open_marks = cfg->open_marks, .chapter_rule = cfg->chapter_rule,
             .out = joined, .out_opaque = t, .event = on_event, .event_opaque = t,
         };
         if ((ret = ff_disctl_join_open(&t->join, logctx, &jc)) < 0)
@@ -2238,6 +2238,11 @@ const uint8_t *ff_disctl_title_textst_style(const DRTitle *t, int track, int *si
 int ff_disctl_title_finish(DRTitle *t)
 {
     return t->error ? t->error : sticky(t, title_finish(t));
+}
+
+int ff_disctl_title_chapter_starts(const DRTitle *t, const int64_t **starts)
+{
+    return ff_disctl_join_chapters(t->join, starts);
 }
 
 int ff_disctl_title_chapters(const DRTitle *t, const DRChapterPlan *plan, DRChapter **out, int *nb_out)

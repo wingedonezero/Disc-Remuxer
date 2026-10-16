@@ -1114,6 +1114,7 @@ int ff_disc_title_reader_open(DrDisc *d, const DiscTitleSource *src)
             .cc_helper = d->opt_cc_helper && *d->opt_cc_helper ? d->opt_cc_helper :
                          ff_disctl_ccx_default(helper, sizeof(helper)),
             .open_marks = src->chapter_clips ? r->chapter_plan.marks : NULL,
+            .chapter_rule = d->chapter_rule,
             .nb_segments = r->last_clip - r->first_clip + 1,
             .place = block_words, .place_opaque = d,
         };

@@ -298,6 +298,5 @@ def test_the_parts_of_a_joined_title_are_files_of_their_own_with_their_own_chapt
     ids = [eid for eid, _ in seg]
     assert ids.index(0x1043A770) < ids.index(0x1F43B675), "the chapters in their room before the clusters"
     starts = [uint(dict(a)[0x91]) for a in find(seg, 0x1043A770, 0x45B9, 0xB6)]
-    # from its own start; the 1 s mark takes the first key frame no more than
-    # 0.4 s before it (the timeline's chapter rule; every picture here is one)
-    assert starts == [0, 640000000], "each part's chapters from its own start"
+    # from its own start; every picture is a key frame, so each chapter is at its mark
+    assert starts == [0, 1000000000], "each part's chapters from its own start"

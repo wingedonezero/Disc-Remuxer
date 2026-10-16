@@ -179,11 +179,20 @@ logged with the reason; nothing is guessed.
   at the time of the one before it is dropped (the reference keeps it, so
   its later chapter names shift by one); when the first kept record does
   not start the title, a chapter is added at 0 (record 0 when it was
-  dropped, else "Chapter 00" when the setting asks). The master's key frame
-  at, or up to 0.4 s before, each mark carries the chapter flag (one per
-  frame; empty markers take none); the k-th flagged frame starts chapter k,
-  which ends where the next starts, the last at the title's end; fewer than
-  two -> no chapters. DVD marks by byte position (the first picture past a
+  dropped, else "Chapter 00" when the setting asks). When the title is
+  finished each mark is placed by the chapter rule (settings chapters.*),
+  stage by stage: the mark's own frame (the video frame within 1 ms of it: a
+  Blu-ray mark's 45 kHz time cannot hold a 1001-based frame time) when it is
+  a key frame; else the nearest key frame before the mark within before_ms
+  (400); else the nearest after it within after_ms (0: off); else the mark's
+  frame. Empty markers are no frames. Every chapter not on a key frame at its
+  mark is said in the standard log (where it went, how many frames, or that
+  a split there cuts later). chapters.snap off: the marks as the disc has
+  them. The k-th placed start starts chapter k, which ends where the next
+  starts, the last at the title's end; a mark after the video's last frame
+  starts none; fewer than two -> no chapters. (The reference program gives a
+  mark the first key frame within 0.4 s before it, even past a key frame at
+  the mark, else the next key frame after it: a decided difference.) DVD marks by byte position (the first picture past a
   cell's position) come with the DVD wiring.
 
 ## 8. Stage 4: junction per output track

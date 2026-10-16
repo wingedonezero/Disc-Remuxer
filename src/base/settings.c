@@ -87,6 +87,16 @@ static const Setting registry[] = {
       "How many VOBUs of a DVD cell are read when a cell is checked in full (in the decoy checks, mostly when the "
       "cells are trimmed): all (every VOBU; one broken VOBU rejects the cell), spread (50 evenly spread over the "
       "cell) or random (50 at random, a different choice on each run).", 0, SET_AT_OPEN },
+    { "chapters", "snap", SET_BOOL, "true", 0, 0, NULL,
+      "Put a chapter on a video key frame near its mark, stage by stage: a mark on a key frame keeps it; else "
+      "the nearest key frame before it within chapters.before_ms; else the nearest after it within "
+      "chapters.after_ms; else the mark itself. Every chapter that is not on a key frame at its mark is said "
+      "in the log. Off: the chapters as the disc has them.", 0, SET_AT_RIP },
+    { "chapters", "before_ms", SET_INT, "400", 0, 5000, NULL,
+      "How far before its mark (ms) a chapter may move back to a key frame. 0: never back.", 0, SET_AT_RIP },
+    { "chapters", "after_ms", SET_INT, "0", 0, 5000, NULL,
+      "How far after its mark (ms) a chapter may move on to a key frame, when none is close enough before it. "
+      "0: never forward.", 0, SET_AT_RIP },
     { "log", "debug_file", SET_BOOL, "false", 0, 0, NULL,
       "Also write a debug log with every detail into the output folder, next to the log.", 0, SET_AT_RIP },
     { "gui", "window", SET_TEXT, "", 0, 0, NULL, "Kept by the GUI: its window's place and size.", 1, SET_IN_GUI },

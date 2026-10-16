@@ -538,8 +538,10 @@ def test_a_chapter_position_starts_the_chapter_at_the_first_picture_from_there()
         drain()
     assert lib.ff_disctl_title_finish(t[0]) == 0
     drain()
+    starts = ffi.new("int64_t **")
+    n = lib.ff_disctl_title_chapter_starts(t[0], ffi.cast("const int64_t **", starts))
+    marked = [starts[0][i] for i in range(n)]
     lib.ff_disctl_title_close(t)
-    marked = [time for time, flags in outs if flags & lib.DR_F_CHAPTER]
     # the I pictures of those GOPs, on the title timeline (the first video frame at 0)
     first = min(BASE + disp * FRAME for _, _, disp, _ in pics)
     assert marked == [BASE + pics[k][2] * FRAME - first for k in at]
