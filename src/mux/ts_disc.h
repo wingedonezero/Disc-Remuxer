@@ -33,6 +33,7 @@ typedef struct MpegTSDiscGap {
     int64_t     bytes;          /**< PES: the PID's payload bytes left out; CUT: the PES bytes missing */
     const char *why;            /**< BAD, PES: why (a static string) */
     int         to_end;         /**< PES: the stream ended before a next PES start */
+    int         cc_from, cc_to; /**< CC: the PID's continuity counter before and in the packet at pos */
 } MpegTSDiscGap;
 
 /** MPEGTS_DISC_GAP_CUT: a PES packet whose next PES start comes before its
@@ -41,8 +42,16 @@ typedef struct MpegTSDiscGap {
 /** MPEGTS_DISC_GAP_PTS: a PES header (at pos) whose flags say it has a PTS
  *  but whose marker bits are not set: read as having no time (nothing left
  *  out). */
+/** MPEGTS_DISC_GAP_CC: the TS packet of a read PID at pos carries a payload
+ *  and a continuity counter (cc_to) that does not follow the PID's last one
+ *  (cc_from) by one, without a discontinuity indicator: packets <= 15
+ *  (cc_to - cc_from - 1 modulo 16; 0 when the counter did not advance but the
+ *  bytes differ) are missing before it (ISO/IEC 13818-1 2.4.3.3); its data
+ *  is kept. */
+/** MPEGTS_DISC_GAP_DUP: the TS packet at pos repeats the PID's packet before
+ *  it byte for byte (a duplicate packet, ISO/IEC 13818-1 2.4.3.3): left out. */
 enum { MPEGTS_DISC_GAP_BAD = 1, MPEGTS_DISC_GAP_ZERO, MPEGTS_DISC_GAP_PES, MPEGTS_DISC_GAP_CUT,
-       MPEGTS_DISC_GAP_PTS };
+       MPEGTS_DISC_GAP_PTS, MPEGTS_DISC_GAP_CC, MPEGTS_DISC_GAP_DUP };
 
 /**
  * A PES header read with the disc reader's rules: 1 and its stream key
@@ -91,6 +100,10 @@ int ts_disc_source_packet(TsDisc *t, const uint8_t *p, int64_t pos);
 /** The stream has ended at byte end: the stretches still open end with it
  *  (their gap events come now). May be called again (nothing then). */
 int ts_disc_flush(TsDisc *t, int64_t end);
+
+/** The caller left source packets out before the next one (blocks that
+ *  cannot be read): the continuity counters start again. */
+void ts_disc_break(TsDisc *t);
 
 void ts_disc_free(TsDisc **t);
 

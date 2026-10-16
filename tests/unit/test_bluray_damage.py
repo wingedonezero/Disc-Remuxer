@@ -23,7 +23,7 @@ def disc(tmp_path, damage):
     packets = []
     for i, c in enumerate(M2V[k:k + 60000] for k in range(0, len(M2V), 60000)):
         packets += bd.ts_packets(V, bd.pes(0xe0, c, pts=2 * S + 3003 * i))
-    data = damage(packets)
+    data = damage(bd.continuity(packets))
     clips = {1: bd.clpi(packets=len(data) // 192, stcs=((0, 0x1001, S, E),), streams=((V, 0x02, b"\x31"),))}
     item = Item("00001", S, E, videos=[Stream(V, 0x02, b"\x31")])
     files = bd.bdmv(clips, {1: bd.mpls([item], marks=((1, 0, S), (1, 0, S + 90000)))})
@@ -88,3 +88,20 @@ def test_a_pes_packet_that_cannot_be_read_drops_its_pid_to_the_next_pes_start(tm
                                "start code at byte "), lines
     assert ": 184 bytes left out until the next PES start at byte " in lines[0], lines
     assert result["damaged_ranges"] == 1 and result["damaged_bytes"] == 184, result
+
+
+def test_a_transport_packet_missing_from_the_stream_file_is_said_and_counted(tmp_path):
+    def damage(packets):
+        # packet 50 (inside the first PES packet) and the duplicate of packet 80 left in
+        kept = packets[:50] + packets[51:81] + [packets[80]] + packets[81:]
+        return units([bd.be32(i * 0x10) + p for i, p in enumerate(kept)])
+    texts, result = rip(tmp_path, disc(tmp_path, damage))
+    assert result and result["status"] != "failed", texts
+    log = "\n".join(texts)
+    assert ("Segment /BDMV/STREAM/00001.m2ts: PID 0x1011 (track 0): the continuity counter jumps from 1 to 3 at "
+            "byte 9600: 1 transport packet(s) missing before it (counted modulo 16); the data around them is "
+            "kept") in log, log
+    assert ("Segment /BDMV/STREAM/00001.m2ts: PID 0x1011 (track 0): a duplicate transport packet at byte 15360 "
+            "(the packet before it again, byte for byte): left out") in log, log
+    assert "Damaged: 1 stretch of the stream files left out" in log, log
+    assert result["damaged_ranges"] == 1 and result["damaged_bytes"] == 0, result

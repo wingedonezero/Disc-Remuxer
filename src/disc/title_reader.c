@@ -121,6 +121,7 @@ struct DiscTitleReader {
     MpegPsDiscStats ps_read;        /**< program streams: what the clips' demuxers read, summed */
     int64_t       *clip_at;         /**< per clip read: where the disc's structure starts it (ticks, its clock),
                                          DR_NOPTS_VALUE: not given */
+    int            ts_break;        /**< ts: blocks were left out since the last block given */
     char         **gap_lines;       /**< ts: the stretches of stream files left out, as said */
     int            nb_gap_lines;
     int64_t        gap_bytes;       /**< and their bytes */
@@ -286,8 +287,14 @@ static int ps_read(void *opaque, uint8_t *buf, int buf_size)
                 return ret;
             r->skipped++;
             r->unusable++;
+            r->ts_break = 1;
             continue;
         }
+        /* blocks left out before this one (said as damage): the transport
+         * stream's continuity counters start again */
+        if (r->ts_break && src->ts)
+            dr_clip_ts_break(r->ps);
+        r->ts_break    = 0;
         r->damage_open = 0;
         return r->bs;
     }
@@ -461,6 +468,14 @@ static int gaps_said(DrDisc *d, DrClipDemux *dm, int clip, int side, const char 
                    where);
             continue;
         }
+        if (g.kind == MPEGTS_DISC_GAP_DUP) {
+            /* an exact repeat: left out, said, not damage */
+            gap_tracks(r->src, g.pid, side, tracks, sizeof(tracks));
+            gap_byte(d, clip, name, g.pos, where, sizeof(where));
+            dr_vlog(d->log, DR_VLOG_WARNING, "%s: PID 0x%04x (%s): a duplicate transport packet at %s (the packet "
+                   "before it again, byte for byte): left out\n", name, g.pid, tracks, where);
+            continue;
+        }
         if (g.kind == MPEGTS_DISC_GAP_CUT) {
             /* its rest is missing (the stretch next to it says why): said, not counted again */
             gap_tracks(r->src, g.pid, side, tracks, sizeof(tracks));
@@ -469,7 +484,20 @@ static int gaps_said(DrDisc *d, DrClipDemux *dm, int clip, int side, const char 
                    "its last %"PRId64" bytes are missing\n", name, g.pid, tracks, where, g.bytes);
             continue;
         }
-        if (g.kind == MPEGTS_DISC_GAP_PES) {
+        if (g.kind == MPEGTS_DISC_GAP_CC) {
+            /* packets missing from the stream file: the data around them is kept */
+            gap_tracks(r->src, g.pid, side, tracks, sizeof(tracks));
+            gap_byte(d, clip, name, g.pos, where, sizeof(where));
+            bytes = 0;
+            if (g.packets)
+                snprintf(line, sizeof(line), "%s: PID 0x%04x (%s): the continuity counter jumps from %d to %d at %s: "
+                         "%"PRId64" transport packet(s) missing before it (counted modulo 16); the data around them "
+                         "is kept", name, g.pid, tracks, g.cc_from, g.cc_to, where, g.packets);
+            else
+                snprintf(line, sizeof(line), "%s: PID 0x%04x (%s): the continuity counter stays at %d at %s with "
+                         "other bytes (a packet out of order or missing); the data is kept", name, g.pid, tracks,
+                         g.cc_to, where);
+        } else if (g.kind == MPEGTS_DISC_GAP_PES) {
             gap_tracks(r->src, g.pid, side, tracks, sizeof(tracks));
             gap_byte(d, clip, name, g.pos, where, sizeof(where));
             if (g.to_end)

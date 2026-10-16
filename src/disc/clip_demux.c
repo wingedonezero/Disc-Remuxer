@@ -309,6 +309,14 @@ static int ts_gap_cb(void *opaque, const MpegTSDiscGap *g)
             dr_vlog(c->logctx, DR_VLOG_WARNING, "TS: PID 0x%04x: a PES packet cut short at byte %"PRId64"\n",
                     g->pid, g->pos);
             break;
+        case MPEGTS_DISC_GAP_CC:
+            dr_vlog(c->logctx, DR_VLOG_DEBUG, "TS: PID 0x%04x: the continuity counter goes from %d to %d at byte "
+                    "%"PRId64"\n", g->pid, g->cc_from, g->cc_to, g->pos);
+            break;
+        case MPEGTS_DISC_GAP_DUP:
+            dr_vlog(c->logctx, DR_VLOG_DEBUG, "TS: PID 0x%04x: a duplicate transport packet at byte %"PRId64": left "
+                    "out\n", g->pid, g->pos);
+            break;
         case MPEGTS_DISC_GAP_PES:
             dr_vlog(c->logctx, DR_VLOG_DEBUG, "TS: PID 0x%04x: %s at byte %"PRId64": %"PRId64" bytes left out "
                     "until %s\n", g->pid, g->why, g->pos, g->bytes,
@@ -452,6 +460,12 @@ int dr_clip_ts_open(DrClipDemux **c, void *logctx, const int *pids, int nb_pids,
 int dr_clip_read(DrClipDemux *c, DrClipPacket *pkt)
 {
     return c->ts ? ts_read_packet(c, pkt) : ps_read_packet(c, pkt);
+}
+
+void dr_clip_ts_break(DrClipDemux *c)
+{
+    if (c && c->ts)
+        ts_disc_break(c->tsdisc);
 }
 
 int dr_clip_gap(DrClipDemux *c, int flush, MpegTSDiscGap *gap)

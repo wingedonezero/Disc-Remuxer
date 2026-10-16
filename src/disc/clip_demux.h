@@ -69,6 +69,10 @@ int dr_clip_read(DrClipDemux *c, DrClipPacket *pkt);
  *  it. */
 int dr_clip_gap(DrClipDemux *c, int flush, MpegTSDiscGap *gap);
 
+/** Transport streams: the block reader left blocks out before the block it
+ *  gives next (said by the caller): the continuity counters start again. */
+void dr_clip_ts_break(DrClipDemux *c);
+
 /** What a program-stream clip's reading counted so far. */
 void dr_clip_ps_stats(const DrClipDemux *c, MpegPsDiscStats *st);
 

@@ -8,7 +8,10 @@
  * is given out at once, the rest of the PES packet as each TS packet brings
  * it; a PES packet of length 0 runs to the next PES start; a TS packet that
  * starts a PES without a start code continues the current one when one is
- * running; what cannot be read (no start code, a header that does not
+ * running; a packet with a payload whose continuity counter does not follow
+ * the PID's last one (and no discontinuity indicator) is reported, its data
+ * kept, a duplicate of the packet before it is left out (reported); what
+ * cannot be read (no start code, a header that does not
  * parse, a header longer than its packet, a header that does not fit) drops
  * the PID's data until its next PES start.
  */
@@ -42,6 +45,8 @@ typedef struct DiscTsPid {
     int      dialog;              /* a text subtitle PID */
     const char *drop_why;         /* DISC_DROP: why, and where it began and the payload bytes left out */
     int64_t  drop_pos, drop_bytes;
+    int      cc;                  /* the last payload packet's continuity counter, -1 none */
+    uint8_t  last[TS_PACKET_SIZE];/* and that packet */
 } DiscTsPid;
 
 struct TsDisc {
@@ -135,13 +140,23 @@ static int disc_emit(TsDisc *t, DiscTsPid *d, int pid, const uint8_t *data, unsi
     return t->ev.emit(t->ev.opaque, pid, d->key, data, len, pts, pos);
 }
 
-/* The run of bad / zero source packets ends. */
+void ts_disc_break(TsDisc *t)
+{
+    for (unsigned i = 0; i < t->nb_pids; i++)
+        if (t->pids[i] >= 0 && t->pids[i] < NB_PID && t->pid[t->pids[i]])
+            t->pid[t->pids[i]]->cc = -1;
+}
+
+/* The run of bad / zero source packets ends (the packets in it are said:
+ * the continuity counters start again). */
 static int run_end(TsDisc *t)
 {
     int ret = 0;
 
-    if (t->run.kind)
+    if (t->run.kind) {
         ret = t->ev.gap(t->ev.opaque, &t->run);
+        ts_disc_break(t);
+    }
     t->run.kind = 0;
     return ret;
 }
@@ -306,6 +321,28 @@ static int disc_ts_packet(TsDisc *t, const uint8_t *p, int64_t pos)
     }
     if (!(d = t->pid[pid]))
         return 0;
+    /* continuity (ISO/IEC 13818-1 2.4.3.3): the counter goes up by one with
+     * each packet that has a payload, unless the adaptation field's
+     * discontinuity_indicator is set; a duplicate repeats the packet */
+    if (p[3] & 0x10) {
+        int cc = p[3] & 0x0f, ret;
+        int disc = (p[3] & 0x20) && p[4] && (p[5] & 0x80);
+        if (d->cc >= 0 && !disc && cc != ((d->cc + 1) & 0x0f)) {
+            MpegTSDiscGap g = { .kind = MPEGTS_DISC_GAP_CC, .pid = pid, .pos = pos, .end = pos,
+                                .packets = (cc - d->cc - 1) & 0x0f, .cc_from = d->cc, .cc_to = cc };
+            if (cc == d->cc && !memcmp(p, d->last, TS_PACKET_SIZE)) {
+                g.kind    = MPEGTS_DISC_GAP_DUP;
+                g.packets = 1;
+                return t->ev.gap(t->ev.opaque, &g);
+            }
+            if (cc == d->cc)
+                g.packets = 0;
+            if ((ret = t->ev.gap(t->ev.opaque, &g)) < 0)
+                return ret;
+        }
+        d->cc = cc;
+        memcpy(d->last, p, TS_PACKET_SIZE);
+    }
     pusi = p[1] & 0x40;
     pl   = p + off;
     len  = (p[3] & 0x10) ? TS_PACKET_SIZE - off : 0;
@@ -414,6 +451,7 @@ TsDisc *ts_disc_new(const int *pids, unsigned nb_pids, const int *dialog_pids, u
             t->pid[pid]->state     = DISC_HEADER;
             t->pid[pid]->remaining = DISC_UNBOUNDED;
             t->pid[pid]->pts       = TS_DISC_NOPTS;
+            t->pid[pid]->cc        = -1;
         }
     }
     for (unsigned i = 0; i < nb_dialog; i++)
