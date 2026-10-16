@@ -9,6 +9,7 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -81,15 +82,22 @@ int mkvout_open(MkvOut **pm, DrDisc *d, const char *path, int title, int part)
                      "and LPCM audio so far", t->number, ff_disctl_codec_id_name(t->codec));
         }
     }
-    /* the chapters as the title list has them: their room near the file's start */
-    if (info && title < info->nb_titles && part < 0) {
+    /* the chapters as the title list has them (a part: those inside it, from
+     * its own start): their room near the file's start */
+    if (info && title < info->nb_titles) {
         const DiscTitleInfo *ti = &info->titles[title];
+        int64_t from = 0, to = INT64_MAX;
+        if (part >= 0 && part < ti->nb_parts) {
+            from = ti->parts[part].start;
+            to   = from + ti->parts[part].duration;
+        }
         if (ti->nb_chapters && (m->est = dr_calloc(ti->nb_chapters, sizeof(*m->est)))) {
-            for (int i = 0; i < ti->nb_chapters; i++) {
-                m->est[i].start = ti->chapters[i].start * 1000;
-                m->est[i].name  = ti->chapters[i].name;
-            }
-            m->nb_est = ti->nb_chapters;
+            for (int i = 0; i < ti->nb_chapters; i++)
+                if (ti->chapters[i].start >= from && ti->chapters[i].start < to) {
+                    m->est[m->nb_est].start = (ti->chapters[i].start - from) * 1000;
+                    m->est[m->nb_est].name  = ti->chapters[i].name;
+                    m->nb_est++;
+                }
         }
     }
     *pm = m;

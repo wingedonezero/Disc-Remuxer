@@ -47,14 +47,23 @@ def avc_lpcm_disc(tmp_path):
     for i in range(FRAMES):
         packets += video[i * len(video) // FRAMES:(i + 1) * len(video) // FRAMES]
         packets += audio[i * len(audio) // FRAMES:(i + 1) * len(audio) // FRAMES]
-    data = bd.source_units(packets)
-    vattr, aattr = b"\x31", bytes([3 << 4 | 1]) + b"jpn"
-    streams = ((0x1011, 0x1b, vattr), (0x1100, 0x80, aattr))
-    clips = {1: bd.clpi(packets=len(data) // 192, stcs=((0, 0x1001, S, E),), streams=streams)}
-    item = Item("00001", S, E, videos=[Stream(0x1011, 0x1b, vattr)], audio=[Stream(0x1100, 0x80, aattr)])
-    files = bd.bdmv(clips, {1: bd.mpls([item])})
-    files["BDMV/STREAM/00001.m2ts"] = data
-    return bd.write(tmp_path / "disc", files), raw
+    return bd.write(tmp_path / "disc", bdmv_of(bd.source_units(packets), 1)), raw
+
+
+VATTR, AATTR = b"\x31", bytes([3 << 4 | 1]) + b"jpn"
+
+
+def bdmv_of(data, nb_clips, marks=()):
+    """A playlist playing nb_clips clips of data back to back."""
+    streams = ((0x1011, 0x1b, VATTR), (0x1100, 0x80, AATTR))
+    clips = {n: bd.clpi(packets=len(data) // 192, stcs=((0, 0x1001, S, E),), streams=streams)
+             for n in range(1, nb_clips + 1)}
+    items = [Item(f"0000{n}", S, E, videos=[Stream(0x1011, 0x1b, VATTR)], audio=[Stream(0x1100, 0x80, AATTR)])
+             for n in range(1, nb_clips + 1)]
+    files = bd.bdmv(clips, {1: bd.mpls(items, marks=marks)})
+    for n in range(1, nb_clips + 1):
+        files[f"BDMV/STREAM/0000{n}.m2ts"] = data
+    return files
 
 
 def demux_mkv(disc, out):
@@ -264,3 +273,31 @@ def test_a_frame_of_two_field_pictures_goes_into_a_block_per_field(tmp_path):
     assert [b[0] for b in blocks] == [0, 20, 40, 60, 80, 100], "a block per field, one field apart"
     assert [bool(b[1] & 0x80) for b in blocks] == [True, False, False, False, False, False], "the IDR field is key"
     assert [bool(b[1] & 0x01) for b in blocks] == [False] * 5 + [True], "the last field's nal_ref_idc is 0"
+
+
+def test_the_parts_of_a_joined_title_are_files_of_their_own_with_their_own_chapters(tmp_path):
+    # two clips played back to back, two chapters in each (at its start and
+    # 1 s in): --split writes each clip as an MKV of its own, its chapters
+    # from its own start, in the room kept for them before the clusters; the
+    # same clip twice gives the same file twice
+    import os
+    disc, _ = avc_lpcm_disc(tmp_path)
+    data = (disc / "BDMV/STREAM/00001.m2ts").read_bytes()
+    marks = [(1, 0, S), (1, 0, S + 45000), (1, 1, S), (1, 1, S + 45000)]
+    joined = bd.write(tmp_path / "joined", bdmv_of(data, 2, marks))
+    out = tmp_path / "out"
+    p = subprocess.run([*PROGRAM, "--set", "output.format=mkv", "--set", "titles.min_length=0", "--split", "0",
+                        "demux", str(joined), "0", str(out)], capture_output=True, text=True,
+                       env={**os.environ, "DR_MKV_NO_VARIABLE_DATA": "1"})
+    files = sorted(out.rglob("*.mkv"))
+    assert p.returncode == 0 and [f.name for f in files] == ["title_t00_p1.mkv", "title_t00_p2.mkv"], \
+        p.stdout + p.stderr
+    parts = [f.read_bytes() for f in files]
+    assert parts[0] == parts[1], "the same clip: the same file"
+    seg = find(elements(parts[0]), 0x18538067)[0]
+    ids = [eid for eid, _ in seg]
+    assert ids.index(0x1043A770) < ids.index(0x1F43B675), "the chapters in their room before the clusters"
+    starts = [uint(dict(a)[0x91]) for a in find(seg, 0x1043A770, 0x45B9, 0xB6)]
+    # from its own start; the 1 s mark takes the first key frame no more than
+    # 0.4 s before it (the timeline's chapter rule; every picture here is one)
+    assert starts == [0, 640000000], "each part's chapters from its own start"
