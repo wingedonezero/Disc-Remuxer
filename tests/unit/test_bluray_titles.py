@@ -295,3 +295,21 @@ def test_clip_information_corrections_are_said(tmp_path):
     dump(build(tmp_path, bd.bdmv(clips, {1: pl})), min_length=0)
     log = "\n".join(LOG)
     assert ("00001.clpi: its first STC sequence starts at source packet 32: taken as 0 (the clip's start)") in log, log
+
+
+def test_an_item_that_cannot_be_used_ends_the_title_and_is_said(tmp_path):
+    # clip 00002 has no clip information: the title stops before it (the
+    # reference program's way), the standard log says why and what is lost
+    items = [part_item("00001"), part_item("00002", 5), part_item("00003", 5)]
+    log = said(tmp_path, [1, 3], {1: bd.mpls(items)})
+    assert ("Blu-ray: playlist 00001 part 0: item 1 cannot be used, clip 00002 has no clip information (its .clpi "
+            "file is missing or cannot be read): items 1-2 (0:00:02) are left out, the title ends after item 0 at "
+            "0:00:02") in log, log
+    marks = [(1, 0, S + 1000), (1, 0, S + 2000)]
+    ts = titles(disc(tmp_path / "t", [1, 3], {1: bd.mpls(items, marks=marks)}))
+    assert [field(t, "segments") for t in ts if t.split()[2] == "00001.mpls"] == ["1"], ts
+    # the first item: the whole part is left out
+    items = [part_item("00002"), part_item("00001", 5), part_item("00003", 5)]
+    log = said(tmp_path / "f", [1, 3], {1: bd.mpls(items)})
+    assert ("Blu-ray: playlist 00001 part 0: its first item 0 cannot be used, clip 00002 has no clip information "
+            "(its .clpi file is missing or cannot be read): the part (0:00:03) is left out") in log, log

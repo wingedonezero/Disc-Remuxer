@@ -464,8 +464,10 @@ static int recs_push(Recs *r, const Rec *x)
 /* The record of play item idx (angle 0 = its own clip): its clip (one ATC
  * sequence only), its STC sequence and, for a stereoscopic playlist
  * (extension SubPath of type 8 with one SubPlayItem per play item), the
- * dependent-view clip. 0 when the item cannot be used. */
-static int item_record(void *log, BlurayDisc *d, const BlurayPlaylist *pl, int idx, int angle, Rec *rec)
+ * dependent-view clip. 0 when the item cannot be used (why, if not NULL,
+ * says why). */
+static int item_record(void *log, BlurayDisc *d, const BlurayPlaylist *pl, int idx, int angle, Rec *rec,
+                       char *why, size_t why_size)
 {
     const BlurayPlayItem *it = &pl->items[idx];
     const char *name = angle == 0 ? it->clip : angle <= it->nb_angles ? it->angles[angle - 1].clip : NULL;
@@ -477,15 +479,24 @@ static int item_record(void *log, BlurayDisc *d, const BlurayPlaylist *pl, int i
     if (!(rec->clip = clip_by_name(d, name))) {
         dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: playlist %05u item %d: no clip %.5s\n", pl->number, idx,
                name ? name : "-");
+        if (why)
+            snprintf(why, why_size, "clip %.5s has no clip information (its .clpi file is missing or cannot be read)",
+                     name ? name : "-");
         return 0;
     }
     if (rec->clip->nb_atc != 1) {
         dr_vlog(log, DR_VLOG_DEBUG, "Blu-ray: clip %05u has %d ATC sequences\n", rec->clip->number, rec->clip->nb_atc);
+        if (why)
+            snprintf(why, why_size, "clip %05u has %d ATC sequences (a title takes clips with one)",
+                     rec->clip->number, rec->clip->nb_atc);
         return 0;
     }
     stc_id = angle == 0 ? it->stc_id : it->angles[angle - 1].stc_id;
-    if (!(rec->stc = stc_lookup(log, rec->clip, stc_id)))
+    if (!(rec->stc = stc_lookup(log, rec->clip, stc_id))) {
+        if (why)
+            snprintf(why, why_size, "clip %05u has no usable STC sequence %u", rec->clip->number, stc_id);
         return 0;
+    }
     rec->connection = it->connection;
     if (pl->ext_subpath_type == 0xffff)
         return 1;
@@ -1038,12 +1049,20 @@ static int cmp_u64(const void *a, const void *b)
     return x < y ? -1 : x > y;
 }
 
+/* h:mm:ss of a time in 45 kHz ticks (for the log). */
+static void hms45(char *buf, size_t size, uint64_t t45)
+{
+    uint64_t sec = t45 / 45000;
+    snprintf(buf, size, "%d:%02d:%02d", (int)(sec / 3600), (int)(sec / 60 % 60), (int)(sec % 60));
+}
+
 /* The records, chapter marks and items of part `part` of a playlist for one
  * angle. 1, 0 nothing (not sequential, no items, the first item unusable). */
 static int part_segments(void *log, BlurayDisc *d, BlurayPlaylist *pl, int part, int angle, Part *out, int with_side)
 {
     int n = pl->nb_items, s = 0, L = 1, longest = 0;
     uint64_t total = 0;
+    char why[128];
     uint32_t maxdur = 0;
     int na = 0;
 
@@ -1125,9 +1144,24 @@ static int part_segments(void *log, BlurayDisc *d, BlurayPlaylist *pl, int part,
         if (ac)
             na = DR_MAX(na, ac + 1);
         a = ac + 1 > angle ? angle : 0;
-        if (!item_record(log, d, pl, idx, a, &rec)) {
-            if (!k)
+        if (!item_record(log, d, pl, idx, a, &rec, why, sizeof(why))) {
+            char ang[16] = "", left[16], at[16];
+            uint64_t rest = 0;
+            for (int j = idx; j < s + L; j++)
+                if (pl->items[j].out_time > pl->items[j].in_time)
+                    rest += pl->items[j].out_time - pl->items[j].in_time;
+            if (angle)
+                snprintf(ang, sizeof(ang), " angle %d", angle + 1);
+            hms45(left, sizeof(left), rest);
+            if (!k) {
+                dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: playlist %05u part %d%s: its first item %d cannot be used, "
+                       "%s: the part (%s) is left out\n", pl->number, part, ang, idx, why, left);
                 return 0;
+            }
+            hms45(at, sizeof(at), total);
+            dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: playlist %05u part %d%s: item %d cannot be used, %s: items "
+                   "%d-%d (%s) are left out, the title ends after item %d at %s\n", pl->number, part, ang, idx, why,
+                   idx, s + L - 1, left, idx - 1, at);
             break;
         }
         if ((ret = recs_push(&out->recs, &rec)) < 0)
@@ -1790,7 +1824,8 @@ static int merge_items(Ctx *c, BlurayPlaylist *pl)
             i++;
             continue;
         }
-        if (!item_record(c->log, c->d, pl, i - 1, 0, &A) || !item_record(c->log, c->d, pl, i, 0, &B))
+        if (!item_record(c->log, c->d, pl, i - 1, 0, &A, NULL, 0) ||
+            !item_record(c->log, c->d, pl, i, 0, &B, NULL, 0))
             return 0;
         s = A.stc->start; pIN = prev->in_time; pOUT = prev->out_time; iIN = I->in_time; iOUT = I->out_time;
         if (A.clip == B.clip && A.stc == B.stc && !A.dep && !B.dep &&
@@ -1824,8 +1859,8 @@ static int merge_items(Ctx *c, BlurayPlaylist *pl)
             continue;
         for (int k = 0; k < nA && ok; k++) {
             Rec A, B;
-            if (!item_record(c->log, c->d, pl, i - 1, k < prev->nb_angles + 1 ? k : 0, &A) ||
-                !item_record(c->log, c->d, pl, i, k < I->nb_angles + 1 ? k : 0, &B))
+            if (!item_record(c->log, c->d, pl, i - 1, k < prev->nb_angles + 1 ? k : 0, &A, NULL, 0) ||
+                !item_record(c->log, c->d, pl, i, k < I->nb_angles + 1 ? k : 0, &B, NULL, 0))
                 return 0;
             ok = DR_ABS((int64_t)prev->in_time - A.stc->start) <= TOLERANCE &&
                  DR_ABS((int64_t)prev->out_time - A.stc->end) <= TOLERANCE &&
