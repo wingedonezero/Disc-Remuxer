@@ -183,6 +183,4 @@ a test run reaches.
 - Holes in a title (a damaged stretch left out): the stream files close the
   hole, the subtitles and chapters after it keep the disc's times — to
   decide: shift them by what the video lost.
-- Forced-only PGS copies keep every display set (the non-forced ones
-  empty); trim them to the forced displays as MakeMKV does — to decide.
 - A caption cue's end can round 1 ms differently from MakeMKV's.

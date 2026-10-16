@@ -5,7 +5,8 @@
  * grid of its segment. Blu-ray PGS display sets, as the PGS rule
  * (src/parse/pgs_rule.c) finds them, the same way: each set lasts one video
  * field period (the next set replaces or clears it); a forced-only track's
- * sets show only their forced objects (disctl_pgs.c).
+ * sets show only their forced objects (disctl_pgs.c), and only the sets
+ * that show them, clear them or define what they use are kept.
  */
 
 #include <stdio.h>
@@ -183,7 +184,10 @@ struct DRSpu {
     Held       *q;               /* units waiting for the video's grid */
     int         head, n, cap;
     int         warned_colcon, warned_outside;
-    int         pgs, forced_only, said_forced;
+    int         pgs, forced_only, said_reused;
+    int        *showing;         /* forced-only: a forced object is on screen (the track's, across segments) */
+    Held       *ep;              /* forced-only: the sets of the current epoch not kept (yet) */
+    int         nb_ep, ep_cap;
     DRSpuStats  st;
 };
 
@@ -248,6 +252,76 @@ static int hold(DRSpu *s, Held *h)
     return 0;
 }
 
+/* Forced-only: the sets of the epoch not kept are not needed (a new epoch
+ * starts, or the segment ends). */
+static void epoch_drop(DRSpu *s)
+{
+    for (int i = 0; i < s->nb_ep; i++)
+        ff_disctl_frame_unref(&s->ep[i].f);
+    s->st.forced_left_out += s->nb_ep;
+    s->nb_ep = 0;
+}
+
+/* Forced-only: what to do with a set cut to its forced objects (it shows
+ * `shows` of them): 1 keep it, 0 hold it back with its epoch's sets not
+ * kept; the epoch's sets held back go out first when a kept set may use
+ * what they define. */
+static int forced_keep(DRSpu *s, const Held *h, int shows)
+{
+    /* composition_state (0x80 epoch start, 0x40 acquisition point), body
+     * byte 7 of the set's first segment, its composition */
+    int state = h->f.size >= 3 + 8 && dr_rb16(h->f.data + 1) >= 8 ? h->f.data[3 + 7] & 0xC0 : 0, ret;
+
+    if (state == 0x80)
+        epoch_drop(s);
+    if (shows) {
+        if (state != 0x80 && s->nb_ep) {
+            /* a set inside its epoch may show objects, use palettes and
+             * windows that sets left out defined */
+            if (!s->said_reused) {
+                s->said_reused = 1;
+                dr_vlog(s->log, DR_VLOG_WARNING, "Title timeline: PGS track %d: a forced subtitle inside an epoch "
+                       "after display sets without forced subtitles: those sets are kept too, showing nothing (the "
+                       "objects, palettes and windows they define may be used) [untested on real discs]\n", s->track);
+            }
+            for (int i = 0; i < s->nb_ep; i++) {
+                if ((ret = hold(s, &s->ep[i])) < 0) {
+                    for (int j = i; j < s->nb_ep; j++)
+                        ff_disctl_frame_unref(&s->ep[j].f);
+                    s->nb_ep = 0;
+                    return ret;
+                }
+            }
+            s->st.forced_reused += s->nb_ep;
+            s->nb_ep = 0;
+        }
+        s->st.forced_sets++;
+        *s->showing = 1;
+        return 1;
+    }
+    if (*s->showing) {
+        s->st.forced_clears++;
+        *s->showing = 0;
+        return 1;
+    }
+    return 0;
+}
+
+/* Forced-only: a set held back with its epoch. */
+static int epoch_add(DRSpu *s, Held *h)
+{
+    if (s->nb_ep == s->ep_cap) {
+        int cap = s->ep_cap ? 2 * s->ep_cap : 16;
+        Held *q = dr_realloc_array(s->ep, cap, sizeof(*q));
+        if (!q)
+            return DR_ERR(ENOMEM);
+        s->ep     = q;
+        s->ep_cap = cap;
+    }
+    s->ep[s->nb_ep++] = *h;
+    return 0;
+}
+
 /* A PGS display set: its bytes (a forced-only track: cut to its forced
  * objects), its time on the video grid once it is known. */
 static int pgs_unit(DRSpu *s, const DRUnit *u)
@@ -278,19 +352,18 @@ static int pgs_unit(DRSpu *s, const DRUnit *u)
         return n;
     }
     s->st.forced_objects += forced;
-    if (s->forced_only) {
-        if (forced && !s->said_forced) {
-            s->said_forced = 1;
-            dr_vlog(s->log, DR_VLOG_INFO, "Title timeline: PGS track %d: forced subtitles: each display set shows only "
-                   "its forced objects, as a player does with subtitles off [untested on real discs]\n", s->track);
-        }
-    } else {
+    if (!s->forced_only) {
         memcpy(dr_buf_data(h.f.buf), u->data, u->size);
         n = u->size;
     }
     memset(dr_buf_data(h.f.buf) + n, 0, DR_BUF_PADDING);
     h.f.data = dr_buf_data(h.f.buf);
     h.f.size = n;
+    if (s->forced_only && !forced_keep(s, &h, forced)) {
+        if ((ret = epoch_add(s, &h)) < 0)
+            ff_disctl_frame_unref(&h.f);
+        return ret;
+    }
     if ((ret = hold(s, &h)) < 0) {
         ff_disctl_frame_unref(&h.f);
         return ret;
@@ -298,10 +371,11 @@ static int pgs_unit(DRSpu *s, const DRUnit *u)
     return drain(s);
 }
 
-void ff_disctl_spu_set_pgs(DRSpu *s, int forced_only)
+void ff_disctl_spu_set_pgs(DRSpu *s, int forced_only, int *showing)
 {
     s->pgs         = 1;
-    s->forced_only = forced_only;
+    s->forced_only = forced_only && showing;
+    s->showing     = showing;
 }
 
 int ff_disctl_spu_unit(void *opaque, const DRUnit *u)
@@ -363,6 +437,7 @@ int ff_disctl_spu_flush(DRSpu *s)
 {
     int ret = drain(s);
 
+    epoch_drop(s);                      /* an epoch ends with its segment */
     if (ret < 0)
         return ret;
     if (s->n) {
@@ -417,7 +492,10 @@ void ff_disctl_spu_close(DRSpu **sp)
         return;
     for (int i = 0; i < s->n; i++)
         ff_disctl_frame_unref(&s->q[s->head + i].f);
+    for (int i = 0; i < s->nb_ep; i++)
+        ff_disctl_frame_unref(&s->ep[i].f);
     dr_freep(&s->q);
+    dr_freep(&s->ep);
     dr_freep(sp);
 }
 

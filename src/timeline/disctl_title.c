@@ -60,6 +60,8 @@ typedef struct Track {
     int64_t       extended;      /* sub-pictures: units without a stop time shown until the next one */
     int64_t       outside;       /* sub-pictures: units drawn outside the canvas */
     int64_t       forced_objects;/* PGS: forced objects shown */
+    int           pgs_showing;   /* PGS, forced only: a forced object is on screen */
+    DRSpuStats    pgs_forced;    /* PGS, forced only: the display sets kept and left out */
     DRCcx        *ccx;           /* captions: the converter, from the first block on */
     int64_t       cc_blocks;     /* captions: caption blocks given to the converter */
     int64_t       cc_origin;     /* captions: the segment converter's origin (its first block's time) */
@@ -1719,7 +1721,7 @@ static int seg_open(DRTitle *t)
             unit  = ff_disctl_spu_unit;
             stage = k->spu;
             if (ret >= 0 && k->cfg.codec == DR_CODEC_HDMV_PGS_SUBTITLE)
-                ff_disctl_spu_set_pgs(k->spu, !!(k->cfg.sub_flags & DR_SUB_FORCED_ONLY));
+                ff_disctl_spu_set_pgs(k->spu, !!(k->cfg.sub_flags & DR_SUB_FORCED_ONLY), &k->pgs_showing);
             break;
         }
         if (ret < 0)
@@ -1786,6 +1788,10 @@ static int seg_end(DRTitle *t)
             ff_disctl_spu_stats(k->spu, &ss);
             k->outside  += ss.outside;
             k->forced_objects += ss.forced_objects;
+            k->pgs_forced.forced_sets     += ss.forced_sets;
+            k->pgs_forced.forced_clears   += ss.forced_clears;
+            k->pgs_forced.forced_reused   += ss.forced_reused;
+            k->pgs_forced.forced_left_out += ss.forced_left_out;
             k->warnings += ss.outside > 0;  /* the stage warns once per segment */
         }
         if (k->audio) {
@@ -2011,6 +2017,18 @@ static int title_finish(DRTitle *t)
         }
         if ((ret = spu_finish(t, k)) < 0)
             return ret;
+        if (k->cfg.codec == DR_CODEC_HDMV_PGS_SUBTITLE && (k->cfg.sub_flags & DR_SUB_FORCED_ONLY) &&
+            k->forced_objects) {
+            const DRSpuStats *p = &k->pgs_forced;
+            char reused[96] = "";
+            if (p->forced_reused)
+                snprintf(reused, sizeof(reused), ", %"PRId64" for what forced ones reuse (showing nothing)",
+                         p->forced_reused);
+            dr_vlog(t->log, DR_VLOG_INFO, "Title timeline: PGS track %d: forced subtitles only, as a player shows "
+                   "them with subtitles off: kept %"PRId64" display sets with forced subtitles (only those "
+                   "objects), %"PRId64" clearing them%s; left out %"PRId64" without forced subtitles\n", i,
+                   p->forced_sets, p->forced_clears, reused, p->forced_left_out);
+        }
         if (is_side(k))
             side_finish(t, k);
         if (k->cfg.kind == DR_KIND_CAPTION && (ret = cc_finish(t, k)) < 0)

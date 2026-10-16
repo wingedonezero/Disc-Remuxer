@@ -775,6 +775,11 @@ typedef struct DRSpuStats {
     int64_t max_shift;         /**< largest move to the video grid (ticks) */
     int64_t outside;           /**< drawn outside the canvas (SET_DAREA beyond width x height) */
     int64_t forced_objects;    /**< PGS: forced objects shown (a forced-only track: the ones it keeps) */
+    /* PGS, a forced-only track: */
+    int64_t forced_sets;       /**< display sets kept that show forced objects */
+    int64_t forced_clears;     /**< display sets kept that clear them */
+    int64_t forced_reused;     /**< display sets kept, showing nothing, for what a later forced one reuses */
+    int64_t forced_left_out;   /**< display sets left out (no forced objects, nothing to clear) */
 } DRSpuStats;
 
 typedef struct DRSpu DRSpu;
@@ -784,15 +789,21 @@ typedef struct DRSpu DRSpu;
  *  units are drawn on (0 x 0: not known, not checked). */
 /* Blu-ray PGS (ff_disctl_spu_set_pgs): the units are display sets, each
  * lasting one video field period (the next set replaces or clears it), timed
- * at the video grid point nearest to its composition segment's time; a
- * forced-only track keeps every set (later sets may use what earlier ones
- * define) with each set's composition objects cut to the forced ones. */
+ * at the video grid point nearest to its composition segment's time. A
+ * forced-only track cuts each set's composition objects to the forced ones
+ * (what a player shows with subtitles off) and keeps a set that then shows
+ * forced objects, the first set after it that shows none (it clears them),
+ * and, when a kept set that does not start an epoch follows sets of its
+ * epoch that were not kept, those sets (showing nothing: the objects,
+ * palettes and windows they define may be used); the others are left out. */
 int  ff_disctl_spu_open(DRSpu **s, void *logctx, int track, DRVideo *v, int width, int height,
                          DRFrameCb cb, void *opaque, DREventCb event, void *event_opaque);
 /** A DRUnitCb: opaque = the DRSpu. */
 int  ff_disctl_spu_unit(void *spu, const DRUnit *unit);
 /** The track is PGS (forced_only: DR_SUB_FORCED_ONLY track). */
-void ff_disctl_spu_set_pgs(DRSpu *s, int forced_only);
+/** PGS; forced_only: *showing is the track's "a forced object is on screen"
+ *  across its segments (0 at the title's start). */
+void ff_disctl_spu_set_pgs(DRSpu *s, int forced_only, int *showing);
 /** The end of the segment (after the video's flush). */
 int  ff_disctl_spu_flush(DRSpu *s);
 void ff_disctl_spu_stats(const DRSpu *s, DRSpuStats *st);
