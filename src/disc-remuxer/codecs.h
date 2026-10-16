@@ -8,11 +8,14 @@
 
 #include <stddef.h>
 
-#include <libavformat/discinfo.h>
+#include "disc/info.h"
 
 /** The codec's full name with its profile, level and Dolby Vision type (base: a
  *  3-D second view's base view, else NULL). */
 const char *codec_description(const DiscStreamInfo *k, const DiscStreamInfo *base, char *buf, size_t size);
+/** A codec id's name as the processing library spells it ("ac3",
+ *  "pcm_s24le", "hdmv_pgs_subtitle", ...). */
+const char *codec_id_name(int id);
 /** The codec's short name (DTS-HD MA, TrueHD, MpegH, ...). */
 const char *codec_short(const DiscStreamInfo *k);
 /** "High@L4.1" / "Main10@L5.1", "" when not known. */

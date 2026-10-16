@@ -1,5 +1,5 @@
 """The title list's stream details on Blu-ray (the disc layer's stream pass,
-libavformat/discpass.c; src/disc-remuxer/codecs.c): a disc folder built here (tests/synth/bluray.py)
+src/disc/pass.c; src/disc-remuxer/codecs.c): a disc folder built here (tests/synth/bluray.py)
 whose clip carries MPEG-2 video, AC-3, DTS and TrueHD with its AC-3 core,
 each on its own PID and PES key (stream id 0xFD with its extension, as on a
 disc), read by the program's info: every track's details come from its own
@@ -88,11 +88,11 @@ def test_details_read_to_the_end_of_a_short_clip(tmp_path):
     assert (t["tracks"][0]["width"], t["tracks"][0]["height"]) == (64, 48)
 
 
-def avc_disc(tmp_path, mbs, aspect_ratio_idc, attr):
+def avc_disc(tmp_path, mbs, aspect_ratio_idc, attr, full_range=None):
     """A clip of SD AVC only: three grey IDR pictures of mbs macroblocks
     whose SPS gives the sample aspect ratio (aspect_ratio_idc)."""
     au = (h264.aud(0) + h264.sps(mbs=mbs, crop_bottom=0, aspect_ratio_idc=aspect_ratio_idc, timing=(1, 50),
-                                 hrd=False, pic_struct=False) +
+                                 hrd=False, pic_struct=False, full_range=full_range) +
           h264.pps(cabac=0) + h264.idr_grey(mbs[0] * mbs[1]))
     packets = stream_packets(0x1011, [au] * 3, 0xe0)
     data = bd.source_units(packets)
@@ -115,3 +115,12 @@ def avc_disc(tmp_path, mbs, aspect_ratio_idc, attr):
 def test_sd_avc_aspect(tmp_path, mbs, idc, attr, size, aspect):
     v = info(avc_disc(tmp_path, mbs, idc, attr))[0]["tracks"][0]
     assert (v["width"], v["height"], v["aspect"]) == (*size, aspect)
+
+
+@pytest.mark.parametrize("full", [1, 0])
+def test_a_video_that_says_full_colour_range_is_said(tmp_path, full):
+    d = avc_disc(tmp_path, (45, 36), 2, b"\x23\x20", full_range=full)
+    p = subprocess.run([*PROGRAM, "--set", "titles.min_length=0", "info", str(d)], capture_output=True, text=True)
+    line = ("Blu-ray: title 00001.m2ts: video stream 0 says full colour range (disc video is limited range): kept as "
+            "on the disc")
+    assert (line in p.stdout) == bool(full), p.stdout

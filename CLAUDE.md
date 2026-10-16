@@ -7,12 +7,13 @@
 > is authoritative — read it first. **This file stays minimal: never add
 > private details to it, to code, or to commit messages.**
 
-A C program (`disc-remuxer`, `src/disc-remuxer/`) that rips DVD, Blu-ray and HD DVD sources into
-Matroska files or elementary streams. Our own copy of FFmpeg is the processing
-layer; it is built with our copies of libdvdread, libdvdnav and libdvdcss;
-expat parses the HD DVD playlists; libaacs (on libgcrypt / libgpg-error)
-handles AACS; CCExtractor (a helper program) turns closed captions into
-text. All live in `libs/` and are edited directly (see `libs/README.md`).
+A C program (`disc-remuxer`, `src/disc-remuxer/`, with a Qt 6 GUI in `src/gui/`) that rips DVD,
+HD DVD and Blu-ray / UHD sources into elementary streams (Matroska later). The whole demux path —
+readers, demuxers, frame cutters, the title timeline, the writer — is our own code in `src/`;
+FFmpeg (unmodified) is only an analysis instrument, linked from `src/analyze/`. libdvdread,
+libdvdnav and libdvdcss read DVDs (table parsing, the navigation VM, CSS); expat parses the HD DVD
+playlists; libaacs (on libgcrypt / libgpg-error) handles AACS; CCExtractor (a helper program) turns
+closed captions into text. All live in `libs/` (see `libs/README.md`: what is changed in each).
 
 ## Build and test
 
@@ -33,12 +34,13 @@ C code through a cffi bridge built against the same libraries.
 
 See `docs/ARCHITECTURE.md` and `libs/README.md`.
 
-- `src/disc-remuxer/` — the program: the engine (`libdisc-remuxer.a`, `engine.h`) and the command line (`main.c`)
+- `src/disc-remuxer/` — the engine (`libdisc-remuxer.a`, `engine.h`) and the command line (`main.c`)
 - `src/gui/` — the GUI (C++, Qt 6 Widgets), linked with the engine
-- `libs/` — FFmpeg and every library, edited directly
+- `src/disc/` (with `dvd/`, `hddvd/`, `bluray/`), `src/timeline/`, `src/mux/`, `src/parse/`, `src/io/`,
+  `src/base/` — the demux path, top to bottom; `src/analyze/` — the one module that links FFmpeg
+- `libs/` — FFmpeg and every library (FFmpeg unmodified; see `libs/README.md`)
 - `mk/` — the build rules (`Makefile`, `build.sh`)
 - `tests/` — unit tests (`unit/`), test data builders (`synth/`), helpers, the cffi bridge (`bridge/`)
-- `legacy/rust/` — the Rust crates the program replaced, kept until their last tests are ported (`TODO.md`)
 
 ## Commits
 

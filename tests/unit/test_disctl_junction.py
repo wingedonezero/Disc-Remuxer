@@ -1,4 +1,4 @@
-"""libavformat/disctl_junction.c: the audio junction of the title timeline. Every
+"""src/timeline/disctl_junction.c: the audio junction of the title timeline. Every
 case is built from an event the reference program logged on a real disc,
 with the numbers in ticks (1/1,080,000,000 s): the title start (every frame
 kept at its own time, also before the video: the reference program dropped

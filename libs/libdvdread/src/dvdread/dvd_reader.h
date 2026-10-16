@@ -139,8 +139,9 @@ typedef struct
 } dvd_report_t;
 
 /**
- * What a damaged range of title VOB sectors is (vob_read.h): sectors left
- * out because they hold no stream data the demuxer can use.
+ * What a damaged range of title VOB sectors is (reported by an application
+ * that reads them, dvd_report_t.damage): sectors left out because they hold
+ * no stream data the demuxer can use.
  */
 typedef enum
 {
@@ -273,6 +274,23 @@ DVDREAD_API int DVDFindingsAdd( dvd_findings_t *, const dvd_report_t *, char *li
 DVDREAD_API void DVDFindingsSummary( dvd_findings_t *, void ( *say )( void *priv, dvd_logger_level_t level,
                                      const char *line ), void *priv );
 DVDREAD_API void DVDFindingsCount( const dvd_findings_t *, int *harmless, int *breaks );
+
+/**
+ * A report through logcb the way the library reports its own: with
+ * logcb->findings, into the findings book (said once, counted; damaged data
+ * as a debug line), else to pf_report and the log. For an application that
+ * reads what the library used to and reports it the same way.
+ */
+DVDREAD_API void DVDReadReport( void *priv, const dvd_logger_cb *logcb, const dvd_report_t *report );
+
+/**
+ * A file of the disc ("/VIDEO_TS/VTS_01_1.VOB") through the reader's file
+ * system: its size and place (DVDStatFile_(); < 0 when there is none), its
+ * path there (DVDFindFile_(), full_path PATH_MAX + 1 bytes). For an
+ * application that reads the disc's files the way the reader finds them.
+ */
+DVDREAD_API int DVDStatFile_( dvd_reader_t *ctx, const char *filename, dvdstat_t *st );
+DVDREAD_API int DVDFindFile_( dvd_reader_t *ctx, const char *filename, char *full_path );
 
 /**
  *

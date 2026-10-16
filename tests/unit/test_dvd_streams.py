@@ -1,4 +1,4 @@
-"""libavformat/dvd_streams.c and the track list of dvddec.c: a DVD title's
+"""src/disc/dvd/dvd_stream_probe.c and the track list of dvd_part.c: a DVD title's
 stream pass (step D3, part b) on built disc folders, seen through
 `disc-remuxer info`: an audio stream without data in the first 48 MiB is
 left out when the program chain's audio_control does not list it (looked up
@@ -96,7 +96,7 @@ def test_whether_audio_control_lists_a_stream_is_taken_from_its_place(tmp_path):
 
 
 def test_a_stream_listed_twice_keeps_its_first_track(tmp_path):
-    # the disc layer's duplicate rule (discpass.c), numbered by the places in
+    # the disc layer's duplicate rule (pass.c), numbered by the places in
     # the title's stream list: the video 0, the audio entries 1-3 (stream 0
     # twice, then the title set's stream 1, which the probe leaves out), the
     # sub-picture entries 4 and 5

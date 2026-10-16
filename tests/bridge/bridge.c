@@ -10,6 +10,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "base/buf.h"
+#include "base/vlog.h"
+#include "io/discio.h"
+#include "base/err.h"
+#include "base/log.h"
+#include "disc-remuxer/names.h"
+#include "base/mem.h"
+#include "base/crc32.h"
+#include "base/sha.h"
+#include "base/str.h"
+
 #include "libavcodec/avcodec.h"
 #include "libavcodec/codec_desc.h"
 #include "libavformat/avformat.h"
@@ -19,13 +30,18 @@
 #include "libavutil/log.h"
 #include "libavutil/mem.h"
 
-#include "libavformat/bluray_internal.h"
-#include "libavformat/disclang.h"
-#include "libavformat/discio.h"
-#include "libavformat/disctl.h"
-#include "libavformat/dvd_internal.h"
-#include "libavformat/hddvd_internal.h"
-#include "libavformat/mpeg.h"
+#include "disc/bluray/bluray_internal.h"
+#include "analyze/analyze.h"
+#include "timeline/disctl.h"
+#include "disc/dvd/dvd_internal.h"
+#include "disc/dvd/dvd_stream_probe.h"
+#include "disc/hddvd/hddvd_internal.h"
+#include "disc/clip_demux.h"
+#include "parse/stock.h"
+#include "parse/rules.h"
+#include "disc-remuxer/writer.h"
+#include "base/crc16.h"
+#include "disc/lang.h"
 
 #include <dvdcss/dvdcss.h>
 #include <dvdread/dvd_udf.h>
@@ -73,10 +89,20 @@ static void log_callback(void *avcl, int level, const char *fmt, va_list vl)
     pthread_mutex_unlock(&log_lock);
 }
 
-/* Route FFmpeg's log (and the libraries' through it) to sink, up to
- * max_level. */
+/* Route the modules' lines (base/vlog.h; logctx is a source-name string,
+ * or NULL) through FFmpeg's log to the sink, up to max_level. */
+static void tb_module_vlog(const void *logctx, int level, const char *fmt, va_list vl)
+{
+    static const int map[] = { AV_LOG_ERROR, AV_LOG_WARNING, AV_LOG_INFO,
+                               AV_LOG_VERBOSE, AV_LOG_DEBUG, AV_LOG_TRACE };
+    (void)logctx;               /* the tests' lines carry no source prefix */
+    av_vlog(NULL, map[level], fmt, vl);
+}
+
 static void tb_log_install(tb_log_sink sink, int max_level)
 {
+    dr_vlog_set(tb_module_vlog);
+    dr_analyze_use();
     pthread_mutex_lock(&log_lock);
     log_sink = sink;
     log_max_level = max_level;
@@ -85,76 +111,16 @@ static void tb_log_install(tb_log_sink sink, int max_level)
     av_log_set_callback(log_callback);
 }
 
-typedef void (*tb_parser_frame_cb)(void *opaque, int size, int64_t pts, int64_t dts);
-
-/* Runs FFmpeg's parser for the codec named codec_name (a codec descriptor
- * name such as "ac3") over nb packets the way libavformat does: each
- * packet's timestamp is passed on its first parser call only, the rest of the
- * packet follows without one, and the parser is flushed at the end. cb gets
- * every frame the parser returns with the timestamps the parser gave it.
- * Returns 0 or a negative AVERROR. */
-static int tb_parser_run(const char *codec_name, const uint8_t *const *data,
-                         const int *sizes, const int64_t *pts, int nb,
-                         tb_parser_frame_cb cb, void *opaque)
-{
-    const AVCodecDescriptor *desc = avcodec_descriptor_get_by_name(codec_name);
-    AVCodecParserContext *parser;
-    AVCodecContext *avctx;
-    int64_t pos = 0;
-    uint8_t *out;
-    int out_size;
-
-    if (!desc)
-        return AVERROR_DECODER_NOT_FOUND;
-    parser = av_parser_init(desc->id);
-    if (!parser)
-        return AVERROR(ENOSYS);
-    avctx = avcodec_alloc_context3(NULL);
-    if (!avctx) {
-        av_parser_close(parser);
-        return AVERROR(ENOMEM);
-    }
-    avctx->codec_id   = desc->id;
-    avctx->codec_type = desc->type;
-
-    for (int i = 0; i < nb; i++) {
-        const uint8_t *p = data[i];
-        int left = sizes[i];
-        int64_t t = pts[i], packet_pos = pos;
-
-        pos += sizes[i];
-        while (left > 0) {
-            int used = av_parser_parse2(parser, avctx, &out, &out_size, p, left,
-                                        t, t, packet_pos);
-            t          = AV_NOPTS_VALUE;
-            packet_pos = -1;
-            p    += used;
-            left -= used;
-            if (out_size)
-                cb(opaque, out_size, parser->pts, parser->dts);
-        }
-    }
-    do {
-        av_parser_parse2(parser, avctx, &out, &out_size, NULL, 0,
-                         AV_NOPTS_VALUE, AV_NOPTS_VALUE, -1);
-        if (out_size)
-            cb(opaque, out_size, parser->pts, parser->dts);
-    } while (out_size);
-
-    av_parser_close(parser);
-    avcodec_free_context(&avctx);
-    return 0;
-}
-
 /* The versions our library headers give (the linked libraries must match). */
 static const char *tb_gcrypt_header_version(void) { return GCRYPT_VERSION; }
 static const char *tb_aacs_header_version(void) { return AACS_VERSION_STRING; }
 
-/* Runs FFmpeg's MPEG-PS demuxer (mpeg.c; `which`: 0 as it is, 1 as disc sectors with the
- * LPCM header length) over the bytes in memory, the way the disc demuxers do (no
- * parsing, no filled-in times); each packet goes to cb with its stream id,
- * the codec the demuxer gave the stream, its bytes and pts. Returns the
- * number of packets, or an AVERROR. */
+/* Runs the MPEG-PS reading (`which`: 0 FFmpeg's demuxer as it is, 1 the
+ * clip demuxer's disc sectors with the LPCM header length) over the bytes
+ * in memory, the way the disc layer does (no parsing, no filled-in times);
+ * each packet goes to cb with its stream id, the codec the reading gave the
+ * stream, its bytes and pts. Returns the number of packets, or an
+ * AVERROR. */
 typedef void (*tb_ps_packet_cb)(void *opaque, int id, int codec, const uint8_t *data, int size, int64_t pts);
 
 typedef struct TbMem { const uint8_t *data; int size, pos; } TbMem;
@@ -170,54 +136,85 @@ static int tb_mem_read(void *opaque, uint8_t *buf, int n)
     return k;
 }
 
-static int tb_ps_read(int which, int lpcm_header, const uint8_t *data, int size, tb_ps_packet_cb cb, void *opaque)
+/* tb_mem_read for the clip demuxer (DR_ERR_EOF at the end). */
+static int tb_mem_read_clip(void *opaque, uint8_t *buf, int n)
 {
-    extern const FFInputFormat ff_mpegps_demuxer;
-    const FFInputFormat *f = &ff_mpegps_demuxer;
-    TbMem m = { data, size, 0 };
-    AVFormatContext *s = avformat_alloc_context();
-    uint8_t *buf = av_malloc(4096);
-    AVPacket *pkt = av_packet_alloc();
-    AVDictionary *opts = NULL;
-    int n = 0, ret;
-
-    if (!s || !buf || !pkt || !(s->pb = avio_alloc_context(buf, 4096, 0, &m, tb_mem_read, NULL, NULL))) {
-        av_free(buf);
-        ret = AVERROR(ENOMEM);
-        goto end;
-    }
-    s->flags |= AVFMT_FLAG_CUSTOM_IO | AVFMT_FLAG_NOPARSE | AVFMT_FLAG_NOFILLIN;
-    s->probesize = 0;
-    if (which) {                /* disc sectors */
-        av_dict_set_int(&opts, "disc", 1, 0);
-        av_dict_set_int(&opts, "lpcm_header", lpcm_header, 0);
-    }
-    ret = avformat_open_input(&s, "", &f->p, &opts);
-    av_dict_free(&opts);
-    if (ret < 0)
-        goto end;
-    while ((ret = av_read_frame(s, pkt)) >= 0) {
-        AVStream *st = s->streams[pkt->stream_index];
-        cb(opaque, st->id, st->codecpar->codec_id, pkt->data, pkt->size, pkt->pts);
-        av_packet_unref(pkt);
-        n++;
-    }
-    ret = ret == AVERROR_EOF ? n : ret;
-end:
-    if (s && s->pb) {
-        av_freep(&s->pb->buffer);
-        avio_context_free(&s->pb);
-    }
-    avformat_close_input(&s);
-    av_packet_free(&pkt);
-    return ret;
+    int ret = tb_mem_read(opaque, buf, n);
+    return ret == AVERROR_EOF ? DR_ERR_EOF : ret;
 }
 
-/* FFmpeg's MPEG-TS demuxer (mpegts.c) in disc mode over the bytes in
- * memory, or over the first max_bytes of the file at path (data NULL), for
- * the PIDs given; each payload piece goes to cb with its stream id (PID |
- * PES key << 16), bytes, pts and byte position. Returns the number of
- * pieces, or an AVERROR. */
+/* The clip demuxer's errors as FFmpeg's values (what the wrapped demuxers
+ * returned before the reading moved out). */
+static int tb_clip_err(int ret)
+{
+    switch (ret) {
+    case DR_ERR_EOF:      return AVERROR_EOF;
+    case DR_ERR_INVALID:  return AVERROR_INVALIDDATA;
+    case DR_ERR_NOMEM:    return AVERROR(ENOMEM);
+    case DR_ERR_EXTERNAL:
+    case DR_ERR_BUG:      return AVERROR_BUG;
+    default:              return ret;
+    }
+}
+
+static int tb_ps_read(int which, int lpcm_header, const uint8_t *data, int size, tb_ps_packet_cb cb, void *opaque)
+{
+    TbMem m = { data, size, 0 };
+    int n = 0, ret;
+
+    if (which) {                /* disc sectors: the clip demuxer */
+        DrClipDemux *c = NULL;
+        DrClipPacket p;
+
+        if ((ret = tb_clip_err(dr_clip_ps_open(&c, NULL, lpcm_header, tb_mem_read_clip, &m))) < 0)
+            return ret;
+        while (!(ret = dr_clip_read(c, &p))) {
+            cb(opaque, p.id, p.codec, p.data, p.size, p.pts);
+            n++;
+        }
+        dr_clip_close(&c);
+        return ret == DR_ERR_EOF ? n : tb_clip_err(ret);
+    }
+    {
+        extern const FFInputFormat ff_mpegps_demuxer;
+        const FFInputFormat *f = &ff_mpegps_demuxer;
+        AVFormatContext *s = avformat_alloc_context();
+        uint8_t *buf = av_malloc(4096);
+        AVPacket *pkt = av_packet_alloc();
+
+        if (!s || !buf || !pkt || !(s->pb = avio_alloc_context(buf, 4096, 0, &m, tb_mem_read, NULL, NULL))) {
+            av_free(buf);
+            ret = AVERROR(ENOMEM);
+            goto end;
+        }
+        s->flags |= AVFMT_FLAG_CUSTOM_IO | AVFMT_FLAG_NOPARSE | AVFMT_FLAG_NOFILLIN;
+        s->probesize = 0;
+        ret = avformat_open_input(&s, "", &f->p, NULL);
+        if (ret < 0)
+            goto end;
+        while ((ret = av_read_frame(s, pkt)) >= 0) {
+            AVStream *st = s->streams[pkt->stream_index];
+            cb(opaque, st->id, st->codecpar->codec_id, pkt->data, pkt->size, pkt->pts);
+            av_packet_unref(pkt);
+            n++;
+        }
+        ret = ret == AVERROR_EOF ? n : ret;
+end:
+        if (s && s->pb) {
+            av_freep(&s->pb->buffer);
+            avio_context_free(&s->pb);
+        }
+        avformat_close_input(&s);
+        av_packet_free(&pkt);
+        return ret;
+    }
+}
+
+/* The clip demuxer's transport-stream reading over the bytes in memory, or
+ * over the first max_bytes of the file at path (data NULL), for the PIDs
+ * given; each payload piece goes to cb with its stream id (PID | PES key
+ * << 16), bytes, pts and byte position. Returns the number of pieces, or an
+ * AVERROR. */
 typedef void (*tb_ts_packet_cb)(void *opaque, int id, const uint8_t *data, int size, int64_t pts, int64_t pos);
 
 typedef struct TbFile { FILE *f; int64_t left; } TbFile;
@@ -235,61 +232,38 @@ static int tb_file_read(void *opaque, uint8_t *buf, int n)
     return k;
 }
 
+static int tb_file_read_clip(void *opaque, uint8_t *buf, int n)
+{
+    int ret = tb_file_read(opaque, buf, n);
+    return ret == AVERROR_EOF ? DR_ERR_EOF : ret;
+}
+
 static int tb_ts_read(const uint8_t *data, int size, const char *path, int64_t max_bytes, const int *pids, int npids,
                       tb_ts_packet_cb cb, void *opaque)
 {
-    extern const FFInputFormat ff_mpegts_demuxer;
     TbMem m = { data, size, 0 };
     TbFile tf = { NULL, max_bytes };
-    AVFormatContext *s = avformat_alloc_context();
-    uint8_t *buf = av_malloc(4096);
-    AVPacket *pkt = av_packet_alloc();
-    AVDictionary *opts = NULL;
-    AVBPrint bp;
+    DrClipDemux *c = NULL;
+    DrClipPacket p;
     int n = 0, ret;
 
-    if (!data && !(tf.f = fopen(path, "rb"))) {
-        av_free(buf);
-        ret = AVERROR(errno);
-        goto end;
+    if (!data && !(tf.f = fopen(path, "rb")))
+        return AVERROR(errno);
+    ret = tb_clip_err(dr_clip_ts_open(&c, NULL, pids, npids, 0, 0,
+                                      data ? tb_mem_read_clip : tb_file_read_clip, data ? (void *)&m : (void *)&tf));
+    if (ret < 0) {
+        if (tf.f)
+            fclose(tf.f);
+        return ret;
     }
-    if (!s || !buf || !pkt ||
-        !(s->pb = avio_alloc_context(buf, 4096, 0, data ? (void *)&m : (void *)&tf, data ? tb_mem_read : tb_file_read,
-                                     NULL, NULL))) {
-        av_free(buf);
-        ret = AVERROR(ENOMEM);
-        goto end;
-    }
-    s->flags |= AVFMT_FLAG_CUSTOM_IO | AVFMT_FLAG_NOPARSE | AVFMT_FLAG_NOFILLIN;
-    s->correct_ts_overflow = 0;
-    s->probesize = 0;
-    av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
-    for (int i = 0; i < npids; i++)
-        av_bprintf(&bp, "%s%d", i ? "," : "", pids[i]);
-    av_dict_set_int(&opts, "disc", 1, 0);
-    if (npids)
-        av_dict_set(&opts, "disc_pids", bp.str, 0);
-    av_bprint_finalize(&bp, NULL);
-    ret = avformat_open_input(&s, "", &ff_mpegts_demuxer.p, &opts);
-    av_dict_free(&opts);
-    if (ret < 0)
-        goto end;
-    while ((ret = av_read_frame(s, pkt)) >= 0) {
-        cb(opaque, s->streams[pkt->stream_index]->id, pkt->data, pkt->size, pkt->pts, pkt->pos);
-        av_packet_unref(pkt);
+    while (!(ret = dr_clip_read(c, &p))) {
+        cb(opaque, p.id, p.data, p.size, p.pts, p.pos);
         n++;
     }
-    ret = ret == AVERROR_EOF ? n : ret;
-end:
-    if (s && s->pb) {
-        av_freep(&s->pb->buffer);
-        avio_context_free(&s->pb);
-    }
-    avformat_close_input(&s);
-    av_packet_free(&pkt);
+    dr_clip_close(&c);
     if (tf.f)
         fclose(tf.f);
-    return ret;
+    return ret == DR_ERR_EOF ? n : tb_clip_err(ret);
 }
 
 /* Blu-ray: a disc folder's structure as ff_bluray_disc_dump() writes it
@@ -298,7 +272,7 @@ static char *tb_bluray_dump(const char *path, const char *lang, int min_length, 
 {
     DiscIOFS *fs = NULL;
     BlurayDisc d;
-    AVBPrint bp;
+    DrStr bp;
     char *out = NULL;
 
     *err = ff_discio_mount_folder(NULL, path, 1, &fs);
@@ -312,11 +286,11 @@ static char *tb_bluray_dump(const char *path, const char *lang, int min_length, 
     if (*err >= 0 && min_length >= 0)
         *err = ff_bluray_decoys_check(NULL, &d);
     if (*err >= 0) {
-        av_bprint_init(&bp, 0, AV_BPRINT_SIZE_UNLIMITED);
+        dr_str_init(&bp);
         ff_bluray_disc_dump(&d, &bp);
-        if (av_bprint_is_complete(&bp))
+        if (dr_str_ok(&bp))
             out = strdup(bp.str);
-        av_bprint_finalize(&bp, NULL);
+        dr_str_free(&bp);
     }
     ff_bluray_disc_free(&d);
     ff_discio_fs_close(&fs);
@@ -408,7 +382,7 @@ static char *tb_bluray_clean_title(const char *s)
     return out;
 }
 
-/* libavformat/dvd_nav.c: a navigator on the disc as the disc layer reads it,
+/* src/disc/dvd/dvd_nav.c: a navigator on the disc as the disc layer reads it,
  * one title played (dr_nav_play). */
 static int tb_dvd_nav_trace(DVDDisc *d, int title, unsigned opts, int max_steps,
                             dr_nav_event *ev, int max_events, dr_nav_result *res)
@@ -422,14 +396,14 @@ static int tb_dvd_nav_trace(DVDDisc *d, int title, unsigned opts, int max_steps,
     return dr_nav_play(nav, title, opts, max_steps, ev, max_events, res);
 }
 
-/* libavformat/dvd_scan.c: the navigation scan (trace: NULL, or the Python
+/* disc/dvd/dvd_scan.c: the navigation scan (trace: NULL, or the Python
  * callback receiving its trace lines). */
 static int tb_dvd_scan(DVDDisc *d, void (*trace)(void *, const char *), dvdnav_scan_results_t *out)
 {
     return ff_dvd_scan(d, trace, NULL, out);
 }
 
-/* libavformat/dvd_titles.c: the navigation scan, then the title list built
+/* disc/dvd/dvd_title_list.c: the navigation scan, then the title list built
  * from it, as ff_dvd_titles_dump() text (*dump, av_free() it); scan_ret:
  * the scan's return value. */
 static int tb_dvd_titles(DVDDisc *d, int cell_mode, int cell_check, int min_length, int *scan_ret, char **dump)
@@ -449,7 +423,7 @@ static int tb_dvd_titles(DVDDisc *d, int cell_mode, int cell_check, int min_leng
     return ret;
 }
 
-/* libavformat/dvd_read.c: the title list (scan as tb_dvd_titles), then
+/* src/disc/dvd/dvd_read.c: the title list (scan as tb_dvd_titles), then
  * segment seg of title t (both from 0) read sector by sector through the
  * checks into path (NULL: not written; sectors left out are not written);
  * *read / *left: sectors read and left out; the first read error ends it. */
@@ -512,4 +486,96 @@ static int tb_dvd_titles_from(DVDDisc *d, dvd_nav_cells_t *res, int nb, int cell
         ret = AVERROR(ENOMEM);
     DVDFreeTitleList_rec(&list);
     return ret;
+}
+
+/* ---- the stock cutters against the processing library's parsers ----
+ * Both are fed the same bytes in the same pieces (each piece copied into a
+ * padded buffer, as the frame step feeds it), then flushed; every call's
+ * result is compared: bytes taken, the unit's bytes, its stream offset, the
+ * samples and rate. Returns -1 all equal, else the first differing call
+ * (tb_stock_why() says what). */
+static char tb_stock_why_buf[512];
+
+static const char *tb_stock_why(void)
+{
+    return tb_stock_why_buf;
+}
+
+static int tb_stock_one(AVCodecParserContext *pc, AVCodecContext *avctx, DrStock *st, const uint8_t *p,
+                        int left, int64_t pos, int call, int *used, int *got)
+{
+    uint8_t *of = NULL;
+    const uint8_t *os = NULL;
+    int nf = 0, ns = 0, ds = 0, rs = 0;
+    int64_t offs = 0;
+    int uf = av_parser_parse2(pc, avctx, &of, &nf, p, left, AV_NOPTS_VALUE, AV_NOPTS_VALUE, pos);
+    int us = dr_stock_parse(st, p, left, pos, &os, &ns, &offs, &ds, &rs);
+
+    *used = uf;
+    *got  = nf;
+    if (uf != us || nf != ns || (nf && memcmp(of, os, nf)) || pc->frame_offset != offs ||
+        pc->duration != ds || avctx->sample_rate != rs) {
+        snprintf(tb_stock_why_buf, sizeof(tb_stock_why_buf), "call %d (pos %lld, %d bytes in): used %d/%d, unit "
+                 "%d/%d bytes%s, offset %lld/%lld, samples %d/%d, rate %d/%d", call, (long long)pos, left, uf, us,
+                 nf, ns, nf == ns && nf && memcmp(of, os, nf) ? " (bytes differ)" : "",
+                 (long long)pc->frame_offset, (long long)offs, pc->duration, ds, avctx->sample_rate, rs);
+        return 1;
+    }
+    return 0;
+}
+
+static int tb_stock_compare(int ffmpeg_codec, int stock_codec, const uint8_t *data, int size,
+                            const int *chunks, int nb_chunks, int *calls)
+{
+    AVCodecParserContext *pc = av_parser_init(ffmpeg_codec);
+    AVCodecContext *avctx = avcodec_alloc_context3(NULL);
+    DrStock *st = dr_stock_new(stock_codec);
+    uint8_t *feed = av_malloc(size + AV_INPUT_BUFFER_PADDING_SIZE);
+    int64_t pos = 0;
+    int at = 0, call = 0, bad = -1;
+
+    tb_stock_why_buf[0] = 0;
+    if (!pc || !avctx || !st || !feed) {
+        snprintf(tb_stock_why_buf, sizeof(tb_stock_why_buf), "no memory");
+        bad = 0;
+        goto end;
+    }
+    avctx->codec_id   = ffmpeg_codec;
+    avctx->codec_type = avcodec_get_type(ffmpeg_codec);
+    for (int c = 0; c < nb_chunks && at < size && bad < 0; c++) {
+        int len = chunks[c] < size - at ? chunks[c] : size - at, left = len;
+        const uint8_t *p = feed;
+        memcpy(feed, data + at, len);
+        memset(feed + len, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+        at += len;
+        while (left > 0 && bad < 0) {
+            int used, got;
+            if (tb_stock_one(pc, avctx, st, p, left, pos, call, &used, &got))
+                bad = call;
+            call++;
+            pos  += used;
+            p    += used;
+            left -= used;
+        }
+    }
+    while (bad < 0) {
+        int used, got;
+        if (call > 4 * size + 1000) {
+            snprintf(tb_stock_why_buf, sizeof(tb_stock_why_buf), "no end after %d calls", call);
+            bad = call;
+            break;
+        }
+        if (tb_stock_one(pc, avctx, st, NULL, 0, pos, call, &used, &got))
+            bad = call;
+        call++;
+        if (!got)
+            break;
+    }
+end:
+    *calls = call;
+    av_parser_close(pc);
+    avcodec_free_context(&avctx);
+    dr_stock_free(&st);
+    av_free(feed);
+    return bad;
 }

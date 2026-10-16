@@ -1,4 +1,4 @@
-"""Blu-ray structure (libavformat/bluray_*.c): disc folders built here byte
+"""Blu-ray structure (src/disc/bluray/bluray_*.c): disc folders built here byte
 by byte (tests/synth/bluray.py), read with ff_bluray_disc_open and checked
 through the structure dump: the file names and BACKUP copies, playlists and
 clip information with the reference program's rules, index and id, the disc
@@ -196,6 +196,22 @@ def test_a_clip_without_its_stream_file_is_left_out(tmp_path):
     del files["BDMV/STREAM/00002.m2ts"]
     t = dump(build(tmp_path, files))
     assert [l.split()[1] for l in lines(t, "clip ")] == ["00001"]
+
+
+def test_a_stream_file_shorter_or_longer_than_its_clip_information_is_said(tmp_path):
+    # number_of_source_packets x 192 is the file's size: shorter = an
+    # incomplete copy (a warning), longer = read as well (info); equal: nothing
+    files = bd.bdmv(clips={1: bd.clpi(packets=10), 2: bd.clpi(packets=10), 3: bd.clpi(packets=10)})
+    files["BDMV/STREAM/00002.m2ts"] = bytes(192 * 4)
+    files["BDMV/STREAM/00003.m2ts"] = bytes(192 * 12)
+    install_log(lib.AV_LOG_INFO)
+    t = dump(build(tmp_path, files))
+    assert sorted(l.split()[1] for l in lines(t, "clip ")) == ["00001", "00002", "00003"], "all kept"
+    assert logged("Blu-ray: clip 00002: its stream file /BDMV/STREAM/00002.m2ts is 1152 bytes shorter than its clip "
+                  "information says (4 of 10 source packets): an incomplete copy? The titles that play it end early")
+    assert logged("Blu-ray: clip 00003: its stream file /BDMV/STREAM/00003.m2ts is 384 bytes longer than its clip "
+                  "information says (10 source packets): the rest is read as part of the clip")
+    assert not logged("clip 00001: its stream file")
 
 
 def test_a_tiny_ts_type_info_refuses_the_clip(tmp_path):

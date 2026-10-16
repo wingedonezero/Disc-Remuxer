@@ -1,4 +1,4 @@
-"""libavformat/disctl_pcm.c: the PCM strategy of the title timeline. Input frames
+"""src/timeline/disctl_pcm.c: the PCM strategy of the title timeline. Input frames
 carry 16-bit stereo 48 kHz samples whose values are their own sample
 numbers, so the output shows exactly which samples were written, where
 silence went, and what was cut. Output frames are 1600 samples (1/30 s),

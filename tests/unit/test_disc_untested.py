@@ -1,5 +1,5 @@
 """A codec the title reader reads but no real disc of the format has had yet
-(libavformat/bluraydec.c, discdec.c; src/disc-remuxer/writer.c): a Blu-ray
+(src/disc/bluray/bluray_part.c, disc.c; src/disc-remuxer/writer.c): a Blu-ray
 title with MPEG audio (tests/synth/bluray.py) is ripped, the track's line in
 the log says "[untested on real discs]", and the title ends done with
 warnings, not failed."""

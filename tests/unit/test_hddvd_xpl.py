@@ -1,4 +1,4 @@
-"""libavformat/hddvd_xpl.c: the HD DVD playlists. The parsing rules on built
+"""src/disc/hddvd/hddvd_xpl.c: the HD DVD playlists. The parsing rules on built
 XML; the loader (file numbering, AACS header, files left out) on built ISO
 9660 images; with HDDVD_CORPUS (a folder of HD DVD images) and
 HDDVD_XPL_REFERENCE (dumps of their VPLST000.XPL made by an independent
@@ -17,7 +17,7 @@ from helpers.hddvd import take_text
 from helpers.source import Memory, Source
 from synth.image import S, Img, iso
 
-INVALIDDATA = -0x41444E49
+INVALIDDATA = lib.DR_ERR_INVALID
 
 
 # ---- parsing from memory ----

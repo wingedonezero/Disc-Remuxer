@@ -1,5 +1,5 @@
-"""libavformat/disctl_frames.c: the title timeline's stage 1 (the frame step). Payloads are cut
-into units by FFmpeg's parser; a payload's time goes to the first unit whose
+"""src/timeline/disctl_frames.c: the title timeline's stage 1 (the frame step). Payloads are cut
+into units by the codec's rule; a payload's time goes to the first unit whose
 anchor (audio: the frame start; MPEG-2 video: the picture start code) lies
 in that payload's bytes (ISO/IEC 13818-1 2.4.3.7). Every expectation is
 computed here from the built stream's layout, independently of the code."""
@@ -7,7 +7,7 @@ computed here from the built stream's layout, independently of the code."""
 import dataclasses
 
 from synth.a52 import with_crcs
-from helpers import AV_NOPTS_VALUE, ffi, install_log, lib, logged
+from helpers import AV_NOPTS_VALUE, DATA, ffi, install_log, lib, logged
 from helpers.disctl import Handles, codec_id  # noqa: F401 (tb_py_place lives there)
 
 TICKS_PER_PTS = 12000
@@ -148,6 +148,24 @@ def test_bytes_with_no_frame_start_are_told_as_damage():
     outs, st = run("ac3", [(b"\x33" * 500, None)], ("Track 1", "title", place))
     assert not outs and (st.skipped, st.skipped_bytes) == (1, 500)
     assert logged("Track 1: 500 bytes at stream offset 0 with no frame start in them (damaged or cut data): left out")
+
+
+def test_payloads_one_after_another_with_no_frame_start_are_told_in_one_line():
+    # a stream this cutter finds no frame in: one line for the whole run
+    # (with the places of its first and last payload), not one per payload;
+    # a frame between two runs ends the first (DTS: its rule gives up each
+    # payload's bytes when no frame starts in them)
+    install_log()
+    dts = (DATA / "sine_5120.dts").read_bytes()[:1884]
+    payloads = [(b"\x33" * 500, None, k) for k in range(4)] + [(dts, None, 4), (b"\x33" * 300, None, 5)]
+    outs, st = run("dts", payloads, ("Track 1", "title", place))
+    assert len(outs) == 1 and (st.skipped, st.skipped_bytes) == (5, 2300)
+    assert logged("Track 1: 2000 bytes from stream offset 0 on, given in 4 pieces, with no frame start in them "
+                  "(damaged or cut data, or a stream this cutter does not know): left out (the first in the sector "
+                  "at VTS_01_1.VOB byte 204800, byte 0 of the title; the last in the sector at VTS_01_1.VOB byte "
+                  "210944, byte 6144 of the title)"), "warning"
+    assert logged("Track 1: 300 bytes at stream offset 3884 with no frame start in them (damaged or cut "
+                  "data): left out (in the sector at VTS_01_1.VOB byte 215040, byte 10240 of the title)"), "warning"
 
 
 def test_a_place_that_is_not_known_is_left_out_of_the_line():

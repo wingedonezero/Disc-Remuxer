@@ -1,6 +1,6 @@
 """Blu-ray text subtitles (HDMV TextST) from a clip of their own
-(libavformat/disctitle.c read_side, bluraydec.c side_offset, mpegts.c
-disc_dialog_pids, libavcodec/hdmv_pgs_parser.c, disctl_textst.c,
+(src/disc/title_reader.c's side clips, bluray_part.c side_offset,
+src/mux/ts_disc.c dialog_pids, src/parse/pgs_rule.c, disctl_textst.c,
 disctl_title.c, src/disc-remuxer/writer.c): no real disc of the corpus has
 them, so a disc is built (tests/synth/bluray.py): an MPEG-2 video clip and a
 text subtitle clip of PES packets without a PTS (private_stream_2), named by

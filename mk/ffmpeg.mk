@@ -1,16 +1,19 @@
 # FFmpeg (libs/ffmpeg, our copy): its own configure + make, out of tree,
-# static, with our DVD libraries, expat and libaacs found through the .pc
-# files above. FFmpeg's own make is run every time (it rebuilds only what
-# changed); configure only when its arguments change, or the lists configure
-# reads the components from (a new parser, demuxer, filter ...).
+# static, with our DVD libraries found through the .pc files above (its
+# stock dvdvideo demuxer; the disc layer itself is ours, src/disc, and
+# FFmpeg no longer compiles or links any of it). FFmpeg's own make is run
+# every time (it rebuilds only what changed); configure only when its
+# arguments change, or the lists configure reads the components from (a new
+# parser, demuxer, filter ...).
 
 FFMPEG_SRC := $(LIBS)/ffmpeg
 FFMPEG     := $(BUILD)/ffmpeg/install
-FFMPEG_PCS := $(PC)/dvdread.pc $(PC)/dvdnav.pc $(PC)/expat.pc $(PC)/libaacs.pc
+FFMPEG_PCS := $(PC)/dvdread.pc $(PC)/dvdnav.pc
 
-FFMPEG_ARGS := --prefix=$(FFMPEG) --enable-gpl --enable-libdvdnav --enable-libdvdread --enable-libexpat \
-  --enable-libaacs --disable-autodetect --enable-static --disable-shared --enable-pic --disable-doc \
-  --disable-ffplay --pkg-config=pkg-config --pkg-config-flags=--static
+FFMPEG_ARGS := --prefix=$(FFMPEG) --enable-gpl --enable-libdvdnav --enable-libdvdread \
+  --disable-autodetect --enable-static --disable-shared --enable-pic --disable-doc \
+  --disable-ffplay --pkg-config=pkg-config --pkg-config-flags=--static \
+  --extra-libs="-L$(BUILD)/dvdnav -ldvdnav -L$(BUILD)/dvdread -ldvdread -L$(BUILD)/dvdcss -ldvdcss"
 ifeq ($(MODE),debug)
 FFMPEG_ARGS += --disable-stripping
 endif

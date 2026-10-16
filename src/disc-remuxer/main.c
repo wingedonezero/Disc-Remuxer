@@ -15,11 +15,10 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <libavformat/avformat.h>
-#include <libavutil/avutil.h>
 
+#include "analyze/analyze.h"
 #include "engine.h"
-#include "settings.h"
+#include "base/settings.h"
 
 static void usage(FILE *f)
 {
@@ -29,7 +28,10 @@ static void usage(FILE *f)
           "  info  <source>                        the titles and tracks of a disc\n"
           "  demux <source> <titles> [<out folder>]  the titles' tracks as stream files, chapters, a log;\n"
           "                                        no out folder: <main output folder>/<disc name>\n"
-          "                                        (setting output.folder; empty: output next to the program)\n"
+          "                                        (setting output.folder; empty: output next to the program);\n"
+          "                                        a folder of discs: each disc in turn into its own folder\n"
+          "                                        (the out folder: the main output folder for them)\n"
+          "  find  <folder>                        the discs in a folder (as the GUI's queue takes them)\n"
           "  settings [show|path]                  the settings in effect / where the settings file is\n"
           "  version                               program and library versions\n"
           "\n"
@@ -41,6 +43,9 @@ static void usage(FILE *f)
           "  --config <file>      settings file to use (default: disc-remuxer.toml next to the program)\n"
           "  --set group.key=val  change a setting for this run only (repeatable)\n"
           "  --json               JSON records on stdout, one per line, instead of text\n"
+          "  --details            info: also every detail the GUI shows (its queue lines and its details\n"
+          "                       panel's rows for the disc, each title, track and chapter); demux: the\n"
+          "                       queue's states as the GUI shows them while it rips\n"
           "  --second-view <titles>  demux: also write the second view of these 3-D titles (the .mvc\n"
           "                       next to the base view); setting bluray.second_view does it for every title\n"
           "  --tracks [<title>:]<steps>  which tracks: every one to start with, then steps left to right,\n"
@@ -68,21 +73,23 @@ static void on_interrupt(int sig)
 
 static void cmd_version(void)
 {
-    unsigned v = avformat_version();
+    char ff[256];
     printf("disc-remuxer %s\n", DISC_REMUXER_VERSION);
-    printf("FFmpeg %s (libavformat %u.%u.%u)\n", av_version_info(), v >> 16, v >> 8 & 0xff, v & 0xff);
+    printf("%s\n", dr_analyze_version(ff, sizeof(ff)));
 }
 
 int main(int argc, char **argv)
 {
     const char *config = NULL, *split = NULL, *second = NULL, **sets = calloc(argc, sizeof(char *));
     const char **tracks = calloc(argc, sizeof(char *));
-    int json = 0, verbose = 0, nb_sets = 0, nb_tracks = 0, i, ret;
+    int json = 0, verbose = 0, details = 0, nb_sets = 0, nb_tracks = 0, i, ret;
     EngineChoice c;
 
     for (i = 1; i < argc && argv[i][0] == '-'; i++) {
         if (!strcmp(argv[i], "--json"))
             json = 1;
+        else if (!strcmp(argv[i], "--details"))
+            details = 1;
         else if (!strcmp(argv[i], "-v"))
             verbose = 1;
         else if (!strcmp(argv[i], "-vv"))
@@ -128,9 +135,11 @@ int main(int argc, char **argv)
             settings_show();
         ret = 0;
     } else if (!strcmp(argv[i], "info") && i + 1 < argc) {
-        ret = engine_info(argv[i + 1], &c);
+        ret = engine_info(argv[i + 1], &c, details);
+    } else if (!strcmp(argv[i], "find") && i + 1 < argc) {
+        ret = engine_find(argv[i + 1]);
     } else if (!strcmp(argv[i], "demux") && i + 2 < argc) {
-        ret = engine_demux(argv[i + 1], argv[i + 2], i + 3 < argc ? argv[i + 3] : NULL, split, &c);
+        ret = engine_demux(argv[i + 1], argv[i + 2], i + 3 < argc ? argv[i + 3] : NULL, split, &c, details);
     } else {
         fprintf(stderr, "disc-remuxer: unknown command or missing arguments: %s\n\n", argv[i]);
         usage(stderr);

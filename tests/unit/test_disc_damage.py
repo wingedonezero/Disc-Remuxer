@@ -26,7 +26,8 @@ AC3 = (DATA / "sine_7680.ac3").read_bytes()
 BASE = 90000
 
 
-def damaged_disc(tmp_path):
+def damaged_disc(tmp_path, zero_vobus=None):
+    """zero_vobus: the VOBUs zeroed after their NAV pack instead (each a range of its own)."""
     pics = pictures(M2V)
     timed = [(a, b, disp, typ, BASE + disp * 3003) for a, b, disp, typ in pics]
     frames = [AC3[i:i + 768] for i in range(0, len(AC3), 768)]
@@ -37,8 +38,11 @@ def damaged_disc(tmp_path):
     p = Pgc(cells=[cell(0, total - 1, len(pics) * 1001 // 30000, last_vobu=navs[-1].lbn)],
             audio_control=bytes([0x80, 0]) + bytes(14))
     folder = build(tmp_path, [p], [[(1, 1)]], navs, total, video_attr=bytes([0x40, 0]), audio_attrs=[ac3(b"en")])
-    holes = [(navs[k].lbn + 1, navs[k + 1].lbn - 1, "zero") for k in range(40, 48)]
-    holes += [(navs[70].lbn + 1, navs[71].lbn - 3, "zero"), (navs[71].lbn - 2, navs[71].lbn - 1, "junk")]
+    if zero_vobus is None:
+        holes = [(navs[k].lbn + 1, navs[k + 1].lbn - 1, "zero") for k in range(40, 48)]
+        holes += [(navs[70].lbn + 1, navs[71].lbn - 3, "zero"), (navs[71].lbn - 2, navs[71].lbn - 1, "junk")]
+    else:
+        holes = [(navs[k].lbn + 1, navs[k + 1].lbn - 1, "zero") for k in zero_vobus]
     for k, sec in enumerate(sectors):
         for a, b, kind in holes:
             if a <= k <= b:
@@ -67,6 +71,16 @@ def test_damaged_blocks_are_said_once_per_range_with_their_place_on_the_disc(tmp
     assert "10 of them damaged data" in log, log
     assert "Damaged data left out: 10 ranges" in log, log
     assert log.count("  Title #0: VTS_01_1.VOB") == 10, log
+
+
+def test_the_summary_lists_every_range_however_many(tmp_path):
+    # 61 ranges: their words are longer than any fixed buffer the summary once cut them to
+    folder, holes = damaged_disc(tmp_path, zero_vobus=range(10, 71))
+    log = demux(folder, tmp_path / "out")
+    assert "Damaged data left out: 61 ranges" in log, log
+    summary = log[log.index("Damaged data left out: 61 ranges"):]
+    assert sum(len(l) for l in summary.splitlines()[1:62]) > 4096
+    assert summary.count("  Title #0: VTS_01_1.VOB") == 61, summary
 
 
 def test_a_range_says_where_the_title_passes_it_and_about_how_much_video_is_missing(tmp_path):

@@ -1,21 +1,21 @@
 # The title timeline
 
-Status: built (stages 1-5) and wired into the HD DVD demuxer; DVD and
-Blu-ray follow. One module for every disc format (HD DVD first, then DVD,
-then Blu-ray / UHD). It turns a title's segments into timed, joined,
-checked frames per track. The outputs (elementary streams, later Matroska)
-only write what it gives them.
+`src/timeline/` (`disctl.h`, `disctl_*.c`): one module for every disc
+format (DVD, HD DVD, Blu-ray / UHD). It turns a title's segments into
+timed, joined, checked frames per track. The outputs (elementary streams,
+later Matroska) only write what it gives them. Where it sits in the
+program: `docs/ARCHITECTURE.md`.
 
 ## 1. Where it sits
 
 ```
-format demuxer (hddvddec.c, dvdvideodec.c, later Blu-ray)
-  title plan, segments (EVOB clip / cell group / playlist clip), tracks,
-  packet source per segment (MPEG-PS / MPEG-TS sub-demuxer, raw PES payloads)
+title reader (src/disc/title_reader.c) with the format part (src/disc/dvd,
+hddvd, bluray): segments (cell group / EVOB clip / playlist clip), tracks,
+the clip demuxer per segment (src/mux: MPEG-PS packs / MPEG-TS PES)
         |  payload records: track, segment, bytes, PES PTS (or none), byte position
         v
-title timeline (libavformat/disctl_*.c)
-  1 units      cut each track into units (FFmpeg parsers), timestamp records
+title timeline (src/timeline/disctl_*.c)
+  1 units      cut each track into units (src/parse rules), timestamp records
   2 timing     per track: video grid / audio durations / sub-picture snap
   3 joiner     segments -> one timeline per track
   4 junction   per output track: title start, copies at joins, audio skew
@@ -23,23 +23,21 @@ title timeline (libavformat/disctl_*.c)
   5 checks     measure + verify, events
         |  frames: data, time, duration, flags (key, discardable, chapter mark)
         v
-format demuxer read_packet -> outputs (stream files; Matroska later)
+dr_disc_read() -> the writer (stream files; Matroska later)
 ```
 
-The format demuxer keeps everything format-specific: opening the disc, the
-title plan, the track list, decryption, and the packet source. It hands the
-core raw PES payloads: its sub-demuxer runs with `AVFMT_FLAG_NOPARSE |
-AVFMT_FLAG_NOFILLIN` and `correct_ts_overflow` off, so FFmpeg's generic layer
-neither cuts frames nor fills in or corrects timestamps. FFmpeg's MPEG-PS
-demuxer gives the HD DVD payloads as needed (LPCM keeps its audio frame
-header, which the core reads); a sub-demuxer is copied under the format
-prefix only where it must differ.
+The format part keeps everything format-specific: the disc's structure,
+the title's segments, the track list, decryption and "the next block of
+this segment". The clip demuxer (`src/mux`) hands the timeline raw PES
+payloads with their PES times; nothing on the way cuts frames or fills in
+or corrects timestamps (LPCM keeps its audio frame header, which the
+timeline reads).
 
-`disctl_title.c` puts the stages together for one title: the demuxer calls
+`disctl_title.c` puts the stages together for one title: the title reader calls
 `ff_disctl_title_segment()` at each segment, `ff_disctl_title_payload()`
 for each payload (track, bytes, PES time) and `ff_disctl_title_finish()` at the end, and
 takes the output frames with `ff_disctl_title_frame()`. Per segment each
-track has a frame step (FFmpeg's parser) and its timing stage; the joiner's frames go to the
+track has a frame step (its codec's rule) and its timing stage; the joiner's frames go to the
 junction (or the PCM strategy), every output frame to the checks. Audio
 frames wait until the video has been handed on past their time (the
 junction compares them with the video). Events of the video and
@@ -47,9 +45,8 @@ sub-picture stages wait until the joiner has placed their segment and then
 move onto the title timeline; every event is one debug line (the first 50
 of each kind and track; the rest are counted).
 
-The demuxer's packets out of `read_packet` are the core's frames: final
-time, duration and flags, already joined. Outer streams have no parser
-(`AVSTREAM_PARSE_NONE`), so nothing re-times them.
+The frames `dr_disc_read()` gives are the timeline's: final time,
+duration and flags, already joined; nothing after it re-times them.
 
 ## 2. Time
 
@@ -67,19 +64,19 @@ wait for it; none in those sectors fails the title.
 ## 3. Stage 1: frames and timestamp records (`disctl_frames.c`)
 
 - Each payload is one record {byte position, length, PTS}. The payload goes
-  to the track's FFmpeg parser (`av_parser_parse2`; the parser's own
-  timestamp logic is not used), which finds the frames ("units").
+  to the track's frame cutter: its codec's rule in `src/parse/` run by the
+  one splitter engine (`parse/split.h`); MPEG-1/2 video and E-AC-3, which
+  have no disc rule, go to the stock cutters (`parse/stock.c`: FFmpeg's
+  parsers' cut, ported). The cutter finds the frames
+  ("units").
 - A unit gets a record's PTS when it is the FIRST unit that starts inside
   that record's bytes. Every later unit of the same payload has no
   timestamp. A record that ends before the next unit starts is dropped.
-- Every codec's frames are found by its FFmpeg parser; where the disc
-  reader's rule differs from the parser's ordinary one, the parser has it
-  in its disc mode (`PARSER_FLAG_DISC`; TrueHD / MLP, sub-pictures, VC-1,
-  and the LPCM parser that FFmpeg did not have): the parser says for each
-  chunk whether it is a frame or bytes that are no frame (left out). VC-1:
+- A rule says for each chunk whether it is a frame or bytes that are no
+  frame (left out); the disc reader's rules (TrueHD / MLP, sub-pictures,
+  VC-1, LPCM, H.264 / HEVC pictures, ...) live in the rules. VC-1:
   a unit is one frame with the headers before it and the user data after it
-  (frame / field user data stays with its frame; FFmpeg's parser starts the
-  next unit there); an end of sequence stays only after a second field; an
+  (frame / field user data stays with its frame); an end of sequence stays only after a second field; an
   end of sequence without one, and headers not followed by a frame, are units
   without a frame, left out; a slice, a field or user data where none can be
   stops the track.
@@ -92,18 +89,18 @@ logged with the reason; nothing is guessed.
 | entry | meaning |
 |---|---|
 | family | `timed` (duration and sync rule below) or `stream` (duration from the parser, never a sync unit) |
-| parser | FFmpeg's parser; `disc_parser`: its disc mode |
-| duration | rule for each unit (e.g. AC-3: samples / rate from the stream's first header; TrueHD: per major-sync access unit) |
+| split | the codec's rule in `src/parse/` (none: the stock cutters, `parse/stock.c` — MPEG-1/2 video, E-AC-3) |
+| duration | rule for each unit (e.g. AC-3: samples / rate from the stream's first header; TrueHD: per major-sync access unit; DTS: the core frame's, or for a stream the disc says has no core (DTS Express, lossless only) each extension substream's LBR / XLL header) |
 | sync unit | whether a unit may start a drop / join (AC-3, E-AC-3, DTS: every frame; TrueHD: major-sync units only) |
-| filter | FFmpeg bitstream filter each unit goes through (`eac3_core`: an AC-3 track; `dca_core`: a DTS track taken out of a DTS-HD stream) |
+| filter | the core filter each unit goes through (`dr_eac3_core`: an AC-3 track taken out of E-AC-3; `dr_dca_core`: a DTS track taken out of a DTS-HD stream) |
 | video only | units per frame (2 = fields), frame-rate source, display-order number and its wrap period |
-| sub-picture only | units found by FFmpeg's DVD subtitle parser in disc mode (unit size from its header); duration from the display-stop command; snapped to the video grid |
+| sub-picture only | units found by the DVD sub-picture rule (unit size from its header); duration from the display-stop command; snapped to the video grid |
 
 ## 5. The format profile
 
 | entry | HD DVD | DVD | Blu-ray / UHD |
 |---|---|---|---|
-| packet source | MPEG-PS (`hddvd_ps.c`) | MPEG-PS | MPEG-TS |
+| packet source | MPEG-PS (`mux/ps_disc.c`) | MPEG-PS | MPEG-TS (`mux/ts_disc.c`) |
 | LPCM extra header | 5 bytes | 3 bytes | own format |
 | chapters | time marks | byte positions -> first picture | time marks |
 | leading / trailing segment probe | yes (large clips kept) | yes | yes |
@@ -262,10 +259,20 @@ The rules above are the default policy. Around them:
     start code and a picture / frame start code; AC-3 / E-AC-3 whole
     syncframes, each one's CRC (as FFmpeg's decoder checks it); DTS a core
     frame that fits (the rest an extension substream) or an extension
-    substream; MPEG audio, ADTS, LOAS one frame of their header's size;
-    TrueHD / MLP the AU length field and the major-sync checksum;
+    substream, and the substream header's CRC, a DTS Express frame's
+    checksum, a lossless (XLL) frame header's CRC; MPEG audio, ADTS, LOAS one
+    frame of their header's size; TrueHD / MLP the AU length field, the
+    major-sync checksum, the AU header's parity, each substream's parity and
+    CRC (when it carries check bytes) and its restart header's CRC (checksum
+    failures are findings: nothing is changed or left out);
     sub-pictures their size and control sequences; a codec without a check
     is counted as unchecked (LPCM so far);
+  - audio: the format each unit's headers state (channels with LFE and the
+    sample rate: AC-3 / E-AC-3 with any dependent substream, the DTS core
+    with any extension substream, TrueHD at each major sync, MPEG audio,
+    ADTS, LATM's rate); a unit stating another format than the units before
+    it is a warning (`DR_EV_VERIFY_FORMAT`), the summary counts them, the
+    detail log names each track's format;
   - per track: durations > 0; audio / subtitles: each frame after the one
     before it (overlaps counted with the largest); video in display order:
     each picture starts where the one before it ends (within the 1-tick
@@ -343,7 +350,7 @@ line each, so a run can be compared event by event with an expected list.
   an HD DVD's title set default language; several in no order: English when
   among them), English when the disc names none; or a fixed code. Codec words and layout names are the
   ones the reference's info output uses (`DD`, `DDplus`, `TrueHD`,
-  `5.1(side)`, ...; the layout from FFmpeg's decoder on the first frames).
+  `5.1(side)`, ...; the layout from FFmpeg's decoder on the first frames, through analyze).
   LPCM leaves as little-endian PCM in a RIFF WAVE file (EXTENSIBLE with the
   channel mask above two channels or 16 bits). Sub-pictures as a VobSub
   pair: the units unchanged (DVD-Video and HD DVD forms) in MPEG-2 program

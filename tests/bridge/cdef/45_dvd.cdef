@@ -1,5 +1,5 @@
 /* libdvdread (dvdread/ifo_types.h, disc_read.h): the disc's structure as
- * libdvdread reads it; libavformat/dvd_internal.h: the DVD part's disc. */
+ * libdvdread reads it; src/disc/dvd/dvd_internal.h: the DVD part's disc. */
 
 typedef struct {
     uint32_t     first_sector;
@@ -34,7 +34,7 @@ typedef struct {
     int64_t      menu_vob_start;
     int64_t      title_vob_start;
     int          no_pgcit;
-    const pgcit_rec_t *pgcit;
+    pgcit_rec_t *pgcit;
     int          nb_vobu_map;
     int          map_trusted;
     ...;
@@ -59,13 +59,13 @@ void ff_dvd_disc_free(DVDDisc *d);
 void ff_dvd_reports_log(DVDDisc *d);
 void ff_dvd_reports_count(const DVDDisc *d, int *harmless, int *breaks);
 
-/* libavformat/dvd_nav.c through the bridge: a navigator on the disc, one
+/* src/disc/dvd/dvd_nav.c through the bridge: a navigator on the disc, one
  * title played (dr_nav_play, 36_dvdnav.cdef). */
 int tb_dvd_nav_trace(DVDDisc *d, int title, unsigned opts, int max_steps,
                      dr_nav_event *ev, int max_events, dr_nav_result *res);
 
-/* libavformat/dvd_scan.c: the navigation scan (libdvdnav, dvdnav/scan.h; its
- * recordings in libdvdread's dvd_nav_cells_t) */
+/* disc/dvd/dvd_scan.c: the navigation scan (dvd_scan.h, on libdvdnav's
+ * navigators; its recordings as dvd_title_list.h's dvd_nav_cells_t) */
 typedef struct {
     char      name[16];
     uint8_t   title, pgc;
@@ -84,13 +84,13 @@ void dvdnav_scan_free_results(dvdnav_scan_results_t *s);
 extern "Python" void tb_py_scan_line(void *opaque, const char *line);
 int tb_dvd_scan(DVDDisc *d, void (*trace)(void *, const char *), dvdnav_scan_results_t *out);
 
-/* libavformat/dvd_titles.c through the bridge: scan + title list as text */
+/* disc/dvd/dvd_title_list.c through the bridge: scan + title list as text */
 int tb_dvd_titles(DVDDisc *d, int cell_mode, int cell_check, int min_length, int *scan_ret, char **dump);
 int tb_dvd_titles_from(DVDDisc *d, dvd_nav_cells_t *res, int nb, int cell_mode, int cell_check,
                        int min_length, char **dump);
 int ff_dvd_cell_check(DVDDisc *d, int vts, int pgcn, int cell, int mode);
 
-/* libdvdread (dvdread/vob_read.h): a title set's title VOBs read for
+/* disc/dvd/dvd_vob.h: a title set's title VOBs read for
  * ripping, each damaged range given back once */
 typedef enum { DVD_DAMAGE_NONE, DVD_DAMAGE_ZERO, DVD_DAMAGE_NO_PACK } dvd_damage_t;
 typedef struct dvd_vob_reader_s dvd_vob_reader_t;
@@ -108,7 +108,7 @@ void DVDEndTitleVOBDamage_rec(dvd_vob_reader_t *v, dvd_vob_damage_t *ended);
 int DVDUseTitleVOBView_rec(dvd_vob_reader_t *v, const uint32_t *sectors, const uint32_t *counts, int n);
 void DVDCloseTitleVOBs_rec(dvd_vob_reader_t *v);
 
-/* libavformat/dvd_read.c: a title VOB sector through the checks (a reading
+/* src/disc/dvd/dvd_read.c: a title VOB sector through the checks (a reading
  * of its own: its damaged ranges given back); through the bridge: a title's
  * segment read through the checks */
 dvd_vob_reader_t *ff_dvd_title_vobs_open(DVDDisc *d, int vts);
@@ -118,7 +118,7 @@ int ff_dvd_title_vob_read(DVDDisc *d, int vts, dvd_vob_reader_t *vr, uint32_t se
 int ff_dvd_title_vob_sector(DVDDisc *d, int vts, uint32_t sector, uint8_t *buf);
 int ff_dvd_css_state(DVDDisc *d, int vts, uint8_t *key);
 int ff_dvd_map_trusted(const DVDDisc *d, int vts);
-/* VOBUs on libdvdread's records (dvd_read.c, vob_read.h) */
+/* VOBUs on the title set's records (dvd_read.c, dvd_vobu.h) */
 typedef struct {
     uint32_t vobu_s_ptm, vobu_e_ptm, vobu_ea, ilvu_ea, next_vobu;
     uint16_t category;
@@ -130,8 +130,8 @@ int tb_dvd_segment_dump(DVDDisc *d, int cell_mode, int t, int seg, const char *p
 /* libdvdcss (our addition): one block descrambled with a title key */
 void dvdcss_descramble(const unsigned char *p_key, void *p_block);
 
-/* the packets of a sector: libdvdread's reader for its stream probe
- * (vob_read.h) and the demuxer's (libavformat/mpeg.h), compared */
+/* the packets of a sector: the DVD part's reader for its stream probe
+ * (disc/dvd/dvd_stream_probe.h) and the demuxer's (mux/ps_disc.h), compared */
 typedef struct {
     int         at;
     int         len;

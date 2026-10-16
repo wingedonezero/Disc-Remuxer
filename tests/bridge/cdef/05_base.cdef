@@ -1,0 +1,77 @@
+/* src/base: errors, memory, refcounted buffers (base/err.h, mem.h, buf.h). */
+
+static const int DR_OK;
+static const int DR_ERR_EOF;
+static const int DR_ERR_INVALID;
+static const int DR_ERR_NOMEM;
+static const int DR_ERR_LIMIT;
+static const int DR_ERR_CANCELLED;
+static const int DR_ERR_EXTERNAL;
+static const int DR_ERR_UNSUPPORTED;
+static const int DR_ERR_BUG;
+const char *dr_err_str(int err, char *buf, size_t size);
+
+void *dr_malloc(size_t size);
+void *dr_mallocz(size_t size);
+void *dr_calloc(size_t n, size_t size);
+void *dr_realloc_array(void *p, size_t n, size_t size);
+void  dr_free(void *p);
+void  dr_freep(void *p);
+char *dr_strdup(const char *s);
+void *dr_memdup(const void *p, size_t size);
+
+#define DR_BUF_PADDING ...
+typedef struct DrBuf DrBuf;
+DrBuf   *dr_buf_alloc(size_t size);
+DrBuf   *dr_buf_from(const void *data, size_t size);
+DrBuf   *dr_buf_ref(DrBuf *b);
+void     dr_buf_unref(DrBuf **bp);
+uint8_t *dr_buf_data(const DrBuf *b);
+size_t   dr_buf_size(const DrBuf *b);
+int      dr_buf_writable(const DrBuf *b);
+void     dr_buf_trim(DrBuf *b, size_t size);
+
+/* base/str.h: the growing text buffer; base/mem.h: the array appends. */
+typedef struct DrStr {
+    char   *str;
+    size_t  len;
+    size_t  cap;
+    int     failed;
+} DrStr;
+void  dr_str_init(DrStr *s);
+void  dr_str_catf(DrStr *s, const char *fmt, ...);
+int   dr_str_ok(const DrStr *s);
+char *dr_str_take(DrStr *s, int keep_empty);
+void  dr_str_free(DrStr *s);
+
+int   dr_array_add_ptr(void *array, int *nb, void *item);
+void *dr_array_add(void *array, int *nb, size_t elem_size, const void *data);
+
+/* base/sha.h, base/crc32.h */
+typedef struct DrSha { uint64_t len; uint32_t h[8]; uint8_t block[64]; int bits; } DrSha;
+void dr_sha_init(DrSha *s, int bits);
+void dr_sha_update(DrSha *s, const uint8_t *data, size_t len);
+void dr_sha_final(DrSha *s, uint8_t *out);
+uint32_t dr_crc32_mpeg(uint32_t crc, const uint8_t *data, size_t len);
+
+/* base/log.h: the log's sink and its library lines (the repeat filter). */
+enum LogLevel { LOG_ERROR, LOG_WARNING, LOG_OK, LOG_INFO, LOG_DETAIL };
+typedef struct LogSink {
+    void (*line)(void *opaque, int level, int code, const char *source, const char *text, int heading);
+    void (*progress)(void *opaque, int title, double done);
+    void  *opaque;
+} LogSink;
+void log_set_sink(const LogSink *sink);
+void log_library_line(enum LogLevel level, const char *source, const char *text);
+void log_title_reading(int on);
+
+/* src/disc-remuxer/names.h: a title's output name from the template. */
+void title_name(const char *tmpl, const char *name, const char *comment, const char *date, unsigned index,
+                char *out, int size);
+void clean_name(const char *s, int rule, char *out, int size);
+
+/* src/parse/stock.h through the bridge: the stock cutters run beside the
+ * processing library's parsers (codec: AV_CODEC_ID_*; stock: DR_STOCK_*). */
+int tb_stock_compare(int ffmpeg_codec, int stock_codec, const uint8_t *data, int size,
+                     const int *chunks, int nb_chunks, int *calls);
+const char *tb_stock_why(void);

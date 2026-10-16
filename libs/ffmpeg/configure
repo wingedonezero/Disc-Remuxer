@@ -220,6 +220,7 @@ External library support:
   --enable-libaribcaption  enable ARIB text and caption decoding via libaribcaption [no]
   --enable-libass          enable libass subtitles rendering,
                            needed for subtitles and ass filter [no]
+  --enable-libbluray       enable BluRay reading using libbluray [no]
   --enable-libbs2b         enable bs2b DSP library [no]
   --enable-libcaca         enable textual display using libcaca [no]
   --enable-libcdio         enable audio CD grabbing with libcdio [no]
@@ -230,10 +231,6 @@ External library support:
                            and libraw1394 [no]
   --enable-libdvdnav       enable libdvdnav, needed for DVD demuxing [no]
   --enable-libdvdread      enable libdvdread, needed for DVD demuxing [no]
-  --enable-libaacs         enable AACS decryption via libaacs, needed for HD DVD and Blu-ray
-                           demuxing [no]
-  --enable-libexpat        enable XML parsing using expat, needed for HD DVD
-                           demuxing [no]
   --enable-libfdk-aac      enable AAC de/encoding via libfdk-aac [no]
   --enable-libflite        enable flite (voice synthesis) support via libflite [no]
   --enable-libfontconfig   enable libfontconfig, useful for drawtext filter [no]
@@ -2081,13 +2078,12 @@ EXTERNAL_LIBRARY_LIST="
     libaom
     libaribcaption
     libass
+    libbluray
     libbs2b
     libcaca
     libcodec2
     libdav1d
-    libaacs
     libdc1394
-    libexpat
     libflite
     libfontconfig
     libfreetype
@@ -3935,8 +3931,6 @@ dv_demuxer_select="dvprofile"
 dv_muxer_select="dvprofile"
 dvdvideo_demuxer_select="mpegps_demuxer"
 dvdvideo_demuxer_deps="libdvdnav libdvdread"
-disc_demuxer_deps="libaacs libdvdnav libdvdread libexpat swresample"
-disc_demuxer_select="ac3_parser dca_parser dvdsub_parser mlp_parser mpegvideo_parser vc1_parser pcm_dvd_parser mpegps_demuxer dca_core_bsf eac3_core_bsf"
 dxa_demuxer_select="riffdec"
 eac3_demuxer_select="ac3_parser"
 evc_demuxer_select="evc_frame_merge_bsf evc_parser"
@@ -4075,6 +4069,7 @@ xv_outdev_deps="xlib_xv xlib_x11 xlib_xext"
 android_content_protocol_deps="jni"
 android_content_protocol_select="file_protocol"
 async_protocol_deps="threads"
+bluray_protocol_deps="libbluray"
 ffrtmpcrypt_protocol_conflict="librtmp_protocol"
 ffrtmpcrypt_protocol_deps_any="gcrypt gmp openssl mbedtls"
 ffrtmpcrypt_protocol_select="tcp_protocol"
@@ -7332,6 +7327,7 @@ enabled libaribcaption    && require_pkg_config libaribcaption "libaribcaption >
 enabled lv2               && require_pkg_config lv2 lilv-0 "lilv/lilv.h" lilv_world_new
 enabled libiec61883       && require libiec61883 libiec61883/iec61883.h iec61883_cmp_connect -lraw1394 -lavc1394 -lrom1394 -liec61883
 enabled libass            && require_pkg_config libass "libass >= 0.11.0" ass/ass.h ass_library_init
+enabled libbluray         && require_pkg_config libbluray libbluray libbluray/bluray.h bd_open
 enabled libbs2b           && require_pkg_config libbs2b libbs2b bs2b.h bs2b_open
 enabled libcaca           && require_pkg_config libcaca caca caca.h caca_create_canvas
 enabled libcodec2         && require libcodec2 codec2/codec2.h codec2_create -lcodec2
@@ -7341,8 +7337,6 @@ enabled libdc1394         && require_pkg_config libdc1394 libdc1394-2 dc1394/dc1
 enabled libdrm            && check_pkg_config libdrm libdrm xf86drm.h drmGetVersion
 enabled libdvdnav         && require_pkg_config libdvdnav "dvdnav >= 6.1.0" dvdnav/dvdnav.h dvdnav_open2
 enabled libdvdread        && require_pkg_config libdvdread "dvdread >= 6.1.1" dvdread/dvd_reader.h DVDOpen2
-enabled libaacs           && require_pkg_config libaacs "libaacs >= 0.12.0" libaacs/aacs.h aacs_bd_open
-enabled libexpat          && require_pkg_config libexpat "expat >= 2.9.0" expat.h XML_ParserCreate
 enabled libfdk_aac        && { check_pkg_config libfdk_aac fdk-aac "fdk-aac/aacenc_lib.h" aacEncOpen ||
                                { require libfdk_aac fdk-aac/aacenc_lib.h aacEncOpen -lfdk-aac &&
                                  warn "using libfdk without pkg-config"; } }
@@ -8398,8 +8392,6 @@ enabled zoompan_filter      && prepend avfilter_deps "swscale"
 enabled lavfi_indev         && prepend avdevice_deps "avfilter"
 
 enabled opus_decoder    && prepend avcodec_deps "swresample"
-
-enabled disc_demuxer    && prepend avformat_deps "swresample"
 
 # reorder the items at var $1 to align with the items order at var $2 .
 # die if an item at $1 is not at $2 .

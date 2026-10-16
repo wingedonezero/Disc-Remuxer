@@ -1,4 +1,4 @@
-"""libavformat/dvd_titles.c: the title list (step D2, part 3a). Built disc
+"""disc/dvd/dvd_title_list.c: the title list (step D2, part 3a). Built disc
 folders (one title set; helpers.dvdnav.build adds a last one-cell title the
 first-play chain jumps to): the navigation scan, or given scan results, then
 the title list: each title's cells, length, segments (extents of the title

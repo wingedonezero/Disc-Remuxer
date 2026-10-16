@@ -1,4 +1,4 @@
-"""libavformat/disctl_audio.c with the AC-3 / E-AC-3 rules of
+"""src/timeline/disctl_audio.c with the AC-3 / E-AC-3 rules of
 disctl_codecs.c: units of one segment get their duration (samples / rate
 of their own first syncframe, ATSC A/52), the sync-unit flag and their final
 bytes (an AC-3 track keeps only AC-3 syncframes, an E-AC-3 track only E-AC-3

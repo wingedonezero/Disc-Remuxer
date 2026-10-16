@@ -1,6 +1,7 @@
-"""libavformat/disctl_verify.c: the checks of a track's output. Units are
-parsed again (AC-3 CRC, TrueHD length and major-sync checksum, MPEG-2 start
-codes); times are checked (audio in order, video without holes in display
+"""src/timeline/disctl_verify.c: the checks of a track's output. Units are
+parsed again (AC-3 CRC, TrueHD length, major-sync checksum, header and
+substream parity, substream and restart-header CRCs, DTS-HD checksums,
+MPEG-2 start codes); times are checked (audio in order, video without holes in display
 order); the audio sync error is measured as a stream file plays the frames
 (back to back from the start delay) and by the output times. Units from
 FFmpeg's encoders (tests/data/README.md)."""
@@ -122,6 +123,65 @@ def test_truehd_checksums():
     assert st.crc_errors == 1
 
 
+def crc8(crc, poly, data):
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            crc = ((crc << 1) ^ poly) & 0xFF if crc & 0x80 else (crc << 1) & 0xFF
+    return crc
+
+
+def thd_sums(u, state):
+    why = ffi.new("const char **")
+    r = lib.ff_disctl_mlp_checksums(state, u, len(u), why)
+    return "ok" if r == lib.DR_UNIT_OK else ffi.string(why[0]).decode()
+
+
+def substream0(u):
+    """Where substream 0's data starts in a major-sync AU, its length, and
+    whether it ends with check bytes."""
+    hs = 4 + (30 + 2 * (u[0x1e] >> 4) if u[0x1d] & 1 else 28)
+    d, ends, chk = hs, [], []
+    for _ in range(u[0x14] >> 4):
+        w = int.from_bytes(u[d:d + 2], "big")
+        d += 4 if w & 0x8000 else 2
+        ends.append((w & 0xFFF) * 2)
+        chk.append(bool(w & 0x2000))
+    return d, ends[0], chk[0]
+
+
+def test_truehd_parity_and_crcs_of_every_access_unit():
+    units = thd_units()
+    state = ffi.new("uint8_t[]", lib.DR_VERIFY_STATE)
+    assert [thd_sums(u, state) for u in units] == ["ok"] * len(units)
+    # a bit of the AU header: its parity; of substream data: the substream's
+    # parity (with check bytes)
+    state = ffi.new("uint8_t[]", lib.DR_VERIFY_STATE)
+    thd_sums(units[0], state)
+    v = bytearray(units[1])
+    v[2] ^= 0x01                                    # input timing: covered by the header parity
+    assert thd_sums(bytes(v), state) == "the TrueHD access unit header's parity"
+    major = units[0]
+    d, n, chk = substream0(major)
+    assert chk, "the test stream's substream 0 carries check bytes"
+    if chk:
+        w = bytearray(major)
+        w[d + n // 2] ^= 0x04
+        assert thd_sums(bytes(w), ffi.new("uint8_t[]", lib.DR_VERIFY_STATE)) == "a TrueHD substream's parity"
+        # the restart header changed, the substream's check bytes made right
+        # again: its own CRC finds it
+        w = bytearray(major)
+        w[d + 8] ^= 0x01
+        w[d + n - 2] = (__import__("functools").reduce(lambda a, b: a ^ b, w[d:d + n - 2], 0)) ^ 0xA9
+        w[d + n - 1] = crc8(0x3C, 0x63, w[d:d + n - 3]) ^ w[d + n - 3]
+        assert thd_sums(bytes(w), ffi.new("uint8_t[]", lib.DR_VERIFY_STATE)) == "a TrueHD restart header's CRC"
+    # through the title check: a finding with the kind, counted as a checksum failure
+    f = thd_frames(units[:3], 0)
+    f[1]["data"] = bytes(v)
+    st, ev = check("truehd", AUDIO, f)
+    assert st.crc_errors == 1
+
+
 def m2v_frames(skip):
     """The MPEG-2 test stream's pictures as output frames on a 29.97 fps
     grid (display order from the bitstream), except those in skip."""
@@ -167,3 +227,68 @@ def test_video_overlaps_and_bad_units():
 def test_a_codec_without_a_unit_check_is_counted():
     st, _ = check("pcm_dvd", AUDIO, [fi(bytes(64), 0, MS, 0, F_KEY)])
     assert st.unchecked == 1
+
+
+# ---- the format the units state (channels, rate): a change is a finding ----
+
+def changed_format(codec, frames, at, change):
+    """frames from k = at on carry change(bytearray) (checksums are not
+    fixed: the format is read from every unit that parses)."""
+    from helpers import install_log, LOG
+    out = []
+    for k, d in enumerate(frames):
+        if k >= at:
+            d = bytearray(d)
+            change(d)
+            d = bytes(d)
+        out.append(fi(d, k * AC3_DUR, AC3_DUR, k * AC3_DUR, F_KEY))
+    install_log(lib.AV_LOG_WARNING)
+    st, ev = check(codec, AUDIO, out)
+    return st, ev, [l for l in LOG if "format changes" in l]
+
+
+def test_an_ac3_track_whose_channels_change_is_said():
+    def to_51(d):                       # acmod 2 (2/0) -> 7 (3/2), lfeon set
+        d[6] = (7 << 5) | (d[6] & 0x1F) | 0x01
+    st, ev, said = changed_format("ac3", ac3_frames(), 3, to_51)
+    assert st.format_changes == 1 and kinds(ev).count(lib.DR_EV_VERIFY_FORMAT) == 1, (st.format_changes, kinds(ev))
+    assert said == ["Title timeline: check: track 1 (ac3): the format changes at 96.000 ms (segment 1) from 2.0 48000 "
+                    "Hz to 5.1 48000 Hz (bytes kept; a player or muxer may keep the first)"], said
+
+
+def test_a_dts_track_whose_channels_change_is_said():
+    dts = (DATA / "sine_5120.dts").read_bytes()
+    frames = [dts[i:i + 1884] for i in range(0, len(dts), 1884)]
+
+    def to_mono(d):                     # AMODE (6 bits after 32 + 28) 2 -> 0
+        v = int.from_bytes(d[4:12], "big")
+        v &= ~(0x3F << (64 - 28 - 6))
+        d[4:12] = v.to_bytes(8, "big")
+    st, ev, said = changed_format("dts", frames, 5, to_mono)
+    assert st.format_changes == 1, kinds(ev)
+    assert said and "from 2.0 48000 Hz to 1.0 48000 Hz" in said[0], said
+
+
+def test_a_truehd_track_whose_channels_change_at_a_major_sync_is_said():
+    st, ev = check("truehd", AUDIO, [fi(d, k * MS, MS, k * MS, F_KEY) for k, d in enumerate(thd_units())])
+    assert st.format_changes == 0, "the same format at every major sync"
+    units = thd_units()
+    majors = [k for k, u in enumerate(units) if u[4:8] == b"\xf8\x72\x6f\xba"]
+
+    def to_51(d):                       # 8ch assignment: L/R, C, LFE, Ls/Rs
+        if d[4:8] == b"\xf8\x72\x6f\xba":
+            v = int.from_bytes(d[8:12], "big") & ~0x1FFF | 0x000F
+            d[8:12] = v.to_bytes(4, "big")
+    from helpers import install_log, LOG
+    install_log(lib.AV_LOG_WARNING)
+    frames = []
+    for k, u in enumerate(units):
+        if k >= majors[3]:
+            u = bytearray(u)
+            to_51(u)
+            u = bytes(u)
+        frames.append(fi(u, k * MS, MS, k * MS, F_KEY))
+    st, ev = check("truehd", AUDIO, frames)
+    said = [l for l in LOG if "format changes" in l]
+    assert st.format_changes == 1, kinds(ev)
+    assert said and "from 2.0 48000 Hz to 5.1 48000 Hz" in said[0], said

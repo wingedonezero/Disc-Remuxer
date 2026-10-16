@@ -1,4 +1,4 @@
-"""Blu-ray tracks (libavformat/bluray_tracks.c): disc folders built here
+"""Blu-ray tracks (src/disc/bluray/bluray_tracks.c): disc folders built here
 (tests/synth/bluray.py) and the tracks of their titles read through the
 structure dump: each stream's tracks by its coding type (cores, forced-only
 subtitle copies), languages, the title's PIDs only, video first, then audio,
@@ -115,7 +115,7 @@ def test_a_title_without_a_video_stream_has_no_tracks(tmp_path):
 
 def test_an_identical_audio_or_subtitle_stream_is_left_out(tmp_path):
     # both streams of a PID are described; the disc layer's stream pass
-    # (discpass.c) leaves out the later one of the same codec, PID and keys
+    # (pass.c) leaves out the later one of the same codec, PID and keys
     clip = [VIDEO, (0x1100, 0x81, b"\x61eng"), (0x1100, 0x81, b"\x61fra"),
             (0x1200, 0x90, b"eng"), (0x1200, 0x90, b"fra")]
     item = Item(audio=[Stream(0x1100, 0x81, b"\x61eng")], pg=[Stream(0x1200, 0x90, b"eng")])
@@ -184,12 +184,15 @@ def test_e_ac3_and_dts_hd_without_a_core_substream_give_one_track(tmp_path):
     packets = video_packets() + [bd.ts_packet(pid, bd.pes(0xfd, bytes(16), ext=0x72, pts=900 + i), pusi=True)
                                  for i in range(3) for pid in (0x1100, 0x1101)]
     got = [g[:2] + (g[3],) for g in probed(tmp_path, clip, packets)]
-    assert got == [("0x03", "0x1011", "0x0"), ("0x4d", "0x1100", "0x0"), ("0x48", "0x1101", "0x0")]
+    # the DTS-HD one is marked as having no core (its frames are extension
+    # substreams only: DTS Express or lossless only); the E-AC-3 one is not
+    assert got == [("0x03", "0x1011", "0x0"), ("0x4d", "0x1100", "0x0"), ("0x48", "0x1101", "0x20000")]
     # with the core substreams (0x71): main + core
     packets = video_packets() + [bd.ts_packet(pid, bd.pes(0xfd, bytes(16), ext=x, pts=900 + i), pusi=True)
                                  for i in range(3) for pid in (0x1100, 0x1101) for x in (0x71, 0x72)]
-    got = [g[0] for g in probed(tmp_path, clip, packets, "core")]
-    assert got == ["0x03", "0x4e", "0x41", "0x49", "0x43"]
+    got = probed(tmp_path, clip, packets, "core")
+    assert [g[0] for g in got] == ["0x03", "0x4e", "0x41", "0x49", "0x43"]
+    assert not any(int(g[3], 16) & 0x20000 for g in got)
 
 
 def test_avc_video_on_another_pes_stream_id(tmp_path):

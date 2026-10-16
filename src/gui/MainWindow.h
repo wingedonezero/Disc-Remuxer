@@ -60,7 +60,9 @@ private slots:
     void ripStarted(quint64 id, QString folder);
     void ripDone(quint64 id, int result, bool stopped);
     void runDone(bool stopped);
-    void onRecord(QString json);
+    void onTitleStarted(TitleStart s);
+    void onTitleDone(TitleResult r);
+    void onRunResult(RunResult r);
     void onProgress(int title, double done);
 
 private:
@@ -70,13 +72,14 @@ private:
         EngineDisc      *disc = nullptr;
         QTreeWidgetItem *item = nullptr;
         bool             scanning = true;
-        QVector<char>    sel;        // per title: rip it
-        QVector<char>    split;      // per title: as parts
         QVector<QVector<QTreeWidgetItem *>> tracks;  // per title: its tracks' rows
         QString          outDir;     // where its last run wrote
         QString          logFile;
     };
     Job *jobOf(QTreeWidgetItem *item);
+    Job *ripping();
+    // the open disc's titles (0 while it is scanned or cannot be read)
+    static int titles(const Job &j);
     Job *jobById(quint64 id);
     void queueScan(Job &job);
     void fillDisc(Job &job);

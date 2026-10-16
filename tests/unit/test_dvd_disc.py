@@ -1,4 +1,4 @@
-"""libavformat/dvd_disc.c, dvd_ifo.c, dvddec.c: a DVD-Video disc's
+"""src/disc/dvd/dvd_disc.c, dvd_ifo.c, dvd_part.c: a DVD-Video disc's
 structure (step D1): the VMG, the title table, the text data, every title
 set's IFO with its BUP and checks; disc folders built with synth/dvd.py,
 images (ISO 9660, sectors that cannot be read) with synth/image.py. With the

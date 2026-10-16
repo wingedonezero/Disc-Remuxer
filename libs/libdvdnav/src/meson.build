@@ -7,7 +7,6 @@ dvdnav_src = files(
     'highlight.c',
     'logger.c',
     'navigation.c',
-    'scan.c',
     'read_cache.c',
     'searching.c',
     'settings.c',

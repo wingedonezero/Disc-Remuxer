@@ -1,4 +1,4 @@
-"""libavformat/hddvd_vti.c: the HD DVD Advanced VTS information file
+"""src/disc/hddvd/hddvd_vti.c: the HD DVD Advanced VTS information file
 (HVDVD_TS/HVA00001.VTI), built byte by byte; with HDDVD_CORPUS (a folder of
 HD DVD images) every image's VTI is read through the disc readers and each
 EVOB record's size is compared with its EVO file."""
@@ -12,7 +12,7 @@ import pytest
 from helpers import EINVAL, averror, ffi, install_log, lib, logged
 from helpers.disc import Image, env_or_skip, free_file
 
-INVALIDDATA = -0x41444E49
+INVALIDDATA = lib.DR_ERR_INVALID
 
 
 # ---- building a VTI ----

@@ -23,7 +23,6 @@
 
 #include "dvd_reader.h"
 #include "ifo_types.h"
-#include "vob_read.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -54,18 +53,18 @@ extern "C" {
  *   the sum of the sets before it by their headers), against the title
  *   table;
  * - each information file's tables: the menus' VOBU address map; of a title
- *   set its program chain table (ifoRead_VTS_PGCIT_rec(), kept by the
- *   reader: DVDKeepPGCIT_rec(), checked against the cell address table), its
- *   chapter table as recorded and its title VOBs' VOBU address map. A VOBU
- *   address map that cannot be read, or a cell whose first sector or last
- *   VOBU start is not on it, leaves the title set's VOBU starts untrusted
- *   (DVDSetVobuMap_rec()). A program chain table or chapter table that
- *   cannot be read leaves the title set out (the VMG's: NULL);
+ *   set its program chain table (ifoRead_VTS_PGCIT_rec(), kept here,
+ *   checked against the cell address table), its chapter table as recorded
+ *   and its title VOBs' VOBU address map. A VOBU address map that cannot be
+ *   read, or a cell whose first sector or last VOBU start is not on it,
+ *   leaves the title set's VOBU starts untrusted (map_trusted). A program
+ *   chain table or chapter table that cannot be read leaves the title set
+ *   out (the VMG's: NULL);
  * - the video manager's copy of each title set's attributes against the
  *   title set's own (ifoCheckVtsAttributes_rec()), and every information
  *   file read once more by ifoOpen() for its own checks.
- * Where the menu VOBs and the title VOBs start on an image is decided here
- * too (DVDMenuVOBStart_rec(), DVDTitleVOBStart_rec()).
+ * Where the menu VOBs and the title VOBs start on an image is asked of the
+ * application while the files are read (DVDOpenDisc_rec()'s place).
  */
 
 /** A node of the text data: an item kind below 0x30 with the texts
@@ -102,18 +101,16 @@ typedef struct
   int64_t            bup_sector;        /* image: the BUP's place (the IFO's when the BUP is not one piece) */
   uint32_t           title_vob_sectors; /* the title VOBs' length (the VMG: its menu VOB's); image: by the
                                            places of the IFO and BUP, a folder: by the files */
-  int64_t            menu_vob_start;    /* image: where its menu VOBs start (DVDMenuVOBStart_rec()), 0 */
-  int64_t            title_vob_start;   /* image: where its title VOBs start (DVDTitleVOBStart_rec()), 0 */
+  int64_t            menu_vob_start;    /* image: where its menu VOBs start (the application's place), 0 */
+  int64_t            title_vob_start;   /* image: where its title VOBs start (the application's place), 0 */
   int                no_pgcit;          /* a title set without a program chain table */
-  const pgcit_rec_t *pgcit;             /* its program chain table (the reader keeps it), NULL */
+  pgcit_rec_t       *pgcit;             /* its program chain table (freed with the disc), NULL */
   uint8_t           *ptt_srpt;          /* VTS_PTT_SRPT as recorded, NULL */
   uint32_t           ptt_srpt_size;
   uint32_t          *vobu_map;          /* VTS_VOBU_ADMAP: the VOBU starts, sorted, each once */
   int                nb_vobu_map;
-  int                map_trusted;       /* its VOBU address map holds every cell (as set by DVDSetVobuMap_rec()) */
+  int                map_trusted;       /* its VOBU address map holds every cell (set when the tables were read) */
   uint32_t           menu_vobu_last;    /* the last VOBU start of the menus' VOBU address map */
-  dvd_vob_reader_t  *own;               /* its title VOBs' own reading (DVDDiscTitleVOBs_rec()) */
-  int                own_opened;
 } dvd_ifo_rec_t;
 
 typedef struct
@@ -130,21 +127,22 @@ typedef struct
 } dvd_disc_rec_t;
 
 /**
- * Reads the disc's structure (see above). NULL when it is no usable
- * DVD-Video disc (reported). Close with DVDCloseDisc_rec() before
- * DVDClose(): it closes the information files.
+ * Where an information file's menu VOBs (menu 1) or title VOBs (menu 0)
+ * start on a disc image (absolute sector, 0: none), decided by the
+ * application, which reads them; asked while the structure is read, for
+ * every information file on an image (the title VOBs of a title set with a
+ * program chain table): dvd_ifo_rec_t menu_vob_start / title_vob_start.
  */
-DVDREAD_API dvd_disc_rec_t *DVDOpenDisc_rec( dvd_reader_t * );
-DVDREAD_API void DVDCloseDisc_rec( dvd_disc_rec_t * );
+typedef int64_t (*dvd_vob_place_f)( void *opaque, ifo_handle_t *ifo, int title, int menu );
 
 /**
- * Title set title's own reading of its title VOBs (DVDOpenTitleVOBs_rec()),
- * opened the first time it is asked for and kept with the disc: the reading
- * the VOBU records, the cell checks and the stream probe of the title set
- * use. NULL when the title set was not read or its title VOBs cannot be
- * opened.
+ * Reads the disc's structure (see above); place (may be NULL: none) is
+ * asked where the VOBs start. NULL when it is no usable DVD-Video disc
+ * (reported). Close with DVDCloseDisc_rec() before DVDClose(): it closes the
+ * information files.
  */
-DVDREAD_API dvd_vob_reader_t *DVDDiscTitleVOBs_rec( dvd_disc_rec_t *, int title );
+DVDREAD_API dvd_disc_rec_t *DVDOpenDisc_rec( dvd_reader_t *, dvd_vob_place_f place, void *opaque );
+DVDREAD_API void DVDCloseDisc_rec( dvd_disc_rec_t * );
 
 /**
  * Title set title's title VOBs share sectors with another title set's: by

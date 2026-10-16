@@ -1,4 +1,4 @@
-"""FFmpeg's MPEG-TS demuxer in disc mode (libavformat/mpegts.c, option disc):
+"""The MPEG-TS clip demuxer (src/mux/ts_disc.c, through the clip demuxer):
 192-byte source packets read as the disc reader reads Blu-ray stream files:
 PES packets of the PIDs asked for put together with its rules, each payload
 piece given out as it arrives on the stream of its PID and PES stream key,
@@ -130,6 +130,57 @@ def test_a_pes_header_whose_pts_markers_are_not_set_gives_no_time_and_says_so():
     assert [(d, t) for _, d, t, _ in out] == [(b"m" * 50, NOPTS)]
     assert logged("TS: PID 0x1100: a PES header at byte 0 has a PTS whose marker bits are not set: read as having "
                   "no time")
+
+
+def test_continuity_counter_jumps_are_said_and_their_data_kept():
+    install_log()
+    data = bytes(range(256)) * 4
+    pk = bd.ts_packets(A, bd.pes(0xfd, data, ext=0x71, pts=90000))      # counters 0..5
+    ret, out = ts_read(bd.source_packets(pk[:2] + pk[4:], renumber=False), [A])
+    got = payloads(out, sid(A, 0x71fd))
+    assert got == data[:184 * 2 - 17] + data[184 * 4 - 17:], "the packets that came are kept"
+    assert logged("TS: PID 0x1100: the continuity counter goes from 1 to 4 at byte 384")
+
+
+def test_a_duplicate_packet_is_left_out():
+    install_log()
+    data = bytes(range(256)) * 4
+    pk = bd.ts_packets(A, bd.pes(0xfd, data, ext=0x71, pts=90000))
+    ret, out = ts_read(bd.source_packets(pk[:2] + [pk[1]] + pk[2:], renumber=False), [A])
+    assert payloads(out, sid(A, 0x71fd)) == data
+    assert logged("TS: PID 0x1100: a duplicate transport packet at byte 384: left out")
+    assert not logged("continuity counter")
+
+
+def test_the_same_counter_with_other_bytes_is_said_and_kept():
+    install_log()
+    a = bd.ts_packet(A, bd.pes(0xbd, b"a" * 100, pts=1), pusi=True, cc=3)
+    b = bd.ts_packet(A, bd.pes(0xbd, b"b" * 100, pts=2), pusi=True, cc=3)
+    ret, out = ts_read(bd.source_packets([a, b], renumber=False), [A])
+    assert [d for _, d, _, _ in out] == [b"a" * 100, b"b" * 100]
+    assert logged("TS: PID 0x1100: the continuity counter goes from 3 to 3 at byte 192")
+
+
+def test_a_discontinuity_indicator_or_a_packet_without_payload_is_no_jump():
+    install_log()
+    a = bd.ts_packet(A, bd.pes(0xbd, b"a" * 100, pts=1), pusi=True, cc=3)
+    b = bytearray(bd.ts_packet(A, bd.pes(0xbd, b"b" * 100, pts=2), pusi=True, cc=9))
+    b[5] |= 0x80                               # discontinuity_indicator
+    c = bytearray(bd.ts_packet(A, b"", cc=7))  # adaptation field only: no payload, its counter not checked
+    c[3] = 0x20 | 7
+    d = bd.ts_packet(A, bd.pes(0xbd, b"d" * 100, pts=3), pusi=True, cc=10)
+    ret, out = ts_read(bd.source_packets([a, bytes(b), bytes(c), d], renumber=False), [A])
+    assert [x for _, x, _, _ in out] == [b"a" * 100, b"b" * 100, b"d" * 100]
+    assert not logged("continuity counter")
+
+
+def test_a_run_of_unreadable_packets_starts_the_counters_again():
+    install_log()
+    pk = bd.ts_packets(A, bd.pes(0xbd, b"x" * 600, pts=5))
+    ret, out = ts_read(bd.source_packets(pk[:1], renumber=False) + bytes(192) +
+                       bd.source_packets(pk[2:], renumber=False), [A])
+    assert logged("TS: bytes 192-383: 1 source packets of zeros: left out")
+    assert not logged("continuity counter"), "the run already says the data is missing"
 
 
 # ---- the corpus: an independent reading of the same stream files ----

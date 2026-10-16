@@ -1,4 +1,4 @@
-"""libavformat/discio_fs.c: the file system a disc image is read through
+"""src/io/discio_fs.c: the file system a disc image is read through
 (ff_discio_mount_image), the DVD-Video check, the label copy rule and the
 disc format probe, on images built here byte by byte: ISO 9660 / Joliet
 trees (ECMA-119) with or without a UDF volume (ECMA-167 / OSTA UDF) over
@@ -16,7 +16,7 @@ from helpers.disc import Image, env_or_skip
 from synth.image import (BUP, VMG, VTS1, Img, Udf, bridge, broken_files, dvd_files, iso,
                          udf102)
 
-INVALIDDATA = -0x41444E49  # FFERRTAG('I','N','D','A')
+INVALIDDATA = lib.DR_ERR_INVALID
 
 
 def chosen(im):

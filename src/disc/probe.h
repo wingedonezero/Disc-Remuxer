@@ -1,0 +1,41 @@
+/*
+ * The stream pass's details probe, provided by the analysis module (the
+ * program registers it with ff_disc_set_probe(); src/analyze/pass_probe.c):
+ * a track's payloads through the library's parser and decoder of its codec
+ * until one frame is decoded, its values written into the track's
+ * DiscStreamInfo. Without a registration the details stay unknown (the
+ * pass says so track by track).
+ */
+
+#ifndef DISC_DISC_PROBE_H
+#define DISC_DISC_PROBE_H
+
+#include <stdint.h>
+
+#include "timeline/disctl.h"
+
+struct DRCodec;
+struct DiscStreamInfo;
+
+typedef struct DiscDetailsProbe DiscDetailsProbe;
+
+typedef struct DiscProbeOps {
+    /** A probe over one track's payloads (tc: its codec table entry or
+     *  NULL; layer: a Dolby Vision enhancement layer, only its metadata is
+     *  read; ds: where the values go): 0, DR_ERR(ENOMEM), or another
+     *  error when the codec has no decoder. */
+    int  (*open)(DiscDetailsProbe **p, DRCodecID codec, const struct DRCodec *tc,
+                 int layer, struct DiscStreamInfo *ds);
+    /** A payload: 0, or DR_ERR(ENOMEM). */
+    int  (*feed)(DiscDetailsProbe *p, const uint8_t *data, int size);
+    /** The end of the data read for details (the parser's last frame, the
+     *  decoder's delayed one): 0, or DR_ERR(ENOMEM). */
+    int  (*flush)(DiscDetailsProbe *p);
+    /** 1 once the details are known (or cannot be). */
+    int  (*done)(const DiscDetailsProbe *p);
+    void (*close)(DiscDetailsProbe **p);
+} DiscProbeOps;
+
+void ff_disc_set_probe(const DiscProbeOps *ops);
+
+#endif /* DISC_DISC_PROBE_H */

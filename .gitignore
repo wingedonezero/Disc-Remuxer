@@ -30,10 +30,6 @@ build/
 dist/
 *.egg-info/
 
-# Rust / Cargo (legacy/rust)
-/target/
-legacy/rust/target/
-**/*.rs.bk
 *.orig
 
 # Private session instructions — never commit

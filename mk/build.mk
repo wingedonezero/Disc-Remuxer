@@ -53,10 +53,17 @@ src_files = $(shell find $(1) -type f ! -path '*/.git/*')
 dist: $(DIST)/disc-remuxer $(DIST)/disc-remuxer-gui $(DIST)/ffmpeg $(DIST)/ffprobe $(DIST)/ccextractor
 libs: $(BUILD)/ffmpeg/.installed
 
+include mk/base.mk
+include mk/io.mk
+include mk/mux.mk
+include mk/parse.mk
+include mk/timeline.mk
+include mk/disc.mk
 include mk/dvd.mk
 include mk/expat.mk
 include mk/aacs.mk
 include mk/ffmpeg.mk
+include mk/analyze.mk
 include mk/ccextractor.mk
 include mk/tool.mk
 include mk/gui.mk

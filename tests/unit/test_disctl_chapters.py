@@ -1,4 +1,4 @@
-"""libavformat/disctl_chapters.c and the joiner's chapter marks: a title's
+"""src/timeline/disctl_chapters.c and the joiner's chapter marks: a title's
 chapter records (times) become marks; the joiner puts each on the first
 video key frame at, or up to 0.4 s before, it; the k-th marked frame starts
 chapter k, which ends where the next starts (the last at the title's end);

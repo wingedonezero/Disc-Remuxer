@@ -1,4 +1,4 @@
-/* Blu-ray (libavformat/bluray_*.c) through the bridge helpers */
+/* Blu-ray (src/disc/bluray/bluray_*.c) through the bridge helpers */
 char *tb_bluray_dump(const char *path, const char *lang, int min_length, int *err);
 char *tb_bluray_text(uint8_t charset, const uint8_t *text, uint32_t len);
 char *tb_bluray_clean_title(const char *s);

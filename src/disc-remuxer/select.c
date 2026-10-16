@@ -7,10 +7,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <libavutil/avutil.h>
 
-#include "log.h"
-#include "msg.h"
+#include "base/log.h"
+#include "base/msg.h"
+#include "engine.h"
 #include "select.h"
 
 enum { W_ALL, W_VIDEO, W_AUDIO, W_SUBTITLE, W_FORCED, W_LANGUAGE, W_NUMBER };
@@ -140,9 +140,9 @@ static int matches(const DiscStreamInfo *k, int index, const Step *st)
         return 0;
     switch (st->word) {
     case W_ALL:      return 1;
-    case W_VIDEO:    return k->type == AVMEDIA_TYPE_VIDEO;
-    case W_AUDIO:    return k->type == AVMEDIA_TYPE_AUDIO;
-    case W_SUBTITLE: return k->type == AVMEDIA_TYPE_SUBTITLE;
+    case W_VIDEO:    return k->type == DISC_MEDIA_VIDEO;
+    case W_AUDIO:    return k->type == DISC_MEDIA_AUDIO;
+    case W_SUBTITLE: return k->type == DISC_MEDIA_SUBTITLE;
     case W_FORCED:   return k->forced;
     case W_LANGUAGE: return !strcmp(k->language, st->lang);
     default:         return index == st->number;

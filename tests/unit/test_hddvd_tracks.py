@@ -1,4 +1,4 @@
-"""libavformat/hddvd_tracks.c: the tracks of HD DVD titles. With
+"""src/disc/hddvd/hddvd_tracks.c: the tracks of HD DVD titles. With
 HDDVD_CORPUS (a folder of HD DVD images), HDDVD_TRACKS_REFERENCE (one
 <image name>.tracks.txt per image, every character but A-Z a-z 0-9 _ of the
 name replaced by _; one line per title: index|first EVO file|tracks, each
@@ -14,7 +14,7 @@ import subprocess
 
 import pytest
 
-from helpers import PROGRAM
+from helpers import PROGRAM, install_log, logged
 from helpers.disc import env_or_skip
 from helpers.hddvd import open_file, open_image
 from synth.hddvd import (ac3_frame, attr_record, clip, eac3_frame, evob, image, pack, playlist, ps1_packet,
@@ -150,6 +150,16 @@ def test_an_audio_stream_of_coding_3_leaves_the_title_out():
     assert tracks_of(im) == ["title A.EVO", "  0|video|vc1|0|0|", "  1|audio|ac3|1|0|"]
 
 
+def test_an_audio_stream_of_an_unknown_coding_is_said_and_left_out():
+    # a coding byte from 0x20 up names no coding: the stream gives no track
+    attrs = attr_record([0x60, 0, 0x50], [0x00, 0x40], [], PALETTE)
+    body = f"<Title>{clip('A.MAP', T, T, False)}</Title>"
+    im = disc([evob("A.EVO", 1, 10)], [1], [attrs], playlist("", body), [b""])
+    install_log()
+    assert tracks_of(im) == ["title A.EVO", "  0|video|vc1|0|0|", "  1|audio|ac3|1|0|"]
+    assert logged("audio stream 2 of EVOB A.EVO has a coding this program has no track for: not ripped")
+
+
 def test_video_coding_and_sub_picture_frame_size():
     cases = [
         ([0x00, 0, 0x00], "mpeg2video", "352x240"),
@@ -194,7 +204,7 @@ def test_coding_4_sub_pictures_are_drawn_on_1920x1080_on_any_video():
 
 def test_a_stream_with_the_codec_and_number_of_an_earlier_one_is_left_out(tmp_path):
     # the format part describes every stream; the disc layer's stream pass
-    # (discpass.c) leaves out the later one of the same codec and data (here
+    # (pass.c) leaves out the later one of the same codec and data (here
     # sub-picture stream 1 again, place 3 in the stream list)
     attr = attr_record([0x60, 0, 0x50], [0x00], [[0, 0x21, 0, 0, 0], [0x20, 0x21, 0, 0, 0], [0, 0x22, 0, 0, 0]],
                        PALETTE)

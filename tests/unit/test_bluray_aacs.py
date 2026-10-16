@@ -1,4 +1,4 @@
-"""Blu-ray AACS (libavformat/bluray_aacs.c on our libaacs): disc folders
+"""Blu-ray AACS (src/disc/bluray/bluray_aacs.c on our libaacs): disc folders
 built here with their AACS files and encrypted stream files (tests/synth/
 bluray.py), opened with the AACS step: the unit keys from the key files
 (volume unique key, media key + volume ID, unit-key list; files in order),
@@ -18,8 +18,8 @@ from synth.hddvd import aes_e, aes_g, hexs
 
 # a key is missing: ENOKEY (not NO_KEY, which says a file cannot be accessed)
 NO_KEY = -errno.ENOKEY
-INVALIDDATA = -0x41444E49
-PATCHWELCOME = -0x45574150
+INVALIDDATA = lib.DR_ERR_INVALID
+PATCHWELCOME = lib.DR_ERR_UNSUPPORTED
 
 KEY_UNKNOWN, KEY_NONE = -1, 0
 

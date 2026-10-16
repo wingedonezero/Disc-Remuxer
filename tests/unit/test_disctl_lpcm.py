@@ -1,4 +1,4 @@
-"""libavformat/disctl_lpcm.c and the LPCM rules of the title timeline: the audio
+"""src/timeline/disctl_lpcm.c and the LPCM rules of the title timeline: the audio
 frame header of DVD-Video (3 bytes) and HD DVD (5 bytes, read in the DVD
 layout), the sample conversion to little-endian PCM, and units of one frame
 through the frame step and the audio stage. The 16-bit stereo 48 kHz case is the
@@ -92,7 +92,7 @@ def test_units_are_frames_of_the_stated_size():
     for k in range(0, len(stream), 2000):
         chunk = stream[k:k + 2000]
         assert header(p, [k // 2000, 0x01, 0x80], False) == 0
-        # the frame format for FFmpeg's LPCM parser, as the title gives it
+        # the frame format for the LPCM rule, as the title gives it
         lib.ff_disctl_frames_set_pcm_format(c[0], p.channels, p.bits, p.spf)
         assert lib.ff_disctl_frames_write(c[0], chunk, len(chunk), (k // 2000) * 1000) == 0
     assert lib.ff_disctl_frames_flush(c[0]) == 0
@@ -204,7 +204,7 @@ def test_blu_ray_samples_become_little_endian_in_the_mask_order():
 
 
 def run_bd(stream, writes):
-    """Blu-ray LPCM through the frame step (FFmpeg's parser, disc mode) and the
+    """Blu-ray LPCM through the frame step (the LPCM rule) and the
     audio stage; writes: [(start, end, time)] of stream."""
     cid = codec_id("pcm_bluray")
     p = lpcm()

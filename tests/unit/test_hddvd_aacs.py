@@ -1,4 +1,4 @@
-"""HD DVD AACS (libavformat/hddvd_aacs.c on our libaacs): keys from the key
+"""HD DVD AACS (src/disc/hddvd/hddvd_aacs.c on our libaacs): keys from the key
 files, title keys, navigation packs, decrypted packs, on built discs. With
 HDDVD_CORPUS (a folder of HD DVD images) and HDDVD_KEYDB (key files,
 comma-separated): the encrypted 300 images are opened, the feature's first
@@ -12,13 +12,13 @@ import pathlib
 
 import pytest
 
-from helpers import install_log, logged
+from helpers import install_log, lib, logged
 from helpers.disc import env_or_skip
 from helpers.hddvd import open_file, open_image
 from synth.hddvd import (aes_g, data_pack, encrypt_pack, evob, hexs, image, nav_pack, playlist, tkf, title_keys,
                          tmap, vti)
 
-INVALIDDATA = -0x41444E49
+INVALIDDATA = lib.DR_ERR_INVALID
 # a key is missing: ENOKEY (not NO_KEY, which says a file cannot be accessed)
 NO_KEY = -errno.ENOKEY
 

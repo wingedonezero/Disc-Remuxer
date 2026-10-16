@@ -1,4 +1,4 @@
-"""libavformat/disctl_video.c with the MPEG-2 rules of disctl_mpv.c:
+"""src/timeline/disctl_video.c with the MPEG-2 rules of disctl_mpv.c:
 pictures timed on a fixed grid (base + display position x field duration).
 The PES times fed in are computed here from the bitstream (each GOP's
 display start + temporal_reference), independently of the code. Stream made

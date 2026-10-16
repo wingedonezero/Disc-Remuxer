@@ -233,7 +233,10 @@ def bdmv(clips=None, playlists=None, extra=None, stream_files=True, root="BDMV")
     for n, d in clips.items():
         f[f"{root}/CLIPINF/{n:05d}.clpi"] = d
         if stream_files:
-            f[f"{root}/STREAM/{n:05d}.m2ts"] = bytes(192)
+            # as long as the clip information says (number_of_source_packets
+            # x 192, ClipInfo at 0x28), one packet when it cannot be read
+            packets = int.from_bytes(d[0x38:0x3c], "big") if len(d) >= 0x3c else 1
+            f[f"{root}/STREAM/{n:05d}.m2ts"] = bytes(192 * packets)
     for n, d in playlists.items():
         f[f"{root}/PLAYLIST/{n:05d}.mpls"] = d
     f.update(extra or {})
@@ -324,10 +327,28 @@ def pes_private2(payload):
     return b"\x00\x00\x01\xbf" + be16(len(payload)) + payload
 
 
-def source_units(packets):
+def continuity(packets):
+    """The packets with each PID's continuity counter going up by one per
+    packet with a payload (ISO/IEC 13818-1 2.4.3.3), as a multiplexer
+    writes them."""
+    cc, out = {}, []
+    for p in packets:
+        pid = (p[1] & 0x1f) << 8 | p[2]
+        if p[3] & 0x10:
+            n = cc.get(pid, -1) + 1 & 15
+            cc[pid] = n
+            p = p[:3] + bytes([p[3] & 0xf0 | n]) + p[4:]
+        out.append(p)
+    return out
+
+
+def source_units(packets, renumber=True):
     """Aligned units of source packets (4-byte TP_extra_header + TS packet),
-    padded with null packets to whole units."""
+    padded with null packets to whole units; renumber: the continuity
+    counters as a multiplexer writes them (else as given)."""
     out = bytearray()
+    if renumber:
+        packets = continuity(packets)
     for i, p in enumerate(packets):
         out += be32(i * 0x10) + p
     n = len(packets)
@@ -347,8 +368,11 @@ def ts_packets(pid, data, cc=0):
     return out
 
 
-def source_packets(packets):
-    """TS packets as 192-byte source packets (no padding to whole units)."""
+def source_packets(packets, renumber=True):
+    """TS packets as 192-byte source packets (no padding to whole units);
+    renumber: the continuity counters as a multiplexer writes them."""
+    if renumber:
+        packets = continuity(packets)
     return b"".join(be32(i * 0x10) + p for i, p in enumerate(packets))
 
 

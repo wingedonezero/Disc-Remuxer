@@ -1,4 +1,4 @@
-"""libavformat/hddvd_titles.c and disclang.c: the HD DVD title plan. With
+"""src/disc/hddvd/hddvd_titles.c and lang.c: the HD DVD title plan. With
 HDDVD_CORPUS (a folder of HD DVD images) and HDDVD_TITLES_REFERENCE (one
 <image name>.titles.txt per image, every character but A-Z a-z 0-9 _ of the
 name replaced by _; one line per title: index|name|language|H:MM:SS|bytes|
@@ -20,11 +20,11 @@ from helpers.disc import env_or_skip
 from helpers.hddvd import plan, take_text
 from synth.hddvd import clip, evob, image, playlist, tmap, vti
 
-INVALIDDATA = -0x41444E49
+INVALIDDATA = lib.DR_ERR_INVALID
 
 
 def lang(code):
-    r = lib.ff_disc_lang_code(code.encode())
+    r = lib.dr_disc_lang_code(code.encode())
     return None if r == ffi.NULL else ffi.string(r).decode()
 
 
@@ -40,7 +40,7 @@ def test_language_codes_follow_iso_639_with_three_extras():
 
 
 def lang_name(code):
-    r = lib.ff_disc_lang_name(code.encode())
+    r = lib.dr_disc_lang_name(code.encode())
     return None if r == ffi.NULL else ffi.string(r).decode()
 
 

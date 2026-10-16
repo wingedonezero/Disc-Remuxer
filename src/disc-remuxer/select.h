@@ -19,7 +19,7 @@
 
 #include <stdint.h>
 
-#include <libavformat/discinfo.h>
+#include "disc/info.h"
 
 /* Checks one --tracks value; 0, or -1 (logged). */
 int tracks_check(const char *spec);

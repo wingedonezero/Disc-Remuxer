@@ -1,4 +1,4 @@
-"""libavformat/discio_iso9660.c: ISO 9660 / Joliet volumes, built here byte
+"""src/io/discio_iso9660.c: ISO 9660 / Joliet volumes, built here byte
 by byte (ECMA-119), and the corpus images when DISCIO_CORPUS names the
 folder holding them."""
 
@@ -12,7 +12,7 @@ from helpers import ENOENT, averror, ffi, lib
 from helpers.disc import Image, env_or_skip, free_file
 from helpers.source import list_dir
 
-INVALIDDATA = -0x41444E49  # FFERRTAG('I','N','D','A')
+INVALIDDATA = lib.DR_ERR_INVALID
 
 
 # ---- building images ----

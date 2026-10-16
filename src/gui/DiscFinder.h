@@ -1,5 +1,6 @@
 // Finding discs in what the user adds: an image, a disc folder, or a folder
-// holding any number of them (searched a few levels deep).
+// holding any number of them (searched a few levels deep) — the engine's
+// finder (discs.h), the one find and demux of a folder use.
 #pragma once
 
 #include <QList>

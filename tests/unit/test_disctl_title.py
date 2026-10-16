@@ -17,7 +17,7 @@ STEP = 12288000  # one sub-picture delay step: 1024 / 90000 s
 MS = 1080000
 BASE = 10 * 1080000000
 EAGAIN = -11
-EOF_ = -0x20464F45
+EOF_ = -0x44520001  # DR_ERR_EOF
 
 
 @dataclasses.dataclass
@@ -96,7 +96,7 @@ def run(tracks, lpcm_hd, segments, spu=None, cc_helper=None, video_data=False):
             assert lib.ff_disctl_title_payload(t[0], p.track, p.data, len(p.data), p.time) == 0
             assert drain() == EAGAIN, "EAGAIN while the title goes on"
     assert lib.ff_disctl_title_finish(t[0]) == 0
-    assert drain() == EOF_, "AVERROR_EOF after the last frame"
+    assert drain() == EOF_, "the end-of-data value after the last frame"
     duration, review = lib.ff_disctl_title_duration(t[0]), lib.ff_disctl_title_review(t[0])
     if spu is not None:
         n, o = ffi.new("int64_t *"), ffi.new("int64_t *")

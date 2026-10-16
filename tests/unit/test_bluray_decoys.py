@@ -1,4 +1,4 @@
-"""Blu-ray fake playlist check (libavformat/bluray_decoys.c): discs built
+"""Blu-ray fake playlist check (src/disc/bluray/bluray_decoys.c): discs built
 byte by byte (tests/synth/bluray.py), read with ff_bluray_disc_open, the
 title list and the check, through the structure dump and the log: copies of
 one clip played more than once (from different stream files) mark a long

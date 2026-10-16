@@ -304,42 +304,4 @@ int ff_parse_mpeg2_descriptor(AVFormatContext *fc, AVStream *st, int stream_type
  */
 int ff_check_h264_startcode(AVFormatContext *s, const AVStream *st, const AVPacket *pkt);
 
-/**
- * A PES header read with disc mode's rules (option disc): 1 and its stream
- * key (stream_id, or 0xFD | stream_id_extension << 8) and PTS (33 bits as
- * recorded, AV_NOPTS_VALUE none), 0 not usable. avail: the bytes at p.
- */
-int ff_mpegts_disc_pes_header(const uint8_t *p, unsigned avail, uint16_t *key, int64_t *pts);
-
-/** Disc mode, a stretch of the stream file left out: TS packets that cannot
- *  be read (one after the other, for one reason), all-zero source packets,
- *  or a PID's data dropped from a PES packet that cannot be read to its next
- *  PES start. */
-typedef struct MpegTSDiscGap {
-    int         kind;           /**< MPEGTS_DISC_GAP_* */
-    int         pid;            /**< MPEGTS_DISC_GAP_PES: the PID */
-    int64_t     pos, end;       /**< the stream's bytes [pos, end): its source packets; PES: from the packet
-                                     where reading failed to the one with the next PES start */
-    int64_t     packets;        /**< source packets in it (BAD, ZERO) */
-    int64_t     bytes;          /**< PES: the PID's payload bytes left out; CUT: the PES bytes missing */
-    const char *why;            /**< BAD, PES: why (a static string) */
-    int         to_end;         /**< PES: the stream ended before a next PES start */
-} MpegTSDiscGap;
-
-/** MPEGTS_DISC_GAP_CUT: a PES packet whose next PES start comes before its
- *  end (pos: that start's packet; bytes: the bytes of it that did not come);
- *  nothing is left out, its rest is missing. */
-/** MPEGTS_DISC_GAP_PTS: a PES header (at pos) whose flags say it has a PTS
- *  but whose marker bits are not set: read as having no time (nothing left
- *  out). */
-enum { MPEGTS_DISC_GAP_BAD = 1, MPEGTS_DISC_GAP_ZERO, MPEGTS_DISC_GAP_PES, MPEGTS_DISC_GAP_CUT,
-       MPEGTS_DISC_GAP_PTS };
-
-/**
- * Disc mode with option disc_gaps: the oldest stretch left out that has
- * ended (1, *gap filled), 0 none. flush: the stream has ended, the
- * stretches still open end with it. Without disc_gaps they are logged.
- */
-int ff_mpegts_disc_gap(AVFormatContext *s, int flush, MpegTSDiscGap *gap);
-
 #endif /* AVFORMAT_MPEGTS_H */

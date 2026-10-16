@@ -5,6 +5,8 @@
  */
 
 #include <errno.h>
+#include <inttypes.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <limits.h>
 #include <stdio.h>
@@ -12,18 +14,22 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#include <libavformat/avformat.h>
-#include <libavformat/discinfo.h>
-#include <libavutil/avstring.h>
-#include <libavutil/avutil.h>
-#include <libavutil/bprint.h>
 
-#include "log.h"
-#include "msg.h"
+#include "base/err.h"
+#include "base/log.h"
+#include "base/macros.h"
+#include "base/mem.h"
+#include "base/str.h"
+#include "disc/disc.h"
+#include "analyze/analyze.h"
+#include "base/msg.h"
 #include "names.h"
-#include "settings.h"
+#include "base/settings.h"
 #include "codecs.h"
+#include "discs.h"
+#include "emit.h"
 #include "engine.h"
+#include "events.h"
 #include "select.h"
 #include "writer.h"
 
@@ -51,11 +57,6 @@ static void hms(char *buf, size_t size, int64_t us)
     int64_t t = (us + 500000) / 1000000;
     snprintf(buf, size, "%d:%02d:%02d", (int)(t / 3600), (int)(t / 60 % 60), (int)(t % 60));
 }
-
-/* The disc demuxer: it tells the kind of disc and follows the contract of
- * docs/FORMATS.md (the disc info, each track's result at the end, read
- * progress as an option). */
-#define DISC_FORMAT "disc"
 
 /* A linked stream's index for JSON, or null (-1: none). */
 static const char *json_index(char *buf, size_t size, int v)
@@ -91,12 +92,13 @@ static const char *roles_text(int roles, const char *sep, int quoted, char *buf,
     return buf;
 }
 
-void engine_track_parts(const DiscTitleInfo *t, int i, char *codec, size_t csize, char *rest, size_t rsize)
+void engine_track_pieces(const DiscTitleInfo *t, int i, char *codec, size_t csize, char *body, size_t bsize,
+                         char *link_out, size_t lsize)
 {
     const DiscStreamInfo *k = &t->streams[i];
     char extra[160] = "", link[96] = "", det[160] = "", a[24], r[48], l[64], b[24];
 
-    if (k->type == AVMEDIA_TYPE_SUBTITLE && k->width)
+    if (k->type == DISC_MEDIA_SUBTITLE && k->width)
         snprintf(extra, sizeof(extra), "  %dx%d", k->width, k->height);
     if (k->forced)
         snprintf(link, sizeof(link), "  (forced subtitles of track %d)", k->from_track);
@@ -117,10 +119,10 @@ void engine_track_parts(const DiscTitleInfo *t, int i, char *codec, size_t csize
         snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "  3-D offset sequence %d",
                  k->offset_sequence);
     /* what the stream is: its codec in full, then its details */
-    if (k->type == AVMEDIA_TYPE_VIDEO && k->width && !k->forced)
+    if (k->type == DISC_MEDIA_VIDEO && k->width && !k->forced)
         snprintf(det, sizeof(det), "  %dx%d %s %s", k->width, k->height, aspect_text(k, a, sizeof(a)),
                  frame_rate_text(k, r, sizeof(r)));
-    if (k->type == AVMEDIA_TYPE_AUDIO && k->channels) {
+    if (k->type == DISC_MEDIA_AUDIO && k->channels) {
         snprintf(det, sizeof(det), "  %s %d Hz", layout_text(k, l, sizeof(l)), k->sample_rate);
         if (k->bits && codec_lossless(k))
             snprintf(det + strlen(det), sizeof(det) - strlen(det), " %d-bit", k->bits);
@@ -128,7 +130,16 @@ void engine_track_parts(const DiscTitleInfo *t, int i, char *codec, size_t csize
             snprintf(det + strlen(det), sizeof(det) - strlen(det), " %s", b);
     }
     codec_description(k, k->second_view && k->from_track >= 0 ? &t->streams[k->from_track] : NULL, codec, csize);
-    snprintf(rest, rsize, "%s%s%s", det, extra, link);
+    snprintf(body, bsize, "%s%s", det, extra);
+    snprintf(link_out, lsize, "%s", link);
+}
+
+void engine_track_parts(const DiscTitleInfo *t, int i, char *codec, size_t csize, char *rest, size_t rsize)
+{
+    char body[512], link[96];
+
+    engine_track_pieces(t, i, codec, csize, body, sizeof(body), link, sizeof(link));
+    snprintf(rest, rsize, "%s%s", body, link);
 }
 
 const char *engine_track_text(const DiscTitleInfo *t, int i, int kept, char *buf, size_t size)
@@ -155,36 +166,107 @@ const char *engine_track_extension(const DiscStreamInfo *k)
 /* A title's angle for the detail line: "; angle 3 (main); the disc plays
  * angles 3, 1, 2 in that order; cell 1 shared by all angles" or "; angle 1,
  * main is angle 3 (#18)". */
+/* fmt's text appended to buf (cut at size). */
+static void cat(char *buf, size_t size, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+static void cat(char *buf, size_t size, const char *fmt, ...)
+{
+    size_t n = strlen(buf);
+    va_list vl;
+
+    if (n + 1 >= size)
+        return;
+    va_start(vl, fmt);
+    vsnprintf(buf + n, size - n, fmt, vl);
+    va_end(vl);
+}
+
 static void angle_text(const DiscTitleInfo *t, char *buf, size_t size)
 {
     snprintf(buf, size, "; angle %d", t->angle);
     if (t->main_angle == t->angle) {
-        av_strlcat(buf, " (main)", size);
+        cat(buf, size, " (main)");
         if (t->angle_order[0] && t->angle_order[1]) {
-            av_strlcat(buf, "; the disc plays angles ", size);
+            cat(buf, size, "; the disc plays angles ");
             for (int k = 0; k < 9 && t->angle_order[k]; k++)
-                av_strlcatf(buf, size, "%s%d", k ? ", " : "", t->angle_order[k]);
-            av_strlcat(buf, " in that order", size);
+                cat(buf, size, "%s%d", k ? ", " : "", t->angle_order[k]);
+            cat(buf, size, " in that order");
         }
     } else if (t->main_angle) {
-        av_strlcatf(buf, size, ", main is angle %d", t->main_angle);
+        cat(buf, size, ", main is angle %d", t->main_angle);
         if (t->main_title >= 0)
-            av_strlcatf(buf, size, " (#%d)", t->main_title);
+            cat(buf, size, " (#%d)", t->main_title);
     }
     if (t->shared_cells)
-        av_strlcatf(buf, size, "; cell%s %s shared by all angles", strchr(t->shared_cells, ',') ? "s" : "",
+        cat(buf, size, "; cell%s %s shared by all angles", strchr(t->shared_cells, ',') ? "s" : "",
                     t->shared_cells);
 }
 
+/* The title as info lists it: its line (and with detail its files, tracks
+ * and parts), then its record (DR_EVENT_TITLE). */
 static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *keep)
 {
-    char dur[32], size[32], files[2048] = "", js[512], jl[16], extra[512] = "", pt[192] = "";
-    AVBPrint streams, parts;
+    char dur[32], size[32], pt[192] = "";
     int nv = 0, na = 0, ns = 0;
 
     hms(dur, sizeof(dur), t->duration);
     size_text(size, sizeof(size), t->size);
-    av_bprint_init(&streams, 0, AV_BPRINT_SIZE_UNLIMITED);
+    for (int i = 0; i < t->nb_streams; i++) {
+        const DiscStreamInfo *k = &t->streams[i];
+        nv += k->type == DISC_MEDIA_VIDEO;
+        na += k->type == DISC_MEDIA_AUDIO;
+        ns += k->type == DISC_MEDIA_SUBTITLE;
+    }
+    if (t->nb_parts)
+        snprintf(pt, sizeof(pt), ", %d parts", t->nb_parts);
+    if (t->angle)
+        snprintf(pt + strlen(pt), sizeof(pt) - strlen(pt), ", angle %d%s", t->angle,
+                 t->angle == t->main_angle ? " (main)" : "");
+    if (t->menu_name)
+        snprintf(pt + strlen(pt), sizeof(pt) - strlen(pt), ", menu name %s", t->menu_name);
+    log_text(LOG_INFO, "  #%-2d %-40s %9s  %-6s %d audio, %d subtitle%s, %d chapter%s%s", t->index,
+             t->name ? t->name : "", dur,
+             nv ? codec_label(t->streams[0].codec, 0) : "-", na, ns, ns == 1 ? "" : "s",
+             t->nb_chapters, t->nb_chapters == 1 ? "" : "s", pt);
+    if (detail) {
+        char list[1024] = "";
+        for (int i = 0; i < t->nb_files; i++)
+            snprintf(list + strlen(list), sizeof(list) - strlen(list), "%s%s", i ? ", " : "", t->files[i]);
+        char from[64] = "", ang[256] = "";
+        if (t->source)
+            snprintf(from, sizeof(from), "from %s%s", t->source, t->nb_files ? ": " : "");
+        if (t->angle)
+            angle_text(t, ang, sizeof(ang));
+        log_text(LOG_INFO, "       %s, %s%s%s%s%s%s", size, from, list, ang, t->language[0] ? ", language " : "",
+                 t->language, t->selected ? "" : ", not selected (not the main angle: name it to rip it)");
+        for (int i = 0; i < t->nb_streams; i++) {
+            const DiscStreamInfo *k = &t->streams[i];
+            char line[512];
+            log_text(LOG_INFO, "       %-2d %-8s %-3s %s", i, disc_media_name(k->type),
+                     k->language[0] ? k->language : "   ", engine_track_text(t, i, keep[i], line, sizeof(line)));
+        }
+        for (int p = 0; p < t->nb_parts; p++) {
+            const DiscPartInfo *q = &t->parts[p];
+            char pd[32], ps[32], pl[512] = "";
+            hms(pd, sizeof(pd), q->duration);
+            hms(ps, sizeof(ps), q->start);
+            for (int f = 0; f < q->nb_files; f++)
+                snprintf(pl + strlen(pl), sizeof(pl) - strlen(pl), "%s%s", f ? ", " : "", t->files[q->first_file + f]);
+            log_text(LOG_INFO, "       part %-2d at %s  %9s  %s, %d chapter%s", p + 1, ps, pd, pl, q->nb_chapters,
+                     q->nb_chapters == 1 ? "" : "s");
+        }
+    }
+    {
+        DrEvent ev = { .kind = DR_EVENT_TITLE };
+        ev.u.title = (DrEventTitle){ t, keep };
+        engine_event(&ev);
+    }
+}
+
+void engine_title_json(const DiscTitleInfo *t, const uint8_t *keep)
+{
+    char files[2048] = "", js[512], jl[16], extra[512] = "";
+    DrStr streams = DR_STR_INIT, parts = DR_STR_INIT;
+
     for (int i = 0; i < t->nb_streams; i++) {
         const DiscStreamInfo *k = &t->streams[i];
         char jc[64], jsl[16], n1[24], n2[24], n3[24], n4[24], n5[24], n6[24], ji[24], jf[24], jo[24];
@@ -192,10 +274,7 @@ static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *ke
         char lm[24], rl[128], jn[96], jm[48], je[16], an[32], jan[48], jh[32], jco[128], jma[320], nc1[24], nc2[24];
         const char *lname = k->language[0] ? disc_language_name(k->language) : NULL, *mkv = disc_mkv_codec_id(k);
         (void)dv; (void)fr;
-        nv += k->type == AVMEDIA_TYPE_VIDEO;
-        na += k->type == AVMEDIA_TYPE_AUDIO;
-        ns += k->type == AVMEDIA_TYPE_SUBTITLE;
-        av_bprintf(&streams,
+        dr_str_catf(&streams,
                  "%s{\"index\":%d,\"kind\":\"%s\",\"codec\":%s,\"language\":%s,\"inner_track\":%s,"
                  "\"from_track\":%s,\"forced\":%s,\"second_view\":%s,\"second_layer\":%s,\"offset_sequence\":%s,\"width\":%s,"
                  "\"height\":%s,\"channels\":%s,\"sample_rate\":%s,\"bits\":%s,\"bit_rate\":%s,"
@@ -203,7 +282,7 @@ static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *ke
                  "\"layout\":%s,\"layout_mask\":%s,\"roles\":[%s],\"selected\":%s,\"language_name\":%s,"
                  "\"codec_id\":%s,\"file_type\":%s,\"name\":%s,\"hdr\":%s,\"colour\":%s,\"mastering\":%s,"
                  "\"max_cll\":%s,\"max_fall\":%s}",
-                 i ? "," : "", i, av_get_media_type_string(k->type),
+                 i ? "," : "", i, disc_media_name(k->type),
                  json_str(jc, sizeof(jc), codec_short(k)),
                  json_str(jsl, sizeof(jsl), k->language), json_index(ji, sizeof(ji), k->inner_track),
                  json_index(jf, sizeof(jf), k->from_track), k->forced ? "true" : "false",
@@ -233,45 +312,6 @@ static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *ke
         char jf[300];
         snprintf(files + strlen(files), sizeof(files) - strlen(files), "%s%s", i ? "," : "",
                  json_str(jf, sizeof(jf), t->files[i]));
-    }
-    if (t->nb_parts)
-        snprintf(pt, sizeof(pt), ", %d parts", t->nb_parts);
-    if (t->angle)
-        snprintf(pt + strlen(pt), sizeof(pt) - strlen(pt), ", angle %d%s", t->angle,
-                 t->angle == t->main_angle ? " (main)" : "");
-    if (t->menu_name)
-        snprintf(pt + strlen(pt), sizeof(pt) - strlen(pt), ", menu name %s", t->menu_name);
-    log_text(LOG_INFO, "  #%-2d %-40s %9s  %-6s %d audio, %d subtitle%s, %d chapter%s%s", t->index,
-             t->name ? t->name : "", dur,
-             nv ? codec_label(t->streams[0].codec, 0) : "-", na, ns, ns == 1 ? "" : "s",
-             t->nb_chapters, t->nb_chapters == 1 ? "" : "s", pt);
-    if (detail) {
-        char list[1024] = "";
-        for (int i = 0; i < t->nb_files; i++)
-            snprintf(list + strlen(list), sizeof(list) - strlen(list), "%s%s", i ? ", " : "", t->files[i]);
-        char from[64] = "", ang[256] = "";
-        if (t->source)
-            snprintf(from, sizeof(from), "from %s%s", t->source, t->nb_files ? ": " : "");
-        if (t->angle)
-            angle_text(t, ang, sizeof(ang));
-        log_text(LOG_INFO, "       %s, %s%s%s%s%s%s", size, from, list, ang, t->language[0] ? ", language " : "",
-                 t->language, t->selected ? "" : ", not selected (not the main angle: name it to rip it)");
-        for (int i = 0; i < t->nb_streams; i++) {
-            const DiscStreamInfo *k = &t->streams[i];
-            char line[512];
-            log_text(LOG_INFO, "       %-2d %-8s %-3s %s", i, av_get_media_type_string(k->type),
-                     k->language[0] ? k->language : "   ", engine_track_text(t, i, keep[i], line, sizeof(line)));
-        }
-        for (int p = 0; p < t->nb_parts; p++) {
-            const DiscPartInfo *q = &t->parts[p];
-            char pd[32], ps[32], pl[512] = "";
-            hms(pd, sizeof(pd), q->duration);
-            hms(ps, sizeof(ps), q->start);
-            for (int f = 0; f < q->nb_files; f++)
-                snprintf(pl + strlen(pl), sizeof(pl) - strlen(pl), "%s%s", f ? ", " : "", t->files[q->first_file + f]);
-            log_text(LOG_INFO, "       part %-2d at %s  %9s  %s, %d chapter%s", p + 1, ps, pd, pl, q->nb_chapters,
-                     q->nb_chapters == 1 ? "" : "s");
-        }
     }
     if (t->source) {
         char jsrc[96];
@@ -303,38 +343,39 @@ static void title_overview(const DiscTitleInfo *t, int detail, const uint8_t *ke
         }
     }
     /* parts: the part number (from 1) as --split names its files, where it starts in the title */
-    av_bprint_init(&parts, 0, AV_BPRINT_SIZE_UNLIMITED);
     for (int p = 0; p < t->nb_parts; p++) {
         const DiscPartInfo *q = &t->parts[p];
-        av_bprintf(&parts, "%s{\"part\":%d,\"start\":%.3f,\"duration\":%.3f,\"chapters\":%d,\"files\":[",
-                   p ? "," : ",\"parts\":[", p + 1, q->start / (double)AV_TIME_BASE,
-                   q->duration / (double)AV_TIME_BASE, q->nb_chapters);
+        dr_str_catf(&parts, "%s{\"part\":%d,\"start\":%.3f,\"duration\":%.3f,\"chapters\":%d,\"files\":[",
+                   p ? "," : ",\"parts\":[", p + 1, q->start / (double)1000000.0,
+                   q->duration / (double)1000000.0, q->nb_chapters);
         for (int f = 0; f < q->nb_files; f++) {
             char jf[300];
-            av_bprintf(&parts, "%s%s", f ? "," : "", json_str(jf, sizeof(jf), t->files[q->first_file + f]));
+            dr_str_catf(&parts, "%s%s", f ? "," : "", json_str(jf, sizeof(jf), t->files[q->first_file + f]));
         }
-        av_bprintf(&parts, "]}%s", p + 1 == t->nb_parts ? "]" : "");
+        dr_str_catf(&parts, "]}%s", p + 1 == t->nb_parts ? "]" : "");
     }
     /* what the format part tells more of the title */
     for (int p = 0; p < t->nb_props; p++) {
         char jn[128], jv[512];
-        av_bprintf(&parts, "%s%s:%s%s", p ? "," : ",\"properties\":{", json_str(jn, sizeof(jn), t->props[p].name),
+        dr_str_catf(&parts, "%s%s:%s%s", p ? "," : ",\"properties\":{", json_str(jn, sizeof(jn), t->props[p].name),
                    json_str(jv, sizeof(jv), t->props[p].value), p + 1 == t->nb_props ? "}" : "");
     }
     log_json("title", "\"index\":%d,\"name\":%s,\"duration\":%.3f,\"chapters\":%d,\"size\":%"PRId64",\"language\":%s,"
              "\"selected\":%s,\"files\":[%s],\"tracks\":[%s]%s%s", t->index,
-             json_str(js, sizeof(js), t->name ? t->name : ""), t->duration / (double)AV_TIME_BASE, t->nb_chapters,
+             json_str(js, sizeof(js), t->name ? t->name : ""), t->duration / (double)1000000.0, t->nb_chapters,
              t->size, json_str(jl, sizeof(jl), t->language), t->selected ? "true" : "false", files, streams.str, extra,
              parts.str);
-    av_bprint_finalize(&streams, NULL);
-    av_bprint_finalize(&parts, NULL);
+    dr_str_free(&streams);
+    dr_str_free(&parts);
 }
 
 struct EngineDisc {
-    AVFormatContext *ctx;
+    DrDisc          *disc;
     const DiscInfo  *info;
     char             source[PATH_MAX];
     uint8_t        **keeps;      /* each title's tracks to rip */
+    char            *rip;        /* per title: 1 ripped (the selection) */
+    char            *split;      /* per title: 1 written as parts (as chosen; the setting adds to it) */
 };
 
 static int parse_titles(const char *spec, const DiscInfo *d, int only_selected, char *sel);
@@ -393,17 +434,17 @@ static void free_keeps(uint8_t **keeps, int nb)
 int engine_disc_open(const char *source, const EngineChoice *c, EngineDisc **out)
 {
     EngineDisc *e = calloc(1, sizeof(*e));
-    int ret = AVERROR(ENOMEM);
+    int ret = DR_ERR(ENOMEM);
 
     *out = NULL;
-    if (!e || (ret = open_disc(DISC_FORMAT, source, &e->ctx)) < 0 || !(e->info = disc_info(e->ctx))) {
-        if (ret == AVERROR(ENOKEY))
+    if (!e || (ret = open_disc(source, &e->disc)) < 0 || !(e->info = dr_disc_info(e->disc))) {
+        if (ret == DR_ERR(ENOKEY))
             log_msg(MSG_SOURCE_UNSUPPORTED, LOG_ERROR, "%s is encrypted (AACS) and the key files have no key for "
                     "it (its disc ID is in the AACS line above): add its key to a KEYDB.cfg (setting "
                     "aacs.key_files)", source);
         else
             log_msg(MSG_SOURCE_UNSUPPORTED, LOG_ERROR, "%s cannot be read as a disc this program supports (%s); "
-                    "DVD-Video, HD DVD and Blu-ray are supported", source, av_err2str(ret < 0 ? ret : AVERROR_BUG));
+                    "DVD-Video, HD DVD and Blu-ray are supported", source, dr_err_text(ret < 0 ? ret : DR_ERR_BUG));
         engine_disc_close(&e);
         return -1;
     }
@@ -412,7 +453,83 @@ int engine_disc_open(const char *source, const EngineChoice *c, EngineDisc **out
         engine_disc_close(&e);
         return -1;
     }
+    /* the selection to start with: every title but the angles other than
+     * the main one; none written as parts */
+    if (!(e->rip = calloc(e->info->nb_titles ? e->info->nb_titles : 1, 1)) ||
+        !(e->split = calloc(e->info->nb_titles ? e->info->nb_titles : 1, 1))) {
+        engine_disc_close(&e);
+        return -1;
+    }
+    for (int t = 0; t < e->info->nb_titles; t++)
+        e->rip[t] = e->info->titles[t].selected;
     *out = e;
+    return 0;
+}
+
+/* ---- the selection ---- */
+
+static int title_ok(const EngineDisc *d, int t)
+{
+    return d && t >= 0 && t < d->info->nb_titles;
+}
+
+int engine_title_rip(const EngineDisc *d, int t)
+{
+    return title_ok(d, t) && d->rip[t];
+}
+
+int engine_set_title_rip(EngineDisc *d, int t, int on)
+{
+    if (!title_ok(d, t))
+        return -1;
+    d->rip[t] = !!on;
+    return 0;
+}
+
+int engine_titles_ripped(const EngineDisc *d)
+{
+    int n = 0;
+
+    for (int t = 0; d && t < d->info->nb_titles; t++)
+        n += d->rip[t];
+    return n;
+}
+
+int engine_select_titles(EngineDisc *d, const char *spec)
+{
+    return parse_titles(spec, d->info, 1, d->rip);
+}
+
+int engine_title_split(const EngineDisc *d, int t)
+{
+    return title_ok(d, t) && d->split[t];
+}
+
+int engine_set_title_split(EngineDisc *d, int t, int on)
+{
+    if (!title_ok(d, t))
+        return -1;
+    d->split[t] = !!on;
+    return 0;
+}
+
+int engine_split_titles(EngineDisc *d, const char *spec)
+{
+    return parse_titles(spec, d->info, 0, d->split);
+}
+
+int engine_track_kept(const EngineDisc *d, int t, int i)
+{
+    return title_ok(d, t) && i >= 0 && i < d->info->titles[t].nb_streams && d->keeps[t][i];
+}
+
+int engine_set_track_kept(EngineDisc *d, int t, int i, int on)
+{
+    if (!title_ok(d, t) || i < 0 || i >= d->info->titles[t].nb_streams)
+        return -1;
+    if (i == 0)                         /* the video is always ripped */
+        return on ? 0 : -1;
+    d->keeps[t][i] = !!on;
     return 0;
 }
 
@@ -421,9 +538,9 @@ const DiscInfo *engine_disc_info(const EngineDisc *d)
     return d->info;
 }
 
-uint8_t *engine_disc_tracks(EngineDisc *d, int t)
+const uint8_t *engine_disc_tracks(const EngineDisc *d, int t)
 {
-    return t >= 0 && t < d->info->nb_titles ? d->keeps[t] : NULL;
+    return title_ok(d, t) ? d->keeps[t] : NULL;
 }
 
 void engine_disc_close(EngineDisc **pd)
@@ -434,28 +551,17 @@ void engine_disc_close(EngineDisc **pd)
         return;
     if (d->info)
         free_keeps(d->keeps, d->info->nb_titles);
-    avformat_close_input(&d->ctx);
+    free(d->rip);
+    free(d->split);
+    dr_disc_close(&d->disc);
     free(d);
     *pd = NULL;
 }
 
-void engine_disc_overview(const EngineDisc *e, int detail)
+void engine_disc_json(const DiscInfo *d)
 {
-    const DiscInfo *d = e->info;
-    char revs[32] = "", js1[64], js2[256], js3[64], js4[1024], jname[1100 + 16 * 300];
+    char js1[64], js2[256], js3[64], js4[1024], jname[1100 + 16 * 300];
 
-    if (d->udf_revision)
-        snprintf(revs, sizeof(revs), " %x.%02x", (unsigned)(d->udf_revision >> 8), (unsigned)(d->udf_revision & 0xff));
-    log_msg(MSG_SOURCE, LOG_INFO, "Disc: %s '%s', %s%s, %s, %d title%s", d->kind, d->label ? d->label : "",
-            d->filesystem ? d->filesystem : "?", revs, d->encrypted ? "encrypted" : "not encrypted",
-            d->nb_titles, d->nb_titles == 1 ? "" : "s");
-    if (d->name)
-        log_msg(MSG_SOURCE, LOG_INFO, "Disc name: %s", d->name);
-    if (d->menu_name)
-        log_msg(MSG_SOURCE, LOG_INFO, "Disc menu name: %s", d->menu_name);
-    /* what the format part tells more of the disc (region, protection, checks, ...) */
-    for (int p = 0; p < d->nb_props; p++)
-        log_msg(MSG_SOURCE, LOG_INFO, "Disc %s: %s", d->props[p].name, d->props[p].value);
     jname[0] = 0;
     if (d->name)
         snprintf(jname, sizeof(jname), ",\"name\":%s", json_str(js4, sizeof(js4), d->name));
@@ -476,6 +582,30 @@ void engine_disc_overview(const EngineDisc *e, int detail)
              json_str(js1, sizeof(js1), d->kind), json_str(js2, sizeof(js2), d->label ? d->label : ""),
              json_str(js3, sizeof(js3), d->filesystem ? d->filesystem : ""), d->encrypted ? "true" : "false",
              d->nb_titles, jname);
+}
+
+void engine_disc_overview(const EngineDisc *e, int detail)
+{
+    const DiscInfo *d = e->info;
+    char revs[32] = "";
+
+    if (d->udf_revision)
+        snprintf(revs, sizeof(revs), " %x.%02x", (unsigned)(d->udf_revision >> 8), (unsigned)(d->udf_revision & 0xff));
+    log_msg(MSG_SOURCE, LOG_INFO, "Disc: %s '%s', %s%s, %s, %d title%s", d->kind, d->label ? d->label : "",
+            d->filesystem ? d->filesystem : "?", revs, d->encrypted ? "encrypted" : "not encrypted",
+            d->nb_titles, d->nb_titles == 1 ? "" : "s");
+    if (d->name)
+        log_msg(MSG_SOURCE, LOG_INFO, "Disc name: %s", d->name);
+    if (d->menu_name)
+        log_msg(MSG_SOURCE, LOG_INFO, "Disc menu name: %s", d->menu_name);
+    /* what the format part tells more of the disc (region, protection, checks, ...) */
+    for (int p = 0; p < d->nb_props; p++)
+        log_msg(MSG_SOURCE, LOG_INFO, "Disc %s: %s", d->props[p].name, d->props[p].value);
+    {
+        DrEvent ev = { .kind = DR_EVENT_DISC };
+        ev.u.disc = (DrEventDisc){ d };
+        engine_event(&ev);
+    }
     for (int t = 0; t < d->nb_titles; t++)
         title_overview(&d->titles[t], detail, e->keeps[t]);
 }
@@ -533,26 +663,6 @@ bad:
     return -1;
 }
 
-/* The disc's name for its folder and log: the image's or folder's name (a
- * VIDEO_TS or BDMV folder: the folder holding it). */
-static void disc_name(const char *source, char *out, size_t size)
-{
-    char tmp[PATH_MAX], *base, *dot;
-    size_t n;
-
-    snprintf(tmp, sizeof(tmp), "%s", source);
-    while ((n = strlen(tmp)) > 1 && tmp[n - 1] == '/')
-        tmp[n - 1] = 0;
-    base = strrchr(tmp, '/') ? strrchr(tmp, '/') + 1 : tmp;
-    if ((!strcasecmp(base, "VIDEO_TS") || !strcasecmp(base, "BDMV")) && base > tmp + 1) {
-        base[-1] = 0;
-        base = strrchr(tmp, '/') ? strrchr(tmp, '/') + 1 : tmp;
-    }
-    if ((dot = strrchr(base, '.')) && !strcasecmp(dot, ".iso"))
-        *dot = 0;
-    clean_name(base, 0, out, size);
-}
-
 static int mkdirs(const char *path)
 {
     char tmp[PATH_MAX];
@@ -597,7 +707,7 @@ void engine_output_folder(const char *source, char *out, size_t size)
 {
     char name[512], root[PATH_MAX], base[PATH_MAX + 520];
 
-    disc_name(source, name, sizeof(name));
+    engine_disc_name(source, name, sizeof(name));
     engine_output_root(root, sizeof(root));
     snprintf(base, sizeof(base), "%s/%s", root, name);
     engine_unique_folder(base, out, size);
@@ -613,7 +723,7 @@ static int run_begin(const char *source, const char *out_dir, char *logp, size_t
         log_msg(MSG_OUTPUT_FOLDER, LOG_ERROR, "The output folder %s cannot be created: %s", out_dir, strerror(errno));
         return 1;
     }
-    disc_name(source, name, sizeof(name));
+    engine_disc_name(source, name, sizeof(name));
     snprintf(logp, size, "%s/%s.log", out_dir, name);
     snprintf(dbgp, sizeof(dbgp), "%s/%s_debug.log", out_dir, name);
     if (log_open_files(logp, setting_bool("log.debug_file") ? dbgp : NULL) < 0) {
@@ -627,21 +737,23 @@ static int run_begin(const char *source, const char *out_dir, char *logp, size_t
     return 0;
 }
 
-/* The run's titles (sel; spl: as parts, may be NULL) from the open disc,
- * then the summary; the log files closed. 0, or 1 (a title failed). */
-static int run_titles(EngineDisc *e, const char *sel, const char *split, const char *out_dir, const char *logp)
+/* The run's titles (the disc's selection: those ripped, those written as
+ * parts) from the open disc, then the summary; the log files closed. 0, or
+ * 1 (a title failed). */
+static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
 {
+    const char *sel = e->rip, *split = e->split;
     const DiscInfo *di = e->info;
     int nb = di->nb_titles, count = 0, ordinal = 0, failed = 0, done = 0, disk_full = 0, errors, warnings;
     int64_t damaged = 0, damaged_bytes = 0;
     char *spl = calloc(nb ? nb : 1, 1);
-    AVBPrint damage;                    /* every title's damaged ranges, for the summary */
+    char **ranges = NULL;               /* every title's damaged ranges, for the summary */
+    int nb_ranges = 0;
 
     if (!spl) {
         log_close_files();
         return 1;
     }
-    av_bprint_init(&damage, 0, AV_BPRINT_SIZE_UNLIMITED);
     for (int t = 0; t < nb; t++) {
         count += !!sel[t];
         spl[t] = split && split[t];
@@ -652,7 +764,7 @@ static int run_titles(EngineDisc *e, const char *sel, const char *split, const c
             log_msg(MSG_TITLE_SELECTION, LOG_INFO, "Title #%d has no parts (it plays no whole stream files back to "
                     "back): written whole", t);
     if (setting_bool("output.split_joined_titles"))
-        memset(spl, 1, (size_t)FFMAX(nb, 0));
+        memset(spl, 1, (size_t)DR_MAX(nb, 0));
     for (int t = 0; t < nb; t++) {
         int parts = spl[t] ? di->titles[t].nb_parts : 0, part_failed = 0, part_stopped = 0;
         if (!sel[t])
@@ -663,24 +775,19 @@ static int run_titles(EngineDisc *e, const char *sel, const char *split, const c
         for (int p = parts ? 0 : -1; p < parts && !engine_cancelled(); p++) {
             /* the second view: read when one of its tracks is selected */
             /* stream files: every title, and each part as a title of its own, in a folder of its name */
-            TitleJob job = { e->ctx, t, p, parts, 1, e->keeps[t], ordinal, count, out_dir, 1 };
+            TitleJob job = { e->disc, t, p, parts, 1, e->keeps[t], ordinal, count, out_dir, 1 };
             TitleOutcome res;
             demux_title(&job, &res);
-            if (res.damaged_ranges) {
-                /* each range under the title's (part's) number */
-                const char *line = res.damage;
-                damaged       += res.damaged_ranges;
-                damaged_bytes += res.damaged_bytes;
-                while (*line) {
-                    const char *nl = strchr(line, '\n');
-                    int len = nl ? (int)(nl - line) : (int)strlen(line);
-                    if (p >= 0)
-                        av_bprintf(&damage, "\n  Title #%d part %d: %.*s", t, p + 1, len, line);
-                    else
-                        av_bprintf(&damage, "\n  Title #%d: %.*s", t, len, line);
-                    line += len + !!nl;
-                }
+            /* each range under the title's (part's) number */
+            damaged       += res.damaged_ranges;
+            damaged_bytes += res.damaged_bytes;
+            for (int i = 0; i < res.nb_damage; i++) {
+                char *l = p >= 0 ? dr_asprintf_str("Title #%d part %d: %s", t, p + 1, res.damage[i]) :
+                                   dr_asprintf_str("Title #%d: %s", t, res.damage[i]);
+                if (!l || dr_array_add_ptr(&ranges, &nb_ranges, l) < 0)
+                    dr_free(l);
             }
+            title_outcome_free(&res);
             /* a title stopped as asked is not written, not failed */
             part_stopped += res.stopped;
             part_failed  += res.failed && !res.stopped;
@@ -709,21 +816,26 @@ static int run_titles(EngineDisc *e, const char *sel, const char *split, const c
             warnings == 1 ? "" : "s", errors, errors == 1 ? "" : "s");
     if (damaged) {
         char dz[32];
-        log_msg(MSG_SUMMARY, LOG_INFO, "Damaged data left out: %"PRId64" range%s (%s)%s", damaged,
-                damaged == 1 ? "" : "s", size_text(dz, sizeof(dz), damaged_bytes), damage.str);
+        log_msg(MSG_SUMMARY, LOG_INFO, "Damaged data left out: %"PRId64" range%s (%s)", damaged,
+                damaged == 1 ? "" : "s", size_text(dz, sizeof(dz), damaged_bytes));
+        /* each range a line of its own (no line is cut, however many) */
+        for (int i = 0; i < nb_ranges; i++)
+            log_msg(MSG_SUMMARY, LOG_INFO, "  %s", ranges[i]);
     }
-    av_bprint_finalize(&damage, NULL);
+    for (int i = 0; i < nb_ranges; i++)
+        dr_free(ranges[i]);
+    dr_free(ranges);
     log_msg(MSG_LOG_FILE, LOG_INFO, "Log: %s", logp);
     {
-        char jl[PATH_MAX + 700];
-        log_json("result", "\"written\":%d,\"failed\":%d,\"warnings\":%d,\"errors\":%d,\"stopped\":%s,\"log\":%s",
-                 done, failed, warnings, errors, engine_cancelled() ? "true" : "false", json_str(jl, sizeof(jl), logp));
+        DrEvent ev = { .kind = DR_EVENT_RUN_RESULT };
+        ev.u.run = (DrEventRunResult){ done, failed, warnings, errors, engine_cancelled(), logp };
+        engine_event(&ev);
     }
     log_close_files();
     return failed || engine_cancelled() ? 1 : 0;
 }
 
-int engine_disc_rip(EngineDisc *e, const char *sel, const char *split, const char *out_dir)
+int engine_disc_rip(EngineDisc *e, const char *out_dir)
 {
     char folder[PATH_MAX], logp[PATH_MAX + 600];
 
@@ -735,10 +847,67 @@ int engine_disc_rip(EngineDisc *e, const char *sel, const char *split, const cha
     if (run_begin(e->source, out_dir, logp, sizeof(logp)))
         return 1;
     engine_disc_overview(e, 0);
-    return run_titles(e, sel, split, out_dir, logp);
+    return run_titles(e, out_dir, logp);
 }
 
-int engine_info(const char *source, const EngineChoice *c)
+/* Details rows as lines: a heading in brackets, a sub-heading and
+ * "label: value" indented by their level. */
+static void log_rows(EngineRows *r)
+{
+    for (int i = 0; i < r->nb; i++) {
+        const EngineRow *w = &r->rows[i];
+        int indent = 2 + 2 * w->level;
+        if (w->kind == ENGINE_ROW_HEAD)
+            log_text(LOG_INFO, "[%s]", w->label);
+        else if (w->kind == ENGINE_ROW_SUB)
+            log_text(LOG_INFO, "%*s-- %s", indent, "", w->label);
+        else
+            log_text(LOG_INFO, "%*s%s: %s", indent, "", w->label, w->value);
+    }
+    engine_rows_free(r);
+}
+
+void engine_details(const EngineDisc *e, const char *source)
+{
+    const DiscInfo *d = e->info;
+    char what[1024], state[512], why[2048];
+    EngineRows rows = { 0 };
+
+    log_step("=== Details (what the GUI shows) ===");
+    engine_disc_line(d, what, sizeof(what), state, sizeof(state), why, sizeof(why));
+    log_text(LOG_INFO, "Queue: %s | %s", what, state);
+    for (char *w = why, *nl; *w; w = nl ? nl + 1 : w + strlen(w)) {
+        nl = strchr(w, '\n');
+        log_text(LOG_INFO, "  why: %.*s", nl ? (int)(nl - w) : (int)strlen(w), w);
+    }
+    if (engine_disc_rows(d, source, &rows) >= 0)
+        log_rows(&rows);
+    else
+        engine_rows_free(&rows);
+    for (int t = 0; t < d->nb_titles; t++) {
+        const DiscTitleInfo *ti = &d->titles[t];
+        char name[64], desc[2048], tstate[512], twhy[1024];
+        engine_title_line(ti, name, sizeof(name), desc, sizeof(desc));
+        engine_title_state(ti, 0, tstate, sizeof(tstate), twhy, sizeof(twhy));
+        log_text(LOG_INFO, "Queue: %s  %s | %s", name, desc, tstate);
+        if (*twhy)
+            log_text(LOG_INFO, "  why: %s", twhy);
+        for (int c = 0; c < ti->nb_chapters; c++) {
+            engine_chapter_line(ti, c, desc, sizeof(desc));
+            log_text(LOG_INFO, "Queue:   Chapter %d  %s", c + 1, desc);
+        }
+        for (int i = 0; i < ti->nb_streams; i++) {
+            engine_track_line(ti, i, name, sizeof(name), desc, sizeof(desc));
+            log_text(LOG_INFO, "Queue:   %s  %s", name, desc);
+        }
+        if (engine_title_rows(ti, e->keeps[t], &rows) >= 0)
+            log_rows(&rows);
+        else
+            engine_rows_free(&rows);
+    }
+}
+
+int engine_info(const char *source, const EngineChoice *c, int details)
 {
     EngineDisc *e;
 
@@ -746,16 +915,19 @@ int engine_info(const char *source, const EngineChoice *c)
     if (engine_disc_open(source, c, &e) < 0)
         return 1;
     engine_disc_overview(e, 1);
+    if (details)
+        engine_details(e, source);
     engine_disc_close(&e);
     return 0;
 }
 
-int engine_demux(const char *source, const char *titles, const char *out_dir, const char *split,
-                 const EngineChoice *c)
+/* One disc's demux run (engine_demux()). */
+static int demux_one(const char *source, const char *titles, const char *out_dir, const char *split,
+                     const EngineChoice *c, int details)
 {
-    char folder[PATH_MAX], logp[PATH_MAX + 600], *sel = NULL, *spl = NULL;
+    char folder[PATH_MAX], logp[PATH_MAX + 600], name[512];
     EngineDisc *e;
-    int nb, count = 0, ret;
+    int count = 0, ret;
 
     atomic_store(&cancelled, 0);
     if (!out_dir) {
@@ -764,36 +936,33 @@ int engine_demux(const char *source, const char *titles, const char *out_dir, co
     }
     if (run_begin(source, out_dir, logp, sizeof(logp)))
         return 1;
+    /* --details: the queue's states as the GUI shows them */
+    engine_disc_name(source, name, sizeof(name));
+    engine_queue_details(details ? name : NULL);
+    if (details)
+        log_text(LOG_INFO, "Queue: %s | %s", name, engine_state_text(ENGINE_STATE_RIPPING));
     /* the disc is read once: every title is opened on it */
     if (engine_disc_open(source, c, &e) < 0) {
+        engine_queue_details(NULL);
         log_close_files();
         return 1;
     }
     engine_disc_overview(e, 0);
-    nb  = e->info->nb_titles;
-    sel = calloc(nb ? nb : 1, 1);
-    spl = calloc(nb ? nb : 1, 1);
-    if (!sel || !spl || (count = parse_titles(titles, e->info, 1, sel)) <= 0 ||
-        (split && parse_titles(split, e->info, 0, spl) < 0)) {
-        if (sel && spl && !count)
+    /* the choice as the GUI makes it: through the selection's calls */
+    if ((count = engine_select_titles(e, titles)) <= 0 || (split && engine_split_titles(e, split) < 0)) {
+        if (!count)
             log_msg(MSG_TITLE_SELECTION, LOG_ERROR, "No title selected");
-        free(sel);
-        free(spl);
+        engine_queue_details(NULL);
         engine_disc_close(&e);
         log_close_files();
         return 2;
     }
-    ret = run_titles(e, sel, spl, out_dir, logp);
-    free(sel);
-    free(spl);
+    ret = run_titles(e, out_dir, logp);
+    engine_queue_details(NULL);
     engine_disc_close(&e);
     return ret;
 }
 
-const char *engine_codec_label(enum AVCodecID id, int profile)
-{
-    return codec_label(id, profile);
-}
 
 int engine_check_choice(const EngineChoice *c)
 {
@@ -805,7 +974,9 @@ int engine_check_choice(const EngineChoice *c)
 
 int engine_init(const char *config, const char *const *sets, int nb_sets, int json, int verbose)
 {
-    log_init(json, verbose);
+    log_init(json, verbose);                /* installs the modules' log hook (base/vlog.h) */
+    dr_analyze_log_install();               /* the processing library's lines into ours */
+    dr_analyze_use();
     if (settings_load(config) < 0)
         return 1;
     for (int k = 0; k < nb_sets; k++)
@@ -813,4 +984,72 @@ int engine_init(const char *config, const char *const *sets, int nb_sets, int js
             return 2;
     config_dirs();
     return 0;
+}
+
+/* ---- folders of discs: the GUI's queue on the command line ---- */
+
+/* The discs in path when it is a folder holding discs (not a disc itself),
+ * else none. */
+static int disc_folder(const char *path, EngineFoundList *l)
+{
+    if (engine_find_discs(path, 5, l) < 0)
+        return -1;
+    if (l->nb == 1 && !strcmp(l->discs[0].relative, "."))
+        engine_found_free(l);
+    return l->nb;
+}
+
+int engine_find(const char *path)
+{
+    EngineFoundList l = { 0 };
+    char folder[PATH_MAX];
+
+    if (engine_find_discs(path, 5, &l) < 0)
+        return 1;
+    if (!l.nb) {
+        char note[PATH_MAX + 64];
+        engine_no_disc_note(path, note, sizeof(note));
+        log_msg(MSG_SOURCE, LOG_WARNING, "%s", note);
+        return 1;
+    }
+    for (int i = 0; i < l.nb; i++) {
+        const EngineFound *f = &l.discs[i];
+        engine_found_folder(f, NULL, folder, sizeof(folder));
+        log_text(LOG_INFO, "Disc %d: %s", i + 1, f->name);
+        log_text(LOG_INFO, "  source: %s", f->path);
+        log_text(LOG_INFO, "  below:  %s", f->relative);
+        log_text(LOG_INFO, "  output: %s", folder);
+    }
+    log_msg(MSG_SOURCE, LOG_INFO, "%d disc%s found in %s", l.nb, l.nb == 1 ? "" : "s", path);
+    engine_found_free(&l);
+    return 0;
+}
+
+int engine_demux(const char *source, const char *titles, const char *out_dir, const char *split,
+                 const EngineChoice *c, int details)
+{
+    EngineFoundList l = { 0 };
+    char folder[PATH_MAX], base[PATH_MAX];
+    int n, ret = 0, failed = 0;
+
+    /* a disc (image or folder): one run */
+    if ((n = disc_folder(source, &l)) <= 0)
+        return demux_one(source, titles, out_dir, split, c, details);
+    /* a folder of discs: each one in turn into its own folder, as the GUI's
+     * queue rips them (out_dir: the main output folder for them) */
+    for (int i = 0; i < n && !engine_cancelled(); i++) {
+        const EngineFound *f = &l.discs[i];
+        int r;
+        log_step("=== Disc %d/%d: %s ===", i + 1, n, f->name);
+        engine_found_folder(f, out_dir, base, sizeof(base));
+        engine_unique_folder(base, folder, sizeof(folder));
+        r = demux_one(f->path, titles, folder, split, c, details);
+        failed += r != 0;
+        ret = r > ret ? r : ret;
+    }
+    log_step("=== Discs ===");
+    log_msg(MSG_SUMMARY, failed ? LOG_ERROR : LOG_OK, "%d disc%s of %d ripped without failures%s", n - failed,
+            n - failed == 1 ? "" : "s", n, engine_cancelled() ? " (stopped as asked)" : "");
+    engine_found_free(&l);
+    return ret;
 }

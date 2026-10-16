@@ -3,7 +3,7 @@ sequence header gives the frame rate and the header flags; the frame header
 gives the picture type (PTYPE; for field pairs the 3-bit FPTYPE, Table 105)
 and the fields (RFF / RPTFRM); display order is counted (B pictures after a
 reference picture first, I pictures restart); sequence header + entry point
-make a key frame. FFmpeg's VC-1 parser, in disc mode, makes a unit of one frame with the
+make a key frame. The VC-1 rule (src/parse/vc1_rule.c) makes a unit of one frame with the
 headers before it and the user data after it; an end of sequence stays only
 after a second field. Streams built bit by bit here."""
 
@@ -14,7 +14,7 @@ from helpers.disctl import Handles, codec_id, events_into, fn
 FIELD = 18018000  # 1001/60000 s
 BASE = 5 * 1080000000
 F_KEY, F_DISCARD = lib.DR_F_KEY, lib.DR_F_DISCARD
-INVALID = -0x41444E49  # AVERROR_INVALIDDATA
+INVALID = -0x44520002  # DR_ERR_INVALID
 
 
 class BitW:
@@ -239,7 +239,7 @@ END_OF_SEQUENCE = bytes([0, 0, 1, 0x0A])
 
 def test_user_data_after_a_frame_header_stays_with_its_frame():
     # SMPTE 421M Annex E: frame-level (0x1D) and field-level (0x1C) user data
-    # follow the frame header they belong to; FFmpeg's parser starts the next
+    # follow the frame header they belong to; FFmpeg's own parser would start the next
     # unit there
     a = seq(False, False) + frame([I], False) + bdu(0x1D)
     b = frame([P], False) + bdu(0x1C) + bdu(0x1D)

@@ -40,7 +40,7 @@ $(DVDCSS_INC)/config.h: mk/dvd.mk $(DVDCSS_SRC)/dvdcss/version.h.in
 DVDREAD_SRC := $(LIBS)/libdvdread/src
 DVDREAD_INC := $(BUILD)/dvdread/include
 DVDREAD_FILES := bitreader.c dvd_input.c dvd_reader.c dvd_udf.c ifo_print.c ifo_read.c logger.c md5.c \
-                 nav_print.c nav_read.c vob_read.c disc_read.c stream_probe.c title_list.c file/file_posix.c
+                 nav_print.c nav_read.c disc_read.c file/file_posix.c
 DVDREAD_CFLAGS := -std=c11 -D_DEFAULT_SOURCE -D_LARGEFILE64_SOURCE -I$(DVDREAD_INC) -I$(LIBS)/libdvdread \
                   -I$(DVDREAD_SRC) -I$(DVDREAD_SRC)/dvdread -I$(DVDCSS_INC) -I$(DVDCSS_SRC)
 $(eval $(call c_library,dvdread,$(DVDREAD_SRC),$(DVDREAD_FILES),$(DVDREAD_CFLAGS)))
@@ -57,7 +57,7 @@ $(DVDREAD_INC)/config.h: mk/dvd.mk $(DVDREAD_SRC)/dvdread/version.h.in $(DVDCSS_
 DVDNAV_SRC := $(LIBS)/libdvdnav/src
 DVDNAV_INC := $(BUILD)/dvdnav/include
 DVDNAV_FILES := dvdnav.c highlight.c logger.c navigation.c read_cache.c searching.c settings.c \
-                scan.c vm/decoder.c vm/getset.c vm/play.c vm/rand.c vm/vm.c vm/vmcmd.c vm/vmget.c
+                vm/decoder.c vm/getset.c vm/play.c vm/rand.c vm/vm.c vm/vmcmd.c vm/vmget.c
 DVDNAV_CFLAGS := -std=c17 -DHAVE_CONFIG_H -D_DEFAULT_SOURCE -I$(DVDNAV_INC) -I$(LIBS)/libdvdnav -I$(DVDNAV_SRC) \
                  -I$(DVDNAV_SRC)/dvdnav -I$(DVDNAV_SRC)/vm -I$(DVDREAD_INC) -I$(DVDREAD_SRC)
 $(eval $(call c_library,dvdnav,$(DVDNAV_SRC),$(DVDNAV_FILES),$(DVDNAV_CFLAGS)))

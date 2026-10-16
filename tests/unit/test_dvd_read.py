@@ -1,4 +1,4 @@
-"""libavformat/dvd_read.c on libdvdread's title VOB reading (vob_read.h): a
+"""src/disc/dvd/dvd_read.c on libdvdread's title VOB reading (vob_read.h): a
 title set's title VOB sectors read through the checks: a sector that is no
 MPEG-2 pack with a packet is left out; a scrambled packet of the video, private stream 1 or MPEG audio
 is descrambled with the title set's CSS title key, found by libdvdcss (no

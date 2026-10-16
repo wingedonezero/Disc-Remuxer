@@ -1,4 +1,4 @@
-/* libavformat/hddvd_internal.h: the HD DVD title set information, the
+/* src/disc/hddvd/hddvd_internal.h: the HD DVD title set information, the
    playlists, the title plan, AACS and the tracks. */
 
 #define HDDVD_VTI_MAX_EVOBS ...
@@ -57,8 +57,8 @@ int ff_hddvd_titles_plan(void *logctx, DiscIOFS *fs, const HDDVDVTI *vti, HDDVDX
 void ff_hddvd_titles_free(HDDVDTitlePlan **plan);
 HDDVDClip *ff_hddvd_titles_clip(const HDDVDTitlePlan *plan, int slot);
 char *ff_hddvd_titles_dump(const HDDVDTitlePlan *plan);
-const char *ff_disc_lang_code(const char *code);
-const char *ff_disc_lang_name(const char *code);
+const char *dr_disc_lang_code(const char *code);
+const char *dr_disc_lang_name(const char *code);
 
 typedef struct HDDVDAACS HDDVDAACS;
 

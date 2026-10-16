@@ -23,8 +23,6 @@
 #include "config_components.h"
 
 #include "libavutil/channel_layout.h"
-#include "libavutil/crc.h"
-#include "libavutil/intreadwrite.h"
 #include "libavutil/mem.h"
 #include "parser.h"
 #include "ac3defs.h"
@@ -480,181 +478,12 @@ static av_cold int ac3_parse_init(AVCodecParserContext *s1)
 }
 
 
-/* ---- Disc mode (PARSER_FLAG_DISC): the disc reader's AC-3 frame rules ----
- * A syncframe starts with 0x0B77. bsid 10..16: E-AC-3 (the frame size field
- * only); bsid 0..8: AC-3 (sample rate code 0..2, frame size code 0..37, as
- * the header parse here); bsid 9 and 17..: no frame. The frames taken: AC-3
- * only for an AC-3 stream, E-AC-3 only for an E-AC-3 one, both with
- * PARSER_FLAG_DISC_ANY. Where no frame starts, the next one is a 0x0B77 whose
- * header is valid, whose bytes are there, whose stream header is valid
- * (E-AC-3: through its channel map) and, for AC-3, whose two CRCs give 0;
- * with 0xA000 bytes or more and none, the kept bytes are given up. At most
- * 0x4000 bytes are kept while looking for a frame. */
-
-#define DISC_LIMIT      0x4000
-#define DISC_GIVE_UP    0xa000
-
-static int disc_is_eac3(int bsid)
-{
-    return bsid >= 10 && bsid <= 16;
-}
-
-/* The frame size and bsid: 1 a valid header, 0 not. */
-static int disc_header(const uint8_t *b, int len, int *size, int *bsid)
-{
-    AC3HeaderInfo info, *pi = &info;
-
-    if (len < 7)
-        return 0;
-    *bsid = b[5] >> 3;
-    if (disc_is_eac3(*bsid)) {
-        *size = ((AV_RB16(b + 2) & 0x7ff) + 1) * 2;
-        return 1;
-    }
-    if (b[5] >= 0x48 || avpriv_ac3_parse_header(&pi, b, len) < 0)
-        return 0;
-    *size = info.frame_size;
-    return 1;
-}
-
-/* A/52 crc1 and crc2: bytes 2 .. 5/8 of the frame, then the remaining 3/8,
- * each give a remainder of 0. */
-static int disc_crc_ok(const uint8_t *b, int size)
-{
-    const AVCRC *crc = av_crc_get_table(AV_CRC_16_ANSI);
-    int n58 = size * 5 >> 3;
-
-    return !av_crc(crc, 0, b + 2, n58 - 2) && !av_crc(crc, 0, b + n58, size * 3 >> 3);
-}
-
-/* The stream header from a frame: E-AC-3 bitstream information up to the
- * channel map (the frame must hold it; a dependent stream's channel map must
- * give the channels its audio coding mode and LFE give); AC-3: the syncinfo. */
-int avpriv_ac3_disc_stream_header(const uint8_t *b, int len)
-{
-    static const uint8_t acmod_channels[8] = { 2, 1, 2, 3, 3, 4, 4, 5 };
-    /* bit 0 (first) .. 15: L C R Ls Rs Lc/Rc Lrs/Rrs Cs Ts Lsd/Rsd Lw/Rw Lvh/Rvh Cvh Lts/Rts LFE2 LFE */
-    static const uint8_t weight[16] = { 1, 1, 1, 1, 1, 2, 2, 1, 1, 2, 2, 2, 1, 2, 1, 1 };
-    GetBitContext gb;
-    unsigned strmtyp, acmod, lfeon, chanmap = 0, chanmape = 0;
-    int size, bsid, expect = 0;
-
-    if (!disc_header(b, len, &size, &bsid))
-        return 0;
-    if (!disc_is_eac3(bsid))
-        return 1;
-    if (init_get_bits8(&gb, b + 2, len - 2) < 0)
-        return 0;
-    strmtyp = get_bits(&gb, 2);
-    skip_bits_long(&gb, 3 + 11 + 2 + 2);        /* substreamid, frmsiz, fscod, fscod2 / numblkscod */
-    acmod = get_bits(&gb, 3);
-    lfeon = get_bits1(&gb);
-    skip_bits_long(&gb, 5 + 5);                 /* bsid, dialnorm */
-    if (get_bits1(&gb))                         /* compre */
-        skip_bits_long(&gb, 8);
-    if (!acmod) {
-        skip_bits_long(&gb, 5);
-        if (get_bits1(&gb))
-            skip_bits_long(&gb, 8);
-    }
-    if (strmtyp == 1 && (chanmape = get_bits1(&gb)))
-        chanmap = get_bits(&gb, 16);
-    if (get_bits_left(&gb) < 0)
-        return 0;
-    if (!chanmape)
-        return 1;
-    for (int i = 0; i < 16; i++)
-        if (chanmap & (0x8000 >> i))
-            expect += weight[i];
-    return expect == acmod_channels[acmod] + lfeon;
-}
-
-static int disc_kind_ok(const AACAC3ParseContext *c, int bsid)
-{
-    return !c->disc_kind || disc_is_eac3(bsid) + 1 == c->disc_kind;
-}
-
-static int disc_sync(void *ctx, const uint8_t *b, int len)
-{
-    int size, bsid;
-
-    if (len < 2)
-        return 2;
-    if (b[0] != 0x0b || b[1] != 0x77)
-        return 0;
-    if (len < 7)
-        return 2;
-    return disc_header(b, len, &size, &bsid) && disc_kind_ok(ctx, bsid);
-}
-
-static int disc_size(void *ctx, const uint8_t *b, int len)
-{
-    int size, bsid;
-
-    if (len < 7)
-        return -1;
-    return disc_header(b, len, &size, &bsid) ? size : -2;
-}
-
-static int disc_check(void *ctx, const uint8_t *b, int len)
-{
-    int size, bsid;
-
-    return disc_header(b, len, &size, &bsid) && disc_kind_ok(ctx, bsid);
-}
-
-static int disc_resync(void *ctx, const uint8_t *b, int len)
-{
-    if (len < 7)
-        return -2;
-    for (int pos = 0; pos < len - 2; pos++) {
-        int rem = len - pos, size, bsid;
-
-        if (b[pos] != 0x0b || b[pos + 1] != 0x77)
-            continue;
-        if (rem < 8)
-            break;
-        if (!disc_header(b + pos, rem, &size, &bsid))
-            return pos + 1;
-        if (rem < size)
-            return -2;
-        if (!avpriv_ac3_disc_stream_header(b + pos, size))
-            return pos + 1;
-        if (disc_is_eac3(bsid))
-            return pos;
-        return pos + !disc_crc_ok(b + pos, size);
-    }
-    return len >= DISC_GIVE_UP + 1 ? -1 : -2;
-}
-
-static const FFDiscFrameRule disc_rule = { disc_sync, disc_size, disc_check, disc_resync, DISC_LIMIT };
-
-static int ac3_parse(AVCodecParserContext *s, AVCodecContext *avctx,
-                     const uint8_t **poutbuf, int *poutbuf_size,
-                     const uint8_t *buf, int buf_size)
-{
-    AACAC3ParseContext *c = s->priv_data;
-
-    if (!(s->flags & PARSER_FLAG_DISC))
-        return ff_aac_ac3_parse(s, avctx, poutbuf, poutbuf_size, buf, buf_size);
-    c->disc_kind = s->flags & PARSER_FLAG_DISC_ANY ? 0 : avctx->codec_id == AV_CODEC_ID_EAC3 ? 2 : 1;
-    return ff_parser_disc_frames(s, c, &disc_rule, &c->disc, poutbuf, poutbuf_size, buf, buf_size);
-}
-
-static av_cold void ac3_parse_close(AVCodecParserContext *s)
-{
-    AACAC3ParseContext *c = s->priv_data;
-
-    ff_parser_disc_cut_close(&c->disc.cut);
-    ff_parse_close(s);
-}
-
 const FFCodecParser ff_ac3_parser = {
     PARSER_CODEC_LIST(AV_CODEC_ID_AC3, AV_CODEC_ID_EAC3),
     .priv_data_size = sizeof(AACAC3ParseContext),
     .init           = ac3_parse_init,
-    .parse          = ac3_parse,
-    .close          = ac3_parse_close,
+    .parse          = ff_aac_ac3_parse,
+    .close          = ff_parse_close,
 };
 
 #else

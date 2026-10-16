@@ -62,10 +62,11 @@ def nal(t, rbsp, ref_idc=3, sc=b"\0\0\0\1"):
 
 def sps(sps_id=0, log2_frame_num=4, poc_type=0, log2_poc_lsb=6, frame_mbs_only=1, timing=(1001, 48000),
         hrd=True, pic_struct=True, mbs=(120, 68), crop_bottom=4, aspect_ratio_idc=None, sc=b"\0\0\0\1",
-        fixed_frame_rate=1):
+        fixed_frame_rate=1, full_range=None):
     """A High profile SPS, 1920 x 1080 (mbs: macroblocks across and down,
     crop_bottom: frame_crop_bottom_offset), with a VUI (aspect_ratio_idc,
-    timing info, NAL HRD parameters, pic_struct_present_flag)."""
+    timing info, NAL HRD parameters, pic_struct_present_flag; full_range not
+    None: a video signal type with video_full_range_flag)."""
     b = Bits()
     b.u(100, 8).u(0, 8).u(41, 8).ue(sps_id)
     b.ue(1).ue(0).ue(0).u(0, 1).u(0, 1)          # 4:2:0, 8 bit, no scaling matrices
@@ -86,7 +87,12 @@ def sps(sps_id=0, log2_frame_num=4, poc_type=0, log2_poc_lsb=6, frame_mbs_only=1
         b.u(0, 1)
     else:
         b.u(1, 1).u(aspect_ratio_idc, 8)
-    b.u(0, 1).u(0, 1).u(0, 1)                    # overscan, video signal, chroma loc
+    b.u(0, 1)                                    # overscan_info_present_flag
+    if full_range is None:
+        b.u(0, 1)                                # video_signal_type_present_flag
+    else:
+        b.u(1, 1).u(5, 3).u(int(full_range), 1).u(0, 1)   # video_format, full range, no colour description
+    b.u(0, 1)                                    # chroma_loc_info_present_flag
     if timing:
         b.u(1, 1).u(timing[0], 32).u(timing[1], 32).u(fixed_frame_rate, 1)
     else:

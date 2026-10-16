@@ -1,4 +1,4 @@
-"""libavformat/discio_udf_netbsd.c: the UDF reader based on NetBSD, on small
+"""src/io/discio_udf_netbsd.c: the UDF reader based on NetBSD, on small
 images built here (ECMA-167 / OSTA UDF layouts: UDF 1.02 with one type-1
 partition, and virtual, sparable and metadata partitions), and on the corpus
 images when DISCIO_UDF_REFERENCE names a folder of reference dumps
@@ -15,7 +15,7 @@ import pytest
 from helpers import EINVAL, ENOENT, averror, ffi, lib
 from helpers.disc import Image, Vol, env_or_skip
 
-INVALIDDATA = -0x41444E49  # FFERRTAG('I','N','D','A')
+INVALIDDATA = lib.DR_ERR_INVALID
 S = 2048
 PART_START = 300
 
