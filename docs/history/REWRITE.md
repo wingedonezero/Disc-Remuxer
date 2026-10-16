@@ -18,7 +18,7 @@ libraries keep only table parsing and the navigation VM; everything else
 of the DVD part is `src/disc/dvd/`. Step 9, engine API v2 (GUI-first), is
 in (9a–9e): one engine, the GUI and the command line equal front ends on its
 typed API. Step 10's retirement is done (no FFmpeg header in the engine,
-`legacy/rust` gone). Next: the real-disc check against main and MakeMKV, then
+`legacy/rust` gone). Next: the real-disc check against main and the reference rips, then
 the MKV writer. The corpus byte-compare + info compare
 against a main build is the user's, run once the whole rewrite is done.
 Tests at every commit: 743 passed, 15 skipped (the disc-marked ones without a
@@ -578,7 +578,7 @@ against the library's; FFmpeg only in src/analyze); `legacy/rust` is gone,
 its last behaviours tested on the C program (name templates, the settings
 file, WAVE and VobSub files, message numbers; the Rust-only CLI.md /
 SETTINGS.md generation and its debug commands dropped, user's call). Then
-the real-disc check against main and MakeMKV, a few discs at the user's
+the real-disc check against main and the reference rips, a few discs at the user's
 direction, before main gets the merge.
 
 The MKV writer comes later (decision D-10: libebml/libmatroska vs an own

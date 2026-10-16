@@ -183,4 +183,4 @@ a test run reaches.
 - Holes in a title (a damaged stretch left out): the stream files close the
   hole, the subtitles and chapters after it keep the disc's times — to
   decide: shift them by what the video lost.
-- A caption cue's end can round 1 ms differently from MakeMKV's.
+- A caption cue's end can round 1 ms differently from the reference rips'.
