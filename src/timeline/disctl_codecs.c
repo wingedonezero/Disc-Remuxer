@@ -569,6 +569,18 @@ static int verify_dts(const uint8_t *d, int size)
     return dts_exss_sync(d, size) ? DR_UNIT_OK : DR_UNIT_BAD;
 }
 
+/* DTS: the checksums of the extension substream (after the core frame, or
+ * the unit alone); a core frame carries none that is checked. */
+static int sums_dts(void *state, const uint8_t *d, int size, const char **why)
+{
+    DrDcaHeader h;
+    int off = dts_core(d, size, &h) >= 0 ? h.frame_size : 0;
+
+    if (off >= size || !dts_exss_sync(d + off, size - off))
+        return DR_UNIT_OK;
+    return dr_dca_exss_checksums(d + off, size - off, why) ? DR_UNIT_OK : DR_UNIT_CRC;
+}
+
 /* MPEG audio: one frame of its header's size (free format: not sized). */
 static int verify_mpa(const uint8_t *d, int size)
 {
@@ -631,12 +643,12 @@ static const DRCodec codecs[] = {
       .verify = verify_ac3 },
     { .id = DR_CODEC_TRUEHD, .name = "truehd", .check = ff_disctl_mlp_check,
       .audio = &ff_disctl_audio_mlp, .split = DR_SPLIT_MLP,
-      .verify = ff_disctl_mlp_verify },
+      .verify = ff_disctl_mlp_verify, .verify_sums = ff_disctl_mlp_checksums },
     { .id = DR_CODEC_MLP, .name = "mlp", .check = ff_disctl_mlp_check,
       .audio = &ff_disctl_audio_mlp, .split = DR_SPLIT_MLP,
-      .verify = ff_disctl_mlp_verify },
+      .verify = ff_disctl_mlp_verify, .verify_sums = ff_disctl_mlp_checksums },
     { .id = DR_CODEC_DTS, .name = "dts", .check = check_dts, .audio = &audio_dts,
-      .verify = verify_dts, .split = DR_SPLIT_DTS },
+      .verify = verify_dts, .verify_sums = sums_dts, .split = DR_SPLIT_DTS },
     { .id = DR_CODEC_PCM_DVD, .name = "pcm_dvd", .audio = &audio_lpcm,
       .split = DR_SPLIT_PCM_DVD, .bits_coded = 1 },
     { .id = DR_CODEC_PCM_BLURAY, .name = "pcm_bluray", .audio = &audio_lpcm,

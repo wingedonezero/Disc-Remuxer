@@ -4,7 +4,7 @@ substream, kept together by the DTS rule) is timed by its core; a
 core-only track keeps only the core frame; every unit is a sync unit. Core
 frames made by FFmpeg's DTS encoder (tests/data/README.md)."""
 
-from helpers import DATA, lib
+from helpers import DATA, ffi, lib
 from helpers.disctl import dur, run
 
 DTS = (DATA / "sine_5120.dts").read_bytes()
@@ -12,15 +12,31 @@ FRAME = 1884
 F_KEY, F_SYNC = lib.DR_F_KEY, lib.DR_F_SYNC
 
 
+def crc16_ccitt(data, crc=0xFFFF):
+    for b in data:
+        crc ^= b << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
+    return crc
+
+
+def with_crc(header, start):
+    """header with its last 2 bytes the CRC-16 (CCITT, from 0xFFFF) of
+    header[start:-2]: the span from start to its end then gives 0."""
+    return header[:-2] + crc16_ccitt(header[start:-2]).to_bytes(2, "big")
+
+
 def exss(size, tag):
     """A DTS-HD extension substream of size bytes (sync 64 58 20 25; header
-    size type 0: 8-bit header size, 16-bit frame size), filled with tag."""
+    size type 0: 8-bit header size, 16-bit frame size; a 16-byte header
+    without static fields, its CRC right), filled with tag."""
     x = bytearray([tag]) * size
     x[:4] = bytes([0x64, 0x58, 0x20, 0x25])
     x[4] = 0  # user defined bits
     # nExtSSIndex (2) = 0, bHeaderSizeType (1) = 0, nuExtSSHeaderSize - 1 (8), nuExtSSFsize - 1 (16), 5 bits 0
     bits = (15 << 21) | ((size - 1) << 5)
     x[5:9] = bits.to_bytes(4, "big")
+    x[:16] = with_crc(bytes(x[:16]), 5)
     return bytes(x)
 
 
@@ -86,7 +102,8 @@ def coreless(kind, body, rate_index=12, xll_log2=(4, 5)):
         x = Bits()
         x.put(0x41A29547, 32); x.put(0, 4); x.put(15, 8); x.put(0, 5); x.put(0, 1)   # version, header size, 1 bit
         x.put(0, 4); x.put(xll_log2[0], 4); x.put(xll_log2[1], 4)
-        comp = x.bytes() + body
+        x.pad_to(14 * 8)
+        comp = with_crc(x.bytes() + b"\0\0", 4) + body         # a 16-byte header, its CRC right
     for header_size in range(16, 64):
         b = Bits()
         b.put(0x64582025, 32); b.put(0, 8)
@@ -110,22 +127,31 @@ def coreless(kind, body, rate_index=12, xll_log2=(4, 5)):
             d.put(1, 2); d.put(len(comp) - 1, 16); d.put(0, 1); d.put(0, 3)
         size = (9 + d.n + 7) // 8                                   # the descriptor, its size field too
         d0 = b.n
-        if d0 + size * 8 > header_size * 8:
+        if d0 + size * 8 > header_size * 8 - 16:
             continue
         b.put(size - 1, 9); b.put(d.v, d.n)
         b.pad_to(d0 + size * 8)
         b.pad_to(header_size * 8)
-        return b.bytes() + comp
+        return with_crc(b.bytes(), 5) + comp                       # the header's CRC right
     raise AssertionError("header does not fit")
 
 
-def express(n, rate_code=12, every=4):
-    """n DTS Express frames: a decoder-init LBR header (with the rate code)
-    every `every` frames, sync-only headers between."""
+def lbr_chunk(data, good=True):
+    """An LBR frame chunk with a checksum (id 0x04, 8-bit length): the id,
+    the length's bytes and the data added up, before the data."""
+    n = len(data) + 2
+    s = (0x04 + (n >> 8) + (n & 0xFF) + sum(data) + (0 if good else 1)) & 0xFFFF
+    return bytes([0x04, n]) + s.to_bytes(2, "big") + data
+
+
+def express(n, rate_code=12, every=4, bad=()):
+    """n DTS Express frames: a decoder-init LBR header (the rate code and 10
+    more bytes) every `every` frames, sync-only headers between, then the
+    frame chunk (its checksum wrong in the frames listed in bad)."""
     out = []
     for k in range(n):
-        body = bytes([2, rate_code]) if k % every == 0 else bytes([1])
-        out.append(coreless("lbr", body + bytes([k]) * (200 + k % 7)))
+        head = bytes([2, rate_code]) + bytes(10) if k % every == 0 else bytes([1])
+        out.append(coreless("lbr", head + lbr_chunk(bytes([k]) * (200 + k % 7), k not in bad)))
     return out
 
 
@@ -174,3 +200,30 @@ def test_a_track_without_a_core_keeps_no_core_frame():
     fs = express(4)
     r = run("dts", [(b"".join(fs) + frames()[0] + b"".join(express(4)), 1)], flags=lib.DR_AUDIO_EXT_ONLY)
     assert all(o.bytes[:4] == bytes.fromhex("64582025") for o in r.outs)
+
+
+# ---- the checksums an extension substream carries (verify only) ----
+
+def sums(frame):
+    why = ffi.new("const char **")
+    ok = lib.dr_dca_exss_checksums(frame, len(frame), why)
+    return "ok" if ok else ffi.string(why[0]).decode()
+
+
+def flip(frame, byte, bit=0):
+    b = bytearray(frame)
+    b[byte] ^= 1 << bit
+    return bytes(b)
+
+
+def test_the_extension_substream_checksums_pass_and_a_changed_bit_fails():
+    lbr = express(1)[0]
+    xll = coreless("xll", bytes(300))
+    hd = exss(600, 1)
+    for f in (lbr, xll, hd):
+        assert sums(f) == "ok"
+    assert sums(flip(lbr, 8)) == "the DTS-HD extension substream header's CRC"
+    assert sums(flip(hd, 9)) == "the DTS-HD extension substream header's CRC"
+    assert sums(express(1, bad=(0,))[0]) == "the DTS Express frame's checksum"
+    assert sums(flip(lbr, len(lbr) - 1)) == "the DTS Express frame's checksum"
+    assert sums(flip(xll, len(xll) - 300 - 4)) == "the DTS-HD lossless (XLL) frame header's CRC"

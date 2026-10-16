@@ -222,6 +222,9 @@ typedef struct DRAudioRules {
  * A codec without an entry is refused (the track is not ripped). Entries
  * grow with the stages; a missing function means the rule is not known yet
  * and is never guessed. */
+/** The bytes of a track's verify_sums state. */
+#define DR_VERIFY_STATE 16
+
 typedef struct DRCodec {
     DRCodecID id;
     const char    *name;
@@ -251,6 +254,11 @@ typedef struct DRCodec {
      *  word or size wrong), DR_UNIT_CRC (a checksum fails). NULL: not
      *  checked. */
     int (*verify)(const uint8_t *data, int size);
+    /** The checksums a unit carries besides those verify checks, run when
+     *  verify passes: DR_UNIT_OK, or DR_UNIT_CRC with *why saying which
+     *  fails; state: DR_VERIFY_STATE zero bytes, the track's (what earlier
+     *  units said). NULL: none. Nothing is changed or left out. */
+    int (*verify_sums)(void *state, const uint8_t *data, int size, const char **why);
 
     /* What the disc layer's stream pass (pass.c) needs to know. */
     /** 1: a stream of the codec is described without data (sub-pictures,
@@ -1165,6 +1173,8 @@ int ff_disctl_spu_verify(const uint8_t *data, int size);
  *  track's codec private data. */
 int ff_disctl_vobsub_header(char *buf, int size, int width, int height, const uint32_t *ycrcb);
 int ff_disctl_mlp_verify(const uint8_t *data, int size);
+/** The DRCodec verify_sums of TrueHD / MLP (state: the substream count). */
+int ff_disctl_mlp_checksums(void *state, const uint8_t *data, int size, const char **why);
 
 
 #endif /* DISC_TIMELINE_DISCTL_H */

@@ -57,8 +57,20 @@ def test_dts_express_is_ripped_as_its_frames_and_dts_hd_as_before(tmp_path):
     log = "\n".join(texts)
     dts = {n: b for n, b in files.items() if n.endswith(".dts")}
     assert "no frame start" not in log, log
+    assert "fails its checksum" not in log, log
     assert len(dts) == 3, (sorted(files), log)
     by_size = sorted(dts.values(), key=len)
     assert b"".join(CORES) in by_size                                     # the core taken out of DTS-HD
     assert b"".join(f + exss(600, i) for i, f in enumerate(CORES)) in by_size
     assert b"".join(fs) in by_size                                        # DTS Express: every frame, as it was
+
+
+def test_a_frame_whose_checksum_fails_is_told_and_kept(tmp_path):
+    # the title check (verify) reads each frame's checksums: a failing one
+    # is a warning with its kind; the frame stays as it is on the disc
+    fs = express(44, bad=(10,))
+    texts, files = rip(tmp_path, disc(tmp_path, fs))
+    log = "\n".join(texts)
+    assert "fails its checksum (the DTS Express frame's checksum)" in log, log
+    assert log.count("fails its checksum") == 1, log
+    assert b"".join(fs) in files.values()

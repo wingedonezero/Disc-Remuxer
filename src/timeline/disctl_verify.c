@@ -46,6 +46,7 @@ struct DRVerify {
     int            nb_v, cap_v, nb_ph, cap_ph;
 
     int            logged[DR_EV_VERIFY_OVERLAP - DR_EV_VERIFY_UNIT + 1];
+    int            sums[DR_VERIFY_STATE / sizeof(int)];   /* the codec's verify_sums state */
     DRVerifyStats  st;
 
     /* audio: the segment being checked, its largest stream-file error and where */
@@ -177,14 +178,18 @@ int ff_disctl_verify_frame(DRVerify *v, const DRFrame *f)
     if (!v->codec->verify)
         v->st.unchecked++;
     else {
+        const char *why = NULL;
         int r = v->codec->verify(f->data, f->size);
+        if (r == DR_UNIT_OK && v->codec->verify_sums)
+            r = v->codec->verify_sums(v->sums, f->data, f->size, &why);
         if (r == DR_UNIT_BAD) {
             v->st.bad_units++;
             finding(v, DR_EV_VERIFY_UNIT, f->time, 0, 1, "the %d-byte unit at %.3f ms does not parse", f->size,
                     ms(f->time));
         } else if (r == DR_UNIT_CRC) {
             v->st.crc_errors++;
-            finding(v, DR_EV_VERIFY_CRC, f->time, 0, 1, "the unit at %.3f ms fails its checksum", ms(f->time));
+            finding(v, DR_EV_VERIFY_CRC, f->time, 0, 1, "the unit at %.3f ms fails its checksum%s%s%s", ms(f->time),
+                    why ? " (" : "", why ? why : "", why ? ")" : "");
         }
     }
     if (f->dur <= 0) {

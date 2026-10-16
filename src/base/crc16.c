@@ -1,5 +1,5 @@
 /*
- * CRC-16 ANSI (see crc16.h).
+ * CRC-16 ANSI and CCITT (see crc16.h).
  */
 
 #include "base/crc16.h"
@@ -21,6 +21,16 @@ static void build(void)
         tab[i] = bswap32(c);
     }
     built = 1;
+}
+
+uint16_t dr_crc16_ccitt(uint16_t crc, const uint8_t *buf, size_t len)
+{
+    for (size_t i = 0; i < len; i++) {
+        crc ^= (uint16_t)(buf[i] << 8);
+        for (int j = 0; j < 8; j++)
+            crc = crc & 0x8000 ? (uint16_t)(crc << 1) ^ 0x1021 : (uint16_t)(crc << 1);
+    }
+    return crc;
 }
 
 uint16_t dr_crc16_ansi(uint16_t crc, const uint8_t *buf, size_t len)

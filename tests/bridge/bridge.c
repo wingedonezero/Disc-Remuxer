@@ -38,6 +38,8 @@
 #include "disc/hddvd/hddvd_internal.h"
 #include "disc/clip_demux.h"
 #include "parse/stock.h"
+#include "parse/rules.h"
+#include "base/crc16.h"
 #include "disc/lang.h"
 
 #include <dvdcss/dvdcss.h>

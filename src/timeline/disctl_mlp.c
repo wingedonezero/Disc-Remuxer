@@ -117,6 +117,126 @@ int ff_disctl_mlp_verify(const uint8_t *p, int n)
     return ff_disctl_mlp_check(p, n) ? DR_UNIT_OK : DR_UNIT_CRC;
 }
 
+/* ---- the checksums of an output AU (Dolby TrueHD / MLP bitstream, as the
+ * processing library's decoder checks them) ----
+ * The AU header (its first 4 bytes) and the substream directory carry a
+ * nibble parity: the XOR of their bytes, folded to a nibble, is 0xF. A
+ * substream whose directory word has bit 13 set ends with two check bytes:
+ * its bytes before them XORed, XOR the first, is 0xA9; their CRC-8
+ * (polynomial 0x63, from 0x3C, the last byte XORed in) is the second. On a
+ * major-sync AU each substream starts with its restart header (after two
+ * flag bits): sync 0x18F5 (13 bits), 1, output_timing (16), min / max /
+ * max matrix channel (4 each), noise shift (4), noise seed (23), 19 bits,
+ * data check (1), lossless check (8), 16 bits, a 6-bit channel assignment
+ * per matrix channel, then its CRC-8 (polynomial 0x1D) over those bits.
+ * The substream count comes from the last major sync (*state). */
+
+static uint8_t crc8(uint8_t crc, int poly, const uint8_t *p, int n)
+{
+    for (int i = 0; i < n; i++) {
+        crc ^= p[i];
+        for (int j = 0; j < 8; j++)
+            crc = crc & 0x80 ? (uint8_t)(crc << 1) ^ poly : (uint8_t)(crc << 1);
+    }
+    return crc;
+}
+
+static uint8_t xor_bytes(const uint8_t *p, int n)
+{
+    uint8_t x = 0;
+
+    for (int i = 0; i < n; i++)
+        x ^= p[i];
+    return x;
+}
+
+/* The restart header at the start of substream data s (n bytes): 1 its
+ * CRC passes or there is none to read, 0 it fails. */
+static int restart_ok(const uint8_t *s, int n)
+{
+    int mm, bits, num, crc;
+
+    if (n < 6 || (s[0] >> 6) != 3 || ((dr_rb16(s) >> 1) & 0x1FFF) != 0x18F5)
+        return 1;
+    mm   = dr_rb16(s + 4) >> 4 & 0xF;               /* bits 40..43: the max matrix channel */
+    bits = 113 + 6 * (mm + 1);                      /* from the sync word to the CRC */
+    num  = (bits + 2) / 8;
+    if (num + 2 > n)
+        return 1;
+    crc  = crc8(s[0] & 0xC0, 0x1D, s, num - 1) ^ s[num - 1];
+    for (int i = 0; i < ((bits + 2) & 7); i++) {
+        crc <<= 1;
+        if (crc & 0x100)
+            crc ^= 0x11D;
+        crc ^= (s[num] >> (7 - i)) & 1;
+    }
+    {
+        int at = bits + 2, got = ((s[at >> 3] << 8 | s[(at >> 3) + 1]) >> (8 - (at & 7))) & 0xFF;
+        return (crc & 0xFF) == got;
+    }
+}
+
+int ff_disctl_mlp_checksums(void *state, const uint8_t *p, int n, const char **why)
+{
+    int *nsub = state, d = 4, major, start = 0, ends[16], check[16];
+    uint8_t x;
+
+    if (n < 8 || au_length(p) != n)
+        return DR_UNIT_OK;
+    if ((major = major_sync(p, n))) {
+        if (n < 32)
+            return DR_UNIT_OK;
+        *nsub = p[0x14] >> 4;
+        d += major_sync_size(p);
+    }
+    if (*nsub < 1 || *nsub > 16)
+        return DR_UNIT_OK;
+    x = xor_bytes(p, 4);
+    for (int k = 0; k < *nsub; k++) {
+        int w;
+        if (d + 2 > n)
+            return DR_UNIT_OK;
+        w = dr_rb16(p + d);
+        x ^= p[d] ^ p[d + 1];
+        d += 2;
+        if (w & 0x8000) {
+            if (d + 2 > n)
+                return DR_UNIT_OK;
+            x ^= p[d] ^ p[d + 1];
+            d += 2;
+        }
+        ends[k]  = (w & 0xFFF) * 2;
+        check[k] = !!(w & 0x2000);
+    }
+    if ((((x >> 4) ^ x) & 0xF) != 0xF) {
+        *why = "the TrueHD access unit header's parity";
+        return DR_UNIT_CRC;
+    }
+    for (int k = 0; k < *nsub; k++) {
+        const uint8_t *s = p + d + start;
+        int len = ends[k] - start;
+
+        if (ends[k] < start || d + ends[k] > n)
+            return DR_UNIT_OK;
+        if (check[k] && len >= 3) {
+            if ((xor_bytes(s, len - 2) ^ s[len - 2]) != 0xA9) {
+                *why = "a TrueHD substream's parity";
+                return DR_UNIT_CRC;
+            }
+            if ((crc8(0x3C, 0x63, s, len - 3) ^ s[len - 3]) != s[len - 1]) {
+                *why = "a TrueHD substream's CRC";
+                return DR_UNIT_CRC;
+            }
+        }
+        if (major && !restart_ok(s, len)) {
+            *why = "a TrueHD restart header's CRC";
+            return DR_UNIT_CRC;
+        }
+        start = ends[k];
+    }
+    return DR_UNIT_OK;
+}
+
 static int sync_mlp(const uint8_t *p, int n)
 {
     return major_sync(p, n);

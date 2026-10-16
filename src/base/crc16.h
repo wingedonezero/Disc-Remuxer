@@ -17,6 +17,12 @@ extern "C" {
 
 uint16_t dr_crc16_ansi(uint16_t crc, const uint8_t *buf, size_t len);
 
+/** CRC-16 CCITT (polynomial 0x1021, most significant bit first), as
+ *  av_crc(AV_CRC_16_CCITT) runs it: DTS (ETSI TS 102 114) protects its
+ *  extension substream and lossless headers with it, from 0xFFFF; a whole
+ *  protected span (the CRC field included) gives 0. */
+uint16_t dr_crc16_ccitt(uint16_t crc, const uint8_t *buf, size_t len);
+
 #ifdef __cplusplus
 }
 #endif

@@ -259,8 +259,12 @@ The rules above are the default policy. Around them:
     start code and a picture / frame start code; AC-3 / E-AC-3 whole
     syncframes, each one's CRC (as FFmpeg's decoder checks it); DTS a core
     frame that fits (the rest an extension substream) or an extension
-    substream; MPEG audio, ADTS, LOAS one frame of their header's size;
-    TrueHD / MLP the AU length field and the major-sync checksum;
+    substream, and the substream header's CRC, a DTS Express frame's
+    checksum, a lossless (XLL) frame header's CRC; MPEG audio, ADTS, LOAS one
+    frame of their header's size; TrueHD / MLP the AU length field, the
+    major-sync checksum, the AU header's parity, each substream's parity and
+    CRC (when it carries check bytes) and its restart header's CRC (checksum
+    failures are findings: nothing is changed or left out);
     sub-pictures their size and control sequences; a codec without a check
     is counted as unchecked (LPCM so far);
   - per track: durations > 0; audio / subtitles: each frame after the one

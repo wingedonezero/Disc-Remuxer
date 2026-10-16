@@ -132,6 +132,13 @@ enum { DR_DCA_EXSS_LBR = 1, DR_DCA_EXSS_XLL = 2 };
  *  DR_DCA_EXSS_LBR or DR_DCA_EXSS_XLL, or DR_ERR_INVALID. */
 int dr_dca_exss_timing(const uint8_t *buf, int size, int *lbr_rate_code, int *rate, int *samples);
 
+/** The checksums of the DTS-HD extension substream frame at buf (ETSI TS
+ *  102 114, as the processing library's DTS decoder checks them when asked
+ *  to): the substream header's CRC-16; with one asset, its LBR (DTS Express)
+ *  frame chunk's checksum and its lossless (XLL) frame header's CRC-16.
+ *  1 every one that can be read passes, 0 one fails (*why: which). */
+int dr_dca_exss_checksums(const uint8_t *buf, int size, const char **why);
+
 /** The core of a DTS track's unit: a unit starting with a core frame is cut
  *  to the core frame's size (the DTS-HD extension substream after it goes);
  *  any other unit stays whole. Never fails. */

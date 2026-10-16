@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "base/bytes.h"
+#include "base/crc16.h"
 #include "base/err.h"
 
 #include "parse/bits.h"
@@ -602,6 +603,72 @@ static int exss_first_asset(const uint8_t *b, int len, ExssAsset *a)
     PLACE(EXSS_XLL, a->xll_size, a->xll_offset)
 #undef PLACE
     return seek_bits(&g, header_size * 8) < 0 ? -1 : 0;
+}
+
+int dr_dca_exss_checksums(const uint8_t *buf, int size, const char **why)
+{
+    DiscExtSS h;
+    DrBits r;
+    ExssAsset a;
+    int idx, blong;
+
+    if (size < 10 || !disc_extss_start(&h, &r, buf, size, &idx, &blong) || h.hdr_size > size || h.hdr_size < 7)
+        return 1;
+    /* the header from its 41st bit (after the sync word and the user
+     * defined bits) to its end, its CRC-16 the last 16 bits */
+    if (dr_crc16_ccitt(0xFFFF, buf + 5, h.hdr_size - 5)) {
+        *why = "the DTS-HD extension substream header's CRC";
+        return 0;
+    }
+    if (h.frame_size > size || exss_first_asset(buf, h.frame_size, &a) < 0)
+        return 1;
+    if ((a.mask & EXSS_LBR) && a.lbr_size >= 8 && dr_rb32(buf + a.lbr_offset) == 0x0A801921U) {
+        /* LBR: sync word, header type (2: an 11-byte decoder init follows),
+         * the frame chunk: id (0x04 with a checksum), length (16 bits when
+         * bit 7 of the id is set), a 16-bit checksum = the id, the length's
+         * two bytes and the chunk's bytes after the checksum, added up */
+        const uint8_t *p = buf + a.lbr_offset;
+        int n = a.lbr_size, i = 5, id, len;
+        unsigned sum;
+
+        if (p[4] == 2)
+            i += 11;
+        else if (p[4] != 1)
+            return 1;
+        if (i + 3 > n)
+            return 1;
+        id = p[i++];
+        if (id & 0x80) {
+            len = dr_rb16(p + i);
+            i  += 2;
+        } else
+            len = p[i++];
+        if ((id & 0x7F) == 0x04) {
+            if (len < 2 || i + len > n) {
+                *why = "the DTS Express frame chunk runs past the frame";
+                return 0;
+            }
+            sum = id + (len >> 8) + (len & 0xFF);
+            for (int k = 2; k < len; k++)
+                sum += p[i + k];
+            if ((uint16_t)sum != dr_rb16(p + i)) {
+                *why = "the DTS Express frame's checksum";
+                return 0;
+            }
+        }
+    }
+    if ((a.mask & EXSS_XLL) && a.xll_size >= 8 && dr_rb32(buf + a.xll_offset) == 0x41A29547U) {
+        /* XLL: sync word, version (4 bits), header size - 1 (8 bits); the
+         * header from its 33rd bit to its end, its CRC-16 the last 16 bits */
+        const uint8_t *p = buf + a.xll_offset;
+        int hs = (((p[4] & 0x0F) << 4) | (p[5] >> 4)) + 1;
+
+        if (hs >= 6 && hs <= a.xll_size && dr_crc16_ccitt(0xFFFF, p + 4, hs - 4)) {
+            *why = "the DTS-HD lossless (XLL) frame header's CRC";
+            return 0;
+        }
+    }
+    return 1;
 }
 
 int dr_dca_exss_timing(const uint8_t *buf, int size, int *lbr_rate_code, int *rate, int *samples)

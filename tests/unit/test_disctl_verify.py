@@ -1,6 +1,7 @@
 """src/timeline/disctl_verify.c: the checks of a track's output. Units are
-parsed again (AC-3 CRC, TrueHD length and major-sync checksum, MPEG-2 start
-codes); times are checked (audio in order, video without holes in display
+parsed again (AC-3 CRC, TrueHD length, major-sync checksum, header and
+substream parity, substream and restart-header CRCs, DTS-HD checksums,
+MPEG-2 start codes); times are checked (audio in order, video without holes in display
 order); the audio sync error is measured as a stream file plays the frames
 (back to back from the start delay) and by the output times. Units from
 FFmpeg's encoders (tests/data/README.md)."""
@@ -119,6 +120,65 @@ def test_truehd_checksums():
     f = thd_frames(units[:3], 0)
     f[0]["data"] = bytes(bad)
     st, _ = check("truehd", AUDIO, f)
+    assert st.crc_errors == 1
+
+
+def crc8(crc, poly, data):
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            crc = ((crc << 1) ^ poly) & 0xFF if crc & 0x80 else (crc << 1) & 0xFF
+    return crc
+
+
+def thd_sums(u, state):
+    why = ffi.new("const char **")
+    r = lib.ff_disctl_mlp_checksums(state, u, len(u), why)
+    return "ok" if r == lib.DR_UNIT_OK else ffi.string(why[0]).decode()
+
+
+def substream0(u):
+    """Where substream 0's data starts in a major-sync AU, its length, and
+    whether it ends with check bytes."""
+    hs = 4 + (30 + 2 * (u[0x1e] >> 4) if u[0x1d] & 1 else 28)
+    d, ends, chk = hs, [], []
+    for _ in range(u[0x14] >> 4):
+        w = int.from_bytes(u[d:d + 2], "big")
+        d += 4 if w & 0x8000 else 2
+        ends.append((w & 0xFFF) * 2)
+        chk.append(bool(w & 0x2000))
+    return d, ends[0], chk[0]
+
+
+def test_truehd_parity_and_crcs_of_every_access_unit():
+    units = thd_units()
+    state = ffi.new("uint8_t[]", lib.DR_VERIFY_STATE)
+    assert [thd_sums(u, state) for u in units] == ["ok"] * len(units)
+    # a bit of the AU header: its parity; of substream data: the substream's
+    # parity (with check bytes)
+    state = ffi.new("uint8_t[]", lib.DR_VERIFY_STATE)
+    thd_sums(units[0], state)
+    v = bytearray(units[1])
+    v[2] ^= 0x01                                    # input timing: covered by the header parity
+    assert thd_sums(bytes(v), state) == "the TrueHD access unit header's parity"
+    major = units[0]
+    d, n, chk = substream0(major)
+    assert chk, "the test stream's substream 0 carries check bytes"
+    if chk:
+        w = bytearray(major)
+        w[d + n // 2] ^= 0x04
+        assert thd_sums(bytes(w), ffi.new("uint8_t[]", lib.DR_VERIFY_STATE)) == "a TrueHD substream's parity"
+        # the restart header changed, the substream's check bytes made right
+        # again: its own CRC finds it
+        w = bytearray(major)
+        w[d + 8] ^= 0x01
+        w[d + n - 2] = (__import__("functools").reduce(lambda a, b: a ^ b, w[d:d + n - 2], 0)) ^ 0xA9
+        w[d + n - 1] = crc8(0x3C, 0x63, w[d:d + n - 3]) ^ w[d + n - 3]
+        assert thd_sums(bytes(w), ffi.new("uint8_t[]", lib.DR_VERIFY_STATE)) == "a TrueHD restart header's CRC"
+    # through the title check: a finding with the kind, counted as a checksum failure
+    f = thd_frames(units[:3], 0)
+    f[1]["data"] = bytes(v)
+    st, ev = check("truehd", AUDIO, f)
     assert st.crc_errors == 1
 
 
