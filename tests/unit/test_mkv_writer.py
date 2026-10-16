@@ -212,3 +212,55 @@ def test_a_track_the_writer_does_not_take_yet_is_left_out_and_said(tmp_path):
     assert [dict(t)[0x86] for t in tracks] == [b"A_PCM/INT/LIT"]
     assert "Track 0 (mpeg2video): not written into the MKV file: the MKV writer takes H.264 video and LPCM audio " \
            "so far" in log, log
+
+
+# ---- the writer on its own (through the bridge) ----
+
+def write_mkv(path, tracks, frames):
+    """frames: (track, bytes, time ns, duration ns, key) in order; the file's bytes."""
+    from helpers import ffi, lib
+    specs = ffi.new("MkvTrackSpec[]", len(tracks))
+    keep = []
+    for spec, t in zip(specs, tracks):
+        for k, v in t.items():
+            if isinstance(v, str):
+                v = ffi.new("char[]", v.encode())
+                keep.append(v)
+            setattr(spec, k, v)
+    fs = ffi.new("MkvFileSpec *")
+    app = ffi.new("char[]", b"no_variable_data")
+    fs.muxing_app = fs.writing_app = app
+    fs.fixed_ids = 1
+    w = ffi.new("MkvWriter **")
+    name = ffi.new("char[]", str(path).encode())
+    assert lib.mkv_open(w, name, fs, specs, len(tracks)) == 0
+    for track, data, t, d, key in frames:
+        buf = ffi.from_buffer(data)
+        assert lib.mkv_frame(w[0], track, buf, len(data), t, d, key) == 0
+    assert lib.mkv_close(w, ffi.NULL, 0, 0, ffi.NULL) == 0
+    return path.read_bytes()
+
+
+def test_a_frame_of_two_field_pictures_goes_into_a_block_per_field(tmp_path):
+    # as mkvmerge (and the reference rips) write field-coded H.264: each field
+    # picture its own block, at the frame's time and one field later, its own
+    # key flag (the IDR field) and discardable flag (nal_ref_idc 0)
+    sps = h264.sps(frame_mbs_only=0, timing=(1, 50), hrd=False, pic_struct=False)
+    pps = h264.pps()
+    frames = []
+    for i in range(3):
+        top = h264.aud(0 if i == 0 else 1) + (sps + pps if i == 0 else b"") + \
+            h264.slice_(h264.SLICE_I if i == 0 else h264.SLICE_P, i, 4 * i, idr=i == 0, field="top")
+        bottom = h264.aud(1) + h264.slice_(h264.SLICE_P, i, 4 * i + 1, ref=i != 2, field="bottom")
+        frames.append((0, top + bottom, 40000000 * i, 40000000, i == 0))
+    data = write_mkv(tmp_path / "f.mkv", [{"codec": 1, "language": "jpn", "width": 64, "height": 48}], frames)
+    seg = find(elements(data), 0x18538067)[0]
+    v = dict(find(seg, 0x1654AE6B, 0xAE)[0])
+    assert uint(v[0x23E383]) == 20000000, "default duration: one field"
+    blocks = []
+    for c in find(seg, 0x1F43B675):
+        ct = uint(dict(c)[0xE7])
+        blocks += [(ct + struct.unpack(">h", d[1:3])[0], d[3]) for eid, d in c if eid == 0xA3]
+    assert [b[0] for b in blocks] == [0, 20, 40, 60, 80, 100], "a block per field, one field apart"
+    assert [bool(b[1] & 0x80) for b in blocks] == [True, False, False, False, False, False], "the IDR field is key"
+    assert [bool(b[1] & 0x01) for b in blocks] == [False] * 5 + [True], "the last field's nal_ref_idc is 0"

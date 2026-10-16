@@ -38,6 +38,7 @@
 #include "disc/hddvd/hddvd_internal.h"
 #include "disc/clip_demux.h"
 #include "parse/stock.h"
+#include "mkv/mkv.h"
 #include "parse/rules.h"
 #include "disc-remuxer/writer.h"
 #include "base/crc16.h"

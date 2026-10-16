@@ -951,63 +951,123 @@ void h264_make_header(MkvTrackState &t)
     t.header_ready = true;
 }
 
+// a recovery point SEI message in an SEI NAL unit (H.264 D.1, payload type 6)
+bool has_recovery_point(const uint8_t *nal, size_t n)
+{
+    Bits r(nal + 1, n - 1);
+    while (r.pos + 16 <= r.b.size() * 8) {
+        unsigned type = 0, size = 0, b;
+        while ((b = r.u(8)) == 0xFF)
+            type += 255;
+        type += b;
+        while ((b = r.u(8)) == 0xFF)
+            size += 255;
+        size += b;
+        if (type == 6)
+            return true;
+        r.pos += (size_t)size * 8;
+        if (r.b.size() * 8 - r.pos <= 8)        // the rbsp_trailing_bits
+            break;
+    }
+    return false;
+}
+
+void h264_parameter_set(MkvTrackState &t, int type, const uint8_t *nal, size_t n)
+{
+    std::vector<uint8_t> v(nal, nal + n);
+    if (type == 7) {
+        H264Sps s;
+        parse_sps(nal, n, s);
+        auto it = std::find(t.sps_ids.begin(), t.sps_ids.end(), s.id);
+        if (it == t.sps_ids.end()) {
+            t.sps_ids.push_back(s.id);
+            t.sps.push_back(v);
+        } else
+            t.sps[it - t.sps_ids.begin()] = v;
+        if (!t.have_sps) {
+            t.first_sps = s;
+            t.have_sps = true;
+        }
+    } else {
+        Bits r(nal + 1, n - 1);
+        unsigned id = r.ue();
+        auto it = std::find(t.pps_ids.begin(), t.pps_ids.end(), id);
+        if (it == t.pps_ids.end()) {
+            t.pps_ids.push_back(id);
+            t.pps.push_back(v);
+        } else
+            t.pps[it - t.pps_ids.begin()] = v;
+    }
+}
+
+// One frame of the title: a block per picture in it, as mkvmerge makes its frames (H.264 7.4.1.2.4: a new
+// picture at an access unit delimiter or at a slice that starts a picture): a frame of two field
+// pictures gives a block per field, each with its own time (the frame's time, then one field later), its
+// own key flag (an IDR slice or a recovery point in it; the first field takes the frame's) and its own
+// discardable flag (its first slice's nal_ref_idc 0).
 int h264_frame(MkvWriter *w, MkvTrackState &t, const uint8_t *data, int size, int64_t time, int64_t dur, int key)
 {
     std::vector<std::pair<const uint8_t *, size_t>> nals;
     nal_units(data, size, nals);
-    auto p = std::make_shared<Packet>();
-    p->track = (int)(&t - w->tracks.data());
-    p->timestamp = p->assigned = time;
-    p->duration = dur;
-    p->key = key;
-    bool slice_seen = false;
+    struct Pic {
+        PacketPtr p;
+        bool idr = false, recovery = false;
+    };
+    std::vector<Pic> pics;
+    bool slice_in_pic = false, slice_seen = false;
     for (auto &n : nals) {
         int type = n.first[0] & 31;
+        bool slice = type == 1 || type == 5;
+        bool starts = pics.empty() || (slice_in_pic && (type == 9 || (slice && (Bits(n.first + 1, n.second - 1).ue() == 0))));
+        if (starts) {
+            pics.push_back(Pic());
+            pics.back().p = std::make_shared<Packet>();
+            slice_in_pic = false;
+        }
+        Pic &pic = pics.back();
         if (type == 9 || type == 10 || type == 11 || type == 12)
             continue;               // access unit delimiter, end of sequence / stream, filler data
-        if (!t.header_ready && !slice_seen && (type == 7 || type == 8)) {
-            std::vector<uint8_t> v(n.first, n.first + n.second);
-            if (type == 7) {
-                H264Sps s;
-                parse_sps(n.first, n.second, s);
-                auto it = std::find(t.sps_ids.begin(), t.sps_ids.end(), s.id);
-                if (it == t.sps_ids.end()) {
-                    t.sps_ids.push_back(s.id);
-                    t.sps.push_back(v);
-                } else
-                    t.sps[it - t.sps_ids.begin()] = v;
-                if (!t.have_sps) {
-                    t.first_sps = s;
-                    t.have_sps = true;
-                }
-            } else {
-                Bits r(n.first + 1, n.second - 1);
-                unsigned id = r.ue();
-                auto it = std::find(t.pps_ids.begin(), t.pps_ids.end(), id);
-                if (it == t.pps_ids.end()) {
-                    t.pps_ids.push_back(id);
-                    t.pps.push_back(v);
-                } else
-                    t.pps[it - t.pps_ids.begin()] = v;
-            }
+        if (!t.header_ready && !slice_seen && (type == 7 || type == 8))
+            h264_parameter_set(t, type, n.first, n.second);
+        if (type == 6 && has_recovery_point(n.first, n.second))
+            pic.recovery = true;
+        if (slice && !slice_in_pic) {
+            pic.p->discardable = !(n.first[0] >> 5);   // nal_ref_idc 0
+            pic.idr = type == 5;
         }
-        if ((type == 1 || type == 5) && !slice_seen) {
-            slice_seen = true;
-            p->discardable = !(n.first[0] >> 5);   // nal_ref_idc 0
-        }
+        if (slice)
+            slice_in_pic = slice_seen = true;
         uint32_t l = (uint32_t)n.second;
         uint8_t h[4] = { (uint8_t)(l >> 24), (uint8_t)(l >> 16), (uint8_t)(l >> 8), (uint8_t)l };
-        p->data.insert(p->data.end(), h, h + 4);
-        p->data.insert(p->data.end(), n.first, n.first + n.second);
+        pic.p->data.insert(pic.p->data.end(), h, h + 4);
+        pic.p->data.insert(pic.p->data.end(), n.first, n.first + n.second);
     }
-    if (p->discardable < 0)
-        p->discardable = 0;
+    // pieces with no slice (data after the last picture) go with the picture before them
+    for (size_t k = pics.size(); k-- > 1;)
+        if (pics[k].p->discardable < 0) {
+            auto &prev = pics[k - 1].p->data;
+            prev.insert(prev.end(), pics[k].p->data.begin(), pics[k].p->data.end());
+            pics.erase(pics.begin() + k);
+        }
+    int n = (int)pics.size();
+    int track = (int)(&t - w->tracks.data());
+    for (int k = 0; k < n; k++) {
+        Packet &p = *pics[k].p;
+        p.track = track;
+        p.timestamp = p.assigned = time + (dur > 0 ? dur * k / n : 0);
+        p.duration = dur > 0 ? dur / n : -1;
+        p.key = k == 0 ? key : (pics[k].idr || pics[k].recovery);
+        if (p.discardable < 0)
+            p.discardable = 0;
+    }
     if (!t.header_ready) {
-        if (dur > 0)
-            t.duration_count[dur]++;
-        t.held.push_back(p);
+        for (auto &pic : pics) {
+            if (pic.p->duration > 0)
+                t.duration_count[pic.p->duration]++;
+            t.held.push_back(pic.p);
+        }
         // the header is made when the first frames are in (mkvmerge: its first batch of frames)
-        if (t.held.size() < 16 && !(key && t.held.size() > 1))
+        if (t.held.size() < 16 && !(key && t.held.size() > (size_t)n))
             return 0;
         if (t.sps.empty() || t.pps.empty())
             return fail(w, EINVAL);
@@ -1017,7 +1077,8 @@ int h264_frame(MkvWriter *w, MkvTrackState &t, const uint8_t *data, int size, in
         t.held.clear();
         return pump(w, false);
     }
-    t.queue.push_back(p);
+    for (auto &pic : pics)
+        t.queue.push_back(pic.p);
     return pump(w, false);
 }
 
