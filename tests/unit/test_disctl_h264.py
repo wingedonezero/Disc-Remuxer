@@ -342,3 +342,26 @@ def test_frame_doubling_without_fixed_frame_rate_is_said_once_and_counted():
     assert ret == 0
     assert len([l for l in LOG if "pic_struct 7 (frame doubling / tripling) without fixed_frame_rate_flag" in l]) == 1
     assert any("%d picture(s) with pic_struct 7 / 8 without fixed_frame_rate_flag" % len(units) in l for l in LOG), LOG
+
+
+def test_field_pictures_are_joined_into_frames_and_that_is_said_once():
+    # interlaced video coded as field pictures (each field its own access
+    # unit, H.264 7.4.3 field_pic_flag): the two fields of a frame leave as
+    # one frame of two field periods, every byte kept in order
+    sps = H.sps(frame_mbs_only=0)
+    units = []
+    for i in range(12):
+        for k, (field, ps) in enumerate((("top", 1), ("bottom", 2))):
+            au = H.aud() + (sps + H.pps() if i == 0 and k == 0 else b"") + H.sei([H.pic_timing(ps)])
+            kind = H.SLICE_I if i == 0 else H.SLICE_P
+            au += H.slice_(kind, i % 16, (2 * i + k) % 64, idr=i == 0, field=field)
+            units.append((au, BASE + (2 * i + k) * FIELD))
+    install_log()
+    s, _, ret = run(units)
+    assert ret == 0
+    assert len(s.out) == len(units) // 2, "two fields, one frame"
+    assert all(o[2] == 2 * FIELD for o in s.out)
+    assert [o[1] for o in s.out] == [t for _, t in units[::2]], "a frame at its first field's time"
+    assert b"".join(o[0] for o in s.out) == b"".join(without(u, set()) for u, _ in units), "every picture, in order"
+    notes = [l for l in LOG if "field pictures: the two fields of a frame are joined into one frame" in l]
+    assert len(notes) == 1 and "untested" not in notes[0], LOG
