@@ -51,6 +51,25 @@ void title_outcome_free(TitleOutcome *out);
  * rounded), into buf; returns buf. */
 const char *size_text(char *buf, size_t size, int64_t bytes);
 
+/* A WAV header (into out, at most WAV_HEADER_MAX bytes; returns its size):
+ * WAVE_FORMAT_PCM for up to 2 channels of 16 bits, else
+ * WAVE_FORMAT_EXTENSIBLE with the channel mask and the bits that carry the
+ * sound (valid: 20-bit samples ride in 24-bit words); data: the sound's
+ * bytes (0 while they are written: the header is written again at the
+ * end). room: the header keeps a 36-byte chunk after "WAVE" for 64-bit
+ * sizes (a file that may pass 4 GiB): JUNK while the file fits the 32-bit
+ * sizes; when it does not, the file is RF64 (EBU Tech 3306): "RF64", the
+ * ds64 chunk there with the RIFF size, the data size and the sample frames,
+ * the 32-bit sizes 0xFFFFFFFF. Without room a file past 4 GiB keeps
+ * 0xFFFFFFFF in the sizes it cannot hold. */
+#define WAV_HEADER_MAX 120
+#define WAV_DS64       28
+/* The expected sound bytes from which a WAV header keeps room (3.5 GiB:
+ * the title's length can be a little short of what is written). */
+#define WAV_ROOM_FROM  0xE0000000LL
+int writer_wav_header(uint8_t *out, int channels, int rate, int bits, int valid, uint64_t mask, int64_t data,
+                      int room);
+
 /* Writes one title's stream files and chapters (logged as a step of its
  * own; out: free with title_outcome_free()); part >= 0: only that part of the title (one of the stream files a
  * title plays back to back), -1 the whole title; second_view: a 3-D title's

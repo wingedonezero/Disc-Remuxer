@@ -474,3 +474,9 @@ extern "Python" int tb_py_video_advance(void *opaque, int64_t target, int *ended
 uint16_t dr_crc16_ccitt(uint16_t crc, const uint8_t *buf, size_t len);
 int dr_dca_exss_checksums(const uint8_t *buf, int size, const char **why);
 int ff_disctl_mlp_checksums(void *state, const uint8_t *data, int size, const char **why);
+
+/* the WAV header (src/disc-remuxer/writer.h) */
+#define WAV_HEADER_MAX ...
+#define WAV_ROOM_FROM ...
+int writer_wav_header(uint8_t *out, int channels, int rate, int bits, int valid, uint64_t mask, int64_t data,
+                      int room);

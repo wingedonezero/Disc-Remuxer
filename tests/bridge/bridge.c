@@ -39,6 +39,7 @@
 #include "disc/clip_demux.h"
 #include "parse/stock.h"
 #include "parse/rules.h"
+#include "disc-remuxer/writer.h"
 #include "base/crc16.h"
 #include "disc/lang.h"
 

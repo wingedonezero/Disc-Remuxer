@@ -152,6 +152,8 @@ typedef struct EsOut {
     int64_t       sub_pos;          /* bytes written to the .sub */
     int64_t       cues;             /* captions: SRT cues written */
     int           wav;              /* a WAV header to complete at the end */
+    int           wav_room;         /* its header keeps room for the RF64 sizes (it may pass 4 GiB) */
+    int64_t       title_us;         /* the title's (or part's) length, microseconds: what a file may reach */
     int           opened;           /* the file name is chosen */
     int           profile;          /* the codec profile the name was chosen with (e.g. TrueHD + Atmos) */
     char            layout[64];     /* audio: the channel layout in the name ("" unknown) */
@@ -219,35 +221,71 @@ static int out_close(EsOut *o, FILE **f)
     return DR_ERR(o->write_err);
 }
 
-static void put_le(FILE *f, uint64_t v, int n)
+static uint8_t *put_le(uint8_t *p, uint64_t v, int n)
 {
     for (int i = 0; i < n; i++)
-        fputc((v >> (8 * i)) & 0xFF, f);
+        *p++ = (v >> (8 * i)) & 0xFF;
+    return p;
 }
 
-/* RIFF WAVE header: WAVE_FORMAT_PCM for up to 2 channels of 16 bits, else
- * WAVE_FORMAT_EXTENSIBLE with the channel mask and the bits that carry the
- * sound (20-bit samples ride in 24-bit words: 20 of 24 valid); sizes filled
- * in at the end. */
-static void wav_header(FILE *f, const DrDiscTrack *t, int64_t data)
+static uint8_t *put_tag(uint8_t *p, const char *tag)
 {
-    int ch = t->channels, bits = t->codec == DR_CODEC_PCM_S24LE ? 24 : 16;
-    int valid = t->bits > 0 && t->bits < bits ? t->bits : bits;
-    int ext = ch > 2 || bits > 16, fmt = ext ? 40 : 16;
-    uint64_t riff = 4 + 8 + fmt + 8 + data;
+    memcpy(p, tag, 4);
+    return p + 4;
+}
 
-    fputs("RIFF", f); put_le(f, riff > 0xFFFFFFFFu ? 0xFFFFFFFFu : riff, 4); fputs("WAVE", f);
-    fputs("fmt ", f); put_le(f, fmt, 4);
-    put_le(f, ext ? 0xFFFE : 1, 2); put_le(f, ch, 2); put_le(f, t->sample_rate, 4);
-    put_le(f, (uint64_t)t->sample_rate * ch * bits / 8, 4); put_le(f, ch * bits / 8, 2); put_le(f, bits, 2);
-    if (ext) {
-        static const uint8_t pcm_guid[14] = { 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00,
-                                              0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71 };
-        put_le(f, 22, 2); put_le(f, valid, 2);
-        put_le(f, dr_layout_of(t->layout, t->channels, NULL, 0), 4);
-        put_le(f, 1, 2); fwrite(pcm_guid, 1, sizeof(pcm_guid), f);
+int writer_wav_header(uint8_t *out, int channels, int rate, int bits, int valid, uint64_t mask, int64_t data,
+                      int room)
+{
+    static const uint8_t pcm_guid[14] = { 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00,
+                                          0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71 };
+    int ext = channels > 2 || bits > 16, fmt = ext ? 40 : 16, block = channels * bits / 8;
+    uint64_t riff = 4 + (room ? 8 + WAV_DS64 : 0) + 8 + fmt + 8 + data;
+    int rf64 = room && riff > 0xFFFFFFFFu;
+    uint8_t *p = out;
+
+    p = put_tag(p, rf64 ? "RF64" : "RIFF");
+    p = put_le(p, riff > 0xFFFFFFFFu ? 0xFFFFFFFFu : riff, 4);
+    p = put_tag(p, "WAVE");
+    if (room) {
+        p = put_tag(p, rf64 ? "ds64" : "JUNK");
+        p = put_le(p, WAV_DS64, 4);
+        p = put_le(p, rf64 ? riff : 0, 8);                       /* RIFF size */
+        p = put_le(p, rf64 ? (uint64_t)data : 0, 8);             /* data size */
+        p = put_le(p, rf64 && block ? (uint64_t)data / block : 0, 8);   /* sample frames */
+        p = put_le(p, 0, 4);                                     /* no table */
     }
-    fputs("data", f); put_le(f, data > 0xFFFFFFFFu ? 0xFFFFFFFFu : data, 4);
+    p = put_tag(p, "fmt ");
+    p = put_le(p, fmt, 4);
+    p = put_le(p, ext ? 0xFFFE : 1, 2);
+    p = put_le(p, channels, 2);
+    p = put_le(p, rate, 4);
+    p = put_le(p, (uint64_t)rate * block, 4);
+    p = put_le(p, block, 2);
+    p = put_le(p, bits, 2);
+    if (ext) {
+        p = put_le(p, 22, 2);
+        p = put_le(p, valid, 2);
+        p = put_le(p, mask, 4);
+        p = put_le(p, 1, 2);
+        memcpy(p, pcm_guid, sizeof(pcm_guid));
+        p += sizeof(pcm_guid);
+    }
+    p = put_tag(p, "data");
+    p = put_le(p, rf64 || (uint64_t)data > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint64_t)data, 4);
+    return p - out;
+}
+
+/* The track's WAV header for data bytes of sound (see writer.h): its size,
+ * or a base error. */
+static int wav_header(FILE *f, const DrDiscTrack *t, int64_t data, int room)
+{
+    uint8_t h[WAV_HEADER_MAX];
+    int bits = t->codec == DR_CODEC_PCM_S24LE ? 24 : 16;
+    int n = writer_wav_header(h, t->channels, t->sample_rate, bits, t->bits > 0 && t->bits < bits ? t->bits : bits,
+                              dr_layout_of(t->layout, t->channels, NULL, 0), data, room);
+
+    return fwrite(h, 1, n, f) == (size_t)n ? n : DR_ERR(errno);
 }
 
 /* Matroska chapter XML (mkvmerge --chapters). */
@@ -426,8 +464,16 @@ static int es_open(const DrDiscTrack *t, EsOut *o, const char *prefix, int64_t f
     if (!(o->f = fopen(o->name, "wb")))
         return DR_ERR(errno);
     if (t->codec == DR_CODEC_PCM_S16LE || t->codec == DR_CODEC_PCM_S24LE) {
-        o->wav = 1;
-        wav_header(o->f, t, 0);
+        /* room for the RF64 sizes when the title's length lets the file
+         * come near 4 GiB (a file that cannot stays as it always was) */
+        int64_t expect = o->title_us / 1000000 * t->sample_rate * t->channels *
+                         (t->codec == DR_CODEC_PCM_S24LE ? 3 : 2);
+        int ret;
+
+        o->wav      = 1;
+        o->wav_room = expect >= WAV_ROOM_FROM;
+        if ((ret = wav_header(o->f, t, 0, o->wav_room)) < 0)
+            return ret;
         if (t->bits > 16 && t->bits < 24)
             log_text(LOG_INFO, "Track %d: %d-bit samples in 24-bit words, as on the disc (the WAV header says %d "
                      "valid bits) [untested on real discs]", t->number, t->bits, t->bits);
@@ -759,6 +805,7 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     char dir[4096], prefix[4200], dur[32], who[64], base[512];
     char *chap = NULL;          /* the chapter file, and why it could not be written */
     int ret, r, chap_err = 0, errors0, warnings0;
+    int64_t title_us = 0;
 
     memset(res, 0, sizeof(*res));
     /* the title's warnings: every warning line from here to its last line */
@@ -773,8 +820,8 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     tname = info && job->title < info->nb_titles ? info->titles[job->title].name : NULL;
     {
         const DiscTitleInfo *ti = info && job->title < info->nb_titles ? &info->titles[job->title] : NULL;
-        int64_t us = !ti ? 0 : job->part >= 0 && job->part < ti->nb_parts ? ti->parts[job->part].duration : ti->duration;
-        hms(dur, sizeof(dur), us > 0 ? us / 1000000.0 : 0);
+        title_us = !ti ? 0 : job->part >= 0 && job->part < ti->nb_parts ? ti->parts[job->part].duration : ti->duration;
+        hms(dur, sizeof(dur), title_us > 0 ? title_us / 1000000.0 : 0);
     }
     log_step("=== Title %d/%d: %s %s (%s) ===", job->ordinal, job->count, who + 6, tname ? tname : "", dur);
     if ((ret = dr_disc_title_open(d, job->title, job->part, job->second_view, job->keep)) < 0) {
@@ -817,6 +864,7 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         EsOut *o = &out[i];
 
         o->st.index    = t->number;
+        o->title_us    = title_us;
         o->st.kind     = disc_media_name(t->type);
         o->st.codec    = codec_id_name(t->codec);
         o->st.lang     = t->language;
@@ -919,10 +967,18 @@ end:
         const DrDiscTrack *t = dr_disc_track(d, i);
         EsOut *o = &out[i];
         if (o->f && o->wav && ret >= 0) {
-            if (fseek(o->f, 0, SEEK_SET) == 0)
-                wav_header(o->f, t, o->st.bytes);
-            else
-                ret = DR_ERR(errno);
+            int n = fseek(o->f, 0, SEEK_SET) == 0 ? wav_header(o->f, t, o->st.bytes, o->wav_room) : DR_ERR(errno);
+            if (n < 0)
+                ret = n;
+            else if (n - 8 + o->st.bytes > 0xFFFFFFFFLL) {   /* the RIFF size the 32 bits cannot hold */
+                if (o->wav_room)
+                    log_text(LOG_INFO, "Track %d: its WAV file is larger than 4 GiB: written as RF64 (the WAV form "
+                             "with 64-bit sizes, EBU Tech 3306, which FFmpeg, mkvmerge and VLC read)", t->number);
+                else
+                    log_text(LOG_WARNING, "Track %d: its WAV file passed 4 GiB, more than the title's length let "
+                             "expect: the header's 32-bit sizes are capped (FFmpeg and mkvmerge read to the end; "
+                             "a reader that trusts the sizes stops at 4 GiB)", t->number);
+            }
         }
         /* text subtitles: the number of dialogs after the style segment */
         if (o->f && o->textst && ret >= 0) {
