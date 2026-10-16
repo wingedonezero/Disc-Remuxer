@@ -452,6 +452,15 @@ void ff_bluray_title_remove(struct BlurayDisc *d, int i);
 int ff_bluray_title_tracks(void *log, DiscIOFS *fs, BlurayAACS *aacs, BlurayTitle *t);
 
 /**
+ * Says each stream of the clip title t's tracks are described from that
+ * gives no track (and is not read as part of one, as a Dolby Vision
+ * enhancement layer is), with why: not in the playlist's stream table (the
+ * disc's menus, secondary audio or video, a stream not every item has), no
+ * track made of its kind, or a second video stream.
+ */
+void ff_bluray_title_left_out(void *log, const BlurayTitle *t);
+
+/**
  * The PES stream keys a track's PID is read with (stream_id, or 0xFD |
  * stream_id_extension << 8; 0 any key), the reference program's per kind:
  * video 0xE0 (AVC 0xE0 + its probed id, VC-1 0x55FD, HEVC 0xE1), AC-3 /

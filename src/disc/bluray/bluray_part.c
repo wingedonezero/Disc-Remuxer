@@ -543,6 +543,7 @@ static int open_title(DrDisc *d, int i, int part, int *second_view_read)
     uint64_t *marks;
 
     c->title = t;
+    ff_bluray_title_left_out(d->log, t);
     /* text subtitles: their bytes stay as on the disc, the encoding of
      * their text is said when it is not UTF-8 (the reference program says
      * it does not support it) */

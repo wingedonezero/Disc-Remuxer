@@ -490,6 +490,89 @@ int ff_bluray_title_tracks(void *log, DiscIOFS *fs, BlurayAACS *aacs, BlurayTitl
     return 0;
 }
 
+/* The stream kinds by BD-ROM stream_coding_type, for the log. */
+static const char *coding_name(int type)
+{
+    switch (type) {
+    case 0x01: return "MPEG-1 video";
+    case 0x02: return "MPEG-2 video";
+    case 0x03: return "MPEG-1 audio";
+    case 0x04: return "MPEG-2 audio";
+    case 0x0f: return "AAC";
+    case 0x11: return "AAC (LATM)";
+    case 0x1b: return "AVC video";
+    case 0x20: return "MVC video (3-D second view)";
+    case 0x24: return "HEVC video";
+    case 0x80: return "LPCM audio";
+    case 0x81: return "AC-3 audio";
+    case 0x82: return "DTS audio";
+    case 0x83: return "TrueHD audio";
+    case 0x84: return "E-AC-3 audio";
+    case 0x85: return "DTS-HD High Resolution audio";
+    case 0x86: return "DTS-HD Master Audio";
+    case 0x90: return "PGS subtitles";
+    case 0x91: return "interactive graphics: the disc's menus";
+    case 0x92: return "text subtitles";
+    case 0xa1: return "secondary E-AC-3 audio";
+    case 0xa2: return "secondary DTS-HD audio";
+    case 0xea: return "VC-1 video";
+    case 0x06: return "private data";
+    }
+    return "an unknown kind";
+}
+
+void ff_bluray_title_left_out(void *log, const BlurayTitle *t)
+{
+    const BluraySegment *s;
+    const BlurayClip *c;
+    int video = 0;
+
+    if (!t->nb_segs || t->track_seg < 0 || t->track_seg >= t->nb_segs)
+        return;
+    s = &t->segs[t->track_seg];
+    c = s->items[0].clip;
+    for (int i = 0; i < c->program.nb_streams; i++) {
+        const BlurayClipStream *e = &c->program.streams[i];
+        int used = 0;
+        Desc d;
+
+        for (int k = 0; k < t->nb_tracks && !used; k++) {
+            const BlurayTrack *tk = &t->tracks[k];
+            used = (!(tk->flags & BLURAY_TRACK_SIDE) && tk->pid == e->pid) ||
+                   ((tk->flags & BLURAY_TRACK_LAYER2) && tk->sel1 == e->pid);
+        }
+        if (used) {
+            video |= e->coding_type == 0x02 || e->coding_type == 0x1b || e->coding_type == 0x24 ||
+                     e->coding_type == 0xea;
+            continue;
+        }
+        if (e->coding_type == 0x91) {
+            dr_vlog(log, DR_VLOG_INFO, "Blu-ray: title %s: stream PID 0x%04x of clip %05u (%s): not ripped\n",
+                   t->name, e->pid, c->number, coding_name(e->coding_type));
+            continue;
+        }
+        if (!keeps_pid(t, e->pid)) {
+            dr_vlog(log, DR_VLOG_INFO, "Blu-ray: title %s: stream PID 0x%04x of clip %05u (%s) is not in the "
+                   "playlist's stream table of every item (video, audio, subtitles): not ripped\n", t->name,
+                   e->pid, c->number, coding_name(e->coding_type));
+            continue;
+        }
+        describe(e, &d);
+        if (!d.n) {
+            dr_vlog(log, DR_VLOG_WARNING, "Blu-ray: title %s: stream PID 0x%04x of clip %05u (%s, stream coding type "
+                   "0x%02x) is a kind no track is made of: not ripped\n", t->name, e->pid, c->number,
+                   coding_name(e->coding_type), e->coding_type);
+        } else if (is_video(d.k[0].code) && video) {
+            dr_vlog(log, DR_VLOG_INFO, "Blu-ray: title %s: stream PID 0x%04x of clip %05u (%s) is a further video "
+                   "stream: only the first is ripped\n", t->name, e->pid, c->number, coding_name(e->coding_type));
+        } else {
+            dr_vlog(log, DR_VLOG_INFO, "Blu-ray: title %s: stream PID 0x%04x of clip %05u (%s) is in the "
+                   "stream table but gives no track: not ripped\n", t->name, e->pid, c->number,
+                   coding_name(e->coding_type));
+        }
+    }
+}
+
 /* ---- what a track reads ---- */
 
 int ff_bluray_track_keys(const BlurayTrack *tk, int bdav, uint16_t key[2])

@@ -14,7 +14,7 @@ import subprocess
 
 import pytest
 
-from helpers import PROGRAM
+from helpers import PROGRAM, install_log, logged
 from helpers.disc import env_or_skip
 from helpers.hddvd import open_file, open_image
 from synth.hddvd import (ac3_frame, attr_record, clip, eac3_frame, evob, image, pack, playlist, ps1_packet,
@@ -148,6 +148,16 @@ def test_an_audio_stream_of_coding_3_leaves_the_title_out():
     body = f"<Title>{clip('A.MAP', T, T, False)}</Title><Title>{clip('B.MAP', T, T, False)}</Title>"
     im = disc([evob("A.EVO", 1, 10), evob("B.EVO", 2, 10)], [1, 2], [ok, bad], playlist("", body), [b"", b""])
     assert tracks_of(im) == ["title A.EVO", "  0|video|vc1|0|0|", "  1|audio|ac3|1|0|"]
+
+
+def test_an_audio_stream_of_an_unknown_coding_is_said_and_left_out():
+    # a coding byte from 0x20 up names no coding: the stream gives no track
+    attrs = attr_record([0x60, 0, 0x50], [0x00, 0x40], [], PALETTE)
+    body = f"<Title>{clip('A.MAP', T, T, False)}</Title>"
+    im = disc([evob("A.EVO", 1, 10)], [1], [attrs], playlist("", body), [b""])
+    install_log()
+    assert tracks_of(im) == ["title A.EVO", "  0|video|vc1|0|0|", "  1|audio|ac3|1|0|"]
+    assert logged("audio stream 2 of EVOB A.EVO has a coding this program has no track for: not ripped")
 
 
 def test_video_coding_and_sub_picture_frame_size():

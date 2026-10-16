@@ -528,8 +528,14 @@ static int build_title(Builder *b, HDDVDTitle *t)
                        "stream handler: the title is left out\n", t->name, i);
                 return 0;
             }
-            if (k.type != type || k.codec == DR_CODEC_NONE)
+            if (k.type != type)
                 continue;
+            if (k.codec == DR_CODEC_NONE) {
+                dr_vlog(b->log, DR_VLOG_WARNING, "Title %s: %s stream %d of EVOB %s has a coding this program has "
+                       "no track for: not ripped\n", t->name, type == DISC_MEDIA_AUDIO ? "audio" : "sub-picture",
+                       i, clip->evob->name);
+                continue;
+            }
             if (k.type == DISC_MEDIA_AUDIO && clip->probe_dtshd[k.number]) {
                 /* DTS-HD, then the DTS stream inside it as a track of its own */
                 k.inner_track = t->nb_tracks + 1;
