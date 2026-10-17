@@ -121,6 +121,8 @@ typedef struct BlurayPlayItem {
     char            codec[5];
     uint32_t        pos;             /**< file offset of its codec identifier */
     uint8_t         connection;      /**< connection_condition (byte 0x0c low 4 bits) */
+    uint8_t         whole_join;      /**< a seamless connection (5) between two items that each play their whole STC
+                                          sequence: a place a title may be split into parts, as a joined 1 */
     uint8_t         stc_id;
     uint32_t        in_time, out_time;   /**< 45 kHz */
     BlurayAngleClip *angles;         /**< the further angles (angle 1 is the item's own clip) */
@@ -538,9 +540,10 @@ int64_t ff_bluray_title_size(const BlurayTitle *t);
 
 /**
  * The parts of title t: the runs of its segments between the places where
- * whole stream files are played back to back (a non-seamless connection,
- * connection condition 1, that joined into the title because both items
- * cover their whole STC sequences: episodes of a series one after another).
+ * whole stream files are played back to back (a connection between two items
+ * that both cover their whole STC sequences: a non-seamless one, connection
+ * condition 1, that joined into the title, or a seamless one with a clean
+ * break, 5: episodes of a series one after another).
  * first (nb_segs + 1 entries, or NULL): the first segment of each part, and
  * nb_segs after the last. Returns the number of parts (1: the title is one
  * piece).

@@ -76,3 +76,16 @@ def test_titles_shorter_than_the_minimum_length_are_left_out_of_the_title_list(t
     # without a minimum length it is title 0
     code, out = run("--set", "titles.min_length=0", "demux", folder, "0", tmp_path / "all")
     assert code == 0 and list((tmp_path / "all").rglob("*.m2v")), out
+
+
+def test_an_option_after_the_command_or_an_extra_argument_stops_the_run(tmp_path):
+    # options go before the command: one after it was ignored before (a demux
+    # with "--split 0" at the end ripped the title whole); an extra argument
+    # likewise; the arguments are checked before a disc is opened
+    disc = tmp_path / "disc"
+    out = tmp_path / "out"
+    p = subprocess.run([*PROGRAM, "demux", str(disc), "0", str(out), "--split", "0"], capture_output=True, text=True)
+    assert p.returncode == 2 and not out.exists(), p.stdout + p.stderr
+    assert "option --split after the command demux: options go before the command" in p.stderr, p.stderr
+    p = subprocess.run([*PROGRAM, "info", str(disc), "extra"], capture_output=True, text=True)
+    assert p.returncode == 2 and "info takes at most 1 argument: extra is one too many" in p.stderr, p.stderr
