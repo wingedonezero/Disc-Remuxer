@@ -829,6 +829,10 @@ int  ff_disctl_spu_unit(void *spu, const DRUnit *unit);
 /** PGS; forced_only: *showing is the track's "a forced object is on screen"
  *  across its segments (0 at the title's start). */
 void ff_disctl_spu_set_pgs(DRSpu *s, int forced_only, int *showing);
+/** The units waiting for the video's grid go on once it is known (called
+ *  as the segment's video frames come: a unit that came before the video's
+ *  first frame would otherwise wait for its track's next unit). */
+int  ff_disctl_spu_drain(DRSpu *s);
 /** The end of the segment (after the video's flush). */
 int  ff_disctl_spu_flush(DRSpu *s);
 void ff_disctl_spu_stats(const DRSpu *s, DRSpuStats *st);

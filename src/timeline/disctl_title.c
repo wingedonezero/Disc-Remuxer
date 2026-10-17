@@ -1660,6 +1660,17 @@ static int seg_frame(void *opaque, DRFrame *f)
             k->have_header = 1;
         }
     }
+    if (!k->index) {
+        /* a video frame: the subtitle units that came before the video's
+         * grid was known go on now, not with their track's next unit (which
+         * may be minutes away), so the tracks leave in time order */
+        DRTitle *t = k->title;
+        int ret = ff_disctl_join_push(t->join, 0, f);
+        for (int i = 1; ret >= 0 && i < t->cfg.nb_tracks; i++)
+            if (t->t[i].spu)
+                ret = ff_disctl_spu_drain(t->t[i].spu);
+        return ret;
+    }
     return ff_disctl_join_push(k->title->join, k->index, f);
 }
 

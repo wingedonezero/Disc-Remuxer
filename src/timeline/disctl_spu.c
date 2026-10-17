@@ -433,6 +433,11 @@ int ff_disctl_spu_unit(void *opaque, const DRUnit *u)
     return drain(s);
 }
 
+int ff_disctl_spu_drain(DRSpu *s)
+{
+    return s->n ? drain(s) : 0;
+}
+
 int ff_disctl_spu_flush(DRSpu *s)
 {
     int ret = drain(s);

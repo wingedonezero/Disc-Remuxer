@@ -242,6 +242,18 @@ def test_a_sub_picture_followed_by_one_at_the_same_time_keeps_its_step():
     assert review == 0
 
 
+def test_a_sub_picture_that_comes_before_the_video_leaves_with_the_video_not_with_its_next_unit():
+    # a unit read before the segment's first video picture waits for the video's grid; it goes on as the
+    # video comes (the tracks leave in time order: an MKV file needs that), not when its track's next unit
+    # comes, 1180 frames later
+    early = Payload(1, spu(20, True, [], 1), BASE + 10 * FRAME, BASE - 2 * FRAME)
+    late = Payload(1, spu(20, True, [], 2), BASE + 1190 * FRAME, BASE + 1190 * FRAME)
+    outs, _, _, _ = run(sub_tracks(), True, [interleave(video(BASE), [early, late])])
+    s = [o for o in outs if o.track == 1]
+    assert [o.time for o in s] == [10 * FRAME, 1190 * FRAME]
+    assert s[0].vmax_before < 100 * FRAME, "out with the first video frames"
+
+
 def cc_block(pairs):
     """A DVD caption block (GOP user data): odd field first, each field-1
     byte pair followed by a field-2 null pair."""
