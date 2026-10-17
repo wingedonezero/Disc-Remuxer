@@ -2301,6 +2301,8 @@ extern "C" int mkv_close(MkvWriter **pw, const MkvChapter *chapters, int nb_chap
     }
     if (w->failed)
         ret = -w->error;
+    for (auto &t : w->tracks)
+        w->st.dropped_negative += t.dropped_negative;
     if (st)
         *st = w->st;
     if (w->out) {

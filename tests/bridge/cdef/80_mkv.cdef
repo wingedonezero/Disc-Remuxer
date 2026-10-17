@@ -20,7 +20,7 @@ typedef struct MkvFileSpec {
     const MkvChapter *chapters;
     int         nb_chapters;
 } MkvFileSpec;
-typedef struct MkvStats { int64_t clusters, cues, blocks, bytes; int64_t late; int nb_removed; int removed[128]; } MkvStats;
+typedef struct MkvStats { int64_t clusters, cues, blocks, bytes; int64_t late; int64_t dropped_negative; int nb_removed; int removed[128]; } MkvStats;
 int mkv_open(MkvWriter **w, const char *path, const MkvFileSpec *file, const MkvTrackSpec *tracks, int nb_tracks);
 int mkv_frame(MkvWriter *w, int track, const uint8_t *data, int size, int64_t time, int64_t duration, int key);
 int mkv_close(MkvWriter **w, const MkvChapter *chapters, int nb_chapters, int abort, MkvStats *st);

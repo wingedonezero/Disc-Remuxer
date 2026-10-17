@@ -251,7 +251,8 @@ def write_mkv(path, tracks, frames, stats=None):
     st = ffi.new("MkvStats *")
     assert lib.mkv_close(w, ffi.NULL, 0, 0, st) == 0
     if stats is not None:
-        stats.update(late=st.late, cues=st.cues, removed=[st.removed[i] for i in range(st.nb_removed)])
+        stats.update(late=st.late, cues=st.cues, dropped_negative=st.dropped_negative,
+                     removed=[st.removed[i] for i in range(st.nb_removed)])
     return path.read_bytes()
 
 
@@ -534,6 +535,7 @@ def test_the_mkvmerge_mode_muxes_the_stream_files_into_the_same_file_and_deletes
     assert [str(f) for f in files if f.suffix != ".log"] == ["title_t00.mkv"], files
     assert "mkvmerge: 2 files into" in log and "the stream files are deleted" in log, log
     assert "mkvmerge: no hole in this title: no timestamp files, the delays as --sync" in log, log
+    assert ": timestamp file " not in log, "a no-hole title writes no timestamp files (nothing contradictory said)"
     assert "no timestamp file (" not in log, "LPCM keeps gaps as silence: nothing to say about it"
     a = find(elements((tmp_path / "mkvmerge/title_t00.mkv").read_bytes()), 0x18538067)[0]
     b = find(elements((tmp_path / "mkv/title_t00/title_t00.mkv").read_bytes()), 0x18538067)[0]
@@ -548,3 +550,85 @@ def test_truehd_data_counts_its_access_units_as_mkvmerge_makes_packets_of_them()
     data = au(10) + au(40) + au(7)
     assert lib.mkv_audio_packets(lib.MKV_CODEC_TRUEHD, data, len(data)) == 3
     assert lib.mkv_audio_packets(lib.MKV_CODEC_TRUEHD, data[:-1], len(data) - 1) == 2, "a cut-off unit is no packet"
+
+
+def fake_mkvmerge(tmp_path, script):
+    """A stand-in mkvmerge (mkv.mkvmerge_path): a shell script."""
+    import os
+    f = tmp_path / "fake-mkvmerge"
+    f.write_text("#!/bin/sh\n" + script)
+    os.chmod(f, 0o755)
+    return f
+
+
+def test_mkvmerge_lines_split_at_carriage_returns(tmp_path):
+    # mkvmerge separates its progress updates with \r inside one line; a
+    # warning after an update must still reach the log
+    disc, _ = avc_lpcm_disc(tmp_path)
+    fake = fake_mkvmerge(tmp_path, "printf 'Progress: 50%%\\rWarning: after an update\\n'\nexit 1\n")
+    p = subprocess.run([*PROGRAM, "--set", "output.format=mkvmerge", "--set", f"mkv.mkvmerge_path={fake}",
+                        "--set", "titles.min_length=0", "demux", str(disc), "0", str(tmp_path / "out")],
+                       capture_output=True, text=True)
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert "mkvmerge: Warning: after an update" in p.stdout, p.stdout
+    assert "mkvmerge finished with warnings" in p.stdout, p.stdout
+
+
+def test_a_failed_mux_keeps_the_stream_files_and_removes_the_unfinished_mkv(tmp_path):
+    # mkvmerge leaves what it wrote of its output when it fails; no unfinished
+    # MKV file may stay next to finished ones
+    disc, _ = avc_lpcm_disc(tmp_path)
+    fake = fake_mkvmerge(tmp_path, 'out=$(python3 -c "import json,sys; a=json.load(open(sys.argv[1][1:]));'
+                                   ' print(a[a.index(\'--output\')+1])" "$1")\n'
+                                   'echo partial > "$out"\nprintf \'Error: boom\\n\'\nexit 2\n')
+    out = tmp_path / "out"
+    p = subprocess.run([*PROGRAM, "--set", "output.format=mkvmerge", "--set", f"mkv.mkvmerge_path={fake}",
+                        "--set", "titles.min_length=0", "demux", str(disc), "0", str(out)],
+                       capture_output=True, text=True)
+    assert "mkvmerge: Error: boom" in p.stdout and "mkvmerge failed (exit status 2," in p.stdout, p.stdout
+    assert f"mkvmerge: its unfinished file {out}/title_t00.mkv is removed" in p.stdout, p.stdout
+    assert not (out / "title_t00.mkv").exists(), "the unfinished MKV file is removed"
+    kept = sorted(f.name for f in (out / "title_t00").iterdir())
+    assert any(f.endswith(".h264") for f in kept) and any(f.endswith(".wav") for f in kept), kept
+    assert "stream files are written, but mkvmerge did not make the MKV file" in p.stdout, p.stdout
+
+
+def test_a_stop_during_the_mux_ends_mkvmerge_and_keeps_the_stream_files(tmp_path):
+    # a stop asked for while mkvmerge runs (Ctrl+C, the GUI's Stop) ends it;
+    # the stream files are kept and the title says it was stopped, not failed
+    import os
+    import signal
+    import time
+    disc, _ = avc_lpcm_disc(tmp_path)
+    started = tmp_path / "mux-started"
+    fake = fake_mkvmerge(tmp_path, f'touch "{started}"\nexec sleep 30\n')
+    out = tmp_path / "out"
+    with subprocess.Popen([*PROGRAM, "--set", "output.format=mkvmerge", "--set", f"mkv.mkvmerge_path={fake}",
+                           "--set", "titles.min_length=0", "demux", str(disc), "0", str(out)],
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                          start_new_session=True) as p:   # its own group: the signal goes to the program alone
+        for _ in range(200):
+            if started.exists():
+                break
+            time.sleep(0.05)
+        assert started.exists(), "the fake mkvmerge never ran"
+        os.kill(p.pid, signal.SIGINT)
+        log = p.communicate(timeout=20)[0]
+    assert "mkvmerge stopped as asked; the stream files are kept" in log, log
+    assert "stopped as asked during the mux: its stream files are kept, the MKV file is not made" in log, log
+    assert not (out / "title_t00.mkv").exists()
+    kept = sorted(f.name for f in (out / "title_t00").iterdir())
+    assert any(f.endswith(".h264") for f in kept) and any(f.endswith(".wav") for f in kept), kept
+
+
+def test_frames_before_the_titles_start_are_dropped_and_counted(tmp_path):
+    # audio starting before the video (a negative delay): the packets below 0
+    # are not in the file, as mkvmerge drops them; the count reaches the log
+    ac3 = (DATA / "sine_7680.ac3").read_bytes()
+    frames = [ac3[i:i + 768] for i in range(0, len(ac3), 768)]
+    st = {}
+    data = write_mkv(tmp_path / "a.mkv", [{"codec": lib.MKV_CODEC_AC3, "language": "eng"}],
+                     [(0, f, 32000000 * (i - 2), 32000000, 1) for i, f in enumerate(frames)], stats=st)
+    assert st["dropped_negative"] == 2, st
+    blocks = audio_blocks(find(elements(data), 0x18538067)[0], 1)
+    assert sum(len(fs) for _, fs in blocks) == len(frames) - 2 and blocks[0][0] == 0

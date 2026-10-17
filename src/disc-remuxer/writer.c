@@ -14,6 +14,8 @@
 #include <errno.h>
 #include <limits.h>
 #include <inttypes.h>
+#include <poll.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -940,18 +942,28 @@ static int opts_addf(Opts *o, const char *fmt, ...)
     return opts_add(o, b);
 }
 
-/* Runs mkvmerge with the options file; its lines go into the log (its
- * warnings and errors as such). Its exit status: 0 done, 1 done with
- * warnings, 2 failed; negative: it could not be run. */
+/* One line of mkvmerge's output into the log (its warnings and errors as
+ * such; mkvmerge separates its progress updates with \r inside one line, so
+ * each \r-piece is a line of its own). */
+static void mkvmerge_line(const char *line)
+{
+    log_text(!strncmp(line, "Error:", 6) ? LOG_ERROR : !strncmp(line, "Warning:", 8) ? LOG_WARNING :
+             LOG_DETAIL, "mkvmerge: %s", line);
+}
+
+/* Runs mkvmerge with the options file; its lines go into the log. A stop
+ * asked for while it runs (engine_cancel()) ends it (SIGTERM). Its exit
+ * status: 0 done, 1 done with warnings, 2 failed (also a stop; the caller
+ * tells them apart by engine_cancelled()); negative: it could not be run. */
 static int run_mkvmerge(const char *program, const char *opts_path)
 {
     char at[4200];
     char *argv[] = { (char *)program, at, NULL };
     posix_spawn_file_actions_t fa;
-    int pfd[2], status = 0, ret;
+    int pfd[2], status = 0, ret, killed = 0;
     pid_t pid;
-    FILE *f;
-    char line[4096];
+    char buf[4096], line[4096];
+    size_t have = 0;
     extern char **environ;
 
     snprintf(at, sizeof(at), "@%s", opts_path);
@@ -968,17 +980,33 @@ static int run_mkvmerge(const char *program, const char *opts_path)
         close(pfd[0]);
         return DR_ERR(ret);
     }
-    if ((f = fdopen(pfd[0], "r"))) {
-        while (fgets(line, sizeof(line), f)) {
-            line[strcspn(line, "\r\n")] = 0;
-            if (!*line)
-                continue;
-            log_text(!strncmp(line, "Error:", 6) ? LOG_ERROR : !strncmp(line, "Warning:", 8) ? LOG_WARNING :
-                     LOG_DETAIL, "mkvmerge: %s", line);
+    for (;;) {
+        struct pollfd pl = { .fd = pfd[0], .events = POLLIN };
+        int pr = poll(&pl, 1, 200), n;
+        if (engine_cancelled() && !killed) {
+            kill(pid, SIGTERM);
+            killed = 1;
         }
-        fclose(f);
-    } else
-        close(pfd[0]);
+        if (pr < 0 && errno != EINTR)
+            break;
+        if (pr <= 0)
+            continue;
+        if ((n = (int)read(pfd[0], buf, sizeof(buf))) <= 0)
+            break;
+        for (int i = 0; i < n; i++) {
+            if (buf[i] == '\r' || buf[i] == '\n') {
+                line[have] = 0;
+                if (have)
+                    mkvmerge_line(line);
+                have = 0;
+            } else if (have < sizeof(line) - 1)
+                line[have++] = (char)buf[i];
+        }
+    }
+    line[have] = 0;
+    if (have)
+        mkvmerge_line(line);
+    close(pfd[0]);
     if (waitpid(pid, &status, 0) < 0)
         return DR_ERR(errno);
     return WIFEXITED(status) ? WEXITSTATUS(status) : 2;
@@ -987,8 +1015,31 @@ static int run_mkvmerge(const char *program, const char *opts_path)
 /* The title's stream files into <out folder>/<title>.mkv with mkvmerge;
  * on success the files written for it are deleted (the title's folder too
  * when it has one). 0, or a negative error (the stream files are kept). */
+/* Does this title have a real hole — damaged data left out, pictures missing
+ * where the times jump, an audio gap left open? The stream files close such a
+ * hole; with its timestamp file every track keeps it. why: what was found. */
+static int title_holes(DrDisc *d, EsOut *out, int nb_tracks, char *why, size_t why_size)
+{
+    int64_t ranges = dr_disc_damaged_ranges(d);
+    char ms[32];
+
+    *why = 0;
+    if (ranges)
+        snprintf(why, why_size, "%"PRId64" damaged range(s) left out", ranges);
+    for (int i = 0; i < nb_tracks; i++) {
+        const DrDiscTrack *t = dr_disc_track(d, i);
+        if (!out[i].opened || !t->holes || (t->type != DISC_MEDIA_VIDEO && t->type != DISC_MEDIA_AUDIO))
+            continue;
+        snprintf(ms, sizeof(ms), "%.3f", t->hole_ticks / (DR_TICKS_PER_SECOND / 1000.0));
+        snprintf(why + strlen(why), why_size - strlen(why), "%strack %d: %"PRId64" %s (%s ms)",
+                 *why ? "; " : "", t->number, t->holes,
+                 t->type == DISC_MEDIA_VIDEO ? "hole(s) in the pictures" : "audio gap(s) left open", ms);
+    }
+    return *why != 0;
+}
+
 static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_dir, const char *dir, int own_dir,
-                          const char *name, const char *chap, int nb_chapters, char **mkv_out)
+                          const char *name, const char *chap, int nb_chapters, int use_ts, char **mkv_out)
 {
     const char *program = *setting_text("mkv.mkvmerge_path") ? setting_text("mkv.mkvmerge_path") : "mkvmerge";
     int none = !strcmp(setting_text("mkv.compression"), "none");
@@ -996,8 +1047,8 @@ static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_
     Opts o = { 0 };
     char *mkv = dr_asprintf_str("%s/%s.mkv", out_dir, name), *opts_path = dr_asprintf_str("%s/%s_mkvmerge.json", dir,
                                                                                           name);
-    char order[8192] = "", why[1024] = "";
-    int nfile = 0, ret = 0, st, use_ts = 0;
+    char order[8192] = "";
+    int nfile = 0, ret = 0, st;
     FILE *f;
 
     *mkv_out = NULL;
@@ -1010,41 +1061,20 @@ static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_
     if (getenv("DR_MKV_NO_VARIABLE_DATA") &&
         ((ret = opts_add(&o, "--engage")) < 0 || (ret = opts_add(&o, "no_variable_data")) < 0))
         goto done;
-    /* the timestamp files only for a title with a real hole: damaged data left out, pictures missing where the
-     * times jump, an audio gap left open. The stream files close such a hole; with its timestamp file every
-     * track keeps it. Any other title: the delays as --sync, as with stream files muxed by hand. */
-    {
-        int64_t ranges = dr_disc_damaged_ranges(d);
-        char ms[32];
-        if (ranges)
-            snprintf(why + strlen(why), sizeof(why) - strlen(why), "%"PRId64" damaged range(s) left out", ranges);
-        for (int i = 0; i < nb_tracks; i++) {
-            const DrDiscTrack *t = dr_disc_track(d, i);
-            if (!out[i].opened || !t->holes || (t->type != DISC_MEDIA_VIDEO && t->type != DISC_MEDIA_AUDIO))
-                continue;
-            snprintf(ms, sizeof(ms), "%.3f", t->hole_ticks / (DR_TICKS_PER_SECOND / 1000.0));
-            snprintf(why + strlen(why), sizeof(why) - strlen(why), "%strack %d: %"PRId64" %s (%s ms)",
-                     *why ? "; " : "", t->number, t->holes,
-                     t->type == DISC_MEDIA_VIDEO ? "hole(s) in the pictures" : "audio gap(s) left open", ms);
-        }
-        use_ts = *why != 0;
-        if (use_ts) {
-            log_text(LOG_INFO, "mkvmerge: timestamp files used for this title: it has holes the stream files close "
-                     "(%s); with them every track keeps its gaps", why);
-            for (int i = 0; i < nb_tracks; i++) {
-                const DrDiscTrack *t = dr_disc_track(d, i);
-                /* LPCM keeps the gaps as silence; another codec without a timestamp file closes them */
-                if (out[i].opened && t->type == DISC_MEDIA_AUDIO && !out[i].ts_path && !is_lpcm(t))
-                    log_text(LOG_WARNING, "Track %d (%s): no timestamp file (how mkvmerge cuts this codec into packets "
-                             "is not built in yet): in the MKV file it closes the title's gaps, so after a hole it "
-                             "runs ahead of the picture", t->number, codec_id_name(t->codec));
-                if (out[i].opened && t->type == DISC_MEDIA_AUDIO && out[i].ts_path && out[i].st.delay_ms < 0)
-                    log_text(LOG_WARNING, "Track %d starts %"PRId64" ms before the video and the title has holes: its "
-                             "timestamp file starts below 0, so mkvmerge moves the whole file later (the video does "
-                             "not start at 0) [not handled yet]", t->number, -out[i].st.delay_ms);
-            }
-        } else
-            log_text(LOG_INFO, "mkvmerge: no hole in this title: no timestamp files, the delays as --sync");
+    /* the timestamp files only for a title with a real hole (title_holes(),
+     * decided and said when they were written); any other title: the delays
+     * as --sync, as with stream files muxed by hand */
+    for (int i = 0; use_ts && i < nb_tracks; i++) {
+        const DrDiscTrack *t = dr_disc_track(d, i);
+        /* LPCM keeps the gaps as silence; another codec without a timestamp file closes them */
+        if (out[i].opened && t->type == DISC_MEDIA_AUDIO && !out[i].ts_path && !is_lpcm(t))
+            log_text(LOG_WARNING, "Track %d (%s): no timestamp file (how mkvmerge cuts this codec into packets "
+                     "is not built in yet): in the MKV file it closes the title's gaps, so after a hole it "
+                     "runs ahead of the picture", t->number, codec_id_name(t->codec));
+        if (out[i].opened && t->type == DISC_MEDIA_AUDIO && out[i].ts_path && out[i].st.delay_ms < 0)
+            log_text(LOG_WARNING, "Track %d starts %"PRId64" ms before the video and the title has holes: its "
+                     "timestamp file starts below 0, so mkvmerge moves the whole file later (the video does "
+                     "not start at 0) [not handled yet]", t->number, -out[i].st.delay_ms);
     }
     for (int i = 0; i < nb_tracks; i++) {
         const DrDiscTrack *t = dr_disc_track(d, i);
@@ -1054,7 +1084,7 @@ static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_
             continue;
         if (t->second_view) {
             log_text(LOG_WARNING, "Track %d: the second view of a 3-D video is not given to mkvmerge (kept out of the "
-                     "MKV file)", t->number);
+                     "MKV file); its file is kept: %s", t->number, e->name);
             continue;
         }
         snprintf(file, sizeof(file), "%s", e->name);
@@ -1101,23 +1131,42 @@ static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_
     }
     log_text(LOG_INFO, "mkvmerge: %d file%s into %s (options file %s)", nfile, nfile == 1 ? "" : "s", mkv, opts_path);
     st = run_mkvmerge(program, opts_path);
+    /* a stop asked for while mkvmerge ran: no MKV file, the stream files are kept */
+    if (engine_cancelled()) {
+        struct stat sb;
+        log_text(LOG_WARNING, "mkvmerge stopped as asked; the stream files are kept");
+        if (stat(mkv, &sb) == 0 && unlink(mkv) == 0)
+            log_text(LOG_INFO, "mkvmerge: its unfinished file %s is removed", mkv);
+        ret = DR_ERR_CANCELLED;
+        goto done;
+    }
     if (st < 0) {
         log_text(LOG_ERROR, "mkvmerge (%s) cannot be run: %s; the stream files are kept", program, strerror(-st));
         ret = DR_ERR_INVALID;
         goto done;
     }
     if (st >= 2) {
+        struct stat sb;
         log_text(LOG_ERROR, "mkvmerge failed (exit status %d, see its lines above); the stream files are kept", st);
+        /* mkvmerge leaves what it wrote of its output: no unfinished MKV
+         * file stays next to finished ones */
+        if (stat(mkv, &sb) == 0 && unlink(mkv) == 0)
+            log_text(LOG_INFO, "mkvmerge: its unfinished file %s is removed", mkv);
         ret = DR_ERR_INVALID;
         goto done;
     }
     if (st == 1)
         log_text(LOG_WARNING, "mkvmerge finished with warnings (see its lines above)");
-    /* done: the files written for the title go */
+    /* done: the files written for the title go (not the second view's, which
+     * mkvmerge was not given: the MKV file does not hold it) */
     {
-        int left = 0;
+        int left = 0, kept = 0;
         for (int i = 0; i < nb_tracks; i++) {
             EsOut *e = &out[i];
+            if (dr_disc_track(d, i)->second_view) {
+                kept += e->opened && e->name;
+                continue;
+            }
             if (e->opened && e->name) {
                 left += unlink(e->name) < 0;
                 if (dr_disc_track(d, i)->codec == DR_CODEC_DVD_SUBTITLE && strlen(e->name) > 3) {
@@ -1133,10 +1182,10 @@ static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_
         if (chap)
             unlink(chap);
         left += unlink(opts_path) < 0;
-        if (own_dir && rmdir(dir) < 0)
+        if (own_dir && !kept && rmdir(dir) < 0)
             log_text(LOG_WARNING, "The folder %s is not empty after the mux: kept", dir);
-        log_text(LOG_INFO, "MKV file: %s (mkvmerge); the stream files are deleted%s", mkv,
-                 left ? " (some could not be)" : "");
+        log_text(LOG_INFO, "MKV file: %s (mkvmerge); the stream files are deleted%s%s", mkv,
+                 left ? " (some could not be)" : "", kept ? " (the second view's file is kept)" : "");
     }
     *mkv_out = mkv;
     mkv = NULL;
@@ -1162,7 +1211,8 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     int mkv = !strcmp(setting_text("output.format"), "mkv");
     /* output.format = mkvmerge: the stream files (with the timestamp files), then mkvmerge muxes them */
     int via = !strcmp(setting_text("output.format"), "mkvmerge");
-    int want_ts = setting_bool("output.timestamps_file") || via, ts_track = -1;
+    int want_ts_setting = setting_bool("output.timestamps_file");
+    int want_ts = want_ts_setting || via, ts_track = -1, use_ts = 0;
     MkvOut *mo = NULL;
     char *mkv_path = NULL;
     int64_t mkv_bytes = 0;
@@ -1356,8 +1406,21 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     }
     for (int i = 0; ret >= 0 && !mkv && i < nb_tracks; i++)
         ret = es_flush_hold(dr_disc_track(d, i), &out[i], prefix);
-    /* the timestamp files: next to each video and audio stream file (MKV: the video's, next to the MKV file) */
-    for (int i = 0; ret >= 0 && want_ts && i < nb_tracks; i++) {
+    /* the mkvmerge mode gives mkvmerge the timestamp files only for a title
+     * with a real hole: the decision (and why) first, so the files written
+     * below are the ones used */
+    if (ret >= 0 && via) {
+        char why[1024];
+        use_ts = title_holes(d, out, nb_tracks, why, sizeof(why));
+        if (use_ts)
+            log_text(LOG_INFO, "mkvmerge: timestamp files used for this title: it has holes the stream files close "
+                     "(%s); with them every track keeps its gaps", why);
+        else
+            log_text(LOG_INFO, "mkvmerge: no hole in this title: no timestamp files, the delays as --sync");
+    }
+    /* the timestamp files: next to each video and audio stream file (MKV: the video's, next to the MKV file;
+     * the mkvmerge mode: only when they are used, unless output.timestamps_file asks for them) */
+    for (int i = 0; ret >= 0 && want_ts && !(via && !use_ts && !want_ts_setting) && i < nb_tracks; i++) {
         EsOut *o = &out[i];
         const DrDiscTrack *t = dr_disc_track(d, i);
         char *path;
@@ -1383,8 +1446,8 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
             log_text(LOG_ERROR, "Track %d: the timestamp file %s could not be written: %s", dr_disc_track(d, i)->number,
                      path, strerror(-r2));
         else
-            log_text(LOG_INFO, "Track %d: timestamp file %s (%zu pictures)", dr_disc_track(d, i)->number, path,
-                     o->nb_ts);
+            log_text(LOG_INFO, "Track %d: timestamp file %s (%zu %s)", dr_disc_track(d, i)->number, path,
+                     o->nb_ts, t->type == DISC_MEDIA_VIDEO ? "pictures" : "packets");
         if (r2 < 0)
             dr_free(path);
         else
@@ -1489,8 +1552,12 @@ end:
         if (via && !check_failed) {
             char *made_mkv = NULL;
             struct stat sb;
-            if (mkvmerge_title(d, out, nb_tracks, job->out_dir, dir, job->sub_folder, res->name, chap, nb_chapters,
-                               &made_mkv) < 0) {
+            int mret = mkvmerge_title(d, out, nb_tracks, job->out_dir, dir, job->sub_folder, res->name, chap,
+                                      nb_chapters, use_ts, &made_mkv);
+            if (mret == DR_ERR_CANCELLED) {
+                res->stopped = 1;
+                res->failed  = 1;
+            } else if (mret < 0) {
                 res->failed = 1;
             } else {
                 for (int i = 0; i < nb_tracks; i++)
@@ -1591,7 +1658,10 @@ end:
         snprintf(made, sizeof(made), "(%u chapter%s, %s%s)", (unsigned)nb_chapters, nb_chapters == 1 ? "" : "s",
                  size_text(sz, sizeof(sz), written),
                  mkv || via_done ? "; the MKV file itself is not read back yet" : "");
-        if (via && !via_done && !check_failed) {
+        if (via && res->stopped) {
+            log_msg(MSG_TITLE_FAILED, LOG_WARNING, "%s stopped as asked during the mux: its stream files are kept, "
+                    "the MKV file is not made", who);
+        } else if (via && !via_done && !check_failed) {
             log_msg(MSG_TITLE_DONE, LOG_ERROR, "%s: its stream files are written, but mkvmerge did not make the MKV "
                     "file (see above)", who);
         } else if (check_failed) {
