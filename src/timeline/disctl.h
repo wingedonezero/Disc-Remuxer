@@ -554,6 +554,7 @@ typedef struct DRJunctionStats {
     int64_t in, out, dropped, dropped_dur, markers;
     int64_t joins[DR_JOIN_KINDS]; /**< TrueHD / MLP joins by DRSampleJoin */
     int64_t copies;            /**< of the dropped: copies at a join left out (DR_EV_AUDIO_COPY) */
+    int64_t gaps, gap_dur;     /**< gaps left open (DR_EV_GAP) and their total (ticks) */
     int64_t skew;              /**< current skew */
     int     ended;             /**< the video ended before the track */
 } DRJunctionStats;
@@ -1111,6 +1112,9 @@ int64_t ff_disctl_title_review(const DRTitle *t);
 /** After finish: a track's frames given out, the warnings logged about it
  *  (junction events, grid findings, checks) and (audio) its start delay. */
 int ff_disctl_title_track_result(const DRTitle *t, int track, int64_t *frames, int64_t *warnings, int64_t *delay);
+/** A track's holes: video: gaps in display order (pictures missing where the times jump); audio: gaps left open
+ *  (the picture runs on without it); and their total (ticks). 0, or <0 for a track index out of range. */
+int ff_disctl_title_track_holes(const DRTitle *t, int track, int64_t *holes, int64_t *dur);
 /** After finish, a sub-picture track: units without a stop time shown until
  *  the next one, units drawn outside the track's canvas. */
 int ff_disctl_title_spu_result(const DRTitle *t, int track, int64_t *no_stop, int64_t *outside);

@@ -2288,6 +2288,25 @@ int ff_disctl_title_track_result(const DRTitle *t, int track, int64_t *frames, i
     return 0;
 }
 
+int ff_disctl_title_track_holes(const DRTitle *t, int track, int64_t *holes, int64_t *dur)
+{
+    *holes = *dur = 0;
+    if (track < 0 || track >= t->cfg.nb_tracks)
+        return DR_ERR(EINVAL);
+    if (t->t[track].cfg.kind == DR_KIND_VIDEO && t->t[track].verify) {
+        DRVerifyStats st;
+        ff_disctl_verify_stats(t->t[track].verify, &st);
+        *holes = st.holes;
+        *dur   = st.hole_dur;
+    } else if (t->t[track].junction) {
+        DRJunctionStats js;
+        ff_disctl_junction_stats(t->t[track].junction, &js);
+        *holes = js.gaps;
+        *dur   = js.gap_dur;
+    }
+    return 0;
+}
+
 int ff_disctl_title_cc_result(const DRTitle *t, int track, int64_t *blocks, int64_t *cues, int64_t *lost)
 {
     if (track < 0 || track >= t->cfg.nb_tracks || t->t[track].cfg.kind != DR_KIND_CAPTION)

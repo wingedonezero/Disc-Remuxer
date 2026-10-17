@@ -75,6 +75,8 @@ typedef struct DrDiscTrack {
     int64_t     frames;          /**< frames (subtitles: units; captions: blocks) given out */
     int64_t     warnings;
     int64_t     delay_ticks;     /**< audio: its first frame's time (the start delay) */
+    int64_t     holes, hole_ticks;       /**< video: pictures missing where the times jump; audio: gaps left open
+                                              (the picture runs on without it); and their total */
     int64_t     cc_blocks, cc_text;      /**< video: line-21 data taken out and dropped */
     int64_t     cues, cc_lost;           /**< a caption track: SRT cues made, captions lost at segment ends */
     int64_t     no_stop, outside;        /**< subtitles: units without a stop time, units outside the canvas */

@@ -201,6 +201,7 @@ typedef struct DRJunctionStats {
     int64_t in, out, dropped, dropped_dur, markers;
     int64_t joins[6];
     int64_t copies;
+    int64_t gaps, gap_dur;
     int64_t skew;
     int     ended;
 } DRJunctionStats;

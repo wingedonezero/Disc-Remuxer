@@ -138,6 +138,7 @@ def test_a_real_gap_resets_the_skew_and_inserts_nothing():
     assert len(s.out) == 60
     assert s.out[30][0] == 30 * eac3 + gap, "the gap stays a gap"
     assert st.skew == 0
+    assert (st.gaps, st.gap_dur) == (1, gap), "counted as a gap left open (the stream file closes it)"
 
 
 def test_a_large_overlap_drops_whole_frames_up_to_a_sync_unit():

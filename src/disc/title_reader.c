@@ -1663,6 +1663,7 @@ static int title_end(DrDisc *d)
         t->frames      = frames;
         t->warnings    = warnings;
         t->delay_ticks = delay;
+        ff_disctl_title_track_holes(r->rip, i, &t->holes, &t->hole_ticks);
         if (ff_disctl_title_cc_result(r->rip, i, &frames, &warnings, &lost) >= 0) {
             t->has_cc    = 1;
             t->cc_blocks = frames;

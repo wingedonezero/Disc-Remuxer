@@ -594,8 +594,8 @@ static int cmp_i64(const void *a, const void *b)
 }
 
 /* mkvmerge's timestamp format v4: the pictures' times in display order, in
- * ms with six decimals and half a ns more (mkvmerge cuts the ns it reads, so
- * each line reads back as its exact ns). */
+ * ms with six decimals and half a ns more (away from 0: mkvmerge cuts the ns
+ * it reads toward 0, so each line reads back as its exact ns). */
 static int ts_write(const char *path, EsOut *o)
 {
     FILE *f = fopen(path, "w");
@@ -607,7 +607,7 @@ static int ts_write(const char *path, EsOut *o)
     ok = fputs("# timestamp format v4\n", f) >= 0;
     for (size_t i = 0; ok && i < o->nb_ts; i++) {
         int64_t t = o->ts[i];
-        ok = (t < 0 ? fprintf(f, "-%"PRId64".%06"PRId64"\n", -t / 1000000, -t % 1000000) :
+        ok = (t < 0 ? fprintf(f, "-%"PRId64".%06"PRId64"5\n", -t / 1000000, -t % 1000000) :
                       fprintf(f, "%"PRId64".%06"PRId64"5\n", t / 1000000, t % 1000000)) > 0;
     }
     if (fclose(f) != 0 || !ok)
@@ -990,8 +990,8 @@ static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_
     Opts o = { 0 };
     char *mkv = dr_asprintf_str("%s/%s.mkv", out_dir, name), *opts_path = dr_asprintf_str("%s/%s_mkvmerge.json", dir,
                                                                                           name);
-    char order[8192] = "";
-    int nfile = 0, ret = 0, st;
+    char order[8192] = "", why[1024] = "";
+    int nfile = 0, ret = 0, st, use_ts = 0;
     FILE *f;
 
     *mkv_out = NULL;
@@ -1004,6 +1004,37 @@ static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_
     if (getenv("DR_MKV_NO_VARIABLE_DATA") &&
         ((ret = opts_add(&o, "--engage")) < 0 || (ret = opts_add(&o, "no_variable_data")) < 0))
         goto done;
+    /* the timestamp files only for a title with a real hole: damaged data left out, pictures missing where the
+     * times jump, an audio gap left open. The stream files close such a hole; with its timestamp file every
+     * track keeps it. Any other title: the delays as --sync, as with stream files muxed by hand. */
+    {
+        int64_t ranges = dr_disc_damaged_ranges(d);
+        char ms[32];
+        if (ranges)
+            snprintf(why + strlen(why), sizeof(why) - strlen(why), "%"PRId64" damaged range(s) left out", ranges);
+        for (int i = 0; i < nb_tracks; i++) {
+            const DrDiscTrack *t = dr_disc_track(d, i);
+            if (!out[i].opened || !t->holes || (t->type != DISC_MEDIA_VIDEO && t->type != DISC_MEDIA_AUDIO))
+                continue;
+            snprintf(ms, sizeof(ms), "%.3f", t->hole_ticks / (DR_TICKS_PER_SECOND / 1000.0));
+            snprintf(why + strlen(why), sizeof(why) - strlen(why), "%strack %d: %"PRId64" %s (%s ms)",
+                     *why ? "; " : "", t->number, t->holes,
+                     t->type == DISC_MEDIA_VIDEO ? "hole(s) in the pictures" : "audio gap(s) left open", ms);
+        }
+        use_ts = *why != 0;
+        if (use_ts) {
+            log_text(LOG_INFO, "mkvmerge: timestamp files used for this title: it has holes the stream files close "
+                     "(%s); with them every track keeps its gaps", why);
+            for (int i = 0; i < nb_tracks; i++) {
+                const DrDiscTrack *t = dr_disc_track(d, i);
+                if (out[i].opened && t->type == DISC_MEDIA_AUDIO && out[i].ts_path && out[i].st.delay_ms < 0)
+                    log_text(LOG_WARNING, "Track %d starts %"PRId64" ms before the video and the title has holes: its "
+                             "timestamp file starts below 0, so mkvmerge moves the whole file later (the video does "
+                             "not start at 0) [not handled yet]", t->number, -out[i].st.delay_ms);
+            }
+        } else
+            log_text(LOG_INFO, "mkvmerge: no hole in this title: no timestamp files, the delays as --sync");
+    }
     for (int i = 0; i < nb_tracks; i++) {
         const DrDiscTrack *t = dr_disc_track(d, i);
         EsOut *e = &out[i];
@@ -1023,11 +1054,11 @@ static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_
         if (t->forced && t->type == DISC_MEDIA_SUBTITLE &&
             ((ret = opts_add(&o, "--forced-display-flag")) < 0 || (ret = opts_add(&o, "0:yes")) < 0))
             goto done;
-        /* audio: its timestamp file holds its start too, else the delay */
-        if (t->type == DISC_MEDIA_AUDIO && !e->ts_path && e->st.delay_ms &&
+        /* audio: its timestamp file (when used) holds its start too, else the delay */
+        if (t->type == DISC_MEDIA_AUDIO && !(use_ts && e->ts_path) && e->st.delay_ms &&
             ((ret = opts_add(&o, "--sync")) < 0 || (ret = opts_addf(&o, "0:%"PRId64, e->st.delay_ms)) < 0))
             goto done;
-        if (e->ts_path &&
+        if (use_ts && e->ts_path &&
             ((ret = opts_add(&o, "--timestamps")) < 0 || (ret = opts_addf(&o, "0:%s", e->ts_path)) < 0))
             goto done;
         if (t->type == DISC_MEDIA_SUBTITLE && none &&

@@ -513,8 +513,9 @@ def test_the_timestamp_file_lists_each_picture_s_time_to_the_ns_in_every_mode(tm
 
 
 def test_the_mkvmerge_mode_muxes_the_stream_files_into_the_same_file_and_deletes_them(tmp_path):
-    # the stream files, their timestamp file and an options file; mkvmerge @options makes <out>/<title>.mkv,
-    # equal byte for byte to the MKV the writer makes itself; the title's folder is gone afterwards
+    # the stream files and an options file; mkvmerge @options makes <out>/<title>.mkv with the same frames at the
+    # same times as the MKV the writer makes itself (no hole: no timestamp files, so mkvmerge places the video's
+    # default duration later in its header); the title's folder is gone afterwards
     import os
     import shutil
     import pytest
@@ -532,8 +533,11 @@ def test_the_mkvmerge_mode_muxes_the_stream_files_into_the_same_file_and_deletes
     files, log = made["mkvmerge"]
     assert [str(f) for f in files if f.suffix != ".log"] == ["title_t00.mkv"], files
     assert "mkvmerge: 2 files into" in log and "the stream files are deleted" in log, log
-    assert (tmp_path / "mkvmerge/title_t00.mkv").read_bytes() == \
-        (tmp_path / "mkv/title_t00/title_t00.mkv").read_bytes()
+    assert "mkvmerge: no hole in this title: no timestamp files, the delays as --sync" in log, log
+    a = find(elements((tmp_path / "mkvmerge/title_t00.mkv").read_bytes()), 0x18538067)[0]
+    b = find(elements((tmp_path / "mkv/title_t00/title_t00.mkv").read_bytes()), 0x18538067)[0]
+    for track in (1, 2):
+        assert audio_blocks(a, track) == audio_blocks(b, track), f"track {track}: the same frames at the same times"
 
 
 def test_truehd_data_counts_its_access_units_as_mkvmerge_makes_packets_of_them():
