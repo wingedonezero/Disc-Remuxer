@@ -226,12 +226,26 @@ def test_a_mark_at_the_end_of_a_file_is_the_next_part_s_start_once(tmp_path):
     assert parts(ts[0])[1][2] == [0, 10000 * M]
 
 
-def test_seamless_items_stay_in_their_part(tmp_path):
+def test_seamless_items_stay_in_their_part_but_whole_files_joined_by_5_start_one(tmp_path):
     pl = bd.mpls([whole("00001"), whole("00002"), whole("00003", 6), whole("00004", 5)])
     ts = titles(disc(tmp_path, [1, 2, 3, 4], {1: pl}))
     assert field(ts[0], "segments") == "1,(2,3),4"
-    assert [(f, d) for f, d, _ in parts(ts[0])] == [(0, 90000), (1, 3 * 90000)], \
-        "connection 6 and 5 are no back-to-back join: only the joined connection 1 starts a part"
+    assert [(f, d) for f, d, _ in parts(ts[0])] == [(0, 90000), (1, 2 * 90000), (2, 90000)], \
+        "connection 6 is one stream cut into files: no part; a 5 between whole files (episodes played " \
+        "seamlessly) starts one, as a joined 1 does"
+
+
+def test_a_seamless_5_between_pieces_of_files_starts_no_part(tmp_path):
+    # a 5 where an item plays only a piece of its file (a film's seamless pieces): no part there
+    pl = bd.mpls([whole("00001"), part_item("00002", 5), whole("00003", 5)])
+    ts = titles(disc(tmp_path, [1, 2, 3], {1: pl}))
+    assert parts(ts[0]) == [], ts[0]
+
+
+def test_whole_files_joined_by_5_are_said(tmp_path):
+    log = said(tmp_path, [1, 2], {1: bd.mpls([whole("00001"), whole("00002", 5)])})
+    assert ("Blu-ray: playlist 00001: items 0-1 are whole clips with matching streams joined seamlessly (connection "
+            "condition 5): the title may be split there into parts") in log, log
 
 
 def test_a_title_without_back_to_back_files_has_no_parts(tmp_path):

@@ -12,7 +12,9 @@
  *    within 35 s after the first ends, with compatible stream tables;
  *    neighbours with connection condition 1 that each cover their whole STC
  *    sequence (within 269 ticks) and have compatible stream tables are
- *    marked to join without starting a new title (0x7f);
+ *    marked to join without starting a new title (0x7f); such neighbours
+ *    with connection condition 5 keep it and are marked as a place the title
+ *    may be split into parts (whole_join);
  * 2. each sequential playlist, in listing order: one title per part (a part
  *    ends at a connection condition other than 5, 6 or the mark), per angle;
  *    repeated blocks at the end of a part and runs of 7 or more identical
@@ -824,7 +826,8 @@ int ff_bluray_title_parts(const BlurayTitle *t, int *first)
     int n = 0;
 
     for (int i = 0; i < t->nb_segs; i++)
-        if (!i || t->segs[i].items[0].connection == CC_JOINED) {
+        if (!i || t->segs[i].items[0].connection == CC_JOINED ||
+            (t->segs[i].items[0].item && t->segs[i].items[0].item->whole_join)) {
             if (first)
                 first[n] = i;
             n++;
@@ -1855,7 +1858,7 @@ static int merge_items(Ctx *c, BlurayPlaylist *pl)
         BlurayPlayItem *I = &pl->items[i], *prev = &pl->items[i - 1];
         int nA = DR_MAX(prev->nb_angles + 1, I->nb_angles + 1), ok = 1;
 
-        if (I->connection != 1)
+        if (I->connection != 1 && I->connection != 5)
             continue;
         for (int k = 0; k < nA && ok; k++) {
             Rec A, B;
@@ -1868,8 +1871,31 @@ static int merge_items(Ctx *c, BlurayPlaylist *pl)
                  DR_ABS((int64_t)I->out_time - B.stc->end) <= TOLERANCE &&
                  items_compatible(prev, A.clip, I, B.clip);
         }
-        if (ok)
+        /* a 5 keeps its connection (already a join of the title); it is only
+         * marked as a place the title may be split */
+        if (ok && I->connection == 5)
+            I->whole_join = 1;
+        else if (ok)
             I->connection = CC_JOINED;
+    }
+    /* said once per playlist: the runs of whole items joined seamlessly (a
+     * place the title may be split) */
+    {
+        char runs[256] = "";
+        int len = 0, first = -1;
+        for (int i = 1; i <= pl->nb_items; i++) {
+            int joined = i < pl->nb_items && pl->items[i].whole_join;
+            if (joined && first < 0)
+                first = i - 1;
+            if (!joined && first >= 0) {
+                len += snprintf(runs + len, sizeof(runs) - DR_MIN((size_t)len, sizeof(runs)), "%s%d-%d", len ? ", " : "",
+                                first, i - 1);
+                first = -1;
+            }
+        }
+        if (len)
+            dr_vlog(c->log, DR_VLOG_INFO, "Blu-ray: playlist %05u: items %s are whole clips with matching streams joined "
+                   "seamlessly (connection condition 5): the title may be split there into parts\n", pl->number, runs);
     }
     /* said once per playlist: the runs of items kept together */
     {
