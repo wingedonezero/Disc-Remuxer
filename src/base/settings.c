@@ -20,7 +20,7 @@ static const char *const udf_readers[]  = { "netbsd", "linux", NULL };
 static const char *const dv_layers[]    = { "merged", "separate", NULL };
 static const char *const cell_modes[]   = { "auto", "walk", "trim", "walk_trim", NULL };
 static const char *const cell_checks[]  = { "all", "spread", "random", NULL };
-static const char *const out_formats[]  = { "streams", "mkv", NULL };
+static const char *const out_formats[]  = { "streams", "mkv", "mkvmerge", NULL };
 static const char *const compressions[] = { "none", "zlib", NULL };
 
 static const Setting registry[] = {
@@ -47,8 +47,16 @@ static const Setting registry[] = {
       "Empty: the folder output next to the program.", 0, SET_AT_RIP },
     { "output", "format", SET_CHOICE, "streams", 0, 0, out_formats,
       "What each title is written as: streams (a file per track: the elementary stream, WAVE, subtitles, "
-      "and the chapters as XML) or mkv (one Matroska file holding every track and the chapters, written the "
-      "way mkvmerge writes one).", 0, SET_AT_RIP },
+      "and the chapters as XML), mkv (one Matroska file holding every track and the chapters, written the "
+      "way mkvmerge writes one) or mkvmerge (the stream files and their timestamp files, then mkvmerge muxes them "
+      "into <main output folder>/<title>.mkv through an options file, and the stream files are deleted once it "
+      "has; mkvmerge from the PATH or mkv.mkvmerge_path).", 0, SET_AT_RIP },
+    { "output", "timestamps_file", SET_BOOL, "false", 0, 0, NULL,
+      "Also write each video track's frame times as a timestamp file (mkvmerge's format v4, one time per picture "
+      "in ms, each read back to the exact ns): <video file>_timestamps.txt next to its stream file, or "
+      "<title>_timestamps.txt next to the MKV file. A raw video stream holds no times; with this file a later mux "
+      "(mkvmerge --timestamps) gets the disc's times even where frames alone do not tell them (a gap, a jump "
+      "between joined pieces, a change of frame rate).", 0, SET_AT_RIP },
     { "output", "file_name_template", SET_TEXT, "", 0, 0, NULL,
       "How a title's output files are named. {NAME1} the title's name, {CMNT1} its comment, {DT} its "
       "date, {N2} its number with two digits; {prefix:VAR} writes the prefix only after other text. "
@@ -102,6 +110,8 @@ static const Setting registry[] = {
       "MKV files (output.format = mkv): none stores the subtitles' blocks as they are; zlib compresses each "
       "(lossless, as mkvmerge does by default; a few players and devices cannot read compressed tracks).",
       0, SET_AT_RIP },
+    { "mkv", "mkvmerge_path", SET_TEXT, "", 0, 0, NULL,
+      "The mkvmerge program output.format = mkvmerge runs. Empty: mkvmerge from the PATH.", 0, SET_AT_RIP },
     { "mkv", "remove_dialog_normalization", SET_BOOL, "false", 0, 0, NULL,
       "MKV files: set the dialogue normalization of every AC-3, E-AC-3 and DTS frame to \"none\" (as mkvmerge's "
       "option of that name), so players do not turn those tracks down to the disc's dialogue level. The disc's "

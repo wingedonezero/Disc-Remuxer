@@ -65,7 +65,9 @@ MainWindow::MainWindow(LogRelay *r) : relay(r)
     formatBox = new QComboBox;
     formatBox->addItem("Streams", "streams");
     formatBox->addItem("MKV", "mkv");
-    formatBox->setToolTip("What each title is written as: a file per track (Streams) or one Matroska file (MKV)");
+    formatBox->addItem("MKV (mkvmerge)", "mkvmerge");
+    formatBox->setToolTip("What each title is written as: a file per track (Streams), one Matroska file (MKV), or "
+                          "the stream files muxed by mkvmerge into one Matroska file (MKV (mkvmerge))");
     buttons->addWidget(new QLabel("Output:"));
     buttons->addWidget(formatBox);
     syncFormatBox();

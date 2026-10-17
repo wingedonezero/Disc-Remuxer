@@ -2152,6 +2152,26 @@ extern "C" int mkv_open(MkvWriter **pw, const char *path, const MkvFileSpec *fil
     return 0;
 }
 
+extern "C" int mkv_h264_pictures(const uint8_t *data, int size)
+{
+    // the start rule of h264_frame: an access unit delimiter or a slice with first_mb_in_slice 0 after a slice
+    std::vector<std::pair<const uint8_t *, size_t>> nals;
+    nal_units(data, size, nals);
+    int pics = 0;
+    bool slice_in_pic = false;
+    for (auto &n : nals) {
+        int type = n.first[0] & 31;
+        bool slice = type == 1 || type == 5;
+        if (slice_in_pic && (type == 9 || (slice && Bits(n.first + 1, n.second - 1).ue() == 0)))
+            slice_in_pic = false;
+        if (slice && !slice_in_pic) {
+            pics++;
+            slice_in_pic = true;
+        }
+    }
+    return pics;
+}
+
 extern "C" int mkv_frame(MkvWriter *w, int track, const uint8_t *data, int size, int64_t time, int64_t duration,
                          int key)
 {

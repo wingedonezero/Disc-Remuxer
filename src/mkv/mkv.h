@@ -92,6 +92,10 @@ typedef struct MkvStats {
  * not wanted). */
 int mkv_close(MkvWriter **w, const MkvChapter *chapters, int nb_chapters, int abort, MkvStats *st);
 
+/* The pictures of an H.264 access unit (Annex B), as the writer splits it
+ * into blocks: 2 for a frame of two field pictures, else 1 (0: no slice). */
+int mkv_h264_pictures(const uint8_t *data, int size);
+
 #ifdef __cplusplus
 }
 #endif

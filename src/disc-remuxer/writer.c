@@ -17,7 +17,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <spawn.h>
+#include <stdarg.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "base/bytes.h"
 #include "base/err.h"
@@ -38,6 +42,7 @@
 #include "timeline/disctl.h"
 #include "writer.h"
 #include "mkvout.h"
+#include "mkv/mkv.h"
 
 /* A time on the title timeline (DR_TICKS_PER_SECOND ticks) in units of
  * 1 / per_second, rounded to the nearest (halves away from 0). */
@@ -151,6 +156,9 @@ typedef struct EsOut {
     int64_t       dialogs;          /* text subtitles: dialogs written */
     int           no_forced;        /* a forced-only track that showed nothing: its file removed */
     int           mkv_skip;         /* MKV: a track whose codec the MKV writer does not take yet */
+    int64_t      *ts;               /* video: each picture's time (ns), for the timestamp file */
+    size_t        nb_ts, cap_ts;
+    char         *ts_path;          /* the timestamp file written */
     int64_t       sub_pos;          /* bytes written to the .sub */
     int64_t       cues;             /* captions: SRT cues written */
     int           wav;              /* a WAV header to complete at the end */
@@ -540,6 +548,56 @@ static int srt_write(EsOut *o, const DrDiscFrame *fr)
     return 0;
 }
 
+/* The timestamp file: a video frame's pictures (H.264: two field pictures
+ * are two, as a muxer writes them), each at its share of the frame's time. */
+static int ts_add(EsOut *o, const DrDiscTrack *t, const DrDiscFrame *fr)
+{
+    int n = t->codec == DR_CODEC_H264 ? mkv_h264_pictures(fr->data, fr->size) : 1;
+    int64_t ns = ticks_in(fr->time, 1000000000), dur = fr->duration > 0 ? ticks_in(fr->duration, 1000000000) : 0;
+
+    if (n < 1)
+        n = 1;
+    if (o->nb_ts + n > o->cap_ts) {
+        size_t cap = o->cap_ts ? 2 * o->cap_ts : 65536;
+        int64_t *p = dr_realloc_array(o->ts, cap, sizeof(*p));
+        if (!p)
+            return DR_ERR(ENOMEM);
+        o->ts = p;
+        o->cap_ts = cap;
+    }
+    for (int k = 0; k < n; k++)
+        o->ts[o->nb_ts++] = ns + dur * k / n;
+    return 0;
+}
+
+static int cmp_i64(const void *a, const void *b)
+{
+    int64_t x = *(const int64_t *)a, y = *(const int64_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+/* mkvmerge's timestamp format v4: the pictures' times in display order, in
+ * ms with six decimals and half a ns more (mkvmerge cuts the ns it reads, so
+ * each line reads back as its exact ns). */
+static int ts_write(const char *path, EsOut *o)
+{
+    FILE *f = fopen(path, "w");
+    int ok;
+
+    if (!f)
+        return DR_ERR(errno);
+    qsort(o->ts, o->nb_ts, sizeof(*o->ts), cmp_i64);
+    ok = fputs("# timestamp format v4\n", f) >= 0;
+    for (size_t i = 0; ok && i < o->nb_ts; i++) {
+        int64_t t = o->ts[i];
+        ok = (t < 0 ? fprintf(f, "-%"PRId64".%06"PRId64"\n", -t / 1000000, -t % 1000000) :
+                      fprintf(f, "%"PRId64".%06"PRId64"5\n", t / 1000000, t % 1000000)) > 0;
+    }
+    if (fclose(f) != 0 || !ok)
+        return DR_ERR(errno ? errno : EIO);
+    return 0;
+}
+
 /* A PGS display set as .sup: each segment after a "PG" header with the
  * set's time (90 kHz, 32 bits) and a decode time of 0 (a reader shows a set
  * at its composition segment's time; the decode times only schedule a
@@ -801,6 +859,234 @@ void title_outcome_free(TitleOutcome *out)
     out->nb_damage = 0;
 }
 
+/* ---- output.format = mkvmerge: the stream files muxed by mkvmerge ----
+ * The options go into an options file (mkvmerge @file: one JSON array of
+ * strings, UTF-8): --output, then each file's options before "( file )",
+ * then the chapters and the track order. */
+
+typedef struct Opts {
+    char  *buf;
+    size_t len, cap;
+    int    n;
+} Opts;
+
+static int opts_add(Opts *o, const char *arg)
+{
+    for (const unsigned char *p = (const unsigned char *)arg; ; p++) {
+        char esc[8];
+        const char *add = NULL;
+        size_t need;
+        if (o->len + 16 > o->cap) {
+            size_t cap = o->cap ? 2 * o->cap : 4096;
+            char *b = dr_realloc(o->buf, cap);
+            if (!b)
+                return DR_ERR(ENOMEM);
+            o->buf = b;
+            o->cap = cap;
+        }
+        if (p == (const unsigned char *)arg) {
+            if (o->n++)
+                o->buf[o->len++] = ',';
+            o->buf[o->len++] = '"';
+        }
+        if (!*p) {
+            o->buf[o->len++] = '"';
+            o->buf[o->len] = 0;
+            return 0;
+        }
+        if (*p == '"' || *p == '\\')
+            snprintf(esc, sizeof(esc), "\\%c", *p), add = esc;
+        else if (*p < 0x20)
+            snprintf(esc, sizeof(esc), "\\u%04x", *p), add = esc;
+        if (add) {
+            need = strlen(add);
+            memcpy(o->buf + o->len, add, need);
+            o->len += need;
+        } else
+            o->buf[o->len++] = (char)*p;
+    }
+}
+
+static int opts_addf(Opts *o, const char *fmt, ...)
+{
+    char b[4200];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(b, sizeof(b), fmt, ap);
+    va_end(ap);
+    return opts_add(o, b);
+}
+
+/* Runs mkvmerge with the options file; its lines go into the log (its
+ * warnings and errors as such). Its exit status: 0 done, 1 done with
+ * warnings, 2 failed; negative: it could not be run. */
+static int run_mkvmerge(const char *program, const char *opts_path)
+{
+    char at[4200];
+    char *argv[] = { (char *)program, at, NULL };
+    posix_spawn_file_actions_t fa;
+    int pfd[2], status = 0, ret;
+    pid_t pid;
+    FILE *f;
+    char line[4096];
+    extern char **environ;
+
+    snprintf(at, sizeof(at), "@%s", opts_path);
+    if (pipe(pfd) < 0)
+        return DR_ERR(errno);
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, pfd[1], 1);
+    posix_spawn_file_actions_adddup2(&fa, pfd[1], 2);
+    posix_spawn_file_actions_addclose(&fa, pfd[0]);
+    ret = posix_spawnp(&pid, program, &fa, NULL, argv, environ);
+    posix_spawn_file_actions_destroy(&fa);
+    close(pfd[1]);
+    if (ret) {
+        close(pfd[0]);
+        return DR_ERR(ret);
+    }
+    if ((f = fdopen(pfd[0], "r"))) {
+        while (fgets(line, sizeof(line), f)) {
+            line[strcspn(line, "\r\n")] = 0;
+            if (!*line)
+                continue;
+            log_text(!strncmp(line, "Error:", 6) ? LOG_ERROR : !strncmp(line, "Warning:", 8) ? LOG_WARNING :
+                     LOG_DETAIL, "mkvmerge: %s", line);
+        }
+        fclose(f);
+    } else
+        close(pfd[0]);
+    if (waitpid(pid, &status, 0) < 0)
+        return DR_ERR(errno);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 2;
+}
+
+/* The title's stream files into <out folder>/<title>.mkv with mkvmerge;
+ * on success the files written for it are deleted (the title's folder too
+ * when it has one). 0, or a negative error (the stream files are kept). */
+static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_dir, const char *dir, int own_dir,
+                          const char *name, const char *chap, int nb_chapters, char **mkv_out)
+{
+    const char *program = *setting_text("mkv.mkvmerge_path") ? setting_text("mkv.mkvmerge_path") : "mkvmerge";
+    int none = !strcmp(setting_text("mkv.compression"), "none");
+    int dialnorm = setting_bool("mkv.remove_dialog_normalization");
+    Opts o = { 0 };
+    char *mkv = dr_asprintf_str("%s/%s.mkv", out_dir, name), *opts_path = dr_asprintf_str("%s/%s_mkvmerge.json", dir,
+                                                                                          name);
+    char order[8192] = "";
+    int nfile = 0, ret = 0, st;
+    FILE *f;
+
+    *mkv_out = NULL;
+    if (!mkv || !opts_path) {
+        ret = DR_ERR(ENOMEM);
+        goto done;
+    }
+    if ((ret = opts_add(&o, "--output")) < 0 || (ret = opts_add(&o, mkv)) < 0)
+        goto done;
+    if (getenv("DR_MKV_NO_VARIABLE_DATA") &&
+        ((ret = opts_add(&o, "--engage")) < 0 || (ret = opts_add(&o, "no_variable_data")) < 0))
+        goto done;
+    for (int i = 0; i < nb_tracks; i++) {
+        const DrDiscTrack *t = dr_disc_track(d, i);
+        EsOut *e = &out[i];
+        char file[4200];
+        if (!e->opened || !e->name)
+            continue;
+        if (t->second_view) {
+            log_text(LOG_WARNING, "Track %d: the second view of a 3-D video is not given to mkvmerge (kept out of the "
+                     "MKV file)", t->number);
+            continue;
+        }
+        snprintf(file, sizeof(file), "%s", e->name);
+        if (t->codec == DR_CODEC_DVD_SUBTITLE && strlen(file) > 3)
+            memcpy(file + strlen(file) - 3, "idx", 3);        /* mkvmerge reads a VobSub pair by its .idx */
+        if ((ret = opts_add(&o, "--language")) < 0 || (ret = opts_addf(&o, "0:%s", *e->st.lang ? e->st.lang : "und")) < 0)
+            goto done;
+        if (t->forced && t->type == DISC_MEDIA_SUBTITLE &&
+            ((ret = opts_add(&o, "--forced-display-flag")) < 0 || (ret = opts_add(&o, "0:yes")) < 0))
+            goto done;
+        if (t->type == DISC_MEDIA_AUDIO && e->st.delay_ms &&
+            ((ret = opts_add(&o, "--sync")) < 0 || (ret = opts_addf(&o, "0:%"PRId64, e->st.delay_ms)) < 0))
+            goto done;
+        if (t->type == DISC_MEDIA_VIDEO && e->ts_path &&
+            ((ret = opts_add(&o, "--timestamps")) < 0 || (ret = opts_addf(&o, "0:%s", e->ts_path)) < 0))
+            goto done;
+        if (t->type == DISC_MEDIA_SUBTITLE && none &&
+            ((ret = opts_add(&o, "--compression")) < 0 || (ret = opts_add(&o, "0:none")) < 0))
+            goto done;
+        if (dialnorm && t->type == DISC_MEDIA_AUDIO &&
+            (t->codec == DR_CODEC_AC3 || t->codec == DR_CODEC_EAC3 || t->codec == DR_CODEC_DTS ||
+             t->codec == DR_CODEC_TRUEHD) &&
+            ((ret = opts_add(&o, "--remove-dialog-normalization-gain")) < 0 || (ret = opts_add(&o, "0")) < 0))
+            goto done;
+        if ((ret = opts_add(&o, "(")) < 0 || (ret = opts_add(&o, file)) < 0 || (ret = opts_add(&o, ")")) < 0)
+            goto done;
+        snprintf(order + strlen(order), sizeof(order) - strlen(order), "%s%d:0", nfile ? "," : "", nfile);
+        nfile++;
+    }
+    if (chap && nb_chapters && ((ret = opts_add(&o, "--chapters")) < 0 || (ret = opts_add(&o, chap)) < 0))
+        goto done;
+    if (nfile && ((ret = opts_add(&o, "--track-order")) < 0 || (ret = opts_add(&o, order)) < 0))
+        goto done;
+    if (!(f = fopen(opts_path, "w"))) {
+        ret = DR_ERR(errno);
+        log_text(LOG_ERROR, "mkvmerge: the options file %s cannot be written: %s", opts_path, strerror(errno));
+        goto done;
+    }
+    if (fprintf(f, "[%s]\n", o.buf ? o.buf : "") < 0 || fclose(f) != 0) {
+        ret = DR_ERR(EIO);
+        log_text(LOG_ERROR, "mkvmerge: the options file %s cannot be written", opts_path);
+        goto done;
+    }
+    log_text(LOG_INFO, "mkvmerge: %d file%s into %s (options file %s)", nfile, nfile == 1 ? "" : "s", mkv, opts_path);
+    st = run_mkvmerge(program, opts_path);
+    if (st < 0) {
+        log_text(LOG_ERROR, "mkvmerge (%s) cannot be run: %s; the stream files are kept", program, strerror(-st));
+        ret = DR_ERR_INVALID;
+        goto done;
+    }
+    if (st >= 2) {
+        log_text(LOG_ERROR, "mkvmerge failed (exit status %d, see its lines above); the stream files are kept", st);
+        ret = DR_ERR_INVALID;
+        goto done;
+    }
+    if (st == 1)
+        log_text(LOG_WARNING, "mkvmerge finished with warnings (see its lines above)");
+    /* done: the files written for the title go */
+    {
+        int left = 0;
+        for (int i = 0; i < nb_tracks; i++) {
+            EsOut *e = &out[i];
+            if (e->opened && e->name) {
+                left += unlink(e->name) < 0;
+                if (dr_disc_track(d, i)->codec == DR_CODEC_DVD_SUBTITLE && strlen(e->name) > 3) {
+                    char idx[4200];
+                    snprintf(idx, sizeof(idx), "%s", e->name);
+                    memcpy(idx + strlen(idx) - 3, "idx", 3);
+                    left += unlink(idx) < 0;
+                }
+            }
+            if (e->ts_path)
+                left += unlink(e->ts_path) < 0;
+        }
+        if (chap)
+            unlink(chap);
+        left += unlink(opts_path) < 0;
+        if (own_dir && rmdir(dir) < 0)
+            log_text(LOG_WARNING, "The folder %s is not empty after the mux: kept", dir);
+        log_text(LOG_INFO, "MKV file: %s (mkvmerge); the stream files are deleted%s", mkv,
+                 left ? " (some could not be)" : "");
+    }
+    *mkv_out = mkv;
+    mkv = NULL;
+done:
+    dr_free(o.buf);
+    dr_free(mkv);
+    dr_free(opts_path);
+    return ret;
+}
+
 int demux_title(const TitleJob *job, TitleOutcome *res)
 {
     DrDisc *d = job->disc;
@@ -814,9 +1100,13 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     int64_t title_us = 0;
     /* output.format = mkv: the title goes into one Matroska file (mkvout.c) */
     int mkv = !strcmp(setting_text("output.format"), "mkv");
+    /* output.format = mkvmerge: the stream files (with the timestamp files), then mkvmerge muxes them */
+    int via = !strcmp(setting_text("output.format"), "mkvmerge");
+    int want_ts = setting_bool("output.timestamps_file") || via, ts_track = -1;
     MkvOut *mo = NULL;
     char *mkv_path = NULL;
     int64_t mkv_bytes = 0;
+    int via_done = 0;
 
     memset(res, 0, sizeof(*res));
     /* the title's warnings: every warning line from here to its last line */
@@ -953,6 +1243,15 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
                 o->st.first_ms = ms;
             o->st.end_ms = DR_MAX(o->st.end_ms, end);
         }
+        /* the timestamp file: each video track's (MKV: the one in the file) */
+        if (want_ts && t->type == DISC_MEDIA_VIDEO && !t->second_view && fr.time != DR_NOPTS_VALUE &&
+            (!mkv || ((ts_track < 0 || ts_track == fr.track) && mkvout_has_track(mo, fr.track)))) {
+            ts_track = fr.track;
+            if ((ret = ts_add(o, t, &fr)) < 0) {
+                dr_disc_frame_unref(&fr);
+                goto end;
+            }
+        }
         if (mkv) {
             if ((ret = mkvout_frame(mo, d, &fr)) < 0)
                 goto end;
@@ -996,6 +1295,35 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     }
     for (int i = 0; ret >= 0 && !mkv && i < nb_tracks; i++)
         ret = es_flush_hold(dr_disc_track(d, i), &out[i], prefix);
+    /* the timestamp files: next to each video stream file (MKV: next to the MKV file) */
+    for (int i = 0; ret >= 0 && want_ts && i < nb_tracks; i++) {
+        EsOut *o = &out[i];
+        char *path;
+        int r2;
+        if (!o->nb_ts)
+            continue;
+        if (mkv)
+            path = dr_asprintf_str("%s_timestamps.txt", prefix);
+        else {
+            const char *dot = o->name ? strrchr(o->name, '.') : NULL;
+            path = o->name ? dr_asprintf_str("%.*s_timestamps.txt", (int)(dot ? dot - o->name : (int)strlen(o->name)),
+                                             o->name) : NULL;
+        }
+        if (!path) {
+            ret = DR_ERR(ENOMEM);
+            break;
+        }
+        if ((r2 = ts_write(path, o)) < 0)
+            log_text(LOG_ERROR, "Track %d: the timestamp file %s could not be written: %s", dr_disc_track(d, i)->number,
+                     path, strerror(-r2));
+        else
+            log_text(LOG_INFO, "Track %d: timestamp file %s (%zu pictures)", dr_disc_track(d, i)->number, path,
+                     o->nb_ts);
+        if (r2 < 0)
+            dr_free(path);
+        else
+            o->ts_path = path;
+    }
     if (ret >= 0 && !mkv) {
         if (!(chap = dr_asprintf_str("%s_chapters.xml", prefix)))
             ret = DR_ERR(ENOMEM);
@@ -1091,6 +1419,24 @@ end:
             unchecked    += !mkv && out[i].opened && !out[i].probe &&
                             (t->type == DISC_MEDIA_VIDEO || t->type == DISC_MEDIA_AUDIO) && !t->second_view;
         }
+        /* mkvmerge: the checked stream files into the MKV file (not when a check failed: they are kept) */
+        if (via && !check_failed) {
+            char *made_mkv = NULL;
+            struct stat sb;
+            if (mkvmerge_title(d, out, nb_tracks, job->out_dir, dir, job->sub_folder, res->name, chap, nb_chapters,
+                               &made_mkv) < 0) {
+                res->failed = 1;
+            } else {
+                for (int i = 0; i < nb_tracks; i++)
+                    if (out[i].opened && !dr_disc_track(d, i)->second_view) {
+                        dr_free(out[i].name);
+                        out[i].name = dr_strdup(made_mkv);
+                    }
+                mkv_bytes = stat(made_mkv, &sb) == 0 ? (int64_t)sb.st_size : 0;
+                dr_free(made_mkv);
+                via_done = 1;
+            }
+        }
         log_text(LOG_INFO, "Tracks:");
         for (int i = 0; i < nb_tracks; i++) {
             const DrDiscTrack *t = dr_disc_track(d, i);
@@ -1174,11 +1520,15 @@ end:
         /* what was written, for the title's last line */
         for (int i = 0; i < nb_tracks; i++)
             written += out[i].opened ? out[i].st.bytes : 0;
-        if (mkv)
+        if (mkv || via_done)
             written = mkv_bytes;
         snprintf(made, sizeof(made), "(%u chapter%s, %s%s)", (unsigned)nb_chapters, nb_chapters == 1 ? "" : "s",
-                 size_text(sz, sizeof(sz), written), mkv ? "; the MKV file itself is not read back yet" : "");
-        if (check_failed) {
+                 size_text(sz, sizeof(sz), written),
+                 mkv || via_done ? "; the MKV file itself is not read back yet" : "");
+        if (via && !via_done && !check_failed) {
+            log_msg(MSG_TITLE_DONE, LOG_ERROR, "%s: its stream files are written, but mkvmerge did not make the MKV "
+                    "file (see above)", who);
+        } else if (check_failed) {
             log_msg(MSG_DETAILS_DIFFER, LOG_ERROR, "%s: its files are written, but %d of them do not keep "
                     "the disc stream's details (see above)", who, check_failed);
             res->failed = 1;
@@ -1216,6 +1566,8 @@ end:
         dr_layout_probe_close(&o->lp);
         details_probe_close(&o->probe);
         dr_free(o->name);
+        dr_free(o->ts);
+        dr_free(o->ts_path);
     }
     dr_free(out);
     dr_free(chap);

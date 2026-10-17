@@ -484,3 +484,53 @@ def test_a_track_that_gets_no_frame_leaves_the_track_list_the_others_keep_their_
         assert tag_tracks == [1, 3]
         assert [t for t, _ in audio_blocks(seg, 3)] == [300, 900]
         assert st["removed"] == [1]
+
+
+def test_an_access_unit_of_two_field_pictures_counts_two():
+    sps = h264.sps(frame_mbs_only=0, timing=(1, 50), hrd=False, pic_struct=False)
+    pair = h264.aud(0) + sps + h264.pps() + h264.slice_(h264.SLICE_I, 0, 0, idr=True, field="top") + \
+        h264.aud(1) + h264.slice_(h264.SLICE_P, 0, 1, field="bottom")
+    assert lib.mkv_h264_pictures(pair, len(pair)) == 2
+    assert lib.mkv_h264_pictures(h264.aud(0) + SPS + PPS + IDR, len(h264.aud(0) + SPS + PPS + IDR)) == 1
+
+
+def test_the_timestamp_file_lists_each_picture_s_time_to_the_ns_in_every_mode(tmp_path):
+    # 25 fps: picture k at k x 40 ms; each line read back by mkvmerge (cut to the ns) gives the exact ns
+    disc, _ = avc_lpcm_disc(tmp_path)
+    for fmt in ("streams", "mkv"):
+        out = tmp_path / fmt
+        p = subprocess.run([*PROGRAM, "--set", f"output.format={fmt}", "--set", "titles.min_length=0", "--set",
+                            "output.timestamps_file=true", "demux", str(disc), "0", str(out)],
+                           capture_output=True, text=True)
+        files = list(out.rglob("*_timestamps.txt"))
+        assert p.returncode == 0 and len(files) == 1, p.stdout + p.stderr
+        name = files[0].name
+        assert name.endswith("_Mpeg4_timestamps.txt") if fmt == "streams" else name == "title_t00_timestamps.txt"
+        lines = files[0].read_text().splitlines()
+        assert lines[0] == "# timestamp format v4" and len(lines) == FRAMES + 1
+        assert [int(float(v) * 1000000) for v in lines[1:]] == [k * 40000000 for k in range(FRAMES)]
+        assert f"timestamp file {files[0]} ({FRAMES} pictures)" in p.stdout
+
+
+def test_the_mkvmerge_mode_muxes_the_stream_files_into_the_same_file_and_deletes_them(tmp_path):
+    # the stream files, their timestamp file and an options file; mkvmerge @options makes <out>/<title>.mkv,
+    # equal byte for byte to the MKV the writer makes itself; the title's folder is gone afterwards
+    import os
+    import shutil
+    import pytest
+    if not shutil.which("mkvmerge"):
+        pytest.skip("mkvmerge is not installed")
+    disc, _ = avc_lpcm_disc(tmp_path)
+    env = {**os.environ, "DR_MKV_NO_VARIABLE_DATA": "1"}
+    made = {}
+    for fmt in ("mkv", "mkvmerge"):
+        out = tmp_path / fmt
+        p = subprocess.run([*PROGRAM, "--set", f"output.format={fmt}", "--set", "titles.min_length=0", "demux",
+                            str(disc), "0", str(out)], capture_output=True, text=True, env=env)
+        assert p.returncode == 0, p.stdout + p.stderr
+        made[fmt] = (sorted(f.relative_to(out) for f in out.rglob("*") if f.is_file()), p.stdout)
+    files, log = made["mkvmerge"]
+    assert [str(f) for f in files if f.suffix != ".log"] == ["title_t00.mkv"], files
+    assert "mkvmerge: 2 files into" in log and "the stream files are deleted" in log, log
+    assert (tmp_path / "mkvmerge/title_t00.mkv").read_bytes() == \
+        (tmp_path / "mkv/title_t00/title_t00.mkv").read_bytes()
