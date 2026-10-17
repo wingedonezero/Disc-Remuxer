@@ -49,6 +49,7 @@ static inline const char *disc_media_name(int type)
 #define DISC_PROFILE_DTS_HD_MA_X_IMAX        62
 #define DISC_PROFILE_DTS_EXPRESS             70
 #define DISC_PROFILE_TRUEHD_ATMOS            30
+#define DISC_PROFILE_EAC3_DDP_ATMOS          30
 #define DISC_PROFILE_H264_CONSTRAINED        (1 << 9)
 #define DISC_PROFILE_H264_INTRA              (1 << 11)
 #define DISC_PROFILE_H264_BASELINE           66

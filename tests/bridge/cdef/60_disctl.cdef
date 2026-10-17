@@ -491,5 +491,8 @@ int ff_disctl_mlp_checksums(void *state, const uint8_t *data, int size, const ch
 int writer_wav_header(uint8_t *out, int channels, int rate, int bits, int valid, uint64_t mask, int64_t data,
                       int room);
 
+/* a stream's short codec name (src/disc-remuxer/writer.h) */
+const char *codec_label(int codec, int profile);
+
 /* LATM stream values from the StreamMuxConfig (src/parse/rules.h) */
 int dr_latm_header(const uint8_t *buf, int size, int *rate, int *samples);

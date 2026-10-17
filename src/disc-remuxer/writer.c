@@ -111,11 +111,11 @@ const char *codec_label(int id, int profile)
     case DR_CODEC_H264:         return "Mpeg4";
     case DR_CODEC_HEVC:         return "MpegH";
     case DR_CODEC_AC3:          return "DD";
-    case DR_CODEC_EAC3:         return "DDplus";
+    case DR_CODEC_EAC3:         return profile == DISC_PROFILE_EAC3_DDP_ATMOS ? "DD+ Atmos" : "DDplus";
     case DR_CODEC_TRUEHD:       return profile == DISC_PROFILE_TRUEHD_ATMOS ? "TrueHD Atmos" : "TrueHD";
     case DR_CODEC_MLP:          return "MLP";
-    case DR_CODEC_DTS:          return profile == DISC_PROFILE_DTS_HD_MA || profile == DISC_PROFILE_DTS_HD_MA_X ||
-                                          profile == DISC_PROFILE_DTS_HD_MA_X_IMAX ? "DTS-HD MA" :
+    case DR_CODEC_DTS:          return profile == DISC_PROFILE_DTS_HD_MA_X || profile == DISC_PROFILE_DTS_HD_MA_X_IMAX ?
+                                          "DTS:X" : profile == DISC_PROFILE_DTS_HD_MA ? "DTS-HD MA" :
                                           profile == DISC_PROFILE_DTS_HD_HRA ? "DTS-HD HR" : "DTS";
     case DR_CODEC_MP1:
     case DR_CODEC_MP2:
@@ -420,7 +420,7 @@ static int vobsub_write(EsOut *o, const DrDiscFrame *fr)
  * against the title start, which is the video's). */
 static int es_open(const DrDiscTrack *t, EsOut *o, const char *prefix, int64_t first)
 {
-    char layout[64] = "", delay[32] = "", roles[64] = "";
+    char layout[64] = "", delay[32] = "", roles[64] = "", label[32];
     int audio = t->type == DISC_MEDIA_AUDIO;
     int profile = dr_layout_probe_profile(o->lp, t->profile);
 
@@ -457,8 +457,12 @@ static int es_open(const DrDiscTrack *t, EsOut *o, const char *prefix, int64_t f
     snprintf(roles, sizeof(roles), "%s%s%s", t->forced ? " (forced)" : "",
              t->commentary ? " (commentary)" : "",
              t->visually_impaired ? " (visually impaired)" : "");
+    /* no ':' in a file name (DTS:X -> DTS-X), as in every name we write */
+    snprintf(label, sizeof(label), "%s", stream_label(t, profile));
+    for (char *c = label; (c = strchr(c, ':')); )
+        *c = '-';
     if (!(o->name = dr_asprintf_str("%s_%02d_[%s]_%s%s%s%s.%s", prefix, t->number, *o->st.lang ? o->st.lang : "und",
-                                stream_label(t, profile), layout, roles, delay,
+                                label, layout, roles, delay,
                                 t->second_view ? "mvc" : es_extension(t->codec))))
         return DR_ERR(ENOMEM);
     o->st.file = o->name;

@@ -16,7 +16,7 @@ const char *codec_description(const DiscStreamInfo *k, const DiscStreamInfo *bas
 /** A codec id's name as the processing library spells it ("ac3",
  *  "pcm_s24le", "hdmv_pgs_subtitle", ...). */
 const char *codec_id_name(int id);
-/** The codec's short name (DTS-HD MA, TrueHD, MpegH, ...). */
+/** The codec's short name (DTS-HD MA, DTS:X, DD+ Atmos, TrueHD, MpegH, ...). */
 const char *codec_short(const DiscStreamInfo *k);
 /** "High@L4.1" / "Main10@L5.1", "" when not known. */
 const char *codec_profile_level(const DiscStreamInfo *k, char *buf, size_t size);
