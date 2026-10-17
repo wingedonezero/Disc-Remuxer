@@ -1061,7 +1061,7 @@ static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_
             continue;
         if (t->second_view) {
             log_text(LOG_WARNING, "Track %d: the second view of a 3-D video is not given to mkvmerge (kept out of the "
-                     "MKV file)", t->number);
+                     "MKV file); its file is kept: %s", t->number, e->name);
             continue;
         }
         snprintf(file, sizeof(file), "%s", e->name);
@@ -1120,11 +1120,16 @@ static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_
     }
     if (st == 1)
         log_text(LOG_WARNING, "mkvmerge finished with warnings (see its lines above)");
-    /* done: the files written for the title go */
+    /* done: the files written for the title go (not the second view's, which
+     * mkvmerge was not given: the MKV file does not hold it) */
     {
-        int left = 0;
+        int left = 0, kept = 0;
         for (int i = 0; i < nb_tracks; i++) {
             EsOut *e = &out[i];
+            if (dr_disc_track(d, i)->second_view) {
+                kept += e->opened && e->name;
+                continue;
+            }
             if (e->opened && e->name) {
                 left += unlink(e->name) < 0;
                 if (dr_disc_track(d, i)->codec == DR_CODEC_DVD_SUBTITLE && strlen(e->name) > 3) {
@@ -1140,10 +1145,10 @@ static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_
         if (chap)
             unlink(chap);
         left += unlink(opts_path) < 0;
-        if (own_dir && rmdir(dir) < 0)
+        if (own_dir && !kept && rmdir(dir) < 0)
             log_text(LOG_WARNING, "The folder %s is not empty after the mux: kept", dir);
-        log_text(LOG_INFO, "MKV file: %s (mkvmerge); the stream files are deleted%s", mkv,
-                 left ? " (some could not be)" : "");
+        log_text(LOG_INFO, "MKV file: %s (mkvmerge); the stream files are deleted%s%s", mkv,
+                 left ? " (some could not be)" : "", kept ? " (the second view's file is kept)" : "");
     }
     *mkv_out = mkv;
     mkv = NULL;
