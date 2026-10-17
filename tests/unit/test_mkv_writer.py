@@ -11,7 +11,7 @@ are checked one by one."""
 import struct
 import subprocess
 
-from helpers import PROGRAM
+from helpers import DATA, PROGRAM, lib
 from synth import bluray as bd
 from synth import h264
 from synth.bluray import Item, Stream
@@ -219,8 +219,8 @@ def test_a_track_the_writer_does_not_take_yet_is_left_out_and_said(tmp_path):
     data, log = demux_mkv(disc, tmp_path / "out")
     tracks = find(elements(data), 0x18538067, 0x1654AE6B, 0xAE)
     assert [dict(t)[0x86] for t in tracks] == [b"A_PCM/INT/LIT"]
-    assert "Track 0 (mpeg2video): not written into the MKV file: the MKV writer takes H.264 video and LPCM audio " \
-           "so far" in log, log
+    assert "Track 0 (mpeg2video): not written into the MKV file: the MKV writer takes H.264 video and LPCM, " \
+           "AC-3, E-AC-3 and DTS audio so far" in log, log
 
 
 # ---- the writer on its own (through the bridge) ----
@@ -300,3 +300,64 @@ def test_the_parts_of_a_joined_title_are_files_of_their_own_with_their_own_chapt
     starts = [uint(dict(a)[0x91]) for a in find(seg, 0x1043A770, 0x45B9, 0xB6)]
     # from its own start; every picture is a key frame, so each chapter is at its mark
     assert starts == [0, 1000000000], "each part's chapters from its own start"
+
+
+def audio_blocks(seg, track):
+    """(time ms, frames) of each block of a track, laced frames split."""
+    out = []
+    for c in find(seg, 0x1F43B675):
+        ct = uint(dict(c)[0xE7])
+        for eid, d in c:
+            if eid == 0xA0:
+                d = dict(d)[0xA1]
+            elif eid != 0xA3:
+                continue
+            tr, k = vint(d, 0)
+            if tr == track:
+                out.append((ct + struct.unpack(">h", d[k:k + 2])[0], laced_frames(d)))
+    return out
+
+
+def test_ac3_frames_are_packets_of_1536_samples_counted_from_the_first_time(tmp_path):
+    ac3 = (DATA / "sine_7680.ac3").read_bytes()
+    frames = [ac3[i:i + 768] for i in range(0, len(ac3), 768)]          # 192 kb/s stereo, 48 kHz
+    data = write_mkv(tmp_path / "a.mkv", [{"codec": lib.MKV_CODEC_AC3, "language": "eng"}],
+                     [(0, f, 32000000 * i, 32000000, 1) for i, f in enumerate(frames)])
+    seg = find(elements(data), 0x18538067)[0]
+    a = dict(find(seg, 0x1654AE6B, 0xAE)[0])
+    aa = dict(a[0xE1])
+    assert a[0x86] == b"A_AC3" and uint(a[0x23E383]) == 32000000
+    assert (struct.unpack(">f", aa[0xB5])[0], uint(aa[0x9F])) == (48000.0, 2)
+    assert 0x6264 not in aa, "no bit depth for AC-3 (as mkvmerge)"
+    blocks = audio_blocks(seg, 1)
+    assert b"".join(f for _, fs in blocks for f in fs) == ac3, "every frame as it is"
+    assert blocks[0][0] == 0 and sum(len(fs) for _, fs in blocks) == len(frames)
+
+
+def test_dts_takes_its_rate_channels_and_bits_from_the_core_header(tmp_path):
+    dts = (DATA / "sine_5120.dts").read_bytes()
+    size = ((dts[5] & 3) << 12 | dts[6] << 4 | dts[7] >> 4) + 1        # the core's frame size
+    blocks_ = ((dts[4] & 1) << 6 | dts[5] >> 2) + 1                    # its PCM sample blocks
+    frames = [dts[i:i + size] for i in range(0, len(dts), size)]
+    # rate from the core header's sampling frequency code (core_samplefreqs)
+    rate_ = [0, 8000, 16000, 32000, 0, 0, 11025, 22050, 44100, 0, 0, 12000, 24000, 48000, 0, 0][(dts[8] >> 2) & 15]
+    dur = blocks_ * 32 * 10 ** 9 // rate_
+    gap = 10 ** 9                                                      # 1 s missing before frame 5
+    data = write_mkv(tmp_path / "d.mkv", [{"codec": lib.MKV_CODEC_DTS, "language": "eng"}],
+                     [(0, f, i * dur + (gap if i >= 5 else 0), -1, 1) for i, f in enumerate(frames)])
+    seg = find(elements(data), 0x18538067)[0]
+    a = dict(find(seg, 0x1654AE6B, 0xAE)[0])
+    aa = dict(a[0xE1])
+    rate = int(struct.unpack(">f", aa[0xB5])[0])
+    assert a[0x86] == b"A_DTS"
+    assert uint(a[0x23E383]) == (blocks_ * 32 * 10 ** 10 // rate + 5) // 10, "one frame, to the nearest ns"
+    assert uint(aa[0x6264]) in (16, 20, 24)
+    got = audio_blocks(seg, 1)
+    assert b"".join(f for _, fs in got for f in fs) == dts
+    # times counted in samples from the first frame's; a frame more than 1 ms off the count starts it again
+    starts, n = [], 0
+    for t, fs in got:
+        starts.append((n, t))
+        n += len(fs)
+    assert starts[0] == (0, 0)
+    assert (5, round((5 * dur + gap) / 10 ** 6)) in starts, "the gap starts a block at the frame's own time"

@@ -406,13 +406,26 @@ struct MkvTrackState {
     std::vector<uint8_t> avcc;
     H264Sps first_sps;
     bool have_sps = false;
+    bool config_ready = false, ps_changed = false;  // the first slice was seen; a parameter set changed after it
     std::map<int64_t, int> duration_count;
     std::deque<PacketPtr> held;     // H.264 frames until the configuration record is made
+    // AC-3 / DTS: packets counted in samples from a reference time (a frame's own time when the count is
+    // more than 1 ms off it)
+    PacketPtr pending;              // AC-3: the frame being built (an independent frame and its dependent ones)
+    int pending_samples = 0, pending_rate = 0;
+    int64_t pending_time = 0;
+    uint64_t ac3_layout = 0;        // the first packet's speakers and LFE channels (its channel count)
+    int ac3_lfe = 0;
+    int64_t ref_time = 0, samples_since = 0;
+    int count_rate = 0;
+    bool counting = false;
+    int64_t dropped_negative = 0;
     // PCM
     std::vector<uint8_t> pcm;
     int64_t samples_out = 0;
     int samples_per_packet = 0, packet_size = 0, frame_bytes = 0;
     bool pcm_started = false;
+    std::string codec_id;
 };
 
 struct MkvWriter {
@@ -487,7 +500,7 @@ void set_track_headers(MkvWriter *w, MkvTrackState &t, bool late)
         GetChild<KaxTrackNumber>(e).SetValue(t.number);
         GetChild<KaxTrackUID>(e).SetValue(t.uid);
         GetChild<KaxTrackType>(e).SetValue(t.spec.codec == MKV_CODEC_H264 ? track_video : track_audio);
-        GetChild<KaxCodecID>(e).SetValue(t.spec.codec == MKV_CODEC_H264 ? "V_MPEG4/ISO/AVC" : "A_PCM/INT/LIT");
+        GetChild<KaxCodecID>(e).SetValue(t.codec_id);
         if (t.default_duration > 0)
             GetChild<KaxTrackDefaultDuration>(e).SetValue(t.default_duration);
         GetChild<KaxTrackLanguage>(e).SetValue(t.language);
@@ -515,7 +528,8 @@ void set_track_headers(MkvWriter *w, MkvTrackState &t, bool late)
             KaxTrackAudio &a = GetChild<KaxTrackAudio>(e);
             GetChild<KaxAudioSamplingFreq>(a).SetValue((double)t.spec.sample_rate);
             GetChild<KaxAudioChannels>(a).SetValue(t.spec.channels);
-            GetChild<KaxAudioBitDepth>(a).SetValue(t.spec.bits);
+            if (t.spec.bits > 0)
+                GetChild<KaxAudioBitDepth>(a).SetValue(t.spec.bits);
         }
         return;
     }
@@ -972,102 +986,126 @@ bool has_recovery_point(const uint8_t *nal, size_t n)
     return false;
 }
 
-void h264_parameter_set(MkvTrackState &t, int type, const uint8_t *nal, size_t n)
-{
-    std::vector<uint8_t> v(nal, nal + n);
-    if (type == 7) {
-        H264Sps s;
-        parse_sps(nal, n, s);
-        auto it = std::find(t.sps_ids.begin(), t.sps_ids.end(), s.id);
-        if (it == t.sps_ids.end()) {
-            t.sps_ids.push_back(s.id);
-            t.sps.push_back(v);
-        } else
-            t.sps[it - t.sps_ids.begin()] = v;
-        if (!t.have_sps) {
-            t.first_sps = s;
-            t.have_sps = true;
-        }
-    } else {
-        Bits r(nal + 1, n - 1);
-        unsigned id = r.ue();
-        auto it = std::find(t.pps_ids.begin(), t.pps_ids.end(), id);
-        if (it == t.pps_ids.end()) {
-            t.pps_ids.push_back(id);
-            t.pps.push_back(v);
-        } else
-            t.pps[it - t.pps_ids.begin()] = v;
-    }
-}
-
 // One frame of the title: a block per picture in it, as mkvmerge makes its frames (H.264 7.4.1.2.4: a new
 // picture at an access unit delimiter or at a slice that starts a picture): a frame of two field
-// pictures gives a block per field, each with its own time (the frame's time, then one field later), its
+// pictures gives a block per field, each with its own time (the frame's, then one field later), its
 // own key flag (an IDR slice or a recovery point in it; the first field takes the frame's) and its own
-// discardable flag (its first slice's nal_ref_idc 0).
+// discardable flag (its first slice's nal_ref_idc 0). The SPS / PPS lists follow every parameter set
+// (by id, the newest content); once one changed after the first slice, each key frame's own parameter
+// sets are replaced by the whole lists in front of it (as mkvmerge does: the key frame then holds every
+// current SPS and PPS).
 int h264_frame(MkvWriter *w, MkvTrackState &t, const uint8_t *data, int size, int64_t time, int64_t dur, int key)
 {
     std::vector<std::pair<const uint8_t *, size_t>> nals;
     nal_units(data, size, nals);
+    using Nal = std::pair<const uint8_t *, size_t>;
     struct Pic {
-        PacketPtr p;
+        std::vector<Nal> prefix, body;  // the units before its first slice, and from there on
         bool idr = false, recovery = false;
+        int discardable = -1;
     };
     std::vector<Pic> pics;
-    bool slice_in_pic = false, slice_seen = false;
+    bool slice_in_pic = false;
+    int track = (int)(&t - w->tracks.data());
     for (auto &n : nals) {
         int type = n.first[0] & 31;
         bool slice = type == 1 || type == 5;
         bool starts = pics.empty() || (slice_in_pic && (type == 9 || (slice && (Bits(n.first + 1, n.second - 1).ue() == 0))));
         if (starts) {
             pics.push_back(Pic());
-            pics.back().p = std::make_shared<Packet>();
             slice_in_pic = false;
         }
         Pic &pic = pics.back();
         if (type == 9 || type == 10 || type == 11 || type == 12)
             continue;               // access unit delimiter, end of sequence / stream, filler data
-        if (!t.header_ready && !slice_seen && (type == 7 || type == 8))
-            h264_parameter_set(t, type, n.first, n.second);
+        if (type == 7 || type == 8) {
+            // the lists: a new id or new content (after the first slice: the lists changed)
+            std::vector<uint8_t> v(n.first, n.first + n.second);
+            std::vector<std::vector<uint8_t>> &list = type == 7 ? t.sps : t.pps;
+            std::vector<unsigned> &ids = type == 7 ? t.sps_ids : t.pps_ids;
+            unsigned id;
+            if (type == 7) {
+                H264Sps sps;
+                parse_sps(n.first, n.second, sps);
+                id = sps.id;
+                if (!t.have_sps) {
+                    t.first_sps = sps;
+                    t.have_sps = true;
+                }
+            } else {
+                Bits r(n.first + 1, n.second - 1);
+                id = r.ue();
+            }
+            auto it = std::find(ids.begin(), ids.end(), id);
+            if (it == ids.end()) {
+                ids.push_back(id);
+                list.push_back(v);
+                t.ps_changed |= t.config_ready;
+            } else if (list[it - ids.begin()] != v) {
+                list[it - ids.begin()] = v;
+                t.ps_changed |= t.config_ready;
+            }
+        }
         if (type == 6 && has_recovery_point(n.first, n.second))
             pic.recovery = true;
         if (slice && !slice_in_pic) {
-            pic.p->discardable = !(n.first[0] >> 5);   // nal_ref_idc 0
+            pic.discardable = !(n.first[0] >> 5);   // nal_ref_idc 0
             pic.idr = type == 5;
+            if (!t.config_ready && !t.sps.empty() && !t.pps.empty())
+                t.config_ready = true;
         }
         if (slice)
-            slice_in_pic = slice_seen = true;
-        uint32_t l = (uint32_t)n.second;
-        uint8_t h[4] = { (uint8_t)(l >> 24), (uint8_t)(l >> 16), (uint8_t)(l >> 8), (uint8_t)l };
-        pic.p->data.insert(pic.p->data.end(), h, h + 4);
-        pic.p->data.insert(pic.p->data.end(), n.first, n.first + n.second);
+            slice_in_pic = true;
+        (slice_in_pic ? pic.body : pic.prefix).push_back(n);
     }
     // pieces with no slice (data after the last picture) go with the picture before them
     for (size_t k = pics.size(); k-- > 1;)
-        if (pics[k].p->discardable < 0) {
-            auto &prev = pics[k - 1].p->data;
-            prev.insert(prev.end(), pics[k].p->data.begin(), pics[k].p->data.end());
+        if (pics[k].discardable < 0) {
+            Pic &prev = pics[k - 1];
+            prev.body.insert(prev.body.end(), pics[k].prefix.begin(), pics[k].prefix.end());
+            prev.body.insert(prev.body.end(), pics[k].body.begin(), pics[k].body.end());
             pics.erase(pics.begin() + k);
         }
     int n = (int)pics.size();
-    int track = (int)(&t - w->tracks.data());
+    std::vector<PacketPtr> out;
     for (int k = 0; k < n; k++) {
-        Packet &p = *pics[k].p;
-        p.track = track;
-        p.timestamp = p.assigned = time + (dur > 0 ? dur * k / n : 0);
-        p.duration = dur > 0 ? dur / n : -1;
-        p.key = k == 0 ? key : (pics[k].idr || pics[k].recovery);
-        if (p.discardable < 0)
-            p.discardable = 0;
+        Pic &pic = pics[k];
+        auto p = std::make_shared<Packet>();
+        p->track = track;
+        p->timestamp = p->assigned = time + (dur > 0 ? dur * k / n : 0);
+        p->duration = dur > 0 ? dur / n : -1;
+        p->key = k == 0 ? key : (pic.idr || pic.recovery);
+        p->discardable = pic.discardable < 0 ? 0 : pic.discardable;
+        auto put = [&](const uint8_t *d, size_t len) {
+            uint8_t h[4] = { (uint8_t)(len >> 24), (uint8_t)(len >> 16), (uint8_t)(len >> 8), (uint8_t)len };
+            p->data.insert(p->data.end(), h, h + 4);
+            p->data.insert(p->data.end(), d, d + len);
+        };
+        if (k == 0 && key && t.ps_changed) {
+            for (auto &x : t.sps)
+                put(x.data(), x.size());
+            for (auto &x : t.pps)
+                put(x.data(), x.size());
+            for (auto &x : pic.prefix)
+                if ((x.first[0] & 31) != 7 && (x.first[0] & 31) != 8)
+                    put(x.first, x.second);
+        } else
+            for (auto &x : pic.prefix)
+                put(x.first, x.second);
+        for (auto &x : pic.body)
+            put(x.first, x.second);
+        out.push_back(p);
     }
     if (!t.header_ready) {
-        for (auto &pic : pics) {
-            if (pic.p->duration > 0)
-                t.duration_count[pic.p->duration]++;
-            t.held.push_back(pic.p);
+        for (auto &p : out) {
+            if (p->duration > 0)
+                t.duration_count[p->duration]++;
+            t.held.push_back(p);
         }
-        // the header is made when the first frames are in (mkvmerge: its first batch of frames)
-        if (t.held.size() < 16 && !(key && t.held.size() > (size_t)n))
+        // the header is made at the second key frame (when mkvmerge's parser gives out the first GOP): the
+        // configuration record takes the parameter sets as they are then, the default duration the first
+        // GOP's most common frame duration
+        if (!(key && t.held.size() > (size_t)n))
             return 0;
         if (t.sps.empty() || t.pps.empty())
             return fail(w, EINVAL);
@@ -1077,9 +1115,556 @@ int h264_frame(MkvWriter *w, MkvTrackState &t, const uint8_t *data, int size, in
         t.held.clear();
         return pump(w, false);
     }
-    for (auto &pic : pics)
-        t.queue.push_back(pic.p);
+    for (auto &p : out)
+        t.queue.push_back(p);
     return pump(w, false);
+}
+
+// ---- counted audio (AC-3, DTS): as mkvmerge's timestamp calculator ----
+
+// A packet of `samples` samples at `rate` that came with a frame at `time`: its time counted from the
+// reference (a frame whose time is more than 1 ms off the count starts it again). Packets before 0 go,
+// as mkvmerge drops them.
+void counted_packet(MkvWriter *w, MkvTrackState &t, PacketPtr p, int64_t time, int samples, int rate,
+                    int64_t duration)
+{
+    if (!t.counting || rate != t.count_rate) {
+        t.counting = true;
+        t.count_rate = rate;
+        t.ref_time = time;
+        t.samples_since = 0;
+    } else if (time != INT64_MIN) {
+        int64_t expected = t.ref_time + t.samples_since * 1000000000LL / rate;
+        if (std::llabs(time - expected) > 1000000) {
+            t.ref_time = time;
+            t.samples_since = 0;
+        }
+    }
+    p->timestamp = p->assigned = t.ref_time + t.samples_since * 1000000000LL / rate;
+    p->duration = duration;
+    t.samples_since += samples;
+    if (p->timestamp < 0) {
+        t.dropped_negative++;
+        return;
+    }
+    t.queue.push_back(p);
+}
+
+// ---- AC-3 / E-AC-3 (ATSC A/52; as mkvmerge reads their headers) ----
+
+enum : uint64_t {
+    SP_FL = 1 << 0, SP_FR = 1 << 1, SP_FC = 1 << 2, SP_LFE = 1 << 3, SP_BL = 1 << 4, SP_BR = 1 << 5,
+    SP_FLC = 1 << 6, SP_FRC = 1 << 7, SP_BC = 1 << 8, SP_SL = 1 << 9, SP_SR = 1 << 10, SP_TC = 1 << 11,
+    SP_TFL = 1 << 12, SP_TFC = 1 << 13, SP_TFR = 1 << 14, SP_TBL = 1 << 15, SP_TBR = 1 << 17,
+    SP_SDL = 1 << 18, SP_SDR = 1 << 19, SP_WL = 1 << 20, SP_WR = 1 << 21, SP_LFE2 = 1 << 22,
+};
+
+struct Ac3Header {
+    bool eac3 = false, dependent = false;
+    int bsid = 0, rate = 0, samples = 1536, lfeon = 0;
+    size_t bytes = 0;
+    uint64_t layout = 0;
+};
+
+bool ac3_header(const uint8_t *p, size_t n, Ac3Header &h)
+{
+    static const uint64_t acmod_layout[8] = {
+        SP_FL | SP_FR, SP_FC, SP_FL | SP_FR, SP_FL | SP_FR | SP_FC, SP_FL | SP_FR | SP_BC,
+        SP_FL | SP_FR | SP_FC | SP_BC, SP_FL | SP_FR | SP_SL | SP_SR, SP_FL | SP_FR | SP_FC | SP_SL | SP_SR,
+    };
+    static const uint64_t custom_layout[16] = {
+        SP_FL, SP_FC, SP_FR, SP_SL, SP_SR, SP_FLC | SP_FRC, SP_BL | SP_BR, SP_BC, SP_TC, SP_SDL | SP_SDR,
+        SP_WL | SP_WR, SP_TFL | SP_TFR, SP_TFC, SP_TBL | SP_TBR, SP_LFE2, SP_LFE,
+    };
+    static const uint16_t frame_words[38][3] = {
+        { 64, 69, 96 }, { 64, 70, 96 }, { 80, 87, 120 }, { 80, 88, 120 }, { 96, 104, 144 }, { 96, 105, 144 },
+        { 112, 121, 168 }, { 112, 122, 168 }, { 128, 139, 192 }, { 128, 140, 192 }, { 160, 174, 240 },
+        { 160, 175, 240 }, { 192, 208, 288 }, { 192, 209, 288 }, { 224, 243, 336 }, { 224, 244, 336 },
+        { 256, 278, 384 }, { 256, 279, 384 }, { 320, 348, 480 }, { 320, 349, 480 }, { 384, 417, 576 },
+        { 384, 418, 576 }, { 448, 487, 672 }, { 448, 488, 672 }, { 512, 557, 768 }, { 512, 558, 768 },
+        { 640, 696, 960 }, { 640, 697, 960 }, { 768, 835, 1152 }, { 768, 836, 1152 }, { 896, 975, 1344 },
+        { 896, 976, 1344 }, { 1024, 1114, 1536 }, { 1024, 1115, 1536 }, { 1152, 1253, 1728 },
+        { 1152, 1254, 1728 }, { 1280, 1393, 1920 }, { 1280, 1394, 1920 },
+    };
+    if (n < 18 || p[0] != 0x0B || p[1] != 0x77)
+        return false;
+    Bits r(p, 18);
+    r.pos = 40;
+    h = Ac3Header();
+    h.bsid = (int)r.u(5);
+    r.pos = 16;
+    if (h.bsid <= 8) {                                    // AC-3
+        static const int rates[3] = { 48000, 44100, 32000 };
+        r.u(16);
+        unsigned fscod = r.u(2), frmsizecod = r.u(6);
+        if (fscod == 3 || frmsizecod >= 38)
+            return false;
+        r.u(5);
+        r.u(3);
+        unsigned acmod = r.u(3);
+        if ((acmod & 1) && acmod != 1)
+            r.u(2);
+        if (acmod & 4)
+            r.u(2);
+        if (acmod == 2)
+            r.u(2);
+        h.lfeon = (int)r.u(1);
+        h.rate = rates[fscod] >> (std::max(h.bsid, 8) - 8);
+        h.bytes = (size_t)frame_words[frmsizecod][fscod] * 2;
+        h.layout = acmod_layout[acmod];
+        return true;
+    }
+    if (h.bsid > 16 || h.bsid <= 10)
+        return false;
+    static const int rates[3] = { 48000, 44100, 32000 }, rates2[3] = { 24000, 22050, 16000 };
+    static const int samples[4] = { 256, 512, 768, 1536 };
+    unsigned type = r.u(2);
+    if (type == 3)
+        return false;
+    r.u(3);
+    h.bytes = (size_t)(r.u(11) + 1) * 2;
+    unsigned fscod = r.u(2), fscod2 = r.u(2);
+    if (fscod == 3 && fscod2 == 3)
+        return false;
+    unsigned acmod = r.u(3);
+    h.lfeon = (int)r.u(1);
+    r.u(5);
+    r.u(5);
+    if (r.u(1))
+        r.u(8);
+    if (acmod == 0) {
+        r.u(5);
+        if (r.u(1))
+            r.u(8);
+    }
+    h.eac3 = true;
+    h.dependent = type == 1;
+    if (h.dependent && r.u(1)) {
+        unsigned chanmap = r.u(16);
+        for (int i = 0; i < 16; i++)
+            if (chanmap & (1u << (15 - i)))
+                h.layout |= custom_layout[i];
+    } else
+        h.layout = acmod_layout[acmod];
+    h.rate = fscod == 3 ? rates2[fscod2] : rates[fscod];
+    h.samples = fscod == 3 ? 1536 : samples[fscod2];
+    return true;
+}
+
+int ac3_channels(uint64_t layout, int lfe)
+{
+    return __builtin_popcountll(layout) + lfe;
+}
+
+void ac3_flush_pending(MkvWriter *w, MkvTrackState &t)
+{
+    if (!t.pending)
+        return;
+    PacketPtr p = t.pending;
+    t.pending.reset();
+    if (!t.header_ready) {                  // the first packet: its channels with its dependent frames'
+        t.spec.channels = ac3_channels(t.ac3_layout, t.ac3_lfe);
+        t.default_duration = (int64_t)t.pending_samples * 1000000000LL / t.pending_rate;
+        t.header_ready = true;
+    }
+    counted_packet(w, t, p, t.pending_time, t.pending_samples, t.pending_rate,
+                   (int64_t)t.pending_samples * 1000000000LL / t.pending_rate);
+}
+
+// A packet per independent frame with the dependent frames after it (as mkvmerge's AC-3 parser joins them);
+// the first packet gives the track's codec, rate and channels.
+int ac3_frame(MkvWriter *w, MkvTrackState &t, const uint8_t *data, int size, int64_t time)
+{
+    size_t off = 0;
+    while (off + 18 <= (size_t)size) {
+        Ac3Header h;
+        if (!ac3_header(data + off, size - off, h) || off + h.bytes > (size_t)size || h.rate <= 0)
+            break;
+        if (!h.dependent || !t.pending) {
+            ac3_flush_pending(w, t);
+            t.pending = std::make_shared<Packet>();
+            t.pending->track = (int)(&t - w->tracks.data());
+            t.pending_time = off ? INT64_MIN : time;
+            t.pending_samples = h.samples;
+            t.pending_rate = h.rate;
+            if (t.codec_id.empty()) {
+                t.codec_id = h.eac3 ? "A_EAC3" : "A_AC3";
+                t.spec.sample_rate = h.rate;
+                t.ac3_layout = h.layout;
+                t.ac3_lfe = h.lfeon;
+            }
+        } else if (!t.header_ready) {
+            t.ac3_layout |= h.layout;
+            t.ac3_lfe += h.lfeon;
+        }
+        t.pending->data.insert(t.pending->data.end(), data + off, data + off + h.bytes);
+        off += h.bytes;
+    }
+    return 0;
+}
+
+// ---- DTS (ETSI TS 102 114; as mkvmerge reads the header) ----
+
+struct DtsAsset {
+    int channels = 0, max_rate = 0;
+    unsigned mask = 0;
+    size_t offset = 0, size = 0;
+    size_t core_offset = 0, core_size = 0, xbr_offset = 0, xbr_size = 0, xxch_offset = 0, xxch_size = 0;
+    size_t x96_offset = 0, x96_size = 0, lbr_offset = 0, lbr_size = 0, xll_offset = 0, xll_size = 0;
+    bool lbr_sync = false, xll_sync = false, embedded_stereo = false, embedded_6ch = false;
+    size_t xll_sync_offset = 0;
+};
+
+struct DtsHeader {
+    bool has_core = false, has_exss = false, has_xch = false, termination = false;
+    int core_rate = 0, channels = 0, lfe = 0, pcm_res = 0, blocks = 0, deficit = 0;
+    int ext_rate = 0, ref_clock = 3, subframe_duration = 0;
+    size_t frame_size = 0;
+    std::vector<DtsAsset> assets;
+    // exss header
+    int substream_size_bits = 16;
+    bool static_fields = false, mix_metadata = false;
+    unsigned nb_mix = 0, mix_channels[4] = { 0 };
+};
+
+int dts_count_channels(unsigned mask)
+{
+    return __builtin_popcount(mask) + __builtin_popcount(mask & 0xae66);
+}
+
+bool dts_set_offset(const DtsAsset &, unsigned has, unsigned want, size_t &off, size_t &size, size_t &out,
+                    size_t in_size)
+{
+    if (!(has & want))
+        return true;
+    if ((off & 3) || in_size > size)
+        return false;
+    out = off;
+    off += in_size;
+    size -= in_size;
+    return true;
+}
+
+bool dts_asset(Bits &r, DtsHeader &h, DtsAsset &a)
+{
+    static const int sub_rates[16] = { 8000, 16000, 32000, 64000, 128000, 22050, 44100, 88200,
+                                       176400, 352800, 12000, 24000, 48000, 96000, 192000, 384000 };
+    size_t start = r.pos;
+    unsigned size = r.u(9) + 1;
+    r.u(3);
+    if (h.static_fields) {
+        if (r.u(1))
+            r.u(4);
+        if (r.u(1))
+            r.u(24);
+        if (r.u(1))
+            r.pos += (size_t)(r.u(10) + 1) * 8;
+        r.u(5);
+        a.max_rate = sub_rates[r.u(4)];
+        a.channels = (int)r.u(8) + 1;
+        if (r.u(1)) {
+            if (a.channels > 2)
+                a.embedded_stereo = r.u(1);
+            if (a.channels > 6)
+                a.embedded_6ch = r.u(1);
+            int mask_bits = 16;
+            if (r.u(1)) {
+                mask_bits = (int)(r.u(2) + 1) << 2;
+                r.pos += mask_bits;
+            }
+            unsigned nsets = r.u(3), nspk[8];
+            for (unsigned i = 0; i < nsets; i++)
+                nspk[i] = dts_count_channels(r.u(mask_bits));
+            for (unsigned i = 0; i < nsets; i++) {
+                unsigned nch = r.u(5) + 1;
+                for (unsigned k = 0; k < nspk[i]; k++)
+                    r.pos += (size_t)__builtin_popcount(r.u(nch)) * 5;
+            }
+        } else
+            r.u(3);
+    }
+    bool drc = r.u(1);
+    if (drc)
+        r.u(8);
+    if (r.u(1))
+        r.u(5);
+    if (drc && a.embedded_stereo)
+        r.u(8);
+    if (h.mix_metadata && r.u(1)) {
+        r.u(1);
+        r.u(6);
+        if (r.u(2) == 3)
+            r.u(8);
+        else
+            r.u(3);
+        if (r.u(1))
+            for (unsigned m = 0; m < h.nb_mix; m++)
+                r.pos += 6 * (size_t)h.mix_channels[m];
+        else
+            r.pos += 6 * (size_t)h.nb_mix;
+        unsigned nch = a.channels + (a.embedded_6ch ? 6 : 0) + (a.embedded_stereo ? 2 : 0);
+        for (unsigned m = 0; m < h.nb_mix; m++)
+            for (unsigned c = 0; c < nch; c++)
+                r.pos += 6 * (size_t)__builtin_popcount(r.u(h.mix_channels[m]));
+    }
+    auto lbr = [&]() {
+        a.lbr_size = r.u(14) + 1;
+        a.lbr_sync = r.u(1);
+        if (a.lbr_sync)
+            r.u(2);
+    };
+    auto xll = [&]() {
+        a.xll_size = r.u(h.substream_size_bits) + 1;
+        a.xll_sync = r.u(1);
+        if (a.xll_sync) {
+            r.u(4);
+            unsigned bits = r.u(5) + 1;
+            r.u(bits);
+            a.xll_sync_offset = r.u(h.substream_size_bits);
+        }
+    };
+    switch (r.u(2)) {
+    case 0:
+        a.mask = r.u(12);
+        if (a.mask & 0x010) {
+            a.core_size = r.u(14) + 1;
+            if (r.u(1))
+                r.u(2);
+        }
+        if (a.mask & 0x020)
+            a.xbr_size = r.u(14) + 1;
+        if (a.mask & 0x040)
+            a.xxch_size = r.u(14) + 1;
+        if (a.mask & 0x080)
+            a.x96_size = r.u(12) + 1;
+        if (a.mask & 0x100)
+            lbr();
+        if (a.mask & 0x200)
+            xll();
+        if (a.mask & 0x400)
+            r.u(16);
+        if (a.mask & 0x800)
+            r.u(16);
+        break;
+    case 1:
+        a.mask = 0x200;
+        xll();
+        break;
+    case 2:
+        a.mask = 0x100;
+        lbr();
+        break;
+    case 3:
+        a.mask = 0;
+        r.u(14);
+        r.u(8);
+        if (r.u(1))
+            r.u(3);
+        break;
+    }
+    if (a.mask & 0x200)
+        r.u(3);
+    size_t off = a.offset, left = a.size;
+    if (!dts_set_offset(a, a.mask, 0x010, off, left, a.core_offset, a.core_size) ||
+        !dts_set_offset(a, a.mask, 0x020, off, left, a.xbr_offset, a.xbr_size) ||
+        !dts_set_offset(a, a.mask, 0x040, off, left, a.xxch_offset, a.xxch_size) ||
+        !dts_set_offset(a, a.mask, 0x080, off, left, a.x96_offset, a.x96_size) ||
+        !dts_set_offset(a, a.mask, 0x100, off, left, a.lbr_offset, a.lbr_size) ||
+        !dts_set_offset(a, a.mask, 0x200, off, left, a.xll_offset, a.xll_size))
+        return false;
+    if (a.mask & 0x100) {
+        static const int lbr_rates[16] = { 8000, 16000, 32000, 0, 0, 22050, 44100, 0,
+                                           0, 0, 12000, 24000, 48000, 0, 0, 0 };
+        r.pos = a.lbr_offset * 8;
+        if (a.lbr_sync && r.u(32) != 0x0a801921)
+            return false;
+        unsigned code = r.u(8);
+        if (code == 2)
+            h.core_rate = lbr_rates[r.u(8) & 0x0f];
+        else if (code != 1)
+            return false;
+    }
+    if (a.mask & 0x200) {
+        r.pos = (a.xll_offset + a.xll_sync_offset) * 8;
+        if (a.xll_sync && r.u(32) != 0x41a29547)
+            return false;
+        if (!(a.mask & 0x100)) {
+            if (!h.has_core)
+                h.core_rate = h.assets[0].max_rate;
+            else
+                h.ext_rate = h.assets[0].max_rate;
+        }
+    } else if (a.mask & 0x080)
+        h.ext_rate = 96000;
+    r.pos = start + (size_t)size * 8;
+    return true;
+}
+
+bool dts_exss(const uint8_t *p, size_t n, DtsHeader &h)
+{
+    Bits r(p, n);
+    r.b.assign(p, p + n);   // the extension substream has no emulation prevention
+    r.u(32);
+    r.u(8);
+    unsigned index = r.u(2);
+    int header_bits = 8;
+    h.substream_size_bits = 16;
+    if (r.u(1)) {
+        header_bits = 12;
+        h.substream_size_bits = 20;
+    }
+    size_t header_size = r.u(header_bits) + 1, part = r.u(h.substream_size_bits) + 1;
+    h.frame_size += part;
+    h.has_exss = true;
+    unsigned npres = 1, nassets = 1;
+    h.static_fields = r.u(1);
+    if (h.static_fields) {
+        h.ref_clock = (int)r.u(2);
+        h.subframe_duration = (int)(r.u(3) + 1) * 512;
+        if (r.u(1))
+            r.pos += 36;
+        npres = r.u(3) + 1;
+        nassets = r.u(3) + 1;
+        unsigned active[8];
+        for (unsigned i = 0; i < npres; i++)
+            active[i] = r.u(index + 1);
+        for (unsigned i = 0; i < npres; i++)
+            for (unsigned k = 0; k <= index; k++)
+                if (active[i] & (1u << k))
+                    r.u(8);
+        h.mix_metadata = r.u(1);
+        if (h.mix_metadata) {
+            r.u(2);
+            int bits = (int)(r.u(2) + 1) << 2;
+            h.nb_mix = r.u(2) + 1;
+            for (unsigned m = 0; m < h.nb_mix; m++)
+                h.mix_channels[m] = dts_count_channels(r.u(bits));
+        }
+    }
+    h.assets.resize(nassets);
+    size_t off = header_size;
+    for (auto &a : h.assets) {
+        a.offset = off;
+        a.size = r.u(h.substream_size_bits) + 1;
+        off += a.size;
+    }
+    for (auto &a : h.assets)
+        if (!dts_asset(r, h, a))
+            return false;
+    return true;
+}
+
+bool dts_header(const uint8_t *p, size_t n, DtsHeader &h)
+{
+    static const int core_rates[16] = { -1, 8000, 16000, 32000, -1, -1, 11025, 22050,
+                                        44100, -1, -1, 12000, 24000, 48000, -1, -1 };
+    static const int amode_channels[16] = { 1, 2, 2, 2, 2, 3, 3, 4, 4, 5, 6, 6, 6, 7, 8, 8 };
+    h = DtsHeader();
+    if (n < 15)
+        return false;
+    uint32_t sync = (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3];
+    if (sync == 0x64582025)
+        return dts_exss(p, n, h);
+    if (sync != 0x7ffe8001)
+        return false;
+    Bits r(p, n);
+    r.b.assign(p, p + std::min<size_t>(n, 32));
+    r.u(32);
+    h.termination = !r.u(1);
+    h.deficit = (int)((r.u(5) + 1) % 32);
+    bool crc = r.u(1);
+    h.blocks = (int)r.u(7) + 1;
+    h.frame_size = r.u(14) + 1;
+    if (h.frame_size < 96)
+        return false;
+    unsigned amode = r.u(6);
+    h.channels = amode < 16 ? amode_channels[amode] : -1;
+    h.core_rate = core_rates[r.u(4)];
+    r.u(5);
+    r.u(5);
+    unsigned ext_audio = r.u(3);
+    bool ext_coding = r.u(1);
+    r.u(1);
+    h.lfe = (int)r.u(2);
+    r.u(1);
+    if (crc)
+        r.u(16);
+    r.u(1);
+    r.u(4);
+    r.u(2);
+    static const int pcm[8] = { 16, 16, 20, 20, 0, 24, 24, 0 };
+    h.pcm_res = pcm[r.u(3)];
+    if (!h.pcm_res)
+        return false;
+    h.has_core = true;
+    // the 6.1 channel extension in the core frame (its sync searched from the frame's end)
+    if (ext_coding && ext_audio == 0 && h.frame_size <= n) {
+        for (size_t pos = h.frame_size - 96; pos > 0; pos--) {
+            if (p[pos] == 0x5a && p[pos + 1] == 0x5a && p[pos + 2] == 0x5a && p[pos + 3] == 0x5a &&
+                pos + ((((size_t)p[pos + 4] << 2) | (p[pos + 5] >> 6)) + 1) == h.frame_size) {
+                h.has_xch = true;
+                break;
+            }
+        }
+    }
+    size_t core = h.frame_size;
+    if (core + 9 <= n && p[core] == 0x64 && p[core + 1] == 0x58 && p[core + 2] == 0x20 && p[core + 3] == 0x25)
+        return dts_exss(p + core, n - core, h);
+    return true;
+}
+
+int64_t dts_samples(const DtsHeader &h);
+int64_t dts_ns(const DtsHeader &h)
+{
+    static const int clocks[3] = { 32000, 44100, 48000 };
+    if (h.has_core)
+        return (dts_samples(h) * 10000000000LL / h.core_rate + 5) / 10;
+    if (h.ref_clock < 3)
+        return ((int64_t)h.subframe_duration * 10000000000LL / clocks[h.ref_clock] + 5) / 10;
+    return 0;
+}
+int64_t dts_samples(const DtsHeader &h)
+{
+    if (h.has_core) {
+        int64_t s = (int64_t)h.blocks * 32;
+        if (h.termination)
+            s -= std::min<int64_t>(s, h.deficit);
+        return s;
+    }
+    int64_t ns = dts_ns(h);
+    return h.core_rate > 0 ? (ns * h.core_rate / 100000000 + 5) / 10 : 0;
+}
+int dts_total_channels(const DtsHeader &h)
+{
+    if (h.has_exss && !h.assets.empty() && h.assets[0].channels)
+        return h.assets[0].channels;
+    return h.channels + (h.lfe == 1 || h.lfe == 2 ? 1 : 0) + (h.has_xch ? 1 : 0);
+}
+
+int dts_frame(MkvWriter *w, MkvTrackState &t, const uint8_t *data, int size, int64_t time)
+{
+    size_t off = 0;
+    while (off + 15 <= (size_t)size) {
+        DtsHeader h;
+        if (!dts_header(data + off, size - off, h) || !h.frame_size || off + h.frame_size > (size_t)size)
+            break;
+        if (!t.header_ready) {
+            t.codec_id = "A_DTS";
+            t.spec.sample_rate = h.ext_rate ? h.ext_rate : h.core_rate;
+            t.spec.channels = dts_total_channels(h);
+            t.spec.bits = h.pcm_res;
+            t.default_duration = dts_ns(h);
+            t.header_ready = true;
+        }
+        auto p = std::make_shared<Packet>();
+        p->track = (int)(&t - w->tracks.data());
+        p->data.assign(data + off, data + off + h.frame_size);
+        if (h.core_rate <= 0)
+            return fail(w, EINVAL);
+        counted_packet(w, t, p, off ? INT64_MIN : time, (int)dts_samples(h), h.core_rate, dts_ns(h));
+        off += h.frame_size;
+    }
+    return 0;
 }
 
 void pcm_flush(MkvWriter *w, MkvTrackState &t, bool all)
@@ -1288,9 +1873,13 @@ extern "C" int mkv_open(MkvWriter **pw, const char *path, const MkvFileSpec *fil
         t.name = tracks[i].name ? tracks[i].name : "";
         t.uid = w->uids.make(UID_TRACK);
         if (t.spec.codec == MKV_CODEC_H264) {
+            t.codec_id = "V_MPEG4/ISO/AVC";
             if (w->video < 0)
                 w->video = i;
+        } else if (t.spec.codec == MKV_CODEC_AC3 || t.spec.codec == MKV_CODEC_DTS) {
+            // codec, rate, channels and default duration: from the first packet
         } else if (t.spec.codec == MKV_CODEC_PCM) {
+            t.codec_id = "A_PCM/INT/LIT";
             if (t.spec.sample_rate <= 0 || t.spec.channels <= 0 || t.spec.bits <= 0) {
                 delete w;
                 return -EINVAL;
@@ -1318,9 +1907,14 @@ extern "C" int mkv_frame(MkvWriter *w, int track, const uint8_t *data, int size,
         return -EINVAL;
     MkvTrackState &t = w->tracks[track];
     try {
-        if (t.spec.codec == MKV_CODEC_H264)
-            return h264_frame(w, t, data, size, time, duration, key);
-        return pcm_frame(w, t, data, size, time);
+        int ret;
+        switch (t.spec.codec) {
+        case MKV_CODEC_H264: return h264_frame(w, t, data, size, time, duration, key);
+        case MKV_CODEC_AC3:  ret = ac3_frame(w, t, data, size, time); break;
+        case MKV_CODEC_DTS:  ret = dts_frame(w, t, data, size, time); break;
+        default:             return pcm_frame(w, t, data, size, time);
+        }
+        return ret < 0 ? ret : pump(w, false);
     } catch (...) {
         return fail(w, errno ? errno : EIO);
     }
@@ -1348,6 +1942,8 @@ extern "C" int mkv_close(MkvWriter **pw, const MkvChapter *chapters, int nb_chap
                 }
                 if (t.spec.codec == MKV_CODEC_PCM)
                     pcm_flush(w, t, true);
+                if (t.spec.codec == MKV_CODEC_AC3)
+                    ac3_flush_pending(w, t);
                 t.done = true;
             }
             if (!w->failed && pump(w, true) == 0 && !w->started)

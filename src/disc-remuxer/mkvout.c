@@ -1,7 +1,7 @@
 /*
  * disc-remuxer: a title into one Matroska file (output.format = mkv; the
  * writer in src/mkv). The title's tracks the writer takes (H.264 video and
- * LPCM audio so far) go in with the title's own times and chapters; the
+ * LPCM, AC-3 / E-AC-3 and DTS audio so far) go in with the title's own times and chapters; the
  * others are left out, each said in the log. The frames are held until
  * every track in the file has given its first one (LPCM's format is known
  * from then on), then written in the order they come.
@@ -53,6 +53,10 @@ static int mkv_codec_of(const DrDiscTrack *t)
 {
     if (t->type == DISC_MEDIA_VIDEO && t->codec == DR_CODEC_H264 && !t->second_view)
         return MKV_CODEC_H264;
+    if (t->type == DISC_MEDIA_AUDIO && (t->codec == DR_CODEC_AC3 || t->codec == DR_CODEC_EAC3))
+        return MKV_CODEC_AC3;
+    if (t->type == DISC_MEDIA_AUDIO && t->codec == DR_CODEC_DTS)
+        return MKV_CODEC_DTS;
     /* LPCM: the disc's (before its first frame) or the PCM it leaves as */
     if (t->type == DISC_MEDIA_AUDIO && (t->codec == DR_CODEC_PCM_S16LE || t->codec == DR_CODEC_PCM_S24LE ||
                                         t->codec == DR_CODEC_PCM_BLURAY || t->codec == DR_CODEC_PCM_DVD))
@@ -79,7 +83,7 @@ int mkvout_open(MkvOut **pm, DrDisc *d, const char *path, int title, int part)
         } else {
             m->map[i] = -1;
             log_text(LOG_WARNING, "Track %d (%s): not written into the MKV file: the MKV writer takes H.264 video "
-                     "and LPCM audio so far", t->number, ff_disctl_codec_id_name(t->codec));
+                     "and LPCM, AC-3, E-AC-3 and DTS audio so far", t->number, ff_disctl_codec_id_name(t->codec));
         }
     }
     /* the chapters as the title list has them (a part: those inside it, from
@@ -128,7 +132,8 @@ static int open_file(MkvOut *m, DrDisc *d)
         s->height   = t->height;
         s->sample_rate = t->sample_rate;
         s->channels    = t->channels;
-        s->bits        = t->codec == DR_CODEC_PCM_S24LE ? 24 : 16;
+        if (s->codec == MKV_CODEC_PCM)
+            s->bits    = t->codec == DR_CODEC_PCM_S24LE ? 24 : 16;
     }
     /* DR_MKV_NO_VARIABLE_DATA (tests): fixed UIDs, no date, mkvmerge's
      * "no_variable_data" application names, so a file can be compared byte

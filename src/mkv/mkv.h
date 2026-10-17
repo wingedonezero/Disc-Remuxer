@@ -29,6 +29,9 @@ typedef struct MkvWriter MkvWriter;
 enum MkvCodec {
     MKV_CODEC_H264 = 1,     /* frames: access units (Annex B), display times */
     MKV_CODEC_PCM,          /* frames: little-endian samples, interleaved */
+    MKV_CODEC_AC3,          /* frames: AC-3 / E-AC-3 sync frames (A_AC3, or A_EAC3 from the stream) */
+    MKV_CODEC_DTS,          /* frames: DTS frames (a core, a core + extension substream, or an extension
+                               substream alone) */
 };
 
 typedef struct MkvTrackSpec {
