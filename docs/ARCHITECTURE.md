@@ -97,7 +97,7 @@ source (image / folder)
             LPCM, AC-3 / E-AC-3, DTS, PGS so far; other tracks are left out
             and said); settings mkv.compression (PGS zlib, default none)
             and mkv.remove_dialog_normalization (default off)
-            output.format = mkvmerge: the stream files and their timestamp
+            output.format = mkvmerge (the default): the stream files and their timestamp
             files, then mkvmerge @<options file> into <out folder>/<title>.mkv
             (writer.c), the stream files deleted once it has
             output.timestamps_file: each video and audio track's picture /

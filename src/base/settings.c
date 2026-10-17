@@ -45,7 +45,7 @@ static const Setting registry[] = {
       "The main output folder: a disc's files go into a folder of the disc's name in it (its image's or "
       "folder's name; _001, _002, ... when that exists), when demux is given no output folder and in the GUI. "
       "Empty: the folder output next to the program.", 0, SET_AT_RIP },
-    { "output", "format", SET_CHOICE, "streams", 0, 0, out_formats,
+    { "output", "format", SET_CHOICE, "mkvmerge", 0, 0, out_formats,
       "What each title is written as: streams (a file per track: the elementary stream, WAVE, subtitles, "
       "and the chapters as XML), mkv (one Matroska file holding every track and the chapters, written the "
       "way mkvmerge writes one) or mkvmerge (the stream files and their timestamp files, then mkvmerge muxes them "

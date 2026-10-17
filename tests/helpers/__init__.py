@@ -17,6 +17,10 @@ DATA = ROOT / "tests" / "data"
 # is the user's), removed when the run starts.
 TEST_SETTINGS = BUILD / "pytest" / "test-settings.toml"
 TEST_SETTINGS.unlink(missing_ok=True)
+TEST_SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+# the tests' baseline output is the stream files (the program's default is the mkvmerge mode); tests of the MKV
+# outputs set output.format themselves
+TEST_SETTINGS.write_text('[output]\nformat = "streams"\n')
 PROGRAM = [str(DIST / "disc-remuxer"), "--config", str(TEST_SETTINGS)]
 
 sys.path.insert(0, str(BUILD / "pytest"))
