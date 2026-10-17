@@ -108,7 +108,7 @@ static const Setting registry[] = {
       "How far after its mark (ms) a chapter may move on to a key frame, when none is close enough before it. "
       "0: never forward.", 0, SET_AT_RIP },
     { "mkv", "compression", SET_CHOICE, "none", 0, 0, compressions,
-      "MKV files (output.format = mkv): none stores the subtitles' blocks as they are; zlib compresses each "
+      "MKV files (the mkv and mkvmerge modes): none stores the subtitles' blocks as they are; zlib compresses each "
       "(lossless, as mkvmerge does by default; a few players and devices cannot read compressed tracks).",
       0, SET_AT_RIP },
     { "mkv", "mkvmerge_path", SET_TEXT, "", 0, 0, NULL,
