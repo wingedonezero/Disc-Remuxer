@@ -120,6 +120,26 @@ int main(int argc, char **argv)
         usage(stderr);
         return 2;
     }
+    /* what follows the command: no more than it takes, and no option (they
+     * go before the command; one after it would be ignored) */
+    {
+        const char *cmd = argv[i];
+        int most = !strcmp(cmd, "settings") || !strcmp(cmd, "info") || !strcmp(cmd, "find") ? 1 :
+                   !strcmp(cmd, "demux") ? 3 : !strcmp(cmd, "version") ? 0 : -1;   /* -1: an unknown command */
+        for (int k = i + 1; k < argc; k++) {
+            if (argv[k][0] == '-' && argv[k][1]) {
+                fprintf(stderr, "disc-remuxer: option %s after the command %s: options go before the command "
+                        "(disc-remuxer [options] %s ...)\n", argv[k], cmd, cmd);
+                return 2;
+            }
+            if (most >= 0 && k - i > most) {
+                fprintf(stderr, "disc-remuxer: %s takes at most %d argument%s: %s is one too many\n\n", cmd, most,
+                        most == 1 ? "" : "s", argv[k]);
+                usage(stderr);
+                return 2;
+            }
+        }
+    }
 
     if ((ret = engine_init(config, sets, nb_sets, json, verbose)))
         return ret;
