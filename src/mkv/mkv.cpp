@@ -2172,6 +2172,29 @@ extern "C" int mkv_h264_pictures(const uint8_t *data, int size)
     return pics;
 }
 
+extern "C" int mkv_audio_packets(int codec, const uint8_t *data, int size)
+{
+    size_t off = 0;
+    int n = 0;
+    while (off + 18 <= (size_t)size) {
+        if (codec == MKV_CODEC_AC3) {
+            Ac3Header h;
+            if (!ac3_header(data + off, size - off, h) || !h.bytes)
+                break;
+            n += !h.dependent;
+            off += h.bytes;
+        } else if (codec == MKV_CODEC_DTS) {
+            DtsHeader h;
+            if (!dts_header(data + off, size - off, h) || !h.frame_size)
+                break;
+            n++;
+            off += h.frame_size;
+        } else
+            break;
+    }
+    return n;
+}
+
 extern "C" int mkv_frame(MkvWriter *w, int track, const uint8_t *data, int size, int64_t time, int64_t duration,
                          int key)
 {

@@ -549,10 +549,24 @@ static int srt_write(EsOut *o, const DrDiscFrame *fr)
 }
 
 /* The timestamp file: a video frame's pictures (H.264: two field pictures
- * are two, as a muxer writes them), each at its share of the frame's time. */
+ * are two, as a muxer writes them), an audio frame's packets as mkvmerge
+ * cuts them (AC-3 / E-AC-3: an independent frame with its dependent ones;
+ * DTS: a frame), each at its share of the frame's time. */
+static int ts_codec(const DrDiscTrack *t)
+{
+    if (t->type == DISC_MEDIA_VIDEO)
+        return !t->second_view;
+    return t->type == DISC_MEDIA_AUDIO &&
+           (t->codec == DR_CODEC_AC3 || t->codec == DR_CODEC_EAC3 || t->codec == DR_CODEC_DTS);
+}
+
 static int ts_add(EsOut *o, const DrDiscTrack *t, const DrDiscFrame *fr)
 {
-    int n = t->codec == DR_CODEC_H264 ? mkv_h264_pictures(fr->data, fr->size) : 1;
+    int n = t->codec == DR_CODEC_H264 ? mkv_h264_pictures(fr->data, fr->size) :
+            t->codec == DR_CODEC_AC3 || t->codec == DR_CODEC_EAC3 ? mkv_audio_packets(MKV_CODEC_AC3, fr->data, fr->size) :
+            t->codec == DR_CODEC_DTS ? mkv_audio_packets(MKV_CODEC_DTS, fr->data, fr->size) : 1;
+    if (n == 0 && t->type == DISC_MEDIA_AUDIO)
+        return 0;                       /* only dependent frames: they go with the frame before them */
     int64_t ns = ticks_in(fr->time, 1000000000), dur = fr->duration > 0 ? ticks_in(fr->duration, 1000000000) : 0;
 
     if (n < 1)
@@ -1006,10 +1020,11 @@ static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_
         if (t->forced && t->type == DISC_MEDIA_SUBTITLE &&
             ((ret = opts_add(&o, "--forced-display-flag")) < 0 || (ret = opts_add(&o, "0:yes")) < 0))
             goto done;
-        if (t->type == DISC_MEDIA_AUDIO && e->st.delay_ms &&
+        /* audio: its timestamp file holds its start too, else the delay */
+        if (t->type == DISC_MEDIA_AUDIO && !e->ts_path && e->st.delay_ms &&
             ((ret = opts_add(&o, "--sync")) < 0 || (ret = opts_addf(&o, "0:%"PRId64, e->st.delay_ms)) < 0))
             goto done;
-        if (t->type == DISC_MEDIA_VIDEO && e->ts_path &&
+        if (e->ts_path &&
             ((ret = opts_add(&o, "--timestamps")) < 0 || (ret = opts_addf(&o, "0:%s", e->ts_path)) < 0))
             goto done;
         if (t->type == DISC_MEDIA_SUBTITLE && none &&
@@ -1243,9 +1258,10 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
                 o->st.first_ms = ms;
             o->st.end_ms = DR_MAX(o->st.end_ms, end);
         }
-        /* the timestamp file: each video track's (MKV: the one in the file) */
-        if (want_ts && t->type == DISC_MEDIA_VIDEO && !t->second_view && fr.time != DR_NOPTS_VALUE &&
-            (!mkv || ((ts_track < 0 || ts_track == fr.track) && mkvout_has_track(mo, fr.track)))) {
+        /* the timestamp files: each video and audio track's (MKV: the video track in the file) */
+        if (want_ts && ts_codec(t) && fr.time != DR_NOPTS_VALUE &&
+            (!mkv || (t->type == DISC_MEDIA_VIDEO && (ts_track < 0 || ts_track == fr.track) &&
+                      mkvout_has_track(mo, fr.track)))) {
             ts_track = fr.track;
             if ((ret = ts_add(o, t, &fr)) < 0) {
                 dr_disc_frame_unref(&fr);
@@ -1295,11 +1311,15 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     }
     for (int i = 0; ret >= 0 && !mkv && i < nb_tracks; i++)
         ret = es_flush_hold(dr_disc_track(d, i), &out[i], prefix);
-    /* the timestamp files: next to each video stream file (MKV: next to the MKV file) */
+    /* the timestamp files: next to each video and audio stream file (MKV: the video's, next to the MKV file) */
     for (int i = 0; ret >= 0 && want_ts && i < nb_tracks; i++) {
         EsOut *o = &out[i];
+        const DrDiscTrack *t = dr_disc_track(d, i);
         char *path;
         int r2;
+        if (!mkv && o->opened && t->type == DISC_MEDIA_AUDIO && !ts_codec(t))
+            log_text(LOG_INFO, "Track %d (%s): no timestamp file (how mkvmerge cuts this codec into packets is not "
+                     "built in yet): a later mux closes any gap in it", t->number, codec_id_name(t->codec));
         if (!o->nb_ts)
             continue;
         if (mkv)

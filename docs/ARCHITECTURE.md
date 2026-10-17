@@ -100,9 +100,11 @@ source (image / folder)
             output.format = mkvmerge: the stream files and their timestamp
             files, then mkvmerge @<options file> into <out folder>/<title>.mkv
             (writer.c), the stream files deleted once it has
-            output.timestamps_file: each video track's picture times
-            (mkvmerge's format v4, exact to the ns) next to its stream file
-            or the MKV file
+            output.timestamps_file: each video and audio track's picture /
+            packet times (mkvmerge's format v4, exact to the ns; audio: AC-3,
+            E-AC-3, DTS so far) next to its stream file, or the video's next
+            to the MKV file; the mkvmerge mode always writes them, so a gap
+            (damaged data, a join left open) stays in every track
 ```
 
 The info path: the format part reads the structure (every check reported

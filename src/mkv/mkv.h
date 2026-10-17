@@ -96,6 +96,10 @@ int mkv_close(MkvWriter **w, const MkvChapter *chapters, int nb_chapters, int ab
  * into blocks: 2 for a frame of two field pictures, else 1 (0: no slice). */
 int mkv_h264_pictures(const uint8_t *data, int size);
 
+/* The packets mkvmerge makes of audio data (MKV_CODEC_AC3: an independent
+ * frame with its dependent ones; MKV_CODEC_DTS: a frame): their count. */
+int mkv_audio_packets(int codec, const uint8_t *data, int size);
+
 #ifdef __cplusplus
 }
 #endif
