@@ -34,6 +34,7 @@ enum MkvCodec {
                                substream alone) */
     MKV_CODEC_PGS,          /* frames: PGS display sets (their segments one after another), each at its
                                presentation time */
+    MKV_CODEC_TRUEHD,       /* (mkv_audio_packets() only: not written yet) */
 };
 
 typedef struct MkvTrackSpec {
@@ -97,7 +98,8 @@ int mkv_close(MkvWriter **w, const MkvChapter *chapters, int nb_chapters, int ab
 int mkv_h264_pictures(const uint8_t *data, int size);
 
 /* The packets mkvmerge makes of audio data (MKV_CODEC_AC3: an independent
- * frame with its dependent ones; MKV_CODEC_DTS: a frame): their count. */
+ * frame with its dependent ones; MKV_CODEC_DTS: a frame; MKV_CODEC_TRUEHD:
+ * an access unit): their count. */
 int mkv_audio_packets(int codec, const uint8_t *data, int size);
 
 #ifdef __cplusplus

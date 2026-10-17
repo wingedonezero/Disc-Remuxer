@@ -54,7 +54,7 @@ static const Setting registry[] = {
     { "output", "timestamps_file", SET_BOOL, "false", 0, 0, NULL,
       "Also write each video and audio track's frame times as a timestamp file (mkvmerge's format v4, one time per "
       "picture / packet in ms, each read back to the exact ns): <stream file>_timestamps.txt next to its stream "
-      "file (audio: AC-3, E-AC-3 and DTS so far), or <title>_timestamps.txt (the video's) next to the MKV file. A "
+      "file (audio: AC-3, E-AC-3, DTS and TrueHD so far), or <title>_timestamps.txt (the video's) next to the MKV file. A "
       "raw stream holds no times; with these files a later mux (mkvmerge --timestamps) gets the disc's times even "
       "where frames alone do not tell them (a gap left by damaged data, a jump between joined pieces, a change of "
       "frame rate).", 0, SET_AT_RIP },

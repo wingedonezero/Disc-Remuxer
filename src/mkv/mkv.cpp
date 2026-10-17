@@ -2192,6 +2192,14 @@ extern "C" int mkv_audio_packets(int codec, const uint8_t *data, int size)
         } else
             break;
     }
+    // TrueHD: access units, each with its length (in 16-bit words) after a check nibble
+    while (codec == MKV_CODEC_TRUEHD && off + 4 <= (size_t)size) {
+        size_t len = (size_t)((data[off] & 0x0f) << 8 | data[off + 1]) * 2;
+        if (len < 4 || off + len > (size_t)size)
+            break;
+        n++;
+        off += len;
+    }
     return n;
 }
 

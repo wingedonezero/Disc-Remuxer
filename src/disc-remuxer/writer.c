@@ -551,20 +551,23 @@ static int srt_write(EsOut *o, const DrDiscFrame *fr)
 /* The timestamp file: a video frame's pictures (H.264: two field pictures
  * are two, as a muxer writes them), an audio frame's packets as mkvmerge
  * cuts them (AC-3 / E-AC-3: an independent frame with its dependent ones;
- * DTS: a frame), each at its share of the frame's time. */
+ * DTS: a frame; TrueHD: an access unit), each at its share of the frame's
+ * time. */
 static int ts_codec(const DrDiscTrack *t)
 {
     if (t->type == DISC_MEDIA_VIDEO)
         return !t->second_view;
     return t->type == DISC_MEDIA_AUDIO &&
-           (t->codec == DR_CODEC_AC3 || t->codec == DR_CODEC_EAC3 || t->codec == DR_CODEC_DTS);
+           (t->codec == DR_CODEC_AC3 || t->codec == DR_CODEC_EAC3 || t->codec == DR_CODEC_DTS ||
+            t->codec == DR_CODEC_TRUEHD);
 }
 
 static int ts_add(EsOut *o, const DrDiscTrack *t, const DrDiscFrame *fr)
 {
     int n = t->codec == DR_CODEC_H264 ? mkv_h264_pictures(fr->data, fr->size) :
             t->codec == DR_CODEC_AC3 || t->codec == DR_CODEC_EAC3 ? mkv_audio_packets(MKV_CODEC_AC3, fr->data, fr->size) :
-            t->codec == DR_CODEC_DTS ? mkv_audio_packets(MKV_CODEC_DTS, fr->data, fr->size) : 1;
+            t->codec == DR_CODEC_DTS ? mkv_audio_packets(MKV_CODEC_DTS, fr->data, fr->size) :
+            t->codec == DR_CODEC_TRUEHD ? mkv_audio_packets(MKV_CODEC_TRUEHD, fr->data, fr->size) : 1;
     if (n == 0 && t->type == DISC_MEDIA_AUDIO)
         return 0;                       /* only dependent frames: they go with the frame before them */
     int64_t ns = ticks_in(fr->time, 1000000000), dur = fr->duration > 0 ? ticks_in(fr->duration, 1000000000) : 0;

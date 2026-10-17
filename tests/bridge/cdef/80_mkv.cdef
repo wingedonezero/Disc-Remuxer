@@ -1,6 +1,6 @@
 /* the Matroska writer (src/mkv/mkv.h) */
 typedef struct MkvWriter MkvWriter;
-enum MkvCodec { MKV_CODEC_H264 = 1, MKV_CODEC_PCM, MKV_CODEC_AC3, MKV_CODEC_DTS, MKV_CODEC_PGS };
+enum MkvCodec { MKV_CODEC_H264 = 1, MKV_CODEC_PCM, MKV_CODEC_AC3, MKV_CODEC_DTS, MKV_CODEC_PGS, MKV_CODEC_TRUEHD };
 typedef struct MkvTrackSpec {
     int         codec;
     const char *language;

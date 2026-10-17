@@ -534,3 +534,12 @@ def test_the_mkvmerge_mode_muxes_the_stream_files_into_the_same_file_and_deletes
     assert "mkvmerge: 2 files into" in log and "the stream files are deleted" in log, log
     assert (tmp_path / "mkvmerge/title_t00.mkv").read_bytes() == \
         (tmp_path / "mkv/title_t00/title_t00.mkv").read_bytes()
+
+
+def test_truehd_data_counts_its_access_units_as_mkvmerge_makes_packets_of_them():
+    # each access unit starts with a check nibble and its length in 16-bit words (12 bits)
+    def au(words):
+        return bytes([0xF0 | (words >> 8), words & 0xFF]) + bytes(2 * words - 2)
+    data = au(10) + au(40) + au(7)
+    assert lib.mkv_audio_packets(lib.MKV_CODEC_TRUEHD, data, len(data)) == 3
+    assert lib.mkv_audio_packets(lib.MKV_CODEC_TRUEHD, data[:-1], len(data) - 1) == 2, "a cut-off unit is no packet"
