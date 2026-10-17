@@ -14,6 +14,8 @@
 #include <errno.h>
 #include <limits.h>
 #include <inttypes.h>
+#include <poll.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -940,18 +942,28 @@ static int opts_addf(Opts *o, const char *fmt, ...)
     return opts_add(o, b);
 }
 
-/* Runs mkvmerge with the options file; its lines go into the log (its
- * warnings and errors as such). Its exit status: 0 done, 1 done with
- * warnings, 2 failed; negative: it could not be run. */
+/* One line of mkvmerge's output into the log (its warnings and errors as
+ * such; mkvmerge separates its progress updates with \r inside one line, so
+ * each \r-piece is a line of its own). */
+static void mkvmerge_line(const char *line)
+{
+    log_text(!strncmp(line, "Error:", 6) ? LOG_ERROR : !strncmp(line, "Warning:", 8) ? LOG_WARNING :
+             LOG_DETAIL, "mkvmerge: %s", line);
+}
+
+/* Runs mkvmerge with the options file; its lines go into the log. A stop
+ * asked for while it runs (engine_cancel()) ends it (SIGTERM). Its exit
+ * status: 0 done, 1 done with warnings, 2 failed (also a stop; the caller
+ * tells them apart by engine_cancelled()); negative: it could not be run. */
 static int run_mkvmerge(const char *program, const char *opts_path)
 {
     char at[4200];
     char *argv[] = { (char *)program, at, NULL };
     posix_spawn_file_actions_t fa;
-    int pfd[2], status = 0, ret;
+    int pfd[2], status = 0, ret, killed = 0;
     pid_t pid;
-    FILE *f;
-    char line[4096];
+    char buf[4096], line[4096];
+    size_t have = 0;
     extern char **environ;
 
     snprintf(at, sizeof(at), "@%s", opts_path);
@@ -968,24 +980,33 @@ static int run_mkvmerge(const char *program, const char *opts_path)
         close(pfd[0]);
         return DR_ERR(ret);
     }
-    if ((f = fdopen(pfd[0], "r"))) {
-        while (fgets(line, sizeof(line), f)) {
-            /* mkvmerge separates its progress updates with \r inside one
-             * line: every \r-piece is a line of its own, so a warning after
-             * an update is not lost */
-            for (char *p = line; *p; ) {
-                char *q = p + strcspn(p, "\r\n");
-                int more = *q != 0;
-                *q = 0;
-                if (*p)
-                    log_text(!strncmp(p, "Error:", 6) ? LOG_ERROR : !strncmp(p, "Warning:", 8) ? LOG_WARNING :
-                             LOG_DETAIL, "mkvmerge: %s", p);
-                p = more ? q + 1 : q;
-            }
+    for (;;) {
+        struct pollfd pl = { .fd = pfd[0], .events = POLLIN };
+        int pr = poll(&pl, 1, 200), n;
+        if (engine_cancelled() && !killed) {
+            kill(pid, SIGTERM);
+            killed = 1;
         }
-        fclose(f);
-    } else
-        close(pfd[0]);
+        if (pr < 0 && errno != EINTR)
+            break;
+        if (pr <= 0)
+            continue;
+        if ((n = (int)read(pfd[0], buf, sizeof(buf))) <= 0)
+            break;
+        for (int i = 0; i < n; i++) {
+            if (buf[i] == '\r' || buf[i] == '\n') {
+                line[have] = 0;
+                if (have)
+                    mkvmerge_line(line);
+                have = 0;
+            } else if (have < sizeof(line) - 1)
+                line[have++] = (char)buf[i];
+        }
+    }
+    line[have] = 0;
+    if (have)
+        mkvmerge_line(line);
+    close(pfd[0]);
     if (waitpid(pid, &status, 0) < 0)
         return DR_ERR(errno);
     return WIFEXITED(status) ? WEXITSTATUS(status) : 2;
@@ -1108,6 +1129,15 @@ static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_
     }
     log_text(LOG_INFO, "mkvmerge: %d file%s into %s (options file %s)", nfile, nfile == 1 ? "" : "s", mkv, opts_path);
     st = run_mkvmerge(program, opts_path);
+    /* a stop asked for while mkvmerge ran: no MKV file, the stream files are kept */
+    if (engine_cancelled()) {
+        struct stat sb;
+        log_text(LOG_WARNING, "mkvmerge stopped as asked; the stream files are kept");
+        if (stat(mkv, &sb) == 0 && unlink(mkv) == 0)
+            log_text(LOG_INFO, "mkvmerge: its unfinished file %s is removed", mkv);
+        ret = DR_ERR_CANCELLED;
+        goto done;
+    }
     if (st < 0) {
         log_text(LOG_ERROR, "mkvmerge (%s) cannot be run: %s; the stream files are kept", program, strerror(-st));
         ret = DR_ERR_INVALID;
@@ -1506,8 +1536,12 @@ end:
         if (via && !check_failed) {
             char *made_mkv = NULL;
             struct stat sb;
-            if (mkvmerge_title(d, out, nb_tracks, job->out_dir, dir, job->sub_folder, res->name, chap, nb_chapters,
-                               &made_mkv) < 0) {
+            int mret = mkvmerge_title(d, out, nb_tracks, job->out_dir, dir, job->sub_folder, res->name, chap,
+                                      nb_chapters, &made_mkv);
+            if (mret == DR_ERR_CANCELLED) {
+                res->stopped = 1;
+                res->failed  = 1;
+            } else if (mret < 0) {
                 res->failed = 1;
             } else {
                 for (int i = 0; i < nb_tracks; i++)
@@ -1608,7 +1642,10 @@ end:
         snprintf(made, sizeof(made), "(%u chapter%s, %s%s)", (unsigned)nb_chapters, nb_chapters == 1 ? "" : "s",
                  size_text(sz, sizeof(sz), written),
                  mkv || via_done ? "; the MKV file itself is not read back yet" : "");
-        if (via && !via_done && !check_failed) {
+        if (via && res->stopped) {
+            log_msg(MSG_TITLE_FAILED, LOG_WARNING, "%s stopped as asked during the mux: its stream files are kept, "
+                    "the MKV file is not made", who);
+        } else if (via && !via_done && !check_failed) {
             log_msg(MSG_TITLE_DONE, LOG_ERROR, "%s: its stream files are written, but mkvmerge did not make the MKV "
                     "file (see above)", who);
         } else if (check_failed) {

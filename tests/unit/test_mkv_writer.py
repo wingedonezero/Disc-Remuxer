@@ -589,3 +589,31 @@ def test_a_failed_mux_keeps_the_stream_files_and_removes_the_unfinished_mkv(tmp_
     kept = sorted(f.name for f in (out / "title_t00").iterdir())
     assert any(f.endswith(".h264") for f in kept) and any(f.endswith(".wav") for f in kept), kept
     assert "stream files are written, but mkvmerge did not make the MKV file" in p.stdout, p.stdout
+
+
+def test_a_stop_during_the_mux_ends_mkvmerge_and_keeps_the_stream_files(tmp_path):
+    # a stop asked for while mkvmerge runs (Ctrl+C, the GUI's Stop) ends it;
+    # the stream files are kept and the title says it was stopped, not failed
+    import os
+    import signal
+    import time
+    disc, _ = avc_lpcm_disc(tmp_path)
+    started = tmp_path / "mux-started"
+    fake = fake_mkvmerge(tmp_path, f'touch "{started}"\nexec sleep 30\n')
+    out = tmp_path / "out"
+    with subprocess.Popen([*PROGRAM, "--set", "output.format=mkvmerge", "--set", f"mkv.mkvmerge_path={fake}",
+                           "--set", "titles.min_length=0", "demux", str(disc), "0", str(out)],
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                          start_new_session=True) as p:   # its own group: the signal goes to the program alone
+        for _ in range(200):
+            if started.exists():
+                break
+            time.sleep(0.05)
+        assert started.exists(), "the fake mkvmerge never ran"
+        os.kill(p.pid, signal.SIGINT)
+        log = p.communicate(timeout=20)[0]
+    assert "mkvmerge stopped as asked; the stream files are kept" in log, log
+    assert "stopped as asked during the mux: its stream files are kept, the MKV file is not made" in log, log
+    assert not (out / "title_t00.mkv").exists()
+    kept = sorted(f.name for f in (out / "title_t00").iterdir())
+    assert any(f.endswith(".h264") for f in kept) and any(f.endswith(".wav") for f in kept), kept
