@@ -251,7 +251,7 @@ def write_mkv(path, tracks, frames, stats=None):
     st = ffi.new("MkvStats *")
     assert lib.mkv_close(w, ffi.NULL, 0, 0, st) == 0
     if stats is not None:
-        stats.update(late=st.late, cues=st.cues)
+        stats.update(late=st.late, cues=st.cues, removed=[st.removed[i] for i in range(st.nb_removed)])
     return path.read_bytes()
 
 
@@ -460,3 +460,27 @@ def test_dialogue_normalization_removed_only_when_asked_with_the_checksums_made_
                              [(0, f, i * 32000000, dur, 1) for i, f in enumerate(changed)])
             got = [f for _, fs in audio_blocks(find(elements(data), 0x18538067)[0], 1) for f in fs]
             assert got == (frames if remove else changed), (codec, remove)
+
+
+def test_a_track_that_gets_no_frame_leaves_the_track_list_the_others_keep_their_numbers(tmp_path):
+    # AC-3, an empty PGS track (a forced-only copy without forced subtitles), a PGS track with two sets: the
+    # track list is written again without the empty one, the room after it grows, the file reads to its end
+    st = {}
+    ac3 = (DATA / "sine_7680.ac3").read_bytes()[:768]
+    frames = [(0, ac3, i * 32000000, 32000000, 1) for i in range(40)]
+    frames.insert(10, (2, pgs_set(1), 300000000, -1, 1))
+    frames.insert(30, (2, pgs_set(2), 900000000, -1, 1))
+    for name, tracks_ in (("e.mkv", [{"codec": lib.MKV_CODEC_AC3, "language": "eng"},
+                                     {"codec": lib.MKV_CODEC_PGS, "language": "eng", "forced": 1},
+                                     {"codec": lib.MKV_CODEC_PGS, "language": "eng"}]),):
+        data = write_mkv(tmp_path / name, tracks_, frames, st)
+        top = elements(data)                                   # reads every element to the end
+        seg = find(top, 0x18538067)[0]
+        entries = [dict(e) for e in find(seg, 0x1654AE6B, 0xAE)]
+        assert [uint(e[0xD7]) for e in entries] == [1, 3], "the empty track's entry gone, numbers kept"
+        ids = [eid for eid, _ in seg]
+        assert ids[ids.index(0x1654AE6B) + 1] == 0xEC, "the room after the track list"
+        tag_tracks = [uint(dict(dict(t)[0x63C0])[0x63C5]) for t in find(seg, 0x1254C367, 0x7373)]
+        assert tag_tracks == [1, 3]
+        assert [t for t, _ in audio_blocks(seg, 3)] == [300, 900]
+        assert st["removed"] == [1]

@@ -1972,6 +1972,43 @@ void write_cues(MkvWriter *w)
     w->st.cues = (int64_t)pts.size();
 }
 
+// The tracks that got no frame (a forced-only subtitle track without forced subtitles) leave the track
+// list: it is written again in its place without them (the room after it grows; mkvmerge writes its
+// track list again the same way when a header changes), the other tracks keeping their numbers (their
+// blocks carry them). No block, cue point or tag names such a track.
+void remove_empty_tracks(MkvWriter *w)
+{
+    bool any = false;
+    for (auto &t : w->tracks)
+        any |= !t.stats.frames;
+    if (!any || !w->ktracks)
+        return;
+    uint64 start = w->ktracks->GetElementPosition();
+    uint64 end = w->tracks_void.GetElementPosition() + w->tracks_void.ElementSize();
+    for (size_t k = 0; k < w->tracks.size(); k++) {
+        MkvTrackState &t = w->tracks[k];
+        if (t.stats.frames || !t.entry)
+            continue;
+        for (unsigned i = 0; i < w->ktracks->ListSize(); i++)
+            if ((*w->ktracks)[i] == t.entry) {
+                delete t.entry;
+                w->ktracks->Remove(i);
+                break;
+            }
+        t.entry = nullptr;
+        if (w->st.nb_removed < (int)(sizeof(w->st.removed) / sizeof(*w->st.removed)))
+            w->st.removed[w->st.nb_removed] = (int)k;
+        w->st.nb_removed++;
+    }
+    uint64 here = w->out->getFilePointer();
+    w->ktracks->UpdateSize(false);
+    w->out->setFilePointer(start);
+    w->ktracks->Render(*w->out, false);
+    EbmlVoid room;
+    render_void(w, room, (int64_t)(end - w->out->getFilePointer()));
+    w->out->setFilePointer(here);
+}
+
 void write_tags(MkvWriter *w)
 {
     KaxTags tags;
@@ -1982,6 +2019,8 @@ void write_tags(MkvWriter *w)
     gmtime_r(&d, &tm);
     strftime(date, sizeof(date), "%Y-%m-%d %H:%M:%S", &tm);
     for (auto &t : w->tracks) {
+        if (!t.entry)
+            continue;               // taken out of the track list (no frames)
         KaxTag &tag = AddNewChild<KaxTag>(tags);
         while (tag.ListSize()) {
             delete tag[0];
@@ -2168,6 +2207,7 @@ extern "C" int mkv_close(MkvWriter **pw, const MkvChapter *chapters, int nb_chap
                 render_cluster(w);
             if (!w->failed) {
                 write_cues(w);
+                remove_empty_tracks(w);
                 // the Duration: the file's last block end
                 int64_t dur = w->max_ts_and_duration - (w->min_ts_in_file == INT64_MAX ? 0 : w->min_ts_in_file);
                 uint64 end = w->out->getFilePointer();

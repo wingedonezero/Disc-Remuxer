@@ -250,6 +250,14 @@ int mkvout_close(MkvOut **pm, DrDisc *d, int abort, int64_t *bytes)
         if (ret >= 0 && !abort) {
             log_text(LOG_DETAIL, "MKV: %"PRId64" clusters, %"PRId64" blocks, %"PRId64" cue points, %"PRId64" bytes",
                      st.clusters, st.blocks, st.cues, st.bytes);
+            for (int k = 0; k < st.nb_removed && k < (int)(sizeof(st.removed) / sizeof(*st.removed)); k++)
+                for (int i = 0; i < m->nb_tracks; i++)
+                    if (m->map[i] == st.removed[k]) {
+                        const DrDiscTrack *t = dr_disc_track(d, i);
+                        log_text(LOG_INFO, "Track %d (%s%s): no frames in the title: taken out of the MKV file's "
+                                 "track list", t->number, ff_disctl_codec_id_name(t->codec),
+                                 t->forced ? ", forced subtitles" : "");
+                    }
             if (st.late)
                 log_text(LOG_WARNING, "MKV: %"PRId64" subtitle display set(s) came after later video or audio was "
                          "written: they are in the file out of time order", st.late);

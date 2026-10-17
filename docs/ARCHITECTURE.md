@@ -189,9 +189,9 @@ a test run reaches.
 
 - The MKV writer: H.264, LPCM, AC-3 / E-AC-3, DTS and PGS so far (on libebml + libmatroska,
   mkvmerge's rules); the other codecs (TrueHD, HEVC + Dolby Vision, the DVD and HD DVD
-  ones) one by one, each checked against mkvmerge on a real disc; a forced-only PGS copy
-  that turns out empty is still an empty track (to decide); the end check does not read the
-  MKV back yet.
+  ones) one by one, each checked against mkvmerge on a real disc; a track that gets no
+  frame (a forced-only copy without forced subtitles) leaves the track list at the end,
+  the others keeping their numbers; the end check does not read the MKV back yet.
 - Holes in a title (a damaged stretch left out): the stream files close the
   hole, the subtitles and chapters after it keep the disc's times — to
   decide: shift them by what the video lost.

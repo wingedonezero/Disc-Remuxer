@@ -80,10 +80,14 @@ int mkv_frame(MkvWriter *w, int track, const uint8_t *data, int size, int64_t ti
 typedef struct MkvStats {
     int64_t clusters, cues, blocks, bytes;
     int64_t late;                   /* subtitle display sets that came after a later packet was written */
+    int     nb_removed;             /* tracks that got no frames: taken out of the track list at the end */
+    int     removed[128];           /* the first of them (their index in the tracks given to mkv_open) */
 } MkvStats;
 
 /* Finishes the file (the frames still held, the cues, the chapters, the
- * tags, the seek head and the sizes) and frees the writer; 0 or a negative
+ * tags, the seek head and the sizes; a track that got no frame is taken out
+ * of the track list, which is written again in its place, the others keeping
+ * their numbers) and frees the writer; 0 or a negative
  * errno. With abort set the file is only closed. st: what it holds (NULL:
  * not wanted). */
 int mkv_close(MkvWriter **w, const MkvChapter *chapters, int nb_chapters, int abort, MkvStats *st);
