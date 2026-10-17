@@ -535,6 +535,7 @@ def test_the_mkvmerge_mode_muxes_the_stream_files_into_the_same_file_and_deletes
     assert [str(f) for f in files if f.suffix != ".log"] == ["title_t00.mkv"], files
     assert "mkvmerge: 2 files into" in log and "the stream files are deleted" in log, log
     assert "mkvmerge: no hole in this title: no timestamp files, the delays as --sync" in log, log
+    assert ": timestamp file " not in log, "a no-hole title writes no timestamp files (nothing contradictory said)"
     assert "no timestamp file (" not in log, "LPCM keeps gaps as silence: nothing to say about it"
     a = find(elements((tmp_path / "mkvmerge/title_t00.mkv").read_bytes()), 0x18538067)[0]
     b = find(elements((tmp_path / "mkv/title_t00/title_t00.mkv").read_bytes()), 0x18538067)[0]
