@@ -64,6 +64,7 @@ include mk/expat.mk
 include mk/aacs.mk
 include mk/ffmpeg.mk
 include mk/analyze.mk
+include mk/zlib.mk
 include mk/matroska.mk
 include mk/mkv.mk
 include mk/ccextractor.mk
