@@ -56,8 +56,8 @@ src/base/         what everything may use: the log, messages, settings,
                   errors, memory, buffers, byte readers, CRCs, SHA
 
 beside the path:
-src/mkv/          the Matroska writer (C++ on libebml + libmatroska, a C
-                  interface): a title into one MKV file with mkvmerge's rules
+src/mkv/          the Matroska writer (C++ on libebml + libmatroska + zlib, a
+                  C interface): a title into one MKV file with mkvmerge's rules
 src/analyze/      the one module that links FFmpeg: stream details, the end
                   check of written files, the TrueHD end-of-stream decode
                   (the timeline's one question); FFmpeg's log lines into ours
@@ -93,8 +93,10 @@ source (image / folder)
             reads each written file back (analyze/)
             output.format = mkv: one Matroska file (mkvout.c -> src/mkv),
             written as mkvmerge writes one from the same streams with the
-            disc's own times: equal byte for byte on real discs (H.264 +
-            LPCM so far; other tracks are left out and said)
+            disc's own times: equal byte for byte on real discs (H.264,
+            LPCM, AC-3 / E-AC-3, DTS, PGS so far; other tracks are left out
+            and said); settings mkv.compression (PGS zlib, default none)
+            and mkv.remove_dialog_normalization (default off)
 ```
 
 The info path: the format part reads the structure (every check reported
@@ -185,9 +187,11 @@ a test run reaches.
 
 ## Open items
 
-- The MKV writer: H.264 and LPCM so far (on libebml + libmatroska, mkvmerge's rules); the
-  other codecs one by one, each checked against mkvmerge on a real disc; the end check does
-  not read the MKV back yet.
+- The MKV writer: H.264, LPCM, AC-3 / E-AC-3, DTS and PGS so far (on libebml + libmatroska,
+  mkvmerge's rules); the other codecs (TrueHD, HEVC + Dolby Vision, the DVD and HD DVD
+  ones) one by one, each checked against mkvmerge on a real disc; a forced-only PGS copy
+  that turns out empty is still an empty track (to decide); the end check does not read the
+  MKV back yet.
 - Holes in a title (a damaged stretch left out): the stream files close the
   hole, the subtitles and chapters after it keep the disc's times — to
   decide: shift them by what the video lost.

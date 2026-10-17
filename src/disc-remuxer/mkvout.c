@@ -1,10 +1,11 @@
 /*
  * disc-remuxer: a title into one Matroska file (output.format = mkv; the
- * writer in src/mkv). The title's tracks the writer takes (H.264 video and
- * LPCM, AC-3 / E-AC-3 and DTS audio so far) go in with the title's own times and chapters; the
- * others are left out, each said in the log. The frames are held until
- * every track in the file has given its first one (LPCM's format is known
- * from then on), then written in the order they come.
+ * writer in src/mkv). The title's tracks the writer takes (H.264 video,
+ * LPCM, AC-3 / E-AC-3 and DTS audio and PGS subtitles so far) go in with the
+ * title's own times and chapters; the others are left out, each said in the
+ * log. The frames are held until every video and audio track in the file has
+ * given its first one (LPCM's format is known from then on), then written in
+ * the order they come (subtitles, which may start late, are not waited for).
  */
 
 #include <errno.h>
@@ -19,6 +20,7 @@
 #include "base/log.h"
 #include "base/macros.h"
 #include "base/mem.h"
+#include "base/settings.h"
 #include "disc/disc.h"
 #include "disc/info.h"
 #include "mkv/mkv.h"
@@ -33,6 +35,7 @@ struct MkvOut {
     int          nb_tracks;     /* the title's tracks */
     int         *map;           /* title track -> file track, -1 left out */
     int          nb_file;       /* tracks in the file */
+    int          nb_wait;       /* of them the ones waited for (video, audio) */
     int         *started;       /* file track: its first frame came */
     int          nb_started;
     DrDiscFrame *hold;
@@ -49,6 +52,16 @@ static int64_t ns_of(int64_t ticks)
     return dr_rescale(ticks, 25, 27);
 }
 
+/* A frame's time in ns: PGS sets at their presentation time on the disc's
+ * 90 kHz clock (as a .sup file carries it, the nearest tick; as ns cut to
+ * the whole ns), every other frame to the nearest ns. */
+static int64_t frame_ns(const DrDiscTrack *t, int64_t ticks)
+{
+    if (t->codec == DR_CODEC_HDMV_PGS_SUBTITLE)
+        return dr_rescale(ticks, 1, DR_TICKS_PER_SECOND / 90000) * 100000 / 9;
+    return ns_of(ticks);
+}
+
 static int mkv_codec_of(const DrDiscTrack *t)
 {
     if (t->type == DISC_MEDIA_VIDEO && t->codec == DR_CODEC_H264 && !t->second_view)
@@ -57,6 +70,8 @@ static int mkv_codec_of(const DrDiscTrack *t)
         return MKV_CODEC_AC3;
     if (t->type == DISC_MEDIA_AUDIO && t->codec == DR_CODEC_DTS)
         return MKV_CODEC_DTS;
+    if (t->type == DISC_MEDIA_SUBTITLE && t->codec == DR_CODEC_HDMV_PGS_SUBTITLE)
+        return MKV_CODEC_PGS;
     /* LPCM: the disc's (before its first frame) or the PCM it leaves as */
     if (t->type == DISC_MEDIA_AUDIO && (t->codec == DR_CODEC_PCM_S16LE || t->codec == DR_CODEC_PCM_S24LE ||
                                         t->codec == DR_CODEC_PCM_BLURAY || t->codec == DR_CODEC_PCM_DVD))
@@ -80,10 +95,12 @@ int mkvout_open(MkvOut **pm, DrDisc *d, const char *path, int title, int part)
         const DrDiscTrack *t = dr_disc_track(d, i);
         if (mkv_codec_of(t)) {
             m->map[i] = m->nb_file++;
+            m->nb_wait += mkv_codec_of(t) != MKV_CODEC_PGS;
         } else {
             m->map[i] = -1;
-            log_text(LOG_WARNING, "Track %d (%s): not written into the MKV file: the MKV writer takes H.264 video "
-                     "and LPCM, AC-3, E-AC-3 and DTS audio so far", t->number, ff_disctl_codec_id_name(t->codec));
+            log_text(LOG_WARNING, "Track %d (%s): not written into the MKV file: the MKV writer takes H.264 video, "
+                     "LPCM, AC-3, E-AC-3 and DTS audio and PGS subtitles so far", t->number,
+                     ff_disctl_codec_id_name(t->codec));
         }
     }
     /* the chapters as the title list has them (a part: those inside it, from
@@ -134,6 +151,12 @@ static int open_file(MkvOut *m, DrDisc *d)
         s->channels    = t->channels;
         if (s->codec == MKV_CODEC_PCM)
             s->bits    = t->codec == DR_CODEC_PCM_S24LE ? 24 : 16;
+        if (s->codec == MKV_CODEC_PGS)
+            s->zlib    = !strcmp(setting_text("mkv.compression"), "zlib");
+        if ((s->codec == MKV_CODEC_AC3 || s->codec == MKV_CODEC_DTS) &&
+            (s->remove_dialnorm = setting_bool("mkv.remove_dialog_normalization")))
+            log_text(LOG_INFO, "Track %d: its dialogue normalization is set to none in the MKV file "
+                     "(mkv.remove_dialog_normalization)", t->number);
     }
     /* DR_MKV_NO_VARIABLE_DATA (tests): fixed UIDs, no date, mkvmerge's
      * "no_variable_data" application names, so a file can be compared byte
@@ -158,7 +181,8 @@ static int open_file(MkvOut *m, DrDisc *d)
     for (int k = 0; k < m->nb_hold; k++) {
         DrDiscFrame *fr = &m->hold[k];
         if (ret >= 0) {
-            ret = mkv_frame(m->w, m->map[fr->track], fr->data, fr->size, ns_of(fr->time),
+            ret = mkv_frame(m->w, m->map[fr->track], fr->data, fr->size,
+                            frame_ns(dr_disc_track(d, fr->track), fr->time),
                             fr->duration > 0 ? ns_of(fr->duration) : -1, fr->key);
             if (ret < 0)
                 ret = DR_ERR(-ret);
@@ -179,7 +203,7 @@ int mkvout_frame(MkvOut *m, DrDisc *d, DrDiscFrame *fr)
         return 0;
     }
     if (!m->opened) {
-        if (!m->started[ft]) {
+        if (!m->started[ft] && dr_disc_track(d, fr->track)->type != DISC_MEDIA_SUBTITLE) {
             m->started[ft] = 1;
             m->nb_started++;
         }
@@ -189,12 +213,12 @@ int mkvout_frame(MkvOut *m, DrDisc *d, DrDiscFrame *fr)
             return DR_ERR(EINVAL);
         }
         m->hold[m->nb_hold++] = *fr;    /* the frame's reference is held */
-        if (m->nb_started < m->nb_file)
+        if (m->nb_started < m->nb_wait)
             return 0;
         return open_file(m, d);
     }
-    ret = mkv_frame(m->w, ft, fr->data, fr->size, ns_of(fr->time), fr->duration > 0 ? ns_of(fr->duration) : -1,
-                    fr->key);
+    ret = mkv_frame(m->w, ft, fr->data, fr->size, frame_ns(dr_disc_track(d, fr->track), fr->time),
+                    fr->duration > 0 ? ns_of(fr->duration) : -1, fr->key);
     dr_disc_frame_unref(fr);
     return ret < 0 ? DR_ERR(-ret) : 0;
 }
@@ -226,6 +250,9 @@ int mkvout_close(MkvOut **pm, DrDisc *d, int abort, int64_t *bytes)
         if (ret >= 0 && !abort) {
             log_text(LOG_DETAIL, "MKV: %"PRId64" clusters, %"PRId64" blocks, %"PRId64" cue points, %"PRId64" bytes",
                      st.clusters, st.blocks, st.cues, st.bytes);
+            if (st.late)
+                log_text(LOG_WARNING, "MKV: %"PRId64" subtitle display set(s) came after later video or audio was "
+                         "written: they are in the file out of time order", st.late);
             if (bytes)
                 *bytes = st.bytes;
         }

@@ -87,7 +87,8 @@ def vint(b, i, keep_marker=False):
 
 
 MASTERS = {0x1A45DFA3, 0x18538067, 0x114D9B74, 0x1549A966, 0x1654AE6B, 0xAE, 0xE0, 0xE1, 0x1F43B675, 0x1C53BB6B,
-           0xBB, 0xB7, 0x1043A770, 0x45B9, 0xB6, 0x80, 0x1254C367, 0x7373, 0x63C0, 0x67C8, 0x4DBB, 0xA0}
+           0xBB, 0xB7, 0x1043A770, 0x45B9, 0xB6, 0x80, 0x1254C367, 0x7373, 0x63C0, 0x67C8, 0x4DBB, 0xA0,
+           0x6D80, 0x6240, 0x5034}
 
 
 def elements(b, start=0, end=None):
@@ -219,14 +220,15 @@ def test_a_track_the_writer_does_not_take_yet_is_left_out_and_said(tmp_path):
     data, log = demux_mkv(disc, tmp_path / "out")
     tracks = find(elements(data), 0x18538067, 0x1654AE6B, 0xAE)
     assert [dict(t)[0x86] for t in tracks] == [b"A_PCM/INT/LIT"]
-    assert "Track 0 (mpeg2video): not written into the MKV file: the MKV writer takes H.264 video and LPCM, " \
-           "AC-3, E-AC-3 and DTS audio so far" in log, log
+    assert "Track 0 (mpeg2video): not written into the MKV file: the MKV writer takes H.264 video, LPCM, " \
+           "AC-3, E-AC-3 and DTS audio and PGS subtitles so far" in log, log
 
 
 # ---- the writer on its own (through the bridge) ----
 
-def write_mkv(path, tracks, frames):
-    """frames: (track, bytes, time ns, duration ns, key) in order; the file's bytes."""
+def write_mkv(path, tracks, frames, stats=None):
+    """frames: (track, bytes, time ns, duration ns, key) in order; the file's bytes (stats: a dict given
+    the writer's MkvStats)."""
     from helpers import ffi, lib
     specs = ffi.new("MkvTrackSpec[]", len(tracks))
     keep = []
@@ -246,7 +248,10 @@ def write_mkv(path, tracks, frames):
     for track, data, t, d, key in frames:
         buf = ffi.from_buffer(data)
         assert lib.mkv_frame(w[0], track, buf, len(data), t, d, key) == 0
-    assert lib.mkv_close(w, ffi.NULL, 0, 0, ffi.NULL) == 0
+    st = ffi.new("MkvStats *")
+    assert lib.mkv_close(w, ffi.NULL, 0, 0, st) == 0
+    if stats is not None:
+        stats.update(late=st.late, cues=st.cues)
     return path.read_bytes()
 
 
@@ -361,3 +366,97 @@ def test_dts_takes_its_rate_channels_and_bits_from_the_core_header(tmp_path):
         n += len(fs)
     assert starts[0] == (0, 0)
     assert (5, round((5 * dur + gap) / 10 ** 6)) in starts, "the gap starts a block at the frame's own time"
+
+
+def pgs_set(n):
+    """A display set: a composition segment (its number n) and the end segment."""
+    pcs = bytes([0x07, 0x80, 0x04, 0x38, 0x10, 0, n, 0x80, 0, 0, 0])
+    return bytes([0x16, 0, len(pcs)]) + pcs + bytes([0x80, 0, 0])
+
+
+def pgs_file(tmp_path, zlib, sets, stats=None):
+    """AC-3 (2 s, 32 ms frames, given first up to each set's time + 0.5 s) and PGS sets ((time ns, set))."""
+    ac3 = (DATA / "sine_7680.ac3").read_bytes()
+    one = ac3[:768]
+    frames, i, pending = [], 0, list(sets)
+    while i * 32000000 < 2 * 10 ** 9 or pending:
+        t = i * 32000000
+        while pending and (t >= pending[0][0] + 500000000 or t >= 2 * 10 ** 9):
+            frames.append((1, pending[0][1], pending[0][0], -1, 1))
+            pending.pop(0)
+        if t < 2 * 10 ** 9:
+            frames.append((0, one, t, 32000000, 1))
+        i += 1
+    return write_mkv(tmp_path / ("z.mkv" if zlib else "p.mkv"),
+                     [{"codec": lib.MKV_CODEC_AC3, "language": "eng"},
+                      {"codec": lib.MKV_CODEC_PGS, "language": "fra", "forced": 1, "zlib": zlib}], frames, stats)
+
+
+def test_pgs_display_sets_are_blocks_at_their_times_compressed_when_asked(tmp_path):
+    import zlib
+    sets = [(400000000, pgs_set(1)), (1200000000, pgs_set(2))]
+    for comp in (0, 1):
+        st = {}
+        data = pgs_file(tmp_path, comp, sets, st)
+        seg = find(elements(data), 0x18538067)[0]
+        s = dict(find(seg, 0x1654AE6B, 0xAE)[1])
+        assert s[0x86] == b"S_HDMV/PGS" and uint(s[0x83]) == 0x11 and uint(s[0x55AA]) == 1
+        assert uint(s[0x9C]) == 0, "no lacing"
+        assert (s[0x22B59C], s[0x22B59D]) == (b"fre", b"fr"), "the bibliographic code, the IETF one"
+        assert (0x6D80 in s) == bool(comp), "a ContentEncoding (zlib, defaults left out) only when compressed"
+        got = audio_blocks(seg, 2)
+        assert [t for t, _ in got] == [400, 1200]
+        sets_out = [zlib.decompress(fs[0]) if comp else fs[0] for _, fs in got]
+        assert sets_out == [p for _, p in sets], "each display set whole, as given"
+        # in time order with the audio: each set's block comes after the audio before its time
+        order = []
+        for c in find(seg, 0x1F43B675):
+            ct = uint(dict(c)[0xE7])
+            order += [(ct + struct.unpack(">h", d[1:3])[0], d[0] & 0x7F) for eid, d in c if eid == 0xA3]
+        assert order == sorted(order, key=lambda x: x[0]), "blocks in time order"
+        assert [b for b in order if b[1] == 2] == [(400, 2), (1200, 2)]
+        cue_tracks = [uint(dict(dict(p)[0xB7])[0xF7]) for p in find(seg, 0x1C53BB6B, 0xBB)]
+        assert cue_tracks.count(2) == 2, "a cue point for every subtitle block"
+        assert st["late"] == 0
+        # the statistics count the sets' own bytes
+        tags = {uint(dict(dict(t)[0x63C0])[0x63C5]): {dict(x)[0x45A3]: dict(x)[0x4487] for x in find(t, 0x67C8)}
+                for t in find(seg, 0x1254C367, 0x7373)}
+        assert tags[2][b"NUMBER_OF_BYTES"] == str(sum(len(p) for _, p in sets)).encode()
+
+
+def test_a_display_set_given_long_after_later_audio_is_written_and_counted_late(tmp_path):
+    st = {}
+    ac3 = (DATA / "sine_7680.ac3").read_bytes()[:768]
+    frames = [(0, ac3, i * 32000000, 32000000, 1) for i in range(500)]       # 16 s of audio first
+    frames.append((1, pgs_set(1), 1000000000, -1, 1))
+    write_mkv(tmp_path / "l.mkv", [{"codec": lib.MKV_CODEC_AC3, "language": "eng"},
+                                   {"codec": lib.MKV_CODEC_PGS, "language": "eng"}], frames, st)
+    assert st["late"] == 1
+
+
+def set_bits(frame, pos, n, v):
+    b = bytearray(frame)
+    for i in range(n):
+        bit, p = (v >> (n - 1 - i)) & 1, pos + i
+        b[p >> 3] = b[p >> 3] | (0x80 >> (p & 7)) if bit else b[p >> 3] & ~(0x80 >> (p & 7))
+    return bytes(b)
+
+
+def test_dialogue_normalization_removed_only_when_asked_with_the_checksums_made_again(tmp_path):
+    # the sample frames say -31 dB (AC-3, stereo: dialnorm at bit 54) and 0 dB (DTS core, encoder version 7:
+    # dialnorm at bit 100, no header CRC); set to -27 dB / -5 dB (checksums left wrong), removal writes the
+    # "none" level back and makes the AC-3 CRCs again: the frames as they were
+    ac3 = (DATA / "sine_7680.ac3").read_bytes()
+    ac3_frames = [ac3[i:i + 768] for i in range(0, len(ac3), 768)]
+    dts = (DATA / "sine_5120.dts").read_bytes()
+    size = ((dts[5] & 3) << 12 | dts[6] << 4 | dts[7] >> 4) + 1
+    dts_frames = [dts[i:i + size] for i in range(0, len(dts), size)]
+    cases = [(lib.MKV_CODEC_AC3, ac3_frames, 54, 5, 27, 32000000), (lib.MKV_CODEC_DTS, dts_frames, 100, 4, 5, -1)]
+    for codec, frames, pos, n, level, dur in cases:
+        changed = [set_bits(f, pos, n, level) for f in frames]
+        for remove in (0, 1):
+            data = write_mkv(tmp_path / f"{codec}_{remove}.mkv",
+                             [{"codec": codec, "language": "eng", "remove_dialnorm": remove}],
+                             [(0, f, i * 32000000, dur, 1) for i, f in enumerate(changed)])
+            got = [f for _, fs in audio_blocks(find(elements(data), 0x18538067)[0], 1) for f in fs]
+            assert got == (frames if remove else changed), (codec, remove)

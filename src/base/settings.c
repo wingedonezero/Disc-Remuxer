@@ -21,6 +21,7 @@ static const char *const dv_layers[]    = { "merged", "separate", NULL };
 static const char *const cell_modes[]   = { "auto", "walk", "trim", "walk_trim", NULL };
 static const char *const cell_checks[]  = { "all", "spread", "random", NULL };
 static const char *const out_formats[]  = { "streams", "mkv", NULL };
+static const char *const compressions[] = { "none", "zlib", NULL };
 
 static const Setting registry[] = {
     { "read", "attempts", SET_INT, "5", 1, 99, NULL,
@@ -97,6 +98,15 @@ static const Setting registry[] = {
     { "chapters", "after_ms", SET_INT, "0", 0, 5000, NULL,
       "How far after its mark (ms) a chapter may move on to a key frame, when none is close enough before it. "
       "0: never forward.", 0, SET_AT_RIP },
+    { "mkv", "compression", SET_CHOICE, "none", 0, 0, compressions,
+      "MKV files (output.format = mkv): none stores the subtitles' blocks as they are; zlib compresses each "
+      "(lossless, as mkvmerge does by default; a few players and devices cannot read compressed tracks).",
+      0, SET_AT_RIP },
+    { "mkv", "remove_dialog_normalization", SET_BOOL, "false", 0, 0, NULL,
+      "MKV files: set the dialogue normalization of every AC-3, E-AC-3 and DTS frame to \"none\" (as mkvmerge's "
+      "option of that name), so players do not turn those tracks down to the disc's dialogue level. The disc's "
+      "level is then not in the file any more (the stream files always keep it). Off: the frames as the disc has them.",
+      0, SET_AT_RIP },
     { "log", "debug_file", SET_BOOL, "false", 0, 0, NULL,
       "Also write a debug log with every detail into the output folder, next to the log.", 0, SET_AT_RIP },
     { "gui", "window", SET_TEXT, "", 0, 0, NULL, "Kept by the GUI: its window's place and size.", 1, SET_IN_GUI },

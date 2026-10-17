@@ -1,12 +1,14 @@
 /* the Matroska writer (src/mkv/mkv.h) */
 typedef struct MkvWriter MkvWriter;
-enum MkvCodec { MKV_CODEC_H264 = 1, MKV_CODEC_PCM, MKV_CODEC_AC3, MKV_CODEC_DTS };
+enum MkvCodec { MKV_CODEC_H264 = 1, MKV_CODEC_PCM, MKV_CODEC_AC3, MKV_CODEC_DTS, MKV_CODEC_PGS };
 typedef struct MkvTrackSpec {
     int         codec;
     const char *language;
     const char *language_ietf;
     const char *name;
     int         forced;
+    int         zlib;
+    int         remove_dialnorm;
     int         width, height;
     int         sample_rate, channels, bits;
 } MkvTrackSpec;
@@ -18,7 +20,7 @@ typedef struct MkvFileSpec {
     const MkvChapter *chapters;
     int         nb_chapters;
 } MkvFileSpec;
-typedef struct MkvStats { int64_t clusters, cues, blocks, bytes; } MkvStats;
+typedef struct MkvStats { int64_t clusters, cues, blocks, bytes; int64_t late; } MkvStats;
 int mkv_open(MkvWriter **w, const char *path, const MkvFileSpec *file, const MkvTrackSpec *tracks, int nb_tracks);
 int mkv_frame(MkvWriter *w, int track, const uint8_t *data, int size, int64_t time, int64_t duration, int key);
 int mkv_close(MkvWriter **w, const MkvChapter *chapters, int nb_chapters, int abort, MkvStats *st);

@@ -73,7 +73,10 @@
 
 #include <sys/random.h>
 
+#include <zlib.h>
+
 extern "C" {
+#include "base/crc16.h"
 #include "mkv/mkv.h"
 }
 
@@ -86,6 +89,7 @@ const int64_t SCALE          = 1000000;           // the timestamp scale: 1 ms
 const int64_t MAX_NS_CLUSTER = 5000000000LL;      // min(32700 x scale, 5 s)
 const int     MAX_BLOCKS     = 65535;
 const int     MAX_CONTENT    = 1500000;
+const int64_t SPARSE_WAIT    = 10000000000LL;     // how far the others run ahead of a subtitle track
 
 int64_t round_scale(int64_t ns)
 {
@@ -260,6 +264,7 @@ struct Packet {
     int64_t unmodified_assigned = 0, unmodified_duration = -1;
     int     key = -1, discardable = -1;     // -1: not said
     bool    duration_mandatory = false;
+    uint64_t raw_size = 0;                  // the data's size before compression (the statistics count it)
     bool has_duration() const { return duration >= 0; }
     int64_t get_duration() const { return has_duration() ? duration : 0; }
     int64_t get_unmodified_duration() const { return has_duration() ? unmodified_duration : 0; }
@@ -383,6 +388,7 @@ std::string format_ts(int64_t ns)
 }
 
 std::string bcp47_of(const char *iso639_2);
+std::string bibliographic(const std::string &iso639_2);
 
 }  // namespace
 
@@ -396,6 +402,7 @@ struct MkvTrackState {
     KaxTrackEntry *entry = nullptr;
     std::deque<PacketPtr> queue;
     bool done = false;              // no packet comes any more
+    bool sparse = false;            // subtitles: a packet now and then (the others do not wait for one)
     bool header_ready = false;      // its header's late fields (H.264: configuration record) are known
     int64_t default_duration = -1;  // ns
     int64_t last_cue = -1;
@@ -439,6 +446,8 @@ struct MkvWriter {
     Uids uids;
     bool started = false;           // the headers are written
     int video = -1;                 // the first video track (key frames start clusters)
+    int64_t latest = INT64_MIN;     // the latest time of any packet queued
+    int64_t last_out = INT64_MIN;   // the latest time of any packet written
     bool failed = false;
     int error = 0;
 
@@ -499,7 +508,8 @@ void set_track_headers(MkvWriter *w, MkvTrackState &t, bool late)
     if (!late) {
         GetChild<KaxTrackNumber>(e).SetValue(t.number);
         GetChild<KaxTrackUID>(e).SetValue(t.uid);
-        GetChild<KaxTrackType>(e).SetValue(t.spec.codec == MKV_CODEC_H264 ? track_video : track_audio);
+        GetChild<KaxTrackType>(e).SetValue(t.spec.codec == MKV_CODEC_H264 ? track_video :
+                                           t.spec.codec == MKV_CODEC_PGS ? track_subtitle : track_audio);
         GetChild<KaxCodecID>(e).SetValue(t.codec_id);
         if (t.default_duration > 0)
             GetChild<KaxTrackDefaultDuration>(e).SetValue(t.default_duration);
@@ -523,6 +533,16 @@ void set_track_headers(MkvWriter *w, MkvTrackState &t, bool late)
             GetChild<KaxVideoDisplayHeight>(v).SetValue(t.spec.height);
             GetChild<KaxVideoDisplayWidth>(v).SetDefaultSize(4);
             GetChild<KaxVideoDisplayHeight>(v).SetDefaultSize(4);
+            e.EnableLacing(false);
+        } else if (t.spec.codec == MKV_CODEC_PGS) {
+            // the compression last of the common fields, then no lacing (as mkvmerge's PGS track)
+            if (t.spec.zlib) {
+                KaxContentEncoding &c = GetChild<KaxContentEncoding>(GetChild<KaxContentEncodings>(e));
+                GetChild<KaxContentEncodingOrder>(c).SetValue(0);
+                GetChild<KaxContentEncodingType>(c).SetValue(0);    // a compression
+                GetChild<KaxContentEncodingScope>(c).SetValue(1);   // of the frames
+                GetChild<KaxContentCompAlgo>(GetChild<KaxContentCompression>(c)).SetValue(0);   // zlib
+            }
             e.EnableLacing(false);
         } else {
             KaxTrackAudio &a = GetChild<KaxTrackAudio>(e);
@@ -736,8 +756,8 @@ bool add_to_cues(MkvWriter *w, const Packet &p)
 {
     MkvTrackState &t = w->tracks[p.track];
     bool add = false;
-    if (t.spec.codec == MKV_CODEC_H264)
-        add = p.is_key_frame();
+    if (t.spec.codec == MKV_CODEC_H264 || t.spec.codec == MKV_CODEC_PGS)
+        add = p.is_key_frame();     // video and subtitles: every key frame
     else if (w->video < 0)
         add = p.is_key_frame() && (t.last_cue < 0 || p.assigned - t.last_cue >= 500000000);
     if (add)
@@ -805,7 +825,7 @@ int render_cluster(MkvWriter *w)
                 cue_blocks.push_back({ p.assigned, (uint64_t)t.number, rg->groups.back() });
         }
         t.stats.frames++;
-        t.stats.bytes += p.data.size();
+        t.stats.bytes += p.raw_size ? p.raw_size : p.data.size();
         t.stats.min_ts = std::min(t.stats.min_ts, p.assigned);
         t.stats.max_end = std::max(t.stats.max_end, p.assigned + p.get_duration());
         w->st.blocks += new_group;
@@ -892,16 +912,26 @@ int add_packet(MkvWriter *w, const PacketPtr &pp)
     return 0;
 }
 
-// the tracks' next packets go out in time order once every track has one (or has ended)
+// the tracks' next packets go out in time order once every track has one (or has ended). A subtitle track
+// is not waited for once the other tracks have come SPARSE_WAIT past the next packet: its next display set
+// cannot be earlier than that, as the disc delivers a set before its time (a set that comes later anyway is
+// counted in MkvStats.late)
 int pump(MkvWriter *w, bool flushing)
 {
+    for (auto &t : w->tracks)
+        if (!t.queue.empty())
+            w->latest = std::max(w->latest, t.queue.back()->assigned);
     for (;;) {
         int winner = -1;
+        bool waiting = false;
         for (size_t i = 0; i < w->tracks.size(); i++) {
             MkvTrackState &t = w->tracks[i];
             if (t.queue.empty()) {
-                if (!t.done && !flushing)
-                    return 0;
+                if (!t.done && !flushing) {
+                    if (!t.sparse)
+                        return 0;
+                    waiting = true;
+                }
                 continue;
             }
             if (winner < 0 || t.queue.front()->assigned < w->tracks[winner].queue.front()->assigned)
@@ -909,10 +939,13 @@ int pump(MkvWriter *w, bool flushing)
         }
         if (winner < 0)
             return 0;
+        if (waiting && w->latest - w->tracks[winner].queue.front()->assigned < SPARSE_WAIT)
+            return 0;
         if (!w->started && write_headers(w) < 0)
             return -w->error;
         PacketPtr p = w->tracks[winner].queue.front();
         w->tracks[winner].queue.pop_front();
+        w->last_out = std::max(w->last_out, p->assigned);
         if (add_packet(w, p) < 0)
             return -w->error;
     }
@@ -1164,6 +1197,8 @@ struct Ac3Header {
     int bsid = 0, rate = 0, samples = 1536, lfeon = 0;
     size_t bytes = 0;
     uint64_t layout = 0;
+    int dialnorm_pos = -1, dialnorm2_pos = -1;      // bit positions of dialnorm (and dialnorm2: dual mono)
+    unsigned dialnorm = 0, dialnorm2 = 0;
 };
 
 bool ac3_header(const uint8_t *p, size_t n, Ac3Header &h)
@@ -1189,6 +1224,7 @@ bool ac3_header(const uint8_t *p, size_t n, Ac3Header &h)
     if (n < 18 || p[0] != 0x0B || p[1] != 0x77)
         return false;
     Bits r(p, 18);
+    r.b.assign(p, p + 18);  // A/52 has no emulation prevention
     r.pos = 40;
     h = Ac3Header();
     h.bsid = (int)r.u(5);
@@ -1209,6 +1245,18 @@ bool ac3_header(const uint8_t *p, size_t n, Ac3Header &h)
         if (acmod == 2)
             r.u(2);
         h.lfeon = (int)r.u(1);
+        h.dialnorm_pos = (int)r.pos;
+        h.dialnorm = r.u(5);
+        if (r.u(1))         // compre
+            r.u(8);
+        if (r.u(1))         // langcode
+            r.u(8);
+        if (r.u(1))         // audprodie
+            r.u(7);
+        if (acmod == 0) {   // dual mono
+            h.dialnorm2_pos = (int)r.pos;
+            h.dialnorm2 = r.u(5);
+        }
         h.rate = rates[fscod] >> (std::max(h.bsid, 8) - 8);
         h.bytes = (size_t)frame_words[frmsizecod][fscod] * 2;
         h.layout = acmod_layout[acmod];
@@ -1229,11 +1277,13 @@ bool ac3_header(const uint8_t *p, size_t n, Ac3Header &h)
     unsigned acmod = r.u(3);
     h.lfeon = (int)r.u(1);
     r.u(5);
-    r.u(5);
+    h.dialnorm_pos = (int)r.pos;
+    h.dialnorm = r.u(5);
     if (r.u(1))
         r.u(8);
     if (acmod == 0) {
-        r.u(5);
+        h.dialnorm2_pos = (int)r.pos;
+        h.dialnorm2 = r.u(5);
         if (r.u(1))
             r.u(8);
     }
@@ -1273,6 +1323,82 @@ void ac3_flush_pending(MkvWriter *w, MkvTrackState &t)
 
 // A packet per independent frame with the dependent frames after it (as mkvmerge's AC-3 parser joins them);
 // the first packet gives the track's codec, rate and channels.
+// ---- dialogue normalization removed (as mkvmerge's --remove-dialog-normalization-gain) ----
+
+void put_bits(uint8_t *p, int pos, int n, unsigned v)
+{
+    for (int i = n - 1; i >= 0; i--, pos++) {
+        uint8_t bit = 0x80 >> (pos & 7);
+        p[pos >> 3] = (v >> i) & 1 ? p[pos >> 3] | bit : p[pos >> 3] & ~bit;
+    }
+}
+
+void put_be16(uint8_t *p, unsigned v)
+{
+    p[0] = (uint8_t)(v >> 8);
+    p[1] = (uint8_t)v;
+}
+
+unsigned bswap16(unsigned v)
+{
+    return (v >> 8 & 0xff) | (v & 0xff) << 8;
+}
+
+// A/52 crc1 for a changed first 5/8 of a frame (as the A/52 encoder computes it: the CRC of the span after
+// crc1, then multiplied by x^-(span) so the whole span checks to 0)
+const unsigned CRC16_POLY = (1 << 0) | (1 << 2) | (1 << 15) | (1 << 16);
+
+unsigned mul_poly(unsigned a, unsigned b, unsigned poly)
+{
+    unsigned c = 0;
+    while (a) {
+        if (a & 1)
+            c ^= b;
+        a >>= 1;
+        b <<= 1;
+        if (b & (1 << 16))
+            b ^= poly;
+    }
+    return c;
+}
+
+unsigned pow_poly(unsigned a, unsigned n, unsigned poly)
+{
+    unsigned r = 1;
+    while (n) {
+        if (n & 1)
+            r = mul_poly(r, a, poly);
+        a = mul_poly(a, a, poly);
+        n >>= 1;
+    }
+    return r;
+}
+
+// one AC-3 / E-AC-3 frame: dialnorm (and dialnorm2) set to 31 (-31 dB: no reduction), then its CRCs
+void ac3_remove_dialnorm(uint8_t *f, const Ac3Header &h)
+{
+    if (h.dialnorm_pos < 0 || (h.dialnorm == 31 && (h.dialnorm2_pos < 0 || h.dialnorm2 == 31)))
+        return;
+    put_bits(f, h.dialnorm_pos, 5, 31);
+    if (h.dialnorm2_pos >= 0)
+        put_bits(f, h.dialnorm2_pos, 5, 31);
+    if (!h.eac3) {                      // E-AC-3 has no crc1
+        int words = (int)(h.bytes >> 1), words58 = (words >> 1) + (words >> 3);
+        unsigned crc1 = bswap16(dr_crc16_ansi(0, f + 4, 2 * words58 - 4));
+        unsigned inv = pow_poly(CRC16_POLY >> 1, 16 * words58 - 16, CRC16_POLY);
+        put_be16(f + 2, mul_poly(inv, crc1, CRC16_POLY));
+    }
+    // crc2; crcrsv set when the CRC would read as a sync word
+    uint8_t &crcrsv = f[h.bytes - 3];
+    crcrsv &= 0xfe;
+    unsigned crc2 = bswap16(dr_crc16_ansi(0, f + 2, h.bytes - 4));
+    if (crc2 == 0x0B77) {
+        crcrsv |= 0x01;
+        crc2 = bswap16(dr_crc16_ansi(0, f + 2, h.bytes - 4));
+    }
+    put_be16(f + h.bytes - 2, crc2);
+}
+
 int ac3_frame(MkvWriter *w, MkvTrackState &t, const uint8_t *data, int size, int64_t time)
 {
     size_t off = 0;
@@ -1298,6 +1424,8 @@ int ac3_frame(MkvWriter *w, MkvTrackState &t, const uint8_t *data, int size, int
             t.ac3_lfe += h.lfeon;
         }
         t.pending->data.insert(t.pending->data.end(), data + off, data + off + h.bytes);
+        if (t.spec.remove_dialnorm)
+            ac3_remove_dialnorm(t.pending->data.data() + t.pending->data.size() - h.bytes, h);
         off += h.bytes;
     }
     return 0;
@@ -1321,6 +1449,12 @@ struct DtsHeader {
     int ext_rate = 0, ref_clock = 3, subframe_duration = 0;
     size_t frame_size = 0;
     std::vector<DtsAsset> assets;
+    // dialogue normalization: the core's (4 bits; its level by the encoder version) and the extension
+    // substream's (5 bits, the last asset's; bit position from the substream's start, byte position)
+    int core_dialnorm_pos = -1, core_dialnorm_db = 0;
+    int ext_dialnorm_pos = -1;
+    unsigned ext_dialnorm = 0;
+    size_t exss_offset = 0, exss_header_size = 0;
     // exss header
     int substream_size_bits = 16;
     bool static_fields = false, mix_metadata = false;
@@ -1386,8 +1520,10 @@ bool dts_asset(Bits &r, DtsHeader &h, DtsAsset &a)
     bool drc = r.u(1);
     if (drc)
         r.u(8);
-    if (r.u(1))
-        r.u(5);
+    if (r.u(1)) {
+        h.ext_dialnorm_pos = (int)r.pos;
+        h.ext_dialnorm = r.u(5);
+    }
     if (drc && a.embedded_stereo)
         r.u(8);
     if (h.mix_metadata && r.u(1)) {
@@ -1514,6 +1650,7 @@ bool dts_exss(const uint8_t *p, size_t n, DtsHeader &h)
         h.substream_size_bits = 20;
     }
     size_t header_size = r.u(header_bits) + 1, part = r.u(h.substream_size_bits) + 1;
+    h.exss_header_size = header_size;
     h.frame_size += part;
     h.has_exss = true;
     unsigned npres = 1, nassets = 1;
@@ -1590,12 +1727,17 @@ bool dts_header(const uint8_t *p, size_t n, DtsHeader &h)
     if (crc)
         r.u(16);
     r.u(1);
-    r.u(4);
+    unsigned version = r.u(4);
     r.u(2);
     static const int pcm[8] = { 16, 16, 20, 20, 0, 24, 24, 0 };
     h.pcm_res = pcm[r.u(3)];
     if (!h.pcm_res)
         return false;
+    r.u(1);
+    r.u(1);
+    h.core_dialnorm_pos = (int)r.pos;
+    unsigned dn = r.u(4);
+    h.core_dialnorm_db = version == 7 ? -(int)dn : version == 6 ? -16 - (int)dn : 0;
     h.has_core = true;
     // the 6.1 channel extension in the core frame (its sync searched from the frame's end)
     if (ext_coding && ext_audio == 0 && h.frame_size <= n) {
@@ -1608,8 +1750,10 @@ bool dts_header(const uint8_t *p, size_t n, DtsHeader &h)
         }
     }
     size_t core = h.frame_size;
-    if (core + 9 <= n && p[core] == 0x64 && p[core + 1] == 0x58 && p[core + 2] == 0x20 && p[core + 3] == 0x25)
+    if (core + 9 <= n && p[core] == 0x64 && p[core + 1] == 0x58 && p[core + 2] == 0x20 && p[core + 3] == 0x25) {
+        h.exss_offset = core;
         return dts_exss(p + core, n - core, h);
+    }
     return true;
 }
 
@@ -1641,6 +1785,19 @@ int dts_total_channels(const DtsHeader &h)
     return h.channels + (h.lfe == 1 || h.lfe == 2 ? 1 : 0) + (h.has_xch ? 1 : 0);
 }
 
+// one DTS frame: the core's dialogue normalization set to 0 (its header CRC left as it is) and the extension
+// substream's set to 0 (its header CRC made again), as mkvmerge does
+void dts_remove_dialnorm(uint8_t *f, const DtsHeader &h)
+{
+    if (h.has_core && h.core_dialnorm_pos >= 0 && h.core_dialnorm_db != 0)
+        put_bits(f, h.core_dialnorm_pos, 4, 0);
+    if (h.has_exss && h.ext_dialnorm_pos >= 0 && h.ext_dialnorm != 0 && h.exss_header_size >= 8) {
+        uint8_t *x = f + h.exss_offset;
+        put_bits(x, h.ext_dialnorm_pos, 5, 0);
+        put_be16(x + h.exss_header_size - 2, bswap16(dr_crc16_ccitt(0xffff, x + 5, h.exss_header_size - 5 - 2)));
+    }
+}
+
 int dts_frame(MkvWriter *w, MkvTrackState &t, const uint8_t *data, int size, int64_t time)
 {
     size_t off = 0;
@@ -1659,6 +1816,8 @@ int dts_frame(MkvWriter *w, MkvTrackState &t, const uint8_t *data, int size, int
         auto p = std::make_shared<Packet>();
         p->track = (int)(&t - w->tracks.data());
         p->data.assign(data + off, data + off + h.frame_size);
+        if (t.spec.remove_dialnorm)
+            dts_remove_dialnorm(p->data.data(), h);
         if (h.core_rate <= 0)
             return fail(w, EINVAL);
         counted_packet(w, t, p, off ? INT64_MIN : time, (int)dts_samples(h), h.core_rate, dts_ns(h));
@@ -1704,6 +1863,22 @@ int pcm_frame(MkvWriter *w, MkvTrackState &t, const uint8_t *data, int size, int
     t.pcm.insert(t.pcm.end(), data, data + size);
     pcm_flush(w, t, false);
     return pump(w, false);
+}
+
+// ISO 639-2: a terminology code's bibliographic form (the twenty that differ), which the legacy Language
+// element takes (as mkvmerge writes it); every other code is both
+std::string bibliographic(const std::string &code)
+{
+    static const char *const pairs[][2] = {
+        { "sqi", "alb" }, { "hye", "arm" }, { "eus", "baq" }, { "mya", "bur" }, { "zho", "chi" }, { "ces", "cze" },
+        { "nld", "dut" }, { "fra", "fre" }, { "kat", "geo" }, { "deu", "ger" }, { "ell", "gre" }, { "isl", "ice" },
+        { "mkd", "mac" }, { "mri", "mao" }, { "msa", "may" }, { "fas", "per" }, { "ron", "rum" }, { "slk", "slo" },
+        { "bod", "tib" }, { "cym", "wel" },
+    };
+    for (auto &p : pairs)
+        if (code == p[0])
+            return p[1];
+    return code;
 }
 
 std::string bcp47_of(const char *code)
@@ -1841,6 +2016,42 @@ void write_tags(MkvWriter *w)
     w->seek.IndexThis(tags, w->segment);
 }
 
+// ---- PGS: a display set per block (as mkvmerge joins a .sup file's segments up to each end segment) ----
+
+int pgs_frame(MkvWriter *w, MkvTrackState &t, const uint8_t *data, int size, int64_t time)
+{
+    auto p = std::make_shared<Packet>();
+    p->track = (int)(&t - w->tracks.data());
+    p->timestamp = p->assigned = time;
+    p->key = 1;
+    p->raw_size = (uint64_t)size;
+    if (t.spec.zlib) {
+        // as mkvmerge compresses a block: zlib, level 9, the whole block in one stream
+        z_stream z{};
+        if (deflateInit(&z, 9) != Z_OK)
+            return fail(w, ENOMEM);
+        p->data.resize(deflateBound(&z, (uLong)size));
+        z.next_in = const_cast<Bytef *>(data);
+        z.avail_in = (uInt)size;
+        z.next_out = p->data.data();
+        z.avail_out = (uInt)p->data.size();
+        int r = deflate(&z, Z_FINISH);
+        p->data.resize(z.total_out);
+        deflateEnd(&z);
+        if (r != Z_STREAM_END)
+            return fail(w, EIO);
+    } else
+        p->data.assign(data, data + size);
+    if (time < 0) {
+        t.dropped_negative++;
+        return 0;
+    }
+    if (time < w->last_out)
+        w->st.late++;
+    t.queue.push_back(p);
+    return 0;
+}
+
 }  // namespace
 
 // ---- the C interface ----
@@ -1867,7 +2078,7 @@ extern "C" int mkv_open(MkvWriter **pw, const char *path, const MkvFileSpec *fil
         MkvTrackState &t = w->tracks[i];
         t.spec = tracks[i];
         t.number = i + 1;
-        t.language = tracks[i].language && *tracks[i].language ? tracks[i].language : "und";
+        t.language = bibliographic(tracks[i].language && *tracks[i].language ? tracks[i].language : "und");
         t.language_ietf = tracks[i].language_ietf && *tracks[i].language_ietf ? tracks[i].language_ietf
                                                                               : bcp47_of(t.language.c_str());
         t.name = tracks[i].name ? tracks[i].name : "";
@@ -1878,6 +2089,10 @@ extern "C" int mkv_open(MkvWriter **pw, const char *path, const MkvFileSpec *fil
                 w->video = i;
         } else if (t.spec.codec == MKV_CODEC_AC3 || t.spec.codec == MKV_CODEC_DTS) {
             // codec, rate, channels and default duration: from the first packet
+        } else if (t.spec.codec == MKV_CODEC_PGS) {
+            t.codec_id = "S_HDMV/PGS";
+            t.header_ready = true;
+            t.sparse = true;
         } else if (t.spec.codec == MKV_CODEC_PCM) {
             t.codec_id = "A_PCM/INT/LIT";
             if (t.spec.sample_rate <= 0 || t.spec.channels <= 0 || t.spec.bits <= 0) {
@@ -1912,6 +2127,7 @@ extern "C" int mkv_frame(MkvWriter *w, int track, const uint8_t *data, int size,
         case MKV_CODEC_H264: return h264_frame(w, t, data, size, time, duration, key);
         case MKV_CODEC_AC3:  ret = ac3_frame(w, t, data, size, time); break;
         case MKV_CODEC_DTS:  ret = dts_frame(w, t, data, size, time); break;
+        case MKV_CODEC_PGS:  ret = pgs_frame(w, t, data, size, time); break;
         default:             return pcm_frame(w, t, data, size, time);
         }
         return ret < 0 ? ret : pump(w, false);

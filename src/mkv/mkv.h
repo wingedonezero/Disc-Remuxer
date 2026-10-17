@@ -10,8 +10,8 @@
  * The caller gives each track's description, then the title's frames in the
  * order they come (each track's frames in its own order: video in decode
  * order with display times); the writer packs them per codec (H.264: NAL
- * units with 4-byte sizes, its configuration record; PCM: 40 ms blocks) and
- * writes them in time order across the tracks. Written by C++ code behind
+ * units with 4-byte sizes, its configuration record; PCM: 40 ms blocks; PGS:
+ * a display set per block) and writes them in time order across the tracks. Written by C++ code behind
  * this C interface (libmatroska is C++).
  */
 
@@ -32,6 +32,8 @@ enum MkvCodec {
     MKV_CODEC_AC3,          /* frames: AC-3 / E-AC-3 sync frames (A_AC3, or A_EAC3 from the stream) */
     MKV_CODEC_DTS,          /* frames: DTS frames (a core, a core + extension substream, or an extension
                                substream alone) */
+    MKV_CODEC_PGS,          /* frames: PGS display sets (their segments one after another), each at its
+                               presentation time */
 };
 
 typedef struct MkvTrackSpec {
@@ -40,6 +42,9 @@ typedef struct MkvTrackSpec {
     const char *language_ietf;      /* BCP 47, NULL or "": from language */
     const char *name;               /* the track's name, NULL none */
     int         forced;             /* subtitles: forced only (FlagForced) */
+    int         zlib;               /* subtitles: each block compressed with zlib (a ContentEncoding) */
+    int         remove_dialnorm;    /* AC-3 / E-AC-3 / DTS: each frame's dialogue normalization set to "none"
+                                       (as mkvmerge's --remove-dialog-normalization-gain) */
     /* video */
     int         width, height;      /* the picture (the stream's, cropped) */
     /* audio */
@@ -74,6 +79,7 @@ int mkv_frame(MkvWriter *w, int track, const uint8_t *data, int size, int64_t ti
 /* What a finished file holds, for the log. */
 typedef struct MkvStats {
     int64_t clusters, cues, blocks, bytes;
+    int64_t late;                   /* subtitle display sets that came after a later packet was written */
 } MkvStats;
 
 /* Finishes the file (the frames still held, the cues, the chapters, the
