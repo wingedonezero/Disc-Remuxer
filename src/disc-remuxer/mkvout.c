@@ -250,14 +250,16 @@ int mkvout_close(MkvOut **pm, DrDisc *d, int abort, int64_t *bytes)
         if (ret >= 0 && !abort) {
             log_text(LOG_DETAIL, "MKV: %"PRId64" clusters, %"PRId64" blocks, %"PRId64" cue points, %"PRId64" bytes",
                      st.clusters, st.blocks, st.cues, st.bytes);
-            for (int k = 0; k < st.nb_removed && k < (int)(sizeof(st.removed) / sizeof(*st.removed)); k++)
-                for (int i = 0; i < m->nb_tracks; i++)
-                    if (m->map[i] == st.removed[k]) {
-                        const DrDiscTrack *t = dr_disc_track(d, i);
-                        log_text(LOG_INFO, "Track %d (%s%s): no frames in the title: taken out of the MKV file's "
-                                 "track list", t->number, ff_disctl_codec_id_name(t->codec),
-                                 t->forced ? ", forced subtitles" : "");
-                    }
+            /* what the file holds (the tracks left out are each in the title's track table) */
+            log_text(LOG_INFO, "MKV file: %s: %d track%s, %d chapter%s (as mkvmerge writes them; subtitle compression "
+                     "%s, dialogue normalization %s)", m->path, m->nb_file - st.nb_removed,
+                     m->nb_file - st.nb_removed == 1 ? "" : "s", ch ? nb : 0, (ch ? nb : 0) == 1 ? "" : "s",
+                     setting_text("mkv.compression"),
+                     setting_bool("mkv.remove_dialog_normalization") ? "set to none" : "as on the disc");
+            if (st.nb_removed)
+                log_text(LOG_INFO, "MKV file: %d track%s got no frames (see the track table): taken out of the file's "
+                         "track list at the end, the others keep their numbers", st.nb_removed,
+                         st.nb_removed == 1 ? "" : "s");
             if (st.late)
                 log_text(LOG_WARNING, "MKV: %"PRId64" subtitle display set(s) came after later video or audio was "
                          "written: they are in the file out of time order", st.late);

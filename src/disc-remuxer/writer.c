@@ -150,6 +150,7 @@ typedef struct EsOut {
     int           textst;           /* text subtitles: the number of dialogs to fill in at the end */
     int64_t       dialogs;          /* text subtitles: dialogs written */
     int           no_forced;        /* a forced-only track that showed nothing: its file removed */
+    int           mkv_skip;         /* MKV: a track whose codec the MKV writer does not take yet */
     int64_t       sub_pos;          /* bytes written to the .sub */
     int64_t       cues;             /* captions: SRT cues written */
     int           wav;              /* a WAV header to complete at the end */
@@ -983,6 +984,7 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         /* the file is finished (its chapters are known now); its tracks count as written */
         for (int i = 0; i < nb_tracks; i++) {
             const DrDiscTrack *t = dr_disc_track(d, i);
+            out[i].mkv_skip = !mkvout_has_track(mo, i);
             if (mkvout_has_track(mo, i) && out[i].st.packets) {
                 out[i].opened = 1;
                 out[i].name   = dr_strdup(mkv_path);
@@ -1079,7 +1081,7 @@ end:
         int checked = 0, check_failed = 0, unchecked = 0;
         int64_t written = 0;
         int nb_chapters = dr_disc_nb_chapters(d);
-        char made[96], sz[32];
+        char made[160], sz[32];
 
         for (int i = 0; i < nb_tracks; i++) {
             const DrDiscTrack *t = dr_disc_track(d, i);
@@ -1103,17 +1105,20 @@ end:
             snprintf(what, sizeof(what), "%s %s%s%s", *o->st.lang ? o->st.lang : "   ",
                      stream_label(t, o->opened ? o->profile : t->profile), *o->layout ? " " : "", o->layout);
             if (empty_cc)
-                snprintf(state, sizeof(state), "no caption text: no file");
+                snprintf(state, sizeof(state), "no caption text: %s", mkv ? "not in the MKV" : "no file");
             else if (o->no_forced)
-                snprintf(state, sizeof(state), "no forced subtitles: no file");
+                snprintf(state, sizeof(state), "no forced subtitles: %s", mkv ? "not in the MKV" : "no file");
+            else if (mkv && o->mkv_skip)
+                snprintf(state, sizeof(state), "not in the MKV: the MKV writer does not take this codec yet");
             else if (!o->opened)
-                snprintf(state, sizeof(state), "no data: no file");
+                snprintf(state, sizeof(state), "no data: %s", mkv ? "not in the MKV" : "no file");
             else if (warn)
                 snprintf(state, sizeof(state), "%"PRId64" warning%s", warn, warn == 1 ? "" : "s");
             else
                 snprintf(state, sizeof(state), "OK");
             if (o->opened && t->type == DISC_MEDIA_AUDIO)
-                snprintf(delay, sizeof(delay), ", delay %"PRId64" ms", o->st.delay_ms);
+                snprintf(delay, sizeof(delay), mkv ? ", starts at %"PRId64" ms" : ", delay %"PRId64" ms",
+                         o->st.delay_ms);
             log_text(!o->opened && !empty_cc && !o->no_forced ? LOG_WARNING : warn || empty_cc || o->no_forced ?
                      LOG_INFO : LOG_OK,
                      "  %02d  %-30s %8"PRId64" %-9s  %s%s",
@@ -1171,8 +1176,8 @@ end:
             written += out[i].opened ? out[i].st.bytes : 0;
         if (mkv)
             written = mkv_bytes;
-        snprintf(made, sizeof(made), "(%u chapter%s, %s)", (unsigned)nb_chapters, nb_chapters == 1 ? "" : "s",
-                 size_text(sz, sizeof(sz), written));
+        snprintf(made, sizeof(made), "(%u chapter%s, %s%s)", (unsigned)nb_chapters, nb_chapters == 1 ? "" : "s",
+                 size_text(sz, sizeof(sz), written), mkv ? "; the MKV file itself is not read back yet" : "");
         if (check_failed) {
             log_msg(MSG_DETAILS_DIFFER, LOG_ERROR, "%s: its files are written, but %d of them do not keep "
                     "the disc stream's details (see above)", who, check_failed);
