@@ -1114,6 +1114,7 @@ int ff_disc_title_reader_open(DrDisc *d, const DiscTitleSource *src)
             .cc_helper = d->opt_cc_helper && *d->opt_cc_helper ? d->opt_cc_helper :
                          ff_disctl_ccx_default(helper, sizeof(helper)),
             .open_marks = src->chapter_clips ? r->chapter_plan.marks : NULL,
+            .chapter_rule = d->chapter_rule,
             .nb_segments = r->last_clip - r->first_clip + 1,
             .place = block_words, .place_opaque = d,
         };
@@ -1662,6 +1663,7 @@ static int title_end(DrDisc *d)
         t->frames      = frames;
         t->warnings    = warnings;
         t->delay_ticks = delay;
+        ff_disctl_title_track_holes(r->rip, i, &t->holes, &t->hole_ticks);
         if (ff_disctl_title_cc_result(r->rip, i, &frames, &warnings, &lost) >= 0) {
             t->has_cc    = 1;
             t->cc_blocks = frames;

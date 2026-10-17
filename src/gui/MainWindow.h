@@ -21,6 +21,8 @@ class QSplitter;
 class QTreeWidgetItem;
 class QueueTree;
 
+class QComboBox;
+
 class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
@@ -49,6 +51,7 @@ private slots:
     void clearAll();
     void rescanSelected();
     void openPrefs();
+    void syncFormatBox();
     void startQueue();
     void stopQueue();
     void scanStarted(quint64 id);
@@ -113,6 +116,7 @@ private:
     Console       *console;
     QSplitter     *centerSplit, *mainSplit;
     QPushButton   *btnStart, *btnStop, *btnRemove, *btnClear;
+    QComboBox     *formatBox;
     QAction       *actStart, *actStop, *actRemove, *actClear, *actRescan;
 
     LogRelay      *relay;

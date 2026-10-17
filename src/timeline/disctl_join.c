@@ -19,7 +19,6 @@
 
 #include "timeline/disctl.h"
 
-#define MARK_AHEAD   432000000LL   /* a chapter mark goes on a video key frame up to 0.4 s before it */
 #define SEED_UNITS   1000          /* audio frames searched for the first one with a time */
 
 typedef struct Track {
@@ -41,9 +40,10 @@ struct DRJoin {
     int64_t      start, offset;
     int64_t      prev_e0, prev_start, prev_offset;
     int64_t      batch_min; /* earliest video time of the segment's first batch so far */
-    int          mark;      /* next chapter mark */
-    int64_t     *chap;      /* times of the frames that start chapters */
-    int          nb_chap, chap_cap;
+    int64_t     *chap;      /* the chapters' start times (placed when the title is finished) */
+    int          nb_chap;
+    int64_t     *vtimes, *ktimes;   /* the video frames' times, the key frames' (for the chapters) */
+    int          nb_v, cap_v, nb_k, cap_k;
     int64_t     *starts;    /* each placed segment's start (its first video time), DR_NOPTS_VALUE: not placed */
     int          nb_starts;
     DRJoinStats  st;
@@ -64,6 +64,140 @@ static int wait_add(Track *t, DRFrame *f)
     return 0;
 }
 
+static int add_time(int64_t **a, int *n, int *cap, int64_t t)
+{
+    if (*n == *cap) {
+        int c = *cap ? 2 * *cap : 1024;
+        int64_t *b = dr_realloc_array(*a, c, sizeof(*b));
+        if (!b)
+            return DR_ERR(ENOMEM);
+        *a   = b;
+        *cap = c;
+    }
+    (*a)[(*n)++] = t;
+    return 0;
+}
+
+static int cmp_time(const void *a, const void *b)
+{
+    int64_t x = *(const int64_t *)a, y = *(const int64_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+/* h:mm:ss.mmm of a time on the title timeline, into buf */
+static const char *hms(char *buf, size_t size, int64_t t)
+{
+    int64_t ms = (t + DR_TICKS_PER_SECOND / 2000) / (DR_TICKS_PER_SECOND / 1000);
+    snprintf(buf, size, "%"PRId64":%02"PRId64":%02"PRId64".%03"PRId64, ms / 3600000, ms / 60000 % 60,
+             ms / 1000 % 60, ms % 1000);
+    return buf;
+}
+
+/* the video frames from a up to (not with) b */
+static int frames_between(const DRJoin *j, int64_t a, int64_t b)
+{
+    int n = 0;
+    for (int i = 0; i < j->nb_v; i++)
+        n += j->vtimes[i] >= a && j->vtimes[i] < b;
+    return n;
+}
+
+/* Each mark's chapter, by the rule's stages (DRChapterRule): the mark on a
+ * key frame; the nearest key frame before it within before_ms; the nearest
+ * after it within after_ms; the mark. Every chapter that is not on a key
+ * frame at its mark is said (standard log): where it went and why. */
+static int place_chapters(DRJoin *j)
+{
+    DRChapterRule r = j->cfg.chapter_rule;
+    int64_t before, after, prev = INT64_MIN, last;
+    char a[32], b[32];
+
+    if (!r.set) {
+        r.before_ms = 400;
+        r.after_ms  = 0;
+    }
+    before = (int64_t)r.before_ms * (DR_TICKS_PER_SECOND / 1000);
+    after  = (int64_t)r.after_ms * (DR_TICKS_PER_SECOND / 1000);
+    if (!j->cfg.nb_marks || !j->nb_v)
+        return 0;
+    qsort(j->vtimes, j->nb_v, sizeof(*j->vtimes), cmp_time);
+    qsort(j->ktimes, j->nb_k, sizeof(*j->ktimes), cmp_time);
+    last = j->vtimes[j->nb_v - 1];
+    if (!(j->chap = dr_calloc(j->cfg.nb_marks, sizeof(*j->chap))))
+        return DR_ERR(ENOMEM);
+    for (int i = 0; i < j->cfg.nb_marks; i++) {
+        int64_t m = j->cfg.marks[i], mf = INT64_MIN, kb = INT64_MIN, ka = INT64_MAX, c;
+        int stage, on_key = 0;
+        if (m == INT64_MAX)                 /* a position never reached */
+            continue;
+        /* the mark's own frame: the video frame within 1 ms of it (a Blu-ray mark's
+         * 45 kHz time cannot hold a 1001-based frame time exactly) */
+        for (int k = 0; k < j->nb_v; k++)
+            if (DR_ABS(j->vtimes[k] - m) <= DR_TICKS_PER_SECOND / 1000 &&
+                (mf == INT64_MIN || DR_ABS(j->vtimes[k] - m) < DR_ABS(mf - m)))
+                mf = j->vtimes[k];
+        for (int k = 0; k < j->nb_k; k++) {
+            int64_t t = j->ktimes[k];
+            if (mf != INT64_MIN && t == mf)
+                on_key = 1;
+            else if (t < m)
+                kb = t;
+            else if (t > m && ka == INT64_MAX)
+                ka = t;
+        }
+        if (r.exact)
+            stage = 0, c = m;
+        else if (on_key)
+            stage = 1, c = mf;
+        else if (before && kb != INT64_MIN && m - kb <= before)
+            stage = 2, c = kb;
+        else if (after && ka != INT64_MAX && ka - m <= after)
+            stage = 3, c = ka;
+        else
+            stage = 4, c = mf != INT64_MIN ? mf : m;
+        /* a mark past the video's last frame starts no chapter */
+        if ((stage == 0 || stage == 4) && m > last) {
+            dr_vlog(j->log, DR_VLOG_INFO, "Title timeline: chapter mark %d (%s) is after the video's last frame: no "
+                    "chapter\n", i + 1, hms(a, sizeof(a), m));
+            continue;
+        }
+        /* chapters in order: a chapter not after the one before it keeps its mark (or goes) */
+        if (c <= prev) {
+            if (m <= prev || (stage == 4 && mf != INT64_MIN && mf <= prev)) {
+                dr_vlog(j->log, DR_VLOG_WARNING, "Title timeline: chapter mark %d (%s) is not after the chapter "
+                        "before it once that one is placed: no chapter\n", i + 1, hms(a, sizeof(a), m));
+                continue;
+            }
+            stage = 4;
+            c = mf != INT64_MIN && mf > prev ? mf : m;
+        }
+        if (stage == 2 || stage == 3)
+            dr_vlog(j->log, DR_VLOG_INFO, "Title timeline: chapter %d: its mark (%s) is between key frames: moved %d "
+                    "frame(s) (%.3f ms) %s to the key frame at %s\n", j->nb_chap + 1, hms(a, sizeof(a), m),
+                    stage == 2 ? frames_between(j, c, m) : frames_between(j, m, c),
+                    (double)DR_ABS(m - c) * 1000 / DR_TICKS_PER_SECOND, stage == 2 ? "earlier" : "later",
+                    hms(b, sizeof(b), c));
+        else if ((stage == 4 || stage == 0) && !on_key) {
+            char next[64] = " (no key frame follows)";
+            if (ka != INT64_MAX)
+                snprintf(next, sizeof(next), ", %d frame(s) later", frames_between(j, m, ka));
+            if (stage == 0)
+                dr_vlog(j->log, DR_VLOG_INFO, "Title timeline: chapter %d: its mark (%s) is between key frames: kept "
+                        "(the chapters as the disc has them); a split there cuts at the next key frame%s\n",
+                        j->nb_chap + 1, hms(a, sizeof(a), m), next);
+            else
+                dr_vlog(j->log, DR_VLOG_INFO, "Title timeline: chapter %d: its mark (%s) is between key frames and no "
+                        "key frame is within %d ms before it%s: kept at the mark; a split there cuts at the next key "
+                        "frame%s\n", j->nb_chap + 1, hms(a, sizeof(a), m), r.before_ms,
+                        after ? " or within the time after it" : "", next);
+        }
+        j->chap[j->nb_chap++] = c;
+        prev = c;
+    }
+    j->st.chapters = j->nb_chap;
+    return 0;
+}
+
 static int give(DRJoin *j, int track, DRFrame *f, int64_t ts, int64_t src)
 {
     f->time = ts + j->offset - j->start;
@@ -71,29 +205,17 @@ static int give(DRJoin *j, int track, DRFrame *f, int64_t ts, int64_t src)
     f->seg  = j->seg;
     /* the first frame after a chapter's position: the next open mark is its time */
     if (!track && (f->flags & DR_F_POSITION) && j->cfg.open_marks)
-        for (int i = j->mark; i < j->cfg.nb_marks; i++)
+        for (int i = 0; i < j->cfg.nb_marks; i++)
             if (j->cfg.open_marks[i] == INT64_MAX) {
                 j->cfg.open_marks[i] = f->time;
                 break;
             }
-    /* an empty marker takes no chapter */
-    if (!track && (f->flags & DR_F_KEY) && (f->dur || f->size) && j->mark < j->cfg.nb_marks) {
-        uint64_t m = j->cfg.marks[j->mark], o = f->time;
-        if (m <= o || m - o < MARK_AHEAD) {
-            if (j->nb_chap == j->chap_cap) {
-                int cap = j->chap_cap ? 2 * j->chap_cap : 32;
-                int64_t *c = dr_realloc_array(j->chap, cap, sizeof(*c));
-                if (!c) {
-                    ff_disctl_frame_unref(f);
-                    return DR_ERR(ENOMEM);
-                }
-                j->chap     = c;
-                j->chap_cap = cap;
-            }
-            j->chap[j->nb_chap++] = f->time;
-            f->flags |= DR_F_CHAPTER;
-            j->mark++;
-            j->st.chapters++;
+    /* the video's frames and key frames, for the chapters (an empty marker is no frame) */
+    if (!track && j->cfg.nb_marks && (f->dur || f->size)) {
+        if ((add_time(&j->vtimes, &j->nb_v, &j->cap_v, f->time) < 0) ||
+            ((f->flags & DR_F_KEY) && add_time(&j->ktimes, &j->nb_k, &j->cap_k, f->time) < 0)) {
+            ff_disctl_frame_unref(f);
+            return DR_ERR(ENOMEM);
         }
     }
     j->st.frames++;
@@ -309,7 +431,8 @@ int ff_disctl_join_push(DRJoin *j, int track, DRFrame *f)
 
 int ff_disctl_join_finish(DRJoin *j)
 {
-    return end_segment(j);
+    int ret = end_segment(j);
+    return ret < 0 ? ret : place_chapters(j);
 }
 
 int ff_disctl_join_open(DRJoin **jp, void *logctx, const DRJoinConfig *cfg)
@@ -366,6 +489,8 @@ void ff_disctl_join_close(DRJoin **jp)
     }
     dr_freep(&j->t);
     dr_freep(&j->chap);
+    dr_freep(&j->vtimes);
+    dr_freep(&j->ktimes);
     dr_freep(&j->starts);
     dr_freep(jp);
 }

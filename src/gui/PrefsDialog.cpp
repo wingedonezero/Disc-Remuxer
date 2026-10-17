@@ -25,7 +25,8 @@ static QString groupTitle(const QString &g)
 {
     static const QMap<QString, QString> titles = {
         { "read", "Reading" }, { "aacs", "AACS" }, { "titles", "Titles" }, { "output", "Output" },
-        { "bluray", "Blu-ray" }, { "dvd", "DVD" }, { "log", "Log" }, { "gui", "GUI" },
+        { "bluray", "Blu-ray" }, { "dvd", "DVD" }, { "chapters", "Chapters" }, { "mkv", "MKV" }, { "log", "Log" },
+        { "gui", "GUI" },
     };
     return titles.value(g, g);
 }

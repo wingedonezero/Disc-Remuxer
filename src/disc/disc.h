@@ -75,6 +75,8 @@ typedef struct DrDiscTrack {
     int64_t     frames;          /**< frames (subtitles: units; captions: blocks) given out */
     int64_t     warnings;
     int64_t     delay_ticks;     /**< audio: its first frame's time (the start delay) */
+    int64_t     holes, hole_ticks;       /**< video: pictures missing where the times jump; audio: gaps left open
+                                              (the picture runs on without it); and their total */
     int64_t     cc_blocks, cc_text;      /**< video: line-21 data taken out and dropped */
     int64_t     cues, cc_lost;           /**< a caption track: SRT cues made, captions lost at segment ends */
     int64_t     no_stop, outside;        /**< subtitles: units without a stop time, units outside the canvas */
@@ -111,6 +113,13 @@ void dr_disc_close(DrDisc **disc);
 
 /** The disc info; valid until the disc is closed. */
 const DiscInfo *dr_disc_info(const DrDisc *d);
+
+/** Where the next titles opened put their chapters (the chapter marks'
+ *  stages, DRChapterRule in timeline/disctl.h): exact = the disc's marks as
+ *  they are; else a mark on a key frame keeps it, else the nearest key frame
+ *  before it within before_ms, else the nearest after it within after_ms,
+ *  else the mark (0 ms: that stage off). */
+void dr_disc_set_chapter_rule(DrDisc *d, int exact, int before_ms, int after_ms);
 
 /** Opens title `title` (part >= 0: only that part) for reading; a title
  *  open before is closed first. The disc stays loaded. second_view: a 3-D

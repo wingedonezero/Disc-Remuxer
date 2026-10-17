@@ -20,6 +20,8 @@ static const char *const udf_readers[]  = { "netbsd", "linux", NULL };
 static const char *const dv_layers[]    = { "merged", "separate", NULL };
 static const char *const cell_modes[]   = { "auto", "walk", "trim", "walk_trim", NULL };
 static const char *const cell_checks[]  = { "all", "spread", "random", NULL };
+static const char *const out_formats[]  = { "streams", "mkv", "mkvmerge", NULL };
+static const char *const compressions[] = { "none", "zlib", NULL };
 
 static const Setting registry[] = {
     { "read", "attempts", SET_INT, "5", 1, 99, NULL,
@@ -43,6 +45,19 @@ static const Setting registry[] = {
       "The main output folder: a disc's files go into a folder of the disc's name in it (its image's or "
       "folder's name; _001, _002, ... when that exists), when demux is given no output folder and in the GUI. "
       "Empty: the folder output next to the program.", 0, SET_AT_RIP },
+    { "output", "format", SET_CHOICE, "mkvmerge", 0, 0, out_formats,
+      "What each title is written as: streams (a file per track: the elementary stream, WAVE, subtitles, "
+      "and the chapters as XML), mkv (one Matroska file holding every track and the chapters, written the "
+      "way mkvmerge writes one) or mkvmerge (the stream files and their timestamp files, then mkvmerge muxes them "
+      "into <main output folder>/<title>.mkv through an options file, and the stream files are deleted once it "
+      "has; mkvmerge from the PATH or mkv.mkvmerge_path).", 0, SET_AT_RIP },
+    { "output", "timestamps_file", SET_BOOL, "false", 0, 0, NULL,
+      "Also write each video and audio track's frame times as a timestamp file (mkvmerge's format v4, one time per "
+      "picture / packet in ms, each read back to the exact ns): <stream file>_timestamps.txt next to its stream "
+      "file (audio: AC-3, E-AC-3, DTS and TrueHD so far), or <title>_timestamps.txt (the video's) next to the MKV file. A "
+      "raw stream holds no times; with these files a later mux (mkvmerge --timestamps) gets the disc's times even "
+      "where frames alone do not tell them (a gap left by damaged data, a jump between joined pieces, a change of "
+      "frame rate).", 0, SET_AT_RIP },
     { "output", "file_name_template", SET_TEXT, "", 0, 0, NULL,
       "How a title's output files are named. {NAME1} the title's name, {CMNT1} its comment, {DT} its "
       "date, {N2} its number with two digits; {prefix:VAR} writes the prefix only after other text. "
@@ -82,6 +97,27 @@ static const Setting registry[] = {
       "How many VOBUs of a DVD cell are read when a cell is checked in full (in the decoy checks, mostly when the "
       "cells are trimmed): all (every VOBU; one broken VOBU rejects the cell), spread (50 evenly spread over the "
       "cell) or random (50 at random, a different choice on each run).", 0, SET_AT_OPEN },
+    { "chapters", "snap", SET_BOOL, "true", 0, 0, NULL,
+      "Put a chapter on a video key frame near its mark, stage by stage: a mark on a key frame keeps it; else "
+      "the nearest key frame before it within chapters.before_ms; else the nearest after it within "
+      "chapters.after_ms; else the mark itself. Every chapter that is not on a key frame at its mark is said "
+      "in the log. Off: the chapters as the disc has them.", 0, SET_AT_RIP },
+    { "chapters", "before_ms", SET_INT, "400", 0, 5000, NULL,
+      "How far before its mark (ms) a chapter may move back to a key frame. 0: never back.", 0, SET_AT_RIP },
+    { "chapters", "after_ms", SET_INT, "0", 0, 5000, NULL,
+      "How far after its mark (ms) a chapter may move on to a key frame, when none is close enough before it. "
+      "0: never forward.", 0, SET_AT_RIP },
+    { "mkv", "compression", SET_CHOICE, "none", 0, 0, compressions,
+      "MKV files (output.format = mkv): none stores the subtitles' blocks as they are; zlib compresses each "
+      "(lossless, as mkvmerge does by default; a few players and devices cannot read compressed tracks).",
+      0, SET_AT_RIP },
+    { "mkv", "mkvmerge_path", SET_TEXT, "", 0, 0, NULL,
+      "The mkvmerge program output.format = mkvmerge runs. Empty: mkvmerge from the PATH.", 0, SET_AT_RIP },
+    { "mkv", "remove_dialog_normalization", SET_BOOL, "false", 0, 0, NULL,
+      "MKV files: set the dialogue normalization of every AC-3, E-AC-3 and DTS frame to \"none\" (as mkvmerge's "
+      "option of that name), so players do not turn those tracks down to the disc's dialogue level. The disc's "
+      "level is then not in the file any more (the stream files always keep it). Off: the frames as the disc has them.",
+      0, SET_AT_RIP },
     { "log", "debug_file", SET_BOOL, "false", 0, 0, NULL,
       "Also write a debug log with every detail into the output folder, next to the log.", 0, SET_AT_RIP },
     { "gui", "window", SET_TEXT, "", 0, 0, NULL, "Kept by the GUI: its window's place and size.", 1, SET_IN_GUI },

@@ -39,7 +39,7 @@
 typedef struct H264State {
     int64_t dropped[32];       /* NAL units taken out, per nal_unit_type */
     int64_t stuffing;          /* zero bytes taken out */
-    int     said_field;        /* the untested note on field pictures was logged */
+    int     said_field;        /* the note on field pictures was logged */
 } H264State;
 
 /* Whether a NAL unit of type t leaves the frame. */
@@ -204,7 +204,7 @@ static int picture_h264(DRVideo *v, const DRFrame *f, DRPicture *pic)
     if (pic->fields == 1 && !s->said_field) {
         s->said_field = 1;
         dr_vlog(NULL, DR_VLOG_INFO, "Title timeline: H.264: field pictures: the two fields of a frame are joined "
-               "into one frame [untested on real discs]\n");
+               "into one frame\n");
     }
     return 0;
 }

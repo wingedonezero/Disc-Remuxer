@@ -56,6 +56,8 @@ src/base/         what everything may use: the log, messages, settings,
                   errors, memory, buffers, byte readers, CRCs, SHA
 
 beside the path:
+src/mkv/          the Matroska writer (C++ on libebml + libmatroska + zlib, a
+                  C interface): a title into one MKV file with mkvmerge's rules
 src/analyze/      the one module that links FFmpeg: stream details, the end
                   check of written files, the TrueHD end-of-stream decode
                   (the timeline's one question); FFmpeg's log lines into ours
@@ -86,9 +88,25 @@ source (image / folder)
             joiner puts segments on one timeline; the junction handles gaps
             and overlaps at joins; chapters; the verify re-reads every frame
             that leaves (CRCs, order, durations, the audio format it states)
-  writer    elementary-stream files, WAVE, VobSub (.sub + .idx), SUP, SRT,
+  writer    output.format = streams: elementary-stream files, WAVE, VobSub (.sub + .idx), SUP, SRT,
             chapter XML (src/disc-remuxer/writer.c); then the end check
             reads each written file back (analyze/)
+            output.format = mkv: one Matroska file (mkvout.c -> src/mkv),
+            written as mkvmerge writes one from the same streams with the
+            disc's own times: equal byte for byte on real discs (H.264,
+            LPCM, AC-3 / E-AC-3, DTS, PGS so far; other tracks are left out
+            and said); settings mkv.compression (PGS zlib, default none)
+            and mkv.remove_dialog_normalization (default off)
+            output.format = mkvmerge (the default): the stream files and their timestamp
+            files, then mkvmerge @<options file> into <out folder>/<title>.mkv
+            (writer.c), the stream files deleted once it has
+            output.timestamps_file: each video and audio track's picture /
+            packet times (mkvmerge's format v4, exact to the ns; audio: AC-3,
+            E-AC-3, DTS so far) next to its stream file, or the video's next
+            to the MKV file; the mkvmerge mode writes them and gives them to
+            mkvmerge only for a title with a real hole (damaged data left out,
+            pictures missing, an audio gap left open), --sync otherwise; the
+            log says which and why
 ```
 
 The info path: the format part reads the structure (every check reported
@@ -145,6 +163,7 @@ command-line test covers the GUI).
 | `select.c`, `select.h` | the selection: titles ripped, written as parts, tracks kept (`--tracks`) |
 | `discs.c`, `discs.h` | finding discs in a folder and each disc's output folder (`find`, the GUI's queue) |
 | `writer.c`, `writer.h` | one title's stream files, chapters, VobSub pairs, WAVE files, and the end check |
+| `mkvout.c`, `mkvout.h` | one title into one MKV file (output.format = mkv): the tracks the writer takes, held until each has started, then the Matroska writer (`src/mkv/`) |
 | `codecs.c`, `codecs.h` | codec, profile, layout and Matroska names as players show them |
 | `names.c`, `names.h` | file names from `output.file_name_template` |
 | `main.c` | the command line: `info`, `demux`, `find`, `settings`, `version`; options `--config`, `--set`, `--json`, `--details`, `--split`, `--second-view`, `--tracks`, `-v` |
@@ -178,7 +197,11 @@ a test run reaches.
 
 ## Open items
 
-- The MKV writer (libebml / libmatroska or an own EBML writer: to decide).
+- The MKV writer: H.264, LPCM, AC-3 / E-AC-3, DTS and PGS so far (on libebml + libmatroska,
+  mkvmerge's rules); the other codecs (TrueHD, HEVC + Dolby Vision, the DVD and HD DVD
+  ones) one by one, each checked against mkvmerge on a real disc; a track that gets no
+  frame (a forced-only copy without forced subtitles) leaves the track list at the end,
+  the others keeping their numbers; the end check does not read the MKV back yet.
 - Holes in a title (a damaged stretch left out): the stream files close the
   hole, the subtitles and chapters after it keep the disc's times — to
   decide: shift them by what the video lost.

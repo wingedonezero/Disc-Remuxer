@@ -11,7 +11,7 @@ every change we made.
 | Library | Changed from upstream | What our changes are |
 |---|---|---|
 | `ffmpeg/` | **no** (the import, byte for byte) | — FFmpeg is an analysis instrument only, linked from `src/analyze/`; every earlier change to it moved out into `src/` during the rewrite |
-| `expat/`, `libgcrypt/`, `libgpg-error/`, `ccextractor/`, `tomlc17/` | no | — |
+| `expat/`, `libgcrypt/`, `libgpg-error/`, `ccextractor/`, `tomlc17/`, `libebml/`, `libmatroska/`, `zlib/` | no | — |
 | `libdvdread/` | yes (+2,483 / −156 lines, 17 files) | the tables read and checked: the `_rec` IFO / BUP readers and their checks, the disc's structure (`disc_read.c`), the NAV-packet checks; the findings book every DVD reader reports through; the file layer offered to the application; its log into ours |
 | `libdvdnav/` | yes (+981 / −208, 19 files) | the navigation VM with our VM changes (recorded failures instead of asserts, deterministic random / shuffle, the playback clock, GPRM counters, navigation-only skipping, `open_files`, a working `dup`); its log into ours |
 | `libdvdcss/` | yes (+59 / −5, 4 files) | two calls for the program's own CSS handling: a title set's title key handed out (`dvdcss_title_key()`), one block descrambled with a given key (`dvdcss_descramble()`) |
@@ -35,9 +35,12 @@ the history of every change, including those since moved out.
 | `libgcrypt/` | libgcrypt 1.12.4 | https://gnupg.org/ftp/gcrypt/libgcrypt/ | tarball sha256 `d77f68f48879510e79a2f65977ccc68981781ea0923e5bdffac2a193ea3d660e`; signatures good (Werner Koch 6DAA 6E64 A76D 2840 571B 4902 5288 97B8 2640 3ADA, Niibe Yutaka AC8E 115B F73E 2D8D 47FA 9908 E98E 9B2D 19C6 C8BD; gnupg.org's list) |
 | `libgpg-error/` | libgpg-error 1.61 | https://gnupg.org/ftp/gcrypt/libgpg-error/ | tarball sha256 `7a85413f2bc354f4f8aa832b718af122e48965e9e0eb9012ee659c13c6385c93`; signatures as libgcrypt |
 | `ccextractor/` | CCExtractor 0.94 | https://github.com/CCExtractor/ccextractor/releases/tag/v0.94 (`archive/refs/tags/v0.94.tar.gz`) | tarball sha256 `9c7be386257c69b5d8cd9d7466dbf20e3a45cea950cc8ca7486a956c3be54a42` (GitHub tag archive; no signature published). Left out of the tarball: `windows/` and `mac/` (prebuilt binaries and IDE projects), `src/GUI/`, `src/rust/` (the optional Rust part; we build C only) |
+| `libebml/` | libebml 1.4.7 | https://dl.matroska.org/downloads/libebml/libebml-1.4.7.tar.xz | tarball sha256 `5b08214f929ee54c6187c370f84235fc9d0f2a2258c4d320d68eae6e2bdfd3f7`; signature good (Moritz Bunkus, D919 9745 B054 5F2E 8197 062B 0F92 290A 445B 9007) |
+| `libmatroska/` | libmatroska 1.7.2 | https://dl.matroska.org/downloads/libmatroska/libmatroska-1.7.2.tar.xz | tarball sha256 `f3e4d406daf7f1399962c43940e4a87de089474d5bcfbf2e6ca516e98bb87cfc`; signature as libebml |
+| `zlib/` | zlib 1.3.2 | https://zlib.net/zlib-1.3.2.tar.xz | tarball sha256 `d7a0654783a4da529d1bb793b7ad9c3318020af77667bcae35f95d0e42a792f3`; signature good (Mark Adler, 5ED4 6A67 21D3 6558 7791 E2AA 783F CD8E 58BC AFBA) |
 | `tomlc17/` | tomlc17 R261003 (TOML v1.1, passes toml-test) | https://github.com/cktan/tomlc17/releases/tag/R261003 (tag commit `8d3766ddafa6515417f4885ae6878ef69fac401e`) | git tag; `tomlc17.c` sha256 `c382824bdfdd12f89a6a228d0838f99deae2f2c1763c3215547a0d7137ffa39d`, `tomlc17.h` sha256 `fa7f05a6057d7b4da1b63ce6185f07f5c734c98043a5d3a30ee7b9289060cba8`. Kept: `src/tomlc17.{c,h}` (here at the top), `LICENSE`, `README.md`, `API.md`; left out: tests, the C++ wrapper, design notes |
 
-tomlc17 is MIT (reads our settings file). CCExtractor is GPL-2.0-or-later (its bundled zlib, libpng, gpac, freetype,
+libebml and libmatroska are LGPL-2.1-or-later (the MKV writer, `src/mkv/`); zlib is under the zlib licence (the MKV writer's track compression). tomlc17 is MIT (reads our settings file). CCExtractor is GPL-2.0-or-later (its bundled zlib, libpng, gpac, freetype,
 protobuf-c and utf8proc keep their own notices). FFmpeg and the three DVD libraries are GPL-2.0-or-later as built here (FFmpeg with `--enable-gpl`,
 which its DVD-Video demuxer requires). The program holds a UDF reader derived
 from Linux fs/udf (`src/io/discio_udf_linux.c`), which is GPL-2.0-only, so
@@ -68,6 +71,11 @@ their bridge (`mk/test.mk`).
   `dist/<mode>/`, next to ours, and runs as a helper process for closed
   captions (its error path ends its process, and its decoder state is
   global).
+- libebml, libmatroska: each with its own CMake, out of tree, static, installed into
+  `build/<mode>/matroska/` (libmatroska on that libebml; CMake's package registry not used)
+  (`mk/matroska.mk`).
+- zlib: compiled directly (`mk/zlib.mk`), the compression core only (no
+  `gz*` file functions), its `zconf.h` as released.
 - FFmpeg: its own `configure` + `make`, out of tree in `build/<mode>/`,
   static libraries, autodetection off (every external library is enabled by
   name), DVD-Video demuxer (FFmpeg's own, unchanged) on libdvdnav / libdvdread.

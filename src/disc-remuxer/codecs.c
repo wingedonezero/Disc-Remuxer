@@ -176,10 +176,14 @@ const char *codec_description(const DiscStreamInfo *k, const DiscStreamInfo *bas
                  k->dolby_vision, k->dolby_vision[0] ? ")" : "");
         return buf;
     case DR_CODEC_AC3:    name = "Dolby Digital"; break;
-    case DR_CODEC_EAC3:   name = "Dolby Digital plus"; break;
+    case DR_CODEC_EAC3:
+        name = k->profile == DISC_PROFILE_EAC3_DDP_ATMOS ? "Dolby Digital plus + Dolby Atmos" : "Dolby Digital plus";
+        break;
     case DR_CODEC_DTS:
-        name = k->profile == DISC_PROFILE_DTS_HD_MA || k->profile == DISC_PROFILE_DTS_HD_MA_X ||
-               k->profile == DISC_PROFILE_DTS_HD_MA_X_IMAX ? "DTS-HD Master Audio" :
+        /* DTS:X: DTS-HD MA with the DTS:X extension after its lossless data */
+        name = k->profile == DISC_PROFILE_DTS_HD_MA_X ? "DTS-HD Master Audio + DTS:X" :
+               k->profile == DISC_PROFILE_DTS_HD_MA_X_IMAX ? "DTS-HD Master Audio + DTS:X IMAX" :
+               k->profile == DISC_PROFILE_DTS_HD_MA ? "DTS-HD Master Audio" :
                k->profile == DISC_PROFILE_DTS_HD_HRA ? "DTS-HD High resolution audio" :
                k->profile == DISC_PROFILE_DTS_EXPRESS ? "DTS Express" : "DTS";
         break;

@@ -1,7 +1,7 @@
 """src/timeline/disctl_chapters.c and the joiner's chapter marks: a title's
-chapter records (times) become marks; the joiner puts each on the first
-video key frame at, or up to 0.4 s before, it; the k-th marked frame starts
-chapter k, which ends where the next starts (the last at the title's end);
+chapter records (times) become marks; the joiner places each by the chapter
+rule (a key frame at the mark, the nearest before it within 0.4 s, else the
+mark); the k-th placed start starts chapter k, which ends where the next starts (the last at the title's end);
 fewer than two: no chapters."""
 
 from helpers import ffi, lib
@@ -113,8 +113,9 @@ def test_a_mark_without_a_key_frame_after_it_is_no_chapter():
 
 
 def test_an_empty_marker_takes_no_chapter():
-    # an empty key marker (a placeholder) at 0.92 s, within 0.4 s of the
-    # mark at 0.96 s: the mark goes on the real key frame at 0.96 s
-    c = title([0, 960000000], 100, 23, 4 * S)
-    assert c[1][0] == 24 * S // 25
+    # an empty key marker (a placeholder) at 0.92 s, the only key within 0.4 s
+    # before the mark at 0.95 s (the key frame before it is 0.47 s back): the
+    # marker is no frame, so the chapter keeps the mark
+    c = title([0, 95 * S // 100], 100, 23, 4 * S)
+    assert c[1][0] == 95 * S // 100
     assert len(c) == 2

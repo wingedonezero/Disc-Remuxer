@@ -6,7 +6,6 @@
 #define DR_F_SYNC ...
 #define DR_F_MARKER ...
 #define DR_F_DISCARD ...
-#define DR_F_CHAPTER ...
 #define DR_F_BATCH ...
 #define DR_F_NO_STOP ...
 #define DR_F_SEQ_END ...
@@ -202,6 +201,7 @@ typedef struct DRJunctionStats {
     int64_t in, out, dropped, dropped_dur, markers;
     int64_t joins[6];
     int64_t copies;
+    int64_t gaps, gap_dur;
     int64_t skew;
     int     ended;
 } DRJunctionStats;
@@ -218,12 +218,19 @@ enum DRTrackKind { DR_KIND_VIDEO = 1, DR_KIND_AUDIO = 2, DR_KIND_SUBTITLE = 3, D
 
 typedef int (*DRJoinOutCb)(void *opaque, int track, DRFrame *frame);
 
+typedef struct DRChapterRule {
+    int set;
+    int exact;
+    int before_ms, after_ms;
+} DRChapterRule;
+
 typedef struct DRJoinConfig {
     int            nb_tracks;
     const int     *kinds;
     const int64_t *marks;
     int            nb_marks;
     int64_t       *open_marks;
+    DRChapterRule  chapter_rule;
     DRJoinOutCb    out;
     void          *out_opaque;
     DREventCb      event;
@@ -414,6 +421,7 @@ typedef struct DRTitleConfig {
     const int64_t      *marks;
     int                 nb_marks;
     int64_t            *open_marks;
+    DRChapterRule       chapter_rule;
     DREventCb           event;
     void               *event_opaque;
     const char         *cc_helper;
@@ -424,6 +432,7 @@ typedef struct DRTitleConfig {
 
 typedef struct DRTitle DRTitle;
 int  ff_disctl_title_open(DRTitle **t, void *logctx, const DRTitleConfig *cfg);
+int  ff_disctl_title_chapter_starts(const DRTitle *t, const int64_t **starts);
 int  ff_disctl_title_segment(DRTitle *t);
 int  ff_disctl_title_payload(DRTitle *t, int track, const uint8_t *data, int size, int64_t time);
 int  ff_disctl_title_finish(DRTitle *t);
@@ -482,6 +491,9 @@ int ff_disctl_mlp_checksums(void *state, const uint8_t *data, int size, const ch
 #define WAV_ROOM_FROM ...
 int writer_wav_header(uint8_t *out, int channels, int rate, int bits, int valid, uint64_t mask, int64_t data,
                       int room);
+
+/* a stream's short codec name (src/disc-remuxer/writer.h) */
+const char *codec_label(int codec, int profile);
 
 /* LATM stream values from the StreamMuxConfig (src/parse/rules.h) */
 int dr_latm_header(const uint8_t *buf, int size, int *rate, int *samples);

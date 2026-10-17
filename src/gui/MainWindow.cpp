@@ -16,6 +16,8 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QProgressBar>
+#include <QComboBox>
+#include <QSignalBlocker>
 #include <QPushButton>
 #include <QSplitter>
 #include <QStyle>
@@ -59,6 +61,22 @@ MainWindow::MainWindow(LogRelay *r) : relay(r)
     for (QPushButton *b : { btnImages, btnFolders, btnRemove, btnClear, btnPrefs, btnStart, btnStop })
         buttons->addWidget(b);
     buttons->addStretch();
+    // what the titles are written as: the setting output.format (also in Preferences)
+    formatBox = new QComboBox;
+    formatBox->addItem("Streams", "streams");
+    formatBox->addItem("MKV", "mkv");
+    formatBox->addItem("MKV (mkvmerge)", "mkvmerge");
+    formatBox->setToolTip("What each title is written as: a file per track (Streams), one Matroska file (MKV), or "
+                          "the stream files muxed by mkvmerge into one Matroska file (MKV (mkvmerge))");
+    buttons->addWidget(new QLabel("Output:"));
+    buttons->addWidget(formatBox);
+    syncFormatBox();
+    connect(formatBox, &QComboBox::currentIndexChanged, this, [this](int i) {
+        char err[256];
+        if (settings_store("output.format", formatBox->itemData(i).toString().toUtf8().constData(), err,
+                           sizeof(err)) == 0)
+            settings_save();
+    });
 
     queueLabel = new QLabel;
     queueLabel->setStyleSheet("font-weight:600;");
@@ -725,6 +743,15 @@ void MainWindow::openPrefs()
         }
         changed.clear();
     }
+    syncFormatBox();
+}
+
+// the output selector shows the setting as it is now
+void MainWindow::syncFormatBox()
+{
+    const QSignalBlocker block(formatBox);
+    int i = formatBox->findData(QString::fromUtf8(setting_text("output.format")));
+    formatBox->setCurrentIndex(i < 0 ? 0 : i);
 }
 
 // ---- the run ----

@@ -789,6 +789,11 @@ fail:
     return ret;
 }
 
+void dr_disc_set_chapter_rule(DrDisc *d, int exact, int before_ms, int after_ms)
+{
+    d->chapter_rule = (DRChapterRule){ .set = 1, .exact = exact, .before_ms = before_ms, .after_ms = after_ms };
+}
+
 void dr_disc_close(DrDisc **disc)
 {
     DrDisc *d = *disc;

@@ -451,6 +451,8 @@ static int step(DRJunction *j)
                 s.skew = 0;
                 q = j->cfg.frame_dur ? (uint64_t)(gap - old) * 1000 / (uint64_t)j->cfg.frame_dur : 0;
                 event(j, DR_EV_GAP, s.exp, gap - old, 0, (uint32_t)q);
+                j->st.gaps++;
+                j->st.gap_dur += gap - old;
             }
         }
     }

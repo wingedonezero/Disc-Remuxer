@@ -1660,6 +1660,17 @@ static int seg_frame(void *opaque, DRFrame *f)
             k->have_header = 1;
         }
     }
+    if (!k->index) {
+        /* a video frame: the subtitle units that came before the video's
+         * grid was known go on now, not with their track's next unit (which
+         * may be minutes away), so the tracks leave in time order */
+        DRTitle *t = k->title;
+        int ret = ff_disctl_join_push(t->join, 0, f);
+        for (int i = 1; ret >= 0 && i < t->cfg.nb_tracks; i++)
+            if (t->t[i].spu)
+                ret = ff_disctl_spu_drain(t->t[i].spu);
+        return ret;
+    }
     return ff_disctl_join_push(k->title->join, k->index, f);
 }
 
@@ -1874,7 +1885,7 @@ int ff_disctl_title_open(DRTitle **tp, void *logctx, const DRTitleConfig *cfg)
     {
         DRJoinConfig jc = {
             .nb_tracks = cfg->nb_tracks, .kinds = kinds, .marks = cfg->marks, .nb_marks = cfg->nb_marks,
-            .open_marks = cfg->open_marks,
+            .open_marks = cfg->open_marks, .chapter_rule = cfg->chapter_rule,
             .out = joined, .out_opaque = t, .event = on_event, .event_opaque = t,
         };
         if ((ret = ff_disctl_join_open(&t->join, logctx, &jc)) < 0)
@@ -2240,6 +2251,11 @@ int ff_disctl_title_finish(DRTitle *t)
     return t->error ? t->error : sticky(t, title_finish(t));
 }
 
+int ff_disctl_title_chapter_starts(const DRTitle *t, const int64_t **starts)
+{
+    return ff_disctl_join_chapters(t->join, starts);
+}
+
 int ff_disctl_title_chapters(const DRTitle *t, const DRChapterPlan *plan, DRChapter **out, int *nb_out)
 {
     const int64_t *starts;
@@ -2269,6 +2285,25 @@ int ff_disctl_title_track_result(const DRTitle *t, int track, int64_t *frames, i
     *frames   = st.frames - st.markers;
     *warnings = t->t[track].warnings;
     *delay    = st.frames ? st.delay : 0;
+    return 0;
+}
+
+int ff_disctl_title_track_holes(const DRTitle *t, int track, int64_t *holes, int64_t *dur)
+{
+    *holes = *dur = 0;
+    if (track < 0 || track >= t->cfg.nb_tracks)
+        return DR_ERR(EINVAL);
+    if (t->t[track].cfg.kind == DR_KIND_VIDEO && t->t[track].verify) {
+        DRVerifyStats st;
+        ff_disctl_verify_stats(t->t[track].verify, &st);
+        *holes = st.holes;
+        *dur   = st.hole_dur;
+    } else if (t->t[track].junction) {
+        DRJunctionStats js;
+        ff_disctl_junction_stats(t->t[track].junction, &js);
+        *holes = js.gaps;
+        *dur   = js.gap_dur;
+    }
     return 0;
 }
 
