@@ -562,6 +562,12 @@ static int ts_codec(const DrDiscTrack *t)
             t->codec == DR_CODEC_TRUEHD);
 }
 
+static int is_lpcm(const DrDiscTrack *t)
+{
+    return t->codec == DR_CODEC_PCM_S16LE || t->codec == DR_CODEC_PCM_S24LE || t->codec == DR_CODEC_PCM_BLURAY ||
+           t->codec == DR_CODEC_PCM_DVD;
+}
+
 static int ts_add(EsOut *o, const DrDiscTrack *t, const DrDiscFrame *fr)
 {
     int n = t->codec == DR_CODEC_H264 ? mkv_h264_pictures(fr->data, fr->size) :
@@ -1027,6 +1033,11 @@ static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_
                      "(%s); with them every track keeps its gaps", why);
             for (int i = 0; i < nb_tracks; i++) {
                 const DrDiscTrack *t = dr_disc_track(d, i);
+                /* LPCM keeps the gaps as silence; another codec without a timestamp file closes them */
+                if (out[i].opened && t->type == DISC_MEDIA_AUDIO && !out[i].ts_path && !is_lpcm(t))
+                    log_text(LOG_WARNING, "Track %d (%s): no timestamp file (how mkvmerge cuts this codec into packets "
+                             "is not built in yet): in the MKV file it closes the title's gaps, so after a hole it "
+                             "runs ahead of the picture", t->number, codec_id_name(t->codec));
                 if (out[i].opened && t->type == DISC_MEDIA_AUDIO && out[i].ts_path && out[i].st.delay_ms < 0)
                     log_text(LOG_WARNING, "Track %d starts %"PRId64" ms before the video and the title has holes: its "
                              "timestamp file starts below 0, so mkvmerge moves the whole file later (the video does "
@@ -1351,7 +1362,8 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         const DrDiscTrack *t = dr_disc_track(d, i);
         char *path;
         int r2;
-        if (!mkv && o->opened && t->type == DISC_MEDIA_AUDIO && !ts_codec(t))
+        /* LPCM fills a gap with silence (its WAV file keeps the title's times): it needs none */
+        if (!mkv && !via && o->opened && t->type == DISC_MEDIA_AUDIO && !ts_codec(t) && !is_lpcm(t))
             log_text(LOG_INFO, "Track %d (%s): no timestamp file (how mkvmerge cuts this codec into packets is not "
                      "built in yet): a later mux closes any gap in it", t->number, codec_id_name(t->codec));
         if (!o->nb_ts)
