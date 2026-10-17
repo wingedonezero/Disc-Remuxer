@@ -1114,7 +1114,12 @@ static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_
         goto done;
     }
     if (st >= 2) {
+        struct stat sb;
         log_text(LOG_ERROR, "mkvmerge failed (exit status %d, see its lines above); the stream files are kept", st);
+        /* mkvmerge leaves what it wrote of its output: no unfinished MKV
+         * file stays next to finished ones */
+        if (stat(mkv, &sb) == 0 && unlink(mkv) == 0)
+            log_text(LOG_INFO, "mkvmerge: its unfinished file %s is removed", mkv);
         ret = DR_ERR_INVALID;
         goto done;
     }

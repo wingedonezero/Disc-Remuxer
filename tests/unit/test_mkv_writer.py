@@ -570,3 +570,22 @@ def test_mkvmerge_lines_split_at_carriage_returns(tmp_path):
     assert p.returncode == 0, p.stdout + p.stderr
     assert "mkvmerge: Warning: after an update" in p.stdout, p.stdout
     assert "mkvmerge finished with warnings" in p.stdout, p.stdout
+
+
+def test_a_failed_mux_keeps_the_stream_files_and_removes_the_unfinished_mkv(tmp_path):
+    # mkvmerge leaves what it wrote of its output when it fails; no unfinished
+    # MKV file may stay next to finished ones
+    disc, _ = avc_lpcm_disc(tmp_path)
+    fake = fake_mkvmerge(tmp_path, 'out=$(python3 -c "import json,sys; a=json.load(open(sys.argv[1][1:]));'
+                                   ' print(a[a.index(\'--output\')+1])" "$1")\n'
+                                   'echo partial > "$out"\nprintf \'Error: boom\\n\'\nexit 2\n')
+    out = tmp_path / "out"
+    p = subprocess.run([*PROGRAM, "--set", "output.format=mkvmerge", "--set", f"mkv.mkvmerge_path={fake}",
+                        "--set", "titles.min_length=0", "demux", str(disc), "0", str(out)],
+                       capture_output=True, text=True)
+    assert "mkvmerge: Error: boom" in p.stdout and "mkvmerge failed (exit status 2," in p.stdout, p.stdout
+    assert f"mkvmerge: its unfinished file {out}/title_t00.mkv is removed" in p.stdout, p.stdout
+    assert not (out / "title_t00.mkv").exists(), "the unfinished MKV file is removed"
+    kept = sorted(f.name for f in (out / "title_t00").iterdir())
+    assert any(f.endswith(".h264") for f in kept) and any(f.endswith(".wav") for f in kept), kept
+    assert "stream files are written, but mkvmerge did not make the MKV file" in p.stdout, p.stdout
