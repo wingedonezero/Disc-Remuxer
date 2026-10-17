@@ -970,11 +970,18 @@ static int run_mkvmerge(const char *program, const char *opts_path)
     }
     if ((f = fdopen(pfd[0], "r"))) {
         while (fgets(line, sizeof(line), f)) {
-            line[strcspn(line, "\r\n")] = 0;
-            if (!*line)
-                continue;
-            log_text(!strncmp(line, "Error:", 6) ? LOG_ERROR : !strncmp(line, "Warning:", 8) ? LOG_WARNING :
-                     LOG_DETAIL, "mkvmerge: %s", line);
+            /* mkvmerge separates its progress updates with \r inside one
+             * line: every \r-piece is a line of its own, so a warning after
+             * an update is not lost */
+            for (char *p = line; *p; ) {
+                char *q = p + strcspn(p, "\r\n");
+                int more = *q != 0;
+                *q = 0;
+                if (*p)
+                    log_text(!strncmp(p, "Error:", 6) ? LOG_ERROR : !strncmp(p, "Warning:", 8) ? LOG_WARNING :
+                             LOG_DETAIL, "mkvmerge: %s", p);
+                p = more ? q + 1 : q;
+            }
         }
         fclose(f);
     } else
