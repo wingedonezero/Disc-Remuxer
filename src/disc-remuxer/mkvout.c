@@ -263,6 +263,10 @@ int mkvout_close(MkvOut **pm, DrDisc *d, int abort, int64_t *bytes)
             if (st.late)
                 log_text(LOG_WARNING, "MKV: %"PRId64" subtitle display set(s) came after later video or audio was "
                          "written: they are in the file out of time order", st.late);
+            if (st.dropped_negative)
+                log_text(LOG_WARNING, "MKV: %"PRId64" frame(s) whose time is before the title's start (below 0) are "
+                         "not in the file, as mkvmerge drops them (the stream files keep such frames, with the start "
+                         "as a negative DELAY)", st.dropped_negative);
             if (bytes)
                 *bytes = st.bytes;
         }

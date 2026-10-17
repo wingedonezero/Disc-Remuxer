@@ -251,7 +251,8 @@ def write_mkv(path, tracks, frames, stats=None):
     st = ffi.new("MkvStats *")
     assert lib.mkv_close(w, ffi.NULL, 0, 0, st) == 0
     if stats is not None:
-        stats.update(late=st.late, cues=st.cues, removed=[st.removed[i] for i in range(st.nb_removed)])
+        stats.update(late=st.late, cues=st.cues, dropped_negative=st.dropped_negative,
+                     removed=[st.removed[i] for i in range(st.nb_removed)])
     return path.read_bytes()
 
 
@@ -617,3 +618,16 @@ def test_a_stop_during_the_mux_ends_mkvmerge_and_keeps_the_stream_files(tmp_path
     assert not (out / "title_t00.mkv").exists()
     kept = sorted(f.name for f in (out / "title_t00").iterdir())
     assert any(f.endswith(".h264") for f in kept) and any(f.endswith(".wav") for f in kept), kept
+
+
+def test_frames_before_the_titles_start_are_dropped_and_counted(tmp_path):
+    # audio starting before the video (a negative delay): the packets below 0
+    # are not in the file, as mkvmerge drops them; the count reaches the log
+    ac3 = (DATA / "sine_7680.ac3").read_bytes()
+    frames = [ac3[i:i + 768] for i in range(0, len(ac3), 768)]
+    st = {}
+    data = write_mkv(tmp_path / "a.mkv", [{"codec": lib.MKV_CODEC_AC3, "language": "eng"}],
+                     [(0, f, 32000000 * (i - 2), 32000000, 1) for i, f in enumerate(frames)], stats=st)
+    assert st["dropped_negative"] == 2, st
+    blocks = audio_blocks(find(elements(data), 0x18538067)[0], 1)
+    assert sum(len(fs) for _, fs in blocks) == len(frames) - 2 and blocks[0][0] == 0

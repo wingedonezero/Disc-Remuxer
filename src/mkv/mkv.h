@@ -81,6 +81,7 @@ int mkv_frame(MkvWriter *w, int track, const uint8_t *data, int size, int64_t ti
 typedef struct MkvStats {
     int64_t clusters, cues, blocks, bytes;
     int64_t late;                   /* subtitle display sets that came after a later packet was written */
+    int64_t dropped_negative;       /* frames whose time is below 0: not in the file (as mkvmerge drops them) */
     int     nb_removed;             /* tracks that got no frames: taken out of the track list at the end */
     int     removed[128];           /* the first of them (their index in the tracks given to mkv_open) */
 } MkvStats;
