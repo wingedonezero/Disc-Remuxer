@@ -105,3 +105,24 @@ def test_a_transport_packet_missing_from_the_stream_file_is_said_and_counted(tmp
             "(the packet before it again, byte for byte): left out") in log, log
     assert "Damaged: 1 stretch of the stream files left out" in log, log
     assert result["damaged_ranges"] == 1 and result["damaged_bytes"] == 0, result
+
+
+def test_damage_that_takes_no_picture_makes_no_hole_for_the_mkvmerge_mode(tmp_path):
+    # 5 source packets in the middle of a picture's data replaced by bytes that are no stream data: the
+    # picture is shorter, none is missing, so the mkvmerge mode uses no timestamp files (a stand-in
+    # mkvmerge: it only makes the output file)
+    import os
+    def damage(packets):
+        src = [bd.be32(i * 0x10) + p for i, p in enumerate(packets)]
+        for k in range(60, 65):
+            src[k] = bytes((k * 37 + i) % 251 + 1 for i in range(192))
+        return units(src)
+    fake = tmp_path / "fake-mkvmerge"
+    fake.write_text('#!/bin/sh\nout=$(python3 -c "import json,sys; a=json.load(open(sys.argv[1][1:])); '
+                    'print(a[a.index(\'--output\')+1])" "$1")\n: > "$out"\n')
+    os.chmod(fake, 0o755)
+    p = subprocess.run([*PROGRAM, "--set", "output.format=mkvmerge", "--set", f"mkv.mkvmerge_path={fake}", "demux",
+                        str(disc(tmp_path, damage)), "0", str(tmp_path / "out")], capture_output=True, text=True)
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert ("mkvmerge: damaged data was left out, but no picture is missing and no audio gap is left open: no "
+            "hole, no timestamp files, the delays as --sync") in p.stdout, p.stdout
