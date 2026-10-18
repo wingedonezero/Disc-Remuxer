@@ -26,14 +26,18 @@
  *  PES start. */
 typedef struct MpegTSDiscGap {
     int         kind;           /**< MPEGTS_DISC_GAP_* */
-    int         pid;            /**< MPEGTS_DISC_GAP_PES: the PID */
+    int         pid;            /**< the PID (BAD, ZERO: the one whose packets they were, when the continuity
+                                     counter of its next packet jumps over exactly them; else -1) */
     int64_t     pos, end;       /**< the stream's bytes [pos, end): its source packets; PES: from the packet
                                      where reading failed to the one with the next PES start */
     int64_t     packets;        /**< source packets in it (BAD, ZERO) */
     int64_t     bytes;          /**< PES: the PID's payload bytes left out; CUT: the PES bytes missing */
     const char *why;            /**< BAD, PES: why (a static string) */
     int         to_end;         /**< PES: the stream ended before a next PES start */
-    int         cc_from, cc_to; /**< CC: the PID's continuity counter before and in the packet at pos */
+    int         cc_from, cc_to; /**< CC: the PID's continuity counter before and in the packet at pos; BAD, ZERO
+                                     with a PID: before and after the run */
+    int64_t     pts;            /**< BAD, ZERO with a PID: the PTS of that PID's PES packet the run falls in
+                                     (TS_DISC_NOPTS: none or not known) */
 } MpegTSDiscGap;
 
 /** MPEGTS_DISC_GAP_CUT: a PES packet whose next PES start comes before its

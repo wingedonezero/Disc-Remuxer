@@ -866,7 +866,13 @@ const char *size_text(char *buf, size_t size, int64_t bytes)
     int gb = bytes >= (1LL << 30);
     int64_t tenths = bytes * 10 / (gb ? 1LL << 30 : 1LL << 20);
 
-    snprintf(buf, size, "%"PRId64".%d %s", tenths / 10, (int)(tenths % 10), gb ? "GB" : "MB");
+    /* below 1 MB in bytes or KB (a few damaged bytes are not "0.0 MB") */
+    if (bytes < 1024)
+        snprintf(buf, size, "%"PRId64" byte%s", bytes, bytes == 1 ? "" : "s");
+    else if (bytes < (1LL << 20))
+        snprintf(buf, size, "%.1f KB", bytes / 1024.0);
+    else
+        snprintf(buf, size, "%"PRId64".%d %s", tenths / 10, (int)(tenths % 10), gb ? "GB" : "MB");
     return buf;
 }
 
@@ -1015,17 +1021,15 @@ static int run_mkvmerge(const char *program, const char *opts_path)
 /* The title's stream files into <out folder>/<title>.mkv with mkvmerge;
  * on success the files written for it are deleted (the title's folder too
  * when it has one). 0, or a negative error (the stream files are kept). */
-/* Does this title have a real hole — damaged data left out, pictures missing
- * where the times jump, an audio gap left open? The stream files close such a
- * hole; with its timestamp file every track keeps it. why: what was found. */
+/* Does this title have a real hole — pictures missing where the times jump,
+ * an audio gap left open (damaged data left out makes one when it took
+ * pictures or audio with it)? The stream files close such a hole; with its
+ * timestamp file every track keeps it. why: what was found. */
 static int title_holes(DrDisc *d, EsOut *out, int nb_tracks, char *why, size_t why_size)
 {
-    int64_t ranges = dr_disc_damaged_ranges(d);
     char ms[32];
 
     *why = 0;
-    if (ranges)
-        snprintf(why, why_size, "%"PRId64" damaged range(s) left out", ranges);
     for (int i = 0; i < nb_tracks; i++) {
         const DrDiscTrack *t = dr_disc_track(d, i);
         if (!out[i].opened || !t->holes || (t->type != DISC_MEDIA_VIDEO && t->type != DISC_MEDIA_AUDIO))
@@ -1415,6 +1419,9 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         if (use_ts)
             log_text(LOG_INFO, "mkvmerge: timestamp files used for this title: it has holes the stream files close "
                      "(%s); with them every track keeps its gaps", why);
+        else if (dr_disc_damaged_ranges(d))
+            log_text(LOG_INFO, "mkvmerge: damaged data was left out, but no picture is missing and no audio gap is "
+                     "left open: no hole, no timestamp files, the delays as --sync");
         else
             log_text(LOG_INFO, "mkvmerge: no hole in this title: no timestamp files, the delays as --sync");
     }
