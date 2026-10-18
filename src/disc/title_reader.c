@@ -124,6 +124,11 @@ struct DiscTitleReader {
     int            ts_break;        /**< ts: blocks were left out since the last block given */
     char         **gap_lines;       /**< ts: the stretches of stream files left out, as said */
     int            nb_gap_lines;
+    char         **gap_briefs;      /**< each in brief (file, bytes, track), for the title's damage summary */
+    int            nb_gap_briefs;
+    int64_t       *gap_times;       /**< each one's time: its stream's PES time there (ticks, the clip's clock;
+                                         DR_NOPTS_VALUE: not known), */
+    int           *gap_segs;        /**< and the segment it lies in */
     int64_t        gap_bytes;       /**< and their bytes */
 };
 
@@ -441,6 +446,30 @@ static void gap_tracks(const DiscTitleSource *src, int pid, int side, char *buf,
     }
 }
 
+/* A size in words: bytes below 1 KiB, KB below 1 MiB, else MB. */
+static const char *size_words(char *buf, int size, int64_t bytes)
+{
+    if (bytes < 1024)
+        snprintf(buf, size, "%"PRId64" byte%s", bytes, bytes == 1 ? "" : "s");
+    else if (bytes < 1024 * 1024)
+        snprintf(buf, size, "%.1f KB", bytes / 1024.0);
+    else
+        snprintf(buf, size, "%.1f MB", bytes / (1024.0 * 1024.0));
+    return buf;
+}
+
+/* What a stream's lost packets leave incomplete, by the kind of its first track. */
+static const char *lost_unit(const DiscTitleSource *src, int pid, int side)
+{
+    for (int i = 0; i < src->nb_tracks; i++)
+        if (src->feeds[i].pid == pid && src->feeds[i].side == side)
+            return src->tracks[i].kind == DR_KIND_VIDEO ? "the picture they belong to is incomplete (it may show a "
+                                                          "glitch until the next key frame)" :
+                   src->tracks[i].kind == DR_KIND_AUDIO ? "the audio frame they belong to is incomplete" :
+                   "the subtitle they belong to is incomplete";
+    return "no track takes this stream";
+}
+
 /* The stretches the demuxer dm has left out of clip (side: side clip k + 1,
  * name its name), said and kept; flush: the clip's reading has ended. */
 static int gaps_said(DrDisc *d, DrClipDemux *dm, int clip, int side, const char *name, int flush)
@@ -450,7 +479,7 @@ static int gaps_said(DrDisc *d, DrClipDemux *dm, int clip, int side, const char 
     int ret;
 
     while ((ret = clip_err(dr_clip_gap(dm, flush, &g))) > 0) {
-        char where[192], at[160], tracks[64], line[640];
+        char where[192], at[160], tracks[64], line[1024];
         int64_t bytes;
 
         flush = 0;                      /* the stretches still open ended with the first call */
@@ -506,25 +535,65 @@ static int gaps_said(DrDisc *d, DrClipDemux *dm, int clip, int side, const char 
             snprintf(line, sizeof(line), "%s: PID 0x%04x (%s): %s at %s: %"PRId64" bytes left out until %s", name,
                      g.pid, tracks, g.why, where, g.bytes, at);
         } else {
+            char whose[320], sz[32];
             gap_bytes(d, clip, name, g.pos, g.end - 1, where, sizeof(where));
             bytes = g.end - g.pos;
+            size_words(sz, sizeof(sz), bytes);
+            /* whose packets they were: the stream whose continuity counter jumps over exactly them */
+            if (g.pid >= 0) {
+                gap_tracks(r->src, g.pid, side, tracks, sizeof(tracks));
+                snprintf(whose, sizeof(whose), "they were PID 0x%04x's (%s; its continuity counter goes from %d to %d "
+                         "over them): %s", g.pid, tracks, g.cc_from, g.cc_to, lost_unit(r->src, g.pid, side));
+            } else
+                snprintf(whose, sizeof(whose), "which stream they belonged to is not known (the continuity counters "
+                         "around them do not tell)");
             if (g.kind == MPEGTS_DISC_GAP_BAD)
-                snprintf(line, sizeof(line), "%s: %"PRId64" transport packets at %s cannot be read (%s): their data "
-                         "is left out", name, g.packets, where, g.why);
+                snprintf(line, sizeof(line), "%s: %s at %s are damaged (%"PRId64" transport packet%s: %s; the stream "
+                         "file itself holds these bytes: a damaged or badly copied file): left out; %s", name, sz,
+                         where, g.packets, g.packets == 1 ? "" : "s", g.why, whose);
             else if (bytes % TS_UNIT)
-                snprintf(line, sizeof(line), "%s: %"PRId64" bytes of zeros at %s (%.2f units): skipped (blank or "
-                         "unreadable sectors)", name, bytes, where, bytes / (double)TS_UNIT);
+                snprintf(line, sizeof(line), "%s: %s of zeros at %s (%.2f units, blank or unreadable sectors): "
+                         "skipped; %s", name, sz, where, bytes / (double)TS_UNIT, whose);
             else
-                snprintf(line, sizeof(line), "%s: %"PRId64" bytes of zeros at %s (%"PRId64" units): skipped (blank "
-                         "or unreadable sectors)", name, bytes, where, bytes / TS_UNIT);
+                snprintf(line, sizeof(line), "%s: %s of zeros at %s (%"PRId64" units, blank or unreadable sectors): "
+                         "skipped; %s", name, sz, where, bytes / TS_UNIT, whose);
         }
         dr_vlog(d->log, DR_VLOG_WARNING, "%s\n", line);
         r->gap_bytes += bytes;
         {
-            char *l = dr_strdup(line);
+            char *l = dr_strdup(line), *br, sz[32], file[192];
+            int *pl;
+            const char *slash = strrchr(name, '/');
             if (!l || dr_array_add_ptr(&r->gap_lines, &r->nb_gap_lines, l) < 0) {
                 dr_free(l);
                 return DR_ERR(ENOMEM);
+            }
+            /* in brief for the summary: the file's name, the bytes, the size, the track */
+            snprintf(file, sizeof(file), "%s", slash ? slash + 1 : name);
+            if (g.pid >= 0)
+                gap_tracks(r->src, g.pid, side, tracks, sizeof(tracks));
+            br = dr_asprintf_str("%s %s (%s%s%s)", file, where, size_words(sz, sizeof(sz), bytes),
+                                 g.pid >= 0 ? ", " : "", g.pid >= 0 ? tracks : "");
+            if (!br || dr_array_add_ptr(&r->gap_briefs, &r->nb_gap_briefs, br) < 0) {
+                dr_free(br);
+                return DR_ERR(ENOMEM);
+            }
+            /* when: the time of its stream's PES packet it lies in (90 kHz, unwrapped by the clip's reference) */
+            {
+                int64_t *tm = dr_realloc_array(r->gap_times, r->nb_gap_briefs, sizeof(*tm)), pts = g.pts;
+                if (!tm)
+                    return DR_ERR(ENOMEM);
+                r->gap_times = tm;
+                if (!(pl = dr_realloc_array(r->gap_segs, r->nb_gap_briefs, sizeof(*pl))))
+                    return DR_ERR(ENOMEM);
+                r->gap_segs = pl;
+                if (pts != TS_DISC_NOPTS && r->pts_ref >= 0 && side == 0) {
+                    if (pts < r->pts_ref)
+                        pts += 1LL << 33;
+                    tm[r->nb_gap_briefs - 1] = pts * DR_TICKS_PER_PTS;
+                } else
+                    tm[r->nb_gap_briefs - 1] = DR_NOPTS_VALUE;
+                pl[r->nb_gap_briefs - 1] = clip - r->first_clip;
             }
         }
     }
@@ -596,6 +665,11 @@ void ff_disc_title_reader_close(DiscTitleReader **reader)
     for (int i = 0; i < r->nb_gap_lines; i++)
         dr_free(r->gap_lines[i]);
     dr_freep(&r->gap_lines);
+    for (int i = 0; i < r->nb_gap_briefs; i++)
+        dr_free(r->gap_briefs[i]);
+    dr_freep(&r->gap_briefs);
+    dr_freep(&r->gap_times);
+    dr_freep(&r->gap_segs);
     ff_disctl_title_close(&r->rip);
     ff_disctl_chapter_plan_free(&r->chapter_plan);
     dr_freep(reader);
@@ -1578,8 +1652,19 @@ static int report_damage(DrDisc *d)
         dr_vlog(d->log, DR_VLOG_WARNING, "Damaged: %d more range(s), in the detail lines\n", r->nb_damage - DAMAGE_REPORTS);
     /* Blu-ray: the stretches of stream files left out (each said when read) */
     if (r->nb_gap_lines) {
-        dr_vlog(d->log, DR_VLOG_WARNING, "Damaged: %d stretch%s of the stream files left out, %.3f MB in all (see the "
-               "warnings above)\n", r->nb_gap_lines, r->nb_gap_lines == 1 ? "" : "es", mb(r->gap_bytes));
+        char sz[32];
+        dr_vlog(d->log, DR_VLOG_WARNING, "Damaged: %d stretch%s of the stream files left out, %s in all (each said "
+               "above):\n", r->nb_gap_lines, r->nb_gap_lines == 1 ? "" : "es", size_words(sz, sizeof(sz), r->gap_bytes));
+        for (int i = 0; i < r->nb_gap_briefs; i++) {
+            char a[32], when[64] = "";
+            int64_t at;
+            /* its time from its stream file's first picture (for a title of one stream file: its time in the title) */
+            if (r->gap_times[i] != DR_NOPTS_VALUE && ff_disctl_title_segment_start(r->rip, r->gap_segs[i], &at) >= 0 &&
+                r->gap_times[i] >= at)
+                snprintf(when, sizeof(when), ", %s into the file", hms(a, sizeof(a), r->gap_times[i] - at));
+            dr_vlog(d->log, i < DAMAGE_REPORTS ? DR_VLOG_WARNING : DR_VLOG_VERBOSE, "  - %s%s\n", r->gap_briefs[i],
+                   when);
+        }
         for (int i = 0; i < r->nb_gap_lines && ret >= 0; i++)
             ret = add_damage(d, dr_strdup(r->gap_lines[i]));
         bytes += r->gap_bytes;

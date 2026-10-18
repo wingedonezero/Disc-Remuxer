@@ -42,6 +42,7 @@ typedef struct DiscTsPid {
     uint32_t remaining;           /* bytes of the running PES body still to come, DISC_UNBOUNDED none */
     uint16_t key;                 /* the running PES packet's stream key */
     int64_t  pts;                 /* the running PES packet's PTS, until a piece of it is given out */
+    int64_t  pes_pts;             /* the running PES packet's PTS (TS_DISC_NOPTS none), for a gap inside it */
     int      dialog;              /* a text subtitle PID */
     const char *drop_why;         /* DISC_DROP: why, and where it began and the payload bytes left out */
     int64_t  drop_pos, drop_bytes;
@@ -148,12 +149,24 @@ void ts_disc_break(TsDisc *t)
 }
 
 /* The run of bad / zero source packets ends (the packets in it are said:
- * the continuity counters start again). */
-static int run_end(TsDisc *t)
+ * the continuity counters start again). next: the readable TS packet after
+ * it (NULL: none): when its PID's counter jumps over exactly the run's
+ * packets (fewer than 16, the counter's cycle), they were that PID's. */
+static int run_end(TsDisc *t, const uint8_t *next)
 {
     int ret = 0;
 
     if (t->run.kind) {
+        if (next && t->run.packets < 16 && (next[3] & 0x10) && !((next[3] & 0x20) && next[4] && (next[5] & 0x80))) {
+            int pid = (next[1] & 0x1f) << 8 | next[2], cc = next[3] & 0x0f;
+            DiscTsPid *d = t->pid[pid];
+            if (d && d->cc >= 0 && ((cc - d->cc - 1) & 0x0f) == t->run.packets) {
+                t->run.pid     = pid;
+                t->run.cc_from = d->cc;
+                t->run.cc_to   = cc;
+                t->run.pts     = d->pes_pts;
+            }
+        }
         ret = t->ev.gap(t->ev.opaque, &t->run);
         ts_disc_break(t);
     }
@@ -172,10 +185,10 @@ static int run_add(TsDisc *t, int kind, const char *why, int64_t pos)
         t->run.packets++;
         return 0;
     }
-    if ((ret = run_end(t)) < 0)
+    if ((ret = run_end(t, NULL)) < 0)
         return ret;
     t->run = (MpegTSDiscGap){ .kind = kind, .pid = -1, .pos = pos, .end = pos + TS_DISC_SRC_PACKET, .packets = 1,
-                              .why = why };
+                              .why = why, .pts = TS_DISC_NOPTS };
     return 0;
 }
 
@@ -214,7 +227,7 @@ int ts_disc_flush(TsDisc *t, int64_t end)
 {
     int ret;
 
-    if ((ret = run_end(t)) < 0)
+    if ((ret = run_end(t, NULL)) < 0)
         return ret;
     for (unsigned i = 0; i < t->nb_pids; i++) {
         DiscTsPid *d = t->pid[t->pids[i]];
@@ -258,8 +271,9 @@ static int disc_headers(TsDisc *t, DiscTsPid *d, int pid, int64_t pos)
             return 0;
         end = pes.total ? DR_MIN(d->buffered, pes.total) : d->buffered;
         n   = end - pes.off;
-        d->key = pes.key;
-        d->pts = pes.pts;
+        d->key     = pes.key;
+        d->pts     = pes.pts;
+        d->pes_pts = pes.pts;
         if (t->ev.pes && (ret = t->ev.pes(t->ev.opaque, pid, pes.key)) < 0)
             return ret;
         if (pes.bad_pts) {
@@ -315,7 +329,7 @@ static int disc_ts_packet(TsDisc *t, const uint8_t *p, int64_t pos)
         off = p[4] + 5;
     }
     {
-        int ret = run_end(t);
+        int ret = run_end(t, p);
         if (ret < 0)
             return ret;
     }
@@ -451,6 +465,7 @@ TsDisc *ts_disc_new(const int *pids, unsigned nb_pids, const int *dialog_pids, u
             t->pid[pid]->state     = DISC_HEADER;
             t->pid[pid]->remaining = DISC_UNBOUNDED;
             t->pid[pid]->pts       = TS_DISC_NOPTS;
+            t->pid[pid]->pes_pts   = TS_DISC_NOPTS;
             t->pid[pid]->cc        = -1;
         }
     }

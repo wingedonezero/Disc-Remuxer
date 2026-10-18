@@ -63,13 +63,19 @@ def test_zero_and_unreadable_packets_are_each_one_line_with_their_bytes(tmp_path
     texts, result = rip(tmp_path, disc(tmp_path, damage))
     assert result and result["status"] != "failed", texts
     log = "\n".join(texts)
-    assert ("Segment /BDMV/STREAM/00001.m2ts: 7680 bytes of zeros at bytes 19200-26879 (1.25 units): skipped "
-            "(blank or unreadable sectors)") in log, log
-    assert ("Segment /BDMV/STREAM/00001.m2ts: 2 transport packets at bytes 26880-27263 cannot be read (no sync "
-            "byte): their data is left out") in log, log
-    assert ("Segment /BDMV/STREAM/00001.m2ts: 1 transport packets at bytes 27264-27455 cannot be read "
-            "(transport_error_indicator set): their data is left out") in log, log
-    assert "Damaged: 3 stretches of the stream files left out" in log, log
+    # none of the three can be put on a stream: the zeros are more than the counter's cycle (16), the next two
+    # are followed by another bad packet
+    unknown = "which stream they belonged to is not known (the continuity counters around them do not tell)"
+    assert ("Segment /BDMV/STREAM/00001.m2ts: 7.5 KB of zeros at bytes 19200-26879 (1.25 units, blank or unreadable "
+            "sectors): skipped; " + unknown) in log, log
+    assert ("Segment /BDMV/STREAM/00001.m2ts: 384 bytes at bytes 26880-27263 are damaged (2 transport packets: no "
+            "sync byte; the stream file itself holds these bytes: a damaged or badly copied file): left out; "
+            + unknown) in log, log
+    assert ("Segment /BDMV/STREAM/00001.m2ts: 192 bytes at bytes 27264-27455 are damaged (1 transport packet: "
+            "transport_error_indicator set; the stream file itself holds these bytes: a damaged or badly copied "
+            "file): left out; " + unknown) in log, log
+    assert "Damaged: 3 stretches of the stream files left out, 8.1 KB in all (each said above):" in log, log
+    assert "  - 00001.m2ts bytes 26880-27263 (384 bytes)" in texts, texts
     assert result["damaged_ranges"] == 3 and result["damaged_bytes"] == 7680 + 3 * 192, result
 
 
@@ -126,3 +132,25 @@ def test_damage_that_takes_no_picture_makes_no_hole_for_the_mkvmerge_mode(tmp_pa
     assert p.returncode == 0, p.stdout + p.stderr
     assert ("mkvmerge: damaged data was left out, but no picture is missing and no audio gap is left open: no "
             "hole, no timestamp files, the delays as --sync") in p.stdout, p.stdout
+    # the counter of the video's next packet jumps over exactly the 5: they were the video's, in the PES packet
+    # of the first chunk (its time: the file's first picture, so 0 into the file)
+    assert ("Segment /BDMV/STREAM/00001.m2ts: 960 bytes at bytes 11520-12479 are damaged (5 transport packets: no "
+            "sync byte; the stream file itself holds these bytes: a damaged or badly copied file): left out; they "
+            "were PID 0x1011's (track 0; its continuity counter goes from 11 to 1 over them): the picture they belong "
+            "to is incomplete (it may show a glitch until the next key frame)") in p.stdout, p.stdout
+    assert "  - 00001.m2ts bytes 11520-12479 (960 bytes, track 0), 0:00:00.000 into the file" in p.stdout, p.stdout
+
+
+def test_a_damaged_stretch_gets_the_time_of_its_stream_s_pes_packet(tmp_path):
+    # 3 bad packets inside the second chunk's PES packet (PTS one picture after the first, 3003 ticks):
+    # 33.367 ms into the file
+    def damage(packets):
+        src = [bd.be32(i * 0x10) + p for i, p in enumerate(packets)]
+        k = next(i for i in range(1, len(packets)) if packets[i][1] & 0x40) + 20
+        for j in range(k, k + 3):
+            src[j] = bytes((j * 31 + i) % 251 + 1 for i in range(192))
+        return units(src)
+    texts, result = rip(tmp_path, disc(tmp_path, damage))
+    assert result and result["status"] != "failed", texts
+    lines = [t for t in texts if t.startswith("  - 00001.m2ts")]
+    assert len(lines) == 1 and lines[0].endswith("(576 bytes, track 0), 0:00:00.033 into the file"), texts

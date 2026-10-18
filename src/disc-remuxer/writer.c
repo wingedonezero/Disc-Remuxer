@@ -866,7 +866,13 @@ const char *size_text(char *buf, size_t size, int64_t bytes)
     int gb = bytes >= (1LL << 30);
     int64_t tenths = bytes * 10 / (gb ? 1LL << 30 : 1LL << 20);
 
-    snprintf(buf, size, "%"PRId64".%d %s", tenths / 10, (int)(tenths % 10), gb ? "GB" : "MB");
+    /* below 1 MB in bytes or KB (a few damaged bytes are not "0.0 MB") */
+    if (bytes < 1024)
+        snprintf(buf, size, "%"PRId64" byte%s", bytes, bytes == 1 ? "" : "s");
+    else if (bytes < (1LL << 20))
+        snprintf(buf, size, "%.1f KB", bytes / 1024.0);
+    else
+        snprintf(buf, size, "%"PRId64".%d %s", tenths / 10, (int)(tenths % 10), gb ? "GB" : "MB");
     return buf;
 }
 
