@@ -222,36 +222,46 @@ def test_a_mark_after_the_video_s_last_frame_starts_no_chapter():
     assert s.chapters == [0, 25 * FRAME] and st.chapters == 2
 
 
-def chapter_line(kinds, marks, segments, rule=None):
-    """The title's one chapter line in the standard log."""
+def chapter_block(kinds, marks, segments, rule=None):
+    """The title's chapter block in the standard log: its heading, a line per mark, its counts."""
     from helpers import LOG, install_log
     install_log(lib.AV_LOG_INFO)
     join(kinds, marks, segments, rule)
-    lines = [l for l in LOG if "Title timeline: chapters: " in l]
-    assert len(lines) == 1, LOG
-    return lines[0].strip()
+    return [l.rstrip("\n") for l in LOG if l.startswith("Chapters: ") or l.startswith("  - ")]
 
 
-def test_the_chapter_rule_says_once_per_title_what_it_did():
-    # key frames every 12 frames from display position 1 (gops()); marks at 0 (no key frame there: kept),
-    # 1 s (moved back to key frame 25), 25 frames (on a key frame)
-    assert chapter_line([VIDEO], [0, 25 * FRAME], [gops()]) == (
-        "Title timeline: chapters: 2 (snap on: to a key frame up to 400 ms back): 1 on a key frame at the mark, "
-        "1 kept at the mark between key frames (each said above)")
-    assert chapter_line([VIDEO], [0, 1080000000, 2268000000], [gops()]) == (
-        "Title timeline: chapters: 3 (snap on: to a key frame up to 400 ms back): 2 moved earlier to a key frame, "
-        "1 kept at the mark between key frames (each said above)")
-    v = [(0, fr(k * FRAME, FRAME, F_KEY if k in (0, 40) else 0)) for k in range(60)]
-    v[-1][1][2] |= F_BATCH
-    assert chapter_line([VIDEO], [0, 30 * FRAME], [v], {"set": 1, "before_ms": 400, "after_ms": 400}) == (
-        "Title timeline: chapters: 2 (snap on: to a key frame up to 400 ms back, else up to 400 ms on): 1 on a key "
-        "frame at the mark, 1 moved later to a key frame (each said above)")
-    assert chapter_line([VIDEO], [0, 40 * FRAME], [v]) == (
-        "Title timeline: chapters: 2 (snap on: to a key frame up to 400 ms back): 2 on a key frame at the mark"), \
-        "nothing moved: the line still says the rule ran"
-    assert chapter_line([VIDEO], [0, 30 * FRAME], [v], {"set": 1, "exact": 1}) == (
-        "Title timeline: chapters: 2 (snap off: at the disc's marks): 1 on a key frame at the mark, 1 kept at the "
-        "mark between key frames (each said above)")
+def test_the_chapter_block_says_the_rule_and_what_it_did_for_each_chapter():
+    # gops(): key frames every 12 frames from display position 1; a mark at 0 (no key frame there), at 1 s
+    # (key frame 25 is 166 ms before it), at 2.1 s (key frame 61, 65 ms before)
+    t25 = ns(25 * FRAME)
+    assert chapter_block([VIDEO], [0, 1080000000, 2268000000], [gops()]) == [
+        "Chapters: 8 key frame(s) in the title; snap on: to the nearest key frame up to 400 ms back",
+        "  - Kept 'Chapter 01' (00:00:00.000.000.000) - between key frames, none within 400 ms before (the next one "
+        "1 frame(s) later)",
+        f"  - Snapped 'Chapter 02' (00:00:01.000.000.000) -> {t25} (moved by -165.833 ms, 5 frame(s))",
+        f"  - Snapped 'Chapter 03' (00:00:02.100.000.000) -> {ns(61 * FRAME)} (moved by -64.633 ms, 2 frame(s))",
+        "Chapters: snap complete: 2 moved, 0 on a key frame, 1 kept between key frames"]
+    # nothing to move: the block still says the rule ran
+    assert chapter_block([VIDEO], [FRAME, 25 * FRAME], [gops()])[1:] == [
+        f"  - Kept 'Chapter 01' ({ns(FRAME)}) - on a key frame",
+        f"  - Kept 'Chapter 02' ({t25}) - on a key frame",
+        "Chapters: snap complete: 0 moved, 2 on a key frame, 0 kept between key frames"]
+
+
+def test_the_chapter_block_with_snap_off_and_with_a_mark_past_the_video():
+    assert chapter_block([VIDEO], [FRAME, 1080000000, 100 * 1080000000], [gops()], {"set": 1, "exact": 1}) == [
+        "Chapters: 8 key frame(s) in the title; snap off: at the disc's marks",
+        f"  - Kept 'Chapter 01' ({ns(FRAME)}) - on a key frame",
+        "  - Kept 'Chapter 02' (00:00:01.000.000.000) - between key frames (the next one 7 frame(s) later)",
+        "  - No chapter for mark 3 (00:01:40.000.000.000) - after the video's last frame",
+        "Chapters: 2 at the disc's marks: 1 on a key frame, 1 between key frames, 1 mark(s) without a chapter"]
+
+
+def ns(ticks):
+    """A title timeline time as the chapter block writes it: HH:MM:SS.mmm.uuu.nnn (nearest ns)."""
+    n = (ticks * 25 + 13) // 27
+    return "%02d:%02d:%02d.%03d.%03d.%03d" % (n // 3600000000000, n // 60000000000 % 60, n // 1000000000 % 60,
+                                             n // 1000000 % 1000, n // 1000 % 1000, n % 1000)
 
 
 def test_a_segment_without_video_fails():
