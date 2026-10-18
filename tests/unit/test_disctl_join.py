@@ -222,5 +222,37 @@ def test_a_mark_after_the_video_s_last_frame_starts_no_chapter():
     assert s.chapters == [0, 25 * FRAME] and st.chapters == 2
 
 
+def chapter_line(kinds, marks, segments, rule=None):
+    """The title's one chapter line in the standard log."""
+    from helpers import LOG, install_log
+    install_log(lib.AV_LOG_INFO)
+    join(kinds, marks, segments, rule)
+    lines = [l for l in LOG if "Title timeline: chapters: " in l]
+    assert len(lines) == 1, LOG
+    return lines[0].strip()
+
+
+def test_the_chapter_rule_says_once_per_title_what_it_did():
+    # key frames every 12 frames from display position 1 (gops()); marks at 0 (no key frame there: kept),
+    # 1 s (moved back to key frame 25), 25 frames (on a key frame)
+    assert chapter_line([VIDEO], [0, 25 * FRAME], [gops()]) == (
+        "Title timeline: chapters: 2 (snap on: to a key frame up to 400 ms back): 1 on a key frame at the mark, "
+        "1 kept at the mark between key frames (each said above)")
+    assert chapter_line([VIDEO], [0, 1080000000, 2268000000], [gops()]) == (
+        "Title timeline: chapters: 3 (snap on: to a key frame up to 400 ms back): 2 moved earlier to a key frame, "
+        "1 kept at the mark between key frames (each said above)")
+    v = [(0, fr(k * FRAME, FRAME, F_KEY if k in (0, 40) else 0)) for k in range(60)]
+    v[-1][1][2] |= F_BATCH
+    assert chapter_line([VIDEO], [0, 30 * FRAME], [v], {"set": 1, "before_ms": 400, "after_ms": 400}) == (
+        "Title timeline: chapters: 2 (snap on: to a key frame up to 400 ms back, else up to 400 ms on): 1 on a key "
+        "frame at the mark, 1 moved later to a key frame (each said above)")
+    assert chapter_line([VIDEO], [0, 40 * FRAME], [v]) == (
+        "Title timeline: chapters: 2 (snap on: to a key frame up to 400 ms back): 2 on a key frame at the mark"), \
+        "nothing moved: the line still says the rule ran"
+    assert chapter_line([VIDEO], [0, 30 * FRAME], [v], {"set": 1, "exact": 1}) == (
+        "Title timeline: chapters: 2 (snap off: at the disc's marks): 1 on a key frame at the mark, 1 kept at the "
+        "mark between key frames (each said above)")
+
+
 def test_a_segment_without_video_fails():
     assert isinstance(join([VIDEO, AUDIO], [], [gop(0, 0, 4), [(1, fr(0, AC3, F_KEY))]]), int)

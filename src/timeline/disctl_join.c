@@ -111,6 +111,7 @@ static int place_chapters(DRJoin *j)
     DRChapterRule r = j->cfg.chapter_rule;
     int64_t before, after, prev = INT64_MIN, last;
     char a[32], b[32];
+    int on_keys = 0, earlier = 0, later = 0, between = 0;   /* the chapters placed, by what the rule did */
 
     if (!r.set) {
         r.before_ms = 400;
@@ -193,8 +194,41 @@ static int place_chapters(DRJoin *j)
         }
         j->chap[j->nb_chap++] = c;
         prev = c;
+        {
+            /* on the key frame at its mark (snap off: the mark itself, within 1 ms of it) */
+            int at_key = on_key && (c == mf || stage == 0);
+            on_keys += at_key;
+            earlier += stage == 2;
+            later   += stage == 3;
+            between += (stage == 0 || stage == 4) && !at_key;
+        }
     }
     j->st.chapters = j->nb_chap;
+    /* one line per title: the rule in use and what it did (each chapter it
+     * moved or could not put on a key frame is said above) */
+    if (j->nb_chap) {
+        char rule[96], what[160] = "";
+        int len = 0;
+        if (r.exact)
+            snprintf(rule, sizeof(rule), "snap off: at the disc's marks");
+        else if (after)
+            snprintf(rule, sizeof(rule), "snap on: to a key frame up to %d ms back, else up to %d ms on", r.before_ms,
+                     r.after_ms);
+        else
+            snprintf(rule, sizeof(rule), "snap on: to a key frame up to %d ms back", r.before_ms);
+        if (on_keys)
+            len += snprintf(what + len, sizeof(what) - len, "%s%d on a key frame at the mark", len ? ", " : "", on_keys);
+        if (earlier)
+            len += snprintf(what + len, sizeof(what) - len, "%s%d moved earlier to a key frame", len ? ", " : "",
+                            earlier);
+        if (later)
+            len += snprintf(what + len, sizeof(what) - len, "%s%d moved later to a key frame", len ? ", " : "", later);
+        if (between)
+            len += snprintf(what + len, sizeof(what) - len, "%s%d kept at the mark between key frames", len ? ", " : "",
+                            between);
+        dr_vlog(j->log, DR_VLOG_INFO, "Title timeline: chapters: %d (%s): %s%s\n", j->nb_chap, rule, what,
+                earlier || later || between ? " (each said above)" : "");
+    }
     return 0;
 }
 
