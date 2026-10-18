@@ -201,6 +201,14 @@ def test_units_before_the_video_start():
     assert (r.events[0]["kind"], r.events[0]["pos"]) == (lib.DR_EV_SUB_EARLY, BASE - MS)
 
 
+def test_a_unit_timed_before_0_is_early_not_untimed():
+    # a time below the title's start is a time: said as before the video's first field, not as "no time"
+    r = run([(spu(10, True, [], 1), -MS), (spu(10, True, [], 2), grid(1, 0))], False)
+    assert [(o[0][4], o[1]) for o in r.out] == [(2, grid(1, 0))]
+    assert (r.st.early, r.st.untimed) == (1, 0)
+    assert [(e["kind"], e["pos"]) for e in r.events] == [(lib.DR_EV_SUB_EARLY, -MS)]
+
+
 def test_units_wait_until_the_video_knows_its_grid():
     payloads = [(spu(10, True, [], 1), grid(2, 0) + MS), (spu(10, True, [], 2), grid(6, 1))]
     r = run(payloads, True)

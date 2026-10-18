@@ -322,6 +322,16 @@ static int epoch_add(DRSpu *s, Held *h)
     return 0;
 }
 
+/* A unit whose time is before the title's start (the video's first field):
+ * left out, said and counted as the units the video grid puts there. */
+static void early(DRSpu *s, const char *track, const char *unit, const DRUnit *u, int64_t dur)
+{
+    dr_vlog(s->log, DR_VLOG_WARNING, "Title timeline: %s track %d: the %s at %"PRId64" ticks is before the video's "
+           "first field: left out\n", track, s->track, unit, u->time);
+    event(s, DR_EV_SUB_EARLY, u->time, dur);
+    s->st.early++;
+}
+
 /* A PGS display set: its bytes (a forced-only track: cut to its forced
  * objects), its time on the video grid once it is known. */
 static int pgs_unit(DRSpu *s, const DRUnit *u)
@@ -335,7 +345,11 @@ static int pgs_unit(DRSpu *s, const DRUnit *u)
                s->track);
         return DR_ERR_BUG;
     }
-    if (u->time == DR_NOPTS_VALUE || u->time < 0) {
+    if (u->time != DR_NOPTS_VALUE && u->time < 0) {
+        early(s, "PGS", "display set", u, 0);
+        return 0;
+    }
+    if (u->time == DR_NOPTS_VALUE) {
         dr_vlog(s->log, DR_VLOG_WARNING, "Title timeline: PGS track %d: the display set at byte %"PRId64" has no time: "
                "left out\n", s->track, u->pos);
         event(s, DR_EV_SUB_UNTIMED, u->pos, 0);
@@ -413,7 +427,11 @@ int ff_disctl_spu_unit(void *opaque, const DRUnit *u)
         h.f.flags |= DR_F_NO_STOP;
         s->st.no_stop++;
     }
-    if (u->time == DR_NOPTS_VALUE || u->time < 0) {
+    if (u->time != DR_NOPTS_VALUE && u->time < 0) {
+        early(s, "sub-picture", "unit", u, h.f.dur);
+        return 0;
+    }
+    if (u->time == DR_NOPTS_VALUE) {
         dr_vlog(s->log, DR_VLOG_WARNING, "Title timeline: sub-picture track %d: the unit at byte %"PRId64" has no time "
                "of its own (not the first unit of its PES packet): left out\n", s->track, u->pos);
         event(s, DR_EV_SUB_UNTIMED, u->pos, h.f.dur);

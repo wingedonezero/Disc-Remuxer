@@ -84,12 +84,13 @@ static int cmp_time(const void *a, const void *b)
     return x < y ? -1 : x > y;
 }
 
-/* h:mm:ss.mmm of a time on the title timeline, into buf */
-static const char *hms(char *buf, size_t size, int64_t t)
+/* HH:MM:SS.mmm.uuu.nnn of a time on the title timeline (to the nearest ns), into buf */
+static const char *ns_text(char *buf, size_t size, int64_t t)
 {
-    int64_t ms = (t + DR_TICKS_PER_SECOND / 2000) / (DR_TICKS_PER_SECOND / 1000);
-    snprintf(buf, size, "%"PRId64":%02"PRId64":%02"PRId64".%03"PRId64, ms / 3600000, ms / 60000 % 60,
-             ms / 1000 % 60, ms % 1000);
+    int64_t ns = t < 0 ? -((-t * 25 + 13) / 27) : (t * 25 + 13) / 27, a = ns < 0 ? -ns : ns;
+    snprintf(buf, size, "%s%02"PRId64":%02"PRId64":%02"PRId64".%03"PRId64".%03"PRId64".%03"PRId64, ns < 0 ? "-" : "",
+             a / INT64_C(3600000000000), a / INT64_C(60000000000) % 60, a / 1000000000 % 60, a / 1000000 % 1000,
+             a / 1000 % 1000, a % 1000);
     return buf;
 }
 
@@ -104,13 +105,15 @@ static int frames_between(const DRJoin *j, int64_t a, int64_t b)
 
 /* Each mark's chapter, by the rule's stages (DRChapterRule): the mark on a
  * key frame; the nearest key frame before it within before_ms; the nearest
- * after it within after_ms; the mark. Every chapter that is not on a key
- * frame at its mark is said (standard log): where it went and why. */
+ * after it within after_ms; the mark. Said in the standard log as a block:
+ * the rule, a line per chapter (kept on a key frame, snapped from -> to,
+ * kept between key frames and why, or no chapter and why), the counts. */
 static int place_chapters(DRJoin *j)
 {
     DRChapterRule r = j->cfg.chapter_rule;
     int64_t before, after, prev = INT64_MIN, last;
-    char a[32], b[32];
+    char a[40], b[40], rule[112];
+    int on_keys = 0, moved = 0, between = 0, none = 0;  /* the marks, by what the rule did */
 
     if (!r.set) {
         r.before_ms = 400;
@@ -125,9 +128,18 @@ static int place_chapters(DRJoin *j)
     last = j->vtimes[j->nb_v - 1];
     if (!(j->chap = dr_calloc(j->cfg.nb_marks, sizeof(*j->chap))))
         return DR_ERR(ENOMEM);
+    if (r.exact)
+        snprintf(rule, sizeof(rule), "snap off: at the disc's marks");
+    else if (after)
+        snprintf(rule, sizeof(rule), "snap on: to the nearest key frame up to %d ms back, else up to %d ms on",
+                 r.before_ms, r.after_ms);
+    else
+        snprintf(rule, sizeof(rule), "snap on: to the nearest key frame up to %d ms back", r.before_ms);
+    dr_vlog(j->log, DR_VLOG_INFO, "Chapters: %d key frame(s) in the title; %s\n", j->nb_k, rule);
     for (int i = 0; i < j->cfg.nb_marks; i++) {
         int64_t m = j->cfg.marks[i], mf = INT64_MIN, kb = INT64_MIN, ka = INT64_MAX, c;
-        int stage, on_key = 0;
+        int stage, on_key = 0, clash = 0, at_key;
+        char next[64] = "no key frame follows";
         if (m == INT64_MAX)                 /* a position never reached */
             continue;
         /* the mark's own frame: the video frame within 1 ms of it (a Blu-ray mark's
@@ -157,44 +169,63 @@ static int place_chapters(DRJoin *j)
             stage = 4, c = mf != INT64_MIN ? mf : m;
         /* a mark past the video's last frame starts no chapter */
         if ((stage == 0 || stage == 4) && m > last) {
-            dr_vlog(j->log, DR_VLOG_INFO, "Title timeline: chapter mark %d (%s) is after the video's last frame: no "
-                    "chapter\n", i + 1, hms(a, sizeof(a), m));
+            dr_vlog(j->log, DR_VLOG_INFO, "  - No chapter for mark %d (%s) - after the video's last frame\n", i + 1,
+                    ns_text(a, sizeof(a), m));
+            none++;
             continue;
         }
         /* chapters in order: a chapter not after the one before it keeps its mark (or goes) */
         if (c <= prev) {
             if (m <= prev || (stage == 4 && mf != INT64_MIN && mf <= prev)) {
-                dr_vlog(j->log, DR_VLOG_WARNING, "Title timeline: chapter mark %d (%s) is not after the chapter "
-                        "before it once that one is placed: no chapter\n", i + 1, hms(a, sizeof(a), m));
+                dr_vlog(j->log, DR_VLOG_WARNING, "  - No chapter for mark %d (%s) - not after the chapter before it "
+                        "once that one is placed\n", i + 1, ns_text(a, sizeof(a), m));
+                none++;
                 continue;
             }
             stage = 4;
+            clash = 1;
             c = mf != INT64_MIN && mf > prev ? mf : m;
         }
+        if (ka != INT64_MAX)
+            snprintf(next, sizeof(next), "the next one %d frame(s) later", frames_between(j, m, ka));
+        /* on the key frame at its mark (snap off: the mark itself, within 1 ms of it) */
+        at_key = on_key && (c == mf || stage == 0);
         if (stage == 2 || stage == 3)
-            dr_vlog(j->log, DR_VLOG_INFO, "Title timeline: chapter %d: its mark (%s) is between key frames: moved %d "
-                    "frame(s) (%.3f ms) %s to the key frame at %s\n", j->nb_chap + 1, hms(a, sizeof(a), m),
-                    stage == 2 ? frames_between(j, c, m) : frames_between(j, m, c),
-                    (double)DR_ABS(m - c) * 1000 / DR_TICKS_PER_SECOND, stage == 2 ? "earlier" : "later",
-                    hms(b, sizeof(b), c));
-        else if ((stage == 4 || stage == 0) && !on_key) {
-            char next[64] = " (no key frame follows)";
-            if (ka != INT64_MAX)
-                snprintf(next, sizeof(next), ", %d frame(s) later", frames_between(j, m, ka));
-            if (stage == 0)
-                dr_vlog(j->log, DR_VLOG_INFO, "Title timeline: chapter %d: its mark (%s) is between key frames: kept "
-                        "(the chapters as the disc has them); a split there cuts at the next key frame%s\n",
-                        j->nb_chap + 1, hms(a, sizeof(a), m), next);
-            else
-                dr_vlog(j->log, DR_VLOG_INFO, "Title timeline: chapter %d: its mark (%s) is between key frames and no "
-                        "key frame is within %d ms before it%s: kept at the mark; a split there cuts at the next key "
-                        "frame%s\n", j->nb_chap + 1, hms(a, sizeof(a), m), r.before_ms,
-                        after ? " or within the time after it" : "", next);
-        }
+            dr_vlog(j->log, DR_VLOG_INFO, "  - Snapped 'Chapter %02d' (%s) -> %s (moved by %c%.3f ms, %d frame(s))\n",
+                    j->nb_chap + 1, ns_text(a, sizeof(a), m), ns_text(b, sizeof(b), c), stage == 2 ? '-' : '+',
+                    (double)DR_ABS(m - c) * 1000 / DR_TICKS_PER_SECOND,
+                    stage == 2 ? frames_between(j, c, m) : frames_between(j, m, c));
+        else if (at_key)
+            dr_vlog(j->log, DR_VLOG_INFO, "  - Kept 'Chapter %02d' (%s) - on a key frame\n", j->nb_chap + 1,
+                    ns_text(a, sizeof(a), c));
+        else if (stage == 0)
+            dr_vlog(j->log, DR_VLOG_INFO, "  - Kept 'Chapter %02d' (%s) - between key frames (%s)\n", j->nb_chap + 1,
+                    ns_text(a, sizeof(a), c), next);
+        else if (clash)
+            dr_vlog(j->log, DR_VLOG_INFO, "  - Kept 'Chapter %02d' (%s) - between key frames; the key frame before it "
+                    "holds the chapter before it (%s)\n", j->nb_chap + 1, ns_text(a, sizeof(a), c), next);
+        else
+            dr_vlog(j->log, DR_VLOG_INFO, "  - Kept 'Chapter %02d' (%s) - between key frames, none within %d ms "
+                    "before%s (%s)\n", j->nb_chap + 1, ns_text(a, sizeof(a), c), r.before_ms,
+                    after ? " or the time after it" : "", next);
         j->chap[j->nb_chap++] = c;
         prev = c;
+        on_keys += at_key;
+        moved   += stage == 2 || stage == 3;
+        between += !at_key && stage != 2 && stage != 3;
     }
     j->st.chapters = j->nb_chap;
+    {
+        char no[48] = "";
+        if (none)
+            snprintf(no, sizeof(no), ", %d mark(s) without a chapter", none);
+        if (r.exact)
+            dr_vlog(j->log, DR_VLOG_INFO, "Chapters: %d at the disc's marks: %d on a key frame, %d between key "
+                    "frames%s\n", j->nb_chap, on_keys, between, no);
+        else
+            dr_vlog(j->log, DR_VLOG_INFO, "Chapters: snap complete: %d moved, %d on a key frame, %d kept between key "
+                    "frames%s\n", moved, on_keys, between, no);
+    }
     return 0;
 }
 
