@@ -143,9 +143,25 @@ int dr_dca_exss_timing(const uint8_t *buf, int size, int *lbr_rate_code, int *ra
 /** The checksums of the DTS-HD extension substream frame at buf (ETSI TS
  *  102 114, as the processing library's DTS decoder checks them when asked
  *  to): the substream header's CRC-16; with one asset, its LBR (DTS Express)
- *  frame chunk's checksum and its lossless (XLL) frame header's CRC-16.
+ *  frame chunk's checksum and its lossless (XLL) frame header's CRC-16, its
+ *  channel set sub-headers' and its NAVI table's CRC-16s (channel sets up to
+ *  96 kHz: above, the frequency bands are not walked).
  *  1 every one that can be read passes, 0 one fails (*why: which). */
 int dr_dca_exss_checksums(const uint8_t *buf, int size, const char **why);
+
+/** DTS:X in a DTS-HD unit (a core frame and the extension substream after
+ *  it, or the substream alone): its lossless (XLL) frame walked to the end
+ *  of its band data, where DTS:X extension data starts with a marker
+ *  (0x02000850, or 0xF14000D0-D4; D0 the IMAX one). 1 the frame was walked
+ *  (*marker: the marker, 0 none), 0 it could not be (no XLL frame, a CRC
+ *  failed, a channel set above 96 kHz, the frame continues past this unit).
+ *  *imax_type: the asset's type descriptor says IMAX (13). */
+int dr_dca_dtsx(const uint8_t *buf, int size, uint32_t *marker, int *imax_type);
+
+/** The size of the DTS-HD extension substream frame at buf (its sync word
+ *  first), once its header is there and its header CRC-16 is right; 0
+ *  otherwise (not a frame start, or too few bytes yet). */
+int dr_dca_exss_frame_size(const uint8_t *buf, int size);
 
 /** The core of a DTS track's unit: a unit starting with a core frame is cut
  *  to the core frame's size (the DTS-HD extension substream after it goes);
