@@ -34,6 +34,7 @@
 
 #include "base/mem.h"
 #include "base/err.h"
+#include "base/bytes.h"
 #include "base/macros.h"
 #include "base/vlog.h"
 #include "base/mem.h"
@@ -43,6 +44,7 @@
 #include "disc/probe.h"
 
 #include "disc/clip_demux.h"
+#include "parse/rules.h"
 #include "timeline/disctl.h"
 
 
@@ -65,6 +67,11 @@ typedef struct Probe {
     int                   done;         /* its details are known (or cannot be) */
     int                   cached;       /* taken from the cache */
     DiscDetailsProbe     *dp;           /* the analysis module's probe, or NULL */
+    uint8_t              *xbuf;         /* DTS: the track's bytes, collected to whole extension substream frames */
+    int                   xlen, xcap;
+    int                   x_walked;     /* DTS: lossless (XLL) frames walked (dr_dca_dtsx) */
+    uint32_t              x_marker;     /* and the DTS:X marker found in them (0 none) */
+    int                   x_imax;       /* an asset type said IMAX */
 } Probe;
 
 /* The details probe the analysis module registered (disc/probe.h). */
@@ -185,6 +192,60 @@ static int dovi_level(const DiscStreamInfo *ds)
     for (int i = 0; i < (int)DR_ARRAY_ELEMS(max_rate); i++)
         if (rate <= max_rate[i])
             return i + 1;
+    return 0;
+}
+
+/* DTS: the track's data comes in pieces; each whole extension substream
+ * frame in it is walked (dr_dca_dtsx: its lossless frame, the DTS:X
+ * marker). At most XBUF_MAX bytes are kept while a frame is not whole. */
+#define XBUF_MAX (256 << 10)
+
+static int dtsx_bytes(Probe *p, const uint8_t *data, int size)
+{
+    int q = 0;
+
+    if (p->xlen + size > p->xcap) {
+        int cap = DR_MIN(DR_MAX(2 * p->xcap, p->xlen + size), XBUF_MAX + size);
+        uint8_t *b = dr_realloc(p->xbuf, cap);
+        if (!b)
+            return DR_ERR(ENOMEM);
+        p->xbuf = b;
+        p->xcap = cap;
+    }
+    memcpy(p->xbuf + p->xlen, data, size);
+    p->xlen += size;
+    while (q + 4 <= p->xlen && p->x_walked < 8) {
+        int n;
+        if (dr_rb32(p->xbuf + q) != 0x64582025U) {
+            q++;
+            continue;
+        }
+        n = dr_dca_exss_frame_size(p->xbuf + q, p->xlen - q);
+        if (!n) {
+            if (p->xlen - q < 4096)
+                break;                      /* its header may not be whole yet */
+            q++;
+            continue;
+        }
+        if (q + n > p->xlen)
+            break;                          /* the frame is not whole yet */
+        {
+            uint32_t marker;
+            int imax;
+            if (dr_dca_dtsx(p->xbuf + q, n, &marker, &imax)) {
+                p->x_walked++;
+                p->x_imax |= imax;
+                if (marker)
+                    p->x_marker = marker;
+            }
+        }
+        q += n;
+    }
+    /* keep what may still become a frame (all of it, when it is not too much) */
+    if (p->xlen - q > XBUF_MAX)
+        q = p->xlen - XBUF_MAX;
+    memmove(p->xbuf, p->xbuf + q, p->xlen - q);
+    p->xlen -= q;
     return 0;
 }
 
@@ -397,6 +458,11 @@ int ff_disc_stream_pass(DrDisc *d, const char *title, const DiscPassSource *src,
                 if (!probe_wants(&p[i], src->ts, pkt.id))
                     continue;
                 p[i].seen = 1;
+                /* DTS: our own walk of the lossless frame (DTS:X by its marker); a few frames are enough */
+                /* DTS: our own walk of the lossless frames (DTS:X by its marker); a few frames are enough */
+                if (details_on && p[i].codec == DR_CODEC_DTS && p[i].x_walked < 8 && (ret = dtsx_bytes(&p[i], pkt.data,
+                                                                                               pkt.size)) < 0)
+                    goto end;
                 if (!details_on || p[i].done)
                     continue;
                 if (p[i].kind == P_MVC) {
@@ -441,6 +507,26 @@ int ff_disc_stream_pass(DrDisc *d, const char *title, const DiscPassSource *src,
             k->aspect     = b->aspect;
             k->frame_rate = b->frame_rate;
         }
+    }
+    /* DTS-HD MA: DTS:X by our walk of its lossless frames (the marker after
+     * the band data), not by the decoder's profile (which knows only some of
+     * the markers): 0xF14000D0 or an IMAX asset type is DTS:X IMAX */
+    for (int i = 0; i < np && details; i++) {
+        DiscStreamInfo *ds = &p[i].k->info;
+        int was = ds->profile;
+        if (p[i].codec != DR_CODEC_DTS || !p[i].x_walked)
+            continue;
+        ds->profile = !p[i].x_marker ? DISC_PROFILE_DTS_HD_MA :
+                      p[i].x_marker == 0xF14000D0U || p[i].x_imax ? DISC_PROFILE_DTS_HD_MA_X_IMAX :
+                      DISC_PROFILE_DTS_HD_MA_X;
+        dr_vlog(d->log, ds->profile != was ? DR_VLOG_INFO : DR_VLOG_VERBOSE, "%s: title %s: DTS stream %d: %s in its "
+               "lossless frames (%d walked)%s\n", fmt, title, p[i].k->stream,
+               p[i].x_marker ? "DTS:X marker" : "no DTS:X marker", p[i].x_walked,
+               ds->profile != was ? ": the decoder said otherwise, the marker decides" : "");
+        if (p[i].x_marker)
+            dr_vlog(d->log, DR_VLOG_VERBOSE, "%s: title %s: DTS stream %d: DTS:X marker 0x%08X%s\n", fmt, title,
+                   p[i].k->stream, p[i].x_marker, p[i].x_imax ? ", IMAX asset type [untested on real discs]" :
+                   p[i].x_marker == 0xF14000D0U ? " (IMAX) [untested on real discs]" : "");
     }
     /* what was found, for titles that share the segment (taken whole) */
     for (int i = 0; i < np && src->key; i++)
@@ -493,9 +579,11 @@ int ff_disc_stream_pass(DrDisc *d, const char *title, const DiscPassSource *src,
     for (int i = nb_drop - 1; i >= 0; i--)
         track_remove(tracks, nb_tracks, drop[i]);
 end:
-    for (int i = 0; p && i < np; i++)
+    for (int i = 0; p && i < np; i++) {
         if (p[i].dp)
             probe_ops->close(&p[i].dp);
+        dr_free(p[i].xbuf);
+    }
     dr_clip_close(&dm);
     dr_free(pids);
     dr_free(drop);
