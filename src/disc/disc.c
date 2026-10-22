@@ -197,6 +197,12 @@ static int track_out(DrDisc *d, const DiscTrack *k, int index, DRCodecID codec, 
     t->type    = k->info.type;
     t->codec   = codec;
     t->profile = DISC_PROFILE_UNKNOWN;
+    /* DTS-HD MA: DTS:X or not as the stream pass found it (its own walk of
+     * the lossless frames' marker, which the decoder does not fully know) */
+    if (codec == DR_CODEC_DTS && (k->info.profile == DISC_PROFILE_DTS_HD_MA ||
+                                  k->info.profile == DISC_PROFILE_DTS_HD_MA_X ||
+                                  k->info.profile == DISC_PROFILE_DTS_HD_MA_X_IMAX))
+        t->profile = k->info.profile;
     dr_strlcpy(t->language, k->info.language, sizeof(t->language));
     t->second_view       = k->info.from_track >= 0 && k->info.second_view;
     t->forced            = k->info.forced || (k->info.roles & DISC_ROLE_FORCED);

@@ -435,6 +435,12 @@ static int es_open(const DrDiscTrack *t, EsOut *o, const char *prefix, int64_t f
     int audio = t->type == DISC_MEDIA_AUDIO;
     int profile = dr_layout_probe_profile(o->lp, t->profile);
 
+    /* DTS-HD MA: DTS:X as the title's details found it (our walk of the
+     * lossless frames' marker), not the decoder's profile */
+    if (t->codec == DR_CODEC_DTS && (t->profile == DISC_PROFILE_DTS_HD_MA || t->profile == DISC_PROFILE_DTS_HD_MA_X ||
+                                     t->profile == DISC_PROFILE_DTS_HD_MA_X_IMAX))
+        profile = t->profile;
+
     o->opened  = 1;
     o->profile = profile;
     if (t->eye) {

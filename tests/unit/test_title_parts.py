@@ -72,6 +72,7 @@ def test_a_clean_rip_logs_its_checks_as_detail_and_ends_with_one_line(tmp_path):
     # the standard log: passing title checks are detail lines (-v, the debug
     # log); the title's last line says the checks passed, its chapters and size
     import json
+    import re
 
     def one_clip(path):
         # one clip whose first picture is at the playlist's start time
@@ -94,7 +95,9 @@ def test_a_clean_rip_logs_its_checks_as_detail_and_ends_with_one_line(tmp_path):
     assert p.returncode == 0, p.stdout + p.stderr
     assert not [t for t in texts if t.startswith("Title check:")], texts
     done = [t for t in texts if t.startswith("Title #0: done")]
-    assert done and "all checks passed (" in done[0] and "chapter" in done[0] and "MB)" in done[0], done
+    # the size in bytes, KB, MB or GB (below 1 MB not "0.0 MB")
+    assert done and "all checks passed (" in done[0] and "chapter" in done[0] and \
+        re.search(r", [0-9.]+ (bytes?|KB|MB|GB)\)$", done[0]), done
     (tmp_path / "v").mkdir()
     v = subprocess.run([*PROGRAM, "-v", "--json", "demux", str(one_clip(tmp_path / "v")), "0", str(tmp_path / "out_v")],
                        capture_output=True, text=True)
