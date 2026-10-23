@@ -136,6 +136,8 @@ enum DREventKind {
     DR_EV_VIDEO_INVALID,
     DR_EV_VIDEO_REPAIR,
     DR_EV_VIDEO_RATE_CHANGE,
+    DR_EV_VIDEO_START_HOLE,
+    DR_EV_VIDEO_START_ODD,
     DR_EV_SUB_UNTIMED,
     DR_EV_SUB_EARLY,
     DR_EV_SUB_OVERLAP,
@@ -484,11 +486,15 @@ extern "Python" int tb_py_video_advance(void *opaque, int64_t target, int *ended
 #define DR_VERIFY_STATE ...
 uint16_t dr_crc16_ccitt(uint16_t crc, const uint8_t *buf, size_t len);
 int dr_dca_exss_checksums(const uint8_t *buf, int size, const char **why);
+int dr_dca_dtsx(const uint8_t *buf, int size, uint32_t *marker, int *imax_type);
 int ff_disctl_mlp_checksums(void *state, const uint8_t *data, int size, const char **why);
 
 /* the WAV header (src/disc-remuxer/writer.h) */
 #define WAV_HEADER_MAX ...
 #define WAV_ROOM_FROM ...
+/* a PGS display set's time in its .sup (src/disc-remuxer/writer.h) */
+int writer_sup_time(int64_t time, uint32_t *pts);
+
 int writer_wav_header(uint8_t *out, int channels, int rate, int bits, int valid, uint64_t mask, int64_t data,
                       int room);
 

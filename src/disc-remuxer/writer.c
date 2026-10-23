@@ -44,6 +44,7 @@
 #include "timeline/disctl.h"
 #include "writer.h"
 #include "mkvout.h"
+#include "subtie.h"
 #include "mkv/mkv.h"
 
 /* A time on the title timeline (DR_TICKS_PER_SECOND ticks) in units of
@@ -149,6 +150,12 @@ static const char *stream_label(const DrDiscTrack *t, int profile)
 
 #define HOLD_MAX 64   /* audio packets kept while their channel layout is not known yet */
 
+/* A subtitle unit written (mkv.tie_subtitles ties it to its picture,
+ * subtie.h): its time, and in a .sup its place and size. */
+typedef struct TieUnit {
+    int64_t time, pos, size;
+} TieUnit;
+
 typedef struct EsOut {
     StreamResult st;
     char         *name;
@@ -162,6 +169,12 @@ typedef struct EsOut {
     size_t        nb_ts, cap_ts;
     char         *ts_path;          /* the timestamp file written */
     int64_t       sub_pos;          /* bytes written to the .sub */
+    int64_t       sup_wrapped;      /* PGS: display sets past the .sup's 32-bit time (writer_sup_time()) */
+    int64_t       sup_wrap_first;   /* the first one's time */
+    int           tie;              /* mkv.tie_subtitles, PGS / VobSub: its units are kept for the tie */
+    TieUnit      *units;
+    size_t        nb_units, cap_units;
+    char         *tied;             /* the tied copy mkvmerge gets (.tied.sup / .tied.idx), NULL none */
     int64_t       cues;             /* captions: SRT cues written */
     int           wav;              /* a WAV header to complete at the end */
     int           wav_room;         /* its header keeps room for the RF64 sizes (it may pass 4 GiB) */
@@ -412,11 +425,28 @@ static int vobsub_unit(EsOut *o, const uint8_t *data, int size, int64_t pts)
     return 0;
 }
 
+static int tie_unit(EsOut *o, int64_t time, int64_t pos, int64_t size)
+{
+    if (o->nb_units == o->cap_units) {
+        size_t cap = o->cap_units ? 2 * o->cap_units : 1024;
+        TieUnit *u = dr_realloc_array(o->units, cap, sizeof(*u));
+        if (!u)
+            return DR_ERR(ENOMEM);
+        o->units     = u;
+        o->cap_units = cap;
+    }
+    o->units[o->nb_units++] = (TieUnit){ time, pos, size };
+    return 0;
+}
+
 static int vobsub_write(EsOut *o, const DrDiscFrame *fr)
 {
     int64_t pts = fr->time == DR_NOPTS_VALUE ? 0 : ticks_in(fr->time, 90000);
     int64_t ms  = fr->time == DR_NOPTS_VALUE ? 0 : ticks_in(fr->time, 1000);
+    int ret;
 
+    if (o->tie && (ret = tie_unit(o, fr->time, 0, 0)) < 0)
+        return ret;
     if (ms < 0)
         ms = 0;
     fprintf(o->idx, "timestamp: %02"PRId64":%02"PRId64":%02"PRId64":%03"PRId64", filepos: %09"PRIx64"\n",
@@ -434,6 +464,12 @@ static int es_open(const DrDiscTrack *t, EsOut *o, const char *prefix, int64_t f
     char layout[64] = "", delay[32] = "", roles[64] = "", label[32];
     int audio = t->type == DISC_MEDIA_AUDIO;
     int profile = dr_layout_probe_profile(o->lp, t->profile);
+
+    /* DTS-HD MA: DTS:X as the title's details found it (our walk of the
+     * lossless frames' marker), not the decoder's profile */
+    if (t->codec == DR_CODEC_DTS && (t->profile == DISC_PROFILE_DTS_HD_MA || t->profile == DISC_PROFILE_DTS_HD_MA_X ||
+                                     t->profile == DISC_PROFILE_DTS_HD_MA_X_IMAX))
+        profile = t->profile;
 
     o->opened  = 1;
     o->profile = profile;
@@ -627,10 +663,23 @@ static int ts_write(const char *path, EsOut *o)
  * set's time (90 kHz, 32 bits) and a decode time of 0 (a reader shows a set
  * at its composition segment's time; the decode times only schedule a
  * player's decoder). */
+int writer_sup_time(int64_t time, uint32_t *pts)
+{
+    int64_t tick = ticks_in(time, 90000);
+
+    *pts = (uint32_t)tick;
+    return tick > UINT32_MAX;
+}
+
 static int sup_write(EsOut *o, const DrDiscFrame *fr)
 {
-    uint32_t pts = (uint32_t)ticks_in(fr->time, 90000);
+    uint32_t pts;
+    int64_t start = o->st.bytes;
     int off = 0;
+
+    /* past what the .sup's 32 bits hold: counted, said at the title's end */
+    if (writer_sup_time(fr->time, &pts) && !o->sup_wrapped++)
+        o->sup_wrap_first = fr->time;
 
     while (off + 3 <= fr->size) {
         int len = 3 + dr_rb16(fr->data + off + 1);
@@ -643,7 +692,9 @@ static int sup_write(EsOut *o, const DrDiscFrame *fr)
         o->st.bytes += sizeof(h) + len;
         off += len;
     }
-    return off == fr->size ? 0 : DR_ERR_INVALID;
+    if (off != fr->size)
+        return DR_ERR_INVALID;
+    return o->tie ? tie_unit(o, fr->time, start, o->st.bytes - start) : 0;
 }
 
 /* A text subtitle dialog as MKVToolNix writes it in a .textst file: the
@@ -1042,6 +1093,125 @@ static int title_holes(DrDisc *d, EsOut *out, int nb_tracks, char *why, size_t w
     return *why != 0;
 }
 
+/* mkv.tie_subtitles: each PGS and VobSub track goes to mkvmerge as a tied
+ * copy (subtie.h): every unit at the ms mkvmerge's count of the video gives
+ * its picture (plus the fields it starts into the picture), so the MKV holds
+ * it on its picture; the stream files keep the disc's times. A title the
+ * clock is not known for keeps the disc's times, said once. video: the
+ * video track given to mkvmerge (-1 none); rate: its frame rate; untimed:
+ * its frames without a time (the clock would miss them). */
+static void tie_subtitles(DrDisc *d, EsOut *out, int nb_tracks, SubTie *st, int video, DrRational rate,
+                          int64_t untimed, int use_ts)
+{
+    char why[256] = "";
+    int any = 0, ready = 0;
+
+    for (int i = 0; i < nb_tracks; i++)
+        any |= out[i].tie && out[i].opened && out[i].name;
+    if (!any)
+        return;
+    if (use_ts)
+        snprintf(why, sizeof(why), "the title has holes, so its video goes to mkvmerge with its timestamp file (the "
+                 "tie for that case is not built yet)");
+    else if (video < 0 || !st)
+        snprintf(why, sizeof(why), "no video track goes to mkvmerge");
+    else if (untimed)
+        snprintf(why, sizeof(why), "%"PRId64" video frame%s without a time", untimed, untimed == 1 ? "" : "s");
+    else {
+        int r = subtie_clock(st, dr_disc_track(d, video)->codec, rate.num, rate.den, why, sizeof(why));
+        if (r < 0)
+            snprintf(why, sizeof(why), "%s", dr_err_text(r));
+        ready = r > 0;
+    }
+    if (!ready) {
+        log_text(LOG_INFO, "Subtitles: not tied to their pictures in the MKV: %s; mkvmerge gets the disc's times (a "
+                 "subtitle can land 1 ms after its picture there)", why);
+        return;
+    }
+    for (int i = 0; i < nb_tracks; i++) {
+        const DrDiscTrack *t = dr_disc_track(d, i);
+        EsOut *o = &out[i];
+        int pgs = t->codec == DR_CODEC_HDMV_PGS_SUBTITLE;
+        size_t n = o->nb_units ? o->nb_units : 1;
+        int64_t *ms = NULL, *pos = NULL, *size = NULL, moved = 0, largest = 0, later = 0, off = 0;
+        int64_t first_off = DR_NOPTS_VALUE;
+        char *base = NULL, *tied = NULL, *idx = NULL, *sub = NULL;
+        int ret = 0;
+
+        if (!o->tie || !o->opened || !o->name)
+            continue;
+        if (!(ms = dr_malloc_array(n, sizeof(*ms))) ||
+            (pgs && (!(pos = dr_malloc_array(n, sizeof(*pos))) || !(size = dr_malloc_array(n, sizeof(*size)))))) {
+            ret = DR_ERR(ENOMEM);
+            goto next;
+        }
+        for (size_t k = 0; k < o->nb_units; k++) {
+            const TieUnit *u = &o->units[k];
+            int64_t m, plain;
+            int j = u->time == DR_NOPTS_VALUE ? -1 : subtie_place(st, u->time, &m);
+
+            if (pgs) {
+                pos[k]  = u->pos;
+                size[k] = u->size;
+            }
+            if (j < 0) {
+                ms[k] = -1;                     /* the unit keeps the disc's time */
+                if (!off++)
+                    first_off = u->time;
+                continue;
+            }
+            /* the ms mkvmerge would give the unit from the disc's time */
+            if (pgs) {
+                uint32_t tick;
+                writer_sup_time(u->time, &tick);
+                plain = subtie_sup_ms(tick);
+            } else
+                plain = DR_MAX(ticks_in(u->time, 1000), 0);
+            moved  += m != plain;
+            largest = DR_MAX(largest, DR_ABS(m - plain));
+            later  += j > 0;
+            ms[k]   = m;
+        }
+        /* <name>.tied.sup, or <name>.tied.idx with <name>.tied.sub (the
+         * stream file's .sub: mkvmerge reads a pair by the .idx's name) */
+        if (!(base = dr_asprintf_str("%.*s", (int)strlen(o->name) - 4, o->name)) ||
+            !(tied = dr_asprintf_str("%s.tied.%s", base, pgs ? "sup" : "idx")) ||
+            (!pgs && (!(idx = dr_asprintf_str("%s.idx", base)) || !(sub = dr_asprintf_str("%s.tied.sub", base))))) {
+            ret = DR_ERR(ENOMEM);
+            goto next;
+        }
+        if (pgs)
+            ret = subtie_sup(o->name, tied, pos, size, ms, o->nb_units);
+        else if ((ret = subtie_idx(idx, tied, ms, o->nb_units)) >= 0 && (ret = subtie_link_or_copy(o->name, sub)) < 0)
+            unlink(tied);
+        if (ret < 0)
+            goto next;
+        o->tied = tied;
+        tied    = NULL;
+        log_text(LOG_INFO, "Track %d (%s): %zu subtitle%s tied to their pictures on mkvmerge's count of the video: "
+                 "%"PRId64" moved (by at most %"PRId64" ms), %"PRId64" start on a later field of their picture (kept "
+                 "there)", t->number, codec_label(t->codec, t->profile), o->nb_units - (size_t)off,
+                 o->nb_units - (size_t)off == 1 ? "" : "s", moved, largest, later);
+        if (off) {
+            char at[32];
+            hms(at, sizeof(at), first_off == DR_NOPTS_VALUE ? 0 : first_off / (double)DR_TICKS_PER_SECOND);
+            log_text(LOG_WARNING, "Track %d: %"PRId64" subtitle%s on no picture or field of the video (the first at "
+                     "%s): kept at the disc's time", t->number, off, off == 1 ? "" : "s", at);
+        }
+next:
+        if (ret < 0)
+            log_text(LOG_WARNING, "Track %d: its subtitles could not be tied (%s): mkvmerge gets the stream file with "
+                     "the disc's times", t->number, dr_err_text(ret));
+        dr_free(ms);
+        dr_free(pos);
+        dr_free(size);
+        dr_free(base);
+        dr_free(tied);
+        dr_free(idx);
+        dr_free(sub);
+    }
+}
+
 static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_dir, const char *dir, int own_dir,
                           const char *name, const char *chap, int nb_chapters, int use_ts, char **mkv_out)
 {
@@ -1091,8 +1261,9 @@ static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_
                      "MKV file); its file is kept: %s", t->number, e->name);
             continue;
         }
-        snprintf(file, sizeof(file), "%s", e->name);
-        if (t->codec == DR_CODEC_DVD_SUBTITLE && strlen(file) > 3)
+        /* a tied copy (tie_subtitles()) in the stream file's place */
+        snprintf(file, sizeof(file), "%s", e->tied ? e->tied : e->name);
+        if (t->codec == DR_CODEC_DVD_SUBTITLE && !e->tied && strlen(file) > 3)
             memcpy(file + strlen(file) - 3, "idx", 3);        /* mkvmerge reads a VobSub pair by its .idx */
         if ((ret = opts_add(&o, "--language")) < 0 || (ret = opts_addf(&o, "0:%s", *e->st.lang ? e->st.lang : "und")) < 0)
             goto done;
@@ -1182,6 +1353,15 @@ static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_
             }
             if (e->ts_path)
                 left += unlink(e->ts_path) < 0;
+            if (e->tied) {
+                left += unlink(e->tied) < 0;
+                if (dr_disc_track(d, i)->codec == DR_CODEC_DVD_SUBTITLE) {
+                    char sub[4200];
+                    snprintf(sub, sizeof(sub), "%s", e->tied);
+                    memcpy(sub + strlen(sub) - 3, "sub", 3);
+                    left += unlink(sub) < 0;
+                }
+            }
         }
         if (chap)
             unlink(chap);
@@ -1221,6 +1401,10 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     char *mkv_path = NULL;
     int64_t mkv_bytes = 0;
     int via_done = 0;
+    /* mkv.tie_subtitles: the video's pictures (track tie_video) for mkvmerge's count of them */
+    int tie = via && setting_bool("mkv.tie_subtitles"), tie_video = -1;
+    SubTie *st = NULL;
+    int64_t tie_untimed = 0;
 
     memset(res, 0, sizeof(*res));
     /* the title's warnings: every warning line from here to its last line */
@@ -1290,6 +1474,9 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         /* LPCM leaves the disc layer as little-endian PCM: its format (with
          * the channel layout) is set when its first frame comes */
         o->probe_late  = t->codec == DR_CODEC_PCM_DVD || t->codec == DR_CODEC_PCM_BLURAY;
+        o->tie         = tie && (t->codec == DR_CODEC_HDMV_PGS_SUBTITLE || t->codec == DR_CODEC_DVD_SUBTITLE);
+        if (tie && tie_video < 0 && t->type == DISC_MEDIA_VIDEO && !t->second_view)
+            tie_video = i;
         if (t->type == DISC_MEDIA_AUDIO && !t->channels && !o->probe_late) {
             if (!(o->hold = dr_calloc(HOLD_MAX, sizeof(*o->hold)))) {
                 ret = DR_ERR(ENOMEM);
@@ -1303,6 +1490,10 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         }
     }
 
+    if (tie && !(st = subtie_alloc())) {
+        ret = DR_ERR(ENOMEM);
+        goto end;
+    }
     if (mkv) {
         if (!(mkv_path = dr_asprintf_str("%s.mkv", prefix))) {
             ret = DR_ERR(ENOMEM);
@@ -1356,6 +1547,17 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
             if (o->st.first_ms == DR_NOPTS_VALUE)
                 o->st.first_ms = ms;
             o->st.end_ms = DR_MAX(o->st.end_ms, end);
+        }
+        /* mkv.tie_subtitles: the pictures mkvmerge will count */
+        if (st && fr.track == tie_video) {
+            if (fr.time == DR_NOPTS_VALUE)
+                tie_untimed++;
+            else if ((ret = subtie_video_frame(st, fr.time, fr.duration,
+                                               t->codec == DR_CODEC_H264 ? mkv_h264_pictures(fr.data, fr.size) : 1))
+                     < 0) {
+                dr_disc_frame_unref(&fr);
+                goto end;
+            }
         }
         /* the timestamp files: each video and audio track's (MKV: the video track in the file) */
         if (want_ts && ts_codec(t) && fr.time != DR_NOPTS_VALUE &&
@@ -1498,6 +1700,17 @@ end:
                 fwrite(n, 1, 2, o->f) != 2)
                 ret = write_failed(o);
         }
+        /* PGS past 13 h 15 min: the .sup cannot hold those times (a 32-bit
+         * 90 kHz field in every program that writes or reads one) */
+        if (o->sup_wrapped && ret >= 0) {
+            char at[32];
+            hms(at, sizeof(at), o->sup_wrap_first / (double)DR_TICKS_PER_SECOND);
+            log_text(LOG_WARNING, "Track %d: %"PRId64" PGS display set%s from %s on %s past 13:15:21, the most a .sup "
+                     "file's 32-bit time can hold: in the .sup their times start again from 0 (every program's .sup "
+                     "has this limit)%s; rip the title in parts (--split) or as output.format = mkv to keep them right",
+                     t->number, o->sup_wrapped, o->sup_wrapped == 1 ? "" : "s", at, o->sup_wrapped == 1 ? "is" : "are",
+                     via ? ", and mkvmerge puts them at those wrong times in the MKV" : "");
+        }
         if (o->f && (r = out_close(o, &o->f)) < 0 && ret >= 0)
             ret = r;
         if (o->idx && (r = out_close(o, &o->idx)) < 0 && ret >= 0)
@@ -1559,7 +1772,15 @@ end:
         if (via && !check_failed) {
             char *made_mkv = NULL;
             struct stat sb;
-            int mret = mkvmerge_title(d, out, nb_tracks, job->out_dir, dir, job->sub_folder, res->name, chap,
+            int mret;
+            if (tie) {
+                const DiscTitleInfo *ti = info && job->title < info->nb_titles ? &info->titles[job->title] : NULL;
+                int num = tie_video >= 0 ? dr_disc_track(d, tie_video)->number : -1;
+                DrRational rate = ti && num >= 0 && num < ti->nb_streams ? ti->streams[num].frame_rate :
+                                  (DrRational){ 0, 0 };
+                tie_subtitles(d, out, nb_tracks, st, tie_video, rate, tie_untimed, use_ts);
+            }
+            mret = mkvmerge_title(d, out, nb_tracks, job->out_dir, dir, job->sub_folder, res->name, chap,
                                       nb_chapters, use_ts, &made_mkv);
             if (mret == DR_ERR_CANCELLED) {
                 res->stopped = 1;
@@ -1711,7 +1932,10 @@ end:
         dr_free(o->name);
         dr_free(o->ts);
         dr_free(o->ts_path);
+        dr_free(o->units);
+        dr_free(o->tied);
     }
+    subtie_free(&st);
     dr_free(out);
     dr_free(chap);
     dr_free(mkv_path);

@@ -839,6 +839,73 @@ move:
     return HAVE;
 }
 
+/* The segment's start against its first pictures. The vote (start()) takes
+ * the start most of the first pictures give, which outvotes a few wrong
+ * stamps, but a hole among the first pictures (pictures missing, the times
+ * jump forward) with more pictures after it than before moves the whole
+ * segment: the pictures before the hole are put after their own times. So
+ * the first run (the first time-stamped pictures that agree, 12 of them or
+ * all a short segment has) is compared with the vote's start: agreeing (a
+ * segment without trouble), nothing changes; disagreeing, the start comes
+ * from the first run only when the stamped pictures show a clean hole
+ * (those before it on the first run's start, every one after it on the
+ * vote's, which is later by whole fields); anything else keeps the vote and
+ * is said. */
+typedef struct Stamped {
+    int64_t pos, key;
+} Stamped;
+
+static int stamped_less(const void *a, const void *b)
+{
+    int64_t x = ((const Stamped *)a)->pos, y = ((const Stamped *)b)->pos;
+    return x < y ? -1 : x > y;
+}
+
+static int start_check(DRVideo *v)
+{
+    int64_t tol = (int64_t)(v->v70 / v->v78) / 500, field = (int64_t)(v->v70 / v->v78), a, d;
+    int n = DR_MIN(v->q.n, VOTE_UNITS), timed = 0, run, split, before = 0;
+    Stamped *s = dr_malloc_array(n ? n : 1, sizeof(*s));
+
+    if (!s)
+        return DR_ERR(ENOMEM);
+    for (int i = 0; i < n; i++) {
+        VUnit *u = at(&v->q, i);
+        if (is_pic(u->type) && u->f.time != DR_NOPTS_VALUE)
+            s[timed++] = (Stamped){ u->pos, u->f.time - (int64_t)(v->v70 * (uint64_t)u->pos / v->v78) };
+    }
+    if (!timed) {
+        dr_free(s);
+        return 0;
+    }
+    qsort(s, timed, sizeof(*s), stamped_less);
+    a = s[0].key;
+    for (run = 1; run < timed && DR_ABS(s[run].key - a) < tol; run++)
+        ;
+    d = v->base - a;
+    if (DR_ABS(d) < tol) {
+        dr_vlog(v->log, DR_VLOG_DEBUG, "Title timeline: video: the segment's first %d time-stamped pictures agree with "
+               "its start\n", DR_MIN(run, 12));
+        dr_free(s);
+        return 0;
+    }
+    /* a clean hole: the first run, then every stamped picture on the vote's
+     * start, which is later by whole fields */
+    split = run;
+    while (split < timed && DR_ABS(s[split].key - v->base) < tol)
+        split++;
+    if (run >= DR_MIN(12, timed) && split == timed && d >= field - tol &&
+        DR_ABS(d - (d + field / 2) / field * field) < tol) {
+        for (int i = 0; i < v->q.n; i++)
+            before += is_pic(at(&v->q, i)->type) && at(&v->q, i)->pos < s[run].pos;
+        v->base = a;
+        event(v, DR_EV_VIDEO_START_HOLE, grid(v, s[run].pos), d, before);
+    } else
+        event(v, DR_EV_VIDEO_START_ODD, grid(v, s[0].pos), -d, run);
+    dr_free(s);
+    return 0;
+}
+
 static int run(DRVideo *v)
 {
     int r;
@@ -863,6 +930,8 @@ static int run(DRVideo *v)
         if (r < 0)
             return r;
         v->started  = 1;
+        if ((r = start_check(v)) < 0)
+            return r;
         v->st.base  = v->base;
         dr_vlog(v->log, DR_VLOG_DEBUG, "Title timeline: video: %d/%d fps, grid base %"PRId64" ticks\n",
                v->num, v->den, v->base);

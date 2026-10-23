@@ -91,13 +91,15 @@ class Bits:
         return (self.v << (-self.n % 8)).to_bytes((self.n + 7) // 8, "big")
 
 
-def coreless(kind, body, rate_index=12, xll_log2=(4, 5)):
+def coreless(kind, body, rate_index=12, xll_log2=(4, 5), asset_type=None):
     """One extension substream frame with one presentation and one asset
     (ETSI TS 102 114 7.4-7.5): static fields, an asset descriptor in coding
     mode 2 (LBR: body after its sync word 0A 80 19 21) or 1 (lossless only:
     body after an XLL header, sync 41 A2 95 47)."""
     if kind == "lbr":
         comp = bytes.fromhex("0A801921") + body
+    elif kind == "xll_frame":
+        comp = body                                             # a whole XLL frame (xll_frame())
     else:
         x = Bits()
         x.put(0x41A29547, 32); x.put(0, 4); x.put(15, 8); x.put(0, 5); x.put(0, 1)   # version, header size, 1 bit
@@ -117,7 +119,11 @@ def coreless(kind, body, rate_index=12, xll_log2=(4, 5)):
         b.put(len(comp) - 1, 16)                                    # the asset's size
         d = Bits()
         d.put(0, 3)                                                 # asset index
-        d.put(0, 1); d.put(0, 1); d.put(0, 1)                       # no type, language, text
+        if asset_type is None:
+            d.put(0, 1)                                             # no asset type
+        else:
+            d.put(1, 1); d.put(asset_type, 4)
+        d.put(0, 1); d.put(0, 1)                                    # no language, text
         d.put(23, 5); d.put(rate_index, 4); d.put(1, 8)             # 24 bits, max rate, 2 channels
         d.put(0, 1); d.put(0, 3)                                    # no one-to-one map, representation
         d.put(0, 1); d.put(0, 1)                                    # no DRC, no dialog normalization
@@ -227,3 +233,86 @@ def test_the_extension_substream_checksums_pass_and_a_changed_bit_fails():
     assert sums(express(1, bad=(0,))[0]) == "the DTS Express frame's checksum"
     assert sums(flip(lbr, len(lbr) - 1)) == "the DTS Express frame's checksum"
     assert sums(flip(xll, len(xll) - 300 - 4)) == "the DTS-HD lossless (XLL) frame header's CRC"
+
+
+# ---- the lossless frame walked: its channel set sub-headers' and NAVI table's CRCs, DTS:X by its marker ----
+
+XLL_SYNC = bytes.fromhex("41A29547")
+
+
+def xll_frame(marker=None, nchsets=1, nsegs_log2=1, rate_index=12, band=bytes(range(96))):
+    """A whole XLL frame (ETSI TS 102 114 clause 8): a 16-byte common header (its CRC right), nchsets 16-byte
+    channel set sub-headers (2 channels, 24 bits, the sampling frequency of rate_index; each CRC right), the NAVI
+    table (16-bit segment sizes, per segment and channel set; its CRC right), the band data (band, cut into the
+    segments), then at the next 32-bit boundary the DTS:X marker (or zeros) and 8 more bytes."""
+    nsegs = 1 << nsegs_log2
+    n = nsegs * nchsets
+    sizes = [len(band) // n] * n
+    sizes[-1] += len(band) - sum(sizes)
+    navi = Bits()
+    for size in sizes:
+        navi.put(size - 1, 16)
+    navi_b = with_crc(navi.bytes() + b"\0\0", 0)
+    chs = []
+    for _ in range(nchsets):
+        c = Bits()
+        c.put(16 - 1, 10); c.put(2 - 1, 4); c.put(3, 2); c.put(23, 5); c.put(23, 5); c.put(rate_index, 4)
+        c.pad_to(14 * 8)
+        chs.append(with_crc(c.bytes() + b"\0\0", 0))
+    body = b"".join(chs) + navi_b + band
+    pad = -(16 + len(body)) % 4
+    tail = bytes(pad) + (marker or 0).to_bytes(4, "big") + bytes(8)
+    frame_size = 16 + len(body) + len(tail)
+    h = Bits()
+    h.put(0x41A29547, 32); h.put(0, 4); h.put(16 - 1, 8)              # version, header size
+    h.put(20 - 1, 5); h.put(frame_size - 1, 20)                       # frame size in 20 bits
+    h.put(nchsets - 1, 4); h.put(nsegs_log2, 4); h.put(5, 4)          # channel sets, segments, samples (log2)
+    h.put(16 - 1, 5); h.put(0, 2); h.put(0, 1); h.put(8 - 1, 5)       # segment size bits, no band CRC, no LSB split
+    h.pad_to(14 * 8)
+    return with_crc(h.bytes() + b"\0\0", 4) + body + tail
+
+
+def dtsx(unit):
+    marker, imax = ffi.new("uint32_t *"), ffi.new("int *")
+    walked = lib.dr_dca_dtsx(unit, len(unit), marker, imax)
+    return walked, marker[0], imax[0]
+
+
+def test_dts_x_is_found_by_its_marker_after_the_band_data():
+    # 0x02000850 and the 0xF14000D0-D4 range are DTS:X; a frame without one is plain DTS-HD MA
+    for marker in (0x02000850, 0xF14000D0, 0xF14000D3, 0xF14000D4, None):
+        unit = coreless("xll_frame", xll_frame(marker))
+        assert sums(unit) == "ok"
+        assert dtsx(unit) == (1, marker or 0, 0), hex(marker or 0)
+        # the same with a core frame before the extension substream
+        assert dtsx(frames()[0] + unit) == (1, marker or 0, 0)
+    assert dtsx(coreless("xll_frame", xll_frame(0xF14000D5)))[1] == 0, "not a DTS:X marker"
+
+
+def test_two_channel_sets_and_several_segments_are_walked():
+    unit = coreless("xll_frame", xll_frame(0xF14000D3, nchsets=2, nsegs_log2=2))
+    assert sums(unit) == "ok" and dtsx(unit) == (1, 0xF14000D3, 0)
+
+
+def test_an_imax_asset_type_is_said():
+    assert dtsx(coreless("xll_frame", xll_frame(0x02000850), asset_type=13)) == (1, 0x02000850, 1)
+
+
+def test_a_channel_set_above_96_khz_is_not_walked_but_its_sub_header_is_checked():
+    # above 96 kHz a channel set has 2 frequency bands, or more (a flag deep in its sub-header): not counted
+    unit = coreless("xll_frame", xll_frame(0x02000850, rate_index=14))
+    assert dtsx(unit)[0] == 0 and sums(unit) == "ok"
+    x = unit.index(XLL_SYNC)
+    assert sums(flip(unit, x + 16 + 3)) == "a DTS-HD lossless (XLL) channel set sub-header's CRC"
+
+
+def test_a_changed_bit_in_a_sub_header_or_the_navi_table_fails_and_one_in_the_band_data_does_not():
+    unit = coreless("xll_frame", xll_frame(0xF14000D3, nchsets=2))
+    x = unit.index(XLL_SYNC)
+    for byte in range(16, 48):                                        # both channel set sub-headers
+        assert sums(flip(unit, x + byte, byte % 8)) == "a DTS-HD lossless (XLL) channel set sub-header's CRC"
+    navi = x + 48
+    for byte in range(navi, navi + 6):                                # 4 segment sizes of 16 bits... and the CRC
+        assert sums(flip(unit, byte, byte % 8)) == "the DTS-HD lossless (XLL) NAVI table's CRC"
+    assert sums(flip(unit, navi + 12)) == "ok", "the band data has no CRC here"
+    assert dtsx(flip(unit, x + 20))[0] == 0, "a frame whose check fails is not walked"

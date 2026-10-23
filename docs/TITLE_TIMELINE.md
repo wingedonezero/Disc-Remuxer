@@ -112,7 +112,13 @@ logged with the reason; nothing is guessed.
 - **Video:** every frame time is a grid point: `base + position * frame
   duration`. Positions are sums of field durations in display order (from
   the order numbers). The base is voted from the first 1000 pictures (PES
-  time - position). PES times then only check the grid: a picture off by
+  time - position), then checked against the first run of time-stamped
+  pictures that agree (12, or all a short segment has): when they show a
+  clean hole among the first pictures (the run, then every stamped picture
+  on the vote's base, later by whole fields), the base is the run's, so the
+  pictures before the hole keep their times and the hole is followed where
+  it is; any other disagreement keeps the vote's base; both are warnings.
+  PES times then only check the grid: a picture off by
   >= 0.1 ms is reported; when most pictures in a 25 s window are off, the
   grid is repaired (a forward jump of up to 600 s is followed with empty
   placeholder frames; a small backward drift is corrected one unit at a

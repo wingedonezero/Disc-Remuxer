@@ -400,6 +400,7 @@ static int seek_bits(DrBits *g, int p)
 typedef struct ExssAsset {
     int offset, size;
     unsigned mask;
+    int asset_type;                         /* the asset type descriptor, -1 not present */
     int max_sample_rate;
     int core_size, xbr_size, xxch_size, x96_size, lbr_size, xll_size;
     int lbr_offset, xll_offset;
@@ -434,6 +435,7 @@ static int exss_first_asset(const uint8_t *b, int len, ExssAsset *a)
     int nch = 0, estereo = 0, e6 = 0, drc, descr_pos, descr_size, offs, left;
 
     memset(a, 0, sizeof(*a));
+    a->asset_type = -1;
     if (dr_bits_init8(&g, b, len) < 0)
         return -1;
     dr_bits_skip(&g, 32 + 8);               /* sync word, user defined bits */
@@ -477,7 +479,7 @@ static int exss_first_asset(const uint8_t *b, int len, ExssAsset *a)
     dr_bits_skip(&g, 3);                    /* asset index */
     if (stat) {
         if (dr_bits_get1(&g))
-            dr_bits_skip(&g, 4);            /* asset type */
+            a->asset_type = dr_bits_get(&g, 4);     /* asset type */
         if (dr_bits_get1(&g))
             dr_bits_skip(&g, 24);           /* language */
         if (dr_bits_get1(&g)) {             /* additional text */
@@ -605,6 +607,130 @@ static int exss_first_asset(const uint8_t *b, int len, ExssAsset *a)
     return seek_bits(&g, header_size * 8) < 0 ? -1 : 0;
 }
 
+/* ---- The lossless extension (XLL, ETSI TS 102 114 clause 8) walked
+ * without decoding: the common header, the channel set sub-headers (each
+ * its own size and CRC-16), the NAVI table (every band's segment sizes, its
+ * CRC-16 after it), and where the band data the NAVI table sizes ends: the
+ * DTS:X extension data starts there, at the next 32-bit boundary from the
+ * frame's start, with its marker. Each CRC-16 is CCITT from 0xFFFF over the
+ * part with its CRC at the end (the remainder 0). ---- */
+
+#define XLL_SYNC 0x41A29547U
+
+enum { XLL_WALKED = 1, XLL_SKIPPED = 0, XLL_BAD = -1 };
+
+/* xll: the XLL frame (its sync word first), n the bytes there are of it.
+ * XLL_WALKED (*marker: the DTS:X marker or 0), XLL_SKIPPED (the frame runs
+ * past the bytes there are, or a channel set above 96 kHz may have more
+ * frequency bands than its rate says), XLL_BAD (*why: the check that failed) */
+static int xll_walk(const uint8_t *xll, int n, uint32_t *marker, const char **why)
+{
+    DrBits g;
+    int hs, frame_size, nchsets, nsegs, seg_nbits, pos, bands[16], max_bands = 1, navi_bits, navi_bytes;
+    int64_t data = 0;
+
+    *marker = 0;
+    if (n < 16 || dr_rb32(xll) != XLL_SYNC || dr_bits_init8(&g, xll, n) < 0)
+        return XLL_SKIPPED;
+    dr_bits_skip(&g, 32 + 4);               /* sync word, version */
+    hs         = dr_bits_get(&g, 8) + 1;
+    frame_size = dr_bits_get(&g, dr_bits_get(&g, 5) + 1) + 1;
+    nchsets    = dr_bits_get(&g, 4) + 1;
+    nsegs      = 1 << dr_bits_get(&g, 4);
+    dr_bits_skip(&g, 4);                    /* samples in a segment, log2 */
+    seg_nbits  = dr_bits_get(&g, 5) + 1;
+    if (frame_size > n || hs < 6 || hs > frame_size)
+        return XLL_SKIPPED;
+    /* the channel set sub-headers: size (10 bits) + 1 bytes each, its CRC
+     * the last 16 bits; its sampling frequency after the channel count,
+     * the residual type of each channel and two 5-bit resolutions */
+    pos = hs;
+    for (int i = 0; i < nchsets; i++) {
+        int size, nch, rate;
+        DrBits c;
+        if (pos + 2 > frame_size)
+            return XLL_SKIPPED;
+        size = (xll[pos] << 2 | xll[pos + 1] >> 6) + 1;
+        if (size < 4 || pos + size > frame_size)
+            return XLL_SKIPPED;
+        if (dr_crc16_ccitt(0xFFFF, xll + pos, size)) {
+            *why = "a DTS-HD lossless (XLL) channel set sub-header's CRC";
+            return XLL_BAD;
+        }
+        dr_bits_init8(&c, xll + pos, size);
+        dr_bits_skip(&c, 10);
+        nch  = dr_bits_get(&c, 4) + 1;
+        dr_bits_skip(&c, nch + 5 + 5);
+        rate = sampling_freqs[dr_bits_get(&c, 4)];
+        if (rate > 96000)
+            return XLL_SKIPPED;             /* 2 bands, or more with the extra bands flag */
+        bands[i] = 1;
+        pos += size;
+    }
+    /* the NAVI table: per band, segment and channel set (that has the
+     * band) a segment size - 1; byte aligned; its CRC-16 */
+    if (dr_bits_init8(&g, xll + pos, frame_size - pos) < 0)
+        return XLL_SKIPPED;
+    for (int band = 0; band < max_bands; band++)
+        for (int seg = 0; seg < nsegs; seg++)
+            for (int i = 0; i < nchsets; i++)
+                if (bands[i] > band)
+                    data += dr_bits_get(&g, seg_nbits) + 1;
+    navi_bits  = g.pos;
+    navi_bytes = (navi_bits + 7) / 8 + 2;
+    if (pos + navi_bytes > frame_size)
+        return XLL_SKIPPED;
+    /* the CRC before the sizes are used: a damaged table fails here */
+    if (dr_crc16_ccitt(0xFFFF, xll + pos, navi_bytes)) {
+        *why = "the DTS-HD lossless (XLL) NAVI table's CRC";
+        return XLL_BAD;
+    }
+    /* the band data, then (at a 32-bit boundary) the extension data */
+    pos += navi_bytes;
+    if (pos + data > frame_size)
+        return XLL_SKIPPED;
+    pos = (int)((pos + data + 3) & ~3);
+    if (pos + 4 <= frame_size) {
+        uint32_t w = dr_rb32(xll + pos);
+        if (w == 0x02000850U || (w >= 0xF14000D0U && w <= 0xF14000D4U))
+            *marker = w;
+    }
+    return XLL_WALKED;
+}
+
+int dr_dca_exss_frame_size(const uint8_t *buf, int size)
+{
+    DiscExtSS h;
+    DrBits r;
+    int idx, blong;
+
+    if (!disc_extss_start(&h, &r, buf, size, &idx, &blong) || h.hdr_size < 7 || h.hdr_size > size ||
+        h.frame_size < h.hdr_size || dr_crc16_ccitt(0xFFFF, buf + 5, h.hdr_size - 5))
+        return 0;
+    return h.frame_size;
+}
+
+int dr_dca_dtsx(const uint8_t *buf, int size, uint32_t *marker, int *imax_type)
+{
+    ExssAsset a;
+    const char *why;
+    int off = 0;
+
+    *marker    = 0;
+    *imax_type = 0;
+    /* a core frame first: the extension substream after it */
+    if (size >= 10 && dr_rb32(buf) == 0x7FFE8001U) {
+        off = disc_core_size(buf);
+        if (off <= 0 || off >= size)
+            return 0;
+    }
+    if (size - off < 10 || dr_rb32(buf + off) != 0x64582025U || exss_first_asset(buf + off, size - off, &a) < 0 ||
+        !(a.mask & EXSS_XLL) || a.xll_size < 16)
+        return 0;
+    *imax_type = a.asset_type == 13;
+    return xll_walk(buf + off + a.xll_offset, a.xll_size, marker, &why) == XLL_WALKED;
+}
+
 int dr_dca_exss_checksums(const uint8_t *buf, int size, const char **why)
 {
     DiscExtSS h;
@@ -663,10 +789,14 @@ int dr_dca_exss_checksums(const uint8_t *buf, int size, const char **why)
         const uint8_t *p = buf + a.xll_offset;
         int hs = (((p[4] & 0x0F) << 4) | (p[5] >> 4)) + 1;
 
+        uint32_t marker;
         if (hs >= 6 && hs <= a.xll_size && dr_crc16_ccitt(0xFFFF, p + 4, hs - 4)) {
             *why = "the DTS-HD lossless (XLL) frame header's CRC";
             return 0;
         }
+        /* the channel set sub-headers' and the NAVI table's CRCs */
+        if (xll_walk(p, a.xll_size, &marker, why) == XLL_BAD)
+            return 0;
     }
     return 1;
 }

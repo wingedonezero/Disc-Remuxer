@@ -107,6 +107,12 @@ source (image / folder)
             mkvmerge only for a title with a real hole (damaged data left out,
             pictures missing, an audio gap left open), --sync otherwise; the
             log says which and why
+            mkv.tie_subtitles (off by default; subtie.c): each PGS / VobSub
+            subtitle goes to mkvmerge in a copy of its file (.tied.sup /
+            .tied.idx) at the ms mkvmerge's own count of the video gives its
+            picture (its rule per codec: MPEG-1/2, H.264, HEVC), so it stays on
+            its picture in the MKV and after an extract and rebuild; the
+            stream files keep the disc's times
 ```
 
 The info path: the format part reads the structure (every check reported
@@ -163,6 +169,7 @@ command-line test covers the GUI).
 | `select.c`, `select.h` | the selection: titles ripped, written as parts, tracks kept (`--tracks`) |
 | `discs.c`, `discs.h` | finding discs in a folder and each disc's output folder (`find`, the GUI's queue) |
 | `writer.c`, `writer.h` | one title's stream files, chapters, VobSub pairs, WAVE files, and the end check |
+| `subtie.c`, `subtie.h` | mkv.tie_subtitles: mkvmerge's count of the video's pictures, each subtitle's picture on it, the tied copies of a .sup / VobSub index |
 | `mkvout.c`, `mkvout.h` | one title into one MKV file (output.format = mkv): the tracks the writer takes, held until each has started, then the Matroska writer (`src/mkv/`) |
 | `codecs.c`, `codecs.h` | codec, profile, layout and Matroska names as players show them |
 | `names.c`, `names.h` | file names from `output.file_name_template` |
