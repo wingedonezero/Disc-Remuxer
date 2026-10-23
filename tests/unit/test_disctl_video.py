@@ -152,3 +152,57 @@ def test_a_later_header_with_another_frame_rate_is_a_warning_and_the_first_rate_
     assert (rc[0]["count"], rc[0]["dur"]) == (25, 1)
     for o, p in zip(s.out, pics):
         assert o[0] == pes(p[2]), "still timed at 29.97"
+
+
+# ---- the segment's start against its first pictures (start_check) ----
+
+def first_after(pics, cut):
+    """The display index of the first picture shown from decode index cut on."""
+    return min(p[2] for p in pics[cut:])
+
+
+def test_a_hole_among_the_first_pictures_keeps_the_start_of_those_before_it():
+    # from the I picture at decode index 100 on, the times are 30 frames later (pictures missing); the vote
+    # (most of the first 1000 pictures) would give the later start and move the first 100 pictures 1,001 ms
+    pics = pictures(M2V)
+    jump = 30 * FRAME
+    cut = next(k for k in range(100, len(pics)) if pics[k][3] == 1)
+    s, st = run(lambda d, k: pes(d) + (jump if k >= cut else 0))
+    assert st.base == BASE, "the start of the pictures before the hole"
+    holes = of_kind(s, lib.DR_EV_VIDEO_START_HOLE)
+    d0 = first_after(pics, cut)
+    assert [(e["pos"], e["dur"], e["count"]) for e in holes] == [(pes(d0), jump, d0)], s.events
+    assert not of_kind(s, lib.DR_EV_VIDEO_START_ODD)
+    real = [o for o in s.out if not o[2] & F_MARKER]
+    assert len(real) == len(pics)
+    assert all(real[k][0] == pes(pics[k][2]) for k in range(cut) if pics[k][2] < d0), "before the hole: disc times"
+    assert real[cut + 30][0] == pes(pics[cut + 30][2]) + jump, "after it: on the new grid"
+    assert of_kind(s, lib.DR_EV_VIDEO_REPAIR), "the jump itself followed where it is"
+
+
+def test_a_few_wrong_first_stamps_keep_the_vote_s_start_and_are_said():
+    # the first three pictures in decode order stamped 30 frames early: not a run of 12, no clean hole
+    s, st = run(lambda d, k: pes(d) - (30 * FRAME if k < 3 else 0))
+    assert st.base == BASE
+    odd = of_kind(s, lib.DR_EV_VIDEO_START_ODD)
+    assert len(odd) == 1 and odd[0]["dur"] == -30 * FRAME and odd[0]["count"] == 2, s.events
+    assert not of_kind(s, lib.DR_EV_VIDEO_START_HOLE)
+
+
+def test_a_backward_jump_among_the_first_pictures_keeps_the_vote_s_start_and_is_said():
+    pics = pictures(M2V)
+    back = 30 * FRAME
+    cut = next(k for k in range(100, len(pics)) if pics[k][3] == 1)
+    s, st = run(lambda d, k: pes(d) - (back if k >= cut else 0))
+    assert st.base == BASE - back, "the vote's start, as before"
+    odd = of_kind(s, lib.DR_EV_VIDEO_START_ODD)
+    assert len(odd) == 1 and odd[0]["dur"] == back, s.events
+    assert not of_kind(s, lib.DR_EV_VIDEO_START_HOLE)
+
+
+def test_a_short_segment_with_few_stamps_that_agree_says_nothing():
+    # 60 pictures with a time on every 15th (as a DVD's short last cell): 4 stamps, all on the start
+    pics = pictures(M2V)
+    s, st = run(lambda d, k: pes(d) if k % 15 == 0 else None, m2v=M2V[:pics[59][1]])
+    assert st.base == BASE
+    assert not of_kind(s, lib.DR_EV_VIDEO_START_HOLE) and not of_kind(s, lib.DR_EV_VIDEO_START_ODD), s.events

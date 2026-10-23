@@ -458,6 +458,10 @@ enum DREventKind {
     DR_EV_VIDEO_INVALID,   /**< end of the segment: count = pictures whose PES time was off the grid */
     DR_EV_VIDEO_REPAIR,    /**< the grid followed a jump of the PES times (count = placeholders) */
     DR_EV_VIDEO_RATE_CHANGE, /**< a later header states another frame rate (count = num, dur = den): warning only */
+    DR_EV_VIDEO_START_HOLE, /**< a hole among a segment's first pictures: the start taken from the pictures before
+                                 it (pos = where the hole starts, dur = its length, count = pictures before it) */
+    DR_EV_VIDEO_START_ODD, /**< a segment's first stamped pictures disagree with its start (no clean hole): the start
+                                kept (pos = the first one, dur = by how much, count = how many agree) */
     DR_EV_SUB_UNTIMED,     /**< a sub-picture unit without a time of its own left out (pos = its byte offset) */
     DR_EV_SUB_EARLY,       /**< a sub-picture unit before the video's first field left out (pos = its PES time) */
     DR_EV_SUB_OVERLAP,     /**< joiner: a sub-picture starts before the one before it ends, by more than

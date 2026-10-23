@@ -212,6 +212,8 @@ static const char *const event_names[] = {
     [DR_EV_VIDEO_TIMECODE_LIMIT] = "video_timecode_limit",
     [DR_EV_VIDEO_INVALID]        = "video_invalid",
     [DR_EV_VIDEO_REPAIR]         = "video_repair",
+    [DR_EV_VIDEO_START_HOLE]     = "video_start_hole",
+    [DR_EV_VIDEO_START_ODD]      = "video_start_odd",
     [DR_EV_VIDEO_RATE_CHANGE]    = "video_rate_change",
     [DR_EV_SUB_UNTIMED]          = "sub_untimed",
     [DR_EV_SUB_EARLY]            = "sub_early",
@@ -350,6 +352,18 @@ static void event_text(DRTitle *t, const DREvent *e)
     case DR_EV_VIDEO_REPAIR:
         dr_vlog(t->log, DR_VLOG_WARNING, "Track %d at %s: the frame grid follows a jump of the disc times (%"PRId64
                " placeholder(s))\n", k, hms(a, 32, e->pos), e->count);
+        break;
+    case DR_EV_VIDEO_START_HOLE:
+        dr_vlog(t->log, DR_VLOG_WARNING, "Track %d at %s: pictures missing for %s ms among the segment's first ones "
+               "(%"PRId64" before them): the segment's start taken from those before the hole (the start most of its "
+               "first pictures give would have put them %s ms after their disc times) [untested on real discs]\n", k,
+               hms(a, 32, e->pos),
+               msec(b, 32, e->dur, 0), e->count, msec(c, 32, e->dur, 0));
+        break;
+    case DR_EV_VIDEO_START_ODD:
+        dr_vlog(t->log, DR_VLOG_WARNING, "Track %d at %s: the segment's first %"PRId64" time-stamped picture(s) put "
+               "its start %s ms from the start most of its first pictures give, with no clean hole between them: "
+               "that start kept\n", k, hms(a, 32, e->pos), e->count, msec(b, 32, e->dur, 1));
         break;
     case DR_EV_PCM_SILENCE:
         dr_vlog(t->log, DR_VLOG_WARNING, "Track %d at %s: a gap of %s ms filled with silence\n", k,
