@@ -162,6 +162,8 @@ typedef struct EsOut {
     size_t        nb_ts, cap_ts;
     char         *ts_path;          /* the timestamp file written */
     int64_t       sub_pos;          /* bytes written to the .sub */
+    int64_t       sup_wrapped;      /* PGS: display sets past the .sup's 32-bit time (writer_sup_time()) */
+    int64_t       sup_wrap_first;   /* the first one's time */
     int64_t       cues;             /* captions: SRT cues written */
     int           wav;              /* a WAV header to complete at the end */
     int           wav_room;         /* its header keeps room for the RF64 sizes (it may pass 4 GiB) */
@@ -633,10 +635,22 @@ static int ts_write(const char *path, EsOut *o)
  * set's time (90 kHz, 32 bits) and a decode time of 0 (a reader shows a set
  * at its composition segment's time; the decode times only schedule a
  * player's decoder). */
+int writer_sup_time(int64_t time, uint32_t *pts)
+{
+    int64_t tick = ticks_in(time, 90000);
+
+    *pts = (uint32_t)tick;
+    return tick > UINT32_MAX;
+}
+
 static int sup_write(EsOut *o, const DrDiscFrame *fr)
 {
-    uint32_t pts = (uint32_t)ticks_in(fr->time, 90000);
+    uint32_t pts;
     int off = 0;
+
+    /* past what the .sup's 32 bits hold: counted, said at the title's end */
+    if (writer_sup_time(fr->time, &pts) && !o->sup_wrapped++)
+        o->sup_wrap_first = fr->time;
 
     while (off + 3 <= fr->size) {
         int len = 3 + dr_rb16(fr->data + off + 1);
@@ -1503,6 +1517,17 @@ end:
             if (fseek(o->f, 6 + t->extradata_size, SEEK_SET) ||
                 fwrite(n, 1, 2, o->f) != 2)
                 ret = write_failed(o);
+        }
+        /* PGS past 13 h 15 min: the .sup cannot hold those times (a 32-bit
+         * 90 kHz field in every program that writes or reads one) */
+        if (o->sup_wrapped && ret >= 0) {
+            char at[32];
+            hms(at, sizeof(at), o->sup_wrap_first / (double)DR_TICKS_PER_SECOND);
+            log_text(LOG_WARNING, "Track %d: %"PRId64" PGS display set%s from %s on %s past 13:15:21, the most a .sup "
+                     "file's 32-bit time can hold: in the .sup their times start again from 0 (every program's .sup "
+                     "has this limit)%s; rip the title in parts (--split) or as output.format = mkv to keep them right",
+                     t->number, o->sup_wrapped, o->sup_wrapped == 1 ? "" : "s", at, o->sup_wrapped == 1 ? "is" : "are",
+                     via ? ", and mkvmerge puts them at those wrong times in the MKV" : "");
         }
         if (o->f && (r = out_close(o, &o->f)) < 0 && ret >= 0)
             ret = r;

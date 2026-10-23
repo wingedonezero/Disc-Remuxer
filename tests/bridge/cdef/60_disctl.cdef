@@ -490,6 +490,9 @@ int ff_disctl_mlp_checksums(void *state, const uint8_t *data, int size, const ch
 /* the WAV header (src/disc-remuxer/writer.h) */
 #define WAV_HEADER_MAX ...
 #define WAV_ROOM_FROM ...
+/* a PGS display set's time in its .sup (src/disc-remuxer/writer.h) */
+int writer_sup_time(int64_t time, uint32_t *pts);
+
 int writer_wav_header(uint8_t *out, int channels, int rate, int bits, int valid, uint64_t mask, int64_t data,
                       int room);
 

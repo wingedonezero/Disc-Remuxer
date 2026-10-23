@@ -70,6 +70,13 @@ const char *size_text(char *buf, size_t size, int64_t bytes);
 int writer_wav_header(uint8_t *out, int channels, int rate, int bits, int valid, uint64_t mask, int64_t data,
                       int room);
 
+/* A PGS display set's time in its .sup (a time on the title timeline, in
+ * DR_TICKS_PER_SECOND ticks): the 90 kHz tick in the 32 bits a .sup holds
+ * (*pts). 0, or 1 when the tick does not fit (past 2^32 / 90000 s = 13 h
+ * 15 min 21.858 s): *pts is then its low 32 bits, as every .sup writer
+ * keeps them, a time that starts again from 0. */
+int writer_sup_time(int64_t time, uint32_t *pts);
+
 /* Writes one title's stream files and chapters (logged as a step of its
  * own; out: free with title_outcome_free()); part >= 0: only that part of the title (one of the stream files a
  * title plays back to back), -1 the whole title; second_view: a 3-D title's
