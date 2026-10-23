@@ -41,6 +41,7 @@
 #include "mkv/mkv.h"
 #include "parse/rules.h"
 #include "disc-remuxer/writer.h"
+#include "disc-remuxer/subtie.h"
 #include "base/crc16.h"
 #include "disc/lang.h"
 
