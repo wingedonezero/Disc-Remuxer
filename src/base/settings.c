@@ -113,6 +113,12 @@ static const Setting registry[] = {
       0, SET_AT_RIP },
     { "mkv", "mkvmerge_path", SET_TEXT, "", 0, 0, NULL,
       "The mkvmerge program output.format = mkvmerge runs. Empty: mkvmerge from the PATH.", 0, SET_AT_RIP },
+    { "mkv", "tie_subtitles", SET_BOOL, "false", 0, 0, NULL,
+      "output.format = mkvmerge: each PGS and VobSub subtitle goes to mkvmerge at the time mkvmerge's own count of "
+      "the video gives its picture (plus the fields it starts into the picture), so in the MKV every subtitle is on "
+      "its picture, also after the MKV is extracted and rebuilt. Off: the disc's times (mkvmerge counts the video a "
+      "little early, so about 1 subtitle in 25 lands 1 ms after its picture). The stream files keep the disc's "
+      "times either way.", 0, SET_AT_RIP },
     { "mkv", "remove_dialog_normalization", SET_BOOL, "false", 0, 0, NULL,
       "MKV files: set the dialogue normalization of every AC-3, E-AC-3 and DTS frame to \"none\" (as mkvmerge's "
       "option of that name), so players do not turn those tracks down to the disc's dialogue level. The disc's "
