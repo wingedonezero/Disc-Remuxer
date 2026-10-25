@@ -50,7 +50,9 @@ struct DVDDisc;
  * left out.
  *
  * A program chain's title. Its cells by the cell mode: walk (the cells the
- * navigation played, DVDCellWalk_rec()), trim (DVDCellTrim_rec()), walk
+ * navigation played, DVDCellWalk_rec(): one run of them, with
+ * dvd.walk_all_runs every run when they go forward over short skipped
+ * cells; each run kept and each stretch skipped said), trim (DVDCellTrim_rec()), walk
  * then trim for titles the navigation did not reach, or auto (walk when the
  * scan has results, falling back to trim when the navigation's cells do not
  * work); one cell per angle block (the title's angle). Its length: declared
@@ -162,6 +164,7 @@ typedef struct
   int      cell_check;                /* dvd_cell_check_t: the VOBUs a full cell check reads */
   uint64_t seed;                      /* of a random cell check */
   int      min_length;                /* seconds */
+  int      walk_all_runs;             /* CellWalk keeps every run (DVDCellWalk_rec() all_runs) */
 } dvd_title_options_t;
 
 /**

@@ -102,6 +102,12 @@ static const Setting registry[] = {
       "way a viewer does when the disc's registers (its memory) have changed, e.g. after an intro played once or "
       "an audio choice, and the titles only reached that way are added to the title list. The titles the normal "
       "pass finds stay exactly as they are. Off: the titles of the normal pass only.", 0, SET_AT_OPEN },
+    { "dvd", "walk_all_runs", SET_BOOL, "false", 0, 0, NULL,
+      "For DVDs whose episodes are missing from a play-all title: when the disc's navigation plays a title's cells "
+      "in several runs (skipping short cells between them), the title keeps every run, in the order played, "
+      "instead of only one. Only when every run comes after the one before it and each skipped stretch is 5 "
+      "seconds or shorter; otherwise the title keeps one run as usual (said in the log). Only used with the "
+      "navigation's cells (cell mode walk or auto). Off: one run per title.", 0, SET_AT_OPEN },
     { "chapters", "snap", SET_BOOL, "true", 0, 0, NULL,
       "Put a chapter on a video key frame near its mark, stage by stage: a mark on a key frame keeps it; else "
       "the nearest key frame before it within chapters.before_ms; else the nearest after it within "

@@ -35,6 +35,8 @@ typedef struct DrDiscOptions {
     int         dvd_cell_check;  /**< DVD_CELL_CHECK_*: 0 all */
     int         dvd_menu_revisit; /**< DVD: titles reached only when a menu is visited again with other register
                                        values are added to the title list */
+    int         dvd_walk_all_runs; /**< DVD: a title keeps every run of cells the navigation plays, not only one
+                                        (when they go forward with short skipped stretches between them) */
     const char *cc_helper;       /**< the caption converter program; NULL: the one next to the program */
     const char *video_language;  /**< video tracks the disc names no language for: an ISO 639 code, or
                                       "market"; NULL / "": none */

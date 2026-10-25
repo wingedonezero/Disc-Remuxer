@@ -230,11 +230,12 @@ def _dump(dump):
     return out
 
 
-def titles_from(disc, results, cell_mode=0, cell_check=0, min_length=0):
+def titles_from(disc, results, cell_mode=0, cell_check=0, min_length=0, walk_all_runs=False):
     """ff_dvd_titles_build() on a DVDDisc * with given scan results
     [(name, title, pgc, [cells])] (or with the angles played, in order:
     (name, title, pgc, [cells], [angles]))
-    instead of a scan: (return value, [dict per title as titles() gives])."""
+    instead of a scan: (return value, [dict per title as titles() gives]);
+    walk_all_runs: dvd.walk_all_runs."""
     res = ffi.new("dvd_nav_cells_t[]", max(len(results), 1))
     keep = []
     for k, (name, title, pgc, cells, *angle) in enumerate(results):
@@ -248,5 +249,5 @@ def titles_from(disc, results, cell_mode=0, cell_check=0, min_length=0):
         res[k].cells = c
         res[k].nb_cells = len(cells)
     dump = ffi.new("char **")
-    ret = lib.tb_dvd_titles_from(disc, res, len(results), cell_mode, cell_check, min_length, dump)
+    ret = lib.tb_dvd_titles_from(disc, res, len(results), cell_mode, cell_check, min_length, int(walk_all_runs), dump)
     return ret, _dump(dump)

@@ -483,13 +483,14 @@ end:
     return ret;
 }
 
-/* The title list from given scan results (no scan run). */
+/* The title list from given scan results (no scan run); walk_all_runs:
+ * dvd.walk_all_runs. */
 static int tb_dvd_titles_from(DVDDisc *d, dvd_nav_cells_t *res, int nb, int cell_mode, int cell_check,
-                              int min_length, char **dump)
+                              int min_length, int walk_all_runs, char **dump)
 {
     dvdnav_scan_results_t scan = { res, nb };
     dvd_title_list_t list = { 0 };
-    DVDTitleOptions o = { cell_mode, cell_check, min_length };
+    DVDTitleOptions o = { cell_mode, cell_check, min_length, walk_all_runs };
     int ret = ff_dvd_titles_build(d, &scan, &o, &list);
 
     *dump = NULL;

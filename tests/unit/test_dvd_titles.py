@@ -92,6 +92,53 @@ def test_cellwalk_keeps_the_first_run_when_both_ends_are_as_long(tmp_path):
     assert logged("title 1: cells 3-6 left out at the end")
 
 
+# dvd.walk_all_runs: every run the navigation plays, when they go forward over short skipped cells
+
+def test_walk_all_runs_keeps_every_run_in_play_order(tmp_path):
+    folder = six_cells(tmp_path, [10, 10, 2, 10, 10, 10])
+    played = [("A1", 1, 1, [1, 2, 4, 5, 6])]
+    assert run(folder, played)[0]["map"] == "4-6", "without the setting: one run, as before"
+    t = run(folder, played, walk_all_runs=True)[0]
+    assert (t["cells"], t["map"], t["length"]) == ("5", "(1-2,4-6)", "50")
+    assert logged("title 1: dvd.walk_all_runs: the navigation plays its cells in 2 runs: all kept, in the order "
+                  "played")
+    assert logged("title 1: cell 3 left out (the navigation skips it)")
+    assert not logged("left out at the start")
+
+
+def test_walk_all_runs_still_drops_the_short_runs_at_the_ends(tmp_path):
+    folder = six_cells(tmp_path, [2, 2, 10, 10, 2, 10, 10, 2, 2])
+    t = run(folder, [("A1", 1, 1, [1, 3, 4, 6, 7, 9])], walk_all_runs=True)[0]
+    assert t["map"] == "(3-4,6-7)"
+    assert logged("title 1: cells 1-2 left out at the start")
+    assert logged("title 1: cell 5 left out (the navigation skips it)")
+    assert logged("title 1: cells 8-9 left out at the end")
+
+
+def test_walk_all_runs_keeps_one_run_over_a_long_skipped_stretch(tmp_path):
+    folder = six_cells(tmp_path, [10, 10, 4, 4, 10, 10])
+    t = run(folder, [("A1", 1, 1, [1, 2, 5, 6])], walk_all_runs=True)[0]
+    assert t["map"] == "1-2", "as without the setting"
+    assert logged("title 1: dvd.walk_all_runs: the navigation plays its cells in several runs, but cells 3-4 skipped "
+                  "between two of them make more than 5 seconds: one run is kept as without the setting")
+    assert not logged("all kept")
+
+
+def test_walk_all_runs_keeps_one_run_when_a_run_goes_back(tmp_path):
+    folder = six_cells(tmp_path, [10, 10, 10, 10, 10, 10])
+    t = run(folder, [("A1", 1, 1, [1, 2, 3, 4, 2, 3])], walk_all_runs=True)[0]
+    assert t["map"] == "1-4", "as without the setting"
+    assert logged("title 1: dvd.walk_all_runs: the navigation plays its cells in several runs, but a run does not "
+                  "come after the one before it: one run is kept as without the setting")
+
+
+def test_walk_all_runs_says_nothing_about_a_title_of_one_run(tmp_path):
+    folder = six_cells(tmp_path, [10, 10, 10, 10, 10, 10])
+    t = run(folder, [("A1", 1, 1, [1, 2, 3, 4, 5, 6])], walk_all_runs=True)[0]
+    assert t["map"] == "1-6"
+    assert not logged("dvd.walk_all_runs")
+
+
 def test_a_title_whose_real_length_is_far_from_its_declared_one_is_left_out(tmp_path):
     # declared 1000 s, its VOBUs play 1 s: a fake
     p = Pgc(cells=[c(0, 9, 5, 1000)])

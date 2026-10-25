@@ -237,14 +237,41 @@ static int cells_room( titles_t *T, dvd_title_t *t )
   return 0;
 }
 
+/* dvd.walk_all_runs: what the walk did with the runs of cells the
+ * navigation played. */
+static void say_runs( titles_t *T, dvd_title_t *t, const dvd_cell_walk_t *w )
+{
+  if( w->one_run == 1 )
+    note( T, DVD_NOTE_INFO, "title %s: dvd.walk_all_runs: the navigation plays its cells in several runs, but a "
+          "run does not come after the one before it: one run is kept as without the setting", t->name );
+  else if( w->one_run == 2 )
+    note( T, DVD_NOTE_INFO, "title %s: dvd.walk_all_runs: the navigation plays its cells in several runs, but "
+          "cells %d-%d skipped between two of them make more than 5 seconds: one run is kept as without the "
+          "setting", t->name, w->gap_first + 1, w->gap_last + 1 );
+  if( w->nb_runs < 2 )
+    return;
+  note( T, DVD_NOTE_INFO, "title %s: dvd.walk_all_runs: the navigation plays its cells in %d runs: all kept, in "
+        "the order played", t->name, w->nb_runs );
+  for( int k = 1; k < w->nb_runs; k++ ) {
+    int a = w->runs[k - 1][1] + 1, b = w->runs[k][0] - 1;
+    if( a == b )
+      note( T, DVD_NOTE_INFO, "title %s: cell %d left out (the navigation skips it)", t->name, a + 1 );
+    else if( a < b )
+      note( T, DVD_NOTE_INFO, "title %s: cells %d-%d left out (the navigation skips them)", t->name, a + 1, b + 1 );
+  }
+}
+
 /* The cells the navigation played in the title's program chain: one run of
- * consecutive cells (CellWalk). 1 done, 0 not possible, -1 no memory. */
+ * consecutive cells (CellWalk), with dvd.walk_all_runs every run when they
+ * go forward over short skipped stretches. 1 done, 0 not possible, -1 no
+ * memory. */
 static int cell_walk( titles_t *T, dvd_title_t *t )
 {
   const dvd_nav_cells_t *e = t->scan;
   const pgc_rec_t *p = title_pgc( T, t );
   DVDCells *vr = reading( T, t->vtsn );
-  int first = -1, last = -1, ret;
+  dvd_cell_walk_t w = { 0 };
+  int ret;
 
   if( !e || !vr )
     return 0;
@@ -252,12 +279,17 @@ static int cell_walk( titles_t *T, dvd_title_t *t )
     return 0;
   if( cells_room( T, t ) < 0 )
     return -1;
-  ret = DVDCellWalk_rec( vr, p->number, e->cells, e->nb_cells, t->angle, t->nr_of_angles, t->cells, &t->nb_cells,
-                         &first, &last );
+  if( T->o->walk_all_runs && e->nb_cells && !(w.runs = dr_malloc( e->nb_cells * sizeof(*w.runs) )) )
+    return -1;
+  ret = DVDCellWalk_rec( vr, p->number, e->cells, e->nb_cells, t->angle, t->nr_of_angles, T->o->walk_all_runs,
+                         t->cells, &t->nb_cells, &w );
+  if( ret >= 0 && T->o->walk_all_runs )
+    say_runs( T, t, &w );
+  dr_free( w.runs );
   if( ret < 0 )
     return -1;
-  if( first >= 0 )                    /* a run was chosen */
-    say_left_out( T, t, first, last );
+  if( w.first >= 0 )                  /* a run was chosen */
+    say_left_out( T, t, w.first, w.last );
   return ret;
 }
 
@@ -1202,7 +1234,7 @@ end:
 int ff_dvd_titles_build(DVDDisc *d, const dvdnav_scan_results_t *scan, const DVDTitleOptions *o,
                         dvd_title_list_t *out)
 {
-    dvd_title_options_t lo = { o->cell_mode, o->cell_check, dr_random_seed(), o->min_length };
+    dvd_title_options_t lo = { o->cell_mode, o->cell_check, dr_random_seed(), o->min_length, o->walk_all_runs };
 
     return DVDTitleList_rec(d, scan->results, scan->nb_results, &lo, out) < 0 ? DR_ERR(ENOMEM) : 0;
 }

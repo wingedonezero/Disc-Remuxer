@@ -504,7 +504,7 @@ static int dvd_load(DrDisc *d)
 {
     
     DVDDemuxContext *c = ff_disc_part(d);
-    DVDTitleOptions o = { d->opt_dvd_cell_mode, d->opt_dvd_cell_check, d->opt_min_length };
+    DVDTitleOptions o = { d->opt_dvd_cell_mode, d->opt_dvd_cell_check, d->opt_min_length, d->opt_dvd_walk_all_runs };
     int folder = !d->image, ret, scanned = 0;
     char *dump;
 

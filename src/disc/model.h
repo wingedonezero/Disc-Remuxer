@@ -248,6 +248,7 @@ struct DrDisc {
     int               opt_dvd_cell_mode;  /**< DVD: a title's cells (DVD_CELL_MODE_*) */
     int               opt_dvd_cell_check; /**< DVD: the VOBUs a full cell check reads (DVD_CELL_CHECK_*) */
     int               opt_dvd_menu_revisit; /**< DVD: titles only a second visit to a menu reaches are added */
+    int               opt_dvd_walk_all_runs; /**< DVD: every run of cells the navigation plays is kept */
     char             *opt_cc_helper;    /**< the caption converter program (NULL: the one next to the program) */
     DRChapterRule     chapter_rule;     /**< where the chapter marks put the chapters (dr_disc_set_chapter_rule()) */
     char             *opt_video_language; /**< the language of video tracks the disc names none for: an ISO
