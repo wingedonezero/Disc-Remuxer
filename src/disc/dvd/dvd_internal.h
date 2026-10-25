@@ -152,6 +152,13 @@ int  ff_dvd_vobu_start_check(DVDDisc *d, int vts, uint32_t sector);
  *  of the title table). The results are dvd_scan.h's
  *  (dvdnav_scan_free_results()); the VOBU records are left on the disc. */
 int  ff_dvd_scan(DVDDisc *d, void (*trace)(void *opaque, const char *line), void *opaque, dvdnav_scan_results_t *out);
+/** dvd.menu_revisit: the scan once more, menus explored again in each new
+ *  register state (at most 16 per menu); out (a scan's results) gets only
+ *  the titles / program chains it has no recording of, marked revisit and
+ *  named "r..." and each
+ *  said in the log; what out has stays as it is. A failed second scan
+ *  leaves out as it is (logged). */
+int  ff_dvd_scan_revisit(DVDDisc *d, dvdnav_scan_results_t *out);
 
 /* ---- dvd_title_list.c: the title list (dvd_title_list.h: dvd_title_list_t,
  * dvd_title_t, its segments dvd_segment_t (libdvdread's), chapters

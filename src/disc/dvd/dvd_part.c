@@ -505,7 +505,7 @@ static int dvd_load(DrDisc *d)
     
     DVDDemuxContext *c = ff_disc_part(d);
     DVDTitleOptions o = { d->opt_dvd_cell_mode, d->opt_dvd_cell_check, d->opt_min_length };
-    int folder = !d->image, ret;
+    int folder = !d->image, ret, scanned = 0;
     char *dump;
 
     if ((ret = ff_dvd_disc_open((void *)d->log, d->fs, d->dvd_flat ? "" : "/VIDEO_TS", folder, folder ? NULL : d->fs->label,
@@ -523,10 +523,16 @@ static int dvd_load(DrDisc *d)
     d->info.name  = c->disc.rec->text_name;
     menu_languages(d, &c->disc);
 
-    /* the titles: the navigation played (not for trimmed cells), then the
-     * title list from it (a failed scan leaves no results) */
-    if ((o.cell_mode != DVD_CELL_MODE_TRIM && ff_dvd_scan(&c->disc, NULL, NULL, &c->scan) == DR_ERR(ENOMEM)) ||
-        (ret = ff_dvd_titles_build(&c->disc, &c->scan, &o, &c->titles)) < 0 ||
+    /* the titles: the navigation played (not for trimmed cells), with
+     * dvd.menu_revisit the titles only a second visit to a menu reaches added
+     * (not after a failed scan), then the title list from it (a failed scan
+     * leaves no results) */
+    if (o.cell_mode != DVD_CELL_MODE_TRIM && (scanned = ff_dvd_scan(&c->disc, NULL, NULL, &c->scan)) == DR_ERR(ENOMEM))
+        return scanned;
+    if (o.cell_mode != DVD_CELL_MODE_TRIM && scanned >= 0 && d->opt_dvd_menu_revisit &&
+        (ret = ff_dvd_scan_revisit(&c->disc, &c->scan)) < 0)
+        return ret;
+    if ((ret = ff_dvd_titles_build(&c->disc, &c->scan, &o, &c->titles)) < 0 ||
         !(c->sources = dr_calloc(DR_MAX(c->titles.nb_titles, 1), sizeof(*c->sources))))
         return ret < 0 ? ret : DR_ERR(ENOMEM);
     /* what the navigation found */

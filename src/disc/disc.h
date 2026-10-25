@@ -33,6 +33,8 @@ typedef struct DrDiscOptions {
     int         min_length;      /**< titles shorter than this (seconds) are left out of the title list */
     int         dvd_cell_mode;   /**< DVD_CELL_MODE_* (dvd_internal.h): 0 auto */
     int         dvd_cell_check;  /**< DVD_CELL_CHECK_*: 0 all */
+    int         dvd_menu_revisit; /**< DVD: titles reached only when a menu is visited again with other register
+                                       values are added to the title list */
     const char *cc_helper;       /**< the caption converter program; NULL: the one next to the program */
     const char *video_language;  /**< video tracks the disc names no language for: an ISO 639 code, or
                                       "market"; NULL / "": none */

@@ -97,6 +97,11 @@ static const Setting registry[] = {
       "How many VOBUs of a DVD cell are read when a cell is checked in full (in the decoy checks, mostly when the "
       "cells are trimmed): all (every VOBU; one broken VOBU rejects the cell), spread (50 evenly spread over the "
       "cell) or random (50 at random, a different choice on each run).", 0, SET_AT_OPEN },
+    { "dvd", "menu_revisit", SET_BOOL, "false", 0, 0, NULL,
+      "For DVDs whose titles are missing: the disc's navigation is played once more, coming back to menus the "
+      "way a viewer does when the disc's registers (its memory) have changed, e.g. after an intro played once or "
+      "an audio choice, and the titles only reached that way are added to the title list. The titles the normal "
+      "pass finds stay exactly as they are. Off: the titles of the normal pass only.", 0, SET_AT_OPEN },
     { "chapters", "snap", SET_BOOL, "true", 0, 0, NULL,
       "Put a chapter on a video key frame near its mark, stage by stage: a mark on a key frame keeps it; else "
       "the nearest key frame before it within chapters.before_ms; else the nearest after it within "

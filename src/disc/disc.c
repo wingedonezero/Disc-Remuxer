@@ -763,6 +763,7 @@ int dr_disc_open(DrDisc **disc, const char *source, const DrDiscOptions *o, cons
     d->opt_min_length   = o->min_length;
     d->opt_dvd_cell_mode  = o->dvd_cell_mode;
     d->opt_dvd_cell_check = o->dvd_cell_check;
+    d->opt_dvd_menu_revisit = o->dvd_menu_revisit;
     d->opt_read_attempts  = o->read_attempts > 0 ? o->read_attempts : DISCIO_DEFAULT_ATTEMPTS;
     d->opt_udf_reader     = o->udf_reader;
     d->opt_prefer_iso     = o->prefer_iso;

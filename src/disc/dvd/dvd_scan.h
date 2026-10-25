@@ -65,6 +65,16 @@
  * on discs with more than 96 titles, or 16 and more when title sets share
  * title VOBs).
  *
+ * Revisits (dvd.menu_revisit, ff_dvd_scan_revisit() in dvd_internal.h; off
+ * by default). A second scan in which a menu explored before is explored
+ * again when the general registers (counters left out) differ from every
+ * state its buttons were pressed in, at most 16 states per menu; a player
+ * coming back to a menu with other register values (an intro played once,
+ * an audio choice) can reach other titles through the same buttons. Only
+ * the titles / program chains the first scan has no recording of are taken
+ * from it, marked revisit; a revisit title never replaces a duplicate the
+ * first scan found. Without the setting nothing of this runs.
+ *
  * Results. The recordings are sorted by title, program chain, length
  * (longest first), then by how many steps from a start their path lies (a
  * title start counts 1000) and by key; the first of each title / program

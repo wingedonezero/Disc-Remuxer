@@ -138,27 +138,8 @@ def vts_ifo(v):
         pgcit += pgc_bytes(p)
     be32(pgcit, 4, len(pgcit) - 1)
 
-    # VTS_C_ADT: one entry per cell id (VOB id, cell id as the program chains
-    # write them), from the first cell that names it
-    cells = {}
-    for p in v.pgcs:
-        for k, c in enumerate(p.cells):
-            cells.setdefault((c.vob_id_nr, c.cell_nr or k + 1), (c.first_sector, c.last_sector))
-    cadt = bytearray(8 + 12 * len(cells))
-    be16(cadt, 0, max((vob for vob, _ in cells), default=0))
-    be32(cadt, 4, len(cadt) - 1)
-    for k, ((vob, ident), (first, last)) in enumerate(sorted(cells.items())):
-        e = 8 + 12 * k
-        be16(cadt, e, vob)
-        cadt[e + 2] = ident
-        be32(cadt, e + 4, first)
-        be32(cadt, e + 8, last)
-
-    # VTS_VOBU_ADMAP
-    vmap = bytearray(4 + 4 * len(v.vobus))
-    be32(vmap, 0, len(vmap) - 1)
-    for k, s in enumerate(v.vobus):
-        be32(vmap, 4 + 4 * k, s)
+    cadt = c_adt_bytes(v.pgcs)
+    vmap = vobu_admap_bytes(v.vobus)
 
     d = bytearray(S)
     places = []
@@ -184,6 +165,63 @@ def vts_ifo(v):
     for k, a in enumerate(v.subp_attrs):
         d[0x256 + 6 * k:0x25c + 6 * k] = a
     return d
+
+
+def c_adt_bytes(pgcs):
+    """A cell address table (VTS_C_ADT / VMGM_C_ADT): one entry per cell id
+    (VOB id, cell id as the program chains write them), from the first cell
+    that names it."""
+    cells = {}
+    for p in pgcs:
+        for k, c in enumerate(p.cells):
+            cells.setdefault((c.vob_id_nr, c.cell_nr or k + 1), (c.first_sector, c.last_sector))
+    cadt = bytearray(8 + 12 * len(cells))
+    be16(cadt, 0, max((vob for vob, _ in cells), default=0))
+    be32(cadt, 4, len(cadt) - 1)
+    for k, ((vob, ident), (first, last)) in enumerate(sorted(cells.items())):
+        e = 8 + 12 * k
+        be16(cadt, e, vob)
+        cadt[e + 2] = ident
+        be32(cadt, e + 4, first)
+        be32(cadt, e + 8, last)
+    return cadt
+
+
+def vobu_admap_bytes(vobus):
+    """A VOBU address map (VTS_VOBU_ADMAP / VMGM_VOBU_ADMAP)."""
+    vmap = bytearray(4 + 4 * len(vobus))
+    be32(vmap, 0, len(vmap) - 1)
+    for k, v in enumerate(vobus):
+        be32(vmap, 4 + 4 * k, v)
+    return vmap
+
+
+def pgcit_bytes(pgcs):
+    """A program chain information table (VTS_PGCIT, or a menu language
+    unit's PGCIT): the search pointers, then the program chains."""
+    n = len(pgcs)
+    pgcit = bytearray(8 + 8 * n)
+    be16(pgcit, 0, n)
+    for k, p in enumerate(pgcs):
+        start = len(pgcit)
+        pgcit[8 + 8 * k] = p.entry_id
+        be32(pgcit, 8 + 8 * k + 4, start)
+        pgcit += pgc_bytes(p)
+    be32(pgcit, 4, len(pgcit) - 1)
+    return pgcit
+
+
+@dataclasses.dataclass
+class Menu:
+    """The VMG's menus: one language unit ("en") with its program chains
+    (entry_id 0x82 for the title menu), the menu VOB (VIDEO_TS.VOB) of
+    vob_sectors sectors holding navs, and its VOBU address map."""
+    pgcs: list
+    navs: list
+    vob_sectors: int
+
+    def vob(self):
+        return title_vobs(self.vob_sectors, self.navs)
 
 
 def pgc_bytes(p):
@@ -247,10 +285,11 @@ class Title:
     title_set_starting_sector: int = 0
 
 
-def vmg_ifo(titles, nr_vts, first_play=None):
+def vmg_ifo(titles, nr_vts, first_play=None, menu=None):
     """VIDEO_TS.IFO: VMGI_MAT in sector 0, TT_SRPT and VTS_ATRT after it;
-    no menus. first_play: the first-play PGC (a Pgc, written after the
-    VMGI_MAT in sector 0), or None for none."""
+    with menu (a Menu) also VMGM_PGCI_UT, VMGM_C_ADT and VMGM_VOBU_ADMAP,
+    and the menu VOB after the IFO. first_play: the first-play PGC (a Pgc,
+    written after the VMGI_MAT in sector 0), or None for none."""
     tt = bytearray(8 + 12 * len(titles))
     be16(tt, 0, len(titles))
     be32(tt, 4, len(tt) - 1)
@@ -275,9 +314,23 @@ def vmg_ifo(titles, nr_vts, first_play=None):
     d += bytes(tt) + bytes(sectors_for(len(tt)) * S - len(tt))
     atrt_at = len(d) // S
     d += bytes(atrt) + bytes(sectors_for(len(atrt)) * S - len(atrt))
+    places = []
+    if menu is not None:
+        lu = pgcit_bytes(menu.pgcs)
+        ut = bytearray(8 + 8)
+        be16(ut, 0, 1)                      # nr_of_lus
+        ut[8:10] = b"en"                    # lang_code
+        ut[11] = 0x80                       # exists: the title menu
+        be32(ut, 12, len(ut))               # lang_start_byte
+        ut += lu
+        be32(ut, 4, len(ut) - 1)
+        for t in [ut, c_adt_bytes(menu.pgcs), vobu_admap_bytes(sorted(n.lbn for n in menu.navs))]:
+            places.append(len(d) // S)
+            d += bytes(t) + bytes(sectors_for(len(t)) * S - len(t))
     ifo_sectors = len(d) // S
+    vob_sectors = menu.vob_sectors if menu is not None else 0
     d[:12] = b"DVDVIDEO-VMG"
-    be32(d, 0x0c, 2 * ifo_sectors - 1)  # vmg_last_sector: IFO + BUP
+    be32(d, 0x0c, 2 * ifo_sectors + vob_sectors - 1)  # vmg_last_sector: IFO + menu VOB + BUP
     be32(d, 0x1c, ifo_sectors - 1)  # vmgi_last_sector
     be16(d, 0x20, 0x0010)
     be16(d, 0x26, 1)  # vmg_nr_of_volumes
@@ -293,6 +346,11 @@ def vmg_ifo(titles, nr_vts, first_play=None):
         be32(d, 0x84, 0x400)  # first_play_pgc
     be32(d, 0xc4, tt_at)  # tt_srpt
     be32(d, 0xd0, atrt_at)  # vts_atrt
+    if menu is not None:
+        be32(d, 0xc0, ifo_sectors)  # vmgm_vobs
+        be32(d, 0xc8, places[0])  # vmgm_pgci_ut
+        be32(d, 0xd8, places[1])  # vmgm_c_adt
+        be32(d, 0xdc, places[2])  # vmgm_vobu_admap
     return d
 
 
@@ -320,6 +378,7 @@ class Nav:
     category: int = 0
     ilvu_ea: int = 0
     next_vobu: int = 0
+    buttons: list = dataclasses.field(default_factory=list)    # each button's 8-byte command (hli_ss 1)
 
     def block(self):
         s = bytearray(S)
@@ -337,6 +396,19 @@ class Nav:
         # pci.hli.hl_gi.hli_ss: the low 2 bits of the PCI's 16-bit word 0x60
         # (PCI data from 0x2d: pci_gi 0x3c bytes, nsml_agli 0x24 bytes)
         s[0x2d + 0x61] = self.hli_ss & 3
+        if self.buttons:
+            # one button group shown from the VOBU's start on, button 1 first;
+            # hl_gi at PCI 0x60, btnit (18 bytes each: coordinates, links,
+            # command) at PCI 0x8e
+            s[0x2d + 0x61] = 1
+            be32(s, 0x8f, 0)                    # hli_s_ptm
+            be32(s, 0x93, 0xffffffff)           # hli_e_ptm
+            be32(s, 0x97, 0xffffffff)           # btn_se_e_ptm
+            s[0x9b] = 0x10                      # btngr_ns 1
+            s[0x9e] = len(self.buttons)         # btn_ns
+            s[0xa1] = 1                         # fosl_btnn
+            for k, cmd in enumerate(self.buttons):
+                s[0xbb + 18 * k + 10:0xbb + 18 * k + 18] = bytes(cmd)
         # dsi.vobu_sri.fwda[k]: DSI data from 0x407, vobu_sri at 0xea (after
         # dsi_gi, sml_pbi, sml_agli), fwda after next_video
         for k, fw in enumerate(self.fwda):
@@ -369,16 +441,19 @@ def copy_attributes(vmg, ifos):
     return bytes(vmg)
 
 
-def write_disc(folder, vmg, title_sets):
-    """Writes a disc folder: VIDEO_TS/VIDEO_TS.IFO (+ .BUP) and per title set
-    VTS_nn_0.IFO (+ .BUP) and VTS_nn_1.VOB. title_sets: [(ifo, vob)]; the
-    title sets' attributes are copied into VIDEO_TS.IFO's VMG_VTS_ATRT."""
+def write_disc(folder, vmg, title_sets, menu_vob=None):
+    """Writes a disc folder: VIDEO_TS/VIDEO_TS.IFO (+ .BUP), the menu VOB
+    VIDEO_TS.VOB when given, and per title set VTS_nn_0.IFO (+ .BUP) and
+    VTS_nn_1.VOB. title_sets: [(ifo, vob)]; the title sets' attributes are
+    copied into VIDEO_TS.IFO's VMG_VTS_ATRT."""
     v = folder / "VIDEO_TS"
     shutil.rmtree(folder, ignore_errors=True)
     v.mkdir(parents=True)
     vmg = copy_attributes(vmg, [bytes(ifo) for ifo, _ in title_sets])
     (v / "VIDEO_TS.IFO").write_bytes(vmg)
     (v / "VIDEO_TS.BUP").write_bytes(vmg)
+    if menu_vob is not None:
+        (v / "VIDEO_TS.VOB").write_bytes(menu_vob)
     for k, (ifo, vob) in enumerate(title_sets):
         (v / f"VTS_{k + 1:02}_0.IFO").write_bytes(ifo)
         (v / f"VTS_{k + 1:02}_0.BUP").write_bytes(ifo)

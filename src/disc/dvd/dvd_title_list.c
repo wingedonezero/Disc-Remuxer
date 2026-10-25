@@ -1063,7 +1063,9 @@ static int same_title( const titles_t *T, const dvd_title_t *a, const dvd_title_
 }
 
 /* A title playing an earlier one's sectors with no more streams and
- * chapters is left out (said); the search starts over after each. */
+ * chapters is left out (said); the search starts over after each. A title
+ * only the scan with dvd.menu_revisit found never takes the place of one
+ * the normal scan found (that one is kept, the other left out). */
 static void remove_duplicates( titles_t *T )
 {
   dvd_title_list_t *l = T->out;
@@ -1071,7 +1073,7 @@ static void remove_duplicates( titles_t *T )
   for( int i = 0; i < l->nb_titles; i++ ) {
     for( int j = 0; j < l->nb_titles; j++ ) {
       dvd_title_t *a = l->titles[i], *b = l->titles[j];
-      if( a == b || !same_title( T, a, b ) )
+      if( a == b || (a->scan && a->scan->revisit && !(b->scan && b->scan->revisit)) || !same_title( T, a, b ) )
         continue;
       note( T, DVD_NOTE_INFO, "title %d left out: it is the same as title %d (VTS_%02d)", b->title + 1,
             a->title + 1, b->vtsn );

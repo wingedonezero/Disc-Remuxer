@@ -92,6 +92,7 @@ typedef struct
   char     name[16];
   uint8_t  title, pgc;
   uint8_t  angles[10];                /* from 1; 0 ends (none: no angle block played) */
+  uint8_t  revisit;                   /* found only by the scan with dvd.menu_revisit (ff_dvd_scan_revisit()) */
   int      nb_cells;
   uint8_t *cells;
 } dvd_nav_cells_t;

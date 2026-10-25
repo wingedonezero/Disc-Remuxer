@@ -404,6 +404,16 @@ static int tb_dvd_scan(DVDDisc *d, void (*trace)(void *, const char *), dvdnav_s
     return ff_dvd_scan(d, trace, NULL, out);
 }
 
+/* The scan with dvd.menu_revisit: the normal scan, then the titles only a
+ * menu visited again with other register values reaches added (as
+ * dvd_load() does). */
+static int tb_dvd_scan_revisit(DVDDisc *d, dvdnav_scan_results_t *out)
+{
+    int ret = ff_dvd_scan(d, NULL, NULL, out);
+
+    return ret < 0 ? ret : ff_dvd_scan_revisit(d, out);
+}
+
 /* disc/dvd/dvd_title_list.c: the navigation scan, then the title list built
  * from it, as ff_dvd_titles_dump() text (*dump, av_free() it); scan_ret:
  * the scan's return value. */

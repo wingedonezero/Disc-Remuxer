@@ -796,6 +796,7 @@ int open_disc(const char *source, DrDisc **disc)
     o.prefer_iso     = setting_bool("read.prefer_iso_for_old_udf102");
     o.dvd_cell_mode  = cell_mode_of(setting_text("dvd.cell_mode"));
     o.dvd_cell_check = cell_check_of(setting_text("dvd.cell_check"));
+    o.dvd_menu_revisit = setting_bool("dvd.menu_revisit");
     o.video_language = setting_text("output.video_language");
     o.nb_keydb       = key_files(&keydb, &own);     /* setting aacs.key_files, or the keydb folder */
     o.keydb          = keydb;

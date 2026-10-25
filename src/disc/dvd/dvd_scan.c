@@ -51,6 +51,7 @@
 #define KEY_REGION_ROOT   0xffffffffu   /* key Z of a region's start */
 #define KEY_TITLE_START   0xfffffffeu   /* key Z of a title start */
 #define KEY_MENU_SEEN     0x63          /* key X of an explored menu highlight */
+#define MENU_STATES       16            /* register states a menu's buttons are pressed in (revisit; at most) */
 #define REGION_SPRM       20
 #define VMG_CATEGORY      0x22          /* VMGI_MAT vmg_category */
 
@@ -155,6 +156,9 @@ typedef struct {
 typedef struct { uint64_t key, parent; int nav; } scan_pending_t;
 typedef struct { uint64_t key, parent; } scan_visited_t;
 
+/* A menu's buttons pressed with these general registers (counters as 0). */
+typedef struct { uint64_t menu; uint16_t gprm[16]; } scan_menu_state_t;
+
 typedef struct { int len; uint8_t c[]; } scan_seq_t;
 
 typedef struct {
@@ -201,6 +205,10 @@ struct dvdnav_scan_s {
   int             nb_pending, alloc_pending;
   scan_visited_t *visited;
   int             nb_visited, alloc_visited;
+  scan_menu_state_t *mstates;           /* the register states each menu's buttons were pressed in */
+  int             nb_mstates, alloc_mstates;
+  int             revisit;              /* menus are explored again in other register states (dvd.menu_revisit) */
+  unsigned        nb_revisits;          /* menus explored again in another register state */
   scan_rec_t     *recs;
   int             nb_recs, alloc_recs;
   scan_seq_t    **seqs;                 /* interned sequences, sorted */
@@ -703,17 +711,97 @@ static void reachable( uint64_t *mask, const scan_pci_t *h, unsigned b )
   }
 }
 
+/* The general registers of navigator nav, a counter (GPRM counter mode) as 0. */
+static void gprm_now( const dvdnav_scan_t *s, int nav, uint16_t g[16] )
+{
+  uint32_t counters = dvdnav_get_prm( s->navs[nav], DVDNAV_PRM_GPRM_MODE, 0 );
+
+  for( unsigned r = 0; r < 16; r++ )
+    g[r] = counters >> r & 1 ? 0 : (uint16_t)dvdnav_get_prm( s->navs[nav], DVDNAV_PRM_GPRM, r );
+}
+
+/* The state number (0 = the first) menu's buttons were pressed in with
+ * registers g, or the number a new state gets (*fresh = 1), or -1: the menu
+ * already has MENU_STATES states. A player that comes back to a menu with
+ * other values in the general registers can reach other places through the
+ * same buttons (a menu command or a title's pre-command reads them), so the
+ * buttons are pressed again in each new state. */
+static int menu_state( const dvdnav_scan_t *s, uint64_t menu, const uint16_t g[16], int *fresh )
+{
+  int n = 0;
+
+  *fresh = 0;
+  for( int i = 0; i < s->nb_mstates; i++ ) {
+    if( s->mstates[i].menu != menu )
+      continue;
+    if( !memcmp( s->mstates[i].gprm, g, sizeof(s->mstates[i].gprm) ) )
+      return n;
+    n++;
+  }
+  if( n >= MENU_STATES )
+    return -1;
+  *fresh = 1;
+  return n;
+}
+
+static int menu_state_add( dvdnav_scan_t *s, uint64_t menu, const uint16_t g[16] )
+{
+  int ret = grow( (void **)&s->mstates, &s->alloc_mstates, s->nb_mstates, sizeof(*s->mstates) );
+  if( ret < 0 )
+    return ret;
+  s->mstates[s->nb_mstates].menu = menu;
+  memcpy( s->mstates[s->nb_mstates].gprm, g, sizeof(s->mstates[s->nb_mstates].gprm) );
+  s->nb_mstates++;
+  return 0;
+}
+
+/* The registers that differ from the menu's first state, "g6 1 -> 0, ...". */
+static void state_change( const dvdnav_scan_t *s, uint64_t menu, const uint16_t g[16], char *out, size_t size )
+{
+  size_t at = 0;
+
+  out[0] = 0;
+  for( int i = 0; i < s->nb_mstates; i++ ) {
+    if( s->mstates[i].menu != menu )
+      continue;
+    for( unsigned r = 0; r < 16 && at < size; r++ )
+      if( s->mstates[i].gprm[r] != g[r] )
+        at += snprintf( out + at, size - at, "%sg%u %u -> %u", at ? ", " : "", r, s->mstates[i].gprm[r], g[r] );
+    return;
+  }
+}
+
 /* Press every button of highlight h reachable from its starting button, each
- * in a copy of navigator ctx, pushed as a state below key. */
+ * in a copy of navigator ctx, pushed as a state below key. With revisits, a
+ * menu explored before is explored again in each new register state of its
+ * own (key Y bits 9-15: the state number; state 0 = the key without
+ * revisits). */
 static int explore_buttons( dvdnav_scan_t *s, int ctx, uint64_t parent, const scan_event_t *ev,
                             const scan_pci_t *h )
 {
   unsigned n = h->btn_ns, start = h->fosl_btnn;
-  uint64_t mask = 0;
-  int ret;
+  uint64_t mask = 0, menu = key_of( KEY_MENU_SEEN, s->region, (ev->title_id == 0) << 8 | ev->vtsn, ev->vobu );
+  uint16_t g[16];
+  int ret, state = 0, fresh = 0;
 
   if( !n )
     return 0;
+  if( s->revisit ) {
+    gprm_now( s, ctx, g );
+    if( (state = menu_state( s, menu, g, &fresh )) < 0 )
+      return 0;
+  }
+  if( fresh ) {
+    if( state ) {
+      char change[160];
+      state_change( s, menu, g, change, sizeof(change) );
+      scan_log( s, DVDNAV_LOGGER_LEVEL_DEBUG, "navigation scan: the menu at VOBU %" PRIu32 " (title set %u) again "
+                "with other register values (%s): its buttons are pressed again", ev->vobu, ev->vtsn, change );
+      s->nb_revisits++;
+    }
+    if( (ret = menu_state_add( s, menu, g )) < 0 )
+      return ret;
+  }
   if( (uint8_t)(start - 1) >= n ) {
     start = ev->highlight ? ev->highlight : 1;
     if( start >= n )
@@ -725,7 +813,7 @@ static int explore_buttons( dvdnav_scan_t *s, int ctx, uint64_t parent, const sc
     int nc;
     if( !(mask >> (b - 1) & 1) )
       continue;
-    key = key_of( b - 1, s->region, (ev->title_id == 0) << 8 | ev->vtsn, ev->vobu );
+    key = key_of( b - 1, s->region, (unsigned)state << 9 | (ev->title_id == 0) << 8 | ev->vtsn, ev->vobu );
     if( known( s, key ) )
       continue;
     if( (ret = nav_clone( s, &nc, ctx )) < 0 || (ret = nav_set( s, nc, P_BUTTON, b )) < 0 )
@@ -735,6 +823,18 @@ static int explore_buttons( dvdnav_scan_t *s, int ctx, uint64_t parent, const sc
       return ret;
   }
   return 0;
+}
+
+/* A menu explored before, now with registers its buttons were not pressed in yet (and room for them). */
+static int new_menu_state( const dvdnav_scan_t *s, int nav, uint64_t menu )
+{
+  uint16_t g[16];
+  int fresh;
+
+  if( !s->revisit )
+    return 0;
+  gprm_now( s, nav, g );
+  return menu_state( s, menu, g, &fresh ) >= 0 && fresh;
 }
 
 static int hli_active( const scan_pci_t *rec, const scan_pci_t *h )
@@ -951,7 +1051,8 @@ static int walk( dvdnav_scan_t *s )
               hi2 = mid;
           }
           if( lo < nb_menu_vobus && menu_vobus[lo] == ev.vobu &&
-              known( s, key_of( KEY_MENU_SEEN, s->region, menu << 8 | ev.vtsn, ev.vobu ) ) )
+              known( s, key_of( KEY_MENU_SEEN, s->region, menu << 8 | ev.vtsn, ev.vobu ) ) &&
+              !new_menu_state( s, st.nav, key_of( KEY_MENU_SEEN, s->region, menu << 8 | ev.vtsn, ev.vobu ) ) )
             goto finish;
         }
         if( !cand ) {
@@ -963,9 +1064,10 @@ static int walk( dvdnav_scan_t *s )
             dt > MENU_PLAY_MS && (!explored || !same_hli( cand, explored )) ) {
           uint64_t k = key_of( KEY_MENU_SEEN, s->region, menu << 8 | ev.vtsn, ev.vobu );
           int lo = 0, hi2 = nb_menu_vobus;
-          if( known( s, k ) )
-            goto finish;
-          if( (ret = visited_add( s, k, key )) < 0 )
+          if( known( s, k ) ) {
+            if( !new_menu_state( s, st.nav, k ) )
+              goto finish;
+          } else if( (ret = visited_add( s, k, key )) < 0 )
             goto fail;
           while( lo < hi2 ) {
             int mid = (lo + hi2) / 2;
@@ -1253,6 +1355,10 @@ static int dvdnav_scan_run( dvdnav_scan_t *s, dvdnav_t *nav, dvdnav_scan_results
     if( r < 7 && !s->region_read )
       break;
   }
+  if( s->nb_revisits )
+    scan_log( s, DVDNAV_LOGGER_LEVEL_INFO, "navigation scan: %u menu(s) explored again because the disc's "
+              "registers had changed since the first visit (a player that comes back to a menu can go elsewhere "
+              "from it)", s->nb_revisits );
   ret = results( s, out );
 end:
   if( ret < 0 )
@@ -1289,6 +1395,7 @@ static void dvdnav_scan_close( dvdnav_scan_t *s )
   dr_free( s->cells );
   dr_free( s->pending );
   dr_free( s->visited );
+  dr_free( s->mstates );
   dr_free( s->recs );
   for( int i = 0; i < s->nb_seqs; i++ )
     dr_free( s->seqs[i] );
@@ -1304,7 +1411,8 @@ static int scan_sector(void *opaque, int set, int menu, uint32_t sector, const u
     return dvdnav_scan_sector(opaque, set, menu, sector, data) < 0 ? DR_ERR(EINVAL) : 0;
 }
 
-int ff_dvd_scan(DVDDisc *d, void (*trace)(void *opaque, const char *line), void *opaque, dvdnav_scan_results_t *out)
+static int scan_disc(DVDDisc *d, int revisit, void (*trace)(void *opaque, const char *line), void *opaque,
+                     dvdnav_scan_results_t *out)
 {
     dvdnav_scan_t *s;
     dvdnav_t *nav;
@@ -1313,13 +1421,83 @@ int ff_dvd_scan(DVDDisc *d, void (*trace)(void *opaque, const char *line), void 
     memset(out, 0, sizeof(*out));
     if (!(s = dvdnav_scan_new(d, trace, opaque)))
         return DR_ERR(ENOMEM);
+    s->revisit = revisit;
     if ((ret = ff_dvd_nav_open(d, &(DVDNavHooks){ s, scan_sector }, &nav)) >= 0) {
         ret = dvdnav_scan_run(s, nav, out);
         ret = ret == -2 ? DR_ERR(ENOMEM) : ret < 0 ? DR_ERR_EXTERNAL : 0;
     }
-    if (ret < 0)
+    if (ret < 0 && !revisit)
         dr_vlog(d->log, DR_VLOG_WARNING, "DVD: the navigation scan failed: the titles keep the order of the title "
                "table\n");
     dvdnav_scan_close(s);
     return ret;
+}
+
+int ff_dvd_scan(DVDDisc *d, void (*trace)(void *opaque, const char *line), void *opaque, dvdnav_scan_results_t *out)
+{
+    return scan_disc(d, 0, trace, opaque, out);
+}
+
+static int result_cmp(const void *pa, const void *pb)
+{
+    const dvd_nav_cells_t *a = pa, *b = pb;
+
+    if (a->title != b->title)
+        return a->title < b->title ? -1 : 1;
+    return a->pgc < b->pgc ? -1 : a->pgc > b->pgc;
+}
+
+static int has_result(const dvdnav_scan_results_t *r, int title, int pgc)
+{
+    for (int i = 0; i < r->nb_results; i++)
+        if (r->results[i].title == title && r->results[i].pgc == pgc)
+            return 1;
+    return 0;
+}
+
+int ff_dvd_scan_revisit(DVDDisc *d, dvdnav_scan_results_t *out)
+{
+    dvdnav_scan_results_t more;
+    dvd_nav_cells_t *all;
+    int ret, add = 0;
+
+    if ((ret = scan_disc(d, 1, NULL, NULL, &more)) < 0) {
+        dvdnav_scan_free_results(&more);
+        if (ret == DR_ERR(ENOMEM))
+            return ret;
+        dr_vlog(d->log, DR_VLOG_WARNING, "DVD: the navigation scan with dvd.menu_revisit failed: the titles are "
+                "those of the normal scan\n");
+        return 0;
+    }
+    for (int i = 0; i < more.nb_results; i++)
+        add += !has_result(out, more.results[i].title, more.results[i].pgc);
+    if (!add) {
+        dr_vlog(d->log, DR_VLOG_INFO, "DVD: dvd.menu_revisit: visiting menus again with other register values "
+                "reaches no further title\n");
+        dvdnav_scan_free_results(&more);
+        return 0;
+    }
+    if (!(all = dr_realloc_array(out->results, out->nb_results + add, sizeof(*all)))) {
+        dvdnav_scan_free_results(&more);
+        return DR_ERR(ENOMEM);
+    }
+    out->results = all;
+    for (int i = 0; i < more.nb_results; i++) {
+        dvd_nav_cells_t *r = &more.results[i];
+        char name[sizeof(r->name)];
+        if (has_result(out, r->title, r->pgc))
+            continue;
+        snprintf(name, sizeof(name), "r%s", r->name);    /* lowercase: no name of the normal scan */
+        memcpy(r->name, name, sizeof(r->name));
+        r->revisit = 1;
+        dr_vlog(d->log, DR_VLOG_INFO, "DVD: dvd.menu_revisit: title %u, program chain %u is reached only when the "
+                "navigation comes back to a menu with other register values: added (%d cells, navigation %s)\n",
+                (unsigned)r->title, (unsigned)r->pgc, r->nb_cells, r->name);
+        out->results[out->nb_results++] = *r;
+        r->cells    = NULL;              /* now out's */
+        r->nb_cells = 0;
+    }
+    qsort(out->results, out->nb_results, sizeof(*out->results), result_cmp);
+    dvdnav_scan_free_results(&more);
+    return 0;
 }
