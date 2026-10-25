@@ -108,6 +108,13 @@ static const Setting registry[] = {
       "instead of only one. Only when every run comes after the one before it and each skipped stretch is 5 "
       "seconds or shorter; otherwise the title keeps one run as usual (said in the log). Only used with the "
       "navigation's cells (cell mode walk or auto). Off: one run per title.", 0, SET_AT_OPEN },
+    { "dvd", "clean_break_parts", SET_BOOL, "false", 0, 0, NULL,
+      "For DVD titles that play several separately authored pieces one after another (e.g. episodes): each title "
+      "lists its parts, one from each clean break, where a cell starts another VOB, the clock restarts and a "
+      "chapter starts (nothing crosses such a break, so a part is exactly that stretch of the title). A title is "
+      "written as parts only when it is chosen to be split (the title's menu in the GUI, demux --split), never by "
+      "output.split_joined_titles: films and episodes made of pieces have such breaks too. Off: DVD titles have "
+      "no parts.", 0, SET_AT_OPEN },
     { "chapters", "snap", SET_BOOL, "true", 0, 0, NULL,
       "Put a chapter on a video key frame near its mark, stage by stage: a mark on a key frame keeps it; else "
       "the nearest key frame before it within chapters.before_ms; else the nearest after it within "

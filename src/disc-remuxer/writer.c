@@ -798,6 +798,7 @@ int open_disc(const char *source, DrDisc **disc)
     o.dvd_cell_check = cell_check_of(setting_text("dvd.cell_check"));
     o.dvd_menu_revisit = setting_bool("dvd.menu_revisit");
     o.dvd_walk_all_runs = setting_bool("dvd.walk_all_runs");
+    o.dvd_clean_break_parts = setting_bool("dvd.clean_break_parts");
     o.video_language = setting_text("output.video_language");
     o.nb_keydb       = key_files(&keydb, &own);     /* setting aacs.key_files, or the keydb folder */
     o.keydb          = keydb;

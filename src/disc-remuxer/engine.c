@@ -766,8 +766,10 @@ static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
         if (spl[t] && sel[t] && !di->titles[t].nb_parts)
             log_msg(MSG_TITLE_SELECTION, LOG_INFO, "Title #%d has no parts (it plays no whole stream files back to "
                     "back): written whole", t);
+    /* (not a title whose parts are written only when it is chosen: DVD clean breaks) */
     if (setting_bool("output.split_joined_titles"))
-        memset(spl, 1, (size_t)DR_MAX(nb, 0));
+        for (int t = 0; t < nb; t++)
+            spl[t] |= !di->titles[t].parts_on_request;
     for (int t = 0; t < nb; t++) {
         int parts = spl[t] ? di->titles[t].nb_parts : 0, part_failed = 0, part_stopped = 0;
         if (!sel[t])

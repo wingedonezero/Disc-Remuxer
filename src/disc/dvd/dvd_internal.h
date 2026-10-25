@@ -182,6 +182,7 @@ typedef struct DVDTitleOptions {
     int cell_check;                     /**< DVD_CELL_CHECK_*: the VOBUs a full cell check reads */
     int min_length;                     /**< seconds */
     int walk_all_runs;                  /**< dvd.walk_all_runs: CellWalk keeps every run (DVDCellWalk_rec()) */
+    int clean_break_parts;              /**< dvd.clean_break_parts: the titles' parts at their clean breaks */
 } DVDTitleOptions;
 
 /** The title list from the disc's structure and the navigation scan (a

@@ -626,8 +626,13 @@ void MainWindow::contextMenu(const QPoint &pos)
     int t = item->data(C_NAME, R_TITLE).toInt();
     const QString out = j->outDir, log = j->logFile;
     if (t >= 0 && j->disc && engine_disc_info(j->disc)->titles[t].nb_parts) {
-        int parts = engine_disc_info(j->disc)->titles[t].nb_parts;
-        QAction *a = menu.addAction(QString("Write as %1 Parts (One per Stream File)").arg(parts));
+        const DiscTitleInfo &ti = engine_disc_info(j->disc)->titles[t];
+        QString unit = ti.part_unit ? QString::fromUtf8(ti.part_unit) : QString("stream file");
+        unit[0] = unit[0].toUpper();
+        for (int k = 1; k < unit.size(); k++)
+            if (unit[k - 1] == ' ')
+                unit[k] = unit[k].toUpper();
+        QAction *a = menu.addAction(QString("Write as %1 Parts (One per %2)").arg(ti.nb_parts).arg(unit));
         a->setCheckable(true);
         a->setChecked(engine_title_split(j->disc, t));
         a->setEnabled(!running);
