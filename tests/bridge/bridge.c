@@ -41,7 +41,6 @@
 #include "mkv/mkv.h"
 #include "parse/rules.h"
 #include "disc-remuxer/writer.h"
-#include "disc-remuxer/subtie.h"
 #include "base/crc16.h"
 #include "disc/lang.h"
 
@@ -405,6 +404,16 @@ static int tb_dvd_scan(DVDDisc *d, void (*trace)(void *, const char *), dvdnav_s
     return ff_dvd_scan(d, trace, NULL, out);
 }
 
+/* The scan with dvd.menu_revisit: the normal scan, then the titles only a
+ * menu visited again with other register values reaches added (as
+ * dvd_load() does). */
+static int tb_dvd_scan_revisit(DVDDisc *d, dvdnav_scan_results_t *out)
+{
+    int ret = ff_dvd_scan(d, NULL, NULL, out);
+
+    return ret < 0 ? ret : ff_dvd_scan_revisit(d, out);
+}
+
 /* disc/dvd/dvd_title_list.c: the navigation scan, then the title list built
  * from it, as ff_dvd_titles_dump() text (*dump, av_free() it); scan_ret:
  * the scan's return value. */
@@ -474,13 +483,14 @@ end:
     return ret;
 }
 
-/* The title list from given scan results (no scan run). */
+/* The title list from given scan results (no scan run); walk_all_runs:
+ * dvd.walk_all_runs. */
 static int tb_dvd_titles_from(DVDDisc *d, dvd_nav_cells_t *res, int nb, int cell_mode, int cell_check,
-                              int min_length, char **dump)
+                              int min_length, int walk_all_runs, char **dump)
 {
     dvdnav_scan_results_t scan = { res, nb };
     dvd_title_list_t list = { 0 };
-    DVDTitleOptions o = { cell_mode, cell_check, min_length };
+    DVDTitleOptions o = { cell_mode, cell_check, min_length, walk_all_runs };
     int ret = ff_dvd_titles_build(d, &scan, &o, &list);
 
     *dump = NULL;

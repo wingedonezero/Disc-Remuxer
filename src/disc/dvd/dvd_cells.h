@@ -170,17 +170,33 @@ int DVDAngleCell_rec( DVDCells *, int pgcn, int cell, int angle, int angles );
 int DVDCellList_rec( DVDCells *, int pgcn, int first, int last, int angle, int angles,
                      int *cells, int *nb );
 
+/** What CellWalk chose besides the cells. */
+typedef struct
+{
+  int first, last;                    /* the first and last cell index of the runs kept, -1: none chosen */
+  int nb_runs;                        /* the runs kept: 1, or (all_runs) more when every run was kept */
+  int (*runs)[2];                     /* all_runs: the runs kept, first and last cell index (room for nb_played) */
+  int one_run;                        /* all_runs, more than one run left after the ends: one kept because a run
+                                         does not come after the one before it (1) or a skipped stretch is longer
+                                         than 5 seconds (2, its cells in gap_first..gap_last); 0 not so */
+  int gap_first, gap_last;
+} dvd_cell_walk_t;
+
 /**
  * CellWalk: the cells of the chain the navigation played (played: their
  * numbers from 1, in playing order) as one run of consecutive cells. Runs
  * at the start, then at the end, without a cell accepted (quick check) and
  * 5 seconds are dropped, then the shorter end run while two remain (a tie
  * keeps the first); the run left is the cell list (DVDCellList_rec(), its
- * first and last cell index in *first / *last). 1 done, 0 not possible
- * (nothing played, a run outside the chain, a broken angle block).
+ * first and last cell index in res). all_runs (dvd.walk_all_runs): after
+ * the ends every run left is kept, in playing order, when each starts after
+ * the one before it ended and the cells skipped between two runs make 5
+ * seconds or less; otherwise one run as without it (res->one_run says
+ * why). 1 done, 0 not possible (nothing played, a run outside the chain, a
+ * broken angle block).
  */
 int DVDCellWalk_rec( DVDCells *, int pgcn, const uint8_t *played, int nb_played, int angle,
-                     int angles, int *cells, int *nb, int *first, int *last );
+                     int angles, int all_runs, int *cells, int *nb, dvd_cell_walk_t *res );
 
 /** What CellTrim chose besides the cells. */
 typedef struct

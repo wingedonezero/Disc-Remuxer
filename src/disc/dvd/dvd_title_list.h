@@ -50,7 +50,9 @@ struct DVDDisc;
  * left out.
  *
  * A program chain's title. Its cells by the cell mode: walk (the cells the
- * navigation played, DVDCellWalk_rec()), trim (DVDCellTrim_rec()), walk
+ * navigation played, DVDCellWalk_rec(): one run of them, with
+ * dvd.walk_all_runs every run when they go forward over short skipped
+ * cells; each run kept and each stretch skipped said), trim (DVDCellTrim_rec()), walk
  * then trim for titles the navigation did not reach, or auto (walk when the
  * scan has results, falling back to trim when the navigation's cells do not
  * work); one cell per angle block (the title's angle). Its length: declared
@@ -60,7 +62,10 @@ struct DVDDisc;
  * shared with another title set do not follow each other. Its sectors and
  * chapters: DVDTitleSegments_rec(), DVDChapterPlaces_rec() (chapters that
  * cannot be placed are dropped; a first one that cannot be placed is put at
- * the start when the next one is not there). An angle block gives one more
+ * the start when the next one is not there). With dvd.clean_break_parts its
+ * parts: one from its start and one from each clean break, a segment whose
+ * first cell starts another VOB than the cell before it, with the clock
+ * restarting and a chapter starting there (said). An angle block gives one more
  * title per further angle (at most 8); the main angle is angle 1 (the angle
  * block's first cell); the order the navigation plays the angles in is said. A title of a program chain whose
  * playback time (tested before the title is built) or declared length (after)
@@ -92,6 +97,7 @@ typedef struct
   char     name[16];
   uint8_t  title, pgc;
   uint8_t  angles[10];                /* from 1; 0 ends (none: no angle block played) */
+  uint8_t  revisit;                   /* found only by the scan with dvd.menu_revisit (ff_dvd_scan_revisit()) */
   int      nb_cells;
   uint8_t *cells;
 } dvd_nav_cells_t;
@@ -132,6 +138,10 @@ typedef struct
   uint32_t               measured;    /* seconds: the cells' VOBUs' presentation times */
   dvd_title_segments_t   segs;        /* its segments (DVDTitleSegments_rec()) */
   char                 **cell_maps;   /* per segment its cell runs as text: "1-3", "(1-3,5)" */
+  int                    nb_parts;    /* dvd.clean_break_parts: its parts (0: none, one piece or the option off) */
+  int                   *part_first;  /* each part's first segment, then nb_segments */
+  int64_t               *part_time;   /* 90 kHz: each part's start from the title's start (its cells' VOBUs'
+                                         presentation times), then the title's end */
   char                  *shared_cells;   /* a title with angles: its cells all angles play (outside the angle
                                             blocks) as text, "1, 2"; NULL none */
   int                    built;
@@ -161,6 +171,8 @@ typedef struct
   int      cell_check;                /* dvd_cell_check_t: the VOBUs a full cell check reads */
   uint64_t seed;                      /* of a random cell check */
   int      min_length;                /* seconds */
+  int      walk_all_runs;             /* CellWalk keeps every run (DVDCellWalk_rec() all_runs) */
+  int      clean_break_parts;         /* the titles' parts at their clean breaks */
 } dvd_title_options_t;
 
 /**

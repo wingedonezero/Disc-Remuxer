@@ -235,6 +235,9 @@ typedef struct DiscTitleInfo {
     DiscStreamInfo  *streams;
     int              nb_parts;       /**< 0: the title is one piece */
     DiscPartInfo    *parts;
+    int              parts_on_request; /**< written as parts only when chosen to be split (not by the setting
+                                            output.split_joined_titles) */
+    const char      *part_unit;      /**< what one part is ("separately authored piece"); NULL: a stream file */
     int              nb_props;
     DiscPropertyInfo *props;         /**< what the format part tells more of it, in its order */
     int              playlist_check; /**< enum DiscPlaylistCheck: marked only on a disc with fakes found */

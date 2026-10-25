@@ -35,6 +35,29 @@ def link_sub(op):
     return [0x20, 0x01, 0, 0, 0, 0, 0, op]
 
 
+def set_gprm(dst, value):
+    """Set (mov): GPRM dst = value."""
+    return [0x71, 0, 0, dst, value >> 8, value & 0xff, 0, 0]
+
+
+def if_goto(reg, value, line):
+    """if GPRM reg == value: Goto line."""
+    return [0x00, 0xa1, 0, reg, value >> 8, value & 0xff, 0, line]
+
+
+def jump_ss_vmgm_pgc(n):
+    """JumpSS VMGM (pgc n)."""
+    return [0x30, 0x06, n >> 8, n & 0xff, 0, 0xc0, 0, 0]
+
+
+def call_ss_vmgm_pgc(n, rsm_cell=1):
+    """CallSS VMGM (pgc n, rsm_cell)."""
+    return [0x30, 0x08, n >> 8, n & 0xff, rsm_cell, 0xc0, 0, 0]
+
+
+NOP = [0] * 8
+
+
 def mov_sprm(dst, sprm):
     """Set (mov): GPRM dst = SPRM sprm."""
     return [0x61, 0, 0, dst, 0, 0x80 | sprm, 0, 0]
@@ -58,14 +81,17 @@ def cell(first, last, secs=1, last_vobu=None, **kw):
     return dataclasses.replace(c, **kw)
 
 
-def build(tmp_path, pgcs, ptts, navs, vob_sectors, first_play=True, angles=None, **vts):
+def build(tmp_path, pgcs, ptts, navs, vob_sectors, first_play=True, angles=None, menu=None, first_play_pre=None,
+          **vts):
     """A disc folder with one title set: its program chains, its titles
     (ptts: per title the (pgcn, pgn) of each part) and title VOBs of
     vob_sectors sectors holding navs. A last title is added for the
     first-play program chain to jump to (JumpTT), so the navigator starts
     without stopping and without touching the tested chains; first_play
     False leaves the first-play chain out; angles: per title its number of
-    angles (default 1); vts: more Vts fields (video_attr, audio_attrs,
+    angles (default 1); menu: the VMG's menus (a dvd.Menu); first_play_pre:
+    the first-play chain's commands instead of the jump to the last title;
+    vts: more Vts fields (video_attr, audio_attrs,
     subp_attrs)."""
     home = len(pgcs) + 1
     stub_vob = max((c.vob_id_nr for p in pgcs for c in p.cells), default=0) + 1     # a VOB of its own
@@ -76,10 +102,11 @@ def build(tmp_path, pgcs, ptts, navs, vob_sectors, first_play=True, angles=None,
     v = Vts(pgcs=pgcs, ptts=ptts, vobus=sorted(n.lbn for n in navs), vob_sectors=vob_sectors + 1, **vts)
     angles = list(angles or []) + [1] * (len(ptts) - len(angles or []))
     titles = [Title(1, k + 1, len(t), angles[k]) for k, t in enumerate(ptts)]
-    fp = Pgc(cells=[], pre=[jump_tt(len(titles))]) if first_play else None
-    vmg = dvd.vmg_ifo(titles, 1, first_play=fp)
+    fp = Pgc(cells=[], pre=first_play_pre or [jump_tt(len(titles))]) if first_play else None
+    vmg = dvd.vmg_ifo(titles, 1, first_play=fp, menu=menu)
     folder = tmp_path / "disc"
-    dvd.write_disc(folder, vmg, [(dvd.vts_ifo(v), dvd.title_vobs(v.vob_sectors, navs))])
+    dvd.write_disc(folder, vmg, [(dvd.vts_ifo(v), dvd.title_vobs(v.vob_sectors, navs))],
+                   menu_vob=menu.vob() if menu is not None else None)
     return folder
 
 
@@ -151,11 +178,15 @@ class ScanResult:
     angles: list = dataclasses.field(default_factory=list)   # every angle played, in the order played
 
 
-def scan(disc, with_trace=False):
-    """ff_dvd_scan() on a DVDDisc *: (return value, [ScanResult], trace lines)."""
+def scan(disc, with_trace=False, revisit=False):
+    """ff_dvd_scan() on a DVDDisc *: (return value, [ScanResult], trace lines); revisit: with
+    ff_dvd_scan_revisit() after it (dvd.menu_revisit; no trace)."""
     SCAN_LINES.clear()
     out = ffi.new("dvdnav_scan_results_t *")
-    ret = lib.tb_dvd_scan(disc, lib.tb_py_scan_line if with_trace else ffi.NULL, out)
+    if revisit:
+        ret = lib.tb_dvd_scan_revisit(disc, out)
+    else:
+        ret = lib.tb_dvd_scan(disc, lib.tb_py_scan_line if with_trace else ffi.NULL, out)
     res = [ScanResult(ffi.string(r.name).decode(), r.title, r.pgc, list(ffi.unpack(r.cells, r.nb_cells)),
                       [a for a in r.angles if a]) for r in out.results[0:out.nb_results]]
     scan.entered = [i for i in range(100) if out.entered[i]]   # the title sets the navigation entered
@@ -199,11 +230,12 @@ def _dump(dump):
     return out
 
 
-def titles_from(disc, results, cell_mode=0, cell_check=0, min_length=0):
+def titles_from(disc, results, cell_mode=0, cell_check=0, min_length=0, walk_all_runs=False):
     """ff_dvd_titles_build() on a DVDDisc * with given scan results
     [(name, title, pgc, [cells])] (or with the angles played, in order:
     (name, title, pgc, [cells], [angles]))
-    instead of a scan: (return value, [dict per title as titles() gives])."""
+    instead of a scan: (return value, [dict per title as titles() gives]);
+    walk_all_runs: dvd.walk_all_runs."""
     res = ffi.new("dvd_nav_cells_t[]", max(len(results), 1))
     keep = []
     for k, (name, title, pgc, cells, *angle) in enumerate(results):
@@ -217,5 +249,5 @@ def titles_from(disc, results, cell_mode=0, cell_check=0, min_length=0):
         res[k].cells = c
         res[k].nb_cells = len(cells)
     dump = ffi.new("char **")
-    ret = lib.tb_dvd_titles_from(disc, res, len(results), cell_mode, cell_check, min_length, dump)
+    ret = lib.tb_dvd_titles_from(disc, res, len(results), cell_mode, cell_check, min_length, int(walk_all_runs), dump)
     return ret, _dump(dump)

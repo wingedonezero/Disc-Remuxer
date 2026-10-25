@@ -237,14 +237,41 @@ static int cells_room( titles_t *T, dvd_title_t *t )
   return 0;
 }
 
+/* dvd.walk_all_runs: what the walk did with the runs of cells the
+ * navigation played. */
+static void say_runs( titles_t *T, dvd_title_t *t, const dvd_cell_walk_t *w )
+{
+  if( w->one_run == 1 )
+    note( T, DVD_NOTE_INFO, "title %s: dvd.walk_all_runs: the navigation plays its cells in several runs, but a "
+          "run does not come after the one before it: one run is kept as without the setting", t->name );
+  else if( w->one_run == 2 )
+    note( T, DVD_NOTE_INFO, "title %s: dvd.walk_all_runs: the navigation plays its cells in several runs, but "
+          "cells %d-%d skipped between two of them make more than 5 seconds: one run is kept as without the "
+          "setting", t->name, w->gap_first + 1, w->gap_last + 1 );
+  if( w->nb_runs < 2 )
+    return;
+  note( T, DVD_NOTE_INFO, "title %s: dvd.walk_all_runs: the navigation plays its cells in %d runs: all kept, in "
+        "the order played", t->name, w->nb_runs );
+  for( int k = 1; k < w->nb_runs; k++ ) {
+    int a = w->runs[k - 1][1] + 1, b = w->runs[k][0] - 1;
+    if( a == b )
+      note( T, DVD_NOTE_INFO, "title %s: cell %d left out (the navigation skips it)", t->name, a + 1 );
+    else if( a < b )
+      note( T, DVD_NOTE_INFO, "title %s: cells %d-%d left out (the navigation skips them)", t->name, a + 1, b + 1 );
+  }
+}
+
 /* The cells the navigation played in the title's program chain: one run of
- * consecutive cells (CellWalk). 1 done, 0 not possible, -1 no memory. */
+ * consecutive cells (CellWalk), with dvd.walk_all_runs every run when they
+ * go forward over short skipped stretches. 1 done, 0 not possible, -1 no
+ * memory. */
 static int cell_walk( titles_t *T, dvd_title_t *t )
 {
   const dvd_nav_cells_t *e = t->scan;
   const pgc_rec_t *p = title_pgc( T, t );
   DVDCells *vr = reading( T, t->vtsn );
-  int first = -1, last = -1, ret;
+  dvd_cell_walk_t w = { 0 };
+  int ret;
 
   if( !e || !vr )
     return 0;
@@ -252,12 +279,17 @@ static int cell_walk( titles_t *T, dvd_title_t *t )
     return 0;
   if( cells_room( T, t ) < 0 )
     return -1;
-  ret = DVDCellWalk_rec( vr, p->number, e->cells, e->nb_cells, t->angle, t->nr_of_angles, t->cells, &t->nb_cells,
-                         &first, &last );
+  if( T->o->walk_all_runs && e->nb_cells && !(w.runs = dr_malloc( e->nb_cells * sizeof(*w.runs) )) )
+    return -1;
+  ret = DVDCellWalk_rec( vr, p->number, e->cells, e->nb_cells, t->angle, t->nr_of_angles, T->o->walk_all_runs,
+                         t->cells, &t->nb_cells, &w );
+  if( ret >= 0 && T->o->walk_all_runs )
+    say_runs( T, t, &w );
+  dr_free( w.runs );
   if( ret < 0 )
     return -1;
-  if( first >= 0 )                    /* a run was chosen */
-    say_left_out( T, t, first, last );
+  if( w.first >= 0 )                  /* a run was chosen */
+    say_left_out( T, t, w.first, w.last );
   return ret;
 }
 
@@ -393,6 +425,77 @@ static int place_chapters( titles_t *T, dvd_title_t *t, DVDCells *vr )
   return 0;
 }
 
+/* dvd.clean_break_parts: the title's parts, one from its start and one from
+ * each clean break: a segment whose first cell starts another VOB than the
+ * cell before it (vob_id_nr), with the clock restarting (stc_discontinuity)
+ * and a chapter starting there. Nothing crosses such a break (a new segment,
+ * a separately authored piece), so a part is exactly that stretch of the
+ * title. Their times: the cells' VOBUs' presentation times. 0, -1 no
+ * memory. */
+static int find_parts( titles_t *T, dvd_title_t *t )
+{
+  const pgc_rec_t *p = title_pgc( T, t );
+  const dvd_title_segments_t *s = &t->segs;
+  int n = 1, at;
+  int64_t time = 0;
+  char text[1024], h[32];
+
+  t->nb_parts = 0;
+  if( s->nb_segments < 2 )
+    return 0;
+  if( !(t->part_first = dr_malloc( (s->nb_segments + 1) * sizeof(*t->part_first) )) ||
+      !(t->part_time = dr_malloc( (s->nb_segments + 1) * sizeof(*t->part_time) )) )
+    return -1;
+  t->part_first[0] = 0;
+  for( int k = 1; k < s->nb_segments; k++ ) {
+    const dvd_segment_t *a = &s->segments[k - 1], *b = &s->segments[k];
+    const cell_rec_t *last, *first;
+    int chapter = 0;
+    if( !a->nb_runs || !b->nb_runs )
+      continue;
+    last  = &p->cells[a->runs[a->nb_runs - 1][1] - 1];
+    first = &p->cells[b->runs[0][0] - 1];
+    for( int c = 0; c < t->nb_chapters; c++ )
+      chapter |= t->chapters[c].segment == k && !t->chapters[c].offset;
+    if( first->vob_id_nr != last->vob_id_nr && (FLAGS( first ) & 2) && chapter )
+      t->part_first[n++] = k;
+  }
+  t->part_first[n] = s->nb_segments;
+  if( n < 2 ) {
+    dr_free( t->part_first );
+    dr_free( t->part_time );
+    t->part_first = NULL;
+    t->part_time  = NULL;
+    return 0;
+  }
+  /* the parts' times, segment by segment */
+  at = 0;
+  for( int k = 0; k < s->nb_segments; k++ ) {
+    const dvd_segment_t *g = &s->segments[k];
+    if( k == t->part_first[at] )
+      t->part_time[at++] = time;
+    for( int r = 0; r < g->nb_runs; r++ )
+      for( int c = g->runs[r][0]; c <= g->runs[r][1]; c++ ) {
+        uint64_t dur;
+        if( cell_duration( T, t->vtsn, p, c - 1, &dur, 0 ) )
+          time += dur;
+        else
+          time += (int64_t)bcd_seconds( p->cells[c - 1].playback_time ) * 90000;
+      }
+  }
+  t->part_time[n] = time;
+  t->nb_parts = n;
+  text[0] = 0;
+  for( int k = 0; k < n; k++ ) {
+    hms( h, sizeof(h), (uint32_t)(t->part_time[k] / 90000) );
+    if( strlen( text ) + strlen( h ) + 3 < sizeof(text) )
+      snprintf( text + strlen( text ), sizeof(text) - strlen( text ), "%s%s", k ? ", " : "", h );
+  }
+  note( T, DVD_NOTE_INFO, "title %s: dvd.clean_break_parts: %d parts, from its start and each clean break (another "
+        "VOB, the clock restarting and a chapter starting), at %s", t->name, n, text );
+  return 0;
+}
+
 /* The cells' VOBUs as extents in segments, then the chapters' places.
  * 1 done, 0 failed, -1 no memory. */
 static int build_segments( titles_t *T, dvd_title_t *t )
@@ -422,7 +525,8 @@ static int build_segments( titles_t *T, dvd_title_t *t )
     return ret < 0 ? -1 : 0;
   }
   t->segs = o;                        /* the title's from here on */
-  if( cell_maps( t ) < 0 || shared_cells( T, t ) < 0 || place_chapters( T, t, vr ) < 0 )
+  if( cell_maps( t ) < 0 || shared_cells( T, t ) < 0 || place_chapters( T, t, vr ) < 0 ||
+      (T->o->clean_break_parts && find_parts( T, t ) < 0) )
     return -1;
   t->built = 1;
   return 1;
@@ -550,6 +654,8 @@ void DVDFreeTitle_rec( dvd_title_t *t )
     dr_free( t->cell_maps[k] );
   dr_free( t->cell_maps );
   dr_free( t->shared_cells );
+  dr_free( t->part_first );
+  dr_free( t->part_time );
   DVDFreeTitleSegments_rec( &t->segs );
   dr_free( t->chapters );
   dr_free( t->cells );
@@ -1063,7 +1169,9 @@ static int same_title( const titles_t *T, const dvd_title_t *a, const dvd_title_
 }
 
 /* A title playing an earlier one's sectors with no more streams and
- * chapters is left out (said); the search starts over after each. */
+ * chapters is left out (said); the search starts over after each. A title
+ * only the scan with dvd.menu_revisit found never takes the place of one
+ * the normal scan found (that one is kept, the other left out). */
 static void remove_duplicates( titles_t *T )
 {
   dvd_title_list_t *l = T->out;
@@ -1071,7 +1179,7 @@ static void remove_duplicates( titles_t *T )
   for( int i = 0; i < l->nb_titles; i++ ) {
     for( int j = 0; j < l->nb_titles; j++ ) {
       dvd_title_t *a = l->titles[i], *b = l->titles[j];
-      if( a == b || !same_title( T, a, b ) )
+      if( a == b || (a->scan && a->scan->revisit && !(b->scan && b->scan->revisit)) || !same_title( T, a, b ) )
         continue;
       note( T, DVD_NOTE_INFO, "title %d left out: it is the same as title %d (VTS_%02d)", b->title + 1,
             a->title + 1, b->vtsn );
@@ -1200,7 +1308,8 @@ end:
 int ff_dvd_titles_build(DVDDisc *d, const dvdnav_scan_results_t *scan, const DVDTitleOptions *o,
                         dvd_title_list_t *out)
 {
-    dvd_title_options_t lo = { o->cell_mode, o->cell_check, dr_random_seed(), o->min_length };
+    dvd_title_options_t lo = { o->cell_mode, o->cell_check, dr_random_seed(), o->min_length, o->walk_all_runs,
+                               o->clean_break_parts };
 
     return DVDTitleList_rec(d, scan->results, scan->nb_results, &lo, out) < 0 ? DR_ERR(ENOMEM) : 0;
 }

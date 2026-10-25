@@ -769,14 +769,35 @@ static uint32_t run_seconds( const pgc_rec_t *p, cell_run_t r )
   return sum;
 }
 
+/* all_runs: why the runs left cannot all be kept (dvd_cell_walk_t one_run),
+ * 0 when they can. */
+static int runs_one( const pgc_rec_t *p, const cell_run_t *runs, int n, dvd_cell_walk_t *res )
+{
+  for( int k = 1; k < n; k++ ) {
+    if( runs[k].first <= runs[k - 1].last )
+      return 1;
+    if( runs[k].first - 1 > runs[k - 1].last &&
+        run_seconds( p, (cell_run_t){ runs[k - 1].last + 1, runs[k].first - 1 } ) > 5 ) {
+      res->gap_first = runs[k - 1].last;
+      res->gap_last  = runs[k].first - 2;
+      return 2;
+    }
+  }
+  return 0;
+}
+
 int DVDCellWalk_rec( DVDCells *v, int pgcn, const uint8_t *played, int nb_played, int angle, int angles,
-                     int *cells, int *nb, int *first, int *last )
+                     int all_runs, int *cells, int *nb, dvd_cell_walk_t *res )
 {
   const pgc_rec_t *p = pgc_of( v, pgcn );
   cell_run_t *runs;
-  int n = 0, ret;
+  int n = 0, ret, all = 0;
 
   *nb = 0;
+  res->first = res->last = -1;
+  res->nb_runs = 0;
+  res->one_run = 0;
+  res->gap_first = res->gap_last = -1;
   if( !p )
     return 0;
   if( !nb_played ) {
@@ -797,19 +818,33 @@ int DVDCellWalk_rec( DVDCells *v, int pgcn, const uint8_t *played, int nb_played
     memmove( runs, runs + 1, --n * sizeof(*runs) );
   while( n > 1 && run_good( v, p, pgcn, runs[n - 1] ) <= 0 )
     n--;
+  /* all_runs: every run left, when they go forward over short skipped stretches */
+  if( all_runs && n > 1 && !(res->one_run = runs_one( p, runs, n, res )) )
+    all = 1;
   /* the longer end */
-  while( n > 1 ) {
+  while( !all && n > 1 ) {
     if( run_seconds( p, runs[0] ) < run_seconds( p, runs[n - 1] ) )
       memmove( runs, runs + 1, --n * sizeof(*runs) );
     else
       n--;
   }
-  if( (unsigned)(runs[0].first - 1) < p->nr_of_cells && (unsigned)(runs[0].last - 1) < p->nr_of_cells ) {
-    *first = runs[0].first - 1;
-    *last  = runs[0].last - 1;
-    ret = DVDCellList_rec( v, pgcn, *first, *last, angle, angles, cells, nb );
-  } else {
-    ret = 0;
+  ret = 1;
+  for( int k = 0; k < n && ret > 0; k++ ) {
+    int got = 0;
+    if( (unsigned)(runs[k].first - 1) >= p->nr_of_cells || (unsigned)(runs[k].last - 1) >= p->nr_of_cells ) {
+      ret = 0;
+      break;
+    }
+    if( !k )
+      res->first = runs[k].first - 1;
+    res->last = runs[k].last - 1;
+    if( res->runs ) {
+      res->runs[k][0] = runs[k].first - 1;
+      res->runs[k][1] = runs[k].last - 1;
+    }
+    res->nb_runs = k + 1;
+    ret = DVDCellList_rec( v, pgcn, runs[k].first - 1, runs[k].last - 1, angle, angles, cells + *nb, &got );
+    *nb += got;
   }
   dr_free( runs );
   return ret;

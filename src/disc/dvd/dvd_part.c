@@ -51,6 +51,7 @@ typedef struct DVDDemuxContext {
     dvd_vob_reader_t *vobs;             /* a reading of its title VOBs (dvd_vob.c), for the title reader */
     dvd_vob_damage_t ended;             /* the damaged range its latest read ended (nb_sectors 0: none) */
     int             view_seg;           /* the segment its file view was set for (-1: none yet) */
+    int             seg0;               /* its first segment (a part: the part's) */
     int64_t        *chapter_times;
     int            *chapter_clips;
     int64_t        *chapter_offsets;
@@ -59,13 +60,13 @@ typedef struct DVDDemuxContext {
 static const char *clip_name(DrDisc *d, int k)
 {
     DVDDemuxContext *c = ff_disc_part(d);
-    return c->title->cell_maps[k];
+    return c->title->cell_maps[c->seg0 + k];
 }
 
 static uint32_t clip_blocks(DrDisc *d, int k)
 {
     DVDDemuxContext *c = ff_disc_part(d);
-    return ff_dvd_segment_blocks(&c->title->segs.segments[k]);
+    return ff_dvd_segment_blocks(&c->title->segs.segments[c->seg0 + k]);
 }
 
 static int read_block(DrDisc *d, int k, uint32_t block, uint8_t *buf)
@@ -73,6 +74,7 @@ static int read_block(DrDisc *d, int k, uint32_t block, uint8_t *buf)
     DVDDemuxContext *c = ff_disc_part(d);
     int ret;
 
+    k += c->seg0;
     /* a new segment: libdvdread checks its file view (an image's VOB files) */
     if (k != c->view_seg) {
         if ((ret = ff_dvd_segment_view(c->title, c->vobs, k)) < 0)
@@ -88,7 +90,7 @@ static int read_block(DrDisc *d, int k, uint32_t block, uint8_t *buf)
 static int block_place(DrDisc *d, int k, uint32_t block, char *file, int size, int64_t *offset)
 {
     DVDDemuxContext *c = ff_disc_part(d);
-    return ff_dvd_segment_place(c->title, c->vobs, k, block, file, size, offset);
+    return ff_dvd_segment_place(c->title, c->vobs, c->seg0 + k, block, file, size, offset);
 }
 
 /* The damaged ranges as libdvdread names them: the one the latest read
@@ -123,7 +125,7 @@ static int64_t clip_start(DrDisc *d, int k)
     uint8_t b[DVD_SECTOR];
 
     /* (on the title set's own reading: the title reader's ranges stay its own) */
-    if (ff_dvd_segment_read(&c->disc, c->title, k, 0, b) <= 0 || dr_rb32(b) != 0x1ba ||
+    if (ff_dvd_segment_read(&c->disc, c->title, c->seg0 + k, 0, b) <= 0 || dr_rb32(b) != 0x1ba ||
         dr_rb32(b + 0x26) != 0x1bf || b[0x2c])
         return DR_NOPTS_VALUE;
     return dr_rb32(b + 0x2d + 0x0c);
@@ -420,21 +422,55 @@ static int title_info(DrDisc *d, int i, DiscTitleInfo *dt)
             return DR_ERR(ENOMEM);
         ch->start = dr_rescale(t->chapters[k].time, INT64_C(1000000), 90000);
     }
+    /* dvd.clean_break_parts: its parts at its clean breaks, written as parts
+     * only when the title is chosen to be split */
+    for (int p = 0; p < t->nb_parts; p++) {
+        DiscPartInfo *dp = ff_disc_title_add_part(dt);
+        if (!dp)
+            return DR_ERR(ENOMEM);
+        dp->start      = dr_rescale(t->part_time[p], INT64_C(1000000), 90000);
+        dp->duration   = dr_rescale(t->part_time[p + 1] - t->part_time[p], INT64_C(1000000), 90000);
+        dp->first_file = t->part_first[p];
+        dp->nb_files   = t->part_first[p + 1] - t->part_first[p];
+        for (int k = 0; k < t->nb_chapters; k++)
+            dp->nb_chapters += t->chapters[k].segment >= t->part_first[p] &&
+                               t->chapters[k].segment < t->part_first[p + 1];
+    }
+    if (t->nb_parts) {
+        dt->parts_on_request = 1;
+        dt->part_unit        = "separately authored piece";
+    }
     return 0;
 }
 
 /* The opened title's source (its streams and tracks: the disc layer's):
- * its segments
+ * its segments (a part: the part's)
  * one after another, DVD-Video's 3-byte LPCM header,
- * the chapter records placed on its segments. */
+ * the chapter records placed on its segments (a part: its own, from its
+ * start). */
 static int open_title(DrDisc *d, int i, int part, int *second_view)
 {
     
     DVDDemuxContext *c = ff_disc_part(d);
     const dvd_title_t *t = c->titles.titles[i];
-    int nb_ch = 0;
+    int nb_ch = 0, s0 = 0, s1 = t->segs.nb_segments;
+    int64_t t0 = 0, t1, base = 0;
 
+    if (part >= 0) {
+        if (part >= t->nb_parts) {
+            dr_vlog(d->log, DR_VLOG_ERROR, "DVD: title %s has no part %d (%s)\n", t->name, part,
+                   t->nb_parts ? "too few parts" : "it has no clean break");
+            return DR_ERR(EINVAL);
+        }
+        s0 = t->part_first[part];
+        s1 = t->part_first[part + 1];
+        t0 = t->part_time[part];
+        dr_vlog(d->log, DR_VLOG_VERBOSE, "DVD: title %s: part %d of %d alone: segments %s .. %s\n", t->name,
+               part + 1, t->nb_parts, t->cell_maps[s0], t->cell_maps[s1 - 1]);
+    }
+    t1 = part >= 0 ? t->part_time[part + 1] : 0;
     c->title = t;
+    c->seg0  = s0;
     memset(&c->ended, 0, sizeof(c->ended));
     c->view_seg = -1;
     if (!(c->vobs = ff_dvd_title_vobs_open(&c->disc, t->vtsn)))
@@ -446,14 +482,23 @@ static int open_title(DrDisc *d, int i, int part, int *second_view)
     /* chapter records: positions (a segment and a byte offset in it; a
      * chapter starts at the first video frame from there), with their times
      * from the title's start */
-    for (int k = 0; k < t->nb_chapters; k++, nb_ch++) {
-        c->chapter_times[k]   = t->chapters[k].time * DR_TICKS_PER_PTS;
-        c->chapter_clips[k]   = t->chapters[k].segment == DVD_TITLE_CHAPTER_NONE ? -1 : t->chapters[k].segment;
-        c->chapter_offsets[k] = t->chapters[k].offset;
+    for (int k = 0; k < t->nb_chapters; k++) {
+        int seg = t->chapters[k].segment;
+        if (part >= 0 && (seg < s0 || seg >= s1))
+            continue;
+        /* a part after the first: its records' times from its first one
+         * (at the clean break it starts with) */
+        if (part > 0 && !nb_ch)
+            base = t->chapters[k].time;
+        c->chapter_times[nb_ch]   = (t->chapters[k].time - base) * DR_TICKS_PER_PTS;
+        c->chapter_clips[nb_ch]   = seg == DVD_TITLE_CHAPTER_NONE ? -1 : seg - s0;
+        c->chapter_offsets[nb_ch] = t->chapters[k].offset;
+        nb_ch++;
     }
-    d->duration = (int64_t)t->declared * INT64_C(1000000) * 1080; /* microseconds -> ticks */
+    d->duration = part >= 0 ? (t1 - t0) * DR_TICKS_PER_PTS
+                            : (int64_t)t->declared * INT64_C(1000000) * 1080; /* microseconds -> ticks */
     d->src = (DiscTitleSource){
-        .nb_clips      = t->segs.nb_segments,
+        .nb_clips      = s1 - s0,
         .clip_kind     = "segment",
         .clip_name     = clip_name,
         .clip_blocks   = clip_blocks,
@@ -504,8 +549,9 @@ static int dvd_load(DrDisc *d)
 {
     
     DVDDemuxContext *c = ff_disc_part(d);
-    DVDTitleOptions o = { d->opt_dvd_cell_mode, d->opt_dvd_cell_check, d->opt_min_length };
-    int folder = !d->image, ret;
+    DVDTitleOptions o = { d->opt_dvd_cell_mode, d->opt_dvd_cell_check, d->opt_min_length, d->opt_dvd_walk_all_runs,
+                          d->opt_dvd_clean_break_parts };
+    int folder = !d->image, ret, scanned = 0;
     char *dump;
 
     if ((ret = ff_dvd_disc_open((void *)d->log, d->fs, d->dvd_flat ? "" : "/VIDEO_TS", folder, folder ? NULL : d->fs->label,
@@ -523,10 +569,16 @@ static int dvd_load(DrDisc *d)
     d->info.name  = c->disc.rec->text_name;
     menu_languages(d, &c->disc);
 
-    /* the titles: the navigation played (not for trimmed cells), then the
-     * title list from it (a failed scan leaves no results) */
-    if ((o.cell_mode != DVD_CELL_MODE_TRIM && ff_dvd_scan(&c->disc, NULL, NULL, &c->scan) == DR_ERR(ENOMEM)) ||
-        (ret = ff_dvd_titles_build(&c->disc, &c->scan, &o, &c->titles)) < 0 ||
+    /* the titles: the navigation played (not for trimmed cells), with
+     * dvd.menu_revisit the titles only a second visit to a menu reaches added
+     * (not after a failed scan), then the title list from it (a failed scan
+     * leaves no results) */
+    if (o.cell_mode != DVD_CELL_MODE_TRIM && (scanned = ff_dvd_scan(&c->disc, NULL, NULL, &c->scan)) == DR_ERR(ENOMEM))
+        return scanned;
+    if (o.cell_mode != DVD_CELL_MODE_TRIM && scanned >= 0 && d->opt_dvd_menu_revisit &&
+        (ret = ff_dvd_scan_revisit(&c->disc, &c->scan)) < 0)
+        return ret;
+    if ((ret = ff_dvd_titles_build(&c->disc, &c->scan, &o, &c->titles)) < 0 ||
         !(c->sources = dr_calloc(DR_MAX(c->titles.nb_titles, 1), sizeof(*c->sources))))
         return ret < 0 ? ret : DR_ERR(ENOMEM);
     /* what the navigation found */

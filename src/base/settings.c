@@ -97,6 +97,24 @@ static const Setting registry[] = {
       "How many VOBUs of a DVD cell are read when a cell is checked in full (in the decoy checks, mostly when the "
       "cells are trimmed): all (every VOBU; one broken VOBU rejects the cell), spread (50 evenly spread over the "
       "cell) or random (50 at random, a different choice on each run).", 0, SET_AT_OPEN },
+    { "dvd", "menu_revisit", SET_BOOL, "false", 0, 0, NULL,
+      "For DVDs whose titles are missing: the disc's navigation is played once more, coming back to menus the "
+      "way a viewer does when the disc's registers (its memory) have changed, e.g. after an intro played once or "
+      "an audio choice, and the titles only reached that way are added to the title list. The titles the normal "
+      "pass finds stay exactly as they are. Off: the titles of the normal pass only.", 0, SET_AT_OPEN },
+    { "dvd", "walk_all_runs", SET_BOOL, "false", 0, 0, NULL,
+      "For DVDs whose episodes are missing from a play-all title: when the disc's navigation plays a title's cells "
+      "in several runs (skipping short cells between them), the title keeps every run, in the order played, "
+      "instead of only one. Only when every run comes after the one before it and each skipped stretch is 5 "
+      "seconds or shorter; otherwise the title keeps one run as usual (said in the log). Only used with the "
+      "navigation's cells (cell mode walk or auto). Off: one run per title.", 0, SET_AT_OPEN },
+    { "dvd", "clean_break_parts", SET_BOOL, "false", 0, 0, NULL,
+      "For DVD titles that play several separately authored pieces one after another (e.g. episodes): each title "
+      "lists its parts, one from each clean break, where a cell starts another VOB, the clock restarts and a "
+      "chapter starts (nothing crosses such a break, so a part is exactly that stretch of the title). A title is "
+      "written as parts only when it is chosen to be split (the title's menu in the GUI, demux --split), never by "
+      "output.split_joined_titles: films and episodes made of pieces have such breaks too. Off: DVD titles have "
+      "no parts.", 0, SET_AT_OPEN },
     { "chapters", "snap", SET_BOOL, "true", 0, 0, NULL,
       "Put a chapter on a video key frame near its mark, stage by stage: a mark on a key frame keeps it; else "
       "the nearest key frame before it within chapters.before_ms; else the nearest after it within "
@@ -113,12 +131,6 @@ static const Setting registry[] = {
       0, SET_AT_RIP },
     { "mkv", "mkvmerge_path", SET_TEXT, "", 0, 0, NULL,
       "The mkvmerge program output.format = mkvmerge runs. Empty: mkvmerge from the PATH.", 0, SET_AT_RIP },
-    { "mkv", "tie_subtitles", SET_BOOL, "false", 0, 0, NULL,
-      "output.format = mkvmerge: each PGS and VobSub subtitle goes to mkvmerge at the time mkvmerge's own count of "
-      "the video gives its picture (plus the fields it starts into the picture), so in the MKV every subtitle is on "
-      "its picture, also after the MKV is extracted and rebuilt. Off: the disc's times (mkvmerge counts the video a "
-      "little early, so about 1 subtitle in 25 lands 1 ms after its picture). The stream files keep the disc's "
-      "times either way.", 0, SET_AT_RIP },
     { "mkv", "remove_dialog_normalization", SET_BOOL, "false", 0, 0, NULL,
       "MKV files: set the dialogue normalization of every AC-3, E-AC-3 and DTS frame to \"none\" (as mkvmerge's "
       "option of that name), so players do not turn those tracks down to the disc's dialogue level. The disc's "
