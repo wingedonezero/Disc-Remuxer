@@ -137,6 +137,8 @@ typedef struct DCAXllDecoder {
 
     int    x_syncword_present;        ///< Syncword for extension data at end of frame (DTS:X) is present
     int    x_imax_syncword_present;   ///< Syncword for extension data at end of frame (DTS:X IMAX) is present
+    unsigned int x_syncword_logged;   ///< Last DTS:X extension syncword reported in the log
+    int    asset_type_logged;         ///< Last asset type reported in the log, plus one (0: none yet)
 
     int     output_mask;
     int32_t *output_samples[DCA_SPEAKER_COUNT];

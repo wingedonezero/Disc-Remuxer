@@ -1645,6 +1645,18 @@ static int dvdvideo_read_packet(AVFormatContext *s, AVPacket *pkt)
             c->subdemux_reset = 0;
             c->pts_offset     = c->play_state.ptm_offset;
 
+            /* reset PTS tracking state so that frames arriving after the
+               PTM discontinuity are not incorrectly discarded:
+               - prev_pts: prevents the AC3 duplicate check from rejecting
+                 valid frames whose PTS appears lower than the stale values
+               - first_pts/play_started: prevents audio frames from going
+                 negative when the PTS base shifts at a cell boundary */
+            for (int i = 0; i < s->nb_streams; i++)
+                c->prev_pts[i] = AV_NOPTS_VALUE;
+
+            c->first_pts     = 0;
+            c->play_started  = 0;
+
             if ((ret = dvdvideo_subdemux_reset(s)) < 0)
                 return ret;
 
@@ -1689,7 +1701,8 @@ static int dvdvideo_read_packet(AVFormatContext *s, AVPacket *pkt)
     if (st_subdemux->codecpar->codec_type == AVMEDIA_TYPE_AUDIO &&
         st_subdemux->codecpar->codec_id == AV_CODEC_ID_AC3) {
 
-        if (pkt->pts <= c->prev_pts[pkt->stream_index])
+        if (c->prev_pts[pkt->stream_index] != AV_NOPTS_VALUE &&
+            pkt->pts < c->prev_pts[pkt->stream_index])
             goto discard;
 
         ret = av_ac3_parse_header(pkt->buf->data, pkt->size,

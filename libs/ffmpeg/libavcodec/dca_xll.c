@@ -1073,10 +1073,30 @@ static int parse_frame(DCAXllDecoder *s, const uint8_t *data, int size, DCAExssA
 
         extradata_syncword = show_bits_long(&s->gb, 32);
 
-        if (extradata_syncword == DCA_SYNCWORD_XLL_X) {
+        // DTS:X uses 0x02000850 or 0xF14000D0-D4: D0 is IMAX, D1-D4 carry
+        // a fixed 6-9 extra channels. Only D0/D1 were recognised before,
+        // both as IMAX.
+        if (extradata_syncword == DCA_SYNCWORD_XLL_X ||
+            (extradata_syncword >= DCA_SYNCWORD_XLL_X_IMAX &&
+             extradata_syncword <= DCA_SYNCWORD_XLL_X_IMAX + 4)) {
             s->x_syncword_present = 1;
-        } else if ((extradata_syncword >> 1) == (DCA_SYNCWORD_XLL_X_IMAX >> 1)) {
+            if (extradata_syncword == DCA_SYNCWORD_XLL_X_IMAX)
+                s->x_imax_syncword_present = 1;
+            if (extradata_syncword != s->x_syncword_logged) {
+                av_log(s->avctx, AV_LOG_VERBOSE, "DTS:X extension syncword 0x%08X\n",
+                       extradata_syncword);
+                s->x_syncword_logged = extradata_syncword;
+            }
+        }
+    }
+
+    // The asset type descriptor marks IMAX certified content explicitly
+    if (asset && asset->asset_type_present) {
+        if (asset->asset_type == 13)
             s->x_imax_syncword_present = 1;
+        if (asset->asset_type + 1 != s->asset_type_logged) {
+            av_log(s->avctx, AV_LOG_VERBOSE, "DTS-HD asset type %d\n", asset->asset_type);
+            s->asset_type_logged = asset->asset_type + 1;
         }
     }
 

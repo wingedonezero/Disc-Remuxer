@@ -73,9 +73,9 @@ static int parse_descriptor(DCAExssParser *s, DCAExssAsset *asset)
 
     if (s->static_fields_present) {
         // Asset type descriptor presence
-        if (get_bits1(&s->gb))
+        if (asset->asset_type_present = get_bits1(&s->gb))
             // Asset type descriptor
-            skip_bits(&s->gb, 4);
+            asset->asset_type = get_bits(&s->gb, 4);
 
         // Language descriptor presence
         if (get_bits1(&s->gb))

@@ -21,8 +21,8 @@ change made to them: `libs/README.md`. The title timeline in detail:
 > missing, every rip would be byte-identical; only reports and checks would
 > degrade.
 
-FFmpeg is linked from one module only (`src/analyze/`), unmodified (see
-`libs/README.md`). Every codec is cut by `src/parse/` (MPEG-1/2 video and
+FFmpeg is linked from one module only (`src/analyze/`); it is the
+maintainer's fork (see `libs/README.md`). Every codec is cut by `src/parse/` (MPEG-1/2 video and
 E-AC-3, which never had a disc rule, by `parse/stock.c`: FFmpeg's own cut,
 ported). The timeline still asks analyze one question (`DRTimelineHost` in
 `src/timeline/disctl.h`), on copies, no stream byte passing: at a TrueHD

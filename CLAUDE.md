@@ -10,8 +10,8 @@
 A C program (`disc-remuxer`, `src/disc-remuxer/`, with a Qt 6 GUI in `src/gui/`) that rips DVD,
 HD DVD and Blu-ray / UHD sources into elementary streams (Matroska later). The whole demux path —
 readers, demuxers, frame cutters, the title timeline, the writer — is our own code in `src/`;
-FFmpeg (unmodified) is only an analysis instrument, linked from `src/analyze/`. libdvdread,
-libdvdnav and libdvdcss read DVDs (table parsing, the navigation VM, CSS); expat parses the HD DVD
+FFmpeg (the maintainer's fork) is only an analysis instrument, linked from `src/analyze/`.
+libdvdread, libdvdnav and libdvdcss read DVDs (table parsing, the navigation VM, CSS); expat parses the HD DVD
 playlists; libaacs (on libgcrypt / libgpg-error) handles AACS; CCExtractor (a helper program) turns
 closed captions into text. All live in `libs/` (see `libs/README.md`: what is changed in each).
 
@@ -38,7 +38,7 @@ See `docs/ARCHITECTURE.md` and `libs/README.md`.
 - `src/gui/` — the GUI (C++, Qt 6 Widgets), linked with the engine
 - `src/disc/` (with `dvd/`, `hddvd/`, `bluray/`), `src/timeline/`, `src/mux/`, `src/parse/`, `src/io/`,
   `src/base/` — the demux path, top to bottom; `src/analyze/` — the one module that links FFmpeg
-- `libs/` — FFmpeg and every library (FFmpeg unmodified; see `libs/README.md`)
+- `libs/` — FFmpeg and every library (see `libs/README.md`: what is changed in each)
 - `mk/` — the build rules (`Makefile`, `build.sh`)
 - `tests/` — unit tests (`unit/`), test data builders (`synth/`), helpers, the cffi bridge (`bridge/`)
 

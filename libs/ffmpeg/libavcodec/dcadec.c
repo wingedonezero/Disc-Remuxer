@@ -156,6 +156,38 @@ void ff_dca_downmix_to_stereo_float(AVFloatDSPContext *fdsp, float **samples,
     }
 }
 
+/* Report frames of a lossless stream that were output from the lossy core.
+ * The first frame after start or seek is expected to be (it lies in the
+ * encoder priming at the start of a stream), anything else is a warning, or
+ * an error with err_detect explode (strict lossless decoding). */
+static int report_lossless(DCAContext *s, const char *lossy)
+{
+    AVCodecContext *avctx = s->avctx;
+
+    if (lossy) {
+        int expected = s->frame_number == 0 && !strncmp(lossy, "no residual", 11);
+        if (!expected && (avctx->err_recognition & AV_EF_EXPLODE)) {
+            av_log(avctx, AV_LOG_ERROR, "Frame %"PRId64" of the lossless stream "
+                   "cannot be decoded lossless: %s\n", s->frame_number, lossy);
+            return AVERROR_INVALIDDATA;
+        }
+        if (!s->lossy_run) {
+            av_log(avctx, expected ? AV_LOG_VERBOSE : AV_LOG_WARNING,
+                   "Frame %"PRId64" of the lossless stream decoded lossy: %s\n",
+                   s->frame_number, lossy);
+            s->lossy_reason = lossy;
+        }
+        s->lossy_run++;
+    } else if (s->lossy_run) {
+        av_log(avctx, s->lossy_run == 1 && s->frame_number == 1 ? AV_LOG_VERBOSE : AV_LOG_WARNING,
+               "Lossless output resumed at frame %"PRId64" after %"PRId64" lossy frame(s) (%s)\n",
+               s->frame_number, s->lossy_run, s->lossy_reason);
+        s->lossy_run = 0;
+    }
+    s->frame_number++;
+    return 0;
+}
+
 static int dcadec_decode_frame(AVCodecContext *avctx, AVFrame *frame,
                                int *got_frame_ptr, AVPacket *avpkt)
 {
@@ -163,6 +195,8 @@ static int dcadec_decode_frame(AVCodecContext *avctx, AVFrame *frame,
     const uint8_t *input = avpkt->data;
     int input_size = avpkt->size;
     int i, ret, prev_packet = s->packet;
+    int has_xll = 0;            // the stream carries XLL in this frame
+    const char *lossy = NULL;   // why this frame of an XLL stream is not lossless
     uint32_t mrk;
 
     if (input_size < MIN_PACKET_SIZE || input_size > MAX_PACKET_SIZE) {
@@ -227,13 +261,19 @@ static int dcadec_decode_frame(AVCodecContext *avctx, AVFrame *frame,
             if ((ret = ff_dca_xll_parse(&s->xll, input, asset)) < 0) {
                 // Conceal XLL synchronization error
                 if (ret == AVERROR(EAGAIN)) {
-                    if ((prev_packet & DCA_PACKET_XLL) && (s->packet & DCA_PACKET_CORE))
+                    if ((prev_packet & DCA_PACKET_XLL) && (s->packet & DCA_PACKET_CORE)) {
                         s->packet |= DCA_PACKET_XLL | DCA_PACKET_RECOVERY;
+                        lossy = "XLL synchronization lost";
+                    } else
+                        lossy = "XLL not decodable yet (mid smoothing period or decoding delay)";
                 } else if (ret == AVERROR(ENOMEM) || (avctx->err_recognition & AV_EF_EXPLODE))
                     return ret;
+                else
+                    lossy = "invalid XLL frame";
             } else {
                 s->packet |= DCA_PACKET_XLL;
             }
+            has_xll = 1;
         }
 
         // Parse LBR component in EXSS
@@ -274,6 +314,8 @@ static int dcadec_decode_frame(AVCodecContext *avctx, AVFrame *frame,
                 && s->xll.nchsets > 1) {
                 av_log(avctx, AV_LOG_VERBOSE, "Forcing XLL recovery mode\n");
                 s->packet |= DCA_PACKET_RECOVERY;
+                if (!lossy)
+                    lossy = "no residual history (first frame after start or seek)";
             }
 
             // Set 'residual ok' flag for the next frame
@@ -288,6 +330,7 @@ static int dcadec_decode_frame(AVCodecContext *avctx, AVFrame *frame,
                 return ret;
             if ((ret = ff_dca_core_filter_frame(&s->core, frame)) < 0)
                 return ret;
+            lossy = "XLL frame error, core fallback";
         }
     } else if (s->packet & DCA_PACKET_CORE) {
         if ((ret = ff_dca_core_filter_frame(&s->core, frame)) < 0)
@@ -300,6 +343,11 @@ static int dcadec_decode_frame(AVCodecContext *avctx, AVFrame *frame,
             av_log(avctx, AV_LOG_WARNING, "Consider disabling 'core_only' option\n");
         return AVERROR_INVALIDDATA;
     }
+
+    if (has_xll && !lossy && !(s->packet & DCA_PACKET_XLL))
+        lossy = "XLL missing";
+    if ((ret = report_lossless(s, has_xll ? lossy : NULL)) < 0)
+        return ret;
 
     *got_frame_ptr = 1;
 
@@ -315,6 +363,8 @@ static av_cold void dcadec_flush(AVCodecContext *avctx)
     ff_dca_lbr_flush(&s->lbr);
 
     s->packet &= DCA_PACKET_MASK;
+    s->frame_number = 0;
+    s->lossy_run    = 0;
 }
 
 static av_cold int dcadec_close(AVCodecContext *avctx)

@@ -68,6 +68,12 @@ typedef struct DCAContext {
 
     int     packet; ///< Packet flags
 
+    /* Lossless (XLL) output accounting: frames of a stream that carries XLL
+     * but were output from the lossy core, and why. */
+    int64_t     frame_number;     ///< frames output since init or flush
+    int64_t     lossy_run;        ///< consecutive lossy frames so far
+    const char *lossy_reason;     ///< reason for the current lossy run
+
     int     request_channel_layout; ///< Converted from avctx.request_channel_layout
     int     core_only;              ///< Core only decoding flag
     int     output_channel_order;

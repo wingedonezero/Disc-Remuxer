@@ -815,6 +815,27 @@ static int mov_write_esds_tag(AVIOContext *pb, MOVTrack *track) // Basic
     return update_size(pb, pos);
 }
 
+static int mov_write_udts_tag(AVIOContext *pb, MOVTrack *track)
+{
+    const uint8_t *extradata = track->extradata[track->last_stsd_index];
+    int extradata_size       = track->extradata_size[track->last_stsd_index];
+
+    if (extradata_size < 12) {
+        av_log(pb, AV_LOG_ERROR,
+               "Cannot write moov atom before DTS-UHD packets."
+               " Set the delay_moov flag to fix this.\n");
+        return AVERROR(EINVAL);
+    }
+
+    /* The extradata is the udts box itself. */
+    if (memcmp(extradata + 4, "udts", 4) == 0) {
+        avio_write(pb, extradata, extradata_size);
+        return extradata_size;
+    }
+
+    return 0;
+}
+
 static int mov_pcm_le_gt16(enum AVCodecID codec_id)
 {
     return codec_id == AV_CODEC_ID_PCM_S24LE ||
@@ -1518,6 +1539,8 @@ static int mov_write_audio_tag(AVFormatContext *s, AVIOContext *pb, MOVMuxContex
         ret = mov_write_dops_tag(s, pb, track);
     else if (track->par->codec_id == AV_CODEC_ID_TRUEHD)
         ret = mov_write_dmlp_tag(s, pb, track);
+    else if (track->par->codec_id == AV_CODEC_ID_DTSUHD)
+        ret = mov_write_udts_tag(pb, track);
     else if (tag == MOV_MP4_IPCM_TAG || tag == MOV_MP4_FPCM_TAG) {
         if (track->par->sample_rate > UINT16_MAX)
             mov_write_srat_tag(pb, track);
@@ -3412,6 +3435,7 @@ static int mov_write_stbl_tag(AVFormatContext *s, AVIOContext *pb, MOVMuxContext
     if ((track->par->codec_type == AVMEDIA_TYPE_VIDEO ||
          track->par->codec_id == AV_CODEC_ID_TRUEHD ||
          track->par->codec_id == AV_CODEC_ID_MPEGH_3D_AUDIO ||
+         track->par->codec_id == AV_CODEC_ID_DTSUHD ||
          (track->par->codec_id == AV_CODEC_ID_AAC && track->par->profile == AV_PROFILE_AAC_USAC) ||
          track->par->codec_tag == MKTAG('r','t','p',' ')) &&
         track->has_keyframes && track->has_keyframes < track->entry)
@@ -6532,6 +6556,14 @@ static void mov_parse_vc1_frame(AVPacket *pkt, MOVTrack *trk)
     }
 }
 
+static void mov_parse_dtsuhd_frame(AVPacket *pkt, MOVTrack *trk)
+{
+    if (pkt->size > 4 && AV_RB32(pkt->data) == 0x40411BF2) {
+        trk->cluster[trk->entry].flags |= MOV_SYNC_SAMPLE;
+        trk->has_keyframes++;
+    }
+ }
+
 static void mov_parse_truehd_frame(AVPacket *pkt, MOVTrack *trk)
 {
     int length;
@@ -7347,6 +7379,8 @@ int ff_mov_write_packet(AVFormatContext *s, AVPacket *pkt)
         mov_parse_vc1_frame(pkt, trk);
     } else if (par->codec_id == AV_CODEC_ID_TRUEHD) {
         mov_parse_truehd_frame(pkt, trk);
+    } else if (par->codec_id == AV_CODEC_ID_DTSUHD) {
+        mov_parse_dtsuhd_frame(pkt, trk);
     } else if (pkt->flags & AV_PKT_FLAG_KEY) {
         if (mov->mode == MODE_MOV && par->codec_id == AV_CODEC_ID_MPEG2VIDEO &&
             trk->entry > 0) { // force sync sample for the first key frame
@@ -9259,6 +9293,7 @@ static const AVCodecTag codec_mp4_tags[] = {
     { AV_CODEC_ID_AC3,             MKTAG('a', 'c', '-', '3') },
     { AV_CODEC_ID_EAC3,            MKTAG('e', 'c', '-', '3') },
     { AV_CODEC_ID_DTS,             MKTAG('m', 'p', '4', 'a') },
+    { AV_CODEC_ID_DTSUHD,          MKTAG('d', 't', 's', 'x') },
     { AV_CODEC_ID_TRUEHD,          MKTAG('m', 'l', 'p', 'a') },
     { AV_CODEC_ID_FLAC,            MKTAG('f', 'L', 'a', 'C') },
     { AV_CODEC_ID_OPUS,            MKTAG('O', 'p', 'u', 's') },

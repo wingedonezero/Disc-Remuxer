@@ -54,6 +54,14 @@ const AVProfile ff_eac3_profiles[] = {
   { AV_PROFILE_UNKNOWN },
 };
 
+const AVProfile ff_dtsuhd_profiles[] = {
+  { AV_PROFILE_DTSUHD_P2,      "DTS-UHD Profile 2"},
+  { AV_PROFILE_DTSUHD_P3,      "DTS-UHD Profile 3"},
+  { AV_PROFILE_DTSUHD_P2_IMAX, "DTS-UHD Profile 2 + IMAX Enhanced"},
+  { AV_PROFILE_DTSUHD_P3_IMAX, "DTS-UHD Profile 3 + IMAX Enhanced"},
+  { AV_PROFILE_UNKNOWN },
+};
+
 const AVProfile ff_truehd_profiles[] = {
   { AV_PROFILE_TRUEHD_ATMOS,   "Dolby TrueHD + Dolby Atmos"},
   { AV_PROFILE_UNKNOWN },

@@ -40,6 +40,8 @@ typedef struct DCAExssAsset {
     int     spkr_mask_enabled;          ///< Speaker mask enabled flag
     int     spkr_mask;                  ///< Loudspeaker activity mask
     int     representation_type;        ///< Representation type
+    int     asset_type_present;         ///< Asset type descriptor present flag
+    int     asset_type;                 ///< Asset type descriptor (13: IMAX certified content)
 
     int     coding_mode;        ///< Coding mode for the asset
     int     extension_mask;     ///< Coding components used in asset

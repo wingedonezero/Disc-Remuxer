@@ -1,10 +1,10 @@
 FATE_AC3 += fate-ac3-2.0
 fate-ac3-2.0: CMD = pcm -i $(TARGET_SAMPLES)/ac3/monsters_inc_2.0_192_small.ac3
-fate-ac3-2.0: REF = $(SAMPLES)/ac3/monsters_inc_2.0_192_small_v2.pcm
+fate-ac3-2.0: REF = $(SAMPLES)/ac3/monsters_inc_2.0_192_small_v3.pcm
 
 FATE_AC3 += fate-ac3-4.0
 fate-ac3-4.0: CMD = pcm -i $(TARGET_SAMPLES)/ac3/millers_crossing_4.0.ac3
-fate-ac3-4.0: REF = $(SAMPLES)/ac3/millers_crossing_4.0_v2.pcm
+fate-ac3-4.0: REF = $(SAMPLES)/ac3/millers_crossing_4.0_v3.pcm
 
 #downmix 4.0 -> front channel
 FATE_AC3 += fate-ac3-4.0-downmix-mono
@@ -29,7 +29,7 @@ fate-ac3-5.1-downmix-stereo: REF = $(SAMPLES)/ac3/monsters_inc_5.1_448_small_ste
 
 FATE_AC3 += fate-ac3-fixed-2.0
 fate-ac3-fixed-2.0: CMD = pcm -c ac3_fixed -i $(TARGET_SAMPLES)/ac3/monsters_inc_2.0_192_small.ac3
-fate-ac3-fixed-2.0: REF = $(SAMPLES)/ac3/monsters_inc_2.0_192_small_v2.pcm
+fate-ac3-fixed-2.0: REF = $(SAMPLES)/ac3/monsters_inc_2.0_192_small_v3.pcm
 
 FATE_AC3 += fate-ac3-fixed-4.0-downmix-mono
 fate-ac3-fixed-4.0-downmix-mono: CMD = pcm -c ac3_fixed -downmix mono -i $(TARGET_SAMPLES)/ac3/millers_crossing_4.0.ac3
