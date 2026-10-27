@@ -3155,6 +3155,8 @@ static int mov_finalize_stsd_codec(MOVContext *c, AVIOContext *pb,
     case AV_CODEC_ID_EVC:
     case AV_CODEC_ID_LCEVC:
     case AV_CODEC_ID_AV1:
+        /* the stream configuration (layout, profile) is in the sync frames */
+    case AV_CODEC_ID_DTSUHD:
         /* field_order detection of H264 requires parsing */
     case AV_CODEC_ID_H264:
         sti->need_parsing = AVSTREAM_PARSE_HEADERS;
@@ -8799,6 +8801,29 @@ static int mov_read_dops(MOVContext *c, AVIOContext *pb, MOVAtom atom)
     return 0;
 }
 
+/* DTS-UHD configuration box: kept whole (size, 'udts', payload) as extradata,
+ * the form the dtsuhd demuxer produces and the mov muxer writes back. */
+static int mov_read_udts(MOVContext *c, AVIOContext *pb, MOVAtom atom)
+{
+    AVStream *st;
+    int ret;
+
+    if (c->fc->nb_streams < 1)
+        return 0;
+    st = c->fc->streams[c->fc->nb_streams-1];
+
+    if (atom.size < 4 || atom.size > (1 << 16))
+        return AVERROR_INVALIDDATA;
+
+    ret = ff_alloc_extradata(st->codecpar, atom.size + 8);
+    if (ret < 0)
+        return ret;
+    AV_WB32(st->codecpar->extradata, atom.size + 8);
+    AV_WL32(st->codecpar->extradata + 4, MKTAG('u','d','t','s'));
+    ret = ffio_read_size(pb, st->codecpar->extradata + 8, atom.size);
+    return ret < 0 ? ret : 0;
+}
+
 static int mov_read_dmlp(MOVContext *c, AVIOContext *pb, MOVAtom atom)
 {
     AVStream *st;
@@ -9843,6 +9868,7 @@ static const MOVParseTableEntry mov_default_parse_table[] = {
 { MKTAG('h','f','o','v'), mov_read_hfov },
 { MKTAG('d','O','p','s'), mov_read_dops },
 { MKTAG('d','m','l','p'), mov_read_dmlp },
+{ MKTAG('u','d','t','s'), mov_read_udts }, /* DTS-UHD configuration */
 { MKTAG('S','m','D','m'), mov_read_smdm },
 { MKTAG('C','o','L','L'), mov_read_coll },
 { MKTAG('v','p','c','C'), mov_read_vpcc },

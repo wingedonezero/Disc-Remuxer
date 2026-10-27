@@ -41,6 +41,7 @@ extern const FFCodecParser ff_dnxhd_parser;
 extern const FFCodecParser ff_dnxuc_parser;
 extern const FFCodecParser ff_dolby_e_parser;
 extern const FFCodecParser ff_dpx_parser;
+extern const FFCodecParser ff_dtsuhd_parser;
 extern const FFCodecParser ff_dvaudio_parser;
 extern const FFCodecParser ff_dvbsub_parser;
 extern const FFCodecParser ff_dvdsub_parser;

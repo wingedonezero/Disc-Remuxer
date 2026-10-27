@@ -130,7 +130,9 @@ static av_cold int ac3_decode_init(AVCodecContext *avctx)
         avctx->sample_fmt = AV_SAMPLE_FMT_FLTP;
 
     ac3_downmix(avctx);
-    s->downmixed = 1;
+    /* The delay buffer starts empty, not downmixed: decode_audio_block()
+     * downmixes it (and sets this) on the first block it downmixes. */
+    s->downmixed = 0;
 
     for (i = 0; i < AC3_MAX_CHANNELS; i++) {
         s->xcfptr[i] = s->transform_coeffs[i];

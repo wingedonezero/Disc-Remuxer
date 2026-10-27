@@ -535,6 +535,7 @@ static int read_restart_header(MLPDecodeContext *m, GetBitContext *gbp,
     const int std_max_matrix_channel = m->avctx->codec_id == AV_CODEC_ID_MLP
                                      ? MAX_MATRIX_CHANNEL_MLP
                                      : MAX_MATRIX_CHANNEL_TRUEHD;
+    const int explode = m->avctx->err_recognition & AV_EF_EXPLODE;
 
     sync_word = get_bits(gbp, 13);
 
@@ -602,10 +603,15 @@ static int read_restart_header(MLPDecodeContext *m, GetBitContext *gbp,
     if (substr == m->max_decoded_substream
         && s->lossless_check_data != 0xffffffff) {
         tmp = xor_32_to_8(s->lossless_check_data);
-        if (tmp != lossless_check)
-            av_log(m->avctx, AV_LOG_WARNING,
+        if (tmp != lossless_check) {
+            /* The output since the previous restart header is not what the
+             * encoder produced. */
+            av_log(m->avctx, explode ? AV_LOG_ERROR : AV_LOG_WARNING,
                    "Lossless check failed - expected %02x, calculated %02x.\n",
                    lossless_check, tmp);
+            if (explode)
+                return AVERROR_INVALIDDATA;
+        }
     }
 
     skip_bits(gbp, 16);
@@ -632,8 +638,11 @@ static int read_restart_header(MLPDecodeContext *m, GetBitContext *gbp,
 
     checksum = ff_mlp_restart_checksum(buf, get_bits_count(gbp) - start_count);
 
-    if (checksum != get_bits(gbp, 8))
+    if (checksum != get_bits(gbp, 8)) {
         av_log(m->avctx, AV_LOG_ERROR, "restart header checksum error\n");
+        if (explode)
+            return AVERROR_INVALIDDATA;
+    }
 
     /* Set default decoding parameters. */
     s->param_presence_flags   = 0xff;
@@ -1300,8 +1309,14 @@ static int read_access_unit(AVCodecContext *avctx, AVFrame *frame,
             if (get_bits1(&gb)) {
                 if (get_bits1(&gb)) {
                     /* A restart header should be present. */
-                    if (read_restart_header(m, &gb, buf, substr) < 0)
+                    if ((ret = read_restart_header(m, &gb, buf, substr)) < 0) {
+                        /* Skipping the substream would output wrong audio
+                         * without an error. */
+                        if (ret == AVERROR_INVALIDDATA &&
+                            (avctx->err_recognition & AV_EF_EXPLODE))
+                            goto error;
                         goto next_substr;
+                    }
                     s->restart_seen = 1;
                 }
 
@@ -1371,10 +1386,16 @@ static int read_access_unit(AVCodecContext *avctx, AVFrame *frame,
             parity   = ff_mlp_calculate_parity(buf, substream_data_len[substr] - 2);
             checksum = ff_mlp_checksum8       (buf, substream_data_len[substr] - 2);
 
-            if ((get_bits(&gb, 8) ^ parity) != 0xa9    )
+            if ((get_bits(&gb, 8) ^ parity) != 0xa9    ) {
                 av_log(m->avctx, AV_LOG_ERROR, "Substream %d parity check failed.\n", substr);
-            if ( get_bits(&gb, 8)           != checksum)
+                if (avctx->err_recognition & AV_EF_EXPLODE)
+                    goto error;
+            }
+            if ( get_bits(&gb, 8)           != checksum) {
                 av_log(m->avctx, AV_LOG_ERROR, "Substream %d checksum failed.\n"    , substr);
+                if (avctx->err_recognition & AV_EF_EXPLODE)
+                    goto error;
+            }
         }
 
         if (substream_data_len[substr] * 8 != get_bits_count(&gb))

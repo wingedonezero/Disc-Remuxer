@@ -4,7 +4,7 @@ from helpers import ffi, lib
 
 
 def test_version_is_the_libs_copy():
-    assert ffi.string(lib.av_version_info()).decode() == "9.0.2"
+    assert ffi.string(lib.av_version_info()).decode() == "n9.0.2-9-gcfc00ad114d"   # libs/ffmpeg/VERSION
 
 
 def test_disc_demuxers_are_built():
