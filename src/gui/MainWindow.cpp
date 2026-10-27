@@ -560,9 +560,10 @@ void MainWindow::itemChanged(QTreeWidgetItem *item, int column)
         return;
     }
     if (i >= 0) {
-        // a track: what the engine rips of its title (the video it keeps)
-        if (engine_set_track_kept(j->disc, t, i, on) < 0)
-            showTitleChecks(*j, t);
+        // a track: what the engine rips of its title (the video it keeps;
+        // the tracks taken out of this one follow it)
+        engine_set_track_kept(j->disc, t, i, on);
+        showTitleChecks(*j, t);
     } else if (t >= 0) {
         engine_set_title_rip(j->disc, t, on);
         showTitleChecks(*j, t);
@@ -625,6 +626,29 @@ void MainWindow::contextMenu(const QPoint &pos)
         return;
     int t = item->data(C_NAME, R_TITLE).toInt();
     const QString out = j->outDir, log = j->logFile;
+    if (t >= 0 && j->disc) {
+        // the title's subtitles all on or off (as --tracks <title>:+subtitle / -subtitle)
+        const DiscTitleInfo &ti = engine_disc_info(j->disc)->titles[t];
+        bool subs = false;
+        for (int k = 0; k < ti.nb_streams; k++)
+            subs |= ti.streams[k].type == DISC_MEDIA_SUBTITLE;
+        if (subs) {
+            bool can = !running && engine_title_rip(j->disc, t);
+            for (const char *steps : { "+subtitle", "-subtitle" })
+                menu.addAction(*steps == '+' ? "Check All Subtitles" : "Uncheck All Subtitles", this,
+                               [this, id = j->id, t, steps] {
+                                   if (Job *x = jobById(id); x && x->disc) {
+                                       engine_apply_tracks(x->disc, t, steps);
+                                       showTitleChecks(*x, t);
+                                       if (tree->currentItem())
+                                           currentChanged(tree->currentItem());
+                                       updateQueueLabel();
+                                   }
+                               })
+                    ->setEnabled(can);
+            menu.addSeparator();
+        }
+    }
     if (t >= 0 && j->disc && engine_disc_info(j->disc)->titles[t].nb_parts) {
         const DiscTitleInfo &ti = engine_disc_info(j->disc)->titles[t];
         QString unit = ti.part_unit ? QString::fromUtf8(ti.part_unit) : QString("stream file");

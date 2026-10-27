@@ -529,8 +529,15 @@ int engine_set_track_kept(EngineDisc *d, int t, int i, int on)
         return -1;
     if (i == 0)                         /* the video is always ripped */
         return on ? 0 : -1;
-    d->keeps[t][i] = !!on;
+    tracks_set(&d->info->titles[t], d->keeps[t], i, on);
     return 0;
+}
+
+int engine_apply_tracks(EngineDisc *d, int t, const char *steps)
+{
+    if (!title_ok(d, t))
+        return -1;
+    return tracks_apply(&d->info->titles[t], steps, d->keeps[t]);
 }
 
 const DiscInfo *engine_disc_info(const EngineDisc *d)
