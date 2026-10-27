@@ -167,8 +167,30 @@ static void apply_step(void *opaque, const Step *st)
                         a->t->index);
             continue;
         }
-        a->keep[i] = st->add;
+        if (st->word == W_NUMBER)
+            tracks_set(a->t, a->keep, i, st->add);
+        else
+            a->keep[i] = st->add;
     }
+}
+
+void tracks_set(const DiscTitleInfo *t, uint8_t *keep, int i, int on)
+{
+    keep[i] = !!on;
+    /* the tracks taken out of it follow (forced subtitles, a core); a 3-D
+     * second view is chosen on its own, the video's other tracks stay */
+    for (int j = i + 1; i && j < t->nb_streams; j++)
+        if (t->streams[j].from_track == i && !t->streams[j].second_view)
+            keep[j] = !!on;
+}
+
+int tracks_apply(const DiscTitleInfo *t, const char *steps, uint8_t *keep)
+{
+    Apply a = { t, keep, 1, 0 };
+
+    if (each_step(steps, NULL, NULL) < 0)
+        return -1;
+    return each_step(steps, apply_step, &a);
 }
 
 int tracks_select(const DiscTitleInfo *t, int second_view, const char *const *specs, int nb_specs, uint8_t *keep)

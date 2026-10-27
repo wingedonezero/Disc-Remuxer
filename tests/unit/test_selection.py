@@ -89,3 +89,17 @@ def test_an_option_after_the_command_or_an_extra_argument_stops_the_run(tmp_path
     assert "option --split after the command demux: options go before the command" in p.stderr, p.stderr
     p = subprocess.run([*PROGRAM, "info", str(disc), "extra"], capture_output=True, text=True)
     assert p.returncode == 2 and "info takes at most 1 argument: extra is one too many" in p.stderr, p.stderr
+
+
+def test_a_track_number_takes_its_forced_subtitles_along(tmp_path):
+    # test_stream_names.disc: video, two AC-3, PGS (3) with its forced-only copy (4)
+    from test_stream_names import disc
+    folder = disc(tmp_path)
+    keep = lambda *opts: [k for _, k in tracks(folder, *opts)]
+    assert keep() == [True] * 5
+    assert keep("--tracks", "-3") == [True, True, True, False, False]
+    assert keep("--tracks", "-3,+4") == [True, True, True, False, True]    # the forced copy alone
+    assert keep("--tracks", "-3", "--tracks", "+3") == [True] * 5
+    # a step by kind or language names both on its own
+    assert keep("--tracks", "0:-subtitle") == [True, True, True, False, False]
+    assert keep("--tracks", "-forced") == [True, True, True, True, False]

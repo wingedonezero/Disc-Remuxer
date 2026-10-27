@@ -126,7 +126,10 @@ const DiscInfo *engine_disc_info(const EngineDisc *d);
  *   engine_split_titles(): the titles of spec, < 0 as above.
  * - A track kept (1 ripped; to start with: as --tracks / the settings chose;
  *   a 3-D title's second view is a track of its own); track 0, the video,
- *   is always ripped: turning it off is refused (-1).
+ *   is always ripped: turning it off is refused (-1). The tracks taken out
+ *   of a track (forced subtitles, a core) follow it; engine_apply_tracks():
+ *   the steps of a --tracks value (e.g. "-subtitle") on title t, < 0 (bad
+ *   steps: logged, nothing changed).
  * Setters: 0, < 0 no such title / track. */
 int  engine_title_rip(const EngineDisc *d, int t);
 int  engine_set_title_rip(EngineDisc *d, int t, int on);
@@ -137,6 +140,7 @@ int  engine_set_title_split(EngineDisc *d, int t, int on);
 int  engine_split_titles(EngineDisc *d, const char *spec);
 int  engine_track_kept(const EngineDisc *d, int t, int i);
 int  engine_set_track_kept(EngineDisc *d, int t, int i, int on);
+int  engine_apply_tracks(EngineDisc *d, int t, const char *steps);
 /* Title t's tracks kept, one per stream of its disc info (1 rip, 0 not). */
 const uint8_t *engine_disc_tracks(const EngineDisc *d, int t);
 /* The disc line and its titles in the log (detail: each title's files and
