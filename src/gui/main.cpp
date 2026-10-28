@@ -10,7 +10,19 @@
 #include <QApplication>
 #include <QMessageBox>
 
+#include <sys/resource.h>
+
 #include "MainWindow.h"
+
+extern "C" {
+#include "base/log.h"
+}
+
+// Every disc in the queue keeps its files open (a DVD folder about 23), and
+// a desktop starts programs allowed 1024: a queue of a few box sets reaches
+// that, and the window then cannot get the file it draws with. The limit
+// raised to this many (as far as the system's ceiling allows).
+static const rlim_t open_files = 5000;
 
 int main(int argc, char **argv)
 {
@@ -25,6 +37,17 @@ int main(int argc, char **argv)
         QMessageBox::critical(nullptr, "Disc Remuxer", "The settings file next to the program cannot be read "
                                                        "(run disc-remuxer settings in a terminal to see why).");
         return ret;
+    }
+    struct rlimit rl;
+    if (!getrlimit(RLIMIT_NOFILE, &rl) && rl.rlim_cur < open_files) {
+        rlim_t was = rl.rlim_cur;
+        rl.rlim_cur = rl.rlim_max == RLIM_INFINITY || rl.rlim_max > open_files ? open_files : rl.rlim_max;
+        if (!setrlimit(RLIMIT_NOFILE, &rl))
+            log_text(LOG_DETAIL, "Open files allowed: %llu (was %llu)", (unsigned long long)rl.rlim_cur,
+                     (unsigned long long)was);
+        else
+            log_text(LOG_WARNING, "Open files allowed: %llu, could not be raised (a long queue may run out)",
+                     (unsigned long long)was);
     }
     MainWindow w(&relay);
     QStringList discs = QApplication::arguments().mid(1);
