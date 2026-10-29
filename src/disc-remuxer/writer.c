@@ -34,6 +34,7 @@
 #include "io/discio.h"
 #include "base/msg.h"
 #include "names.h"
+#include "parse/rules.h"
 #include "analyze/details.h"
 #include "disc/disc.h"
 #include "emit.h"
@@ -1065,6 +1066,129 @@ static int title_holes(DrDisc *d, EsOut *out, int nb_tracks, char *why, size_t w
     return *why != 0;
 }
 
+/* The size of the AC-3 / E-AC-3 frame at p (avail bytes, at least 8), 0 when
+ * none can be read there. */
+static int ac3_frame_size(const uint8_t *p, int avail)
+{
+    DrAc3Header h;
+
+    if (p[0] != 0x0B || p[1] != 0x77)
+        return 0;
+    if ((p[5] >> 3) > 10)                   /* E-AC-3 (any substream): frmsiz */
+        return ((((p[2] & 7) << 8) | p[3]) + 1) * 2;
+    return dr_ac3_header(p, avail, &h) < 0 ? 0 : h.frame_size;
+}
+
+int writer_atmos_units(const char *path, int codec, int64_t *units, int64_t *atmos)
+{
+    enum { CHUNK = 1 << 20, MAX_UNIT = 1 << 14 };
+    uint8_t *buf = NULL;
+    FILE *f = NULL;
+    int have = 0, eof = 0, ret = 0;
+
+    *units = *atmos = 0;
+    if (codec != DR_CODEC_TRUEHD && codec != DR_CODEC_EAC3)
+        return DR_ERR(EINVAL);
+    if (!(buf = dr_malloc(CHUNK + MAX_UNIT))) {
+        ret = DR_ERR(ENOMEM);
+        goto done;
+    }
+    if (!(f = fopen(path, "rb"))) {
+        ret = DR_ERR(errno);
+        goto done;
+    }
+    while (1) {
+        int off = 0;
+        if (!eof) {
+            size_t want = CHUNK + MAX_UNIT - have, n = fread(buf + have, 1, want, f);
+            if (n < want) {
+                if (ferror(f)) {
+                    ret = DR_ERR(EIO);
+                    goto done;
+                }
+                eof = 1;
+            }
+            have += (int)n;
+        }
+        while (have - off >= 8) {
+            const uint8_t *p = buf + off;
+            int avail = have - off, size;
+            if (codec == DR_CODEC_TRUEHD)
+                size = (((p[0] & 0xF) << 8) | p[1]) * 2;
+            else
+                size = ac3_frame_size(p, avail);
+            if (size < 8 || size > MAX_UNIT) {
+                ret = DR_ERR_INVALID;
+                goto done;
+            }
+            if (size > avail)
+                break;
+            if (codec == DR_CODEC_TRUEHD) {
+                *atmos += dr_truehd_atmos(p, size);
+            } else {
+                int a = dr_eac3_atmos(p, size);
+                if (a < 0) {
+                    ret = a;
+                    goto done;
+                }
+                *atmos += a;
+            }
+            (*units)++;
+            off += size;
+        }
+        if (eof) {
+            if (have - off)                 /* the file does not end on a whole unit */
+                ret = DR_ERR_INVALID;
+            break;
+        }
+        memmove(buf, buf + off, have - off);
+        have -= off;
+    }
+done:
+    if (f)
+        fclose(f);
+    dr_free(buf);
+    return ret;
+}
+
+/* mkv.remove_dialog_normalization: may this track's dialogue normalization
+ * be removed? Not for Dolby Atmos (TrueHD Atmos, DD+ Atmos): receivers stop
+ * decoding the Atmos objects of a track whose dialogue normalization was
+ * changed. A TrueHD or E-AC-3 track's finished file is read from start to
+ * end, and its dialogue normalization is kept when any unit carries Atmos,
+ * when its details (the start of the stream) said Atmos, or when the file
+ * cannot be read; said in the log either way. */
+static int dialnorm_removable(const DrDiscTrack *t, const EsOut *e)
+{
+    const char *codec = codec_id_name(t->codec), *unit = t->codec == DR_CODEC_TRUEHD ? "access unit" : "frame";
+    int labelled = e->profile == (t->codec == DR_CODEC_TRUEHD ? DISC_PROFILE_TRUEHD_ATMOS : DISC_PROFILE_EAC3_DDP_ATMOS);
+    int64_t units, atmos;
+    int ret;
+
+    if (t->codec != DR_CODEC_TRUEHD && t->codec != DR_CODEC_EAC3)
+        return 1;
+    if ((ret = writer_atmos_units(e->name, t->codec, &units, &atmos)) < 0) {
+        char why[128];
+        log_text(LOG_WARNING, "Track %d (%s): dialogue normalization kept as on the disc: its file could not be "
+                 "read through to check it for Dolby Atmos (%s)", t->number, codec, dr_err_str(ret, why, sizeof(why)));
+        return 0;
+    }
+    if (atmos) {
+        log_text(LOG_INFO, "Track %d (%s): dialogue normalization kept as on the disc: Dolby Atmos in %"PRId64" of "
+                 "its %"PRId64" %ss (receivers stop decoding Atmos when it is changed)%s", t->number, codec, atmos,
+                 units, unit, labelled ? "" : "; its details did not say Atmos (they look at the start of the stream)");
+        return 0;
+    }
+    if (labelled) {
+        log_text(LOG_WARNING, "Track %d (%s): dialogue normalization kept as on the disc: its details say Dolby "
+                 "Atmos, but none of its %"PRId64" %ss carries the Atmos marker", t->number, codec, units, unit);
+        return 0;
+    }
+    log_text(LOG_INFO, "Track %d (%s): no Dolby Atmos in its %"PRId64" %ss: dialogue normalization removed",
+             t->number, codec, units, unit);
+    return 1;
+}
+
 static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_dir, const char *dir, int own_dir,
                           const char *name, const char *chap, int nb_chapters, int use_ts, char **mkv_out)
 {
@@ -1134,7 +1258,7 @@ static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_
             goto done;
         if (dialnorm && t->type == DISC_MEDIA_AUDIO &&
             (t->codec == DR_CODEC_AC3 || t->codec == DR_CODEC_EAC3 || t->codec == DR_CODEC_DTS ||
-             t->codec == DR_CODEC_TRUEHD) &&
+             t->codec == DR_CODEC_TRUEHD) && dialnorm_removable(t, e) &&
             ((ret = opts_add(&o, "--remove-dialog-normalization-gain")) < 0 || (ret = opts_add(&o, "0")) < 0))
             goto done;
         if ((ret = opts_add(&o, "(")) < 0 || (ret = opts_add(&o, file)) < 0 || (ret = opts_add(&o, ")")) < 0)

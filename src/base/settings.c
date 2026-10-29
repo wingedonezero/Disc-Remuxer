@@ -132,9 +132,11 @@ static const Setting registry[] = {
     { "mkv", "mkvmerge_path", SET_TEXT, "", 0, 0, NULL,
       "The mkvmerge program output.format = mkvmerge runs. Empty: mkvmerge from the PATH.", 0, SET_AT_RIP },
     { "mkv", "remove_dialog_normalization", SET_BOOL, "false", 0, 0, NULL,
-      "MKV files: set the dialogue normalization of every AC-3, E-AC-3 and DTS frame to \"none\" (as mkvmerge's "
-      "option of that name), so players do not turn those tracks down to the disc's dialogue level. The disc's "
-      "level is then not in the file any more (the stream files always keep it). Off: the frames as the disc has them.",
+      "MKV files: set the dialogue normalization of every AC-3, E-AC-3, DTS and TrueHD frame to \"none\" (as "
+      "mkvmerge's option of that name), so players do not turn those tracks down to the disc's dialogue level. The "
+      "disc's level is then not in the file any more (the stream files always keep it). Tracks with Dolby Atmos (DD+ "
+      "Atmos, TrueHD Atmos; each ripped track read through to the end) keep theirs: receivers stop decoding Atmos "
+      "when it is changed. Off: the frames as the disc has them.",
       0, SET_AT_RIP },
     { "log", "debug_file", SET_BOOL, "false", 0, 0, NULL,
       "Also write a debug log with every detail into the output folder, next to the log.", 0, SET_AT_RIP },

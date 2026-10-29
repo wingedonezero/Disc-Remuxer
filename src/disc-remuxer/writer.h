@@ -77,6 +77,14 @@ int writer_wav_header(uint8_t *out, int channels, int rate, int bits, int valid,
  * keeps them, a time that starts again from 0. */
 int writer_sup_time(int64_t time, uint32_t *pts);
 
+/* Dolby Atmos in a finished stream file, read from its first unit to its
+ * last: codec DR_CODEC_TRUEHD (its access units, the file holds nothing
+ * else) or DR_CODEC_EAC3 (its frames; AC-3 frames among them count as frames
+ * without Atmos). *units: the units read, *atmos: those that carry Atmos.
+ * 0, or a negative base error when the file cannot be read or does not end
+ * on a whole unit / a unit cannot be read where one must start. */
+int writer_atmos_units(const char *path, int codec, int64_t *units, int64_t *atmos);
+
 /* Writes one title's stream files and chapters (logged as a step of its
  * own; out: free with title_outcome_free()); part >= 0: only that part of the title (one of the stream files a
  * title plays back to back), -1 the whole title; second_view: a 3-D title's

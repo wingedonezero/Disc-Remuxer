@@ -41,3 +41,14 @@ static int disc_resync(const uint8_t *p, int avail)
 }
 
 const DrCutRule dr_mlp_cut = { disc_unit_size, disc_resync, 0 };
+
+/* The major sync (4 bytes in, TrueHD: F8 72 6F BA): 32 bits of sync, 32 of
+ * rate and channel assignment, 48 more, the variable rate bit and 15 bits of
+ * peak rate, then 4 bits of substream count, 2 reserved, 2 of extended
+ * substream info and 8 of substream_info: byte 16 and 17 of the major sync. */
+int dr_truehd_atmos(const uint8_t *p, int n)
+{
+    if (n < 22 || !disc_major_sync(p, n) || p[7] != 0xBA)
+        return 0;
+    return (p[20] >> 4) == 4 && (p[21] & 0x80);
+}
