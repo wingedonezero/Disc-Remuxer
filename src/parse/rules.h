@@ -125,12 +125,6 @@ int dr_eac3_core(const uint8_t *data, int size, int *off, int *out_size);
  *  read. */
 int dr_eac3_atmos(const uint8_t *buf, int size);
 
-/** Dolby Atmos in the TrueHD access unit at buf: 1 when it starts with a
- *  TrueHD major sync that has 4 substreams and the top bit of its
- *  substream_info set (a 16-channel presentation; FFmpeg's TrueHD decoder
- *  calls such a stream TrueHD + Atmos), else 0. */
-int dr_truehd_atmos(const uint8_t *buf, int size);
-
 /** A DTS core frame's header (ETSI TS 102 114 5.4), as far as the timeline
  *  reads it. */
 typedef struct DrDcaHeader {

@@ -1,15 +1,11 @@
-"""Dolby Atmos found in a finished stream file, for mkv.remove_dialog_normalization
-(writer.c writer_atmos_units; parse/ac3_rule.c dr_eac3_atmos, parse/mlp_rule.c
-dr_truehd_atmos): an E-AC-3 frame carries Atmos when its additional bitstream
+"""Dolby Atmos found in a finished E-AC-3 stream file, for
+mkv.remove_dialog_normalization (writer.c writer_eac3_atmos; parse/ac3_rule.c
+dr_eac3_atmos): an E-AC-3 frame carries Atmos when its additional bitstream
 information starts with flag_ec3_extension_type_a (ETSI TS 102 366 Annex E,
-as FFmpeg's parser reads it); a TrueHD access unit when it starts with a major
-sync with 4 substreams and the top bit of substream_info (FFmpeg's TrueHD +
-Atmos). The frames here are built bit by bit: the headers, the rest zeros."""
+as FFmpeg's parser reads it). The frames here are built bit by bit: the
+headers, the rest zeros."""
 
 from helpers import ffi, lib
-
-EAC3, TRUEHD = 86056, 86060      # src/timeline/disctl.h
-
 
 class Bits:
     def __init__(self, size):
@@ -92,30 +88,14 @@ def ac3():
     return bytes(w.b)
 
 
-def truehd(major=False, substreams=3, top_bit=False, sync=0xBA, words=40):
-    """A TrueHD access unit: its length (words), a major sync when asked."""
-    au = bytearray(words * 2)
-    au[0] = (words >> 8) & 0xF
-    au[1] = words & 0xFF
-    if major:
-        au[4:8] = bytes((0xF8, 0x72, 0x6F, sync))
-        au[20] = substreams << 4
-        au[21] = 0x80 if top_bit else 0x00
-    return bytes(au)
-
-
 def eac3_atmos(frame):
     return lib.dr_eac3_atmos(frame, len(frame))
 
 
-def truehd_atmos(au):
-    return lib.dr_truehd_atmos(au, len(au))
-
-
-def units_in(path, codec):
-    units, atmos = ffi.new("int64_t *"), ffi.new("int64_t *")
-    ret = lib.writer_atmos_units(str(path).encode(), codec, units, atmos)
-    return ret, units[0], atmos[0]
+def frames_in(path):
+    frames, atmos = ffi.new("int64_t *"), ffi.new("int64_t *")
+    ret = lib.writer_eac3_atmos(str(path).encode(), frames, atmos)
+    return ret, frames[0], atmos[0]
 
 
 def test_an_eac3_frame_with_the_flag_is_atmos_whatever_comes_before_it():
@@ -139,38 +119,19 @@ def test_a_frame_that_cannot_be_read_says_so():
     assert eac3_atmos(b"\x00" * 64) < 0, "no sync word"
 
 
-def test_a_truehd_major_sync_with_4_substreams_and_the_top_bit_is_atmos():
-    assert truehd_atmos(truehd(major=True, substreams=4, top_bit=True)) == 1
-    assert truehd_atmos(truehd(major=True, substreams=4, top_bit=False)) == 0
-    assert truehd_atmos(truehd(major=True, substreams=3, top_bit=True)) == 0
-    assert truehd_atmos(truehd(major=True, substreams=4, top_bit=True, sync=0xBB)) == 0, "MLP"
-    assert truehd_atmos(truehd()) == 0, "no major sync"
-
-
-def test_a_truehd_file_is_read_to_its_end(tmp_path):
-    path = tmp_path / "a.thd"
-    plain = truehd(major=True, substreams=3) + truehd() * 9
-    atmos = truehd(major=True, substreams=4, top_bit=True) + truehd() * 9
-    path.write_bytes(plain * 2000 + atmos + plain * 2000)        # 1.6 MB: read in more than one piece
-    assert units_in(path, TRUEHD) == (0, 40010, 1), "the one Atmos major sync in the middle is found"
-    path.write_bytes(plain * 100)
-    assert units_in(path, TRUEHD) == (0, 1000, 0)
-
-
 def test_an_eac3_file_is_read_to_its_end_with_ac3_frames_among_them(tmp_path):
     path = tmp_path / "a.eac3"
     plain = ac3() + eac3(strmtyp=1, metadata=True)
     path.write_bytes(plain * 3000 + eac3(metadata=True, addbsi=True, atmos=True) + plain * 3000)
-    assert units_in(path, EAC3) == (0, 12001, 1)
+    assert frames_in(path) == (0, 12001, 1), "read in more than one piece"
     path.write_bytes(plain * 10)
-    assert units_in(path, EAC3) == (0, 20, 0)
+    assert frames_in(path) == (0, 20, 0)
 
 
 def test_a_file_that_cannot_be_read_through_is_an_error(tmp_path):
-    path = tmp_path / "a.thd"
-    path.write_bytes(truehd(major=True) + truehd()[:30])
-    assert units_in(path, TRUEHD)[0] < 0, "it does not end on a whole unit"
+    path = tmp_path / "a.eac3"
+    path.write_bytes(eac3() + eac3()[:100])
+    assert frames_in(path)[0] < 0, "it does not end on a whole frame"
     path.write_bytes(eac3() + b"\x00" * 64)
-    assert units_in(path, EAC3)[0] < 0, "no frame where one must start"
-    assert units_in(tmp_path / "missing.thd", TRUEHD)[0] < 0
-    assert units_in(path, 86020)[0] < 0, "DTS is not read"
+    assert frames_in(path)[0] < 0, "no frame where one must start"
+    assert frames_in(tmp_path / "missing.eac3")[0] < 0
