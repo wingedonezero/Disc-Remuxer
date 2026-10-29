@@ -291,3 +291,94 @@ int dr_eac3_core(const uint8_t *data, int size, int *off, int *out_size)
     }
     return 0;
 }
+
+/* The bitstream information of an E-AC-3 frame (Annex E E.1.2.2) read up to
+ * the first byte of its additional bitstream information, whose last bit is
+ * flag_ec3_extension_type_a: field for field as FFmpeg's E-AC-3 header
+ * parser reads it (any substream). */
+int dr_eac3_atmos(const uint8_t *b, int len)
+{
+    static const uint8_t eac3_blocks[4] = { 1, 2, 3, 6 };
+    DrBits g;
+    int frame_type, sr_code, blocks, channel_mode, lfe_on, bsid, dialogs, flag;
+
+    if (dr_bits_init8(&g, b, len) < 0 || dr_bits_get(&g, 16) != 0x0B77)
+        return DR_ERR_INVALID;
+    frame_type   = dr_bits_get(&g, 2);
+    dr_bits_skip(&g, 3 + 11);               /* substreamid, frmsiz */
+    sr_code      = dr_bits_get(&g, 2);
+    blocks       = eac3_blocks[dr_bits_get(&g, 2)];     /* numblkscod, or fscod2 (then 6 blocks) */
+    if (sr_code == 3)
+        blocks = 6;
+    channel_mode = dr_bits_get(&g, 3);
+    lfe_on       = dr_bits_get1(&g);
+    bsid         = dr_bits_get(&g, 5);
+    if (bsid <= 10)
+        return 0;                           /* AC-3: no additional bitstream information of this kind */
+    if (bsid > 16 || frame_type == 3)
+        return DR_ERR_INVALID;
+    dialogs = channel_mode ? 1 : 2;
+    for (int i = 0; i < dialogs; i++) {
+        dr_bits_skip(&g, 5);                /* dialnorm */
+        if (dr_bits_get1(&g))               /* compre */
+            dr_bits_skip(&g, 8);            /* compr */
+    }
+    if (frame_type == 1 && dr_bits_get1(&g))    /* chanmape */
+        dr_bits_skip(&g, 16);               /* chanmap */
+    if (dr_bits_get1(&g)) {                 /* mixmdate */
+        if (channel_mode > 2)
+            dr_bits_skip(&g, 2);            /* dmixmod */
+        if (channel_mode & 1)
+            dr_bits_skip(&g, 6);            /* ltrtcmixlev, lorocmixlev */
+        if (channel_mode & 4)
+            dr_bits_skip(&g, 6);            /* ltrtsurmixlev, lorosurmixlev */
+        if (lfe_on && dr_bits_get1(&g))     /* lfemixlevcode */
+            dr_bits_skip(&g, 5);            /* lfemixlevcod */
+        if (frame_type == 0) {
+            int mixdef;
+            for (int i = 0; i < dialogs; i++)
+                if (dr_bits_get1(&g))       /* pgmscle */
+                    dr_bits_skip(&g, 6);    /* pgmscl */
+            if (dr_bits_get1(&g))           /* extpgmscle */
+                dr_bits_skip(&g, 6);        /* extpgmscl */
+            mixdef = dr_bits_get(&g, 2);
+            if (mixdef == 1)
+                dr_bits_skip(&g, 5);
+            else if (mixdef == 2)
+                dr_bits_skip(&g, 12);
+            else if (mixdef == 3)
+                dr_bits_skip(&g, (dr_bits_get(&g, 5) + 2) * 8); /* mixdeflen, mixdata */
+            if (channel_mode < 2)
+                for (int i = 0; i < dialogs; i++)
+                    if (dr_bits_get1(&g))   /* paninfoe */
+                        dr_bits_skip(&g, 14);   /* panmean, paninfo */
+            if (dr_bits_get1(&g))           /* frmmixcfginfoe */
+                for (int blk = 0; blk < blocks; blk++)
+                    if (blocks == 1 || dr_bits_get1(&g))    /* blkmixcfginfoe */
+                        dr_bits_skip(&g, 5);    /* blkmixcfginfo */
+        }
+    }
+    if (dr_bits_get1(&g)) {                 /* infomdate */
+        dr_bits_skip(&g, 3 + 2);            /* bsmod, copyrightb, origbs */
+        if (channel_mode == 2)
+            dr_bits_skip(&g, 4);            /* dsurmod, dheadphonmod */
+        if (channel_mode >= 6)
+            dr_bits_skip(&g, 2);            /* dsurexmod */
+        for (int i = 0; i < dialogs; i++)
+            if (dr_bits_get1(&g))           /* audprodie */
+                dr_bits_skip(&g, 8);        /* mixlevel, roomtyp, adconvtyp */
+        if (sr_code != 3)
+            dr_bits_skip(&g, 1);            /* sourcefscod */
+    }
+    if (frame_type == 0 && blocks != 6)
+        dr_bits_skip(&g, 1);                /* convsync */
+    if (frame_type == 2 && (blocks == 6 || dr_bits_get1(&g)))  /* blkid */
+        dr_bits_skip(&g, 6);                /* frmsizecod */
+    if (!dr_bits_get1(&g)) {                /* addbsie */
+        flag = 0;
+    } else {
+        dr_bits_skip(&g, 6 + 7);            /* addbsil, the first byte's upper 7 bits */
+        flag = dr_bits_get1(&g);            /* flag_ec3_extension_type_a */
+    }
+    return dr_bits_left(&g) < 0 ? DR_ERR_INVALID : flag;
+}

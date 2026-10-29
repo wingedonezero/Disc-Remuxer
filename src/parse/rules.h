@@ -118,6 +118,19 @@ int dr_ac3_header(const uint8_t *buf, int size, DrAc3Header *h);
  *  a header cannot be read. */
 int dr_eac3_core(const uint8_t *data, int size, int *off, int *out_size);
 
+/** Dolby Atmos in the E-AC-3 frame at buf (joint object coding): 1 when its
+ *  additional bitstream information starts with flag_ec3_extension_type_a
+ *  set (ETSI TS 102 366 Annex E E.1.2, read as FFmpeg's parser reads it), 0
+ *  when not (an AC-3 frame: 0), DR_ERR_INVALID when the header cannot be
+ *  read. */
+int dr_eac3_atmos(const uint8_t *buf, int size);
+
+/** Dolby Atmos in the TrueHD access unit at buf: 1 when it starts with a
+ *  TrueHD major sync that has 4 substreams and the top bit of its
+ *  substream_info set (a 16-channel presentation; FFmpeg's TrueHD decoder
+ *  calls such a stream TrueHD + Atmos), else 0. */
+int dr_truehd_atmos(const uint8_t *buf, int size);
+
 /** A DTS core frame's header (ETSI TS 102 114 5.4), as far as the timeline
  *  reads it. */
 typedef struct DrDcaHeader {
