@@ -46,7 +46,7 @@ def part(pics, cuts, k, codec=H264, others=()):
         pl[i].zero, pl[i].key_time = z, kt
     c = ffi.new("DRCut **")
     kinds = ffi.new("int[]", [lib.DR_CUT_TRACK_VIDEO, lib.DR_CUT_TRACK_NONE])
-    assert lib.ff_disctl_cut_open(c, ffi.NULL, pl, len(cuts), k, codec, kinds, 2) == 0
+    assert lib.ff_disctl_cut_open(c, ffi.NULL, pl, len(cuts), k, codec, kinds, 2, ffi.NULL) == 0
     given = []
     for i, (t, key, start, rasl, ref) in enumerate(pics):
         f = ffi.new("DRFrame *")
@@ -170,7 +170,7 @@ A = 34_560_000                      # an AC-3 frame: 1536 samples at 48 kHz = 32
 SAMPLE = 22_500                     # one sample at 48 kHz
 
 
-def run_audio(cuts, k, frames, kind, rate=48000, bpf=4):
+def run_audio(cuts, k, frames, kind, rate=48000, bpf=4, starts=None):
     """Part k of audio frames [(time, dur, bytes)] on track 1 (the video's
     cuts given; no video frames): [(part time, dur, bytes)]."""
     pl = ffi.new("DRCutPlace[]", len(cuts))
@@ -178,8 +178,15 @@ def run_audio(cuts, k, frames, kind, rate=48000, bpf=4):
         pl[i].zero, pl[i].key_time = z, kt
     c = ffi.new("DRCut **")
     kinds = ffi.new("int[]", [lib.DR_CUT_TRACK_VIDEO, kind])
-    assert lib.ff_disctl_cut_open(c, ffi.NULL, pl, len(cuts), k, H264, kinds, 2) == 0
+    table = ffi.new("int64_t[]", [v for s in (starts or []) for v in (0, s)]) if starts else ffi.NULL
+    assert lib.ff_disctl_cut_open(c, ffi.NULL, pl, len(cuts), k, H264, kinds, 2, table) == 0
     lib.ff_disctl_cut_pcm(c[0], 1, rate, bpf)
+    if starts is not None:
+        # the video's key frames at the title's start and at the cut, so the part's checks can run
+        for t in (0, cuts[0][1]):
+            v = ffi.new("DRFrame *")
+            v.time, v.flags = t, lib.DR_F_KEY | lib.DR_F_START_CLEAN
+            lib.ff_disctl_cut_frame(c[0], 0, v)
     out, keep = [], []
     for t, dur, data in frames:
         buf = ffi.new("uint8_t[]", data)
@@ -193,6 +200,8 @@ def run_audio(cuts, k, frames, kind, rate=48000, bpf=4):
     assert n[0] == len(out)
     if out:
         assert first[0] == out[0][0]
+    if starts is not None:
+        run_audio.finish = lib.ff_disctl_cut_finish(c[0])
     lib.ff_disctl_cut_close(c)
     return out
 
@@ -247,9 +256,62 @@ def test_pcm_without_its_layout_is_an_error():
     pl[0].zero = pl[0].key_time = F
     c = ffi.new("DRCut **")
     kinds = ffi.new("int[]", [lib.DR_CUT_TRACK_VIDEO, lib.DR_CUT_TRACK_PCM])
-    assert lib.ff_disctl_cut_open(c, ffi.NULL, pl, 1, 1, H264, kinds, 2) == 0
+    assert lib.ff_disctl_cut_open(c, ffi.NULL, pl, 1, 1, H264, kinds, 2, ffi.NULL) == 0
     buf = ffi.new("uint8_t[]", frames[0][2])
     f = ffi.new("DRFrame *")
     f.time, f.dur, f.data, f.size = 0, frames[0][1], buf, len(frames[0][2])
     assert lib.ff_disctl_cut_frame(c[0], 1, f) < 0
     lib.ff_disctl_cut_close(c)
+
+
+# ---- audio that starts only at some units (TrueHD, a DTS-HD stream) ----
+
+U = 900_000                         # a TrueHD unit: 1/1200 s
+
+
+def units(n, every=128, first_entry=0):
+    """n units of 1/1200 s; every `every`-th one (from first_entry) an entry unit."""
+    u = ffi.new("CutUnit[]", n)
+    for i in range(n):
+        u[i].time, u[i].entry = i * U, (i - first_entry) % every == 0 and i >= first_entry
+    return u
+
+
+def start(u, n, zero, limit=128 * U):
+    s = ffi.new("CutStart *")
+    assert lib.cut_track_start(u, n, zero, limit, s) == 0
+    return s.time, s.entry, s.carried, s.to_entry
+
+
+def test_a_start_unit_track_starts_at_its_first_entry_unit_within_the_limit():
+    u = units(1000)
+    # the cut's 0 between entry units 256 and 384: it starts at 384, units 300..383 stay in the part before
+    assert start(u, 1000, 300 * U - 1000) == (384 * U, 1, 84, -1)
+    assert start(u, 1000, 384 * U) == (384 * U, 1, 0, -1), "on an entry unit"
+    # no entry unit within the limit: the first unit at or after the 0, and how far the next entry is
+    u = units(1000, every=600)
+    assert start(u, 1000, 10 * U) == (10 * U, 0, 0, 590)
+    # the track ends before the cut
+    assert start(u, 1000, 2000 * U)[0] == 2 ** 63 - 1
+
+
+def test_a_start_unit_track_is_routed_by_the_start_table():
+    frames = [(i * U, U, bytes([i % 256])) for i in range(600)]
+    zero = 300 * U - 1000
+    table = [384 * U]                   # the unit its part starts at (from cut_track_start())
+    p0 = run_audio([(zero, zero)], 0, frames, lib.DR_CUT_TRACK_ENTRY, starts=table)
+    assert run_audio.finish == 0
+    p1 = run_audio([(zero, zero)], 1, frames, lib.DR_CUT_TRACK_ENTRY, starts=table)
+    assert run_audio.finish == 0
+    assert [p[2] for p in p0] + [p[2] for p in p1] == [f[2] for f in frames], "every unit in one part"
+    assert len(p0) == 384 and p0[-1][0] > zero, "the units up to its start unit stay in the part before"
+    assert p1[0][0] == 384 * U - zero, "its part starts at the start unit, on the part's clock"
+
+
+def test_a_start_unit_not_where_the_table_says_fails_the_part():
+    frames = [(i * U, U, b"x") for i in range(600)]
+    zero = 300 * U
+    run_audio([(zero, zero)], 1, frames, lib.DR_CUT_TRACK_ENTRY, starts=[384 * U + 5])
+    assert run_audio.finish < 0, "no unit at that time"
+    run_audio([(zero, zero)], 0, frames, lib.DR_CUT_TRACK_ENTRY, starts=[384 * U + 5])
+    assert run_audio.finish < 0, "the next part's start unit not met"

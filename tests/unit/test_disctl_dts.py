@@ -9,7 +9,7 @@ from helpers.disctl import dur, run
 
 DTS = (DATA / "sine_5120.dts").read_bytes()
 FRAME = 1884
-F_KEY, F_SYNC = lib.DR_F_KEY, lib.DR_F_SYNC
+F_KEY, F_SYNC, F_ENTRY = lib.DR_F_KEY, lib.DR_F_SYNC, lib.DR_F_ENTRY
 
 
 def crc16_ccitt(data, crc=0xFFFF):
@@ -50,7 +50,7 @@ def test_dts_core_frames_last_512_samples():
     for o, f in zip(r.outs, frames()):
         assert o.bytes == f
         assert o.dur == dur(512, 48000)
-        assert o.flags == F_KEY | F_SYNC
+        assert o.flags == F_KEY | F_SYNC | F_ENTRY
     assert (r.audio.header.rate, r.audio.header.samples) == (48000, 512)
     assert r.audio.review == 0
 
@@ -91,11 +91,13 @@ class Bits:
         return (self.v << (-self.n % 8)).to_bytes((self.n + 7) // 8, "big")
 
 
-def coreless(kind, body, rate_index=12, xll_log2=(4, 5), asset_type=None):
+def coreless(kind, body, rate_index=12, xll_log2=(4, 5), asset_type=None, xll_sync=None):
     """One extension substream frame with one presentation and one asset
     (ETSI TS 102 114 7.4-7.5): static fields, an asset descriptor in coding
     mode 2 (LBR: body after its sync word 0A 80 19 21) or 1 (lossless only:
-    body after an XLL header, sync 41 A2 95 47)."""
+    body after an XLL header, sync 41 A2 95 47). xll_sync: (decoding delay
+    in frames, offset to the XLL sync word) for an asset that says its XLL
+    sync word is present; None: not present."""
     if kind == "lbr":
         comp = bytes.fromhex("0A801921") + body
     elif kind == "xll_frame":
@@ -130,7 +132,13 @@ def coreless(kind, body, rate_index=12, xll_log2=(4, 5), asset_type=None):
         if kind == "lbr":
             d.put(2, 2); d.put(len(comp) - 1, 14); d.put(0, 1)
         else:
-            d.put(1, 2); d.put(len(comp) - 1, 16); d.put(0, 1); d.put(0, 3)
+            d.put(1, 2); d.put(len(comp) - 1, 16)
+            if xll_sync is None:
+                d.put(0, 1)
+            else:
+                d.put(1, 1); d.put(0, 4); d.put(7, 5)           # sync present, smoothing buffer, 8-bit delay
+                d.put(xll_sync[0], 8); d.put(xll_sync[1], 16)   # decoding delay, offset to the sync
+            d.put(0, 3)
         size = (9 + d.n + 7) // 8                                   # the descriptor, its size field too
         d0 = b.n
         if d0 + size * 8 > header_size * 8 - 16:
@@ -166,7 +174,7 @@ def test_dts_express_frames_are_cut_one_by_one_and_timed_by_their_lbr_header():
     r = run("dts", [(b"".join(fs[:5]), 1), (b"".join(fs[5:]), 2)], flags=lib.DR_AUDIO_EXT_ONLY)
     assert [o.bytes for o in r.outs] == fs
     assert all(o.dur == dur(4096, 48000) for o in r.outs)                 # 1024 << 2 samples, 85.33 ms
-    assert all(o.flags == F_KEY | F_SYNC for o in r.outs)
+    assert all(o.flags == F_KEY | F_SYNC | F_ENTRY for o in r.outs)
     assert (r.audio.header.rate, r.audio.header.samples) == (48000, 4096)
     assert r.audio.review == 0 and r.frames.skipped == 0
 
@@ -316,3 +324,18 @@ def test_a_changed_bit_in_a_sub_header_or_the_navi_table_fails_and_one_in_the_ba
         assert sums(flip(unit, byte, byte % 8)) == "the DTS-HD lossless (XLL) NAVI table's CRC"
     assert sums(flip(unit, navi + 12)) == "ok", "the band data has no CRC here"
     assert dtsx(flip(unit, x + 20))[0] == 0, "a frame whose check fails is not walked"
+
+
+def test_a_stream_can_start_where_no_lossless_data_runs_in_from_the_frame_before():
+    entry = lambda f: lib.dr_dca_xll_entry(f, len(f))
+    body = bytes(300)
+    assert entry(coreless("xll", body, xll_sync=(0, 0))) == 1, "its XLL sync at the start, no delay"
+    assert entry(coreless("xll", body, xll_sync=(0, 40))) == 0, "data of the frame before comes first"
+    assert entry(coreless("xll", body, xll_sync=(3, 0))) == 0, "a decoding delay: smoothing runs through it"
+    assert entry(coreless("xll", body)) == 0, "no XLL sync word in it"
+    assert entry(coreless("lbr", body)) == 1, "no lossless data (DTS Express)"
+    core = frames()[0]
+    assert entry(core) == 1, "a core frame alone"
+    assert entry(core + coreless("xll", body, xll_sync=(0, 0))) == 1, "core + extension"
+    assert entry(core + coreless("xll", body, xll_sync=(0, 40))) == 0
+    assert entry(b"\0" * 64) == 0, "not a frame"

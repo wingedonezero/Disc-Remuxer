@@ -1391,7 +1391,8 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         res->failed = 1;
         return DR_ERR(ENOSYS);
     }
-    if ((ret = job->nb_cuts ? dr_disc_title_open_cut(d, job->title, job->cuts, job->nb_cuts, job->part, job->keep) :
+    if ((ret = job->nb_cuts ? dr_disc_title_open_cut(d, job->title, job->cuts, job->nb_cuts, job->part, job->keep,
+                                                     job->cut_starts) :
                               dr_disc_title_open(d, job->title, job->part, job->second_view, job->keep)) < 0) {
         log_msg(MSG_TITLE_OPEN_FAILED, LOG_ERROR, "%s cannot be opened: %s", who, dr_err_text(ret));
         res->failed = 1;

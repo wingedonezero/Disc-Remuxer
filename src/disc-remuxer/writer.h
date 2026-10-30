@@ -33,6 +33,7 @@ typedef struct TitleJob {
     const DrDiscCut *cuts;     /* a cut title (part: 0 .. nb_cuts): its cuts in time order, NULL none */
     int         nb_cuts;
     int64_t     cut_end;       /* with cuts: where the title's video ends (ticks) */
+    const int64_t *cut_starts; /* with cuts: per cut and track the unit a start-unit track's part starts at */
 } TitleJob;
 
 typedef struct TitleOutcome {

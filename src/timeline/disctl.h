@@ -98,6 +98,8 @@ const DRTimelineHost *ff_disctl_host(void);
 #define DR_F_RASL     0x8000   /**< video: a leading picture that cannot be decoded from the key frame
                                     before it in decoding order alone (HEVC RASL, H.265 7.4.2.2) */
 #define DR_F_REF      0x10000  /**< video (H.264): a reference picture (nal_ref_idc not 0, H.264 7.4.1) */
+#define DR_F_ENTRY    0x20000  /**< audio: a unit a stream can start at (DRAudioRules.entry): a part cut there
+                                    loses nothing of what follows */
 
 typedef struct DRFrame {
     DrBuf *buf;      /**< owns the bytes (NULL for a marker) */
@@ -204,6 +206,9 @@ typedef struct DRAudioRules {
     int  (*header)(DRAudio *a, const DRFrame *unit, DRAudioHeader *h);
     /** 1 when the unit is a sync unit (DR_F_SYNC). NULL: never. */
     int  (*sync)(const uint8_t *data, int size);
+    /** 1 when a stream can start at the unit (DR_F_ENTRY: its decoding needs
+     *  nothing of the units before it). NULL: every unit. */
+    int  (*entry)(DRAudio *a, const uint8_t *data, int size);
     /** The unit's duration in ticks; < 0 on failure. NULL: samples / rate
      *  of the header. */
     int  (*duration)(DRAudio *a, DRFrame *frame);
@@ -1245,8 +1250,11 @@ enum DRCutTrack {
     DR_CUT_TRACK_NONE = 0,  /**< not carried yet: its frames are left out (counted, said) */
     DR_CUT_TRACK_VIDEO,     /**< the master video (track 0) */
     DR_CUT_TRACK_EVERY,     /**< audio whose every frame can start a stream (AC-3, E-AC-3, DTS core,
-                                 DTS Express, MPEG audio Layer I / II, AAC) */
+                                 DTS Express, MPEG audio Layer I / II, AAC ADTS) */
     DR_CUT_TRACK_PCM,       /**< PCM (LPCM as it leaves the timeline): cut between two samples */
+    DR_CUT_TRACK_ENTRY,     /**< audio that can start only at some units (DR_F_ENTRY: TrueHD, a DTS-HD
+                                 stream, AAC LATM): each part's start unit is given (ff_disctl_cut_open()
+                                 starts) */
 };
 
 /** A cut's place on the title timeline (ticks). */
@@ -1268,9 +1276,12 @@ typedef struct DRCut DRCut;
 
 /** The stage for part `part` (0 .. nb_cuts) of a title cut at cuts (in
  *  time order); codec: DRCutCodec of the video; kinds: each of the
- *  nb_tracks tracks' DRCutTrack. 0, or a negative base error. */
+ *  nb_tracks tracks' DRCutTrack; starts (nb_cuts x nb_tracks, cut by cut):
+ *  for a DR_CUT_TRACK_ENTRY track the time of the unit its part starts at
+ *  for each cut (INT64_MAX: none, the track ends before it). 0, or a
+ *  negative base error. */
 int  ff_disctl_cut_open(DRCut **c, void *log, const DRCutPlace *cuts, int nb_cuts, int part, int codec,
-                        const int *kinds, int nb_tracks);
+                        const int *kinds, int nb_tracks, const int64_t *starts);
 /** A PCM track's samples per second and bytes per sample frame (all its
  *  channels), before its first frame. */
 void ff_disctl_cut_pcm(DRCut *c, int track, int rate, int bytes_per_sample_frame);

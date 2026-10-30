@@ -120,6 +120,7 @@ typedef struct DrDiscFrame {
     unsigned    rasl:1;          /**< video: a leading picture that cannot be decoded from the key frame before it
                                       alone (HEVC RASL) */
     unsigned    ref:1;           /**< video (H.264): a reference picture */
+    unsigned    entry:1;         /**< audio: a stream can start at this unit (nothing of the ones before it needed) */
     int         start;           /**< video key frames: enum DrDiscStart */
 } DrDiscFrame;
 
@@ -151,9 +152,19 @@ typedef struct DrDiscCut {
  *  order) for reading: the title is read whole and only the part's frames
  *  are given, on the part's clock (its first picture at 0); the results at
  *  its end are the part's (frames, delays, its chapters, its length). keep
- *  must leave out every track dr_disc_cut_left_out() names. 0, or a
- *  negative error (the title is closed). */
-int  dr_disc_title_open_cut(DrDisc *d, int title, const DrDiscCut *cuts, int nb_cuts, int part, const uint8_t *keep);
+ *  must leave out every track dr_disc_cut_left_out() names. starts (nb_cuts
+ *  x the title's tracks, cut by cut): for each track that starts only at
+ *  some units (dr_disc_cut_start_units()) the time (ticks) of the unit its
+ *  part starts at at each cut, INT64_MAX none (the engine's cuts pass finds
+ *  them); may be NULL when no such track is kept. 0, or a negative error
+ *  (the title is closed). */
+int  dr_disc_title_open_cut(DrDisc *d, int title, const DrDiscCut *cuts, int nb_cuts, int part, const uint8_t *keep,
+                            const int64_t *starts);
+/** 1 when a stream of track `track` of title `title` can start only at some
+ *  of its units (TrueHD at a major sync, a DTS-HD stream where its lossless
+ *  data starts fresh: DrDiscFrame.entry), so each cut needs the unit its
+ *  part starts at (dr_disc_title_open_cut() starts). */
+int  dr_disc_cut_start_units(const DrDisc *d, int title, int track);
 /** Why a cut part cannot carry track `track` of title `title` yet (words),
  *  NULL when it can. */
 const char *dr_disc_cut_left_out(const DrDisc *d, int title, int track);

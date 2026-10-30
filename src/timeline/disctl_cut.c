@@ -37,6 +37,8 @@ typedef struct CutTrack {
     int64_t    frames;       /* given */
     int64_t    first;        /* the first given one's time (part clock), INT64_MIN none */
     int64_t    left;         /* DR_CUT_TRACK_NONE: frames left out */
+    int64_t    from, to;     /* DR_CUT_TRACK_ENTRY: the units the part starts at and the next part starts at */
+    int        seen_to;      /* the next part's unit was met */
 } CutTrack;
 
 struct DRCut {
@@ -66,7 +68,7 @@ int ff_disctl_leading_kept(int start, int codec, int rasl, int ref)
 }
 
 int ff_disctl_cut_open(DRCut **pc, void *log, const DRCutPlace *cuts, int nb_cuts, int part, int codec,
-                       const int *kinds, int nb_tracks)
+                       const int *kinds, int nb_tracks, const int64_t *starts)
 {
     DRCut *c;
 
@@ -85,6 +87,15 @@ int ff_disctl_cut_open(DRCut **pc, void *log, const DRCutPlace *cuts, int nb_cut
     for (int i = 0; i < nb_tracks; i++) {
         c->t[i].kind  = kinds[i];
         c->t[i].first = INT64_MIN;
+        if (kinds[i] == DR_CUT_TRACK_ENTRY) {
+            if (!starts) {
+                dr_free(c->t);
+                dr_free(c);
+                return DR_ERR(EINVAL);
+            }
+            c->t[i].from = part > 0 ? starts[(part - 1) * nb_tracks + i] : INT64_MIN;
+            c->t[i].to   = part < nb_cuts ? starts[part * nb_tracks + i] : INT64_MAX;
+        }
     }
     c->log      = log;
     c->part     = part;
@@ -197,7 +208,11 @@ int ff_disctl_cut_frame(DRCut *c, int track, DRFrame *f)
         ret = 0;                        /* audio without a time has no place in a part */
     else if (t->kind == DR_CUT_TRACK_PCM)
         ret = cut_pcm(c, t, f);
-    else
+    else if (t->kind == DR_CUT_TRACK_ENTRY) {
+        if (f->time == t->to)
+            t->seen_to = 1;
+        ret = f->time >= t->from && f->time < t->to;
+    } else
         ret = (!c->has_from || f->time >= c->from.zero) && (!c->has_to || f->time < c->to.zero);
     if (ret <= 0)
         return ret;
@@ -249,6 +264,24 @@ int ff_disctl_cut_finish(DRCut *c)
                 "not at 0: the cut's place does not match the title's pictures\n", c->part + 1, c->nb_parts,
                 c->r.first);
         return DR_ERR_INVALID;
+    }
+    /* each start unit met where the cuts say */
+    for (int i = 0; i < c->nb_tracks; i++) {
+        const CutTrack *t = &c->t[i];
+        if (t->kind != DR_CUT_TRACK_ENTRY)
+            continue;
+        if (c->has_from && t->from != INT64_MAX && (t->first == INT64_MIN || t->first + c->from.zero != t->from)) {
+            dr_vlog(c->log, DR_VLOG_ERROR, "Cut part %d/%d: stream %d does not start at the unit the cuts name (at %"
+                    PRId64" ticks on the title timeline): the cuts do not belong to this reading of the title\n",
+                    c->part + 1, c->nb_parts, i, t->from);
+            return DR_ERR_INVALID;
+        }
+        if (c->has_to && t->to != INT64_MAX && !t->seen_to) {
+            dr_vlog(c->log, DR_VLOG_ERROR, "Cut part %d/%d: stream %d: the next part's start unit (at %"PRId64" ticks "
+                    "on the title timeline) was not met: the cuts do not belong to this reading of the title\n",
+                    c->part + 1, c->nb_parts, i, t->to);
+            return DR_ERR_INVALID;
+        }
     }
     for (int i = 0; i < c->nb_tracks; i++)
         if (c->t[i].left)

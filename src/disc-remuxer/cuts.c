@@ -234,6 +234,49 @@ int cut_resolve(const CutPoint *points, int nb_points, const int64_t *chapters, 
     return made;
 }
 
+int cut_track_start(const CutUnit *u, int nb, int64_t zero, int64_t limit, CutStart *s)
+{
+    int i = 0, k;
+
+    memset(s, 0, sizeof(*s));
+    s->to_entry = -1;
+    while (i < nb && u[i].time < zero)
+        i++;
+    if (i == nb) {
+        s->time = INT64_MAX;            /* no unit after the cut: the track ends before it */
+        return 0;
+    }
+    for (k = i; k < nb && u[k].time <= zero + limit; k++)
+        if (u[k].entry) {
+            s->time    = u[k].time;
+            s->entry   = 1;
+            s->carried = k - i;
+            return 0;
+        }
+    /* none within the limit: the first unit at or after the 0 */
+    s->time = u[i].time;
+    for (k = i; k < nb; k++)
+        if (u[k].entry) {
+            s->to_entry = k - i;
+            break;
+        }
+    return 0;
+}
+
+static int add_unit(CutAudio *a, const DrDiscFrame *fr)
+{
+    if (a->nb == a->cap) {
+        int n = a->cap ? a->cap * 2 : 4096;
+        CutUnit *u = realloc(a->u, n * sizeof(*u));
+        if (!u)
+            return DR_ERR(ENOMEM);
+        a->u   = u;
+        a->cap = n;
+    }
+    a->u[a->nb++] = (CutUnit){ fr->time, fr->entry };
+    return 0;
+}
+
 static int add_picture(CutIndex *ix, int *cap, const DrDiscFrame *fr)
 {
     if (ix->nb_pics == *cap) {
@@ -249,19 +292,29 @@ static int add_picture(CutIndex *ix, int *cap, const DrDiscFrame *fr)
     return 0;
 }
 
-int cut_index_read(DrDisc *d, int title, int64_t stop_after, CutIndex *ix)
+int cut_index_read(DrDisc *d, int title, int64_t stop_after, const int64_t *windows, int nb_windows, CutIndex *ix)
 {
     const DiscInfo *info = dr_disc_info(d);
     uint8_t *keep;
-    int cap = 0, keys_after = 0, ret;
+    int cap = 0, keys_after = 0, nb_streams, ret, *of = NULL;
 
     memset(ix, 0, sizeof(*ix));
     if (!info || title < 0 || title >= info->nb_titles)
         return DR_ERR(EINVAL);
-    /* the video only (track 0 is always read) */
-    if (!(keep = calloc(info->titles[title].nb_streams ? info->titles[title].nb_streams : 1, 1)))
+    nb_streams = info->titles[title].nb_streams;
+    /* the video (track 0 is always read) and the start-unit tracks */
+    if (!(keep = calloc(nb_streams ? nb_streams : 1, 1)) ||
+        !(ix->audio = calloc(nb_streams ? nb_streams : 1, sizeof(*ix->audio)))) {
+        free(keep);
         return DR_ERR(ENOMEM);
+    }
     keep[0] = 1;
+    for (int i = 1; i < nb_streams; i++)
+        if (dr_disc_cut_start_units(d, title, i)) {
+            keep[i] = 1;
+            ix->audio[ix->nb_audio++] = (CutAudio){ .track = i, .codec = info->titles[title].streams[i].codec,
+                                                    .last = INT64_MIN };
+        }
     /* the chapters as a rip places them */
     dr_disc_set_chapter_rule(d, !setting_bool("chapters.snap"), (int)setting_int("chapters.before_ms"),
                              (int)setting_int("chapters.after_ms"));
@@ -269,12 +322,26 @@ int cut_index_read(DrDisc *d, int title, int64_t stop_after, CutIndex *ix)
     free(keep);
     if (ret < 0) {
         log_msg(MSG_TITLE_OPEN_FAILED, LOG_ERROR, "Title #%d cannot be opened: %s", title, dr_err_text(ret));
+        cut_index_free(ix);
         return ret;
+    }
+    /* each opened track's start-unit track (its disc info number) */
+    if (!(of = calloc(dr_disc_nb_tracks(d) + 1, sizeof(*of)))) {
+        dr_disc_title_close(d);
+        cut_index_free(ix);
+        return DR_ERR(ENOMEM);
+    }
+    for (int k = 0; k < dr_disc_nb_tracks(d); k++) {
+        of[k] = -1;
+        for (int a = 0; a < ix->nb_audio; a++)
+            if (ix->audio[a].track == dr_disc_track(d, k)->number)
+                of[k] = a;
     }
     ix->codec = dr_disc_nb_tracks(d) <= 0 ? DR_CUT_OTHER : dr_disc_track(d, 0)->codec == DR_CODEC_HEVC ? DR_CUT_HEVC :
                 dr_disc_track(d, 0)->codec == DR_CODEC_H264 ? DR_CUT_H264 : DR_CUT_OTHER;
     for (;;) {
         DrDiscFrame fr;
+        int done;
 
         if ((ret = dr_disc_read(d, &fr)) < 0)
             break;
@@ -284,8 +351,21 @@ int cut_index_read(DrDisc *d, int title, int64_t stop_after, CutIndex *ix)
             break;
         }
         log_progress(title, dr_disc_progress(d) / 10000.0);
-        if (fr.track || fr.time == DR_NOPTS_VALUE) {
+        if (fr.time == DR_NOPTS_VALUE) {
             dr_disc_frame_unref(&fr);
+            continue;
+        }
+        if (fr.track) {
+            CutAudio *a = fr.track < dr_disc_nb_tracks(d) && of[fr.track] >= 0 ? &ix->audio[of[fr.track]] : NULL;
+            int inside = 0;
+            for (int w = 0; a && w < nb_windows && !inside; w++)
+                inside = fr.time >= windows[2 * w] && fr.time <= windows[2 * w + 1];
+            ret = inside ? add_unit(a, &fr) : 0;
+            if (a)
+                a->last = fr.time;
+            dr_disc_frame_unref(&fr);
+            if (ret < 0)
+                break;
             continue;
         }
         ret = add_picture(ix, &cap, &fr);
@@ -293,11 +373,17 @@ int cut_index_read(DrDisc *d, int title, int64_t stop_after, CutIndex *ix)
         if (ret < 0)
             break;
         /* enough for the requests: the first key frame after them and its
-         * leading pictures (read before the next key frame) */
-        if (stop_after >= 0 && ix->pics[ix->nb_pics - 1].key && ix->pics[ix->nb_pics - 1].time > stop_after &&
-            ++keys_after == 2)
+         * leading pictures (read before the next key frame), and the
+         * start-unit tracks past them by the start limit */
+        if (stop_after >= 0 && ix->pics[ix->nb_pics - 1].key && ix->pics[ix->nb_pics - 1].time > stop_after)
+            keys_after++;
+        done = stop_after >= 0 && keys_after >= 2;
+        for (int a = 0; done && a < ix->nb_audio; a++)
+            done = ix->audio[a].last > stop_after + 2 * CUT_START_LIMIT;
+        if (done)
             break;
     }
+    free(of);
     if (ret == DR_ERR_EOF) {
         int n = dr_disc_nb_chapters(d);
         ix->complete = 1;
@@ -318,6 +404,9 @@ int cut_index_read(DrDisc *d, int title, int64_t stop_after, CutIndex *ix)
 
 void cut_index_free(CutIndex *ix)
 {
+    for (int a = 0; ix->audio && a < ix->nb_audio; a++)
+        free(ix->audio[a].u);
+    free(ix->audio);
     free(ix->pics);
     free(ix->chapters);
     memset(ix, 0, sizeof(*ix));

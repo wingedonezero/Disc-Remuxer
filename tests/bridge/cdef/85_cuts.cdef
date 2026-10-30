@@ -45,6 +45,18 @@ int cut_resolve(const CutPoint *points, int nb_points, const int64_t *chapters, 
 
 const char *cut_time_text(char *buf, int size, int64_t ticks);
 
+typedef struct CutUnit {
+    int64_t time;
+    uint8_t entry;
+} CutUnit;
+typedef struct CutStart {
+    int64_t time;
+    int     entry;
+    int     carried;
+    int     to_entry;
+} CutStart;
+int cut_track_start(const CutUnit *u, int nb, int64_t zero, int64_t limit, CutStart *s);
+
 /* the cut stage of the title timeline (src/timeline/disctl_cut.c) */
 enum DRCutCodec { DR_CUT_OTHER = 0, DR_CUT_H264, DR_CUT_HEVC };
 int ff_disctl_leading_decodes(int start, int codec, int rasl);
@@ -61,9 +73,9 @@ typedef struct DRCutResult {
     int     start;
 } DRCutResult;
 typedef struct DRCut DRCut;
-enum DRCutTrack { DR_CUT_TRACK_NONE = 0, DR_CUT_TRACK_VIDEO, DR_CUT_TRACK_EVERY, DR_CUT_TRACK_PCM };
+enum DRCutTrack { DR_CUT_TRACK_NONE = 0, DR_CUT_TRACK_VIDEO, DR_CUT_TRACK_EVERY, DR_CUT_TRACK_PCM, DR_CUT_TRACK_ENTRY };
 int  ff_disctl_cut_open(DRCut **c, void *log, const DRCutPlace *cuts, int nb_cuts, int part, int codec,
-                        const int *kinds, int nb_tracks);
+                        const int *kinds, int nb_tracks, const int64_t *starts);
 void ff_disctl_cut_pcm(DRCut *c, int track, int rate, int bytes_per_sample_frame);
 void ff_disctl_cut_track(const DRCut *c, int track, int64_t *frames, int64_t *first);
 int  ff_disctl_cut_frame(DRCut *c, int track, DRFrame *f);

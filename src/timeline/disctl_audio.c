@@ -171,6 +171,8 @@ static int unit_done(DRAudio *a, DRFrame *f)
         f->flags |= DR_F_SYNC;
     if (!a->rules->key_on_sync || (f->flags & DR_F_SYNC))
         f->flags |= DR_F_KEY;
+    if (!a->rules->entry || a->rules->entry(a, f->data, f->size))
+        f->flags |= DR_F_ENTRY;
     if (a->rules->duration) {
         int size = f->size;
         if ((ret = a->rules->duration(a, f)) < 0) {

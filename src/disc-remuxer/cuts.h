@@ -86,6 +86,40 @@ typedef struct CutResult {
 int cut_resolve(const CutPoint *points, int nb_points, const int64_t *chapters, int nb_chapters, int64_t end,
                 const CutRequest *reqs, int nb_reqs, int rule, CutResult *res);
 
+/* A unit of an audio track that starts only at some units (TrueHD, a DTS-HD
+ * stream: dr_disc_cut_start_units()). */
+typedef struct CutUnit {
+    int64_t time;            /* ticks, title timeline */
+    uint8_t entry;           /* a stream can start at it (DrDiscFrame.entry) */
+} CutUnit;
+
+/* Where such a track's part starts at a cut. */
+typedef struct CutStart {
+    int64_t time;            /* the unit's time (ticks); INT64_MAX: the track has no unit after the cut */
+    int     entry;           /* 1 an entry unit within the limit, 0 none: the first unit at or after the cut */
+    int     carried;         /* units from the cut's 0 up to it (they stay in the part before) */
+    int     to_entry;        /* entry 0: units from it to the next entry unit, -1 none in sight */
+} CutStart;
+
+/* The limit an entry unit may lie after a cut's 0: one TrueHD restart
+ * interval (128 units of 1/1200 s). */
+#define CUT_START_LIMIT (DR_TICKS_PER_SECOND * 128 / 1200)
+
+/* Where a start-unit track's part starts at a cut whose 0 is zero: its
+ * first entry unit at or after zero when it is within limit of it, else
+ * its first unit at or after zero (none: INT64_MAX, the track ends before
+ * the cut). u: the track's units in time order around the cut. 0. */
+int cut_track_start(const CutUnit *u, int nb, int64_t zero, int64_t limit, CutStart *s);
+
+/* A start-unit track's units as the cuts pass read them. */
+typedef struct CutAudio {
+    int      track;          /* its number in the title's tracks (disc info) */
+    int      codec;          /* DRCodecID */
+    CutUnit *u;
+    int      nb, cap;
+    int64_t  last;           /* the last unit's time read (ticks), INT64_MIN none */
+} CutAudio;
+
 /* A title's pictures read as a rip reads the title (its video only), the
  * title's chapters and where its video ends. */
 typedef struct CutIndex {
@@ -96,13 +130,17 @@ typedef struct CutIndex {
     int         nb_chapters;
     int64_t     end;         /* ticks: the end of the last picture read */
     int         complete;    /* read to the title's end */
+    CutAudio   *audio;       /* the start-unit tracks: their units inside the windows */
+    int         nb_audio;
 } CutIndex;
 
-/* Reads title `title` of the open disc (its video track only) into ix;
- * stop_after >= 0: the reading stops once two key frames after that time
- * have been read (what the requests need); < 0: to the title's end (the
- * chapters need it). 0, or a negative base error (logged). */
-int  cut_index_read(DrDisc *d, int title, int64_t stop_after, CutIndex *ix);
+/* Reads title `title` of the open disc into ix: its video and its tracks
+ * that start only at some units (their units only inside the windows: nb
+ * pairs of from / to times, ticks); stop_after >= 0: the reading stops once
+ * two key frames after that time and those tracks' units past it by the
+ * start limit have been read (what the requests need); < 0: to the title's
+ * end (the chapters need it). 0, or a negative base error (logged). */
+int  cut_index_read(DrDisc *d, int title, int64_t stop_after, const int64_t *windows, int nb_windows, CutIndex *ix);
 void cut_index_free(CutIndex *ix);
 
 /* A time on the title timeline in words: 00:22:52.204.166.667 (h, min, s,

@@ -165,6 +165,16 @@ int dr_dca_exss_checksums(const uint8_t *buf, int size, const char **why);
  *  *imax_type: the asset's type descriptor says IMAX (13). */
 int dr_dca_dtsx(const uint8_t *buf, int size, uint32_t *marker, int *imax_type);
 
+/** Whether a stream can start at this DTS / DTS-HD unit (a core frame, its
+ *  extension substream after it, or the substream alone) without losing
+ *  lossless data: 1 when its first asset has no lossless (XLL) data, or its
+ *  XLL data starts with the XLL sync word, nothing carried in from the frame
+ *  before (offset to the sync 0) and no initial decoding delay (ETSI TS 102
+ *  114 extension substream asset: XLL sync word present, its offset, the
+ *  decoding delay in frames); 0 otherwise (peak bit-rate smoothing runs
+ *  through it) or when the unit cannot be read. */
+int dr_dca_xll_entry(const uint8_t *buf, int size);
+
 /** The size of the DTS-HD extension substream frame at buf (its sync word
  *  first), once its header is there and its header CRC-16 is right; 0
  *  otherwise (not a frame start, or too few bytes yet). */

@@ -382,7 +382,8 @@ struct EngineDisc {
 };
 
 static int parse_titles(const char *spec, const DiscInfo *d, int only_selected, char *sel);
-static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cuts, int *nb, int64_t *end);
+static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cuts, int *nb, int64_t *end,
+                        int64_t **starts);
 static int cut_value(const char *v, int *title, const char **items);
 
 /* Each title's tracks to rip (select.h) into keeps[title] (freed with
@@ -788,8 +789,8 @@ static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
     int nb_ranges = 0;
     DrDiscCut *cuts = NULL;             /* the title's cuts (a title with cuts) */
     int nb_cuts = 0;
-    int64_t cut_end = 0;
-    uint8_t *vkeep = NULL;              /* a cut title's tracks: the video only so far */
+    int64_t cut_end = 0, *cut_starts = NULL;
+    uint8_t *vkeep = NULL;              /* a cut title's tracks: those a cut part carries */
 
     if (!spl) {
         log_close_files();
@@ -823,14 +824,16 @@ static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
                         "parts", t);
             hms(dur, sizeof(dur), di->titles[t].duration);
             log_step("=== Cuts: title #%d (%s) ===", t, dur);
-            if (resolve_cuts(e, t, e->cut[t], &cuts, &nb_cuts, &cut_end) || !nb_cuts ||
+            if (resolve_cuts(e, t, e->cut[t], &cuts, &nb_cuts, &cut_end, &cut_starts) || !nb_cuts ||
                 !(vkeep = calloc(di->titles[t].nb_streams ? di->titles[t].nb_streams : 1, 1))) {
                 log_msg(MSG_TITLE_FAILED, LOG_ERROR, "Title #%d is not ripped: not every cut asked for can be made",
                         t);
                 failed++;
                 free(cuts);
-                cuts    = NULL;
-                nb_cuts = 0;
+                free(cut_starts);
+                cuts       = NULL;
+                cut_starts = NULL;
+                nb_cuts    = 0;
                 continue;
             }
             /* the tracks a cut part carries so far; the others said */
@@ -847,7 +850,7 @@ static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
             /* the second view: read when one of its tracks is selected */
             /* stream files: every title, and each part as a title of its own, in a folder of its name */
             TitleJob job = { e->disc, t, p, parts, !nb_cuts, nb_cuts ? vkeep : e->keeps[t], ordinal, count, out_dir,
-                             1, cuts, nb_cuts, cut_end };
+                             1, cuts, nb_cuts, cut_end, cut_starts };
             TitleOutcome res;
             demux_title(&job, &res);
             /* each range under the title's (part's) number */
@@ -868,10 +871,12 @@ static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
                 break;
         }
         free(cuts);
+        free(cut_starts);
         free(vkeep);
-        cuts    = NULL;
-        vkeep   = NULL;
-        nb_cuts = 0;
+        cuts       = NULL;
+        cut_starts = NULL;
+        vkeep      = NULL;
+        nb_cuts    = 0;
         failed += !!part_failed;
         done   += !part_failed && !part_stopped;
         /* a full disk: every title after it would fail the same way */
@@ -1027,9 +1032,12 @@ static int by_zero(const void *a, const void *b)
  * as a rip reads it, each cut said in the log, then the parts. *cuts (freed
  * with free()) / *nb: the cuts in time order, *end: where the title's
  * video ends (ticks; as the disc records the title's length when it was not
- * read to its end). 0 when every cut is made, 1 when one is refused or the
- * title cannot be read (logged). */
-static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cuts, int *nb, int64_t *end)
+ * read to its end), *starts (freed with free()): per cut and track of the
+ * title the unit a start-unit track's part starts at (cuts.h
+ * cut_track_start(), INT64_MAX for the other tracks). 0 when every cut is
+ * made, 1 when one is refused or the title cannot be read (logged). */
+static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cuts, int *nb, int64_t *end,
+                        int64_t **starts)
 {
     CutRequest *reqs = NULL;
     CutResult *res = NULL;
@@ -1040,9 +1048,13 @@ static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cut
     const char *bad;
     char a[40], b[40];
 
-    *cuts = NULL;
-    *nb   = 0;
-    *end  = 0;
+    int64_t *windows = NULL;
+    int nb_windows = 0, nb_streams = e->info->titles[t].nb_streams;
+
+    *cuts   = NULL;
+    *nb     = 0;
+    *end    = 0;
+    *starts = NULL;
     if (cut_parse(items, &reqs, &nb_reqs, &bad) < 0) {
         log_msg(MSG_USAGE, LOG_ERROR, "Cuts \"%s\" cannot be read at \"%s\": the cuts are c<chapter> or a time "
                 "(h:mm:ss.fff or m:ss.fff on the title's timeline), comma separated", items, bad);
@@ -1055,7 +1067,23 @@ static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cut
     rule = !strcmp(setting_text("cuts.key_frame"), "next") ? CUT_NEXT : CUT_NEAREST;
     log_text(LOG_INFO, "Cuts: %s; a time not on a key frame takes the %s key frame (setting cuts.key_frame)", items,
              rule == CUT_NEXT ? "next" : "nearest");
-    if (cut_index_read(e->disc, t, stop, &ix) < 0 || cut_points(ix.pics, ix.nb_pics, ix.codec, &pts, &nb_pts) < 0)
+    /* the units of the start-unit tracks are kept around what is asked (a
+     * cut's key frame lies within a few seconds of it): each time, each
+     * chapter's mark on the disc when a chapter is asked */
+    if (!(windows = calloc(2 * (nb_reqs + e->info->titles[t].nb_chapters + 1), sizeof(*windows))))
+        goto end;
+    for (int i = 0; i < nb_reqs; i++)
+        if (!reqs[i].chapter) {
+            windows[2 * nb_windows]       = reqs[i].time - 5 * DR_TICKS_PER_SECOND;
+            windows[2 * nb_windows++ + 1] = reqs[i].time + 5 * DR_TICKS_PER_SECOND;
+        }
+    for (int c = 0; stop < 0 && c < e->info->titles[t].nb_chapters; c++) {
+        int64_t m = e->info->titles[t].chapters[c].start * (DR_TICKS_PER_SECOND / 1000000);
+        windows[2 * nb_windows]       = m - 5 * DR_TICKS_PER_SECOND;
+        windows[2 * nb_windows++ + 1] = m + 5 * DR_TICKS_PER_SECOND;
+    }
+    if (cut_index_read(e->disc, t, stop, windows, nb_windows, &ix) < 0 ||
+        cut_points(ix.pics, ix.nb_pics, ix.codec, &pts, &nb_pts) < 0)
         goto end;
     log_text(LOG_INFO, "Cuts: the title's video read %s: %d picture(s), %d place(s) a part can start",
              ix.complete ? "to its end" : "as far as the cuts need", ix.nb_pics, nb_pts);
@@ -1107,6 +1135,38 @@ static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cut
     /* the cuts and the parts, in time order */
     qsort(*cuts, n, sizeof(**cuts), by_zero);
     *nb  = n;
+    /* where each start-unit track's part starts at each cut */
+    if (!(*starts = malloc((size_t)(n ? n : 1) * (nb_streams ? nb_streams : 1) * sizeof(**starts))))
+        goto end;
+    for (int i = 0; i < n * nb_streams; i++)
+        (*starts)[i] = INT64_MAX;
+    for (int c = 0; c < n; c++)
+        for (int a = 0; a < ix.nb_audio; a++) {
+            const CutAudio *au = &ix.audio[a];
+            const char *unit = au->codec == DR_CODEC_TRUEHD || au->codec == DR_CODEC_MLP ? "major sync unit" :
+                               "unit whose lossless data starts fresh";
+            char what[48];
+            CutStart st;
+            cut_track_start(au->u, au->nb, (*cuts)[c].zero, CUT_START_LIMIT, &st);
+            (*starts)[c * nb_streams + au->track] = st.time;
+            snprintf(what, sizeof(what), "track %d (%s)", au->track,
+                     codec_label(e->info->titles[t].streams[au->track].codec,
+                                 e->info->titles[t].streams[au->track].profile));
+            if (st.time == INT64_MAX)
+                log_text(LOG_INFO, "    cut %d: %s ends before it", c + 1, what);
+            else if (st.entry)
+                log_text(LOG_INFO, "    cut %d: %s starts at the %s %.3f ms after the part's 0; %d unit(s) before "
+                         "it stay in the part before", c + 1, what, unit,
+                         (double)(st.time - (*cuts)[c].zero) * 1000 / DR_TICKS_PER_SECOND, st.carried);
+            else
+                log_msg(MSG_CUTS, LOG_WARNING, "    cut %d: %s has no %s within %.0f ms of it: it starts at its first "
+                        "unit at or after the part's 0 (%.3f ms after it); its lossless data runs across the cut: "
+                        "%s and the last unit(s) before it decode as the DTS core only", c + 1, what, unit,
+                        (double)CUT_START_LIMIT * 1000 / DR_TICKS_PER_SECOND,
+                        (double)(st.time - (*cuts)[c].zero) * 1000 / DR_TICKS_PER_SECOND,
+                        st.to_entry < 0 ? "the units after it as far as was read" :
+                        st.to_entry == 1 ? "1 unit after it" : "the units after it up to the next start unit");
+        }
     *end = ix.complete ? ix.end : e->info->titles[t].duration * (DR_TICKS_PER_SECOND / 1000000);
     zeros[0] = 0;
     for (int i = 0; i < n; i++)
@@ -1123,9 +1183,12 @@ static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cut
 end:
     if (ret) {
         free(*cuts);
-        *cuts = NULL;
-        *nb   = 0;
+        free(*starts);
+        *cuts   = NULL;
+        *starts = NULL;
+        *nb     = 0;
     }
+    free(windows);
     free(reqs);
     free(res);
     free(pts);
@@ -1167,7 +1230,11 @@ int engine_cuts(const char *source, const char *title, const char *items, const 
     }
     hms(dur, sizeof(dur), e->info->titles[t].duration);
     log_step("=== Cuts: title #%d (%s) ===", t, dur);
-    ret = resolve_cuts(e, t, items, &cuts, &nb, &end);
+    {
+        int64_t *starts;
+        ret = resolve_cuts(e, t, items, &cuts, &nb, &end, &starts);
+        free(starts);
+    }
     free(cuts);
     engine_disc_close(&e);
     return ret;

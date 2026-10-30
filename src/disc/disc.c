@@ -256,29 +256,37 @@ static int cut_track(const DiscTrack *k, int i, const char **why)
     case DR_CODEC_MP1:
     case DR_CODEC_MP2:
     case DR_CODEC_AAC:
-    case DR_CODEC_AAC_LATM:
         return DR_CUT_TRACK_EVERY;
+    case DR_CODEC_AAC_LATM:
+        return DR_CUT_TRACK_ENTRY;      /* at a frame with its own StreamMuxConfig */
     case DR_CODEC_DTS:
         /* a DTS core (also one taken out of DTS-HD) and DTS Express: every
-         * frame; the whole DTS-HD stream (its lossless or high-resolution
-         * data may run from one frame into the next): not yet */
+         * frame; the whole DTS-HD stream: where its lossless data starts
+         * fresh (DR_F_ENTRY) */
         if (k->info.from_track >= 0 || k->info.profile == DISC_PROFILE_DTS_EXPRESS)
             return DR_CUT_TRACK_EVERY;
         if (k->info.inner_track >= 0 || (k->flags & DISC_TRACK_EXT_ONLY) ||
             k->info.profile == DISC_PROFILE_DTS_HD_HRA || k->info.profile == DISC_PROFILE_DTS_HD_MA ||
-            k->info.profile == DISC_PROFILE_DTS_HD_MA_X || k->info.profile == DISC_PROFILE_DTS_HD_MA_X_IMAX) {
-            *why = "DTS-HD (its whole stream) is not cut yet";
-            return DR_CUT_TRACK_NONE;
-        }
+            k->info.profile == DISC_PROFILE_DTS_HD_MA_X || k->info.profile == DISC_PROFILE_DTS_HD_MA_X_IMAX)
+            return DR_CUT_TRACK_ENTRY;
         return DR_CUT_TRACK_EVERY;
     case DR_CODEC_TRUEHD:
     case DR_CODEC_MLP:
-        *why = "TrueHD is not cut yet";
-        return DR_CUT_TRACK_NONE;
+        return DR_CUT_TRACK_ENTRY;      /* at its major sync units */
     default:
         *why = "this codec is not cut yet";
         return DR_CUT_TRACK_NONE;
     }
+}
+
+int dr_disc_cut_start_units(const DrDisc *d, int title, int track)
+{
+    const char *why;
+
+    if (!d || title < 0 || title >= d->nb_title_slots || !d->title_tracks || !d->title_tracks[title] ||
+        track < 0 || track >= d->nb_title_tracks[title])
+        return 0;
+    return cut_track(&d->title_tracks[title][track], track, &why) == DR_CUT_TRACK_ENTRY;
 }
 
 const char *dr_disc_cut_left_out(const DrDisc *d, int title, int track)
@@ -452,6 +460,7 @@ static int disc_close(DrDisc *d)
 
     title_close(d);
     dr_freep(&d->opt_cuts);
+    dr_freep(&d->opt_starts);
     if (d->fmt && d->part)
         d->fmt->close(d);
     dr_freep(&d->part);
@@ -689,7 +698,8 @@ void dr_disc_title_close(DrDisc *d)
 
 static int title_open_with(DrDisc *d, int title, int part, int second_view, const uint8_t *keep);
 
-int dr_disc_title_open_cut(DrDisc *d, int title, const DrDiscCut *cuts, int nb_cuts, int part, const uint8_t *keep)
+int dr_disc_title_open_cut(DrDisc *d, int title, const DrDiscCut *cuts, int nb_cuts, int part, const uint8_t *keep,
+                           const int64_t *starts)
 {
     int ret;
 
@@ -697,9 +707,18 @@ int dr_disc_title_open_cut(DrDisc *d, int title, const DrDiscCut *cuts, int nb_c
         return DR_ERR(EINVAL);
     if (!keep)
         return DR_ERR(ENOSYS);          /* the tracks a cut part carries are chosen (dr_disc_cut_left_out()) */
-    for (int i = 0; title >= 0 && title < d->info.nb_titles && i < d->info.titles[title].nb_streams; i++)
+    if (title < 0 || title >= d->info.nb_titles)
+        return DR_ERR(EINVAL);
+    for (int i = 0; i < d->info.titles[title].nb_streams; i++) {
         if (i && keep[i] && dr_disc_cut_left_out(d, title, i))
             return DR_ERR(ENOSYS);      /* a track a cut part does not carry yet */
+        if (keep[i] && dr_disc_cut_start_units(d, title, i) && !starts)
+            return DR_ERR(EINVAL);      /* its start units are the cuts pass's */
+    }
+    dr_freep(&d->opt_starts);
+    d->opt_nb_streams = d->info.titles[title].nb_streams;
+    if (starts && !(d->opt_starts = dr_memdup(starts, (size_t)nb_cuts * d->opt_nb_streams * sizeof(*starts))))
+        return DR_ERR(ENOMEM);
     dr_freep(&d->opt_cuts);
     if (!(d->opt_cuts = dr_calloc(nb_cuts, sizeof(*d->opt_cuts))))
         return DR_ERR(ENOMEM);
@@ -716,6 +735,7 @@ int dr_disc_title_open(DrDisc *d, int title, int part, int second_view, const ui
     if (!d)
         return DR_ERR(EINVAL);
     dr_freep(&d->opt_cuts);
+    dr_freep(&d->opt_starts);
     d->nb_opt_cuts = 0;
     return title_open_with(d, title, part, second_view, keep);
 }
