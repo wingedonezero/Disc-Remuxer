@@ -410,14 +410,20 @@ void CutEditor::buildUi()
         return b;
     };
     auto sep = [&] { row->addSpacing(10); };
+    // a step button held down steps on (as Avidemux's), every ms
+    auto repeat = [](QToolButton *b, int ms) {
+        b->setAutoRepeat(true);
+        b->setAutoRepeatDelay(300);
+        b->setAutoRepeatInterval(ms);
+    };
     playBtn = button("", QStyle::SP_MediaPlay, "Play / pause (Space) - pictures only", [this] { togglePlay(); });
     sep();
-    button("", QStyle::SP_MediaSeekBackward, "Previous frame (Left)", [this] { stopPlay(); show(cur - 1); });
-    button("", QStyle::SP_MediaSeekForward, "Next frame (Right)", [this] { stopPlay(); show(cur + 1); });
-    button("", QStyle::SP_MediaSkipBackward, "Previous key frame (Down)", [this] { goKey(-1); });
-    button("", QStyle::SP_MediaSkipForward, "Next key frame (Up)", [this] { goKey(1); });
-    button("◀ Clean", -1, "Previous key frame a cut at is clean: nothing lost (Alt+Down)", [this] { goClean(-1); });
-    button("Clean ▶", -1, "Next key frame a cut at is clean: nothing lost (Alt+Up)", [this] { goClean(1); });
+    repeat(button("", QStyle::SP_MediaSeekBackward, "Previous frame (Left)", [this] { stopPlay(); show(cur - 1); }), 40);
+    repeat(button("", QStyle::SP_MediaSeekForward, "Next frame (Right)", [this] { stopPlay(); show(cur + 1); }), 40);
+    repeat(button("", QStyle::SP_MediaSkipBackward, "Previous key frame (Down)", [this] { goKey(-1); }), 150);
+    repeat(button("", QStyle::SP_MediaSkipForward, "Next key frame (Up)", [this] { goKey(1); }), 150);
+    repeat(button("◀ Clean", -1, "Previous key frame a cut at is clean: nothing lost (Alt+Down)", [this] { goClean(-1); }), 250);
+    repeat(button("Clean ▶", -1, "Next key frame a cut at is clean: nothing lost (Alt+Up)", [this] { goClean(1); }), 250);
     sep();
     button("+ Cut", -1, "Add a cut here (Ctrl+K): at this picture's key frame, by the rule of setting cuts.key_frame",
            [this] { addCutHere(); });
@@ -430,8 +436,8 @@ void CutEditor::buildUi()
     sep();
     button("⏮", -1, "First frame (Home)", [this] { stopPlay(); show(0); });
     button("⏭", -1, "Last frame (End)", [this] { stopPlay(); show(times.size() - 1); });
-    button("-1 min", -1, "One minute back (Ctrl+Down)", [this] { stopPlay(); showAt(times[cur] - 60 * TPS); });
-    button("+1 min", -1, "One minute on (Ctrl+Up)", [this] { stopPlay(); showAt(times[cur] + 60 * TPS); });
+    repeat(button("-1 min", -1, "One minute back (Ctrl+Down)", [this] { stopPlay(); showAt(times[cur] - 60 * TPS); }), 250);
+    repeat(button("+1 min", -1, "One minute on (Ctrl+Up)", [this] { stopPlay(); showAt(times[cur] + 60 * TPS); }), 250);
     row->addStretch();
     cv->addLayout(row);
 
