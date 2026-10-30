@@ -9,6 +9,7 @@
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
+#include <QFontMetrics>
 #include <QFormLayout>
 #include <QLineEdit>
 #include <QPlainTextEdit>
@@ -29,6 +30,7 @@
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStyle>
+#include <QTabWidget>
 #include <QToolButton>
 #include <QToolTip>
 #include <QTreeWidget>
@@ -219,13 +221,17 @@ void CutTimeline::paintEvent(QPaintEvent *)
     f.setPointSizeF(f.pointSizeF() * 0.8);
     p.setFont(f);
     p.setPen(palette().text().color());
+    // a number right of its tick, or left of it where the end leaves no room
+    QFontMetrics fm(f);
     int last = -100;
     for (int i = 0; i < chapters.size(); i++) {
         int x = xOf(chapters[i]);
+        QString n = QString::number(i + 1);
+        int w = fm.horizontalAdvance(n), tx = x + 2 + w <= width() ? x + 2 : x - 2 - w;
         p.drawLine(x, top + bar, x, top + bar + 4);
-        if (x - last >= 18) {
-            p.drawText(x + 2, height() - 1, QString::number(i + 1));
-            last = x;
+        if (tx - last >= 4) {
+            p.drawText(tx, height() - 1, n);
+            last = tx + w;
         }
     }
     // suggestions not added yet
@@ -500,7 +506,7 @@ void CutEditor::buildUi()
     sideSplit->addWidget(cutBox);
 
     // the analysis: the MKV splitter's modes, fields and log
-    auto *anBox = new QGroupBox("Analysis");
+    auto *anBox = new QWidget;
     auto *ab = new QVBoxLayout(anBox);
     auto *af = new QFormLayout;
     modeBox = new QComboBox;
@@ -536,7 +542,7 @@ void CutEditor::buildUi()
     {
         auto *w = new QWidget;
         auto *v = new QVBoxLayout(w);
-        auto *hint = new QLabel("Analyze, then tick chapters in the Chapters list to split before them.");
+        auto *hint = new QLabel("Analyze, then tick chapters in the Chapters tab to split before them.");
         auto *row = new QHBoxLayout;
         v->setContentsMargins(0, 0, 0, 0);
         hint->setWordWrap(true);
@@ -592,7 +598,6 @@ void CutEditor::buildUi()
         analysisLog->setFont(mono);
     }
     ab->addWidget(analysisLog, 1);
-    sideSplit->addWidget(anBox);
     // the values last used (as the splitter keeps them)
     {
         int m = cut_mode_of_key(setting_text("cuts.helper_mode"));
@@ -619,7 +624,7 @@ void CutEditor::buildUi()
     });
     sideSplit->addWidget(partBox);
 
-    auto *chBox = new QGroupBox("Chapters");
+    auto *chBox = new QWidget;
     auto *chb = new QVBoxLayout(chBox);
     chapterList = list({ "#", "Start", "Length" });
     chb->addWidget(chapterList);
@@ -641,7 +646,12 @@ void CutEditor::buildUi()
         stopPlay();
         showAt(it->data(0, Qt::UserRole).toLongLong());
     });
-    sideSplit->addWidget(chBox);
+    // the analysis and the chapters under tabs, below the cuts and their parts
+    tabs = new QTabWidget;
+    tabs->addTab(anBox, "Analysis");
+    tabs->addTab(chBox, "Chapters");
+    tabs->setFocusPolicy(Qt::NoFocus);
+    sideSplit->addWidget(tabs);
     split->addWidget(side);
     split->setStretchFactor(0, 1);
 
@@ -713,7 +723,7 @@ void CutEditor::buildUi()
     okButton->setEnabled(false);
     resize(1440, 900);
     split->setSizes({ 920, 520 });
-    sideSplit->setSizes({ 300, 280, 140, 180 });
+    sideSplit->setSizes({ 260, 170, 470 });
 }
 
 void CutEditor::loadState()
@@ -724,7 +734,8 @@ void CutEditor::loadState()
         return;
     restoreGeometry(QByteArray::fromBase64(s[0].toLatin1()));
     split->setSizes({ s[1].toInt(), s[2].toInt() });
-    sideSplit->setSizes({ s[3].toInt(), s[4].toInt(), s[5].toInt(), s[6].toInt() });
+    sideSplit->setSizes({ s[3].toInt(), s[4].toInt(), s[5].toInt() });
+    tabs->setCurrentIndex(s[6].toInt());
 }
 
 void CutEditor::saveState()
@@ -750,6 +761,7 @@ void CutEditor::saveState()
         s << QString::number(v);
     for (int v : sideSplit->sizes())
         s << QString::number(v);
+    s << QString::number(tabs->currentIndex());
     settings_store("gui.cut_editor", s.join(',').toUtf8().constData(), err, sizeof(err));
     settings_save();
 }
@@ -1227,9 +1239,13 @@ QString CutEditor::keyText(int n) const
     int p = pointOfKey(pic.time);
     if (p >= 0) {
         char brief[64], full[768];
-        s += cut_point_clean(&pts[p], brief, sizeof(brief), full, sizeof(full))
-                 ? QString(": a cut here is clean")
-                 : QString(": a cut here is %1").arg(QString::fromUtf8(brief));
+        if (cut_point_clean(&pts[p], brief, sizeof(brief), full, sizeof(full)))
+            s += ": a cut here is clean";
+        else
+            s += ": a cut here " +
+                 QStringList({ pts[p].left_out ? QString("loses %1 picture(s)").arg(pts[p].left_out) : QString(),
+                               pts[p].undecodable ? QString("starts with %1 not shown").arg(pts[p].undecodable)
+                                                  : QString() }).filter(QRegularExpression(".")).join(", ");
     }
     return s;
 }

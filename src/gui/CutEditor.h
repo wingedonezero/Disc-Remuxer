@@ -36,6 +36,7 @@ class QProgressBar;
 class QPushButton;
 class QSplitter;
 class QStackedWidget;
+class QTabWidget;
 class QToolButton;
 class QTreeWidget;
 
@@ -235,6 +236,7 @@ private:
     QLabel         *timeLabel, *totalLabel, *typeLabel, *note;
     QTreeWidget    *cutList, *partList, *chapterList;
     QSplitter      *split, *sideSplit;
+    QTabWidget     *tabs;
     QComboBox      *modeBox;
     QStackedWidget *modePages;
     QLineEdit      *targetEdit, *stampEdit;
