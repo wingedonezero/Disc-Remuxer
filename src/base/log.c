@@ -206,6 +206,9 @@ static void vlog_line(const void *logctx, int level, const char *fmt, va_list vl
     char piece[4096];
     int n;
 
+    /* the cut editor's own reading: what it says is no news but its errors */
+    if (level > DR_VLOG_ERROR && level < DR_VLOG_VERBOSE && !strncmp(source, "preview", 7))
+        level = DR_VLOG_VERBOSE;
     if (!vlog_wants(level))
         return;
     n = vsnprintf(piece, sizeof(piece), fmt, vl);

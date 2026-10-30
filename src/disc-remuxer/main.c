@@ -40,6 +40,8 @@ static void usage(FILE *f)
           "                                        c<chapter> or a time on the title's timeline (h:mm:ss.fff\n"
           "                                        or m:ss.fff), comma separated, e.g. c5,45:42.322; a time\n"
           "                                        not on a key frame: setting cuts.key_frame\n"
+          "  frame <source> <title> <time> <file.bmp>  the picture shown at that time on the title's\n"
+          "                                        timeline, as the cut editor shows it, as a BMP file\n"
           "  find  <folder>                        the discs in a folder (as the GUI's queue takes them)\n"
           "  settings [show|path]                  the settings in effect / where the settings file is\n"
           "  version                               program and library versions\n"
@@ -138,7 +140,8 @@ int main(int argc, char **argv)
     {
         const char *cmd = argv[i];
         int most = !strcmp(cmd, "settings") || !strcmp(cmd, "info") || !strcmp(cmd, "find") ? 1 :
-                   !strcmp(cmd, "demux") || !strcmp(cmd, "cuts") ? 3 : !strcmp(cmd, "version") ? 0 : -1;   /* -1: an unknown command */
+                   !strcmp(cmd, "demux") || !strcmp(cmd, "cuts") ? 3 : !strcmp(cmd, "frame") ? 4 :
+                   !strcmp(cmd, "version") ? 0 : -1;   /* -1: an unknown command */
         for (int k = i + 1; k < argc; k++) {
             if (argv[k][0] == '-' && argv[k][1]) {
                 fprintf(stderr, "disc-remuxer: option %s after the command %s: options go before the command "
@@ -172,6 +175,8 @@ int main(int argc, char **argv)
         ret = 0;
     } else if (!strcmp(argv[i], "info") && i + 1 < argc) {
         ret = engine_info(argv[i + 1], &c, details);
+    } else if (!strcmp(argv[i], "frame") && i + 4 < argc) {
+        ret = engine_frame(argv[i + 1], argv[i + 2], argv[i + 3], argv[i + 4], &c);
     } else if (!strcmp(argv[i], "cuts") && i + 3 < argc) {
         ret = engine_cuts(argv[i + 1], argv[i + 2], argv[i + 3], &c);
     } else if (!strcmp(argv[i], "find") && i + 1 < argc) {

@@ -178,6 +178,15 @@ int  dr_disc_cut_start_units(const DrDisc *d, int title, int track);
  *  NULL when it can. */
 const char *dr_disc_cut_left_out(const DrDisc *d, int title, int track);
 
+/** Opens title `title` for reading from a place (DrDiscFrame.seg / block,
+ *  as a reading from its start gave them): segment seg from block block on,
+ *  through the same title timeline. That timeline starts there, so its
+ *  times are those of a title starting at that segment: the caller moves
+ *  them by the difference at the first key frame (the cut editor checks
+ *  every picture against its index). The chapters and results are not the
+ *  title's. 0, or a negative error (the title is closed). */
+int  dr_disc_title_open_at(DrDisc *d, int title, int seg, int64_t block, const uint8_t *keep);
+
 /** Opens title `title` (part >= 0: only that part) for reading; a title
  *  open before is closed first. The disc stays loaded. second_view: a 3-D
  *  title's second view is read too (when one of its tracks is kept). keep:

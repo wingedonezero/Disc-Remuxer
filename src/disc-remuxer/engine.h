@@ -55,6 +55,10 @@ int  engine_info(const char *source, const EngineChoice *c, int details);
  * key frame and the part it starts, nothing is written. 0, 1 (a cut
  * refused, or the title cannot be read), 2 (bad arguments). */
 int  engine_cuts(const char *source, const char *title, const char *items, const EngineChoice *c);
+/* The frame command: the picture of title `title` shown at time `at` (the
+ * last one starting at or before it), as the cut editor shows it, written to
+ * path as a BMP. 0, 1 (it cannot be read or written), 2 (bad arguments). */
+int  engine_frame(const char *source, const char *title, const char *at, const char *path, const EngineChoice *c);
 /* The demux command: titles ("all": the titles not shorter than the
  * minimum length; "3", "1,3-5") into out_dir, NULL: a folder named after
  * the disc in the main output folder (engine_output_folder()); split: the

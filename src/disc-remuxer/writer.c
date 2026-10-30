@@ -783,6 +783,11 @@ static int cell_check_of(const char *text)
 
 int open_disc(const char *source, DrDisc **disc)
 {
+    return open_disc_log(source, NULL, disc);
+}
+
+int open_disc_log(const char *source, const char *log, DrDisc **disc)
+{
     DrDiscOptions o = { 0 };
     const char **keydb = NULL;
     int own = 0, ret;
@@ -803,7 +808,7 @@ int open_disc(const char *source, DrDisc **disc)
     o.video_language = setting_text("output.video_language");
     o.nb_keydb       = key_files(&keydb, &own);     /* setting aacs.key_files, or the keydb folder */
     o.keydb          = keydb;
-    ret = dr_disc_open(disc, source, &o, NULL);
+    ret = dr_disc_open(disc, source, &o, log);
     for (int i = 0; own && i < o.nb_keydb; i++)
         free((void *)keydb[i]);
     free(keydb);

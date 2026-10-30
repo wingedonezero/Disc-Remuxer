@@ -20,6 +20,10 @@ const char *track_extension(const DiscStreamInfo *k);
  * (its disc info: the title list with each title's streams), no title
  * opened. Returns 0 or a negative base error. */
 int open_disc(const char *source, DrDisc **disc);
+/* The same, its lines carrying the source name log (base/vlog.h; NULL:
+ * "disc"); a name starting with "preview" (the cut editor's own reading)
+ * keeps all but its errors to the detail level. */
+int open_disc_log(const char *source, const char *log, DrDisc **disc);
 
 typedef struct TitleJob {
     DrDisc     *disc;          /* the open disc (open_disc()); the title is opened on it and closed again */

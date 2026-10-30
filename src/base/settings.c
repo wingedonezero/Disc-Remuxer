@@ -131,6 +131,10 @@ static const Setting registry[] = {
       "that is no clean break of the disc, e.g. between two episodes in one stream): nearest takes the nearest "
       "key frame (the earlier one when both are as near), next the first key frame after the time (mkvmerge's "
       "way). A time on a key frame (within 1 ms) is cut there either way.", 0, SET_AT_RIP },
+    { "cuts", "preview_cache_mb", SET_INT, "512", 16, 16384, NULL,
+      "The cut editor keeps the pictures it decoded last for stepping back and forth: how much memory (MB) they "
+      "may take (about 60 pictures of 1080p video in 512 MB, 15 of UHD). All of it is given back when the editor "
+      "closes.", 0, SET_AT_RIP },
     { "mkv", "compression", SET_CHOICE, "none", 0, 0, compressions,
       "MKV files (the mkv and mkvmerge modes): none stores the subtitles' blocks as they are; zlib compresses each "
       "(lossless, as mkvmerge does by default; a few players and devices cannot read compressed tracks).",

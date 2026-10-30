@@ -96,6 +96,7 @@ struct DiscTitleReader {
     DRTitle       *rip;
     DRCut         *cut;            /**< a cut part (DrDisc.opt_cuts): the stage that keeps its frames */
     int            stop;            /**< a cut part is complete: the reading stops (1), the title finished (2) */
+    uint32_t       start_block;     /**< a reading started inside its first clip (dr_disc_title_open_at()): there */
     DRChapterPlan  chapter_plan;
     int            first_clip, last_clip; /**< the clips read: the title's, filler clips at its ends left out */
     int           *pos_clip;        /**< position chapters: per open mark, its clip and byte offset */
@@ -616,6 +617,16 @@ static const char *clip_words(DrDisc *d, char *buf, int size)
 /* Start reading clip k of the title (a segment of the title timeline): its
  * blocks, its PTS wrap reference (Blu-ray: found before the clip is read;
  * else still to be found). */
+/* A clip's wrap reference kept for the readings of the same title from a
+ * place (dr_disc_title_open_at()). */
+static void cache_ref(DrDisc *d, int k)
+{
+    DiscTitleReader *r = reader_of(d);
+
+    if (r->pts_ref >= 0 && d->ref_cache && k < d->nb_ref_cache)
+        d->ref_cache[k] = r->pts_ref;
+}
+
 static int clip_start(DrDisc *d, int k)
 {
     DiscTitleReader *r = reader_of(d);
@@ -639,11 +650,16 @@ static int clip_start(DrDisc *d, int k)
            src->clip_kind, src->clip_name(d, k), k + 1, src->nb_clips, r->nb_blocks, src->ts ? "units" : "blocks");
     ps_read_add(r);
     dr_clip_close(&r->ps);
+    /* a reading from a place: the clip's reference as read before (the same
+     * clip read from its start gives the same one) */
+    if (d->ref_cache && k < d->nb_ref_cache && d->ref_cache[k] >= 0)
+        r->pts_ref = d->ref_cache[k];
     if (src->ts) {
         /* the stretches left out are kept for gaps_said() */
-        if ((ret = ts_reference(d)) < 0 ||
+        if ((r->pts_ref < 0 && (ret = ts_reference(d)) < 0) ||
             (ret = clip_err(dr_clip_ts_open(&r->ps, (void *)d->log, src->pids, src->nb_pids, 0, 1, ps_read, d))) < 0)
             return ret;
+        cache_ref(d, k);
     } else if ((ret = clip_err(dr_clip_ps_open(&r->ps, (void *)d->log, src->lpcm_header, ps_read, d))) < 0)
         return ret;
     return ff_disctl_title_segment(r->rip);
@@ -1226,6 +1242,31 @@ int ff_disc_title_reader_open(DrDisc *d, const DiscTitleSource *src)
     for (int k = 0; src->ts && k < src->nb_sides; k++)
         if ((ret = read_side(d, k)) < 0)
             return ret;
+    /* the readings of this title from a place keep each clip's reference */
+    if (d->ref_cache_title != d->opt_title) {
+        dr_freep(&d->ref_cache);
+        d->nb_ref_cache    = 0;
+        d->ref_cache_title = d->opt_title;
+    }
+    if (!d->ref_cache && src->nb_clips > 0) {
+        if (!(d->ref_cache = dr_malloc_array(src->nb_clips, sizeof(*d->ref_cache))))
+            return DR_ERR(ENOMEM);
+        for (int i = 0; i < src->nb_clips; i++)
+            d->ref_cache[i] = -1;
+        d->nb_ref_cache = src->nb_clips;
+    }
+    if (d->opt_start_seg >= 0) {
+        /* a reading from a place: that segment's clip from that block on */
+        int k = r->first_clip + d->opt_start_seg;
+        if (k > r->last_clip || (ret = clip_start(d, k)) < 0)
+            return k > r->last_clip ? DR_ERR(EINVAL) : ret;
+        if (d->opt_start_block < 0 || d->opt_start_block >= r->nb_blocks)
+            return DR_ERR(EINVAL);
+        r->block       = (uint32_t)d->opt_start_block;
+        r->skipped     = r->block;      /* the positions read are the clip's */
+        r->start_block = r->block;
+        return 0;
+    }
     return clip_start(d, r->first_clip);
 }
 
@@ -1486,8 +1527,10 @@ static int read_input(DrDisc *d)
     if (r->pts_ref < 0) {
         int64_t limit = DR_MIN(PTS_REF_SECTORS, (int64_t)r->nb_blocks);
 
-        if (pkt.id == d->track_ids[0] && pkt.pts != DR_NOPTS_VALUE && first && sector < limit) {
+        if (pkt.id == d->track_ids[0] && pkt.pts != DR_NOPTS_VALUE && first && sector - r->start_block < limit) {
             r->pts_ref = pkt.pts >= PTS_REF_BACK ? pkt.pts - PTS_REF_BACK : pkt.pts + (1LL << 33) - PTS_REF_BACK;
+            if (!r->start_block)
+                cache_ref(d, r->clip);
             dr_vlog(d->log, DR_VLOG_VERBOSE, "%s %s: first video time %"PRId64" in sector %"PRId64": wrap reference %"
                    PRId64"\n", src->clip_kind, src->clip_name(d, r->clip), pkt.pts, sector, r->pts_ref);
             for (int i = 0; i < r->nb_held; i++) {

@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 
 
+#include "base/bytes.h"
 #include "base/err.h"
 #include "base/log.h"
 #include "base/macros.h"
@@ -33,6 +34,7 @@
 #include "select.h"
 #include "writer.h"
 #include "cuts.h"
+#include "cut_preview.h"
 #include "timeline/disctl.h"
 
 
@@ -1340,6 +1342,95 @@ static int cut_check(int t, const CutTrackBytes *sums, int nb_sums, const CutTra
         bad += got != w->title;
     }
     return bad;
+}
+
+/* A BMP file (24 bits, rows bottom up, each padded to 4 bytes) of a BGRA
+ * picture. 0, or a negative base error. */
+static int write_bmp(const char *path, const CutFrame *f)
+{
+    int row = (f->width * 3 + 3) & ~3;
+    uint32_t data = (uint32_t)row * f->height;
+    uint8_t h[54] = { 'B', 'M' }, *line;
+    FILE *out;
+    int ok = 1;
+
+    if (!(out = fopen(path, "wb")))
+        return DR_ERR(errno);
+    if (!(line = calloc(row, 1))) {
+        fclose(out);
+        return DR_ERR(ENOMEM);
+    }
+    dr_wl32(h + 2, 54 + data);
+    dr_wl32(h + 10, 54);
+    dr_wl32(h + 14, 40);
+    dr_wl32(h + 18, f->width);
+    dr_wl32(h + 22, f->height);
+    h[26] = 1;
+    h[28] = 24;
+    dr_wl32(h + 34, data);
+    ok = fwrite(h, 1, sizeof(h), out) == sizeof(h);
+    for (int y = f->height - 1; ok && y >= 0; y--) {
+        const uint8_t *s = f->bgra + (size_t)y * f->stride;
+        for (int x = 0; x < f->width; x++)
+            memcpy(line + 3 * x, s + 4 * x, 3);
+        ok = fwrite(line, 1, row, out) == (size_t)row;
+    }
+    free(line);
+    if (fclose(out) || !ok)
+        return DR_ERR(EIO);
+    return 0;
+}
+
+int engine_frame(const char *source, const char *title, const char *at, const char *path, const EngineChoice *c)
+{
+    EngineDisc *e = NULL;
+    CutIndex ix = { 0 };
+    CutPreview *pv = NULL;
+    CutRequest *reqs = NULL;
+    CutFrame f;
+    const char *bad;
+    char *x, a[40], b[40];
+    int t, nb, n, ret = 1;
+
+    t = (int)strtol(title, &x, 10);
+    if (!*title || *x || t < 0 || cut_parse(at, &reqs, &nb, &bad) < 0 || nb != 1 || reqs[0].chapter) {
+        log_msg(MSG_USAGE, LOG_ERROR, "frame: a title number and one time (h:mm:ss.fff or m:ss.fff on the title's "
+                "timeline) are asked, not \"%s\" \"%s\"", title, at);
+        free(reqs);
+        return 2;
+    }
+    log_msg(MSG_SOURCE, LOG_INFO, "Source: %s", source);
+    if (engine_disc_open(source, c, &e) < 0)
+        goto end;
+    if (t >= e->info->nb_titles) {
+        log_msg(MSG_TITLE_MISSING, LOG_ERROR, "Title #%d does not exist (the disc has %d)", t, e->info->nb_titles);
+        ret = 2;
+        goto end;
+    }
+    /* the title's pictures up to a little past the time, then that picture
+     * as the cut editor shows it */
+    if (cut_index_read(e->disc, t, reqs[0].time + 2 * DR_TICKS_PER_SECOND, NULL, 0, &ix) < 0 ||
+        cut_preview_open(&pv, source, t, &ix, (int64_t)setting_int("cuts.preview_cache_mb") << 20) < 0)
+        goto end;
+    n = cut_preview_at(pv, reqs[0].time);
+    if (cut_preview_picture(pv, n, 0, 0, &f) < 0)
+        goto end;
+    if ((ret = write_bmp(path, &f)) < 0) {
+        log_msg(MSG_OUTPUT_FOLDER, LOG_ERROR, "frame: %s cannot be written: %s", path, dr_err_text(ret));
+        ret = 1;
+        goto end;
+    }
+    log_text(LOG_INFO, "Frame: picture %d at %s (%s), %dx%d, decoded from the key frame at %s (picture %d, %d "
+             "picture(s) decoded); decoded picture md5 %s; written to %s", n, cut_time_text(a, sizeof(a), f.time),
+             f.key ? start_text(f.start) : "no key frame", f.width, f.height,
+             cut_time_text(b, sizeof(b), cut_preview_time(pv, f.from)), f.from, f.decoded, f.md5, path);
+    ret = 0;
+end:
+    cut_preview_close(&pv);
+    cut_index_free(&ix);
+    free(reqs);
+    engine_disc_close(&e);
+    return ret;
 }
 
 /* One disc's demux run (engine_demux()). */

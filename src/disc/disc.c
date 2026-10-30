@@ -463,6 +463,7 @@ static int disc_close(DrDisc *d)
     title_close(d);
     dr_freep(&d->opt_cuts);
     dr_freep(&d->opt_starts);
+    dr_freep(&d->ref_cache);
     if (d->fmt && d->part)
         d->fmt->close(d);
     dr_freep(&d->part);
@@ -732,6 +733,22 @@ int dr_disc_title_open_cut(DrDisc *d, int title, const DrDiscCut *cuts, int nb_c
     return ret;
 }
 
+int dr_disc_title_open_at(DrDisc *d, int title, int seg, int64_t block, const uint8_t *keep)
+{
+    int ret;
+
+    if (!d || seg < 0 || block < 0)
+        return DR_ERR(EINVAL);
+    dr_freep(&d->opt_cuts);
+    dr_freep(&d->opt_starts);
+    d->nb_opt_cuts     = 0;
+    d->opt_start_seg   = seg;
+    d->opt_start_block = block;
+    ret = title_open_with(d, title, -1, 0, keep);
+    d->opt_start_seg   = -1;
+    return ret;
+}
+
 int dr_disc_title_open(DrDisc *d, int title, int part, int second_view, const uint8_t *keep)
 {
     if (!d)
@@ -874,6 +891,7 @@ int dr_disc_open(DrDisc **disc, const char *source, const DrDiscOptions *o, cons
         return DR_ERR_NOMEM;
     d->log              = log ? log : "disc";
     d->opt_title        = o->title;
+    d->opt_start_seg    = -1;
     d->opt_part         = o->part;
     d->opt_details      = o->details;
     d->opt_dolby_vision = o->dolby_vision;
