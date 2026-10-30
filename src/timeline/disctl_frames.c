@@ -676,6 +676,13 @@ int ff_disctl_frames_flush(DRFrames *c)
             return ret;
         if (!out_size)
             break;
+        /* the reading stopped on purpose (a cut part complete): what the
+         * parser still holds is the start of a frame the reading did not
+         * finish, past the part's end */
+        if (c->stopped) {
+            left_out(c, c->in_pos - out_size, out_size, LEFT_END);
+            continue;
+        }
         if ((ret = unit_out(c, out, out_size)) < 0)
             return ret;
     }
