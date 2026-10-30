@@ -6,8 +6,8 @@
 // once they are ripped too; =stop: the rip stopped after a second;
 // =uncheck: the disc unchecked; =expand: the first title opened; =prefs:
 // the settings menu; =cuts:<title>:<time>:<keys>: the cut editor of a title,
-// CutEditor::setTest(), DISC_REMUXER_GUI_CUT_LIST: the title's cut list
-// before), then the
+// CutEditor::setTest()); DISC_REMUXER_GUI_TITLES: the titles ripped,
+// DISC_REMUXER_GUI_CUT_LIST: "<title>:<cuts>", a title's cut list), then the
 // program quits.
 #include <QApplication>
 #include <QMessageBox>

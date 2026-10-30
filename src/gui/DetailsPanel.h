@@ -15,7 +15,8 @@ public:
     explicit DetailsPanel(QWidget *parent = nullptr);
 
     void showDisc(const QString &source, const DiscInfo *d);
-    void showTitle(const DiscTitleInfo *t, const uint8_t *keep);
+    // cuts: its cut list (NULL none)
+    void showTitle(const DiscTitleInfo *t, const uint8_t *keep, const char *cuts);
     void showTrack(const DiscTitleInfo *t, int i, const uint8_t *keep);
     // a title's chapters (the tree's chapter rows)
     void showChapters(const DiscTitleInfo *t);

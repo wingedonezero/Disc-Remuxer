@@ -299,6 +299,7 @@ int cut_index_read(DrDisc *d, int title, int64_t stop_after, const int64_t *wind
 {
     const DiscInfo *info = dr_disc_info(d);
     uint8_t *keep;
+    const char *was;
     int cap = 0, keys_after = 0, nb_streams, ret, *of = NULL;
 
     memset(ix, 0, sizeof(*ix));
@@ -321,9 +322,13 @@ int cut_index_read(DrDisc *d, int title, int64_t stop_after, const int64_t *wind
     /* the chapters as a rip places them */
     dr_disc_set_chapter_rule(d, !setting_bool("chapters.snap"), (int)setting_int("chapters.before_ms"),
                              (int)setting_int("chapters.after_ms"));
+    /* the reading's lines kept to the detail level but its errors (a
+     * caption track it does not read is no news) */
+    was = dr_disc_set_log(d, "cuts");
     ret = dr_disc_title_open(d, title, -1, 0, keep);
     free(keep);
     if (ret < 0) {
+        dr_disc_set_log(d, was);
         log_msg(MSG_TITLE_OPEN_FAILED, LOG_ERROR, "Title #%d cannot be opened: %s", title, dr_err_text(ret));
         cut_index_free(ix);
         return ret;
@@ -331,6 +336,7 @@ int cut_index_read(DrDisc *d, int title, int64_t stop_after, const int64_t *wind
     /* each opened track's start-unit track (its disc info number) */
     if (!(of = calloc(dr_disc_nb_tracks(d) + 1, sizeof(*of)))) {
         dr_disc_title_close(d);
+        dr_disc_set_log(d, was);
         cut_index_free(ix);
         return DR_ERR(ENOMEM);
     }
@@ -406,6 +412,7 @@ int cut_index_read(DrDisc *d, int title, int64_t stop_after, const int64_t *wind
         }
     }
     dr_disc_title_close(d);
+    dr_disc_set_log(d, was);
     if (ret < 0 && ret != DR_ERR_CANCELLED)
         log_msg(MSG_TITLE_FAILED, LOG_ERROR, "Title #%d: its video cannot be read for the cuts: %s", title,
                 dr_err_text(ret));

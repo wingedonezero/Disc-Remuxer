@@ -900,6 +900,12 @@ static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
             break;
         ++ordinal;
         /* a title with cuts: where they fall first; its parts are the cut's */
+        if (e->cut && e->cut[t] && !strcmp(setting_text("output.format"), "mkv")) {
+            log_msg(MSG_TITLE_FAILED, LOG_ERROR, "Title #%d is not ripped: a title with cuts is not written by the "
+                    "program's own MKV writer (output.format = mkv): use mkvmerge or streams", t);
+            failed++;
+            continue;
+        }
         if (e->cut && e->cut[t]) {
             char dur[32];
             if (parts)
@@ -1081,7 +1087,7 @@ void engine_details(const EngineDisc *e, const char *source)
         const DiscTitleInfo *ti = &d->titles[t];
         char name[64], desc[2048], tstate[512], twhy[1024];
         engine_title_line(ti, name, sizeof(name), desc, sizeof(desc));
-        engine_title_state(ti, 0, tstate, sizeof(tstate), twhy, sizeof(twhy));
+        engine_title_state(ti, 0, e->cut ? e->cut[t] : NULL, tstate, sizeof(tstate), twhy, sizeof(twhy));
         log_text(LOG_INFO, "Queue: %s  %s | %s", name, desc, tstate);
         if (*twhy)
             log_text(LOG_INFO, "  why: %s", twhy);
@@ -1093,7 +1099,7 @@ void engine_details(const EngineDisc *e, const char *source)
             engine_track_line(ti, i, name, sizeof(name), desc, sizeof(desc));
             log_text(LOG_INFO, "Queue:   %s  %s", name, desc);
         }
-        if (engine_title_rows(ti, e->keeps[t], &rows) >= 0)
+        if (engine_title_rows(ti, e->keeps[t], e->cut ? e->cut[t] : NULL, &rows) >= 0)
             log_rows(&rows);
         else
             engine_rows_free(&rows);
