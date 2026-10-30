@@ -45,7 +45,8 @@ def part(pics, cuts, k, codec=H264, others=()):
     for i, (z, kt) in enumerate(cuts):
         pl[i].zero, pl[i].key_time = z, kt
     c = ffi.new("DRCut **")
-    assert lib.ff_disctl_cut_open(c, ffi.NULL, pl, len(cuts), k, codec) == 0
+    kinds = ffi.new("int[]", [lib.DR_CUT_TRACK_VIDEO, lib.DR_CUT_TRACK_NONE])
+    assert lib.ff_disctl_cut_open(c, ffi.NULL, pl, len(cuts), k, codec, kinds, 2) == 0
     given = []
     for i, (t, key, start, rasl, ref) in enumerate(pics):
         f = ffi.new("DRFrame *")
@@ -57,7 +58,7 @@ def part(pics, cuts, k, codec=H264, others=()):
         if i in others:
             o = ffi.new("DRFrame *")
             o.time = t
-            assert lib.ff_disctl_cut_frame(c[0], 1, o) == 0, "only the video is cut so far"
+            assert lib.ff_disctl_cut_frame(c[0], 1, o) == 0, "a track a cut part does not carry: left out"
     ret = lib.ff_disctl_cut_finish(c[0])
     r = ffi.new("DRCutResult *")
     lib.ff_disctl_cut_result(c[0], r)
@@ -143,7 +144,7 @@ def test_a_key_frame_not_where_the_cuts_say_fails_the_part():
     assert part(pics, [(5 * F, 6 * F)], 1)[1] < 0, "the first picture is not at 0"
 
 
-def test_other_tracks_are_left_out_so_far():
+def test_a_track_a_cut_part_does_not_carry_is_left_out():
     pics = stream(CLEAN, CLEAN)
     given, ret, _ = part(pics, places(pics, H264), 1, others={0, 5, 9})
     assert ret == 0 and given
@@ -161,3 +162,94 @@ def test_the_leading_picture_rule():
     assert lib.ff_disctl_leading_kept(OPEN, H264, 0, 0) == 0, "an H.264 non-reference picture may be left out"
     assert lib.ff_disctl_leading_kept(OPEN, H264, 0, 1) == 1, "an H.264 reference picture stays"
     assert lib.ff_disctl_leading_kept(OPEN, OTHER, 0, 0) == 1, "MPEG-2 / VC-1: kept"
+
+
+# ---- audio ----
+
+A = 34_560_000                      # an AC-3 frame: 1536 samples at 48 kHz = 32 ms
+SAMPLE = 22_500                     # one sample at 48 kHz
+
+
+def run_audio(cuts, k, frames, kind, rate=48000, bpf=4):
+    """Part k of audio frames [(time, dur, bytes)] on track 1 (the video's
+    cuts given; no video frames): [(part time, dur, bytes)]."""
+    pl = ffi.new("DRCutPlace[]", len(cuts))
+    for i, (z, kt) in enumerate(cuts):
+        pl[i].zero, pl[i].key_time = z, kt
+    c = ffi.new("DRCut **")
+    kinds = ffi.new("int[]", [lib.DR_CUT_TRACK_VIDEO, kind])
+    assert lib.ff_disctl_cut_open(c, ffi.NULL, pl, len(cuts), k, H264, kinds, 2) == 0
+    lib.ff_disctl_cut_pcm(c[0], 1, rate, bpf)
+    out, keep = [], []
+    for t, dur, data in frames:
+        buf = ffi.new("uint8_t[]", data)
+        keep.append(buf)
+        f = ffi.new("DRFrame *")
+        f.time, f.dur, f.data, f.size = t, dur, buf, len(data)
+        if lib.ff_disctl_cut_frame(c[0], 1, f):
+            out.append((f.time, f.dur, bytes(ffi.buffer(f.data, f.size))))
+    n, first = ffi.new("int64_t *"), ffi.new("int64_t *")
+    lib.ff_disctl_cut_track(c[0], 1, n, first)
+    assert n[0] == len(out)
+    if out:
+        assert first[0] == out[0][0]
+    lib.ff_disctl_cut_close(c)
+    return out
+
+
+def test_audio_frames_go_by_their_time_and_a_part_starts_0_to_one_frame_after_its_0():
+    frames = [(i * A, A, bytes([i % 256]) * 8) for i in range(100)]
+    zero = 40 * F                       # 1668.3 ms: inside AC-3 frame 52 (1664 .. 1696 ms)
+    parts = [run_audio([(zero, zero)], k, frames, lib.DR_CUT_TRACK_EVERY) for k in (0, 1)]
+    first_after = next(i for i in range(100) if i * A >= zero)
+    assert [p[2] for p in parts[0]] == [f[2] for f in frames[:first_after]], "frames before the 0: the part before"
+    assert [p[2] for p in parts[1]] == [f[2] for f in frames[first_after:]], "nothing lost, nothing twice"
+    delay = parts[1][0][0]
+    assert 0 <= delay < A and delay == first_after * A - zero, "positive, under one frame, exact"
+    assert parts[0][-1][0] < zero, "the part before may run on past its 0 by less than a frame"
+
+
+def pcm_frames(n, samples, bpf=4):
+    """n PCM frames of `samples` samples each, every sample frame numbered (bytes say which)."""
+    out = []
+    for i in range(n):
+        data = b"".join((i * samples + s).to_bytes(bpf, "little") for s in range(samples))
+        out.append((i * samples * SAMPLE, samples * SAMPLE, data))
+    return out
+
+
+def test_pcm_is_cut_between_two_samples_at_the_first_one_at_or_after_the_0():
+    frames = pcm_frames(40, 1600)       # 1/30 s frames at 48 kHz, stereo 16-bit
+    whole = b"".join(f[2] for f in frames)
+    # at 23.976 a picture is 2002 samples: a 0 on a picture is on a sample
+    zero = 15 * F                       # 15 pictures = 30030 samples
+    p0, p1 = (run_audio([(zero, zero)], k, frames, lib.DR_CUT_TRACK_PCM) for k in (0, 1))
+    assert b"".join(p[2] for p in p0) + b"".join(p[2] for p in p1) == whole, "every sample once"
+    assert len(b"".join(p[2] for p in p0)) == 30030 * 4
+    assert p1[0][0] == 0, "the part's audio starts exactly at its 0"
+    assert int.from_bytes(p1[0][2][:4], "little") == 30030
+    assert p0[-1][0] + p0[-1][1] == zero, "the part before ends at the 0"
+
+
+def test_pcm_at_a_0_between_samples_starts_less_than_a_sample_after_it():
+    frames = pcm_frames(40, 1600)
+    zero = 15 * 36_036_000              # 15 pictures at 29.97 (1001/30000 s): 24024 samples exactly
+    zero += 7_000                       # moved off the sample grid by 7000 ticks
+    p0, p1 = (run_audio([(zero, zero)], k, frames, lib.DR_CUT_TRACK_PCM) for k in (0, 1))
+    assert b"".join(p[2] for p in p0) + b"".join(p[2] for p in p1) == b"".join(f[2] for f in frames)
+    assert 0 < p1[0][0] < SAMPLE, "under one sample, never before the 0"
+    assert int.from_bytes(p1[0][2][:4], "little") == 24025
+
+
+def test_pcm_without_its_layout_is_an_error():
+    frames = pcm_frames(2, 1600)
+    pl = ffi.new("DRCutPlace[]", 1)
+    pl[0].zero = pl[0].key_time = F
+    c = ffi.new("DRCut **")
+    kinds = ffi.new("int[]", [lib.DR_CUT_TRACK_VIDEO, lib.DR_CUT_TRACK_PCM])
+    assert lib.ff_disctl_cut_open(c, ffi.NULL, pl, 1, 1, H264, kinds, 2) == 0
+    buf = ffi.new("uint8_t[]", frames[0][2])
+    f = ffi.new("DRFrame *")
+    f.time, f.dur, f.data, f.size = 0, frames[0][1], buf, len(frames[0][2])
+    assert lib.ff_disctl_cut_frame(c[0], 1, f) < 0
+    lib.ff_disctl_cut_close(c)

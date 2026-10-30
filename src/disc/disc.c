@@ -233,6 +233,64 @@ static int track_out(DrDisc *d, const DiscTrack *k, int index, DRCodecID codec, 
     return 0;
 }
 
+/* What a cut part does with the title's track i (k): the video; PCM; audio
+ * whose every frame can start a stream; NULL else, with why in *why. */
+static int cut_track(const DiscTrack *k, int i, const char **why)
+{
+    *why = NULL;
+    if (!i)
+        return DR_CUT_TRACK_VIDEO;
+    if (k->kind != DR_KIND_AUDIO) {
+        *why = k->kind == DR_KIND_SUBTITLE ? "subtitles are not cut yet" :
+               k->kind == DR_KIND_CAPTION  ? "captions are not cut yet" : "a second view is not cut yet";
+        return DR_CUT_TRACK_NONE;
+    }
+    switch (k->info.codec) {
+    case DR_CODEC_PCM_DVD:
+    case DR_CODEC_PCM_BLURAY:
+    case DR_CODEC_PCM_S16LE:
+    case DR_CODEC_PCM_S24LE:
+        return DR_CUT_TRACK_PCM;
+    case DR_CODEC_AC3:
+    case DR_CODEC_EAC3:
+    case DR_CODEC_MP1:
+    case DR_CODEC_MP2:
+    case DR_CODEC_AAC:
+    case DR_CODEC_AAC_LATM:
+        return DR_CUT_TRACK_EVERY;
+    case DR_CODEC_DTS:
+        /* a DTS core (also one taken out of DTS-HD) and DTS Express: every
+         * frame; the whole DTS-HD stream (its lossless or high-resolution
+         * data may run from one frame into the next): not yet */
+        if (k->info.from_track >= 0 || k->info.profile == DISC_PROFILE_DTS_EXPRESS)
+            return DR_CUT_TRACK_EVERY;
+        if (k->info.inner_track >= 0 || (k->flags & DISC_TRACK_EXT_ONLY) ||
+            k->info.profile == DISC_PROFILE_DTS_HD_HRA || k->info.profile == DISC_PROFILE_DTS_HD_MA ||
+            k->info.profile == DISC_PROFILE_DTS_HD_MA_X || k->info.profile == DISC_PROFILE_DTS_HD_MA_X_IMAX) {
+            *why = "DTS-HD (its whole stream) is not cut yet";
+            return DR_CUT_TRACK_NONE;
+        }
+        return DR_CUT_TRACK_EVERY;
+    case DR_CODEC_TRUEHD:
+    case DR_CODEC_MLP:
+        *why = "TrueHD is not cut yet";
+        return DR_CUT_TRACK_NONE;
+    default:
+        *why = "this codec is not cut yet";
+        return DR_CUT_TRACK_NONE;
+    }
+}
+
+const char *dr_disc_cut_left_out(const DrDisc *d, int title, int track)
+{
+    const char *why;
+
+    if (!d || title < 0 || title >= d->nb_title_slots || !d->title_tracks || !d->title_tracks[title] ||
+        track < 0 || track >= d->nb_title_tracks[title])
+        return "no such track";
+    return cut_track(&d->title_tracks[title][track], track, &why) == DR_CUT_TRACK_NONE ? why : NULL;
+}
+
 int ff_disc_open_tracks(DrDisc *d, const char *title, const DiscTrack *tracks, int nb_tracks, int ts,
                         int second_view, const uint8_t *keep)
 {
@@ -243,6 +301,7 @@ int ff_disc_open_tracks(DrDisc *d, const char *title, const DiscTrack *tracks, i
     /* one more for a Dolby Vision enhancement layer (read from its own PID) */
     if (!(d->tracks = dr_calloc(nb_tracks + 1, sizeof(*d->tracks))) ||
         !(d->track_ids = dr_calloc(nb_tracks + 1, sizeof(*d->track_ids))) ||
+        !(d->track_cut = dr_calloc(nb_tracks + 1, sizeof(*d->track_cut))) ||
         !(d->out_tracks = dr_calloc(nb_tracks + 1, sizeof(*d->out_tracks))) ||
         !(d->track_extradata = dr_calloc(nb_tracks + 1, sizeof(*d->track_extradata))) ||
         (ts && (!(d->feeds = dr_calloc(nb_tracks + 1, sizeof(*d->feeds))) ||
@@ -291,6 +350,10 @@ int ff_disc_open_tracks(DrDisc *d, const char *title, const DiscTrack *tracks, i
         }
         if (k->flags & DISC_TRACK_LAYER2)
             layer = i;
+        {
+            const char *why;
+            d->track_cut[n] = view ? DR_CUT_TRACK_NONE : cut_track(k, i, &why);
+        }
         t->codec       = codec;
         t->kind        = view ? DR_KIND_LAYER : k->kind;
         t->sub_flags   = (k->info.forced ? DR_SUB_FORCED_ONLY : 0) | (k->feed.side ? DR_SUB_SIDE : 0);
@@ -362,6 +425,7 @@ static void title_close(DrDisc *d)
         d->fmt->close_title(d);
     dr_freep(&d->tracks);
     dr_freep(&d->track_ids);
+    dr_freep(&d->track_cut);
     dr_freep(&d->feeds);
     dr_freep(&d->pids);
     for (int i = 0; d->track_extradata && i < d->nb_out_tracks; i++)
@@ -632,10 +696,10 @@ int dr_disc_title_open_cut(DrDisc *d, int title, const DrDiscCut *cuts, int nb_c
     if (!d || nb_cuts <= 0 || part < 0 || part > nb_cuts)
         return DR_ERR(EINVAL);
     if (!keep)
-        return DR_ERR(ENOSYS);          /* only the video is cut so far */
+        return DR_ERR(ENOSYS);          /* the tracks a cut part carries are chosen (dr_disc_cut_left_out()) */
     for (int i = 0; title >= 0 && title < d->info.nb_titles && i < d->info.titles[title].nb_streams; i++)
-        if (i && keep[i])
-            return DR_ERR(ENOSYS);      /* only the video is cut so far */
+        if (i && keep[i] && dr_disc_cut_left_out(d, title, i))
+            return DR_ERR(ENOSYS);      /* a track a cut part does not carry yet */
     dr_freep(&d->opt_cuts);
     if (!(d->opt_cuts = dr_calloc(nb_cuts, sizeof(*d->opt_cuts))))
         return DR_ERR(ENOMEM);

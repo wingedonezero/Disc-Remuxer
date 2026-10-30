@@ -1240,6 +1240,15 @@ int ff_disctl_leading_decodes(int start, int codec, int rasl);
  *  keeps them (players do not show what cannot be decoded). */
 int ff_disctl_leading_kept(int start, int codec, int rasl, int ref);
 
+/** What a cut part does with a track (ff_disctl_cut_open()). */
+enum DRCutTrack {
+    DR_CUT_TRACK_NONE = 0,  /**< not carried yet: its frames are left out (counted, said) */
+    DR_CUT_TRACK_VIDEO,     /**< the master video (track 0) */
+    DR_CUT_TRACK_EVERY,     /**< audio whose every frame can start a stream (AC-3, E-AC-3, DTS core,
+                                 DTS Express, MPEG audio Layer I / II, AAC) */
+    DR_CUT_TRACK_PCM,       /**< PCM (LPCM as it leaves the timeline): cut between two samples */
+};
+
 /** A cut's place on the title timeline (ticks). */
 typedef struct DRCutPlace {
     int64_t zero;       /**< the part's 0: its first picture that decodes */
@@ -1258,14 +1267,26 @@ typedef struct DRCutResult {
 typedef struct DRCut DRCut;
 
 /** The stage for part `part` (0 .. nb_cuts) of a title cut at cuts (in
- *  time order); codec: DRCutCodec of the video. 0, or a negative base
- *  error. */
-int  ff_disctl_cut_open(DRCut **c, void *log, const DRCutPlace *cuts, int nb_cuts, int part, int codec);
+ *  time order); codec: DRCutCodec of the video; kinds: each of the
+ *  nb_tracks tracks' DRCutTrack. 0, or a negative base error. */
+int  ff_disctl_cut_open(DRCut **c, void *log, const DRCutPlace *cuts, int nb_cuts, int part, int codec,
+                        const int *kinds, int nb_tracks);
+/** A PCM track's samples per second and bytes per sample frame (all its
+ *  channels), before its first frame. */
+void ff_disctl_cut_pcm(DRCut *c, int track, int rate, int bytes_per_sample_frame);
 /** A frame of the title timeline (in its order): 1 when it belongs to the
- *  part (its time is now on the part's clock), 0 when not (the caller drops
- *  it). Only the master video (track 0) is cut so far: other tracks' frames
- *  are left out (counted, said at the end). */
+ *  part (its time is now on the part's clock; a PCM frame that holds a cut
+ *  is cut down to the part's samples), 0 when not (the caller drops it),
+ *  a negative base error (a PCM track without its layout). Video: in
+ *  decoding order from the part's key frame to the next cut's; audio whose
+ *  every frame can start: the frames from the part's 0 (the earlier ones
+ *  are the part before's); PCM: from its first sample at or after the
+ *  part's 0. DR_CUT_TRACK_NONE tracks: left out (counted, said at the
+ *  end). */
 int  ff_disctl_cut_frame(DRCut *c, int track, DRFrame *f);
+/** A track's frames given and its first frame's time on the part's clock
+ *  (INT64_MIN: none). */
+void ff_disctl_cut_track(const DRCut *c, int track, int64_t *frames, int64_t *first);
 /** The end of the title: the part's key frames met where the cuts say
  *  (said in the log; DR_ERR_INVALID when not). */
 int  ff_disctl_cut_finish(DRCut *c);

@@ -833,9 +833,14 @@ static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
                 nb_cuts = 0;
                 continue;
             }
-            vkeep[0] = 1;
-            log_msg(MSG_CUTS, LOG_WARNING, "Title #%d: its cut parts carry the video only: cutting audio, subtitles "
-                    "and captions is not built yet", t);
+            /* the tracks a cut part carries so far; the others said */
+            for (int i = 0; i < di->titles[t].nb_streams; i++) {
+                const char *why = dr_disc_cut_left_out(e->disc, t, i);
+                vkeep[i] = !i || (e->keeps[t][i] && !why);
+                if (i && e->keeps[t][i] && why)
+                    log_msg(MSG_CUTS, LOG_WARNING, "Title #%d: track %d (%s) is left out of its cut parts: %s", t, i,
+                            codec_label(di->titles[t].streams[i].codec, di->titles[t].streams[i].profile), why);
+            }
             parts = nb_cuts + 1;
         }
         for (int p = parts ? 0 : -1; p < parts && !engine_cancelled(); p++) {

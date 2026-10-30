@@ -278,6 +278,7 @@ struct DrDisc {
                                              and PIDs by ff_disc_open_tracks() */
     struct DRTitleTrack *tracks;        /**< src.tracks, the disc layer's own */
     int              *track_ids;        /**< per track: PS its stream id, TS PID | key << 16 */
+    int              *track_cut;        /**< per track: what a cut part does with it (DRCutTrack) */
     DiscTsFeed       *feeds;            /**< src.feeds */
     int              *pids;             /**< src.pids */
     DiscPassCache    *pass_cache;       /**< the stream pass's results per segment */

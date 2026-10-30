@@ -150,10 +150,13 @@ typedef struct DrDiscCut {
 /** Opens part `part` (0 .. nb_cuts) of title `title` cut at cuts (in time
  *  order) for reading: the title is read whole and only the part's frames
  *  are given, on the part's clock (its first picture at 0); the results at
- *  its end are the part's (frames, delays, its chapters, its length). Only
- *  the video track is cut so far: keep must keep the video alone. 0, or a
+ *  its end are the part's (frames, delays, its chapters, its length). keep
+ *  must leave out every track dr_disc_cut_left_out() names. 0, or a
  *  negative error (the title is closed). */
 int  dr_disc_title_open_cut(DrDisc *d, int title, const DrDiscCut *cuts, int nb_cuts, int part, const uint8_t *keep);
+/** Why a cut part cannot carry track `track` of title `title` yet (words),
+ *  NULL when it can. */
+const char *dr_disc_cut_left_out(const DrDisc *d, int title, int track);
 
 /** Opens title `title` (part >= 0: only that part) for reading; a title
  *  open before is closed first. The disc stays loaded. second_view: a 3-D

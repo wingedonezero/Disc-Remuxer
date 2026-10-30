@@ -1200,7 +1200,8 @@ int ff_disc_title_reader_open(DrDisc *d, const DiscTitleSource *src)
     if (d->opt_cuts && (ret = ff_disctl_cut_open(&r->cut, (void *)d->log, d->opt_cuts, d->nb_opt_cuts, d->opt_cut_part,
                                                  !src->nb_tracks ? DR_CUT_OTHER :
                                                  src->tracks[0].codec == DR_CODEC_HEVC ? DR_CUT_HEVC :
-                                                 src->tracks[0].codec == DR_CODEC_H264 ? DR_CUT_H264 : DR_CUT_OTHER)) < 0)
+                                                 src->tracks[0].codec == DR_CODEC_H264 ? DR_CUT_H264 : DR_CUT_OTHER,
+                                                 d->track_cut, src->nb_tracks)) < 0)
         return ret;
     for (int i = r->first_clip; i <= r->last_clip; i++)
         r->blocks_total += src->clip_blocks(d, i);
@@ -1705,8 +1706,10 @@ static int cut_end(DrDisc *d)
         return ret;
     ff_disctl_cut_result(r->cut, &cr);
     for (int i = 0; i < d->nb_out_tracks; i++) {
-        d->out_tracks[i].frames      = i ? 0 : cr.pictures;
-        d->out_tracks[i].delay_ticks = i ? 0 : cr.first;
+        int64_t frames, first;
+        ff_disctl_cut_track(r->cut, i, &frames, &first);
+        d->out_tracks[i].frames      = frames;
+        d->out_tracks[i].delay_ticks = first == INT64_MIN ? 0 : first;
     }
     if (!(ch = dr_calloc(d->nb_chapters + 1, sizeof(*ch))))
         return DR_ERR_NOMEM;
@@ -1754,6 +1757,20 @@ static int cut_end(DrDisc *d)
         dr_vlog(d->log, DR_VLOG_INFO, "Cut part %d/%d: %"PRId64" picture(s) shown before its key frame need the "
                 "pictures before it and cannot be left out: kept (players do not show them)\n",
                 d->opt_cut_part + 1, d->nb_opt_cuts + 1, cr.undecodable);
+    /* each audio track: where it starts on the part's clock */
+    for (int i = 1; i < d->nb_out_tracks && from; i++) {
+        const DrDiscTrack *t = &d->out_tracks[i];
+        int64_t frames, first, ns;
+        ff_disctl_cut_track(r->cut, i, &frames, &first);
+        if (t->type != DISC_MEDIA_AUDIO || !frames)
+            continue;
+        ns = first * 25 / 27;
+        dr_vlog(d->log, DR_VLOG_INFO, "Cut part %d/%d: track %d (%s): starts %"PRId64".%06"PRId64" ms after the "
+                "part's 0 (%s)\n", d->opt_cut_part + 1, d->nb_opt_cuts + 1, t->number,
+                ff_disctl_codec_id_name(r->src->tracks[i].codec), ns / 1000000, ns % 1000000,
+                d->track_cut[i] == DR_CUT_TRACK_PCM ? "its first sample at or after the cut" :
+                                                      "its first frame that starts at or after the cut");
+    }
     return 0;
 }
 
@@ -1865,14 +1882,22 @@ int ff_disc_title_reader_frame(DrDisc *d, DrDiscFrame *out)
                 ff_disctl_frame_unref(&f);
                 continue;
             }
-            /* a cut part: only its frames, on its clock */
-            if (r->cut && !ff_disctl_cut_frame(r->cut, k, &f)) {
-                ff_disctl_frame_unref(&f);
-                continue;
-            }
             if ((ret = lpcm_params(d, k)) < 0 || (ret = textst_header(d, k)) < 0) {
                 ff_disctl_frame_unref(&f);
                 return ret;
+            }
+            /* a cut part: only its frames, on its clock (PCM cut between two samples) */
+            if (r->cut) {
+                const DrDiscTrack *t = &d->out_tracks[k];
+                if (d->track_cut[k] == DR_CUT_TRACK_PCM)
+                    ff_disctl_cut_pcm(r->cut, k, t->sample_rate,
+                                      t->channels * (t->codec == DR_CODEC_PCM_S24LE ? 3 : 2));
+                if ((ret = ff_disctl_cut_frame(r->cut, k, &f)) <= 0) {
+                    ff_disctl_frame_unref(&f);
+                    if (ret < 0)
+                        return ret;
+                    continue;
+                }
             }
             /* the frame's reference moves to the caller */
             out->buf      = f.buf;
