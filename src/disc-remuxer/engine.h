@@ -167,6 +167,18 @@ void engine_cut_editor_close(EngineDisc *d, int t, struct CutPreview **p);
 /* A title's cut list (the --cut items, "c5,45:42.323"; NULL none), and
  * setting it (NULL or "": cleared). 0, or -1 (not a list of cuts). */
 const char *engine_title_cuts(const EngineDisc *d, int t);
+/* The cut editor's analysis (cut_modes.h) of an index read to the title's
+ * end, with the mode and values of the settings cuts.helper_* (ticked: the
+ * chapters ticked for Before Chapters): out (cut_mode_result_free()), and
+ * its split points as cut list items in *items ("c5,c9", or times; ""
+ * none; free()). 0, or -1 (no memory). */
+struct CutModeResult;
+int  engine_cut_mode(const struct CutIndex *ix, const int *ticked, int nb_ticked, struct CutModeResult *out,
+                     char **items);
+/* The suggest-cuts command: engine_cut_mode() on title `title`: its log,
+ * the cuts it suggests and the parts they make (the --cut value). 0, 1 (the
+ * title cannot be read), 2 (bad arguments). */
+int  engine_suggest_cuts(const char *source, const char *title, const EngineChoice *c);
 int  engine_set_title_cuts(EngineDisc *d, int t, const char *items);
 int  engine_track_kept(const EngineDisc *d, int t, int i);
 int  engine_set_track_kept(EngineDisc *d, int t, int i, int on);

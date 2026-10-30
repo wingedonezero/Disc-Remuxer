@@ -6,7 +6,14 @@
 #include <cstring>
 #include <functional>
 
+#include <QComboBox>
 #include <QDialogButtonBox>
+#include <QDoubleSpinBox>
+#include <QFormLayout>
+#include <QLineEdit>
+#include <QPlainTextEdit>
+#include <QRegularExpressionValidator>
+#include <QSpinBox>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -147,6 +154,12 @@ void CutTimeline::setCuts(const QVector<int64_t> &zeros)
     update();
 }
 
+void CutTimeline::setSuggested(const QVector<int64_t> &zeros)
+{
+    suggested = zeros;
+    update();
+}
+
 void CutTimeline::setPosition(int64_t t)
 {
     pos = t;
@@ -195,6 +208,10 @@ void CutTimeline::paintEvent(QPaintEvent *)
             last = x;
         }
     }
+    // suggestions not added yet
+    p.setPen(QPen(QColor(240, 140, 0), 2, Qt::DashLine));
+    for (int64_t c : suggested)
+        p.drawLine(xOf(c), top, xOf(c), top + bar);
     // the cuts
     p.setPen(QPen(QColor(220, 30, 30), 2));
     for (int64_t c : cuts)
@@ -454,6 +471,116 @@ void CutEditor::buildUi()
     });
     sideSplit->addWidget(cutBox);
 
+    // the analysis: the MKV splitter's modes, fields and log
+    auto *anBox = new QGroupBox("Analysis");
+    auto *ab = new QVBoxLayout(anBox);
+    auto *af = new QFormLayout;
+    modeBox = new QComboBox;
+    for (int m = 0; m < CUT_MODE_COUNT; m++)
+        modeBox->addItem(cut_mode_names[m]);
+    modeBox->setFocusPolicy(Qt::NoFocus);
+    af->addRow("Analysis Mode:", modeBox);
+    ab->addLayout(af);
+    modePages = new QStackedWidget;
+    auto page = [this](const QString &label, QWidget *field) {
+        auto *w = new QWidget;
+        auto *f = new QFormLayout(w);
+        f->setContentsMargins(0, 0, 0, 0);
+        f->addRow(label, field);
+        modePages->addWidget(w);
+        return f;
+    };
+    targetEdit = new QLineEdit;
+    targetEdit->setPlaceholderText("mm:ss, e.g. 23:40");
+    targetEdit->setValidator(new QRegularExpressionValidator(QRegularExpression(R"(\d{1,3}(:[0-5]?\d?|\.\d{0,3})?)"),
+                                                             targetEdit));
+    minSpin = new QDoubleSpinBox;
+    minSpin->setSuffix(" min");
+    minSpin->setRange(0.1, 240);
+    episodesSpin = new QSpinBox;
+    episodesSpin->setRange(2, 100);
+    fromEndSpin = new QSpinBox;
+    fromEndSpin->setRange(1, 100);
+    page("Target Episode Duration (mm:ss):", targetEdit);
+    page("Min Content Duration:", minSpin);
+    page("Expected # of Episodes:", episodesSpin);
+    page("Chapters to Remove from End:", fromEndSpin);
+    {
+        auto *w = new QWidget;
+        auto *v = new QVBoxLayout(w);
+        auto *hint = new QLabel("Analyze, then tick chapters in the Chapters list to split before them.");
+        auto *row = new QHBoxLayout;
+        v->setContentsMargins(0, 0, 0, 0);
+        hint->setWordWrap(true);
+        v->addWidget(hint);
+        for (bool on : { true, false }) {
+            auto *b = new QPushButton(on ? "Select All Chapters" : "Clear Selection");
+            b->setFocusPolicy(Qt::NoFocus);
+            b->setAutoDefault(false);
+            connect(b, &QPushButton::clicked, this, [this, on] {
+                for (int i = 0; i < chapterList->topLevelItemCount(); i++)
+                    if (QTreeWidgetItem *it = chapterList->topLevelItem(i); it->flags() & Qt::ItemIsUserCheckable)
+                        it->setCheckState(0, on ? Qt::Checked : Qt::Unchecked);
+            });
+            row->addWidget(b);
+        }
+        row->addStretch();
+        v->addLayout(row);
+        modePages->addWidget(w);
+    }
+    stampEdit = new QLineEdit;
+    stampEdit->setPlaceholderText("e.g. 21:30, 44:10.500  (HH:MM:SS, MM:SS, or 90s)");
+    stampEdit->setToolTip("A part starts at each time (at a key frame: setting cuts.key_frame).\n"
+                          "Double-click a row in the Chapters list to paste that chapter's start time.");
+    page("Split after timestamps:", stampEdit);
+    ab->addWidget(modePages);
+    auto *arow = new QHBoxLayout;
+    auto *analyzeBtn = new QPushButton("Analyze");
+    addSuggestedBtn = new QPushButton("Add Suggested Cuts");
+    for (QPushButton *b : { analyzeBtn, addSuggestedBtn }) {
+        b->setFocusPolicy(Qt::NoFocus);
+        b->setAutoDefault(false);
+        arow->addWidget(b);
+    }
+    arow->addStretch();
+    addSuggestedBtn->setEnabled(false);
+    connect(analyzeBtn, &QPushButton::clicked, this, [this] {
+        if (ix)
+            analyze();
+    });
+    connect(addSuggestedBtn, &QPushButton::clicked, this, [this] {
+        if (ix)
+            addSuggested();
+    });
+    ab->addLayout(arow);
+    analysisLog = new QPlainTextEdit;
+    analysisLog->setReadOnly(true);
+    analysisLog->setLineWrapMode(QPlainTextEdit::NoWrap);
+    analysisLog->setFocusPolicy(Qt::NoFocus);
+    {
+        QFont mono = analysisLog->font();
+        mono.setFamily("monospace");
+        mono.setStyleHint(QFont::Monospace);
+        analysisLog->setFont(mono);
+    }
+    ab->addWidget(analysisLog, 1);
+    sideSplit->addWidget(anBox);
+    // the values last used (as the splitter keeps them)
+    {
+        int m = cut_mode_of_key(setting_text("cuts.helper_mode"));
+        double v;
+        char buf[32], err[160];
+        modeBox->setCurrentIndex(m < 0 ? 0 : m);
+        targetEdit->setText(cut_mode_target(setting_text("cuts.helper_target"), &v, err, sizeof(err)) < 0
+                                ? QString::fromUtf8(setting_text("cuts.helper_target"))
+                                : (cut_mode_target_text(v, buf, sizeof(buf)), QString::fromUtf8(buf)));
+        minSpin->setValue(QString::fromUtf8(setting_text("cuts.helper_min_minutes")).toDouble());
+        episodesSpin->setValue(int(setting_int("cuts.helper_episodes")));
+        fromEndSpin->setValue(int(setting_int("cuts.helper_chapters_from_end")));
+        stampEdit->setText(QString::fromUtf8(setting_text("cuts.helper_timestamps")));
+    }
+    connect(modeBox, &QComboBox::currentIndexChanged, this, [this] { modeChanged(); });
+
     auto *partBox = new QGroupBox("Parts");
     auto *pb = new QVBoxLayout(partBox);
     partList = list({ "Part", "Start", "Length" });
@@ -478,6 +605,11 @@ void CutEditor::buildUi()
     });
     chb->addWidget(chCut);
     connect(chapterList, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem *it) {
+        // After Timestamps: its start pasted into the times (as the splitter does)
+        if (modeBox->currentIndex() == CUT_MODE_TIMESTAMPS) {
+            QString t = stampEdit->text().trimmed(), s = it->data(1, Qt::UserRole).toString();
+            stampEdit->setText(t.isEmpty() ? s : t + ", " + s);
+        }
         stopPlay();
         showAt(it->data(0, Qt::UserRole).toLongLong());
     });
@@ -549,19 +681,20 @@ void CutEditor::buildUi()
     controls->setEnabled(false);
     side->setEnabled(false);
     okButton->setEnabled(false);
-    resize(1280, 760);
-    split->setSizes({ 900, 380 });
+    resize(1440, 900);
+    split->setSizes({ 920, 520 });
+    sideSplit->setSizes({ 200, 320, 160, 220 });
 }
 
 void CutEditor::loadState()
 {
     const QStringList s = QString::fromUtf8(setting_text("gui.cut_editor")).split(',', Qt::SkipEmptyParts);
 
-    if (s.size() != 6)
+    if (s.size() != 7)
         return;
     restoreGeometry(QByteArray::fromBase64(s[0].toLatin1()));
     split->setSizes({ s[1].toInt(), s[2].toInt() });
-    sideSplit->setSizes({ s[3].toInt(), s[4].toInt(), s[5].toInt() });
+    sideSplit->setSizes({ s[3].toInt(), s[4].toInt(), s[5].toInt(), s[6].toInt() });
 }
 
 void CutEditor::saveState()
@@ -572,6 +705,17 @@ void CutEditor::saveState()
     if (saved || !testFile.isEmpty())
         return;
     saved = true;
+    storeHelperValues();
+    {
+        // the target kept as the field shows it (one it cannot read: the default)
+        double v;
+        char buf[32], err[160];
+        if (cut_mode_target(targetEdit->text().toUtf8().constData(), &v, err, sizeof(err)) < 0)
+            snprintf(buf, sizeof(buf), "23:00");
+        else
+            cut_mode_target_text(v, buf, sizeof(buf));
+        settings_store("cuts.helper_target", buf, err, sizeof(err));
+    }
     for (int v : split->sizes())
         s << QString::number(v);
     for (int v : sideSplit->sizes())
@@ -639,11 +783,15 @@ void CutEditor::opened(bool ok)
     for (int c = 0; c < ix->nb_chapters; c++) {
         int64_t s = ix->chapters[c], e = c + 1 < ix->nb_chapters ? ix->chapters[c + 1] : ix->end;
         auto *it = new QTreeWidgetItem(chapterList, { QString::number(c + 1), msText(s), msText(e - s) });
+        char st[40];
+        cut_mode_start_text((s * 25 + 13) / 27, st, sizeof(st));
         it->setData(0, Qt::UserRole, (qlonglong)s);
+        it->setData(1, Qt::UserRole, QString::fromUtf8(st));
         it->setToolTip(1, exactText(s));
         chapters << s;
     }
     timeline->setTitle(ix->end, chapters);
+    modeChanged();
     totalLabel->setText("/ " + msText(ix->end));
     loadCuts();
     refresh();
@@ -857,6 +1005,138 @@ void CutEditor::clearCuts()
     setNote("Every cut removed: with OK the title is ripped whole.");
 }
 
+// ---- the analysis ----
+
+// The mode's own field(s); Before Chapters: check boxes on the chapters
+// (never on one at 0:00).
+void CutEditor::modeChanged()
+{
+    int m = modeBox->currentIndex();
+
+    modePages->setCurrentIndex(m == CUT_MODE_TIME ? 0 : m == CUT_MODE_EPISODES ? 2 : m == CUT_MODE_REMOVE_END ? 3 :
+                               m == CUT_MODE_CHAPTERS ? 4 : m == CUT_MODE_TIMESTAMPS ? 5 : 1);
+    for (int i = 0; ix && i < chapterList->topLevelItemCount(); i++) {
+        QTreeWidgetItem *it = chapterList->topLevelItem(i);
+        bool can = m == CUT_MODE_CHAPTERS && (ix->chapters[i] * 25 + 13) / 27 / 1000 > 0;
+        if (can) {
+            it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
+            if (!it->data(0, Qt::CheckStateRole).isValid())
+                it->setCheckState(0, Qt::Unchecked);
+        } else {
+            it->setFlags(it->flags() & ~Qt::ItemIsUserCheckable);
+            it->setData(0, Qt::CheckStateRole, QVariant());
+        }
+    }
+}
+
+QVector<int> CutEditor::ticked() const
+{
+    QVector<int> t;
+    for (int i = 0; i < chapterList->topLevelItemCount(); i++)
+        if (QTreeWidgetItem *it = chapterList->topLevelItem(i);
+            (it->flags() & Qt::ItemIsUserCheckable) && it->checkState(0) == Qt::Checked)
+            t << i + 1;
+    return t;
+}
+
+// The box's values into the settings the analysis reads (kept when the
+// editor closes, as the splitter keeps its last ones).
+void CutEditor::storeHelperValues()
+{
+    char err[256];
+
+    settings_store("cuts.helper_mode", cut_mode_keys[modeBox->currentIndex()], err, sizeof(err));
+    settings_store("cuts.helper_target", targetEdit->text().toUtf8().constData(), err, sizeof(err));
+    settings_store("cuts.helper_min_minutes", QString::number(minSpin->value()).toUtf8().constData(), err, sizeof(err));
+    settings_store("cuts.helper_episodes", QByteArray::number(episodesSpin->value()).constData(), err, sizeof(err));
+    settings_store("cuts.helper_chapters_from_end", QByteArray::number(fromEndSpin->value()).constData(), err,
+                   sizeof(err));
+    settings_store("cuts.helper_timestamps", stampEdit->text().toUtf8().constData(), err, sizeof(err));
+}
+
+void CutEditor::analyze()
+{
+    QVector<int> t = ticked();
+    CutModeResult r;
+    char *items = nullptr;
+
+    storeHelperValues();
+    if (engine_cut_mode(ix, t.data(), t.size(), &r, &items) < 0) {
+        analysisLog->setPlainText("The analysis could not be run (no memory).");
+        return;
+    }
+    analysisLog->setPlainText(QString::fromUtf8(r.log));
+    suggested = QString::fromUtf8(items);
+    cut_mode_result_free(&r);
+    free(items);
+    // where they would start parts, by the rule the cuts take
+    QVector<int64_t> zeros;
+    QByteArray b = suggested.toUtf8();
+    CutRequest *reqs = nullptr;
+    const char *bad;
+    int nb = 0;
+    if (!suggested.isEmpty() && cut_parse(b.constData(), &reqs, &nb, &bad) == 0) {
+        QVector<CutResult> res(nb);
+        cut_resolve(pts, nbPts, ix->chapters, ix->nb_chapters, ix->end, reqs, nb, rule, res.data());
+        for (const CutResult &x : res)
+            if (x.point >= 0)
+                zeros << pts[x.point].zero;
+    }
+    free(reqs);
+    timeline->setSuggested(zeros);
+    addSuggestedBtn->setEnabled(!suggested.isEmpty());
+    setNote(suggested.isEmpty() ? QString("The analysis suggests no cut.")
+                                : QString("Suggested: %1 (dashed on the timeline). Add Suggested Cuts adds them.")
+                                      .arg(suggested));
+}
+
+void CutEditor::addSuggested()
+{
+    addItems(suggested, cut_mode_names[modeBox->currentIndex()]);
+    suggested.clear();
+    timeline->setSuggested({});
+    addSuggestedBtn->setEnabled(false);
+}
+
+// Items as the cut list keeps them, each placed by the cuts' rule; one on a
+// key frame that has a cut already, or refused, is said and left out.
+void CutEditor::addItems(const QString &items, const QString &from)
+{
+    QByteArray b = items.toUtf8();
+    CutRequest *reqs = nullptr;
+    const char *bad;
+    QStringList left;
+    int nb = 0, added = 0;
+
+    if (items.isEmpty() || cut_parse(b.constData(), &reqs, &nb, &bad) < 0)
+        return;
+    QVector<CutResult> res(nb);
+    cut_resolve(pts, nbPts, ix->chapters, ix->nb_chapters, ix->end, reqs, nb, rule, res.data());
+    for (int i = 0; i < nb; i++) {
+        QString text = QString::fromUtf8(reqs[i].text);
+        bool there = false;
+        if (res[i].point < 0) {
+            left << QString("%1 (%2)").arg(text, res[i].same_as >= 0 ? QString("the same key frame as %1")
+                                                                           .arg(QString::fromUtf8(reqs[res[i].same_as].text))
+                                                                     : QString::fromUtf8(res[i].why));
+            continue;
+        }
+        for (const Cut &c : cuts)
+            there |= c.point == res[i].point;
+        if (there) {
+            left << QString("%1 (a cut is already at its key frame)").arg(text);
+            continue;
+        }
+        cuts << Cut{ text, res[i].point, from };
+        added++;
+    }
+    free(reqs);
+    sortCuts();
+    refresh();
+    setNote(QString("%1 cut(s) added from %2.").arg(added).arg(from) +
+            (left.isEmpty() ? QString() : " Left out: " + left.join("; ") + "."));
+}
+
 // ---- moving through the title ----
 
 int CutEditor::at(int64_t t) const
@@ -963,6 +1243,18 @@ void CutEditor::runTest()
             addCutHere();
         else if (s == "X")
             removeCut();
+        else if (s.startsWith('M'))
+            modeBox->setCurrentIndex(std::max(0, cut_mode_of_key(s.mid(1).toUtf8().constData())));
+        else if (s.startsWith('T'))
+            targetEdit->setText(s.mid(1));
+        else if (s.startsWith('E'))
+            episodesSpin->setValue(s.mid(1).toInt());
+        else if (s.startsWith('N'))
+            minSpin->setValue(s.mid(1).toDouble());
+        else if (s == "A")
+            analyze();
+        else if (s == "S")
+            addSuggested();
         else if (s.startsWith('C')) {
             if (QTreeWidgetItem *it = chapterList->topLevelItem(s.mid(1).toInt() - 1))
                 chapterList->setCurrentItem(it);
@@ -984,6 +1276,8 @@ void CutEditor::endTest()
         std::printf(" %s+%s", partList->topLevelItem(i)->text(1).toUtf8().constData(),
                     partList->topLevelItem(i)->text(2).toUtf8().constData());
     std::printf("\ncut editor: note: %s\n", note->text().toUtf8().constData());
+    if (!analysisLog->toPlainText().isEmpty())
+        std::printf("cut editor: analysis log:\n%s\n", analysisLog->toPlainText().toUtf8().constData());
     std::fflush(stdout);
     grab().save(testFile);
     reject();

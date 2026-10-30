@@ -9,6 +9,7 @@
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,6 +36,7 @@
 #include "writer.h"
 #include "cuts.h"
 #include "cut_preview.h"
+#include "cut_modes.h"
 #include "timeline/disctl.h"
 
 
@@ -1478,6 +1480,158 @@ end:
     cut_preview_close(&pv);
     cut_index_free(&ix);
     free(reqs);
+    engine_disc_close(&e);
+    return ret;
+}
+
+/* A time on the title timeline in ns (as a Matroska file keeps it). */
+static int64_t ticks_ns(int64_t t)
+{
+    return t < 0 ? -((-t * 25 + 13) / 27) : (t * 25 + 13) / 27;
+}
+
+int engine_cut_mode(const CutIndex *ix, const int *ticked, int nb_ticked, CutModeResult *out, char **items)
+{
+    CutModeInput in = { 0 };
+    int64_t *ns = calloc(ix->nb_chapters ? ix->nb_chapters : 1, sizeof(*ns));
+    char err[256], *e;
+    size_t size = 1;
+    int ret = 0;
+
+    *items = NULL;
+    memset(out, 0, sizeof(*out));
+    if (!ns)
+        return -1;
+    for (int i = 0; i < ix->nb_chapters; i++)
+        ns[i] = ticks_ns(ix->chapters[i]);
+    in.mode        = cut_mode_of_key(setting_text("cuts.helper_mode"));
+    in.chapters    = ns;
+    in.names       = (const char *const *)ix->chapter_names;
+    in.nb_chapters = ix->nb_chapters;
+    in.duration    = ticks_ns(ix->end);
+    in.episodes    = (int)setting_int("cuts.helper_episodes");
+    in.from_end    = (int)setting_int("cuts.helper_chapters_from_end");
+    in.ticked      = ticked;
+    in.nb_ticked   = nb_ticked;
+    in.timestamps  = setting_text("cuts.helper_timestamps");
+    in.min_minutes = strtod(setting_text("cuts.helper_min_minutes"), &e);
+    if (in.mode < 0)
+        in.mode = CUT_MODE_TIME;
+    /* the splitter's fields: the min duration a spin box of 0.1 to 240 (two
+     * decimals); a target it cannot read stops Time-based Grouping only (the
+     * others take the default) */
+    if (e == setting_text("cuts.helper_min_minutes") || !(in.min_minutes >= 0.1 && in.min_minutes <= 240)) {
+        snprintf(err, sizeof(err), "Error: the min content duration \"%s\" is not 0.1 to 240 minutes "
+                 "(setting cuts.helper_min_minutes).", setting_text("cuts.helper_min_minutes"));
+        ret = (out->log = strdup(err)) ? 0 : -1;
+        goto end;
+    }
+    in.min_minutes = round(in.min_minutes * 100) / 100;
+    if (cut_mode_target(setting_text("cuts.helper_target"), &in.target, err + 7, sizeof(err) - 7) < 0) {
+        if (in.mode == CUT_MODE_TIME) {
+            memcpy(err, "Error: ", 7);
+            ret = (out->log = strdup(err)) ? 0 : -1;
+            goto end;
+        }
+        in.target = 23.0;
+    }
+    {
+        char list[4096] = "";
+        for (int i = 0; i < in.nb_chapters && strlen(list) < sizeof(list) - 24; i++)
+            snprintf(list + strlen(list), sizeof(list) - strlen(list), "%s%"PRId64, i ? " " : "", ns[i]);
+        log_text(LOG_DETAIL, "Cut analysis: the title's length %"PRId64" ns, its %d chapter(s) at (ns): %s",
+                 in.duration, in.nb_chapters, list);
+    }
+    if (cut_mode_run(&in, out) < 0) {
+        ret = -1;
+        goto end;
+    }
+    /* the split points as the cut list keeps them */
+    for (int i = 0; i < out->nb_chapters; i++)
+        size += 16;
+    for (int i = 0; i < out->nb_stamps; i++)
+        size += strlen(out->stamps[i]) + 1;
+    if (!(*items = calloc(size, 1))) {
+        ret = -1;
+        goto end;
+    }
+    for (int i = 0; i < out->nb_chapters; i++)
+        snprintf(*items + strlen(*items), size - strlen(*items), "%sc%d", **items ? "," : "", out->chapters[i]);
+    for (int i = 0; i < out->nb_stamps; i++)
+        snprintf(*items + strlen(*items), size - strlen(*items), "%s%s", **items ? "," : "", out->stamps[i]);
+end:
+    free(ns);
+    if (ret < 0) {
+        cut_mode_result_free(out);
+        free(*items);
+        *items = NULL;
+    }
+    return ret;
+}
+
+int engine_suggest_cuts(const char *source, const char *title, const EngineChoice *c)
+{
+    EngineDisc *e = NULL;
+    const CutIndex *ix;
+    CutModeResult r = { 0 };
+    CutRequest *reqs = NULL;
+    CutResult *res = NULL;
+    CutPoint *pts = NULL;
+    char *items = NULL, *x, *text, *ln, *save, a[40];
+    const char *bad;
+    int t, nb = 0, nb_pts = 0, ret = 1, rule;
+
+    t = (int)strtol(title, &x, 10);
+    if (!*title || *x || t < 0) {
+        log_msg(MSG_USAGE, LOG_ERROR, "suggest-cuts: a title number is asked, not \"%s\"", title);
+        return 2;
+    }
+    log_msg(MSG_SOURCE, LOG_INFO, "Source: %s", source);
+    if (engine_disc_open(source, c, &e) < 0)
+        goto end;
+    if (t >= e->info->nb_titles) {
+        log_msg(MSG_TITLE_MISSING, LOG_ERROR, "Title #%d does not exist (the disc has %d)", t, e->info->nb_titles);
+        ret = 2;
+        goto end;
+    }
+    /* the title read to its end (its chapters as the rip places them) */
+    if (!(ix = engine_cut_index(e, t)) || engine_cut_mode(ix, NULL, 0, &r, &items) < 0)
+        goto end;
+    log_text(LOG_INFO, "Cut analysis of title #%d: %s (settings cuts.helper_*)", t,
+             cut_mode_names[cut_mode_of_key(setting_text("cuts.helper_mode")) < 0 ? 0 :
+                            cut_mode_of_key(setting_text("cuts.helper_mode"))]);
+    if (!(text = strdup(r.log)))
+        goto end;
+    for (ln = strtok_r(text, "\n", &save); ln; ln = strtok_r(NULL, "\n", &save))
+        log_text(LOG_INFO, "  %s", ln);
+    free(text);
+    if (!items || !*items) {
+        log_text(LOG_INFO, "Cuts suggested: none");
+        ret = 0;
+        goto end;
+    }
+    /* where they fall, as the cut editor and the rip place them */
+    rule = !strcmp(setting_text("cuts.key_frame"), "next") ? CUT_NEXT : CUT_NEAREST;
+    if (cut_parse(items, &reqs, &nb, &bad) < 0 || !(res = calloc(nb, sizeof(*res))) ||
+        cut_points(ix->pics, ix->nb_pics, ix->codec, &pts, &nb_pts) < 0)
+        goto end;
+    cut_resolve(pts, nb_pts, ix->chapters, ix->nb_chapters, ix->end, reqs, nb, rule, res);
+    log_text(LOG_INFO, "Cuts suggested: %s (--cut %d:%s)", items, t, items);
+    for (int i = 0; i < nb; i++) {
+        if (res[i].point < 0)
+            log_msg(MSG_CUTS, LOG_WARNING, "  - %s: no cut - %s", reqs[i].text,
+                    res[i].same_as >= 0 ? "the same key frame as another" : res[i].why);
+        else
+            log_text(LOG_INFO, "  - %s: a part starts at %s (key frame: %s)", reqs[i].text,
+                     cut_time_text(a, sizeof(a), pts[res[i].point].zero), start_text(pts[res[i].point].start));
+    }
+    ret = 0;
+end:
+    free(pts);
+    free(res);
+    free(reqs);
+    free(items);
+    cut_mode_result_free(&r);
     engine_disc_close(&e);
     return ret;
 }

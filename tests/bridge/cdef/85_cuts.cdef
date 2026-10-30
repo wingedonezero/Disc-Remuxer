@@ -89,3 +89,36 @@ int  ff_disctl_cut_frame(DRCut *c, int track, DRFrame *f);
 int  ff_disctl_cut_finish(DRCut *c);
 void ff_disctl_cut_result(const DRCut *c, DRCutResult *r);
 void ff_disctl_cut_close(DRCut **c);
+
+/* the cut editor's analysis modes (src/disc-remuxer/cut_modes.h) */
+enum CutMode { CUT_MODE_TIME = 0, CUT_MODE_PATTERN, CUT_MODE_GAP, CUT_MODE_SHORTEST, CUT_MODE_EPISODES,
+               CUT_MODE_REMOVE_END, CUT_MODE_CHAPTERS, CUT_MODE_TIMESTAMPS, CUT_MODE_COUNT };
+extern const char *const cut_mode_names[8];
+extern const char *const cut_mode_keys[8];
+int cut_mode_of_key(const char *key);
+typedef struct CutModeInput {
+    int                mode;
+    const int64_t     *chapters;
+    const char *const *names;
+    int                nb_chapters;
+    int64_t            duration;
+    double             target;
+    double             min_minutes;
+    int                episodes;
+    int                from_end;
+    const int         *ticked;
+    int                nb_ticked;
+    const char        *timestamps;
+} CutModeInput;
+typedef struct CutModeResult {
+    char  *log;
+    int   *chapters;
+    int    nb_chapters;
+    char **stamps;
+    int    nb_stamps;
+} CutModeResult;
+int  cut_mode_run(const CutModeInput *in, CutModeResult *out);
+void cut_mode_result_free(CutModeResult *r);
+int  cut_mode_target(const char *text, double *minutes, char *err, int size);
+void cut_mode_target_text(double minutes, char *buf, int size);
+void cut_mode_start_text(int64_t ns, char *buf, int size);

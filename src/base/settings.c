@@ -23,6 +23,8 @@ static const char *const cell_checks[]  = { "all", "spread", "random", NULL };
 static const char *const out_formats[]  = { "streams", "mkv", "mkvmerge", NULL };
 static const char *const compressions[] = { "none", "zlib", NULL };
 static const char *const cut_keys[]     = { "nearest", "next", NULL };
+static const char *const cut_modes[]    = { "time", "pattern", "gap", "shortest", "episodes", "remove_end", "chapters",
+                                            "timestamps", NULL };
 
 static const Setting registry[] = {
     { "read", "attempts", SET_INT, "5", 1, 99, NULL,
@@ -135,6 +137,21 @@ static const Setting registry[] = {
       "The cut editor keeps the pictures it decoded last for stepping back and forth: how much memory (MB) they "
       "may take (about 60 pictures of 1080p video in 512 MB, 15 of UHD). All of it is given back when the editor "
       "closes.", 0, SET_AT_RIP },
+    { "cuts", "helper_mode", SET_CHOICE, "time", 0, 0, cut_modes,
+      "Kept by the cut editor: its analysis mode (time: Time-based Grouping, pattern: Pattern Recognition, gap: "
+      "Statistical Gap Analysis, shortest: Shortest Chapter Analysis, episodes: Manual Episode Count, remove_end: "
+      "Remove Chapters from End, chapters: Before Chapters, timestamps: After Timestamps).", 1, SET_AT_RIP },
+    { "cuts", "helper_target", SET_TEXT, "23:00", 0, 0, NULL,
+      "Kept by the cut editor: Time-based Grouping's target episode duration (mm:ss, or minutes).", 1, SET_AT_RIP },
+    { "cuts", "helper_min_minutes", SET_TEXT, "15.0", 0, 0, NULL,
+      "Kept by the cut editor: the min content duration (minutes, 0.1 to 240) of Pattern Recognition, Statistical "
+      "Gap Analysis, Shortest Chapter Analysis and Manual Episode Count.", 1, SET_AT_RIP },
+    { "cuts", "helper_episodes", SET_INT, "2", 2, 100, NULL,
+      "Kept by the cut editor: Manual Episode Count's expected number of episodes.", 1, SET_AT_RIP },
+    { "cuts", "helper_chapters_from_end", SET_INT, "1", 1, 100, NULL,
+      "Kept by the cut editor: how many chapters Remove Chapters from End takes off.", 1, SET_AT_RIP },
+    { "cuts", "helper_timestamps", SET_TEXT, "", 0, 0, NULL,
+      "Kept by the cut editor: After Timestamps' times.", 1, SET_AT_RIP },
     { "mkv", "compression", SET_CHOICE, "none", 0, 0, compressions,
       "MKV files (the mkv and mkvmerge modes): none stores the subtitles' blocks as they are; zlib compresses each "
       "(lossless, as mkvmerge does by default; a few players and devices cannot read compressed tracks).",

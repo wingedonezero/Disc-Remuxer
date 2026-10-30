@@ -22,10 +22,16 @@ extern "C" {
 #include "engine.h"
 #include "cuts.h"
 #include "cut_preview.h"
+#include "cut_modes.h"
 }
 
 class LogRelay;
+class QComboBox;
+class QDoubleSpinBox;
 class QLabel;
+class QLineEdit;
+class QPlainTextEdit;
+class QSpinBox;
 class QProgressBar;
 class QPushButton;
 class QSplitter;
@@ -72,6 +78,8 @@ public:
     explicit CutTimeline(QWidget *parent = nullptr);
     void setTitle(int64_t end, const QVector<int64_t> &chapters);
     void setCuts(const QVector<int64_t> &zeros);
+    // where an analysis' suggestions would start parts (dashed, not cuts yet)
+    void setSuggested(const QVector<int64_t> &zeros);
     void setPosition(int64_t t);
     QSize sizeHint() const override { return QSize(400, 34); }
 
@@ -92,7 +100,7 @@ private:
     int     xOf(int64_t t) const;
 
     int64_t          end = 0, pos = 0;
-    QVector<int64_t> chapters, cuts;
+    QVector<int64_t> chapters, cuts, suggested;
     bool             dragging = false;
 };
 
@@ -124,7 +132,9 @@ public:
     QString items() const;
     // Tests: once open, the picture at time `at` shown, then the keys of
     // steps pressed (L R frames, D U key frames, K add a cut, X remove it,
-    // C<n> a cut at chapter n; comma separated); once its picture is there
+    // C<n> a cut at chapter n; the analysis: M<mode key>, T<target minutes>,
+    // E<episodes>, N<min minutes>, A analyze, S add the suggestions; comma
+    // separated); once its picture is there
     // the window saved as a picture into file, what it shows printed, and it
     // closes (its sizes are not kept).
     void setTest(const QString &at, const QString &steps, const QString &file);
@@ -171,6 +181,15 @@ private:
     int     pointOfKey(int64_t key_time) const;
     void    saveState();
     void    loadState();
+    // the analysis (cut_modes.h): the mode's page and the chapters' check
+    // boxes, the run, its suggestions added
+    void    modeChanged();
+    void    analyze();
+    void    addSuggested();
+    void    storeHelperValues();
+    QVector<int> ticked() const;
+    // the requests resolved as cuts (refused ones said in the note)
+    void    addItems(const QString &items, const QString &from);
     void    runTest();
     void    endTest();
 
@@ -195,6 +214,7 @@ private:
     int              cur = 0;
 
     QVector<Cut>     cuts;
+    QString          suggested;    // the last analysis' split points as cut list items
 
     // play: pictures at the title's own pace from where it started
     QTimer        playTimer;
@@ -211,5 +231,12 @@ private:
     QLabel         *timeLabel, *totalLabel, *typeLabel, *note;
     QTreeWidget    *cutList, *partList, *chapterList;
     QSplitter      *split, *sideSplit;
+    QComboBox      *modeBox;
+    QStackedWidget *modePages;
+    QLineEdit      *targetEdit, *stampEdit;
+    QDoubleSpinBox *minSpin;
+    QSpinBox       *episodesSpin, *fromEndSpin;
+    QPlainTextEdit *analysisLog;
+    QPushButton    *addSuggestedBtn;
     QWidget        *controls, *side;
 };

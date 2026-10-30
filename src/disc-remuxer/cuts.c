@@ -391,10 +391,19 @@ int cut_index_read(DrDisc *d, int title, int64_t stop_after, const int64_t *wind
         int n = dr_disc_nb_chapters(d);
         ix->complete = 1;
         ret = 0;
-        if (n > 0 && !(ix->chapters = calloc(n, sizeof(*ix->chapters))))
+        if (n > 0 && (!(ix->chapters = calloc(n, sizeof(*ix->chapters))) ||
+                      !(ix->chapter_names = calloc(n, sizeof(*ix->chapter_names)))))
             ret = DR_ERR(ENOMEM);
-        for (int i = 0; ret >= 0 && i < n; i++)
-            ix->chapters[ix->nb_chapters++] = dr_disc_chapter(d, i)->start;
+        for (int i = 0; ret >= 0 && i < n; i++) {
+            const DrDiscChapter *c = dr_disc_chapter(d, i);
+            char name[16];
+            snprintf(name, sizeof(name), "Chapter %02u", (unsigned)(i + 1));
+            if (!(ix->chapter_names[i] = strdup(c->name && *c->name ? c->name : name))) {
+                ret = DR_ERR(ENOMEM);
+                break;
+            }
+            ix->chapters[ix->nb_chapters++] = c->start;
+        }
     }
     dr_disc_title_close(d);
     if (ret < 0 && ret != DR_ERR_CANCELLED)
@@ -412,6 +421,9 @@ void cut_index_free(CutIndex *ix)
     free(ix->audio);
     free(ix->pics);
     free(ix->chapters);
+    for (int c = 0; ix->chapter_names && c < ix->nb_chapters; c++)
+        free(ix->chapter_names[c]);
+    free(ix->chapter_names);
     memset(ix, 0, sizeof(*ix));
 }
 

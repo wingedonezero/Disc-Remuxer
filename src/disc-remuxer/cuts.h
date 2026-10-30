@@ -131,6 +131,7 @@ typedef struct CutIndex {
     int         nb_pics;
     int         codec;       /* DRCutCodec of the video (cut_points()) */
     int64_t    *chapters;    /* ticks; read only when the title was read to its end */
+    char      **chapter_names; /* each as the rip names it in a Matroska file (the disc's, else "Chapter 05") */
     int         nb_chapters;
     int64_t     end;         /* ticks: the end of the last picture read */
     int         complete;    /* read to the title's end */

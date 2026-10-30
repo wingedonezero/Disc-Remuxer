@@ -42,6 +42,10 @@ static void usage(FILE *f)
           "                                        not on a key frame: setting cuts.key_frame\n"
           "  frame <source> <title> <time> <file.bmp>  the picture shown at that time on the title's\n"
           "                                        timeline, as the cut editor shows it, as a BMP file\n"
+          "  suggest-cuts <source> <title>         the cut editor's analysis of a title's chapters (the mode\n"
+          "                                        and values of settings cuts.helper_*, e.g. --set\n"
+          "                                        cuts.helper_target=23:40): its log, the cuts it suggests,\n"
+          "                                        where their parts start and the --cut value\n"
           "  find  <folder>                        the discs in a folder (as the GUI's queue takes them)\n"
           "  settings [show|path]                  the settings in effect / where the settings file is\n"
           "  version                               program and library versions\n"
@@ -140,6 +144,7 @@ int main(int argc, char **argv)
     {
         const char *cmd = argv[i];
         int most = !strcmp(cmd, "settings") || !strcmp(cmd, "info") || !strcmp(cmd, "find") ? 1 :
+                   !strcmp(cmd, "suggest-cuts") ? 2 :
                    !strcmp(cmd, "demux") || !strcmp(cmd, "cuts") ? 3 : !strcmp(cmd, "frame") ? 4 :
                    !strcmp(cmd, "version") ? 0 : -1;   /* -1: an unknown command */
         for (int k = i + 1; k < argc; k++) {
@@ -177,6 +182,8 @@ int main(int argc, char **argv)
         ret = engine_info(argv[i + 1], &c, details);
     } else if (!strcmp(argv[i], "frame") && i + 4 < argc) {
         ret = engine_frame(argv[i + 1], argv[i + 2], argv[i + 3], argv[i + 4], &c);
+    } else if (!strcmp(argv[i], "suggest-cuts") && i + 2 < argc) {
+        ret = engine_suggest_cuts(argv[i + 1], argv[i + 2], &c);
     } else if (!strcmp(argv[i], "cuts") && i + 3 < argc) {
         ret = engine_cuts(argv[i + 1], argv[i + 2], argv[i + 3], &c);
     } else if (!strcmp(argv[i], "find") && i + 1 < argc) {

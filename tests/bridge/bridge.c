@@ -42,6 +42,7 @@
 #include "parse/rules.h"
 #include "disc-remuxer/writer.h"
 #include "disc-remuxer/cuts.h"
+#include "disc-remuxer/cut_modes.h"
 #include "base/crc16.h"
 #include "disc/lang.h"
 
