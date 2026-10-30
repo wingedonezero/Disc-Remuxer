@@ -36,6 +36,16 @@ typedef struct TitleJob {
     const int64_t *cut_starts; /* with cuts: per cut and track the unit a start-unit track's part starts at */
 } TitleJob;
 
+/* A cut part's track: its bytes (DrDiscTrack.cut_*), for the check after
+ * the title's last part. */
+typedef struct CutTrackBytes {
+    int     number;            /* the disc info's track number */
+    int64_t title, part, left; /* the title's bytes read, the part's, the video's left out */
+    int     read_all;          /* the whole title was read (its title bytes are all of them) */
+    int     pcm;               /* LPCM (said in samples) */
+    int     bytes_per_sample;  /* LPCM: of one sample frame */
+} CutTrackBytes;
+
 typedef struct TitleOutcome {
     int     failed;            /* no usable output (or untested features met) */
     int     stopped;           /* stopped on request (engine_cancel()): its files are not complete */
@@ -46,6 +56,8 @@ typedef struct TitleOutcome {
     char  **damage;            /* each range in words (nb_damage of them; title_outcome_free()) */
     int     nb_damage;
     char    name[512];         /* the name its files take */
+    CutTrackBytes *cut;        /* a cut part: its tracks' bytes (nb_cut of them) */
+    int     nb_cut;
 } TitleOutcome;
 
 /* Frees what an outcome holds (its damaged ranges). */

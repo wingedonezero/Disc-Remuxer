@@ -394,3 +394,82 @@ def test_pgs_display_sets_say_what_is_shown_across_a_cut_and_a_part_that_does_no
     run_subs([(zero, zero)], 0, sets, lib.DR_CUT_TRACK_PGS)
     run_subs([(zero, zero)], 1, sets, lib.DR_CUT_TRACK_PGS)
     assert not logged("still shown") and not logged("normal one")
+
+
+# ---- the part complete (the reading may stop), the bytes ----
+
+def test_a_part_is_complete_once_the_video_and_every_audio_track_are_past_its_end():
+    zero = 100 * F
+    pl = ffi.new("DRCutPlace[]", 1)
+    pl[0].zero = pl[0].key_time = zero
+    c = ffi.new("DRCut **")
+    kinds = ffi.new("int[]", [lib.DR_CUT_TRACK_VIDEO, lib.DR_CUT_TRACK_EVERY, lib.DR_CUT_TRACK_SUB])
+    assert lib.ff_disctl_cut_open(c, ffi.NULL, pl, 1, 0, H264, kinds, 3, ffi.NULL) == 0
+    margin = 10 * F
+
+    def frame(track, t, key=False, size=10):
+        f = ffi.new("DRFrame *")
+        buf = ffi.new("uint8_t[]", size)
+        f.time, f.size, f.data = t, size, buf
+        f.flags = lib.DR_F_KEY | lib.DR_F_START_CLEAN if key else 0
+        return lib.ff_disctl_cut_frame(c[0], track, f)
+
+    frame(0, 0, key=True)
+    for n in range(1, 100):
+        frame(0, n * F)
+    frame(1, 90 * F)
+    assert not lib.ff_disctl_cut_done(c[0], margin)
+    frame(0, 100 * F, key=True)                      # the next part's key frame
+    for n in range(101, 115):
+        frame(0, n * F)
+    assert not lib.ff_disctl_cut_done(c[0], margin), "the audio is not past the part's end yet"
+    frame(1, 101 * F)                                # an audio unit of the next part
+    assert lib.ff_disctl_cut_done(c[0], margin)
+    title, part, left = ffi.new("int64_t *"), ffi.new("int64_t *"), ffi.new("int64_t *")
+    lib.ff_disctl_cut_bytes(c[0], 0, title, part, left)
+    assert (title[0], part[0], left[0]) == (115 * 10, 100 * 10, 0), "the title's bytes seen, the part's given"
+    lib.ff_disctl_cut_bytes(c[0], 1, title, part, left)
+    assert (title[0], part[0]) == (20, 10)
+    lib.ff_disctl_cut_close(c)
+
+
+def test_the_last_part_is_never_complete_early():
+    pl = ffi.new("DRCutPlace[]", 1)
+    pl[0].zero = pl[0].key_time = F
+    c = ffi.new("DRCut **")
+    kinds = ffi.new("int[]", [lib.DR_CUT_TRACK_VIDEO])
+    assert lib.ff_disctl_cut_open(c, ffi.NULL, pl, 1, 1, H264, kinds, 1, ffi.NULL) == 0
+    for n in range(0, 500):
+        f = ffi.new("DRFrame *")
+        f.time, f.flags = n * F, lib.DR_F_KEY | lib.DR_F_START_CLEAN
+        lib.ff_disctl_cut_frame(c[0], 0, f)
+    assert not lib.ff_disctl_cut_done(c[0], F)
+    lib.ff_disctl_cut_close(c)
+
+
+def test_the_parts_bytes_add_up_to_the_titles_with_the_left_out_pictures():
+    pics = stream(OPEN, CLEAN)
+    cuts = places(pics, H264)
+    totals = []
+    for k in range(len(cuts) + 1):
+        pl = ffi.new("DRCutPlace[]", len(cuts))
+        for i, (z, kt) in enumerate(cuts):
+            pl[i].zero, pl[i].key_time = z, kt
+        c = ffi.new("DRCut **")
+        kinds = ffi.new("int[]", [lib.DR_CUT_TRACK_VIDEO])
+        assert lib.ff_disctl_cut_open(c, ffi.NULL, pl, len(cuts), k, H264, kinds, 1, ffi.NULL) == 0
+        keep = []
+        for t, key, start, rasl, ref in pics:
+            buf = ffi.new("uint8_t[]", 7)
+            keep.append(buf)
+            f = ffi.new("DRFrame *")
+            f.time, f.data, f.size = t, buf, 7
+            f.flags = (lib.DR_F_KEY | START_FLAG.get(start, 0) if key else 0) | (lib.DR_F_REF if ref else 0)
+            lib.ff_disctl_cut_frame(c[0], 0, f)
+        title, part, left = ffi.new("int64_t *"), ffi.new("int64_t *"), ffi.new("int64_t *")
+        lib.ff_disctl_cut_bytes(c[0], 0, title, part, left)
+        totals.append((title[0], part[0], left[0]))
+        lib.ff_disctl_cut_close(c)
+    assert all(t[0] == len(pics) * 7 for t in totals)
+    assert sum(t[1] + t[2] for t in totals) == len(pics) * 7, "parts + left out = the title"
+    assert sum(t[2] for t in totals) == 2 * 7, "the open key frame's two leading pictures"

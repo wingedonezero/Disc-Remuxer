@@ -360,6 +360,10 @@ int ff_disctl_frames_write_at(DRFrames *c, const uint8_t *data, int size, int64_
 
 /** The end of the segment: the units still buffered in the parser. */
 int ff_disctl_frames_flush(DRFrames *c);
+/** The reading stops before the stream's end on purpose (a cut part is
+ *  complete): what is left at the flush goes to the debug log, not as
+ *  damaged or cut data. */
+void ff_disctl_frames_stopped(DRFrames *c);
 
 void ff_disctl_frames_stats(const DRFrames *c, DRFramesStats *stats);
 
@@ -625,6 +629,9 @@ typedef struct DRJoinConfig {
     DRChapterRule  chapter_rule; /**< how a mark finds its chapter's frame (zero: the default rule) */
     DRJoinOutCb    out;   void *out_opaque;
     DREventCb      event; void *event_opaque;
+    int            has_range;    /**< a cut part (DRTitleConfig.range_*): chapter lines of marks outside go to the
+                                      debug log */
+    int64_t        range_from, range_to;
 } DRJoinConfig;
 
 typedef struct DRJoinStats {
@@ -1063,6 +1070,12 @@ typedef struct DRTitleConfig {
     const char         *cc_helper; /**< the caption converter program (for a DR_KIND_CAPTION track) */
     int                 nb_segments; /**< the segments the title is read in (0: not known) */
     DRPlaceCb           place; void *place_opaque;   /**< where a segment's block lies (NULL: not told) */
+    /** A cut part is read (the whole title, given out in part): the title
+     *  times from range_from up to range_to are the part's. Warnings with a
+     *  time outside it go to the debug log and are not counted for a track;
+     *  so do the chapter lines of marks outside it. */
+    int                 has_range;
+    int64_t             range_from, range_to;
 } DRTitleConfig;
 
 typedef struct DRTitle DRTitle;
@@ -1095,6 +1108,9 @@ int  ff_disctl_title_side_end(DRTitle *t, int track);
 const uint8_t *ff_disctl_title_textst_style(const DRTitle *t, int track, int *size);
 /** The end of the title: every stage finishes. */
 int  ff_disctl_title_finish(DRTitle *t);
+/** The same, when the reading stopped before the title's end on purpose (a
+ *  cut part is complete): the unfinished data at the end is no fault. */
+int  ff_disctl_title_finish_stopped(DRTitle *t);
 /** The next output frame (taken over by the caller): 0, DR_ERR(EAGAIN)
  *  when none is ready yet, DR_ERR_EOF after the last one. */
 int  ff_disctl_title_frame(DRTitle *t, int *track, DRFrame *frame);
@@ -1300,6 +1316,16 @@ int  ff_disctl_cut_frame(DRCut *c, int track, DRFrame *f);
 /** A track's frames given and its first frame's time on the part's clock
  *  (INT64_MIN: none). */
 void ff_disctl_cut_track(const DRCut *c, int track, int64_t *frames, int64_t *first);
+/** A track's bytes: of every frame the stage saw (the title's, as far as it
+ *  was read), of the frames given (a PCM frame cut down: its part), and of
+ *  the video's leading pictures left out. */
+void ff_disctl_cut_bytes(const DRCut *c, int track, int64_t *title, int64_t *part, int64_t *left);
+/** 1 once the part is complete and the reading may stop: the video past
+ *  the next cut's key frame by margin ticks, every audio track past its
+ *  own end (a unit at or after the next part's start; one that has none:
+ *  the video past the cut by ten times the margin). Never for the last
+ *  part. */
+int  ff_disctl_cut_done(const DRCut *c, int64_t margin);
 /** The end of the title: the part's key frames met where the cuts say
  *  (said in the log; DR_ERR_INVALID when not). */
 int  ff_disctl_cut_finish(DRCut *c);

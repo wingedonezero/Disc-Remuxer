@@ -912,6 +912,8 @@ void title_outcome_free(TitleOutcome *out)
         dr_freep(&out->damage[i]);
     dr_freep(&out->damage);
     out->nb_damage = 0;
+    dr_freep(&out->cut);
+    out->nb_cut = 0;
 }
 
 /* ---- output.format = mkvmerge: the stream files muxed by mkvmerge ----
@@ -1546,6 +1548,16 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     }
     if (ret == DR_ERR_EOF)
         ret = 0;
+    /* a cut part: its tracks' bytes, for the check after the title's last part */
+    if (ret >= 0 && job->nb_cuts && (res->cut = dr_calloc(nb_tracks ? nb_tracks : 1, sizeof(*res->cut)))) {
+        for (int i = 0; i < nb_tracks; i++) {
+            const DrDiscTrack *t = dr_disc_track(d, i);
+            int pcm = t->codec == DR_CODEC_PCM_S16LE || t->codec == DR_CODEC_PCM_S24LE;
+            res->cut[res->nb_cut++] = (CutTrackBytes){ t->number, t->cut_title_bytes, t->cut_bytes,
+                                                       t->cut_left_bytes, t->cut_read_all, pcm,
+                                                       pcm ? t->channels * (t->codec == DR_CODEC_PCM_S24LE ? 3 : 2) : 0 };
+        }
+    }
     if (mkv && ret >= 0) {
         /* the file is finished (its chapters are known now); its tracks count as written */
         for (int i = 0; i < nb_tracks; i++) {

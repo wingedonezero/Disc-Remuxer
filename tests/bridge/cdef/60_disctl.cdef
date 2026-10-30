@@ -242,6 +242,8 @@ typedef struct DRJoinConfig {
     void          *out_opaque;
     DREventCb      event;
     void          *event_opaque;
+    int            has_range;
+    int64_t        range_from, range_to;
 } DRJoinConfig;
 
 typedef struct DRJoinStats {
@@ -435,6 +437,8 @@ typedef struct DRTitleConfig {
     int                 nb_segments;
     DRPlaceCb           place;
     void               *place_opaque;
+    int                 has_range;
+    int64_t             range_from, range_to;
 } DRTitleConfig;
 
 typedef struct DRTitle DRTitle;

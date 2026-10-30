@@ -88,6 +88,11 @@ typedef struct DrDiscTrack {
     int64_t     no_stop, outside;        /**< subtitles: units without a stop time, units outside the canvas */
     unsigned    has_cc:1, has_spu:1, has_forced_objects:1;
     int64_t     forced_objects;          /**< PGS: forced objects shown (with has_forced_objects) */
+    /* a cut part (dr_disc_title_open_cut()): the bytes of the track's frames
+     * read (the title's, all of them when cut_read_all), given to this part,
+     * and (video) its leading pictures left out */
+    int64_t     cut_title_bytes, cut_bytes, cut_left_bytes;
+    unsigned    cut_read_all:1;
 } DrDiscTrack;
 
 /** A chapter of the read title (after DR_ERR_EOF): ticks on the title

@@ -385,6 +385,7 @@ static int parse_titles(const char *spec, const DiscInfo *d, int only_selected, 
 static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cuts, int *nb, int64_t *end,
                         int64_t **starts);
 static int cut_value(const char *v, int *title, const char **items);
+static int cut_check(int t, const CutTrackBytes *sums, int nb_sums, const CutTrackBytes *title, int nb_title);
 
 /* Each title's tracks to rip (select.h) into keeps[title] (freed with
  * free_keeps()); 0, or -1 (logged). */
@@ -788,6 +789,8 @@ static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
     char **ranges = NULL;               /* every title's damaged ranges, for the summary */
     int nb_ranges = 0;
     DrDiscCut *cuts = NULL;             /* the title's cuts (a title with cuts) */
+    CutTrackBytes *cut_sums = NULL, *cut_title = NULL;  /* its parts' bytes added up; its last part's */
+    int nb_cut_sums = 0, nb_cut_title = 0;
     int nb_cuts = 0;
     int64_t cut_end = 0, *cut_starts = NULL;
     uint8_t *vkeep = NULL;              /* a cut title's tracks: those a cut part carries */
@@ -862,6 +865,27 @@ static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
                 if (!l || dr_array_add_ptr(&ranges, &nb_ranges, l) < 0)
                     dr_free(l);
             }
+            /* a cut part: its tracks' bytes added up; the last part's title bytes are the whole title's */
+            for (int i = 0; i < res.nb_cut; i++) {
+                CutTrackBytes *s = NULL;
+                for (int k = 0; k < nb_cut_sums && !s; k++)
+                    if (cut_sums[k].number == res.cut[i].number)
+                        s = &cut_sums[k];
+                if (!s) {
+                    CutTrackBytes *n = realloc(cut_sums, (nb_cut_sums + 1) * sizeof(*n));
+                    if (!n)
+                        break;
+                    cut_sums = n;
+                    s = &cut_sums[nb_cut_sums++];
+                    *s = (CutTrackBytes){ res.cut[i].number, 0, 0, 0, 0, res.cut[i].pcm, res.cut[i].bytes_per_sample };
+                }
+                s->part += res.cut[i].part;
+                s->left += res.cut[i].left;
+            }
+            if (nb_cuts && p == parts - 1 && res.nb_cut && (cut_title = malloc(res.nb_cut * sizeof(*cut_title)))) {
+                memcpy(cut_title, res.cut, res.nb_cut * sizeof(*cut_title));
+                nb_cut_title = res.nb_cut;
+            }
             title_outcome_free(&res);
             /* a title stopped as asked is not written, not failed */
             part_stopped += res.stopped;
@@ -870,6 +894,13 @@ static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
             if (disk_full)
                 break;
         }
+        /* a cut title: every track's parts add up to the title */
+        if (nb_cuts && !part_failed && !part_stopped && !disk_full)
+            part_failed += cut_check(t, cut_sums, nb_cut_sums, cut_title, nb_cut_title);
+        free(cut_sums);
+        free(cut_title);
+        cut_sums    = cut_title = NULL;
+        nb_cut_sums = nb_cut_title = 0;
         free(cuts);
         free(cut_starts);
         free(vkeep);
@@ -1238,6 +1269,47 @@ int engine_cuts(const char *source, const char *title, const char *items, const 
     free(cuts);
     engine_disc_close(&e);
     return ret;
+}
+
+/* The check after a cut title's last part: per track, the bytes of all its
+ * parts (and the video's leading pictures left out) against the title's
+ * (the last part read the whole title); said per track. Returns the
+ * tracks that do not add up. */
+static int cut_check(int t, const CutTrackBytes *sums, int nb_sums, const CutTrackBytes *title, int nb_title)
+{
+    int bad = 0;
+
+    for (int i = 0; i < nb_title; i++) {
+        const CutTrackBytes *w = &title[i], *s = NULL;
+        int64_t got;
+        for (int k = 0; k < nb_sums && !s; k++)
+            if (sums[k].number == w->number)
+                s = &sums[k];
+        if (!s || !w->title)
+            continue;                   /* a track left out of the parts */
+        got = s->part + s->left;
+        if (!w->read_all) {
+            log_msg(MSG_CUTS, LOG_ERROR, "Cut check: title #%d track %d: the last part did not read the whole title: "
+                    "not checked", t, w->number);
+            bad++;
+            continue;
+        }
+        if (w->pcm && w->bytes_per_sample)
+            log_msg(MSG_CUTS, got == w->title ? LOG_OK : LOG_ERROR, "Cut check: title #%d track %d (LPCM): the parts' "
+                    "%"PRId64" samples %s the title's %"PRId64": %s", t, w->number, got / w->bytes_per_sample,
+                    got == w->title ? "=" : "differ from", w->title / w->bytes_per_sample,
+                    got == w->title ? "PASS" : "FAIL");
+        else if (s->left)
+            log_msg(MSG_CUTS, got == w->title ? LOG_OK : LOG_ERROR, "Cut check: title #%d track %d: the parts' %"PRId64
+                    " bytes + %"PRId64" of leading pictures left out %s the title's %"PRId64": %s", t, w->number,
+                    s->part, s->left, got == w->title ? "=" : "differ from", w->title, got == w->title ? "PASS" : "FAIL");
+        else
+            log_msg(MSG_CUTS, got == w->title ? LOG_OK : LOG_ERROR, "Cut check: title #%d track %d: the parts' %"PRId64
+                    " bytes %s the title's %"PRId64": %s", t, w->number, got, got == w->title ? "=" : "differ from",
+                    w->title, got == w->title ? "PASS" : "FAIL");
+        bad += got != w->title;
+    }
+    return bad;
 }
 
 /* One disc's demux run (engine_demux()). */

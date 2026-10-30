@@ -95,6 +95,7 @@ struct DiscTitleReader {
     /* the title timeline */
     DRTitle       *rip;
     DRCut         *cut;            /**< a cut part (DrDisc.opt_cuts): the stage that keeps its frames */
+    int            stop;            /**< a cut part is complete: the reading stops (1), the title finished (2) */
     DRChapterPlan  chapter_plan;
     int            first_clip, last_clip; /**< the clips read: the title's, filler clips at its ends left out */
     int           *pos_clip;        /**< position chapters: per open mark, its clip and byte offset */
@@ -1193,6 +1194,10 @@ int ff_disc_title_reader_open(DrDisc *d, const DiscTitleSource *src)
             .chapter_rule = d->chapter_rule,
             .nb_segments = r->last_clip - r->first_clip + 1,
             .place = block_words, .place_opaque = d,
+            .has_range  = d->opt_cuts != NULL,
+            .range_from = d->opt_cuts && d->opt_cut_part > 0 ? d->opt_cuts[d->opt_cut_part - 1].zero : INT64_MIN,
+            .range_to   = d->opt_cuts && d->opt_cut_part < d->nb_opt_cuts ? d->opt_cuts[d->opt_cut_part].zero :
+                                                                             INT64_MAX,
         };
         if ((ret = ff_disctl_title_open(&r->rip, (void *)d->log, &cfg)) < 0)
             return ret;
@@ -1402,6 +1407,12 @@ static void start_check(DrDisc *d)
         return;
     for (int k = r->first_clip; k <= r->last_clip; k++) {
         int64_t first, at = r->clip_at[k - r->first_clip], diff;
+        /* a cut part's reading stopped: the clips it read to their end only */
+        if (r->stop > 1 && k >= r->clip) {
+            dr_vlog(d->log, DR_VLOG_VERBOSE, "Title check: %s %s: the reading stopped %s it: its start is not "
+                   "checked\n", src->clip_kind, src->clip_name(d, k), k == r->clip ? "in" : "before");
+            continue;
+        }
         if (at == DR_NOPTS_VALUE || ff_disctl_title_segment_start(r->rip, k - r->first_clip, &first) < 0) {
             dr_vlog(d->log, DR_VLOG_VERBOSE, "Title check: %s %s: %s or its first picture not known: its start is not "
                    "checked\n", src->clip_kind, src->clip_name(d, k), src->clip_start_name);
@@ -1436,6 +1447,13 @@ static int read_input(DrDisc *d)
     int64_t sector;
     int first, ret;
 
+    /* a cut part complete: the title ends here, as at the disc's end */
+    if (r->stop) {
+        if (r->stop > 1)
+            return DR_ERR_BUG;
+        r->stop = 2;
+        return ff_disctl_title_finish_stopped(r->rip);
+    }
     ret = clip_err(dr_clip_read(r->ps, &pkt));
     /* Blu-ray: the stretches of the stream file left out so far (all of
      * them at its end) */
@@ -1700,6 +1718,9 @@ static int report_damage(DrDisc *d)
 /* What the title gives the caller at its end: chapters, the untested
  * features met, the caption data taken out of the video, each track's
  * result. */
+/* How far past its end a cut part reads (the video, then its stop). */
+#define CUT_MARGIN (2 * DR_TICKS_PER_SECOND)
+
 /* A cut part's results at the title's end: its key frames met, its frames
  * and start, its chapters (the title's placed chapters inside it, on its
  * clock; one at 0 from the chapter it starts in when it starts inside one)
@@ -1719,10 +1740,13 @@ static int cut_end(DrDisc *d)
         return ret;
     ff_disctl_cut_result(r->cut, &cr);
     for (int i = 0; i < d->nb_out_tracks; i++) {
+        DrDiscTrack *t = &d->out_tracks[i];
         int64_t frames, first;
         ff_disctl_cut_track(r->cut, i, &frames, &first);
-        d->out_tracks[i].frames      = frames;
-        d->out_tracks[i].delay_ticks = first == INT64_MIN ? 0 : first;
+        t->frames      = frames;
+        t->delay_ticks = first == INT64_MIN ? 0 : first;
+        ff_disctl_cut_bytes(r->cut, i, &t->cut_title_bytes, &t->cut_bytes, &t->cut_left_bytes);
+        t->cut_read_all = r->stop < 2;
     }
     if (!(ch = dr_calloc(d->nb_chapters + 1, sizeof(*ch))))
         return DR_ERR_NOMEM;
@@ -1906,7 +1930,15 @@ int ff_disc_title_reader_frame(DrDisc *d, DrDiscFrame *out)
                 if (d->track_cut[k] == DR_CUT_TRACK_PCM)
                     ff_disctl_cut_pcm(r->cut, k, t->sample_rate,
                                       t->channels * (t->codec == DR_CODEC_PCM_S24LE ? 3 : 2));
-                if ((ret = ff_disctl_cut_frame(r->cut, k, &f)) <= 0) {
+                ret = ff_disctl_cut_frame(r->cut, k, &f);
+                if (ret >= 0 && !r->stop && ff_disctl_cut_done(r->cut, CUT_MARGIN)) {
+                    r->stop = 1;
+                    dr_vlog(d->log, DR_VLOG_INFO, "Cut part %d/%d: complete: the reading stops here (its end + %d s), "
+                           "%"PRId64"%% of the title read; the title's checks below cover what was read\n",
+                           d->opt_cut_part + 1, d->nb_opt_cuts + 1, (int)(CUT_MARGIN / DR_TICKS_PER_SECOND),
+                           r->blocks_total ? r->blocks_done * 100 / r->blocks_total : 0);
+                }
+                if (ret <= 0) {
                     ff_disctl_frame_unref(&f);
                     if (ret < 0)
                         return ret;

@@ -79,6 +79,8 @@ int  ff_disctl_cut_open(DRCut **c, void *log, const DRCutPlace *cuts, int nb_cut
                         const int *kinds, int nb_tracks, const int64_t *starts);
 void ff_disctl_cut_pcm(DRCut *c, int track, int rate, int bytes_per_sample_frame);
 void ff_disctl_cut_track(const DRCut *c, int track, int64_t *frames, int64_t *first);
+void ff_disctl_cut_bytes(const DRCut *c, int track, int64_t *title, int64_t *part, int64_t *left);
+int  ff_disctl_cut_done(const DRCut *c, int64_t margin);
 int  ff_disctl_cut_frame(DRCut *c, int track, DRFrame *f);
 int  ff_disctl_cut_finish(DRCut *c);
 void ff_disctl_cut_result(const DRCut *c, DRCutResult *r);

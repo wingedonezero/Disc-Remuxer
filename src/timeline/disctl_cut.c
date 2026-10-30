@@ -45,6 +45,8 @@ typedef struct CutTrack {
     /* subtitles: shown across the part's start / end; PGS: what the sets show */
     int64_t    across_start, across_end;
     int        before_shows, last_shows, given_any, after_seen, normal_start;
+    int64_t    title_bytes, part_bytes, left_bytes;
+    int        past_end;     /* a unit of the next part was seen */
 } CutTrack;
 
 struct DRCut {
@@ -57,6 +59,7 @@ struct DRCut {
     int        codec;        /* DRCutCodec */
     int        phase;
     int        leading;      /* still after the part's key frame, before the next key frame */
+    int64_t    video_max;    /* the latest video time seen (title clock), INT64_MIN none */
     int        seen_to;
     DRCutResult r;
 };
@@ -111,8 +114,9 @@ int ff_disctl_cut_open(DRCut **pc, void *log, const DRCutPlace *cuts, int nb_cut
         c->from = cuts[part - 1];
     if ((c->has_to = part < nb_cuts))
         c->to = cuts[part];
-    c->phase   = c->has_from ? BEFORE : IN;
-    c->r.first = INT64_MAX;
+    c->phase     = c->has_from ? BEFORE : IN;
+    c->r.first   = INT64_MAX;
+    c->video_max = INT64_MIN;
     *pc = c;
     return 0;
 }
@@ -247,15 +251,26 @@ static int cut_video(DRCut *c, DRFrame *f)
 int ff_disctl_cut_frame(DRCut *c, int track, DRFrame *f)
 {
     CutTrack *t = track >= 0 && track < c->nb_tracks ? &c->t[track] : NULL;
-    int ret;
+    int ret, size = f->size;
 
     if (!t || t->kind == DR_CUT_TRACK_NONE) {
         if (t)
             t->left++;
         return 0;
     }
-    if (t->kind == DR_CUT_TRACK_VIDEO)
+    t->title_bytes += size;
+    if (f->time != DR_NOPTS_VALUE) {
+        if (t->kind == DR_CUT_TRACK_VIDEO)
+            c->video_max = DR_MAX(c->video_max, f->time);
+        else if (c->has_to && f->time >= (t->kind == DR_CUT_TRACK_ENTRY ? t->to : c->to.zero))
+            t->past_end = 1;
+    }
+    if (t->kind == DR_CUT_TRACK_VIDEO) {
+        int64_t left = c->r.left_out;
         ret = cut_video(c, f);
+        if (c->r.left_out != left)
+            t->left_bytes += size;
+    }
     else if (f->time == DR_NOPTS_VALUE)
         ret = 0;                        /* audio without a time has no place in a part */
     else if (t->kind == DR_CUT_TRACK_PCM)
@@ -272,12 +287,36 @@ int ff_disctl_cut_frame(DRCut *c, int track, DRFrame *f)
         return ret;
     if (c->has_from && f->time != DR_NOPTS_VALUE)
         f->time -= c->from.zero;
+    t->part_bytes += f->size;
     t->frames++;
     if (f->time != DR_NOPTS_VALUE && (t->first == INT64_MIN || f->time < t->first))
         t->first = f->time;
     if (t->kind == DR_CUT_TRACK_VIDEO) {
         c->r.pictures++;
         c->r.first = DR_MIN(c->r.first, f->time);
+    }
+    return 1;
+}
+
+void ff_disctl_cut_bytes(const DRCut *c, int track, int64_t *title, int64_t *part, int64_t *left)
+{
+    const CutTrack *t = track >= 0 && track < c->nb_tracks ? &c->t[track] : NULL;
+
+    *title = t ? t->title_bytes : 0;
+    *part  = t ? t->part_bytes : 0;
+    *left  = t ? t->left_bytes : 0;
+}
+
+int ff_disctl_cut_done(const DRCut *c, int64_t margin)
+{
+    if (!c->has_to || !c->seen_to || c->video_max == INT64_MIN || c->video_max < c->to.zero + margin)
+        return 0;
+    for (int i = 0; i < c->nb_tracks; i++) {
+        const CutTrack *t = &c->t[i];
+        int audio = t->kind == DR_CUT_TRACK_EVERY || t->kind == DR_CUT_TRACK_PCM || t->kind == DR_CUT_TRACK_ENTRY;
+        if (audio && !t->past_end && !(t->kind == DR_CUT_TRACK_ENTRY && t->to == INT64_MAX) &&
+            c->video_max < c->to.zero + 10 * margin)
+            return 0;
     }
     return 1;
 }

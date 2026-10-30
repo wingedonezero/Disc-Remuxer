@@ -40,6 +40,7 @@ typedef struct Record {
 
 struct DRFrames {
     void                 *log;
+    int                   stopped; /* the reading stopped before the end (ff_disctl_frames_stopped()) */
     const DRCodec        *codec;
     DrSplit              *split;   /* the codec's own rule (DRCodec.split), or */
     DrStock              *hp;      /* the stock cutter */
@@ -280,6 +281,13 @@ static void left_out(DRFrames *c, int64_t off, int k, int what)
     place_of(c, off, where, sizeof(where));
     if (where[0])
         snprintf(at, sizeof(at), " (%s)", where);
+    /* the reading stopped on purpose (a cut part complete): what is left
+     * of the stream at its end is no fault of the disc */
+    if (c->stopped && what != LEFT_START && what != LEFT_REFUSED) {
+        dr_vlog(c->log, DR_VLOG_VERBOSE, "%s: the reading stopped before the %s's end: its last %d bytes (stream offset "
+               "%"PRId64") are left out%s\n", c->label, c->part, k, off, at);
+        return;
+    }
     switch (what) {
     case LEFT_START:
         dr_vlog(c->log, DR_VLOG_INFO, "%s: the first %d bytes of the %s come before its first frame start: left "
@@ -627,6 +635,11 @@ int ff_disctl_frames_write_at(DRFrames *c, const uint8_t *data, int size, int64_
     }
     c->st.bytes += size;
     return 0;
+}
+
+void ff_disctl_frames_stopped(DRFrames *c)
+{
+    c->stopped = 1;
 }
 
 int ff_disctl_frames_flush(DRFrames *c)
