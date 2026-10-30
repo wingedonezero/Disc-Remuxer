@@ -1198,7 +1198,9 @@ int ff_disc_title_reader_open(DrDisc *d, const DiscTitleSource *src)
             return ret;
     }
     if (d->opt_cuts && (ret = ff_disctl_cut_open(&r->cut, (void *)d->log, d->opt_cuts, d->nb_opt_cuts, d->opt_cut_part,
-                                                 src->nb_tracks && src->tracks[0].codec == DR_CODEC_HEVC)) < 0)
+                                                 !src->nb_tracks ? DR_CUT_OTHER :
+                                                 src->tracks[0].codec == DR_CODEC_HEVC ? DR_CUT_HEVC :
+                                                 src->tracks[0].codec == DR_CODEC_H264 ? DR_CUT_H264 : DR_CUT_OTHER)) < 0)
         return ret;
     for (int i = r->first_clip; i <= r->last_clip; i++)
         r->blocks_total += src->clip_blocks(d, i);
@@ -1748,6 +1750,10 @@ static int cut_end(DrDisc *d)
         dr_vlog(d->log, DR_VLOG_INFO, "Cut part %d/%d: %"PRId64" picture(s) shown before its key frame need the "
                 "pictures before it: left out (in neither part)\n", d->opt_cut_part + 1, d->nb_opt_cuts + 1,
                 cr.left_out);
+    if (cr.undecodable)
+        dr_vlog(d->log, DR_VLOG_INFO, "Cut part %d/%d: %"PRId64" picture(s) shown before its key frame need the "
+                "pictures before it and cannot be left out: kept (players do not show them)\n",
+                d->opt_cut_part + 1, d->nb_opt_cuts + 1, cr.undecodable);
     return 0;
 }
 
@@ -1878,6 +1884,7 @@ int ff_disc_title_reader_frame(DrDisc *d, DrDiscFrame *out)
             out->key      = !!(f.flags & DR_F_KEY);
             out->discard  = !!(f.flags & DR_F_DISCARD);
             out->rasl     = !!(f.flags & DR_F_RASL);
+            out->ref      = !!(f.flags & DR_F_REF);
             out->start    = f.flags & DR_F_START_CLEAN  ? DR_DISC_START_CLEAN  :
                             f.flags & DR_F_START_BROKEN ? DR_DISC_START_BROKEN :
                             f.flags & DR_F_START_OPEN   ? DR_DISC_START_OPEN   : DR_DISC_START_NONE;

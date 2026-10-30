@@ -22,6 +22,7 @@ typedef struct CutPicture {
     uint8_t key;             /* a key frame */
     uint8_t start;           /* key frames: enum DrDiscStart */
     uint8_t rasl;            /* a leading picture that cannot be decoded from its key frame alone */
+    uint8_t ref;             /* H.264: a reference picture */
 } CutPicture;
 
 /* A place a part can start: a key frame and its group. */
@@ -30,7 +31,8 @@ typedef struct CutPoint {
     int64_t key_time;        /* the key frame's time */
     int     start;           /* enum DrDiscStart of the key frame */
     int     kept;            /* pictures after the key frame in decoding order shown before it, decodable */
-    int     left_out;        /* those that cannot be decoded without the group before (left out of the part) */
+    int     undecodable;     /* those that cannot be decoded without the group before, kept all the same */
+    int     left_out;        /* those that cannot be decoded, left out of the part */
 } CutPoint;
 
 /* The places a part can start, from the pictures in decoding order: one
@@ -38,10 +40,12 @@ typedef struct CutPoint {
  * frame in decoding order and are shown before it (its leading pictures)
  * can be decoded from it when it starts cleanly (an IDR picture, a closed
  * GOP, a closed entry point); after any other key frame they need the group
- * before it, except where the codec marks its leading pictures one by one
- * (marked: HEVC, whose RADL pictures decode and RASL pictures do not). 0, or
- * a negative base error. */
-int cut_points(const CutPicture *pics, int nb, int marked, CutPoint **points, int *nb_points);
+ * before it, except HEVC's RADL pictures. One that cannot be decoded is left
+ * out where the codec allows the stream without it (an HEVC RASL picture,
+ * an H.264 picture that is no reference picture), else kept (timeline
+ * ff_disctl_leading_kept()). The part's 0 is the earliest picture kept.
+ * codec: DRCutCodec. 0, or a negative base error. */
+int cut_points(const CutPicture *pics, int nb, int codec, CutPoint **points, int *nb_points);
 
 /* What is asked: a chapter (from 1, as the rip names it: 'Chapter 05') or
  * a time on the title timeline. */
@@ -87,7 +91,7 @@ int cut_resolve(const CutPoint *points, int nb_points, const int64_t *chapters, 
 typedef struct CutIndex {
     CutPicture *pics;
     int         nb_pics;
-    int         marked;      /* the codec marks its leading pictures (cut_points()) */
+    int         codec;       /* DRCutCodec of the video (cut_points()) */
     int64_t    *chapters;    /* ticks; read only when the title was read to its end */
     int         nb_chapters;
     int64_t     end;         /* ticks: the end of the last picture read */

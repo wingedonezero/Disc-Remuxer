@@ -1050,7 +1050,7 @@ static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cut
     rule = !strcmp(setting_text("cuts.key_frame"), "next") ? CUT_NEXT : CUT_NEAREST;
     log_text(LOG_INFO, "Cuts: %s; a time not on a key frame takes the %s key frame (setting cuts.key_frame)", items,
              rule == CUT_NEXT ? "next" : "nearest");
-    if (cut_index_read(e->disc, t, stop, &ix) < 0 || cut_points(ix.pics, ix.nb_pics, ix.marked, &pts, &nb_pts) < 0)
+    if (cut_index_read(e->disc, t, stop, &ix) < 0 || cut_points(ix.pics, ix.nb_pics, ix.codec, &pts, &nb_pts) < 0)
         goto end;
     log_text(LOG_INFO, "Cuts: the title's video read %s: %d picture(s), %d place(s) a part can start",
              ix.complete ? "to its end" : "as far as the cuts need", ix.nb_pics, nb_pts);
@@ -1061,7 +1061,7 @@ static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cut
     for (int i = 0; i < nb_reqs; i++) {
         const CutResult *r = &res[i];
         const CutPoint *p;
-        char asked[96], extra[256] = "";
+        char asked[96], extra[640] = "", c[40];
 
         if (reqs[i].chapter && r->target)
             snprintf(asked, sizeof(asked), "chapter %d (%s)", reqs[i].chapter, cut_time_text(a, sizeof(a), r->target));
@@ -1082,6 +1082,11 @@ static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cut
         if (p->kept)
             snprintf(extra, sizeof(extra), "; the part starts with %d picture(s) shown before its key frame "
                      "(they decode from it)", p->kept);
+        if (p->undecodable)
+            snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "; %d picture(s) shown before it "
+                     "need the pictures before it and cannot be left out (reference pictures, or a codec that "
+                     "does not allow it): kept, the part starts with them (players do not show them; its first "
+                     "picture that decodes at %s)", p->undecodable, cut_time_text(c, sizeof(c), p->key_time - p->zero));
         if (p->left_out)
             snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "; %d picture(s) shown before it "
                      "need the pictures before it: left out (in neither part)", p->left_out);

@@ -119,6 +119,7 @@ typedef struct DrDiscFrame {
     unsigned    key:1, discard:1;
     unsigned    rasl:1;          /**< video: a leading picture that cannot be decoded from the key frame before it
                                       alone (HEVC RASL) */
+    unsigned    ref:1;           /**< video (H.264): a reference picture */
     int         start;           /**< video key frames: enum DrDiscStart */
 } DrDiscFrame;
 

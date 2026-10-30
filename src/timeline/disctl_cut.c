@@ -7,7 +7,9 @@
  * own, but for its leading pictures that do not decode without the group
  * before it (ISO/IEC 13818-2 closed_gop / broken_link, H.264 IDR and
  * recovery points, H.265 7.4.2.2 RADL / RASL pictures, SMPTE 421M entry
- * points); from the next cut's key frame on the next part's.
+ * points) where leaving them out leaves a stream the codec allows
+ * (ff_disctl_leading_kept()); from the next cut's key frame on the next
+ * part's.
  */
 
 #include <errno.h>
@@ -30,7 +32,7 @@ struct DRCut {
     DRCutPlace from, to;     /* the part's cut and the next one's (has_from / has_to) */
     int        has_from, has_to;
     int        part, nb_parts;
-    int        marked;
+    int        codec;        /* DRCutCodec */
     int        phase;
     int        leading;      /* still after the part's key frame, before the next key frame */
     int        seen_to;
@@ -38,12 +40,19 @@ struct DRCut {
     DRCutResult r;
 };
 
-int ff_disctl_leading_decodes(int start, int marked, int rasl)
+int ff_disctl_leading_decodes(int start, int codec, int rasl)
 {
-    return start == DR_START_CLEAN || (marked && !rasl);
+    return start == DR_START_CLEAN || (codec == DR_CUT_HEVC && !rasl);
 }
 
-int ff_disctl_cut_open(DRCut **pc, void *log, const DRCutPlace *cuts, int nb_cuts, int part, int marked)
+int ff_disctl_leading_kept(int start, int codec, int rasl, int ref)
+{
+    if (ff_disctl_leading_decodes(start, codec, rasl))
+        return 1;
+    return !((codec == DR_CUT_HEVC && rasl) || (codec == DR_CUT_H264 && !ref));
+}
+
+int ff_disctl_cut_open(DRCut **pc, void *log, const DRCutPlace *cuts, int nb_cuts, int part, int codec)
 {
     DRCut *c;
 
@@ -58,7 +67,7 @@ int ff_disctl_cut_open(DRCut **pc, void *log, const DRCutPlace *cuts, int nb_cut
     c->log      = log;
     c->part     = part;
     c->nb_parts = nb_cuts + 1;
-    c->marked   = marked;
+    c->codec    = codec;
     if ((c->has_from = part > 0))
         c->from = cuts[part - 1];
     if ((c->has_to = part < nb_cuts))
@@ -102,10 +111,13 @@ int ff_disctl_cut_frame(DRCut *c, int track, DRFrame *f)
         }
         if (c->leading && key)
             c->leading = 0;
-        else if (c->leading && f->time < c->from.key_time &&
-                 !ff_disctl_leading_decodes(c->r.start, c->marked, !!(f->flags & DR_F_RASL))) {
-            c->r.left_out++;
-            return 0;
+        else if (c->leading && f->time < c->from.key_time) {
+            int rasl = !!(f->flags & DR_F_RASL), ref = !!(f->flags & DR_F_REF);
+            if (!ff_disctl_leading_kept(c->r.start, c->codec, rasl, ref)) {
+                c->r.left_out++;
+                return 0;
+            }
+            c->r.undecodable += !ff_disctl_leading_decodes(c->r.start, c->codec, rasl);
         }
         break;
     default:
@@ -154,7 +166,8 @@ int ff_disctl_cut_finish(DRCut *c)
                 "only the video is cut so far\n", c->part + 1, c->nb_parts, c->other);
     if (c->has_from)
         dr_vlog(c->log, DR_VLOG_VERBOSE, "Cut part %d/%d: its key frame met (%s), %"PRId64" picture(s) given, %"PRId64
-                " left out\n", c->part + 1, c->nb_parts, start_name(c->r.start), c->r.pictures, c->r.left_out);
+                " left out, %"PRId64" kept that cannot be decoded\n", c->part + 1, c->nb_parts, start_name(c->r.start),
+                c->r.pictures, c->r.left_out, c->r.undecodable);
     return 0;
 }
 

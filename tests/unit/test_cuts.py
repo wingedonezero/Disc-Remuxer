@@ -9,31 +9,34 @@ TPS = 1_080_000_000
 F = 45_045_000                      # one picture at 23.976
 MS = TPS // 1000
 CLEAN, BROKEN, OPEN = lib.DR_DISC_START_CLEAN, lib.DR_DISC_START_BROKEN, lib.DR_DISC_START_OPEN
+OTHER, H264, HEVC = lib.DR_CUT_OTHER, lib.DR_CUT_H264, lib.DR_CUT_HEVC
 
 
 def pics(*specs):
     """Pictures in decoding order: (picture number shown, start) for key
-    frames, a number for the others; ('r', n) a RASL picture."""
+    frames, a number for the others; ('r', n) an HEVC RASL picture, ('R', n)
+    an H.264 reference picture."""
     out = []
     for s in specs:
-        if isinstance(s, tuple) and s[0] == 'r':
-            out.append((s[1] * F, 0, 0, 1))
+        if isinstance(s, tuple) and s[0] in ('r', 'R'):
+            out.append((s[1] * F, 0, 0, s[0] == 'r', s[0] == 'R'))
         elif isinstance(s, tuple):
-            out.append((s[0] * F, 1, s[1], 0))
+            out.append((s[0] * F, 1, s[1], 0, 1))
         else:
-            out.append((s * F, 0, 0, 0))
+            out.append((s * F, 0, 0, 0, 0))
     a = ffi.new("CutPicture[]", len(out))
-    for i, (t, key, start, rasl) in enumerate(out):
-        a[i].time, a[i].duration, a[i].key, a[i].start, a[i].rasl = t, F, key, start, rasl
+    for i, (t, key, start, rasl, ref) in enumerate(out):
+        a[i].time, a[i].duration, a[i].key, a[i].start, a[i].rasl, a[i].ref = t, F, key, start, rasl, ref
     return a, len(out)
 
 
-def points(specs, marked=0):
+def points(specs, codec=OTHER):
+    """(zero, key frame, its start, kept decodable, kept not decodable, left out), in pictures."""
     a, n = pics(*specs)
     p, np_ = ffi.new("CutPoint **"), ffi.new("int *")
-    assert lib.cut_points(a, n, marked, p, np_) == 0
-    got = [(p[0][i].zero // F, p[0][i].key_time // F, p[0][i].start, p[0][i].kept, p[0][i].left_out)
-           for i in range(np_[0])]
+    assert lib.cut_points(a, n, codec, p, np_) == 0
+    got = [(p[0][i].zero // F, p[0][i].key_time // F, p[0][i].start, p[0][i].kept, p[0][i].undecodable,
+            p[0][i].left_out) for i in range(np_[0])]
     lib.free(p[0])
     return got
 
@@ -47,22 +50,26 @@ def gops(second):
     return [(s[0], second) if isinstance(s, tuple) and s[1] is None else s for s in GOPS]
 
 
-def test_an_open_key_frame_leaves_its_leading_pictures_out():
-    assert points(gops(OPEN)) == [(6, 6, OPEN, 0, 2), (10, 12, CLEAN, 2, 0)]
-    assert points(gops(BROKEN))[0] == (6, 6, BROKEN, 0, 2)
+def test_an_open_key_frame_leaves_out_what_the_codec_allows_and_keeps_the_rest():
+    # H.264: non-reference leading pictures are left out (no frame_num goes missing)
+    assert points(gops(OPEN), H264) == [(6, 6, OPEN, 0, 0, 2), (10, 12, CLEAN, 2, 0, 0)]
+    assert points(gops(BROKEN), H264)[0] == (6, 6, BROKEN, 0, 0, 2)
+    # H.264: a reference leading picture is kept (left out it would leave a frame_num gap); the others go
+    assert points([(0, CLEAN), 3, 1, 2, (6, OPEN), ('R', 4), 5, 9, 7, 8], H264) == [(4, 6, OPEN, 0, 1, 1)]
+    # MPEG-2 / VC-1: kept, as stream-copy cutting keeps them; the part starts with them
+    assert points(gops(OPEN), OTHER)[0] == (4, 6, OPEN, 0, 2, 0)
 
 
 def test_a_clean_key_frame_keeps_its_leading_pictures_and_starts_with_them():
     # a closed GOP: its B pictures decode from the I picture after them
-    assert points(gops(CLEAN))[0] == (4, 6, CLEAN, 2, 0)
+    for codec in (OTHER, H264, HEVC):
+        assert points(gops(CLEAN), codec)[0] == (4, 6, CLEAN, 2, 0, 0)
 
 
 def test_hevc_marks_each_leading_picture():
     # a CRA picture with a RASL picture (left out) and a RADL picture (kept)
     specs = [(0, CLEAN), 3, 1, 2, (6, OPEN), ('r', 4), 5, 9, 7, 8]
-    assert points(specs, marked=1) == [(5, 6, OPEN, 1, 1)]
-    # unmarked (H.264): the open key frame's leading pictures all need the group before
-    assert points(specs, marked=0) == [(6, 6, OPEN, 0, 2)]
+    assert points(specs, HEVC) == [(5, 6, OPEN, 1, 0, 1)]
 
 
 def test_the_first_picture_is_no_place_to_cut():
@@ -79,10 +86,10 @@ def req(*items):
     return r, len(items)
 
 
-def resolve(specs, items, rule=lib.CUT_NEAREST, chapters=(), end=None, marked=0):
+def resolve(specs, items, rule=lib.CUT_NEAREST, chapters=(), end=None, codec=OTHER):
     a, n = pics(*specs)
     p, np_ = ffi.new("CutPoint **"), ffi.new("int *")
-    assert lib.cut_points(a, n, marked, p, np_) == 0
+    assert lib.cut_points(a, n, codec, p, np_) == 0
     r, nr = req(*items)
     res = ffi.new("CutResult[]", nr)
     ch = ffi.new("int64_t[]", [c for c in chapters] or [0])

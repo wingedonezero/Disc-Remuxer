@@ -97,6 +97,7 @@ const DRTimelineHost *ff_disctl_host(void);
                                     (ff_disctl_title_place()); ctr holds how many */
 #define DR_F_RASL     0x8000   /**< video: a leading picture that cannot be decoded from the key frame
                                     before it in decoding order alone (HEVC RASL, H.265 7.4.2.2) */
+#define DR_F_REF      0x10000  /**< video (H.264): a reference picture (nal_ref_idc not 0, H.264 7.4.1) */
 
 typedef struct DRFrame {
     DrBuf *buf;      /**< owns the bytes (NULL for a marker) */
@@ -160,6 +161,7 @@ typedef struct DRPicture {
     int seq_end;        /**< the unit carries an end of sequence code (MPEG-2, VC-1) */
     int seq_start;      /**< the unit starts a sequence: a sequence header before its picture (MPEG-2, VC-1) */
     int rasl;           /**< a leading picture that needs pictures before its key frame (DR_F_RASL) */
+    int ref;            /**< H.264: a reference picture (DR_F_REF) */
 } DRPicture;
 
 /* What the core needs to know about a video codec. */
@@ -1218,12 +1220,25 @@ int ff_disctl_mlp_checksums(void *state, const uint8_t *data, int size, const ch
  * starts begins with the first picture of the key frame's group that
  * decodes (its zero) and ends where the next cut's part begins. ---- */
 
+/** What a cut needs to know of the video codec (DRCutCodec). */
+enum DRCutCodec {
+    DR_CUT_OTHER = 0,   /**< MPEG-2, VC-1, ... */
+    DR_CUT_H264,
+    DR_CUT_HEVC,        /**< marks its leading pictures one by one (RADL / RASL) */
+};
+
 /** Whether a leading picture (after its key frame in decoding order, shown
  *  before it) decodes from the key frame on its own: always after a clean
- *  key frame (DRStart); after any other only where the codec marks its
- *  leading pictures one by one (marked: HEVC) and this one is no RASL
- *  picture. */
-int ff_disctl_leading_decodes(int start, int marked, int rasl);
+ *  key frame (DRStart); after any other only in HEVC and when it is no
+ *  RASL picture. */
+int ff_disctl_leading_decodes(int start, int codec, int rasl);
+/** Whether a part that starts at the key frame keeps the leading picture:
+ *  one that decodes, yes; one that does not is left out only where that
+ *  leaves a stream the codec allows (an HEVC RASL picture, H.265 8.1.3; an
+ *  H.264 picture that is no reference picture, so no frame_num goes
+ *  missing, H.264 7.4.3); every other one is kept, as stream-copy cutting
+ *  keeps them (players do not show what cannot be decoded). */
+int ff_disctl_leading_kept(int start, int codec, int rasl, int ref);
 
 /** A cut's place on the title timeline (ticks). */
 typedef struct DRCutPlace {
@@ -1235,6 +1250,7 @@ typedef struct DRCutPlace {
 typedef struct DRCutResult {
     int64_t pictures;   /**< video pictures given out */
     int64_t left_out;   /**< leading pictures of the part's key frame that do not decode: left out */
+    int64_t undecodable;/**< those kept all the same (ff_disctl_leading_kept()) */
     int64_t first;      /**< the earliest picture given out, on the part's clock (0 when it is right) */
     int     start;      /**< DRStart of the part's key frame (0 for the first part) */
 } DRCutResult;
@@ -1242,9 +1258,9 @@ typedef struct DRCutResult {
 typedef struct DRCut DRCut;
 
 /** The stage for part `part` (0 .. nb_cuts) of a title cut at cuts (in
- *  time order); marked: the video codec marks its leading pictures (HEVC).
- *  0, or a negative base error. */
-int  ff_disctl_cut_open(DRCut **c, void *log, const DRCutPlace *cuts, int nb_cuts, int part, int marked);
+ *  time order); codec: DRCutCodec of the video. 0, or a negative base
+ *  error. */
+int  ff_disctl_cut_open(DRCut **c, void *log, const DRCutPlace *cuts, int nb_cuts, int part, int codec);
 /** A frame of the title timeline (in its order): 1 when it belongs to the
  *  part (its time is now on the part's clock), 0 when not (the caller drops
  *  it). Only the master video (track 0) is cut so far: other tracks' frames

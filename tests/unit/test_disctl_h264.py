@@ -365,3 +365,13 @@ def test_field_pictures_are_joined_into_frames_and_that_is_said_once():
     assert b"".join(o[0] for o in s.out) == b"".join(without(u, set()) for u, _ in units), "every picture, in order"
     notes = [l for l in LOG if "field pictures: the two fields of a frame are joined into one frame" in l]
     assert len(notes) == 1 and "untested" not in notes[0], LOG
+
+
+def test_reference_pictures_are_marked():
+    # I and P pictures here are reference pictures (nal_ref_idc 3), B pictures are not (0)
+    units = gop(0) + gop(1, idr=False)
+    s, _, ret = run([(u, t) for u, t, _ in units])
+    assert ret == 0
+    refs = [bool(o[3] & lib.DR_F_REF) for o in s.out]
+    assert refs == [not (o[3] & lib.DR_F_DISCARD) for o in s.out]
+    assert refs.count(True) == 2 * (1 + (N - 1) // 3)

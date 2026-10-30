@@ -43,6 +43,7 @@ typedef struct VUnit {
     int      seq_end;               /* carries an end of sequence code */
     int      seq_start;             /* starts a sequence (a sequence header before its picture) */
     int      rasl;                  /* DRPicture.rasl */
+    int      ref;                   /* DRPicture.ref */
     int64_t  seq;                   /* the unit's number in the segment */
 } VUnit;
 
@@ -580,9 +581,11 @@ static int assign(DRVideo *v, int n, int no_check)
                 v->e8 = p;
         }
         u.f.flags &= ~(DR_F_KEY | DR_F_DISCARD | DR_F_BATCH | DR_F_START_CLEAN | DR_F_START_BROKEN |
-                       DR_F_START_OPEN | DR_F_RASL);
+                       DR_F_START_OPEN | DR_F_RASL | DR_F_REF);
         if (u.rasl)
             u.f.flags |= DR_F_RASL;
+        if (u.ref)
+            u.f.flags |= DR_F_REF;
         if ((u.type == DR_PIC_I && !v->rules->codec_keys) || u.key) {
             u.f.flags |= DR_F_KEY;
             u.f.flags |= u.start == DR_START_CLEAN  ? DR_F_START_CLEAN  :
@@ -1077,6 +1080,7 @@ int ff_disctl_video_unit(void *opaque, const DRUnit *du)
     u.seq_end   = pic.seq_end;
     u.seq_start = pic.seq_start;
     u.rasl      = pic.rasl;
+    u.ref       = pic.ref;
     if (is_pic(u.type) && u.fields <= 0) {
         dr_vlog(v->log, DR_VLOG_ERROR, "Title timeline: video: a picture without a duration\n");
         ff_disctl_frame_unref(&u.f);

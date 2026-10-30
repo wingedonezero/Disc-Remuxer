@@ -30,7 +30,7 @@ static int by_zero(const void *a, const void *b)
     return (x->zero > y->zero) - (x->zero < y->zero);
 }
 
-int cut_points(const CutPicture *pics, int nb, int marked, CutPoint **points, int *nb_points)
+int cut_points(const CutPicture *pics, int nb, int codec, CutPoint **points, int *nb_points)
 {
     CutPoint *p;
     int n = 0;
@@ -56,11 +56,15 @@ int cut_points(const CutPicture *pics, int nb, int marked, CutPoint **points, in
         for (int j = i + 1; j < nb && !pics[j].key; j++) {
             if (pics[j].time >= pics[i].time)
                 continue;
-            if (ff_disctl_leading_decodes(pics[i].start, marked, pics[j].rasl)) {
-                c->kept++;
-                c->zero = DR_MIN(c->zero, pics[j].time);
-            } else
+            if (!ff_disctl_leading_kept(pics[i].start, codec, pics[j].rasl, pics[j].ref)) {
                 c->left_out++;
+                continue;
+            }
+            if (ff_disctl_leading_decodes(pics[i].start, codec, pics[j].rasl))
+                c->kept++;
+            else
+                c->undecodable++;
+            c->zero = DR_MIN(c->zero, pics[j].time);
         }
     }
     qsort(p, n, sizeof(*p), by_zero);
@@ -240,7 +244,7 @@ static int add_picture(CutIndex *ix, int *cap, const DrDiscFrame *fr)
         ix->pics = p;
         *cap     = n;
     }
-    ix->pics[ix->nb_pics++] = (CutPicture){ fr->time, fr->duration, fr->key, (uint8_t)fr->start, fr->rasl };
+    ix->pics[ix->nb_pics++] = (CutPicture){ fr->time, fr->duration, fr->key, (uint8_t)fr->start, fr->rasl, fr->ref };
     ix->end = DR_MAX(ix->end, fr->time + fr->duration);
     return 0;
 }
@@ -267,7 +271,8 @@ int cut_index_read(DrDisc *d, int title, int64_t stop_after, CutIndex *ix)
         log_msg(MSG_TITLE_OPEN_FAILED, LOG_ERROR, "Title #%d cannot be opened: %s", title, dr_err_text(ret));
         return ret;
     }
-    ix->marked = dr_disc_nb_tracks(d) > 0 && dr_disc_track(d, 0)->codec == DR_CODEC_HEVC;
+    ix->codec = dr_disc_nb_tracks(d) <= 0 ? DR_CUT_OTHER : dr_disc_track(d, 0)->codec == DR_CODEC_HEVC ? DR_CUT_HEVC :
+                dr_disc_track(d, 0)->codec == DR_CODEC_H264 ? DR_CUT_H264 : DR_CUT_OTHER;
     for (;;) {
         DrDiscFrame fr;
 
