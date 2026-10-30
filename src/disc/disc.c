@@ -240,9 +240,11 @@ static int cut_track(const DiscTrack *k, int i, const char **why)
     *why = NULL;
     if (!i)
         return DR_CUT_TRACK_VIDEO;
+    if (k->kind == DR_KIND_SUBTITLE || k->kind == DR_KIND_CAPTION)
+        return k->info.codec == DR_CODEC_HDMV_PGS_SUBTITLE && k->kind == DR_KIND_SUBTITLE ? DR_CUT_TRACK_PGS :
+                                                                                           DR_CUT_TRACK_SUB;
     if (k->kind != DR_KIND_AUDIO) {
-        *why = k->kind == DR_KIND_SUBTITLE ? "subtitles are not cut yet" :
-               k->kind == DR_KIND_CAPTION  ? "captions are not cut yet" : "a second view is not cut yet";
+        *why = "a 3-D second view is not cut";
         return DR_CUT_TRACK_NONE;
     }
     switch (k->info.codec) {

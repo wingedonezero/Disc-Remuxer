@@ -12,7 +12,10 @@
  * part's. Audio by time, as stream-copy cutting does: a frame that starts
  * before the part's 0 is the part before's, so a part's audio starts 0 to
  * one frame after its 0; PCM between two samples, at the first one at or
- * after the part's 0.
+ * after the part's 0. Subtitles and captions by their start time too; one
+ * shown across a cut, and a PGS part whose first display set is no epoch
+ * start or acquisition point (it refers to objects of the part before), are
+ * said.
  */
 
 #include <errno.h>
@@ -39,6 +42,9 @@ typedef struct CutTrack {
     int64_t    left;         /* DR_CUT_TRACK_NONE: frames left out */
     int64_t    from, to;     /* DR_CUT_TRACK_ENTRY: the units the part starts at and the next part starts at */
     int        seen_to;      /* the next part's unit was met */
+    /* subtitles: shown across the part's start / end; PGS: what the sets show */
+    int64_t    across_start, across_end;
+    int        before_shows, last_shows, given_any, after_seen, normal_start;
 } CutTrack;
 
 struct DRCut {
@@ -155,6 +161,52 @@ static int cut_pcm(DRCut *c, CutTrack *t, DRFrame *f)
     return 1;
 }
 
+/* A PGS display set's composition: whether it shows objects and its
+ * composition state (0x80 epoch start, 0x40 acquisition point, 0 normal);
+ * 0, or -1 when it does not start with a composition segment. */
+static int pgs_composition(const uint8_t *d, int size, int *shows, int *state)
+{
+    if (size < 14 || d[0] != 0x16)
+        return -1;
+    *state = d[3 + 7] & 0xC0;
+    *shows = d[3 + 10] > 0;
+    return 0;
+}
+
+/* A subtitle or caption unit, by its start time: 1 the part's, 0 not;
+ * what is shown across the part's start or end is counted. */
+static int cut_sub(DRCut *c, CutTrack *t, const DRFrame *f)
+{
+    int in = (!c->has_from || f->time >= c->from.zero) && (!c->has_to || f->time < c->to.zero);
+    int shows = 0, state = 0;
+
+    if (t->kind == DR_CUT_TRACK_PGS) {
+        if (pgs_composition(f->data, f->size, &shows, &state) < 0)
+            return in;
+        if (!in && c->has_from && f->time < c->from.zero)
+            t->before_shows = shows;
+        else if (in) {
+            if (!t->given_any && c->has_from) {
+                t->across_start += t->before_shows;
+                t->normal_start  = !state;
+            }
+            t->last_shows = shows;
+        } else if (!t->after_seen) {
+            t->after_seen  = 1;
+            t->across_end += t->last_shows;
+        }
+        t->given_any |= in;
+        return in;
+    }
+    if (f->dur > 0) {
+        if (in && c->has_to && f->time + f->dur > c->to.zero)
+            t->across_end++;
+        if (!in && c->has_from && f->time < c->from.zero && f->time + f->dur > c->from.zero)
+            t->across_start++;
+    }
+    return in;
+}
+
 /* The master video in decoding order: 1 the part's, 0 not. */
 static int cut_video(DRCut *c, DRFrame *f)
 {
@@ -212,7 +264,9 @@ int ff_disctl_cut_frame(DRCut *c, int track, DRFrame *f)
         if (f->time == t->to)
             t->seen_to = 1;
         ret = f->time >= t->from && f->time < t->to;
-    } else
+    } else if (t->kind == DR_CUT_TRACK_SUB || t->kind == DR_CUT_TRACK_PGS)
+        ret = cut_sub(c, t, f);
+    else
         ret = (!c->has_from || f->time >= c->from.zero) && (!c->has_to || f->time < c->to.zero);
     if (ret <= 0)
         return ret;
@@ -282,6 +336,23 @@ int ff_disctl_cut_finish(DRCut *c)
                     c->part + 1, c->nb_parts, i, t->to);
             return DR_ERR_INVALID;
         }
+    }
+    /* subtitles across the cuts, a PGS part that does not start afresh */
+    for (int i = 0; i < c->nb_tracks; i++) {
+        const CutTrack *t = &c->t[i];
+        if (t->across_start)
+            dr_vlog(c->log, DR_VLOG_WARNING, "Cut part %d/%d: stream %d: a subtitle of the part before is still "
+                    "shown at the part's start (it starts before the cut): not in this part\n", c->part + 1,
+                    c->nb_parts, i);
+        if (t->across_end)
+            dr_vlog(c->log, DR_VLOG_WARNING, "Cut part %d/%d: stream %d: its last subtitle is still shown at the "
+                    "part's end (it ends after the cut)%s\n", c->part + 1, c->nb_parts, i,
+                    t->kind == DR_CUT_TRACK_PGS ? ": the display set that clears it is the next part's, so it has "
+                    "no end in this part's file" : "");
+        if (t->normal_start)
+            dr_vlog(c->log, DR_VLOG_WARNING, "Cut part %d/%d: stream %d: its first PGS display set is a normal one "
+                    "(no epoch start or acquisition point): it refers to objects of the part before\n",
+                    c->part + 1, c->nb_parts, i);
     }
     for (int i = 0; i < c->nb_tracks; i++)
         if (c->t[i].left)

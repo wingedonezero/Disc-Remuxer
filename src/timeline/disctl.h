@@ -1255,6 +1255,8 @@ enum DRCutTrack {
     DR_CUT_TRACK_ENTRY,     /**< audio that can start only at some units (DR_F_ENTRY: TrueHD, a DTS-HD
                                  stream, AAC LATM): each part's start unit is given (ff_disctl_cut_open()
                                  starts) */
+    DR_CUT_TRACK_SUB,       /**< subtitles and captions: each unit by its start time */
+    DR_CUT_TRACK_PGS,       /**< PGS display sets: by their time, and what they show is followed */
 };
 
 /** A cut's place on the title timeline (ticks). */

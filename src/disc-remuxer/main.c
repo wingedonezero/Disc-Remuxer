@@ -67,9 +67,8 @@ static void usage(FILE *f)
           "                       setting output.split_joined_titles does it for every title\n"
           "  --cut <title>:<cuts>  demux: write this title in parts cut at these places (c<chapter> or a\n"
           "                       time on the title's timeline, comma separated; the cuts command shows\n"
-          "                       where they fall); repeatable, one title each; so far the parts carry\n"
-          "                       the video, LPCM and AC-3 / DD+ / DTS core / MPEG audio / AAC (the\n"
-          "                       log names each track left out)\n"
+          "                       where they fall); repeatable, one title each; a 3-D second view is\n"
+          "                       left out of the parts (said in the log)\n"
           "  -v, -vv              more detail on the terminal\n"
           "\n"
           "DVD-Video, HD DVD and Blu-ray (UHD, 3-D) are wired.\n", f);

@@ -73,7 +73,8 @@ typedef struct DRCutResult {
     int     start;
 } DRCutResult;
 typedef struct DRCut DRCut;
-enum DRCutTrack { DR_CUT_TRACK_NONE = 0, DR_CUT_TRACK_VIDEO, DR_CUT_TRACK_EVERY, DR_CUT_TRACK_PCM, DR_CUT_TRACK_ENTRY };
+enum DRCutTrack { DR_CUT_TRACK_NONE = 0, DR_CUT_TRACK_VIDEO, DR_CUT_TRACK_EVERY, DR_CUT_TRACK_PCM, DR_CUT_TRACK_ENTRY,
+                 DR_CUT_TRACK_SUB, DR_CUT_TRACK_PGS };
 int  ff_disctl_cut_open(DRCut **c, void *log, const DRCutPlace *cuts, int nb_cuts, int part, int codec,
                         const int *kinds, int nb_tracks, const int64_t *starts);
 void ff_disctl_cut_pcm(DRCut *c, int track, int rate, int bytes_per_sample_frame);

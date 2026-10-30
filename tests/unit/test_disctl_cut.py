@@ -5,7 +5,7 @@ the two are checked against each other: every picture lands in exactly one
 part (but the leading pictures left out at an open key frame), each part
 starts at 0, and its pictures are the title's from its key frame on."""
 
-from helpers import ffi, lib
+from helpers import ffi, install_log, lib, logged
 
 F = 45_045_000                      # one picture at 23.976 (ticks)
 CLEAN, BROKEN, OPEN = lib.DR_START_CLEAN, lib.DR_START_BROKEN, lib.DR_START_OPEN
@@ -315,3 +315,82 @@ def test_a_start_unit_not_where_the_table_says_fails_the_part():
     assert run_audio.finish < 0, "no unit at that time"
     run_audio([(zero, zero)], 0, frames, lib.DR_CUT_TRACK_ENTRY, starts=[384 * U + 5])
     assert run_audio.finish < 0, "the next part's start unit not met"
+
+
+# ---- subtitles and captions ----
+
+def run_subs(cuts, k, units, kind):
+    """Part k of subtitle units [(time, dur, bytes)] on track 1 (with the video's key frames at 0 and at
+    the cut): [(part time, bytes)], finish's return."""
+    pl = ffi.new("DRCutPlace[]", len(cuts))
+    for i, (z, kt) in enumerate(cuts):
+        pl[i].zero, pl[i].key_time = z, kt
+    c = ffi.new("DRCut **")
+    kinds = ffi.new("int[]", [lib.DR_CUT_TRACK_VIDEO, kind])
+    assert lib.ff_disctl_cut_open(c, ffi.NULL, pl, len(cuts), k, H264, kinds, 2, ffi.NULL) == 0
+    for t in (0, cuts[0][1]):
+        v = ffi.new("DRFrame *")
+        v.time, v.flags = t, lib.DR_F_KEY | lib.DR_F_START_CLEAN
+        lib.ff_disctl_cut_frame(c[0], 0, v)
+    out, keep = [], []
+    for t, dur, data in units:
+        buf = ffi.new("uint8_t[]", data)
+        keep.append(buf)
+        f = ffi.new("DRFrame *")
+        f.time, f.dur, f.data, f.size = t, dur, buf, len(data)
+        if lib.ff_disctl_cut_frame(c[0], 1, f):
+            out.append((f.time, bytes(ffi.buffer(f.data, f.size))))
+    ret = lib.ff_disctl_cut_finish(c[0])
+    lib.ff_disctl_cut_close(c)
+    return out, ret
+
+
+S = 1_080_000_000                   # one second
+
+
+def test_subtitles_go_by_their_start_time_on_the_part_clock():
+    units = [(t * S, S, bytes([t])) for t in (1, 5, 9, 10, 12)]
+    zero = 10 * S
+    p0, _ = run_subs([(zero, zero)], 0, units, lib.DR_CUT_TRACK_SUB)
+    p1, _ = run_subs([(zero, zero)], 1, units, lib.DR_CUT_TRACK_SUB)
+    assert [b for _, b in p0] == [bytes([1]), bytes([5]), bytes([9])]
+    assert p1 == [(0, bytes([10])), (2 * S, bytes([12]))], "from the 0 on, on the part's clock"
+
+
+def test_a_subtitle_shown_across_the_cut_is_said_on_both_sides():
+    units = [(9 * S, 2 * S, b"a"), (12 * S, S, b"b")]        # 9 s to 11 s: across a cut at 10 s
+    zero = 10 * S
+    install_log(lib.AV_LOG_WARNING)
+    p0, _ = run_subs([(zero, zero)], 0, units, lib.DR_CUT_TRACK_SUB)
+    assert [b for _, b in p0] == [b"a"] and logged("its last subtitle is still shown at the part's end")
+    install_log(lib.AV_LOG_WARNING)
+    p1, _ = run_subs([(zero, zero)], 1, units, lib.DR_CUT_TRACK_SUB)
+    assert [b for _, b in p1] == [b"b"] and logged("a subtitle of the part before is still shown")
+    install_log(lib.AV_LOG_WARNING)
+    run_subs([(zero, zero)], 0, [(8 * S, S, b"a"), (12 * S, S, b"b")], lib.DR_CUT_TRACK_SUB)
+    assert not logged("still shown"), "nothing across: nothing said"
+
+
+def pgs(state, objects):
+    """A display set: a composition segment (state, objects) and the end segment."""
+    body = bytes([7, 128, 4, 56, 16, 0, 1, state, 0, 0, objects]) + bytes(8 * objects)
+    return bytes([0x16]) + len(body).to_bytes(2, "big") + body + bytes([0x80, 0, 0])
+
+
+def test_pgs_display_sets_say_what_is_shown_across_a_cut_and_a_part_that_does_not_start_afresh():
+    zero = 10 * S
+    # shown at 9 s, cleared at 11 s: across the cut
+    sets = [(9 * S, 0, pgs(0x80, 1)), (11 * S, 0, pgs(0x00, 0)), (12 * S, 0, pgs(0x80, 1))]
+    install_log(lib.AV_LOG_WARNING)
+    p0, _ = run_subs([(zero, zero)], 0, sets, lib.DR_CUT_TRACK_PGS)
+    assert len(p0) == 1 and logged("the display set that clears it is the next part's")
+    install_log(lib.AV_LOG_WARNING)
+    p1, _ = run_subs([(zero, zero)], 1, sets, lib.DR_CUT_TRACK_PGS)
+    assert [t for t, _ in p1] == [S, 2 * S]
+    assert logged("a subtitle of the part before is still shown") and logged("its first PGS display set is a normal one")
+    # cleared before the cut, the part starts with an epoch start: nothing said
+    sets = [(8 * S, 0, pgs(0x80, 1)), (9 * S, 0, pgs(0x00, 0)), (12 * S, 0, pgs(0x80, 1))]
+    install_log(lib.AV_LOG_WARNING)
+    run_subs([(zero, zero)], 0, sets, lib.DR_CUT_TRACK_PGS)
+    run_subs([(zero, zero)], 1, sets, lib.DR_CUT_TRACK_PGS)
+    assert not logged("still shown") and not logged("normal one")
