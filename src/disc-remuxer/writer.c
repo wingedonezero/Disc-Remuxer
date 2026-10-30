@@ -1373,13 +1373,26 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     tname = info && job->title < info->nb_titles ? info->titles[job->title].name : NULL;
     {
         const DiscTitleInfo *ti = info && job->title < info->nb_titles ? &info->titles[job->title] : NULL;
-        title_us = !ti ? 0 : job->part >= 0 && job->part < ti->nb_parts ? ti->parts[job->part].duration : ti->duration;
+        if (job->nb_cuts) {             /* a cut part: from its cut to the next one */
+            int64_t from = job->part > 0 ? job->cuts[job->part - 1].zero : 0;
+            int64_t to   = job->part < job->nb_cuts ? job->cuts[job->part].zero : job->cut_end;
+            title_us = (to - from) / (DR_TICKS_PER_SECOND / 1000000);
+        } else
+            title_us = !ti ? 0 : job->part >= 0 && job->part < ti->nb_parts ? ti->parts[job->part].duration :
+                                                                            ti->duration;
         hms(dur, sizeof(dur), title_us > 0 ? title_us / 1000000.0 : 0);
     }
     log_step("=== Title %d/%d: %s %s (%s) ===", job->ordinal, job->count, who + 6, tname ? tname : "", dur);
     dr_disc_set_chapter_rule(d, !setting_bool("chapters.snap"), (int)setting_int("chapters.before_ms"),
                              (int)setting_int("chapters.after_ms"));
-    if ((ret = dr_disc_title_open(d, job->title, job->part, job->second_view, job->keep)) < 0) {
+    if (job->nb_cuts && mkv) {
+        log_msg(MSG_TITLE_OPEN_FAILED, LOG_ERROR, "%s: a cut title is not written by the program's own MKV writer "
+                "(output.format = mkv): use mkvmerge or streams", who);
+        res->failed = 1;
+        return DR_ERR(ENOSYS);
+    }
+    if ((ret = job->nb_cuts ? dr_disc_title_open_cut(d, job->title, job->cuts, job->nb_cuts, job->part, job->keep) :
+                              dr_disc_title_open(d, job->title, job->part, job->second_view, job->keep)) < 0) {
         log_msg(MSG_TITLE_OPEN_FAILED, LOG_ERROR, "%s cannot be opened: %s", who, dr_err_text(ret));
         res->failed = 1;
         return ret;

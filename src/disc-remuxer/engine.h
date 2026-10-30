@@ -39,9 +39,11 @@ typedef struct EngineChoice {
     const char *const *tracks;
     int                nb_tracks;
     const char        *second;
+    const char *const *cuts;     /* --cut values: "<title>:<cuts>" (cuts.h cut_parse()) */
+    int                nb_cuts;
 } EngineChoice;
 
-/* Checks the --tracks values; 0, or -1 (logged). */
+/* Checks the --tracks and --cut values; 0, or -1 (logged). */
 int  engine_check_choice(const EngineChoice *c);
 
 /* The info command: the disc and every title with its tracks; details:

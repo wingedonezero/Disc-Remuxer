@@ -97,7 +97,8 @@ typedef struct DrDiscChapter {
     const char *name;            /**< NULL: none */
 } DrDiscChapter;
 
-/** How decoding can start at a video key frame (DrDiscFrame.start). */
+/** How decoding can start at a video key frame (DrDiscFrame.start; the same
+ *  numbers as the title timeline's DRStart). */
 enum DrDiscStart {
     DR_DISC_START_NONE = 0,     /**< not a key frame, or its codec does not say */
     DR_DISC_START_CLEAN,        /**< nothing before it is needed (IDR, closed GOP, closed entry point) */
@@ -137,6 +138,21 @@ const DiscInfo *dr_disc_info(const DrDisc *d);
  *  before it within before_ms, else the nearest after it within after_ms,
  *  else the mark (0 ms: that stage off). */
 void dr_disc_set_chapter_rule(DrDisc *d, int exact, int before_ms, int after_ms);
+
+/** A cut of a title: a place a part starts that is no clean break of the
+ *  disc (the engine's cuts.h finds them): the part's 0 (its first picture
+ *  that decodes) and its key frame's time, ticks on the title timeline. */
+typedef struct DrDiscCut {
+    int64_t zero, key_time;
+} DrDiscCut;
+
+/** Opens part `part` (0 .. nb_cuts) of title `title` cut at cuts (in time
+ *  order) for reading: the title is read whole and only the part's frames
+ *  are given, on the part's clock (its first picture at 0); the results at
+ *  its end are the part's (frames, delays, its chapters, its length). Only
+ *  the video track is cut so far: keep must keep the video alone. 0, or a
+ *  negative error (the title is closed). */
+int  dr_disc_title_open_cut(DrDisc *d, int title, const DrDiscCut *cuts, int nb_cuts, int part, const uint8_t *keep);
 
 /** Opens title `title` (part >= 0: only that part) for reading; a title
  *  open before is closed first. The disc stays loaded. second_view: a 3-D

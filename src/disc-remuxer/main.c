@@ -65,6 +65,10 @@ static void usage(FILE *f)
           "  --split <titles>     demux: write these titles' parts one by one (a title that plays whole\n"
           "                       stream files back to back, e.g. episodes; info lists the parts);\n"
           "                       setting output.split_joined_titles does it for every title\n"
+          "  --cut <title>:<cuts>  demux: write this title in parts cut at these places (c<chapter> or a\n"
+          "                       time on the title's timeline, comma separated; the cuts command shows\n"
+          "                       where they fall); repeatable, one title each; so far the parts carry\n"
+          "                       the video only\n"
           "  -v, -vv              more detail on the terminal\n"
           "\n"
           "DVD-Video, HD DVD and Blu-ray (UHD, 3-D) are wired.\n", f);
@@ -91,8 +95,8 @@ static void cmd_version(void)
 int main(int argc, char **argv)
 {
     const char *config = NULL, *split = NULL, *second = NULL, **sets = calloc(argc, sizeof(char *));
-    const char **tracks = calloc(argc, sizeof(char *));
-    int json = 0, verbose = 0, details = 0, nb_sets = 0, nb_tracks = 0, i, ret;
+    const char **tracks = calloc(argc, sizeof(char *)), **cuts = calloc(argc, sizeof(char *));
+    int json = 0, verbose = 0, details = 0, nb_sets = 0, nb_tracks = 0, nb_cuts = 0, i, ret;
     EngineChoice c;
 
     for (i = 1; i < argc && argv[i][0] == '-'; i++) {
@@ -112,6 +116,8 @@ int main(int argc, char **argv)
             split = argv[++i];
         else if (!strcmp(argv[i], "--second-view") && i + 1 < argc)
             second = argv[++i];
+        else if (!strcmp(argv[i], "--cut") && i + 1 < argc)
+            cuts[nb_cuts++] = argv[++i];
         else if (!strcmp(argv[i], "--tracks") && i + 1 < argc)
             tracks[nb_tracks++] = argv[++i];
         else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
@@ -151,7 +157,7 @@ int main(int argc, char **argv)
     if ((ret = engine_init(config, sets, nb_sets, json, verbose)))
         return ret;
     signal(SIGINT, on_interrupt);
-    c = (EngineChoice){ tracks, nb_tracks, second };
+    c = (EngineChoice){ tracks, nb_tracks, second, cuts, nb_cuts };
     if (engine_check_choice(&c) < 0)
         return 2;
 
@@ -179,5 +185,6 @@ int main(int argc, char **argv)
     }
     free(sets);
     free(tracks);
+    free(cuts);
     return ret;
 }

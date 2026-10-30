@@ -240,6 +240,9 @@ struct DrDisc {
                                              (disc_title_open()) */
     int               opt_part;         /**< -1: the whole title, else that part of it (DiscTitleInfo.parts) */
     int               opt_second_view;  /**< 3-D titles: the second view is read (a track of its own) */
+    struct DRCutPlace *opt_cuts;        /**< the opened title's cuts (dr_disc_title_open_cut()), NULL none */
+    int               nb_opt_cuts;
+    int               opt_cut_part;     /**< with opt_cuts: the part given (0 .. nb_opt_cuts) */
     const uint8_t    *keep;             /**< the opened title's selected tracks (disc_title_open()), NULL all */
     int               opt_details;      /**< the title list (info) reads each track's details from the stream */
     int               opt_dolby_vision; /**< Dolby Vision enhancement layer: 0 merged into the video's frames,

@@ -1213,5 +1213,48 @@ int ff_disctl_mlp_verify(const uint8_t *data, int size);
 /** The DRCodec verify_sums of TrueHD / MLP (state: the substream count). */
 int ff_disctl_mlp_checksums(void *state, const uint8_t *data, int size, const char **why);
 
+/* ---- Cuts: a title split at places that are no clean break of the disc
+ * (disctl_cut.c). A cut is a key frame of the master video; the part it
+ * starts begins with the first picture of the key frame's group that
+ * decodes (its zero) and ends where the next cut's part begins. ---- */
+
+/** Whether a leading picture (after its key frame in decoding order, shown
+ *  before it) decodes from the key frame on its own: always after a clean
+ *  key frame (DRStart); after any other only where the codec marks its
+ *  leading pictures one by one (marked: HEVC) and this one is no RASL
+ *  picture. */
+int ff_disctl_leading_decodes(int start, int marked, int rasl);
+
+/** A cut's place on the title timeline (ticks). */
+typedef struct DRCutPlace {
+    int64_t zero;       /**< the part's 0: its first picture that decodes */
+    int64_t key_time;   /**< the key frame's time */
+} DRCutPlace;
+
+/** What the cut stage did for one part (ff_disctl_cut_result()). */
+typedef struct DRCutResult {
+    int64_t pictures;   /**< video pictures given out */
+    int64_t left_out;   /**< leading pictures of the part's key frame that do not decode: left out */
+    int64_t first;      /**< the earliest picture given out, on the part's clock (0 when it is right) */
+    int     start;      /**< DRStart of the part's key frame (0 for the first part) */
+} DRCutResult;
+
+typedef struct DRCut DRCut;
+
+/** The stage for part `part` (0 .. nb_cuts) of a title cut at cuts (in
+ *  time order); marked: the video codec marks its leading pictures (HEVC).
+ *  0, or a negative base error. */
+int  ff_disctl_cut_open(DRCut **c, void *log, const DRCutPlace *cuts, int nb_cuts, int part, int marked);
+/** A frame of the title timeline (in its order): 1 when it belongs to the
+ *  part (its time is now on the part's clock), 0 when not (the caller drops
+ *  it). Only the master video (track 0) is cut so far: other tracks' frames
+ *  are left out (counted, said at the end). */
+int  ff_disctl_cut_frame(DRCut *c, int track, DRFrame *f);
+/** The end of the title: the part's key frames met where the cuts say
+ *  (said in the log; DR_ERR_INVALID when not). */
+int  ff_disctl_cut_finish(DRCut *c);
+void ff_disctl_cut_result(const DRCut *c, DRCutResult *r);
+void ff_disctl_cut_close(DRCut **c);
+
 
 #endif /* DISC_TIMELINE_DISCTL_H */

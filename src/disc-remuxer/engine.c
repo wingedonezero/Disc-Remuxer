@@ -378,9 +378,12 @@ struct EngineDisc {
     uint8_t        **keeps;      /* each title's tracks to rip */
     char            *rip;        /* per title: 1 ripped (the selection) */
     char            *split;      /* per title: 1 written as parts (as chosen; the setting adds to it) */
+    char           **cut;        /* per title: the cuts asked for (cuts.h cut_parse()), NULL none */
 };
 
 static int parse_titles(const char *spec, const DiscInfo *d, int only_selected, char *sel);
+static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cuts, int *nb, int64_t *end);
+static int cut_value(const char *v, int *title, const char **items);
 
 /* Each title's tracks to rip (select.h) into keeps[title] (freed with
  * free_keeps()); 0, or -1 (logged). */
@@ -464,6 +467,25 @@ int engine_disc_open(const char *source, const EngineChoice *c, EngineDisc **out
     }
     for (int t = 0; t < e->info->nb_titles; t++)
         e->rip[t] = e->info->titles[t].selected;
+    if (!(e->cut = calloc(e->info->nb_titles ? e->info->nb_titles : 1, sizeof(*e->cut)))) {
+        engine_disc_close(&e);
+        return -1;
+    }
+    for (int k = 0; c && k < c->nb_cuts; k++) {
+        const char *items;
+        int t;
+        if (cut_value(c->cuts[k], &t, &items) < 0 || t >= e->info->nb_titles) {
+            log_msg(MSG_TITLE_MISSING, LOG_ERROR, "--cut %s: the disc has no title #%d (it has %d)", c->cuts[k], t,
+                    e->info->nb_titles);
+            engine_disc_close(&e);
+            return -1;
+        }
+        free(e->cut[t]);
+        if (!(e->cut[t] = strdup(items))) {
+            engine_disc_close(&e);
+            return -1;
+        }
+    }
     *out = e;
     return 0;
 }
@@ -562,6 +584,9 @@ void engine_disc_close(EngineDisc **pd)
         free_keeps(d->keeps, d->info->nb_titles);
     free(d->rip);
     free(d->split);
+    for (int t = 0; d->cut && d->info && t < d->info->nb_titles; t++)
+        free(d->cut[t]);
+    free(d->cut);
     dr_disc_close(&d->disc);
     free(d);
     *pd = NULL;
@@ -761,6 +786,10 @@ static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
     char *spl = calloc(nb ? nb : 1, 1);
     char **ranges = NULL;               /* every title's damaged ranges, for the summary */
     int nb_ranges = 0;
+    DrDiscCut *cuts = NULL;             /* the title's cuts (a title with cuts) */
+    int nb_cuts = 0;
+    int64_t cut_end = 0;
+    uint8_t *vkeep = NULL;              /* a cut title's tracks: the video only so far */
 
     if (!spl) {
         log_close_files();
@@ -786,10 +815,34 @@ static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
         if (engine_cancelled())
             break;
         ++ordinal;
+        /* a title with cuts: where they fall first; its parts are the cut's */
+        if (e->cut && e->cut[t]) {
+            char dur[32];
+            if (parts)
+                log_msg(MSG_TITLE_SELECTION, LOG_INFO, "Title #%d is cut at the cuts asked for, not split at its "
+                        "parts", t);
+            hms(dur, sizeof(dur), di->titles[t].duration);
+            log_step("=== Cuts: title #%d (%s) ===", t, dur);
+            if (resolve_cuts(e, t, e->cut[t], &cuts, &nb_cuts, &cut_end) || !nb_cuts ||
+                !(vkeep = calloc(di->titles[t].nb_streams ? di->titles[t].nb_streams : 1, 1))) {
+                log_msg(MSG_TITLE_FAILED, LOG_ERROR, "Title #%d is not ripped: not every cut asked for can be made",
+                        t);
+                failed++;
+                free(cuts);
+                cuts    = NULL;
+                nb_cuts = 0;
+                continue;
+            }
+            vkeep[0] = 1;
+            log_msg(MSG_CUTS, LOG_WARNING, "Title #%d: its cut parts carry the video only: cutting audio, subtitles "
+                    "and captions is not built yet", t);
+            parts = nb_cuts + 1;
+        }
         for (int p = parts ? 0 : -1; p < parts && !engine_cancelled(); p++) {
             /* the second view: read when one of its tracks is selected */
             /* stream files: every title, and each part as a title of its own, in a folder of its name */
-            TitleJob job = { e->disc, t, p, parts, 1, e->keeps[t], ordinal, count, out_dir, 1 };
+            TitleJob job = { e->disc, t, p, parts, !nb_cuts, nb_cuts ? vkeep : e->keeps[t], ordinal, count, out_dir,
+                             1, cuts, nb_cuts, cut_end };
             TitleOutcome res;
             demux_title(&job, &res);
             /* each range under the title's (part's) number */
@@ -809,6 +862,11 @@ static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
             if (disk_full)
                 break;
         }
+        free(cuts);
+        free(vkeep);
+        cuts    = NULL;
+        vkeep   = NULL;
+        nb_cuts = 0;
         failed += !!part_failed;
         done   += !part_failed && !part_stopped;
         /* a full disk: every title after it would fail the same way */
@@ -954,56 +1012,50 @@ static int pictures_between(const CutIndex *ix, int64_t a, int64_t b)
     return n;
 }
 
-static int by_target(const void *a, const void *b)
+static int by_zero(const void *a, const void *b)
 {
-    const int64_t *x = a, *y = b;
-    return (*x > *y) - (*x < *y);
+    const DrDiscCut *x = a, *y = b;
+    return (x->zero > y->zero) - (x->zero < y->zero);
 }
 
-int engine_cuts(const char *source, const char *title, const char *items, const EngineChoice *c)
+/* Where the cuts asked for (items) fall in title t: the title's video read
+ * as a rip reads it, each cut said in the log, then the parts. *cuts (freed
+ * with free()) / *nb: the cuts in time order, *end: where the title's
+ * video ends (ticks; as the disc records the title's length when it was not
+ * read to its end). 0 when every cut is made, 1 when one is refused or the
+ * title cannot be read (logged). */
+static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cuts, int *nb, int64_t *end)
 {
-    EngineDisc *e = NULL;
     CutRequest *reqs = NULL;
     CutResult *res = NULL;
     CutPoint *pts = NULL;
     CutIndex ix = { 0 };
     int64_t stop = 0, *zeros = NULL;
-    int nb_reqs, nb_pts = 0, made = 0, t, rule, ret = 1;
+    int nb_reqs, nb_pts = 0, made = 0, rule, n = 0, ret = 1;
     const char *bad;
-    char *end, a[40], b[40], dur[32];
+    char a[40], b[40];
 
-    t = (int)strtol(title, &end, 10);
-    if (!*title || *end || t < 0) {
-        log_msg(MSG_USAGE, LOG_ERROR, "cuts: the title is one number as info lists it, not \"%s\"", title);
-        return 2;
-    }
+    *cuts = NULL;
+    *nb   = 0;
+    *end  = 0;
     if (cut_parse(items, &reqs, &nb_reqs, &bad) < 0) {
-        log_msg(MSG_USAGE, LOG_ERROR, "cuts: \"%s\" cannot be read at \"%s\": the cuts are c<chapter> or a time "
+        log_msg(MSG_USAGE, LOG_ERROR, "Cuts \"%s\" cannot be read at \"%s\": the cuts are c<chapter> or a time "
                 "(h:mm:ss.fff or m:ss.fff on the title's timeline), comma separated", items, bad);
-        return 2;
-    }
-    log_msg(MSG_SOURCE, LOG_INFO, "Source: %s", source);
-    if (engine_disc_open(source, c, &e) < 0)
-        goto end;
-    if (t >= e->info->nb_titles) {
-        log_msg(MSG_TITLE_MISSING, LOG_ERROR, "Title #%d does not exist (the disc has %d)", t, e->info->nb_titles);
-        ret = 2;
-        goto end;
+        return 1;
     }
     /* a chapter needs the title read to its end (its chapters are placed
      * there); times only up to the key frames after the last one */
     for (int i = 0; i < nb_reqs && stop >= 0; i++)
         stop = reqs[i].chapter ? -1 : DR_MAX(stop, reqs[i].time);
     rule = !strcmp(setting_text("cuts.key_frame"), "next") ? CUT_NEXT : CUT_NEAREST;
-    hms(dur, sizeof(dur), e->info->titles[t].duration);
-    log_step("=== Cuts: title #%d (%s) ===", t, dur);
-    log_text(LOG_INFO, "Cuts: a time not on a key frame takes the %s key frame (setting cuts.key_frame)",
+    log_text(LOG_INFO, "Cuts: %s; a time not on a key frame takes the %s key frame (setting cuts.key_frame)", items,
              rule == CUT_NEXT ? "next" : "nearest");
     if (cut_index_read(e->disc, t, stop, &ix) < 0 || cut_points(ix.pics, ix.nb_pics, ix.marked, &pts, &nb_pts) < 0)
         goto end;
     log_text(LOG_INFO, "Cuts: the title's video read %s: %d picture(s), %d place(s) a part can start",
              ix.complete ? "to its end" : "as far as the cuts need", ix.nb_pics, nb_pts);
-    if (!(res = calloc(nb_reqs, sizeof(*res))) || !(zeros = calloc(nb_reqs + 2, sizeof(*zeros))))
+    if (!(res = calloc(nb_reqs, sizeof(*res))) || !(zeros = calloc(nb_reqs + 2, sizeof(*zeros))) ||
+        !(*cuts = calloc(nb_reqs, sizeof(**cuts))))
         goto end;
     made = cut_resolve(pts, nb_pts, ix.chapters, ix.nb_chapters, ix.end, reqs, nb_reqs, rule, res);
     for (int i = 0; i < nb_reqs; i++) {
@@ -1026,7 +1078,8 @@ int engine_cuts(const char *source, const char *title, const char *items, const 
             continue;
         }
         p = &pts[r->point];
-            if (p->kept)
+        (*cuts)[n++] = (DrDiscCut){ p->zero, p->key_time };
+        if (p->kept)
             snprintf(extra, sizeof(extra), "; the part starts with %d picture(s) shown before its key frame "
                      "(they decode from it)", p->kept);
         if (p->left_out)
@@ -1041,30 +1094,71 @@ int engine_cuts(const char *source, const char *title, const char *items, const 
                      p->zero < r->target ? '-' : '+', (double)DR_ABS(p->zero - r->target) * 1000 / DR_TICKS_PER_SECOND,
                      pictures_between(&ix, r->target, p->zero), extra, cut_time_text(b, sizeof(b), p->zero));
     }
-    /* the parts, in time order */
-    {
-        int n = 0;
-        zeros[n++] = 0;
-        for (int i = 0; i < nb_reqs; i++)
-            if (res[i].point >= 0)
-                zeros[n++] = pts[res[i].point].zero;
-        qsort(zeros + 1, n - 1, sizeof(*zeros), by_target);
-        log_text(LOG_INFO, "Cuts: %d part(s)%s", n, ix.complete ? "" : " (the last one's end as the disc records "
-                 "the title's length)");
-        zeros[n] = ix.complete ? ix.end : e->info->titles[t].duration * (DR_TICKS_PER_SECOND / 1000000);
-        for (int i = 0; i < n; i++) {
-            char l[40];
-            log_text(LOG_INFO, "  part %d: %s - %s (%s)", i + 1, cut_time_text(a, sizeof(a), zeros[i]),
-                     cut_time_text(b, sizeof(b), zeros[i + 1]), cut_time_text(l, sizeof(l), zeros[i + 1] - zeros[i]));
-        }
+    /* the cuts and the parts, in time order */
+    qsort(*cuts, n, sizeof(**cuts), by_zero);
+    *nb  = n;
+    *end = ix.complete ? ix.end : e->info->titles[t].duration * (DR_TICKS_PER_SECOND / 1000000);
+    zeros[0] = 0;
+    for (int i = 0; i < n; i++)
+        zeros[i + 1] = (*cuts)[i].zero;
+    zeros[n + 1] = *end;
+    log_text(LOG_INFO, "Cuts: %d part(s)%s", n + 1, ix.complete ? "" : " (the last one's end as the disc records "
+             "the title's length)");
+    for (int i = 0; i <= n; i++) {
+        char l[40];
+        log_text(LOG_INFO, "  part %d: %s - %s (%s)", i + 1, cut_time_text(a, sizeof(a), zeros[i]),
+                 cut_time_text(b, sizeof(b), zeros[i + 1]), cut_time_text(l, sizeof(l), zeros[i + 1] - zeros[i]));
     }
     ret = made == nb_reqs ? 0 : 1;
 end:
+    if (ret) {
+        free(*cuts);
+        *cuts = NULL;
+        *nb   = 0;
+    }
     free(reqs);
     free(res);
     free(pts);
     free(zeros);
     cut_index_free(&ix);
+    return ret;
+}
+
+int engine_cuts(const char *source, const char *title, const char *items, const EngineChoice *c)
+{
+    EngineDisc *e = NULL;
+    DrDiscCut *cuts;
+    int64_t end;
+    int t, nb, ret = 1;
+    char *x, dur[32];
+
+    t = (int)strtol(title, &x, 10);
+    if (!*title || *x || t < 0) {
+        log_msg(MSG_USAGE, LOG_ERROR, "cuts: the title is one number as info lists it, not \"%s\"", title);
+        return 2;
+    }
+    {
+        CutRequest *reqs;
+        const char *bad;
+        if (cut_parse(items, &reqs, &nb, &bad) < 0) {
+            log_msg(MSG_USAGE, LOG_ERROR, "cuts: \"%s\" cannot be read at \"%s\": the cuts are c<chapter> or a time "
+                    "(h:mm:ss.fff or m:ss.fff on the title's timeline), comma separated", items, bad);
+            return 2;
+        }
+        free(reqs);
+    }
+    log_msg(MSG_SOURCE, LOG_INFO, "Source: %s", source);
+    if (engine_disc_open(source, c, &e) < 0)
+        return 1;
+    if (t >= e->info->nb_titles) {
+        log_msg(MSG_TITLE_MISSING, LOG_ERROR, "Title #%d does not exist (the disc has %d)", t, e->info->nb_titles);
+        engine_disc_close(&e);
+        return 2;
+    }
+    hms(dur, sizeof(dur), e->info->titles[t].duration);
+    log_step("=== Cuts: title #%d (%s) ===", t, dur);
+    ret = resolve_cuts(e, t, items, &cuts, &nb, &end);
+    free(cuts);
     engine_disc_close(&e);
     return ret;
 }
@@ -1112,11 +1206,39 @@ static int demux_one(const char *source, const char *titles, const char *out_dir
 }
 
 
+/* A --cut value: its title and where its cuts start in it; 0, or -1. */
+static int cut_value(const char *v, int *title, const char **items)
+{
+    char *end;
+    long t = strtol(v, &end, 10);
+
+    if (end == v || *end != ':' || t < 0 || t > 9999)
+        return -1;
+    *title = (int)t;
+    *items = end + 1;
+    return 0;
+}
+
 int engine_check_choice(const EngineChoice *c)
 {
     for (int k = 0; k < c->nb_tracks; k++)
         if (tracks_check(c->tracks[k]) < 0)
             return -1;
+    for (int k = 0; k < c->nb_cuts; k++) {
+        CutRequest *reqs;
+        const char *items, *bad;
+        int t, n;
+        if (cut_value(c->cuts[k], &t, &items) < 0) {
+            log_msg(MSG_USAGE, LOG_ERROR, "--cut %s: <title>:<cuts> is asked, e.g. 1:c5,45:42.323", c->cuts[k]);
+            return -1;
+        }
+        if (cut_parse(items, &reqs, &n, &bad) < 0) {
+            log_msg(MSG_USAGE, LOG_ERROR, "--cut %s cannot be read at \"%s\": the cuts are c<chapter> or a time "
+                    "(h:mm:ss.fff or m:ss.fff on the title's timeline), comma separated", c->cuts[k], bad);
+            return -1;
+        }
+        free(reqs);
+    }
     return 0;
 }
 

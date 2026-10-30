@@ -387,6 +387,7 @@ static int disc_close(DrDisc *d)
 {
 
     title_close(d);
+    dr_freep(&d->opt_cuts);
     if (d->fmt && d->part)
         d->fmt->close(d);
     dr_freep(&d->part);
@@ -622,12 +623,43 @@ void dr_disc_title_close(DrDisc *d)
     title_close(d);
 }
 
-int dr_disc_title_open(DrDisc *d, int title, int part, int second_view, const uint8_t *keep)
+static int title_open_with(DrDisc *d, int title, int part, int second_view, const uint8_t *keep);
+
+int dr_disc_title_open_cut(DrDisc *d, int title, const DrDiscCut *cuts, int nb_cuts, int part, const uint8_t *keep)
 {
     int ret;
 
+    if (!d || nb_cuts <= 0 || part < 0 || part > nb_cuts)
+        return DR_ERR(EINVAL);
+    if (!keep)
+        return DR_ERR(ENOSYS);          /* only the video is cut so far */
+    for (int i = 0; title >= 0 && title < d->info.nb_titles && i < d->info.titles[title].nb_streams; i++)
+        if (i && keep[i])
+            return DR_ERR(ENOSYS);      /* only the video is cut so far */
+    dr_freep(&d->opt_cuts);
+    if (!(d->opt_cuts = dr_calloc(nb_cuts, sizeof(*d->opt_cuts))))
+        return DR_ERR(ENOMEM);
+    for (int i = 0; i < nb_cuts; i++)
+        d->opt_cuts[i] = (DRCutPlace){ cuts[i].zero, cuts[i].key_time };
+    d->nb_opt_cuts  = nb_cuts;
+    d->opt_cut_part = part;
+    ret = title_open_with(d, title, -1, 0, keep);
+    return ret;
+}
+
+int dr_disc_title_open(DrDisc *d, int title, int part, int second_view, const uint8_t *keep)
+{
     if (!d)
         return DR_ERR(EINVAL);
+    dr_freep(&d->opt_cuts);
+    d->nb_opt_cuts = 0;
+    return title_open_with(d, title, part, second_view, keep);
+}
+
+static int title_open_with(DrDisc *d, int title, int part, int second_view, const uint8_t *keep)
+{
+    int ret;
+
     dr_disc_title_close(d);
     if (title < 0)
         return DR_ERR(EINVAL);

@@ -30,6 +30,9 @@ typedef struct TitleJob {
     int         ordinal, count;/* this is title <ordinal> of <count> selected */
     const char *out_dir;
     int         sub_folder;    /* the files in a folder of their name: the title's, a part's <title>_p<n> */
+    const DrDiscCut *cuts;     /* a cut title (part: 0 .. nb_cuts): its cuts in time order, NULL none */
+    int         nb_cuts;
+    int64_t     cut_end;       /* with cuts: where the title's video ends (ticks) */
 } TitleJob;
 
 typedef struct TitleOutcome {

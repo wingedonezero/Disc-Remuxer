@@ -56,7 +56,7 @@ int cut_points(const CutPicture *pics, int nb, int marked, CutPoint **points, in
         for (int j = i + 1; j < nb && !pics[j].key; j++) {
             if (pics[j].time >= pics[i].time)
                 continue;
-            if (pics[i].start == DR_DISC_START_CLEAN || (marked && !pics[j].rasl)) {
+            if (ff_disctl_leading_decodes(pics[i].start, marked, pics[j].rasl)) {
                 c->kept++;
                 c->zero = DR_MIN(c->zero, pics[j].time);
             } else

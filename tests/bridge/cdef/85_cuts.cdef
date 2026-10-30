@@ -42,3 +42,22 @@ int cut_resolve(const CutPoint *points, int nb_points, const int64_t *chapters, 
                 const CutRequest *reqs, int nb_reqs, int rule, CutResult *res);
 
 const char *cut_time_text(char *buf, int size, int64_t ticks);
+
+/* the cut stage of the title timeline (src/timeline/disctl_cut.c) */
+int ff_disctl_leading_decodes(int start, int marked, int rasl);
+typedef struct DRCutPlace {
+    int64_t zero;
+    int64_t key_time;
+} DRCutPlace;
+typedef struct DRCutResult {
+    int64_t pictures;
+    int64_t left_out;
+    int64_t first;
+    int     start;
+} DRCutResult;
+typedef struct DRCut DRCut;
+int  ff_disctl_cut_open(DRCut **c, void *log, const DRCutPlace *cuts, int nb_cuts, int part, int marked);
+int  ff_disctl_cut_frame(DRCut *c, int track, DRFrame *f);
+int  ff_disctl_cut_finish(DRCut *c);
+void ff_disctl_cut_result(const DRCut *c, DRCutResult *r);
+void ff_disctl_cut_close(DRCut **c);
