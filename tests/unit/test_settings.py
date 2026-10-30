@@ -63,7 +63,7 @@ def test_every_option_of_the_disc_layer_is_a_setting_or_a_run_choice():
     block = DISC_H[DISC_H.index("typedef struct DrDiscOptions"):]
     block = block[:block.index("} DrDiscOptions;")]
     options = re.findall(r'^\s+(?:const char \*const \*|const char \*|int64_t|int)\s*(\w+);', block, re.M)
-    opened = WRITER[WRITER.index("int open_disc_log("):]
+    opened = WRITER[WRITER.index("int open_disc("):]
     opened = opened[:opened.index("\n}\n")]
     set_there = set(re.findall(r'\bo\.(\w+)\s*=', opened))
     assert "title" in options and "udf_reader" in options and len(options) >= 12

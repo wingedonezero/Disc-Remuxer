@@ -178,6 +178,11 @@ int  dr_disc_cut_start_units(const DrDisc *d, int title, int track);
  *  NULL when it can. */
 const char *dr_disc_cut_left_out(const DrDisc *d, int title, int track);
 
+/** The source name the disc's lines carry from now on (base/vlog.h); the
+ *  one before is returned (a title opened keeps the name it was opened
+ *  with). */
+const char *dr_disc_set_log(DrDisc *d, const char *log);
+
 /** Opens title `title` for reading from a place (DrDiscFrame.seg / block,
  *  as a reading from its start gave them): segment seg from block block on,
  *  through the same title timeline. That timeline starts there, so its

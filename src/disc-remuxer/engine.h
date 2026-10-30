@@ -156,6 +156,18 @@ int  engine_split_titles(EngineDisc *d, const char *spec);
  * engine_cancel()) the first time, kept while the disc is open. NULL when
  * it cannot be read (logged). */
 const struct CutIndex *engine_cut_index(EngineDisc *d, int t);
+/* The cut editor of title t on the open disc: its index (read the first
+ * time) and its pictures (cut_preview.h: only the title is opened on the
+ * disc, read from the place of a key frame); while it is open nothing else
+ * opens a title on the disc (no rip of it). 0, or -1 (logged). Closing it
+ * frees its pictures and the index: only the title's cut list stays. */
+struct CutPreview;
+int  engine_cut_editor_open(EngineDisc *d, int t, struct CutPreview **p);
+void engine_cut_editor_close(EngineDisc *d, int t, struct CutPreview **p);
+/* A title's cut list (the --cut items, "c5,45:42.323"; NULL none), and
+ * setting it (NULL or "": cleared). 0, or -1 (not a list of cuts). */
+const char *engine_title_cuts(const EngineDisc *d, int t);
+int  engine_set_title_cuts(EngineDisc *d, int t, const char *items);
 int  engine_track_kept(const EngineDisc *d, int t, int i);
 int  engine_set_track_kept(EngineDisc *d, int t, int i, int on);
 int  engine_apply_tracks(EngineDisc *d, int t, const char *steps);

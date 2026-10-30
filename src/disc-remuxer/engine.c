@@ -567,6 +567,53 @@ const CutIndex *engine_cut_index(EngineDisc *d, int t)
     return d->index[t] = ix;
 }
 
+int engine_cut_editor_open(EngineDisc *d, int t, CutPreview **p)
+{
+    const CutIndex *ix = engine_cut_index(d, t);
+
+    *p = NULL;
+    if (!ix)
+        return -1;
+    return cut_preview_open(p, d->disc, t, ix, (int64_t)setting_int("cuts.preview_cache_mb") << 20) < 0 ? -1 : 0;
+}
+
+void engine_cut_editor_close(EngineDisc *d, int t, CutPreview **p)
+{
+    cut_preview_close(p);
+    /* only the cut list stays: the index goes too */
+    if (title_ok(d, t) && d->index && d->index[t]) {
+        cut_index_free(d->index[t]);
+        free(d->index[t]);
+        d->index[t] = NULL;
+    }
+}
+
+const char *engine_title_cuts(const EngineDisc *d, int t)
+{
+    return title_ok(d, t) && d->cut ? d->cut[t] : NULL;
+}
+
+int engine_set_title_cuts(EngineDisc *d, int t, const char *items)
+{
+    CutRequest *reqs;
+    const char *bad;
+    char *copy = NULL;
+    int nb;
+
+    if (!title_ok(d, t) || !d->cut)
+        return -1;
+    if (items && *items) {
+        if (cut_parse(items, &reqs, &nb, &bad) < 0)
+            return -1;
+        free(reqs);
+        if (!(copy = strdup(items)))
+            return -1;
+    }
+    free(d->cut[t]);
+    d->cut[t] = copy;
+    return 0;
+}
+
 int engine_track_kept(const EngineDisc *d, int t, int i)
 {
     return title_ok(d, t) && i >= 0 && i < d->info->titles[t].nb_streams && d->keeps[t][i];
@@ -1410,7 +1457,7 @@ int engine_frame(const char *source, const char *title, const char *at, const ch
     /* the title's pictures up to a little past the time, then that picture
      * as the cut editor shows it */
     if (cut_index_read(e->disc, t, reqs[0].time + 2 * DR_TICKS_PER_SECOND, NULL, 0, &ix) < 0 ||
-        cut_preview_open(&pv, source, t, &ix, (int64_t)setting_int("cuts.preview_cache_mb") << 20) < 0)
+        cut_preview_open(&pv, e->disc, t, &ix, (int64_t)setting_int("cuts.preview_cache_mb") << 20) < 0)
         goto end;
     n = cut_preview_at(pv, reqs[0].time);
     if (cut_preview_picture(pv, n, 0, 0, &f) < 0)

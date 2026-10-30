@@ -14,7 +14,6 @@
 #include "disc/disc.h"
 #include "timeline/disctl.h"
 #include "cut_preview.h"
-#include "writer.h"
 
 /* A decoded picture kept. */
 typedef struct Kept {
@@ -24,7 +23,8 @@ typedef struct Kept {
 } Kept;
 
 struct CutPreview {
-    DrDisc         *disc;           /* opened for this preview alone */
+    DrDisc         *disc;           /* the caller's */
+    const char     *log;            /* the disc's source name before */
     int             title;
     const CutIndex *ix;
     int            *disp;           /* display number -> the index's picture (decoding order) */
@@ -53,14 +53,13 @@ static int by_time(const void *a, const void *b)
     return (x > y) - (x < y);
 }
 
-int cut_preview_open(CutPreview **pp, const char *source, int title, const CutIndex *ix, int64_t cache_bytes)
+int cut_preview_open(CutPreview **pp, DrDisc *disc, int title, const CutIndex *ix, int64_t cache_bytes)
 {
     CutPreview *p;
-    const DiscInfo *info;
-    int ret;
+    const DiscInfo *info = disc ? dr_disc_info(disc) : NULL;
 
     *pp = NULL;
-    if (!ix || ix->nb_pics <= 0)
+    if (!ix || ix->nb_pics <= 0 || !info || title < 0 || title >= info->nb_titles)
         return DR_ERR(EINVAL);
     if (!(p = calloc(1, sizeof(*p))) || !(p->disp = malloc(ix->nb_pics * sizeof(*p->disp))) ||
         !(p->num = malloc(ix->nb_pics * sizeof(*p->num)))) {
@@ -76,19 +75,14 @@ int cut_preview_open(CutPreview **pp, const char *source, int title, const CutIn
     qsort(p->disp, ix->nb_pics, sizeof(*p->disp), by_time);
     for (int n = 0; n < ix->nb_pics; n++)
         p->num[p->disp[n]] = n;
-    /* the disc again, its lines kept to the detail level */
-    if ((ret = open_disc_log(source, "preview", &p->disc)) < 0 || !(info = dr_disc_info(p->disc)) ||
-        title < 0 || title >= info->nb_titles) {
-        log_msg(MSG_TITLE_OPEN_FAILED, LOG_ERROR, "Cut editor: %s cannot be opened for its pictures: %s", source,
-                dr_err_text(ret < 0 ? ret : DR_ERR(EINVAL)));
-        cut_preview_close(&p);
-        return ret < 0 ? ret : DR_ERR(EINVAL);
-    }
     if (!(p->keep = calloc(info->titles[title].nb_streams ? info->titles[title].nb_streams : 1, 1))) {
         cut_preview_close(&p);
         return DR_ERR(ENOMEM);
     }
     p->keep[0] = 1;
+    /* its readings' lines kept to the detail level */
+    p->disc = disc;
+    p->log  = dr_disc_set_log(disc, "preview");
     *pp = p;
     return 0;
 }
@@ -312,7 +306,7 @@ void cut_preview_close(CutPreview **pp)
     dr_preview_close(&p->dec);
     if (p->disc) {
         dr_disc_title_close(p->disc);
-        dr_disc_close(&p->disc);
+        dr_disc_set_log(p->disc, p->log);
     }
     free(p->keep);
     free(p->disp);

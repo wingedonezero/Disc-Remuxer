@@ -733,6 +733,14 @@ int dr_disc_title_open_cut(DrDisc *d, int title, const DrDiscCut *cuts, int nb_c
     return ret;
 }
 
+const char *dr_disc_set_log(DrDisc *d, const char *log)
+{
+    const char *old = d->log;
+
+    d->log = log;
+    return old;
+}
+
 int dr_disc_title_open_at(DrDisc *d, int title, int seg, int64_t block, const uint8_t *keep)
 {
     int ret;
