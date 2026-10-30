@@ -40,6 +40,7 @@ typedef struct DRFrame {
     int64_t      src;
     int          seg;
     int          ctr;
+    int64_t      block;
 } DRFrame;
 
 typedef int (*DRFrameCb)(void *opaque, DRFrame *frame);
@@ -77,6 +78,7 @@ typedef struct DRUnit {
     int            samples;
     int            rate;
     const DRPicture *pic;
+    int64_t        block;
 } DRUnit;
 
 typedef int (*DRUnitCb)(void *opaque, const DRUnit *unit);

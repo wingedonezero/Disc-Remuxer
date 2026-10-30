@@ -51,6 +51,8 @@ int cut_points(const CutPicture *pics, int nb, int codec, CutPoint **points, int
         c = &p[n++];
         c->zero = c->key_time = pics[i].time;
         c->start = pics[i].start;
+        c->seg   = pics[i].seg;
+        c->block = pics[i].block;
         /* its leading pictures: after it in decoding order up to the next
          * key frame, shown before it */
         for (int j = i + 1; j < nb && !pics[j].key; j++) {
@@ -287,7 +289,8 @@ static int add_picture(CutIndex *ix, int *cap, const DrDiscFrame *fr)
         ix->pics = p;
         *cap     = n;
     }
-    ix->pics[ix->nb_pics++] = (CutPicture){ fr->time, fr->duration, fr->key, (uint8_t)fr->start, fr->rasl, fr->ref };
+    ix->pics[ix->nb_pics++] = (CutPicture){ fr->time, fr->duration, fr->key, (uint8_t)fr->start, fr->rasl, fr->ref,
+                                            fr->seg, fr->block };
     ix->end = DR_MAX(ix->end, fr->time + fr->duration);
     return 0;
 }

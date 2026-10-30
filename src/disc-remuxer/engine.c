@@ -379,6 +379,7 @@ struct EngineDisc {
     char            *rip;        /* per title: 1 ripped (the selection) */
     char            *split;      /* per title: 1 written as parts (as chosen; the setting adds to it) */
     char           **cut;        /* per title: the cuts asked for (cuts.h cut_parse()), NULL none */
+    CutIndex       **index;      /* per title: the cut editor's index (engine_cut_index()), NULL not read */
 };
 
 static int parse_titles(const char *spec, const DiscInfo *d, int only_selected, char *sel);
@@ -544,6 +545,26 @@ int engine_split_titles(EngineDisc *d, const char *spec)
     return parse_titles(spec, d->info, 0, d->split);
 }
 
+const CutIndex *engine_cut_index(EngineDisc *d, int t)
+{
+    CutIndex *ix;
+
+    if (!title_ok(d, t))
+        return NULL;
+    if (!d->index && !(d->index = calloc(d->info->nb_titles, sizeof(*d->index))))
+        return NULL;
+    if (d->index[t])
+        return d->index[t];
+    if (!(ix = calloc(1, sizeof(*ix))))
+        return NULL;
+    /* the whole title: every picture and the chapters as a rip places them */
+    if (cut_index_read(d->disc, t, -1, NULL, 0, ix) < 0) {
+        free(ix);
+        return NULL;
+    }
+    return d->index[t] = ix;
+}
+
 int engine_track_kept(const EngineDisc *d, int t, int i)
 {
     return title_ok(d, t) && i >= 0 && i < d->info->titles[t].nb_streams && d->keeps[t][i];
@@ -589,6 +610,12 @@ void engine_disc_close(EngineDisc **pd)
     for (int t = 0; d->cut && d->info && t < d->info->nb_titles; t++)
         free(d->cut[t]);
     free(d->cut);
+    for (int t = 0; d->index && d->info && t < d->info->nb_titles; t++)
+        if (d->index[t]) {
+            cut_index_free(d->index[t]);
+            free(d->index[t]);
+        }
+    free(d->index);
     dr_disc_close(&d->disc);
     free(d);
     *pd = NULL;
@@ -1154,6 +1181,9 @@ static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cut
         if (p->left_out)
             snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "; %d picture(s) shown before it "
                      "need the pictures before it: left out (in neither part)", p->left_out);
+        if (p->block >= 0)
+            snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "; its key frame is read from segment "
+                     "%d, block %"PRId64, p->seg + 1, p->block);
         if (r->on_point)
             log_text(LOG_INFO, "  - %s -> on a key frame (%s)%s; the part starts at %s", asked,
                      start_text(p->start), extra, cut_time_text(b, sizeof(b), p->zero));

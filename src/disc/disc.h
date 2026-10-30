@@ -126,6 +126,10 @@ typedef struct DrDiscFrame {
                                       alone (HEVC RASL) */
     unsigned    ref:1;           /**< video (H.264): a reference picture */
     unsigned    entry:1;         /**< audio: a stream can start at this unit (nothing of the ones before it needed) */
+    int         seg;             /**< the segment of the title it comes from (from 0) */
+    int64_t     block;           /**< the block of that segment the data holding its first byte is read from
+                                      (a Blu-ray: 6144-byte aligned units; DVD, HD DVD: 2048-byte sectors), -1 not
+                                      known: where a reading can start to reach it */
     int         start;           /**< video key frames: enum DrDiscStart */
 } DrDiscFrame;
 

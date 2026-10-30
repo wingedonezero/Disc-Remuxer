@@ -213,7 +213,7 @@ static int unit_done(DRAudio *a, DRFrame *f)
 int ff_disctl_audio_unit(void *opaque, const DRUnit *u)
 {
     DRAudio *a = opaque;
-    DRFrame f = { .time = u->time, .pos = u->pos, .samples = u->samples, .rate = u->rate };
+    DRFrame f = { .time = u->time, .pos = u->pos, .samples = u->samples, .rate = u->rate, .block = u->block };
     int ret;
 
     if (!(f.buf = dr_buf_alloc(u->size + DR_BUF_PADDING)))

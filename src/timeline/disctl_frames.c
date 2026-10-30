@@ -222,6 +222,22 @@ static void place_of(DRFrames *c, int64_t off, char *buf, int size)
         buf[0] = '\0';
 }
 
+/* 1 + the block the payload holding stream offset off was read from, 0 not
+ * known; the entries before it are dropped (units come in stream order). */
+static int64_t block_of(DRFrames *c, int64_t off)
+{
+    int i = c->nb_blk - 1;
+
+    while (i >= 0 && c->blk[i][0] > off)
+        i--;
+    if (i > 0) {
+        memmove(c->blk, c->blk + i, (c->nb_blk - i) * sizeof(*c->blk));
+        c->nb_blk -= i;
+        i = 0;
+    }
+    return i < 0 ? 0 : c->blk[i][1] + 1;
+}
+
 /* The run of bytes with no frame start, if any, said: one piece as it
  * came, pieces one after another (a stream with no frame this cutter knows)
  * as one line. */
@@ -467,7 +483,7 @@ static int unit_take(DRFrames *c, const uint8_t *data, int size, int64_t off,
     c->st.units++;
     if (time != DR_NOPTS_VALUE)
         c->st.timed++;
-    ret = c->cb(c->opaque, &(DRUnit){ data, size, time, off, samples, rate, pic });
+    ret = c->cb(c->opaque, &(DRUnit){ data, size, time, off, samples, rate, pic, block_of(c, off) });
     if (ret < 0 && ret != DR_ERR(ENOMEM) && ret != DR_ERR(EAGAIN)) {
         /* the stage said why (the line before): here where it is */
         char where[256];

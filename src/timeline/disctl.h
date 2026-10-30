@@ -117,6 +117,8 @@ typedef struct DRFrame {
     int          ctr;      /**< with DR_F_CTR: the stream's own sample number of the frame's first sample,
                                 modulo 65536 (TrueHD / MLP: a restart header's output timing, counted on
                                 by the samples of an access unit); with DR_F_PLACE: the places it marks */
+    int64_t      block;    /**< 1 + the block of its segment the payload holding its first byte is read from
+                                (ff_disctl_title_payload_at()); 0: not known */
 } DRFrame;
 
 /** Hands a frame on; the callee owns it (ff_disctl_frame_unref). */
@@ -308,6 +310,7 @@ typedef struct DRUnit {
     int            samples;/**< samples the frame cutter gives the unit, 0 = none */
     int            rate;   /**< and their sample rate */
     const DRPicture *pic;  /**< the picture values the parser gives (DRCodec.parser_picture), or NULL */
+    int64_t        block;  /**< DRFrame.block */
 } DRUnit;
 
 /** Called for every unit, in stream order. A negative return stops the

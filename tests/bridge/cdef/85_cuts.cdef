@@ -9,6 +9,8 @@ typedef struct CutPicture {
     uint8_t start;
     uint8_t rasl;
     uint8_t ref;
+    int     seg;
+    int64_t block;
 } CutPicture;
 
 typedef struct CutPoint {
@@ -18,6 +20,8 @@ typedef struct CutPoint {
     int     kept;
     int     undecodable;
     int     left_out;
+    int     seg;
+    int64_t block;
 } CutPoint;
 
 int cut_points(const CutPicture *pics, int nb, int codec, CutPoint **points, int *nb_points);

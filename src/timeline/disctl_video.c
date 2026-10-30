@@ -1051,7 +1051,8 @@ void ff_disctl_video_stuffing(DRVideo *v, int64_t bytes)
 int ff_disctl_video_unit(void *opaque, const DRUnit *du)
 {
     DRVideo *v = opaque;
-    VUnit u = { .f = { .time = du->time, .pos = du->pos, .samples = du->samples, .rate = du->rate },
+    VUnit u = { .f = { .time = du->time, .pos = du->pos, .samples = du->samples, .rate = du->rate,
+                       .block = du->block },
                 .seq = v->st.units };
     DRPicture pic = du->pic ? *du->pic : (DRPicture){ 0 };
     int ret;

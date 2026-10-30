@@ -146,6 +146,12 @@ int  engine_select_titles(EngineDisc *d, const char *spec);
 int  engine_title_split(const EngineDisc *d, int t);
 int  engine_set_title_split(EngineDisc *d, int t, int on);
 int  engine_split_titles(EngineDisc *d, const char *spec);
+/* The cut editor's index of title t (cuts.h): every picture of its video
+ * (time, key frame kind, place on the disc) and its chapters, read the way
+ * a rip reads the title (progress through the log sink, stopped by
+ * engine_cancel()) the first time, kept while the disc is open. NULL when
+ * it cannot be read (logged). */
+const struct CutIndex *engine_cut_index(EngineDisc *d, int t);
 int  engine_track_kept(const EngineDisc *d, int t, int i);
 int  engine_set_track_kept(EngineDisc *d, int t, int i, int on);
 int  engine_apply_tracks(EngineDisc *d, int t, const char *steps);

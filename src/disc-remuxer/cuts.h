@@ -23,6 +23,8 @@ typedef struct CutPicture {
     uint8_t start;           /* key frames: enum DrDiscStart */
     uint8_t rasl;            /* a leading picture that cannot be decoded from its key frame alone */
     uint8_t ref;             /* H.264: a reference picture */
+    int     seg;             /* its place: the title's segment (from 0) */
+    int64_t block;           /* and the block of it a reading can start at to reach it, -1 not known */
 } CutPicture;
 
 /* A place a part can start: a key frame and its group. */
@@ -33,6 +35,8 @@ typedef struct CutPoint {
     int     kept;            /* pictures after the key frame in decoding order shown before it, decodable */
     int     undecodable;     /* those that cannot be decoded without the group before, kept all the same */
     int     left_out;        /* those that cannot be decoded, left out of the part */
+    int     seg;             /* the key frame's place (CutPicture) */
+    int64_t block;
 } CutPoint;
 
 /* The places a part can start, from the pictures in decoding order: one

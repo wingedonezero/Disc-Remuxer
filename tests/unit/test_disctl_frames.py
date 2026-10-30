@@ -19,6 +19,7 @@ class Out:
     size: int
     time: int
     head: bytes
+    block: int = 0
 
 
 def run(codec, payloads, report=None):
@@ -31,7 +32,7 @@ def run(codec, payloads, report=None):
 
     def on_unit(u):
         data = bytes(ffi.buffer(u.data, u.size))
-        outs.append(Out(u.pos, u.size, u.time, data[:4]))
+        outs.append(Out(u.pos, u.size, u.time, data[:4], u.block))
         return 0
     keep = Handles()
     c = ffi.new("DRFrames **")
@@ -232,3 +233,17 @@ def test_a_codec_without_a_table_entry_is_refused():
     lib.ff_disctl_frames_close(c)
     assert ret < 0
     assert c[0] == ffi.NULL
+
+
+def test_each_unit_has_the_block_of_the_payload_holding_its_first_byte():
+    # 92 junk bytes, then frames of 768 bytes over payloads of 2016 bytes read from blocks 6, 7, 8, ...:
+    # a frame starting inside a payload, one spread over two, each takes the block its first byte is in
+    stream = b"\x11" * 92 + ac3_frame() * 12
+    payloads = [(p, None, 6 + k) for k, p in enumerate(chunks(stream, 2016))]
+    outs, _ = run("ac3", payloads)
+    assert len(outs) == 12
+    for o in outs:
+        assert o.block == 1 + 6 + o.pos // 2016, f"frame at {o.pos}: 1 + its payload's block"
+    # payloads without a block: none known
+    outs, _ = run("ac3", [(ac3_frame() * 2, None)])
+    assert [o.block for o in outs] == [0, 0]
