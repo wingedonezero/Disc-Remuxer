@@ -27,6 +27,7 @@ typedef struct CutFrame {
     char           md5[33];      /* of the picture as decoded (its planes packed, as FFmpeg's framemd5) */
     int            decoded;      /* pictures decoded for it (0: it was kept) */
     int            from;         /* display number of the key frame the decoding started at (-1: kept) */
+    char           type;         /* its picture type as decoded ('I', 'P', 'B', ...; '?' not told) */
 } CutFrame;
 
 /* The pictures of title `title` of the open disc, by its index ix (both

@@ -154,6 +154,8 @@ static const Setting registry[] = {
     { "gui", "columns", SET_LIST, "", 0, 0, NULL, "Kept by the GUI: the widths of the queue's columns.",
       1, SET_IN_GUI },
     { "gui", "panes", SET_LIST, "", 0, 0, NULL, "Kept by the GUI: the sizes of the window's panes.", 1, SET_IN_GUI },
+    { "gui", "cut_editor", SET_LIST, "", 0, 0, NULL,
+      "Kept by the GUI: the cut editor window's place and the sizes of its panes.", 1, SET_IN_GUI },
     { "gui", "last_folder", SET_TEXT, "", 0, 0, NULL,
       "Kept by the GUI: the folder discs were last added from.", 1, SET_IN_GUI },
     { "gui", "show_detail_lines", SET_BOOL, "false", 0, 0, NULL,

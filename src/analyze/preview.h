@@ -21,6 +21,7 @@ typedef struct DrPreviewImage {
     uint8_t *bgra;              /* owned: dr_preview_image_free() */
     int64_t  time;              /* the time its unit was sent with */
     char     md5[33];           /* of the decoded picture as decoded (its planes packed, as FFmpeg's framemd5) */
+    char     type;              /* its picture type as the decoder says it: 'I', 'P', 'B', ... ('?' not told) */
 } DrPreviewImage;
 
 /* A decoder for the track's codec. 0, or a negative error. */

@@ -119,6 +119,7 @@ int dr_preview_receive(DrPreview *p, int width, int height, DrPreviewImage *img)
     img->height = height;
     img->stride = width * 4;
     img->time   = f->pts;
+    img->type   = av_get_picture_type_char(f->pict_type);
     if (!(img->bgra = av_malloc((size_t)img->stride * height))) {
         av_frame_unref(f);
         return AVERROR(ENOMEM);

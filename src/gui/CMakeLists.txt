@@ -24,7 +24,8 @@ add_executable(disc-remuxer-gui
     DetailsPanel.cpp DetailsPanel.h
     Console.cpp Console.h
     QueueTree.cpp QueueTree.h
-    PrefsDialog.cpp PrefsDialog.h)
+    PrefsDialog.cpp PrefsDialog.h
+    CutEditor.cpp CutEditor.h)
 
 target_include_directories(disc-remuxer-gui PRIVATE ${ENGINE_INCLUDE} ${SRC_INCLUDE})
 target_compile_definitions(disc-remuxer-gui PRIVATE DISC_REMUXER_VERSION="${DISC_REMUXER_VERSION}")

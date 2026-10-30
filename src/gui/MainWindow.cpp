@@ -26,6 +26,7 @@
 #include <QVBoxLayout>
 
 #include "Console.h"
+#include "CutEditor.h"
 #include "DetailsPanel.h"
 #include "PrefsDialog.h"
 #include "QueueTree.h"
@@ -390,6 +391,19 @@ void MainWindow::scanned(quint64 id, quintptr handle)
             if (j->item->childCount())
                 j->item->child(0)->setExpanded(true);
         }
+        if (test.startsWith("cuts:") && j) {
+            // the cut editor of a title: cuts:<title>:<time>:<steps> (CutEditor::setTest()),
+            // with the cut list DISC_REMUXER_GUI_CUT_LIST kept on the title before
+            QStringList a = test.split(':');
+            QByteArray list = qgetenv("DISC_REMUXER_GUI_CUT_LIST");
+            if (!list.isEmpty())
+                engine_set_title_cuts(j->disc, a.value(1).toInt(), list.constData());
+            QTimer::singleShot(0, this, [this, id = j->id, a] {
+                openCuts(id, a.value(1).toInt(), a.mid(2, a.size() - 3).join(':'), a.size() > 3 ? a.last() : QString());
+                QApplication::quit();
+            });
+            return;
+        }
         if (test == "rip" || test == "stop") {
             startQueue();
             if (test == "stop")
@@ -668,6 +682,17 @@ void MainWindow::contextMenu(const QPoint &pos)
         });
         menu.addSeparator();
     }
+    if (t >= 0 && j->disc) {
+        // the title's cuts: the editor, or the list dropped
+        menu.addAction("Cuts…", this, [this, id = j->id, t] { QTimer::singleShot(0, this, [this, id, t] { openCuts(id, t); }); })
+            ->setEnabled(!running && !j->scanning);
+        menu.addAction("Clear Cuts", this, [this, id = j->id, t] {
+                if (Job *x = jobById(id); x && x->disc)
+                    engine_set_title_cuts(x->disc, t, nullptr);
+            })
+            ->setEnabled(!running && engine_title_cuts(j->disc, t));
+        menu.addSeparator();
+    }
     menu.addAction("Open the Output Folder", this, [out] { QDesktopServices::openUrl(QUrl::fromLocalFile(out)); })
         ->setEnabled(!out.isEmpty() && QFileInfo(out).isDir());
     menu.addAction("Open the Log", this, [log] { QDesktopServices::openUrl(QUrl::fromLocalFile(log)); })
@@ -682,6 +707,20 @@ void MainWindow::contextMenu(const QPoint &pos)
     menu.addAction("Remove from the Queue", this, [this, item] { tree->setCurrentItem(item); removeSelected(); })
         ->setEnabled(!running);
     menu.exec(tree->viewport()->mapToGlobal(pos));
+}
+
+// The cut editor of title t (window modal: nothing else reads the disc
+// while it is open; OK keeps its cut list on the title).
+void MainWindow::openCuts(quint64 id, int t, const QString &at, const QString &steps)
+{
+    Job *j = jobById(id);
+
+    if (!j || !j->disc || j->scanning || running)
+        return;
+    CutEditor editor(j->disc, t, relay, this);
+    if (!snapshot.isEmpty())
+        editor.setTest(at, steps, snapshot);
+    editor.exec();
 }
 
 void MainWindow::removeJob(int row)

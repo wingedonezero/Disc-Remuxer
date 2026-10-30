@@ -289,7 +289,7 @@ int cut_preview_picture(CutPreview *p, int n, int w, int h, CutFrame *out)
     k->used = ++p->clock;
     *out = (CutFrame){ n, ix->pics[p->disp[n]].time, ix->pics[p->disp[n]].key, ix->pics[p->disp[n]].start,
                        k->img.width, k->img.height, k->img.stride, k->img.bgra, "", p->decoded,
-                       p->decoded ? p->num[p->from] : -1 };
+                       p->decoded ? p->num[p->from] : -1, k->img.type };
     memcpy(out->md5, k->img.md5, sizeof(out->md5));
     return 0;
 }

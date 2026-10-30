@@ -559,7 +559,9 @@ const CutIndex *engine_cut_index(EngineDisc *d, int t)
         return d->index[t];
     if (!(ix = calloc(1, sizeof(*ix))))
         return NULL;
-    /* the whole title: every picture and the chapters as a rip places them */
+    /* the whole title: every picture and the chapters as a rip places them
+     * (engine_cancel() stops it; a Stop from before does not) */
+    atomic_store(&cancelled, 0);
     if (cut_index_read(d->disc, t, -1, NULL, 0, ix) < 0) {
         free(ix);
         return NULL;
