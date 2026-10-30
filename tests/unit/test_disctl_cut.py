@@ -90,10 +90,8 @@ def test_each_part_starts_at_0_and_every_picture_lands_once():
                 assert all(pt == t - zero for t, pt in given), "on the part's clock: time - its zero"
                 assert n == len(given)
                 seen += [t for t, _ in given]
-            # H.264 leaves its non-reference leading pictures out; MPEG-2 / VC-1 keep them
-            left_out = set()
-            if codec == H264:
-                left_out = ({4 * F, 5 * F} if second != CLEAN else set()) | ({10 * F, 11 * F} if third != CLEAN else set())
+            # the leading pictures of an open key frame are left out (H.264's non-reference ones, MPEG-2 / VC-1's B)
+            left_out = ({4 * F, 5 * F} if second != CLEAN else set()) | ({10 * F, 11 * F} if third != CLEAN else set())
             assert sorted(seen) == sorted(p[0] for p in pics if p[0] not in left_out), (codec, second, third)
             assert len(seen) == len(set(seen)), "no picture in two parts"
 
@@ -121,10 +119,10 @@ def test_an_open_key_frame_part_leaves_out_only_what_the_codec_allows():
     given, ret, (n, left, first, start, und) = parts[1]
     assert ret == 0 and cuts[0] == (4 * F, 6 * F)
     assert [t // F for t, _ in given] == [6, 4, 9, 7, 8] and (left, und, first) == (1, 1, 0)
-    # MPEG-2 / VC-1: kept, the part starts with them
+    # MPEG-2 / VC-1: their B pictures left out, the part starts on its key frame
     cuts, parts = parts_of(stream(OPEN, CLEAN), OTHER)
     given, _, (n, left, first, start, und) = parts[1]
-    assert cuts[0] == (4 * F, 6 * F) and [t // F for t, _ in given] == [6, 4, 5, 9, 7, 8] and (left, und) == (0, 2)
+    assert cuts[0] == (6 * F, 6 * F) and [t // F for t, _ in given] == [6, 9, 7, 8] and (left, und) == (2, 0)
 
 
 def test_hevc_keeps_radl_and_leaves_rasl_out():
@@ -161,7 +159,8 @@ def test_the_leading_picture_rule():
     assert lib.ff_disctl_leading_kept(OPEN, HEVC, 1, 0) == 0, "a RASL picture may be left out"
     assert lib.ff_disctl_leading_kept(OPEN, H264, 0, 0) == 0, "an H.264 non-reference picture may be left out"
     assert lib.ff_disctl_leading_kept(OPEN, H264, 0, 1) == 1, "an H.264 reference picture stays"
-    assert lib.ff_disctl_leading_kept(OPEN, OTHER, 0, 0) == 1, "MPEG-2 / VC-1: kept"
+    assert lib.ff_disctl_leading_kept(OPEN, OTHER, 0, 0) == 0, "an MPEG-2 / VC-1 B picture is left out"
+    assert lib.ff_disctl_leading_kept(BROKEN, OTHER, 0, 0) == 0, "after a broken link too"
 
 
 # ---- audio ----

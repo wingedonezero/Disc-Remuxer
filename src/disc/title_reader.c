@@ -1835,7 +1835,8 @@ static int cut_end(DrDisc *d)
                 cr.left_out);
     if (cr.undecodable)
         dr_vlog(d->log, DR_VLOG_INFO, "Cut part %d/%d: %"PRId64" picture(s) shown before its key frame need the "
-                "pictures before it and cannot be left out: kept (players do not show them)\n",
+                "pictures before it and cannot be left out (H.264 reference pictures): kept (players do not show "
+                "them)\n",
                 d->opt_cut_part + 1, d->nb_opt_cuts + 1, cr.undecodable);
     /* each audio track: where it starts on the part's clock */
     for (int i = 1; i < d->nb_out_tracks && from; i++) {

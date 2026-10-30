@@ -45,8 +45,8 @@ typedef struct CutPoint {
  * can be decoded from it when it starts cleanly (an IDR picture, a closed
  * GOP, a closed entry point); after any other key frame they need the group
  * before it, except HEVC's RADL pictures. One that cannot be decoded is left
- * out where the codec allows the stream without it (an HEVC RASL picture,
- * an H.264 picture that is no reference picture), else kept (timeline
+ * out, so the part starts on its key frame, but an H.264 reference picture
+ * (the stream does not allow it missing: kept; timeline
  * ff_disctl_leading_kept()). The part's 0 is the earliest picture kept.
  * codec: DRCutCodec. 0, or a negative base error. */
 int cut_points(const CutPicture *pics, int nb, int codec, CutPoint **points, int *nb_points);

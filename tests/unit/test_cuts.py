@@ -56,8 +56,8 @@ def test_an_open_key_frame_leaves_out_what_the_codec_allows_and_keeps_the_rest()
     assert points(gops(BROKEN), H264)[0] == (6, 6, BROKEN, 0, 0, 2)
     # H.264: a reference leading picture is kept (left out it would leave a frame_num gap); the others go
     assert points([(0, CLEAN), 3, 1, 2, (6, OPEN), ('R', 4), 5, 9, 7, 8], H264) == [(4, 6, OPEN, 0, 1, 1)]
-    # MPEG-2 / VC-1: kept, as stream-copy cutting keeps them; the part starts with them
-    assert points(gops(OPEN), OTHER)[0] == (4, 6, OPEN, 0, 2, 0)
+    # MPEG-2 / VC-1: their B pictures left out; the part starts on its key frame
+    assert points(gops(OPEN), OTHER)[0] == (6, 6, OPEN, 0, 0, 2)
 
 
 def test_a_clean_key_frame_keeps_its_leading_pictures_and_starts_with_them():

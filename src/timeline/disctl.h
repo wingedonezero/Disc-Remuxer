@@ -1257,11 +1257,12 @@ enum DRCutCodec {
  *  RASL picture. */
 int ff_disctl_leading_decodes(int start, int codec, int rasl);
 /** Whether a part that starts at the key frame keeps the leading picture:
- *  one that decodes, yes; one that does not is left out only where that
- *  leaves a stream the codec allows (an HEVC RASL picture, H.265 8.1.3; an
- *  H.264 picture that is no reference picture, so no frame_num goes
- *  missing, H.264 7.4.3); every other one is kept, as stream-copy cutting
- *  keeps them (players do not show what cannot be decoded). */
+ *  one that decodes, yes; one that does not is left out (the part starts
+ *  on its key frame: an MPEG-1/2 or VC-1 B picture, which nothing refers
+ *  to, decoders drop them, ISO/IEC 13818-2 broken_link, SMPTE ST 421
+ *  6.2.1; an HEVC RASL picture, H.265 8.1.3), but an H.264 reference
+ *  picture: left out it would leave a frame_num gap the stream does not
+ *  allow (H.264 7.4.3), so it is kept. */
 int ff_disctl_leading_kept(int start, int codec, int rasl, int ref);
 
 /** What a cut part does with a track (ff_disctl_cut_open()). */

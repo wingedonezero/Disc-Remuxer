@@ -1234,8 +1234,8 @@ static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cut
                      "(they decode from it)", p->kept);
         if (p->undecodable)
             snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "; %d picture(s) shown before it "
-                     "need the pictures before it and cannot be left out (reference pictures, or a codec that "
-                     "does not allow it): kept, the part starts with them (players do not show them; its first "
+                     "need the pictures before it and cannot be left out (H.264 reference pictures: the stream "
+                     "would miss a frame_num): kept, the part starts with them (players do not show them; its first "
                      "picture that decodes at %s)", p->undecodable, cut_time_text(c, sizeof(c), p->key_time - p->zero));
         if (p->left_out)
             snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "; %d picture(s) shown before it "

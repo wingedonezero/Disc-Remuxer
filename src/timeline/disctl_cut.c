@@ -7,8 +7,8 @@
  * own, but for its leading pictures that do not decode without the group
  * before it (ISO/IEC 13818-2 closed_gop / broken_link, H.264 IDR and
  * recovery points, H.265 7.4.2.2 RADL / RASL pictures, SMPTE 421M entry
- * points) where leaving them out leaves a stream the codec allows
- * (ff_disctl_leading_kept()); from the next cut's key frame on the next
+ * points), left out but where that leaves a stream the codec does not
+ * allow (ff_disctl_leading_kept()); from the next cut's key frame on the next
  * part's. Audio by time, as stream-copy cutting does: a frame that starts
  * before the part's 0 is the part before's, so a part's audio starts 0 to
  * one frame after its 0; PCM between two samples, at the first one at or
@@ -73,7 +73,7 @@ int ff_disctl_leading_kept(int start, int codec, int rasl, int ref)
 {
     if (ff_disctl_leading_decodes(start, codec, rasl))
         return 1;
-    return !((codec == DR_CUT_HEVC && rasl) || (codec == DR_CUT_H264 && !ref));
+    return codec == DR_CUT_H264 && ref;
 }
 
 int ff_disctl_cut_open(DRCut **pc, void *log, const DRCutPlace *cuts, int nb_cuts, int part, int codec,
