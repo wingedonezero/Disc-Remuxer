@@ -22,7 +22,10 @@ typedef struct CutPoint {
     int     left_out;
     int     seg;
     int64_t block;
+    int64_t lost;
+    int64_t shown;
 } CutPoint;
+int cut_point_clean(const CutPoint *p, char *brief, int bsize, char *full, int fsize);
 
 int cut_points(const CutPicture *pics, int nb, int codec, CutPoint **points, int *nb_points);
 

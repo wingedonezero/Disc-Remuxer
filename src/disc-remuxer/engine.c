@@ -1232,14 +1232,6 @@ static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cut
         if (p->kept)
             snprintf(extra, sizeof(extra), "; the part starts with %d picture(s) shown before its key frame "
                      "(they decode from it)", p->kept);
-        if (p->undecodable)
-            snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "; %d picture(s) shown before it "
-                     "need the pictures before it and cannot be left out (H.264 reference pictures: the stream "
-                     "would miss a frame_num): kept, the part starts with them (players do not show them; its first "
-                     "picture that decodes at %s)", p->undecodable, cut_time_text(c, sizeof(c), p->key_time - p->zero));
-        if (p->left_out)
-            snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "; %d picture(s) shown before it "
-                     "need the pictures before it: left out (in neither part)", p->left_out);
         if (p->block >= 0)
             snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "; its key frame is read from segment "
                      "%d, block %"PRId64, p->seg + 1, p->block);
@@ -1251,6 +1243,14 @@ static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cut
                      "starts at %s", asked, rule == CUT_NEXT ? "next" : "nearest", start_text(p->start),
                      p->zero < r->target ? '-' : '+', (double)DR_ABS(p->zero - r->target) * 1000 / DR_TICKS_PER_SECOND,
                      pictures_between(&ix, r->target, p->zero), extra, cut_time_text(b, sizeof(b), p->zero));
+        /* whether the cut is clean, and what it costs when it is not */
+        {
+            char brief[64], full[768];
+            if (cut_point_clean(p, brief, sizeof(brief), full, sizeof(full)))
+                log_text(LOG_INFO, "    %s", full);
+            else
+                log_msg(MSG_CUTS, LOG_WARNING, "  Cut at %s: %s", asked, full);
+        }
     }
     /* the cuts and the parts, in time order */
     qsort(*cuts, n, sizeof(**cuts), by_zero);

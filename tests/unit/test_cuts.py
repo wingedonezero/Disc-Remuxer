@@ -72,6 +72,37 @@ def test_hevc_marks_each_leading_picture():
     assert points(specs, HEVC) == [(5, 6, OPEN, 1, 0, 1)]
 
 
+def verdicts(specs, codec):
+    """Per place: clean, its short words, how long the left-out pictures are shown and when the part's first
+    picture that decodes is (both in pictures)."""
+    a, n = pics(*specs)
+    p, np_ = ffi.new("CutPoint **"), ffi.new("int *")
+    assert lib.cut_points(a, n, codec, p, np_) == 0
+    brief, full = ffi.new("char[]", 64), ffi.new("char[]", 768)
+    out = []
+    for i in range(np_[0]):
+        ok = lib.cut_point_clean(p[0] + i, brief, 64, full, 768)
+        out.append((ok, ffi.string(brief).decode(), p[0][i].lost // F, p[0][i].shown // F, ffi.string(full).decode()))
+    lib.free(p[0])
+    return out
+
+
+def test_a_cut_says_whether_it_is_clean_and_what_it_costs():
+    # a closed GOP, an IDR picture, a CRA picture with only RADL pictures: clean in every codec
+    for codec in (OTHER, H264, HEVC):
+        ok, brief, lost, shown, full = verdicts(gops(CLEAN), codec)[0]
+        assert (ok, brief, lost, shown) == (1, "clean", 0, 0) and full.startswith("a clean cut: nothing lost")
+    assert verdicts([(0, CLEAN), 3, 1, 2, (6, OPEN), 4, 5, 9, 7, 8], HEVC)[0][:2] == (1, "clean"), "RADL pictures decode"
+    # an open MPEG-2 / VC-1 key frame: its two B pictures lost, the part starts at 0 on the key frame
+    ok, brief, lost, shown, full = verdicts(gops(OPEN), OTHER)[0]
+    assert (ok, brief, lost, shown) == (0, "open: loses 2 picture(s)", 2, 0)
+    assert "the part before loses its last 0.083 s of pictures" in full
+    # H.264 with a reference leading picture: one lost, one kept at the start that players do not show
+    ok, brief, lost, shown, full = verdicts([(0, CLEAN), 3, 1, 2, (6, OPEN), ('R', 4), 5, 9, 7, 8], H264)[0]
+    assert (ok, brief, lost, shown) == (0, "open: loses 1, 1 hidden", 1, 2)
+    assert "starts with 1 picture(s) that cannot be decoded" in full and "first picture shown is at 0.083 s" in full
+
+
 def test_the_first_picture_is_no_place_to_cut():
     assert points([(0, CLEAN), 1, 2]) == []
 

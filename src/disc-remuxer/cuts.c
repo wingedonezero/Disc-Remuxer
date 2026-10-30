@@ -53,6 +53,7 @@ int cut_points(const CutPicture *pics, int nb, int codec, CutPoint **points, int
         c->start = pics[i].start;
         c->seg   = pics[i].seg;
         c->block = pics[i].block;
+        int64_t decodes = pics[i].time;     /* its earliest picture kept that decodes */
         /* its leading pictures: after it in decoding order up to the next
          * key frame, shown before it */
         for (int j = i + 1; j < nb && !pics[j].key; j++) {
@@ -60,18 +61,50 @@ int cut_points(const CutPicture *pics, int nb, int codec, CutPoint **points, int
                 continue;
             if (!ff_disctl_leading_kept(pics[i].start, codec, pics[j].rasl, pics[j].ref)) {
                 c->left_out++;
+                c->lost += pics[j].duration;
                 continue;
             }
-            if (ff_disctl_leading_decodes(pics[i].start, codec, pics[j].rasl))
+            if (ff_disctl_leading_decodes(pics[i].start, codec, pics[j].rasl)) {
                 c->kept++;
-            else
+                decodes = DR_MIN(decodes, pics[j].time);
+            } else
                 c->undecodable++;
             c->zero = DR_MIN(c->zero, pics[j].time);
         }
+        c->shown = decodes - c->zero;
     }
     qsort(p, n, sizeof(*p), by_zero);
     *points    = p;
     *nb_points = n;
+    return 0;
+}
+
+int cut_point_clean(const CutPoint *p, char *brief, int bsize, char *full, int fsize)
+{
+    char lost[320] = "", hidden[320] = "";
+
+    if (!p->left_out && !p->undecodable) {
+        snprintf(brief, bsize, "clean");
+        snprintf(full, fsize, "a clean cut: nothing lost (the part before ends with the picture shown before this "
+                 "part's first; this part starts at 0 with a picture that decodes)");
+        return 1;
+    }
+    if (p->left_out)
+        snprintf(lost, sizeof(lost), "%d picture(s) shown before its key frame need pictures on both sides of the "
+                 "cut: in neither part (the part before loses its last %.3f s of pictures; its sound runs on over "
+                 "the picture before them)", p->left_out, (double)p->lost / DR_TICKS_PER_SECOND);
+    if (p->undecodable)
+        snprintf(hidden, sizeof(hidden), "%sthis part starts with %d picture(s) that cannot be decoded (H.264 "
+                 "reference pictures: the stream needs them, so they are kept): players do not show them; its first "
+                 "picture shown is at %.3f s", *lost ? "; " : "", p->undecodable,
+                 (double)p->shown / DR_TICKS_PER_SECOND);
+    if (p->left_out && p->undecodable)
+        snprintf(brief, bsize, "open: loses %d, %d hidden", p->left_out, p->undecodable);
+    else if (p->left_out)
+        snprintf(brief, bsize, "open: loses %d picture(s)", p->left_out);
+    else
+        snprintf(brief, bsize, "open: %d hidden at start", p->undecodable);
+    snprintf(full, fsize, "not a clean cut (an open key frame): %s%s", lost, hidden);
     return 0;
 }
 
@@ -402,7 +435,7 @@ int cut_index_read(DrDisc *d, int title, int64_t stop_after, const int64_t *wind
             ret = DR_ERR(ENOMEM);
         for (int i = 0; ret >= 0 && i < n; i++) {
             const DrDiscChapter *c = dr_disc_chapter(d, i);
-            char name[16];
+            char name[24];
             snprintf(name, sizeof(name), "Chapter %02u", (unsigned)(i + 1));
             if (!(ix->chapter_names[i] = strdup(c->name && *c->name ? c->name : name))) {
                 ret = DR_ERR(ENOMEM);

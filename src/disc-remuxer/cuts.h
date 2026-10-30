@@ -37,7 +37,16 @@ typedef struct CutPoint {
     int     left_out;        /* those that cannot be decoded, left out of the part */
     int     seg;             /* the key frame's place (CutPicture) */
     int64_t block;
+    int64_t lost;            /* ticks: how long the left-out pictures are shown (the part before ends that much
+                                before it: its last pictures are in neither part) */
+    int64_t shown;           /* ticks from the part's 0 to its first picture that decodes (0: it starts with one) */
 } CutPoint;
+
+/* Whether a cut there is clean (nothing lost: the part before ends with
+ * the picture shown before the part's first, the part starts at 0 with a
+ * picture that decodes) and, when it is not, what it costs, in words:
+ * short (a list's column) and full. 1 clean, 0 not. */
+int cut_point_clean(const CutPoint *p, char *brief, int bsize, char *full, int fsize);
 
 /* The places a part can start, from the pictures in decoding order: one
  * per key frame after the first picture. The pictures that follow a key

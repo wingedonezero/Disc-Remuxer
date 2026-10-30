@@ -70,6 +70,25 @@ static QString exactText(int64_t ticks)
     return QString::fromUtf8(cut_time_text(b, sizeof(b), ticks));
 }
 
+// Whether a cut at p is clean, for the note line (the Cut column's
+// tooltip and the log say it in full).
+static QString verdictNote(const CutPoint &p)
+{
+    char brief[64], full[768];
+    QString s;
+
+    if (cut_point_clean(&p, brief, sizeof(brief), full, sizeof(full)))
+        return " A clean cut: nothing lost.";
+    s = " ⚠ Not a clean cut (an open key frame):";
+    if (p.left_out)
+        s += QString(" the part before loses its last %1 picture(s) (%2 s)").arg(p.left_out)
+                 .arg(double(p.lost) / DR_TICKS_PER_SECOND, 0, 'f', 3);
+    if (p.undecodable)
+        s += QString("%1 this part starts with %2 picture(s) players do not show (its first shown at %3 s)")
+                 .arg(p.left_out ? ";" : "").arg(p.undecodable).arg(double(p.shown) / DR_TICKS_PER_SECOND, 0, 'f', 3);
+    return s + ". Alt+Up / Alt+Down: the clean key frames.";
+}
+
 static QString startText(int start)
 {
     return start == DR_DISC_START_CLEAN  ? "clean" :
@@ -148,9 +167,10 @@ void CutTimeline::setTitle(int64_t e, const QVector<int64_t> &c)
     update();
 }
 
-void CutTimeline::setCuts(const QVector<int64_t> &zeros)
+void CutTimeline::setCuts(const QVector<int64_t> &zeros, const QVector<bool> &cl)
 {
-    cuts = zeros;
+    cuts  = zeros;
+    clean = cl;
     update();
 }
 
@@ -212,10 +232,16 @@ void CutTimeline::paintEvent(QPaintEvent *)
     p.setPen(QPen(QColor(240, 140, 0), 2, Qt::DashLine));
     for (int64_t c : suggested)
         p.drawLine(xOf(c), top, xOf(c), top + bar);
-    // the cuts
+    // the cuts; one that is not clean with an orange mark on top
     p.setPen(QPen(QColor(220, 30, 30), 2));
     for (int64_t c : cuts)
         p.drawLine(xOf(c), top, xOf(c), top + bar);
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(240, 140, 0));
+    for (int i = 0; i < cuts.size(); i++)
+        if (i < clean.size() && !clean[i])
+            p.drawPolygon(QPolygon({ QPoint(xOf(cuts[i]) - 5, top), QPoint(xOf(cuts[i]) + 5, top),
+                                     QPoint(xOf(cuts[i]), top + 8) }));
     // the picture shown
     int x = xOf(pos);
     p.setPen(QPen(palette().highlight().color(), 2));
@@ -384,6 +410,8 @@ void CutEditor::buildUi()
     button("", QStyle::SP_MediaSeekForward, "Next frame (Right)", [this] { stopPlay(); show(cur + 1); });
     button("", QStyle::SP_MediaSkipBackward, "Previous key frame (Down)", [this] { goKey(-1); });
     button("", QStyle::SP_MediaSkipForward, "Next key frame (Up)", [this] { goKey(1); });
+    button("◀ Clean", -1, "Previous key frame a cut at is clean: nothing lost (Alt+Down)", [this] { goClean(-1); });
+    button("Clean ▶", -1, "Next key frame a cut at is clean: nothing lost (Alt+Up)", [this] { goClean(1); });
     sep();
     button("+ Cut", -1, "Add a cut here (Ctrl+K): at this picture's key frame, by the rule of setting cuts.key_frame",
            [this] { addCutHere(); });
@@ -445,7 +473,7 @@ void CutEditor::buildUi()
 
     auto *cutBox = new QGroupBox("Cuts");
     auto *cb = new QVBoxLayout(cutBox);
-    cutList = list({ "#", "Part starts", "Key frame", "From" });
+    cutList = list({ "#", "Part starts", "Cut", "From" });
     cb->addWidget(cutList);
     auto *cbr = new QHBoxLayout;
     for (auto [text, fn] : { std::pair<const char *, void (CutEditor::*)()>{ "Add Cut Here", &CutEditor::addCutHere },
@@ -644,6 +672,8 @@ void CutEditor::buildUi()
     key(Qt::Key_Right, [this] { stopPlay(); show(cur + 1); });
     key(Qt::Key_Down, [this] { goKey(-1); });
     key(Qt::Key_Up, [this] { goKey(1); });
+    key(QKeySequence(Qt::ALT | Qt::Key_Down), [this] { goClean(-1); });
+    key(QKeySequence(Qt::ALT | Qt::Key_Up), [this] { goClean(1); });
     key(QKeySequence(Qt::CTRL | Qt::Key_K), [this] { addCutHere(); });
     key(Qt::Key_Delete, [this] { removeCut(); });
     key(QKeySequence(Qt::SHIFT | Qt::Key_Down), [this] { goCut(-1); });
@@ -683,7 +713,7 @@ void CutEditor::buildUi()
     okButton->setEnabled(false);
     resize(1440, 900);
     split->setSizes({ 920, 520 });
-    sideSplit->setSizes({ 200, 320, 160, 220 });
+    sideSplit->setSizes({ 300, 280, 140, 180 });
 }
 
 void CutEditor::loadState()
@@ -778,6 +808,12 @@ void CutEditor::opened(bool ok)
         times[n] = ix->pics[order[n]].time;
         if (ix->pics[order[n]].key)
             keys << n;
+    }
+    for (int k : keys) {
+        int p = pointOfKey(times[k]);
+        char brief[64], full[768];
+        if (p >= 0 && cut_point_clean(&pts[p], brief, sizeof(brief), full, sizeof(full)))
+            cleanKeys << k;
     }
     QVector<int64_t> chapters;
     for (int c = 0; c < ix->nb_chapters; c++) {
@@ -881,16 +917,25 @@ void CutEditor::sortCuts()
 void CutEditor::refresh()
 {
     QVector<int64_t> zeros;
+    QVector<bool> cleanCuts;
 
     cutList->clear();
     for (int i = 0; i < cuts.size(); i++) {
         const CutPoint &p = pts[cuts[i].point];
-        auto *it = new QTreeWidgetItem(cutList, { QString::number(i + 1), msText(p.zero), startText(p.start),
+        char brief[64], full[768];
+        bool ok = cut_point_clean(&p, brief, sizeof(brief), full, sizeof(full));
+        auto *it = new QTreeWidgetItem(cutList, { QString::number(i + 1), msText(p.zero), QString::fromUtf8(brief),
                                                   cuts[i].from });
         it->setData(0, Qt::UserRole, i);
         it->setToolTip(1, QString("The part starts at %1; its key frame at %2").arg(exactText(p.zero),
                                                                                      exactText(p.key_time)));
+        it->setToolTip(2, QString::fromUtf8(full));
+        if (!ok) {
+            it->setForeground(2, QColor(200, 110, 0));
+            it->setIcon(2, style()->standardIcon(QStyle::SP_MessageBoxWarning));
+        }
         zeros << p.zero;
+        cleanCuts << ok;
     }
     partList->clear();
     QVector<int64_t> b = { 0 };
@@ -900,7 +945,7 @@ void CutEditor::refresh()
         auto *it = new QTreeWidgetItem(partList, { QString::number(i + 1), msText(b[i]), msText(b[i + 1] - b[i]) });
         it->setData(0, Qt::UserRole, (qlonglong)b[i]);
     }
-    timeline->setCuts(zeros);
+    timeline->setCuts(zeros, cleanCuts);
     for (QTreeWidget *w : { cutList, partList })
         for (int c = 0; c < w->columnCount() - 1; c++)
             w->resizeColumnToContents(c);
@@ -933,14 +978,15 @@ void CutEditor::addCutHere()
     sortCuts();
     refresh();
     int moved = at(p.zero) - cur;
+    QString verdict = verdictNote(p);
     if (r.on_point || !moved)
-        setNote(QString("Cut added: the part starts at %1.").arg(msText(p.zero)));
+        setNote(QString("Cut added: the part starts at %1.").arg(msText(p.zero)) + verdict);
     else
         setNote(QString("Not a key frame: moved to the %1 key frame, %2 picture(s) %3; the part starts at %4.")
                     .arg(rule == CUT_NEXT ? "next" : "nearest")
                     .arg(std::abs(moved))
                     .arg(moved > 0 ? "later" : "earlier")
-                    .arg(msText(p.zero)));
+                    .arg(msText(p.zero)) + verdict);
 }
 
 void CutEditor::addChapterCut()
@@ -971,11 +1017,12 @@ void CutEditor::addChapterCut()
     cuts << Cut{ QString(req.text), r.point, QString("chapter %1").arg(req.chapter) };
     sortCuts();
     refresh();
-    setNote(r.on_point ? QString("Cut added at chapter %1: the part starts at %2.").arg(req.chapter).arg(msText(p.zero))
-                       : QString("Chapter %1's mark is not on a key frame: the %2 one is taken; the part starts at %3.")
-                             .arg(req.chapter)
-                             .arg(rule == CUT_NEXT ? "next" : "nearest")
-                             .arg(msText(p.zero)));
+    QString verdict = verdictNote(p);
+    setNote((r.on_point ? QString("Cut added at chapter %1: the part starts at %2.").arg(req.chapter).arg(msText(p.zero))
+                        : QString("Chapter %1's mark is not on a key frame: the %2 one is taken; the part starts at %3.")
+                              .arg(req.chapter)
+                              .arg(rule == CUT_NEXT ? "next" : "nearest")
+                              .arg(msText(p.zero))) + verdict);
     stopPlay();
     show(at(p.zero));
 }
@@ -1106,7 +1153,7 @@ void CutEditor::addItems(const QString &items, const QString &from)
     CutRequest *reqs = nullptr;
     const char *bad;
     QStringList left;
-    int nb = 0, added = 0;
+    int nb = 0, added = 0, open = 0;
 
     if (items.isEmpty() || cut_parse(b.constData(), &reqs, &nb, &bad) < 0)
         return;
@@ -1129,11 +1176,15 @@ void CutEditor::addItems(const QString &items, const QString &from)
         }
         cuts << Cut{ text, res[i].point, from };
         added++;
+        char brief[64], full[768];
+        open += !cut_point_clean(&pts[res[i].point], brief, sizeof(brief), full, sizeof(full));
     }
     free(reqs);
     sortCuts();
     refresh();
-    setNote(QString("%1 cut(s) added from %2.").arg(added).arg(from) +
+    setNote(QString("%1 cut(s) added from %2").arg(added).arg(from) +
+            (open ? QString(", ⚠ %1 of them not clean (see the Cut column).").arg(open)
+                  : added ? QString(", all clean.") : QString(".")) +
             (left.isEmpty() ? QString() : " Left out: " + left.join("; ") + "."));
 }
 
@@ -1175,13 +1226,10 @@ QString CutEditor::keyText(int n) const
     QString s = QString("key frame, %1").arg(startText(pic.start));
     int p = pointOfKey(pic.time);
     if (p >= 0) {
-        int lead = pts[p].kept + pts[p].undecodable + pts[p].left_out;
-        if (lead)
-            s += QString(" (%1 picture(s) shown before it").arg(lead) +
-                 (pts[p].left_out ? QString(", %1 left out at a cut").arg(pts[p].left_out) : QString()) +
-                 (pts[p].undecodable ? QString(", %1 kept that need the pictures before").arg(pts[p].undecodable)
-                                     : QString()) +
-                 ")";
+        char brief[64], full[768];
+        s += cut_point_clean(&pts[p], brief, sizeof(brief), full, sizeof(full))
+                 ? QString(": a cut here is clean")
+                 : QString(": a cut here is %1").arg(QString::fromUtf8(brief));
     }
     return s;
 }
@@ -1239,6 +1287,8 @@ void CutEditor::runTest()
             show(cur + (s == "R" ? 1 : -1));
         else if (s == "D" || s == "U")
             goKey(s == "U" ? 1 : -1);
+        else if (s == "CD" || s == "CU")
+            goClean(s == "CU" ? 1 : -1);
         else if (s == "K")
             addCutHere();
         else if (s == "X")
@@ -1298,6 +1348,20 @@ void CutEditor::goKey(int dir)
     } else {
         auto k = std::upper_bound(keys.begin(), keys.end(), cur);
         if (k != keys.end())
+            show(*k);
+    }
+}
+
+void CutEditor::goClean(int dir)
+{
+    stopPlay();
+    if (dir < 0) {
+        auto k = std::lower_bound(cleanKeys.begin(), cleanKeys.end(), cur);
+        if (k != cleanKeys.begin())
+            show(*(k - 1));
+    } else {
+        auto k = std::upper_bound(cleanKeys.begin(), cleanKeys.end(), cur);
+        if (k != cleanKeys.end())
             show(*k);
     }
 }

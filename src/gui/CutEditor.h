@@ -77,7 +77,8 @@ class CutTimeline : public QWidget {
 public:
     explicit CutTimeline(QWidget *parent = nullptr);
     void setTitle(int64_t end, const QVector<int64_t> &chapters);
-    void setCuts(const QVector<int64_t> &zeros);
+    // clean: per cut, whether nothing is lost there (the others marked)
+    void setCuts(const QVector<int64_t> &zeros, const QVector<bool> &clean);
     // where an analysis' suggestions would start parts (dashed, not cuts yet)
     void setSuggested(const QVector<int64_t> &zeros);
     void setPosition(int64_t t);
@@ -101,6 +102,7 @@ private:
 
     int64_t          end = 0, pos = 0;
     QVector<int64_t> chapters, cuts, suggested;
+    QVector<bool>    clean;
     bool             dragging = false;
 };
 
@@ -132,7 +134,7 @@ public:
     QString items() const;
     // Tests: once open, the picture at time `at` shown, then the keys of
     // steps pressed (L R frames, D U key frames, K add a cut, X remove it,
-    // C<n> a cut at chapter n; the analysis: M<mode key>, T<target minutes>,
+    // C<n> a cut at chapter n, CD CU clean key frames; the analysis: M<mode key>, T<target minutes>,
     // E<episodes>, N<min minutes>, A analyze, S add the suggestions; comma
     // separated); once its picture is there
     // the window saved as a picture into file, what it shows printed, and it
@@ -169,6 +171,7 @@ private:
     void    togglePlay();
     void    playTick();
     void    goKey(int dir);
+    void    goClean(int dir);
     void    goCut(int dir);
     void    goChapter(int dir);
     void    goTime();
@@ -207,6 +210,7 @@ private:
     QVector<int>     order;      // display number -> the index's picture
     QVector<int64_t> times;
     QVector<int>     keys;       // display numbers of the key frames
+    QVector<int>     cleanKeys;  // those a cut at is clean (cut_point_clean())
     CutPoint        *pts = nullptr;
     int              nbPts = 0;
     int              rule = CUT_NEAREST;
