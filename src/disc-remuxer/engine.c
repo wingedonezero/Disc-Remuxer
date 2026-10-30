@@ -32,6 +32,8 @@
 #include "events.h"
 #include "select.h"
 #include "writer.h"
+#include "cuts.h"
+#include "timeline/disctl.h"
 
 
 /* Library state (key caches, key files) stays next to the program. */
@@ -931,6 +933,140 @@ int engine_info(const char *source, const EngineChoice *c, int details)
         engine_details(e, source);
     engine_disc_close(&e);
     return 0;
+}
+
+/* The words for a key frame's kind (enum DrDiscStart). */
+static const char *start_text(int start)
+{
+    return start == DR_DISC_START_CLEAN  ? "clean: nothing before it is needed" :
+           start == DR_DISC_START_OPEN   ? "open: the pictures shown before it may need pictures before it" :
+           start == DR_DISC_START_BROKEN ? "a broken link: the pictures shown before it cannot be decoded" :
+                                           "its codec does not say how decoding starts there";
+}
+
+/* The pictures with a time from a up to (not with) b, in either order. */
+static int pictures_between(const CutIndex *ix, int64_t a, int64_t b)
+{
+    int64_t lo = DR_MIN(a, b), hi = DR_MAX(a, b);
+    int n = 0;
+    for (int i = 0; i < ix->nb_pics; i++)
+        n += ix->pics[i].time >= lo && ix->pics[i].time < hi;
+    return n;
+}
+
+static int by_target(const void *a, const void *b)
+{
+    const int64_t *x = a, *y = b;
+    return (*x > *y) - (*x < *y);
+}
+
+int engine_cuts(const char *source, const char *title, const char *items, const EngineChoice *c)
+{
+    EngineDisc *e = NULL;
+    CutRequest *reqs = NULL;
+    CutResult *res = NULL;
+    CutPoint *pts = NULL;
+    CutIndex ix = { 0 };
+    int64_t stop = 0, *zeros = NULL;
+    int nb_reqs, nb_pts = 0, made = 0, t, rule, ret = 1;
+    const char *bad;
+    char *end, a[40], b[40], dur[32];
+
+    t = (int)strtol(title, &end, 10);
+    if (!*title || *end || t < 0) {
+        log_msg(MSG_USAGE, LOG_ERROR, "cuts: the title is one number as info lists it, not \"%s\"", title);
+        return 2;
+    }
+    if (cut_parse(items, &reqs, &nb_reqs, &bad) < 0) {
+        log_msg(MSG_USAGE, LOG_ERROR, "cuts: \"%s\" cannot be read at \"%s\": the cuts are c<chapter> or a time "
+                "(h:mm:ss.fff or m:ss.fff on the title's timeline), comma separated", items, bad);
+        return 2;
+    }
+    log_msg(MSG_SOURCE, LOG_INFO, "Source: %s", source);
+    if (engine_disc_open(source, c, &e) < 0)
+        goto end;
+    if (t >= e->info->nb_titles) {
+        log_msg(MSG_TITLE_MISSING, LOG_ERROR, "Title #%d does not exist (the disc has %d)", t, e->info->nb_titles);
+        ret = 2;
+        goto end;
+    }
+    /* a chapter needs the title read to its end (its chapters are placed
+     * there); times only up to the key frames after the last one */
+    for (int i = 0; i < nb_reqs && stop >= 0; i++)
+        stop = reqs[i].chapter ? -1 : DR_MAX(stop, reqs[i].time);
+    rule = !strcmp(setting_text("cuts.key_frame"), "next") ? CUT_NEXT : CUT_NEAREST;
+    hms(dur, sizeof(dur), e->info->titles[t].duration);
+    log_step("=== Cuts: title #%d (%s) ===", t, dur);
+    log_text(LOG_INFO, "Cuts: a time not on a key frame takes the %s key frame (setting cuts.key_frame)",
+             rule == CUT_NEXT ? "next" : "nearest");
+    if (cut_index_read(e->disc, t, stop, &ix) < 0 || cut_points(ix.pics, ix.nb_pics, ix.marked, &pts, &nb_pts) < 0)
+        goto end;
+    log_text(LOG_INFO, "Cuts: the title's video read %s: %d picture(s), %d place(s) a part can start",
+             ix.complete ? "to its end" : "as far as the cuts need", ix.nb_pics, nb_pts);
+    if (!(res = calloc(nb_reqs, sizeof(*res))) || !(zeros = calloc(nb_reqs + 2, sizeof(*zeros))))
+        goto end;
+    made = cut_resolve(pts, nb_pts, ix.chapters, ix.nb_chapters, ix.end, reqs, nb_reqs, rule, res);
+    for (int i = 0; i < nb_reqs; i++) {
+        const CutResult *r = &res[i];
+        const CutPoint *p;
+        char asked[96], extra[256] = "";
+
+        if (reqs[i].chapter && r->target)
+            snprintf(asked, sizeof(asked), "chapter %d (%s)", reqs[i].chapter, cut_time_text(a, sizeof(a), r->target));
+        else if (reqs[i].chapter)
+            snprintf(asked, sizeof(asked), "chapter %d", reqs[i].chapter);
+        else
+            snprintf(asked, sizeof(asked), "%s (%s)", reqs[i].text, cut_time_text(a, sizeof(a), r->target));
+        if (r->point < 0) {
+            if (r->same_as >= 0)
+                log_msg(MSG_CUTS, LOG_WARNING, "  - %s: no cut - the same key frame as %s", asked,
+                        reqs[r->same_as].text);
+            else
+                log_msg(MSG_CUTS, LOG_WARNING, "  - %s: no cut - %s", asked, r->why);
+            continue;
+        }
+        p = &pts[r->point];
+            if (p->kept)
+            snprintf(extra, sizeof(extra), "; the part starts with %d picture(s) shown before its key frame "
+                     "(they decode from it)", p->kept);
+        if (p->left_out)
+            snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "; %d picture(s) shown before it "
+                     "need the pictures before it: left out (in neither part)", p->left_out);
+        if (r->on_point)
+            log_text(LOG_INFO, "  - %s -> on a key frame (%s)%s; the part starts at %s", asked,
+                     start_text(p->start), extra, cut_time_text(b, sizeof(b), p->zero));
+        else
+            log_text(LOG_INFO, "  - %s -> the %s key frame (%s), moved by %c%.3f ms (%d picture(s))%s; the part "
+                     "starts at %s", asked, rule == CUT_NEXT ? "next" : "nearest", start_text(p->start),
+                     p->zero < r->target ? '-' : '+', (double)DR_ABS(p->zero - r->target) * 1000 / DR_TICKS_PER_SECOND,
+                     pictures_between(&ix, r->target, p->zero), extra, cut_time_text(b, sizeof(b), p->zero));
+    }
+    /* the parts, in time order */
+    {
+        int n = 0;
+        zeros[n++] = 0;
+        for (int i = 0; i < nb_reqs; i++)
+            if (res[i].point >= 0)
+                zeros[n++] = pts[res[i].point].zero;
+        qsort(zeros + 1, n - 1, sizeof(*zeros), by_target);
+        log_text(LOG_INFO, "Cuts: %d part(s)%s", n, ix.complete ? "" : " (the last one's end as the disc records "
+                 "the title's length)");
+        zeros[n] = ix.complete ? ix.end : e->info->titles[t].duration * (DR_TICKS_PER_SECOND / 1000000);
+        for (int i = 0; i < n; i++) {
+            char l[40];
+            log_text(LOG_INFO, "  part %d: %s - %s (%s)", i + 1, cut_time_text(a, sizeof(a), zeros[i]),
+                     cut_time_text(b, sizeof(b), zeros[i + 1]), cut_time_text(l, sizeof(l), zeros[i + 1] - zeros[i]));
+        }
+    }
+    ret = made == nb_reqs ? 0 : 1;
+end:
+    free(reqs);
+    free(res);
+    free(pts);
+    free(zeros);
+    cut_index_free(&ix);
+    engine_disc_close(&e);
+    return ret;
 }
 
 /* One disc's demux run (engine_demux()). */

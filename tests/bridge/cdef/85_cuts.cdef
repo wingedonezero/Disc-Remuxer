@@ -1,0 +1,44 @@
+/* cuts (src/disc-remuxer/cuts.h): the places a part can start and the rule
+ * that turns chapters / times into cuts */
+enum DrDiscStart { DR_DISC_START_NONE = 0, DR_DISC_START_CLEAN, DR_DISC_START_BROKEN, DR_DISC_START_OPEN };
+
+typedef struct CutPicture {
+    int64_t time;
+    int64_t duration;
+    uint8_t key;
+    uint8_t start;
+    uint8_t rasl;
+} CutPicture;
+
+typedef struct CutPoint {
+    int64_t zero;
+    int64_t key_time;
+    int     start;
+    int     kept;
+    int     left_out;
+} CutPoint;
+
+int cut_points(const CutPicture *pics, int nb, int marked, CutPoint **points, int *nb_points);
+
+typedef struct CutRequest {
+    int     chapter;
+    int64_t time;
+    char    text[40];
+} CutRequest;
+
+int cut_parse(const char *spec, CutRequest **reqs, int *nb, const char **bad);
+
+enum CutRule { CUT_NEAREST = 0, CUT_NEXT };
+
+typedef struct CutResult {
+    int64_t     target;
+    int         point;
+    int         on_point;
+    const char *why;
+    int         same_as;
+} CutResult;
+
+int cut_resolve(const CutPoint *points, int nb_points, const int64_t *chapters, int nb_chapters, int64_t end,
+                const CutRequest *reqs, int nb_reqs, int rule, CutResult *res);
+
+const char *cut_time_text(char *buf, int size, int64_t ticks);

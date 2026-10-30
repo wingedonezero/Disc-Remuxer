@@ -97,6 +97,14 @@ typedef struct DrDiscChapter {
     const char *name;            /**< NULL: none */
 } DrDiscChapter;
 
+/** How decoding can start at a video key frame (DrDiscFrame.start). */
+enum DrDiscStart {
+    DR_DISC_START_NONE = 0,     /**< not a key frame, or its codec does not say */
+    DR_DISC_START_CLEAN,        /**< nothing before it is needed (IDR, closed GOP, closed entry point) */
+    DR_DISC_START_BROKEN,       /**< a broken link: the pictures shown before it cannot be decoded */
+    DR_DISC_START_OPEN,         /**< the pictures shown before it may need pictures before it in the stream */
+};
+
 /** A frame of the title timeline: data/size point into buf (one reference,
  *  given to the caller: dr_disc_frame_unref(), or keep your own with
  *  dr_buf_ref()). */
@@ -108,6 +116,9 @@ typedef struct DrDiscFrame {
     int64_t     time;            /**< DR_TICKS_PER_SECOND ticks, DR_NOPTS_VALUE none */
     int64_t     duration;        /**< ticks, 0 not known */
     unsigned    key:1, discard:1;
+    unsigned    rasl:1;          /**< video: a leading picture that cannot be decoded from the key frame before it
+                                      alone (HEVC RASL) */
+    int         start;           /**< video key frames: enum DrDiscStart */
 } DrDiscFrame;
 
 /** Opens the disc at source (an image file, or a disc folder): the disc

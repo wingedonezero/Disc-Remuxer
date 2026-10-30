@@ -34,6 +34,12 @@ static void usage(FILE *f)
           "                                        (setting output.folder; empty: output next to the program);\n"
           "                                        a folder of discs: each disc in turn into its own folder\n"
           "                                        (the out folder: the main output folder for them)\n"
+          "  cuts  <source> <title> <cuts>         where cuts in a title fall (nothing written): the title's\n"
+          "                                        video is read as a rip reads it; each cut is said with\n"
+          "                                        the key frame it takes and the part it starts. <cuts>:\n"
+          "                                        c<chapter> or a time on the title's timeline (h:mm:ss.fff\n"
+          "                                        or m:ss.fff), comma separated, e.g. c5,45:42.322; a time\n"
+          "                                        not on a key frame: setting cuts.key_frame\n"
           "  find  <folder>                        the discs in a folder (as the GUI's queue takes them)\n"
           "  settings [show|path]                  the settings in effect / where the settings file is\n"
           "  version                               program and library versions\n"
@@ -126,7 +132,7 @@ int main(int argc, char **argv)
     {
         const char *cmd = argv[i];
         int most = !strcmp(cmd, "settings") || !strcmp(cmd, "info") || !strcmp(cmd, "find") ? 1 :
-                   !strcmp(cmd, "demux") ? 3 : !strcmp(cmd, "version") ? 0 : -1;   /* -1: an unknown command */
+                   !strcmp(cmd, "demux") || !strcmp(cmd, "cuts") ? 3 : !strcmp(cmd, "version") ? 0 : -1;   /* -1: an unknown command */
         for (int k = i + 1; k < argc; k++) {
             if (argv[k][0] == '-' && argv[k][1]) {
                 fprintf(stderr, "disc-remuxer: option %s after the command %s: options go before the command "
@@ -160,6 +166,8 @@ int main(int argc, char **argv)
         ret = 0;
     } else if (!strcmp(argv[i], "info") && i + 1 < argc) {
         ret = engine_info(argv[i + 1], &c, details);
+    } else if (!strcmp(argv[i], "cuts") && i + 3 < argc) {
+        ret = engine_cuts(argv[i + 1], argv[i + 2], argv[i + 3], &c);
     } else if (!strcmp(argv[i], "find") && i + 1 < argc) {
         ret = engine_find(argv[i + 1]);
     } else if (!strcmp(argv[i], "demux") && i + 2 < argc) {

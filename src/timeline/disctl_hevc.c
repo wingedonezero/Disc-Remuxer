@@ -258,7 +258,9 @@ static int split_hevc(DRVideo *v, DRFrame *f)
  * 7.4.2.2): an IDR picture needs nothing before it (its leading pictures
  * are RADL pictures); a BLA picture's RASL pictures are not decoded (a
  * broken link); a CRA picture's RASL pictures use pictures before it, as may
- * the pictures before a recovery point. */
+ * the pictures before a recovery point. RASL pictures are marked (a part
+ * that starts at their key frame leaves them out); RADL pictures decode from
+ * their key frame. */
 static int picture_hevc(DRVideo *v, const DRFrame *f, DRPicture *pic)
 {
     if (pic->rate_num > 0 && pic->rate_den > 0)
@@ -267,9 +269,11 @@ static int picture_hevc(DRVideo *v, const DRFrame *f, DRPicture *pic)
         pic->type = DR_PIC_OTHER;
         return 0;
     }
-    if (pic->key) {
+    {
         int t = first_vcl(f->data, f->size);
-        pic->start = t == 19 || t == 20 ? DR_START_CLEAN : t >= 16 && t <= 18 ? DR_START_BROKEN : DR_START_OPEN;
+        if (pic->key)
+            pic->start = t == 19 || t == 20 ? DR_START_CLEAN : t >= 16 && t <= 18 ? DR_START_BROKEN : DR_START_OPEN;
+        pic->rasl = t == 8 || t == 9;
     }
     return 0;
 }

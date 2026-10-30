@@ -47,6 +47,12 @@ int  engine_check_choice(const EngineChoice *c);
 /* The info command: the disc and every title with its tracks; details:
  * then everything the GUI shows of them (engine_details()). 0, 1. */
 int  engine_info(const char *source, const EngineChoice *c, int details);
+/* The cuts command: where the cuts asked for (items: "c5,45:42.322",
+ * cuts.h cut_parse()) fall in title `title` (its number as info lists it):
+ * the title's video is read as a rip reads it, each cut is said with its
+ * key frame and the part it starts, nothing is written. 0, 1 (a cut
+ * refused, or the title cannot be read), 2 (bad arguments). */
+int  engine_cuts(const char *source, const char *title, const char *items, const EngineChoice *c);
 /* The demux command: titles ("all": the titles not shorter than the
  * minimum length; "3", "1,3-5") into out_dir, NULL: a folder named after
  * the disc in the main output folder (engine_output_folder()); split: the

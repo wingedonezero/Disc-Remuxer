@@ -1800,6 +1800,10 @@ int ff_disc_title_reader_frame(DrDisc *d, DrDiscFrame *out)
             out->duration = f.dur;
             out->key      = !!(f.flags & DR_F_KEY);
             out->discard  = !!(f.flags & DR_F_DISCARD);
+            out->rasl     = !!(f.flags & DR_F_RASL);
+            out->start    = f.flags & DR_F_START_CLEAN  ? DR_DISC_START_CLEAN  :
+                            f.flags & DR_F_START_BROKEN ? DR_DISC_START_BROKEN :
+                            f.flags & DR_F_START_OPEN   ? DR_DISC_START_OPEN   : DR_DISC_START_NONE;
             return 0;
         }
         if (ret == DR_ERR_EOF) {

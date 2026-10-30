@@ -22,6 +22,7 @@ static const char *const cell_modes[]   = { "auto", "walk", "trim", "walk_trim",
 static const char *const cell_checks[]  = { "all", "spread", "random", NULL };
 static const char *const out_formats[]  = { "streams", "mkv", "mkvmerge", NULL };
 static const char *const compressions[] = { "none", "zlib", NULL };
+static const char *const cut_keys[]     = { "nearest", "next", NULL };
 
 static const Setting registry[] = {
     { "read", "attempts", SET_INT, "5", 1, 99, NULL,
@@ -125,6 +126,11 @@ static const Setting registry[] = {
     { "chapters", "after_ms", SET_INT, "0", 0, 5000, NULL,
       "How far after its mark (ms) a chapter may move on to a key frame, when none is close enough before it. "
       "0: never forward.", 0, SET_AT_RIP },
+    { "cuts", "key_frame", SET_CHOICE, "nearest", 0, 0, cut_keys,
+      "Where a cut asked for at a time that is not on a video key frame goes (a cut: a place a title is split at "
+      "that is no clean break of the disc, e.g. between two episodes in one stream): nearest takes the nearest "
+      "key frame (the earlier one when both are as near), next the first key frame after the time (mkvmerge's "
+      "way). A time on a key frame (within 1 ms) is cut there either way.", 0, SET_AT_RIP },
     { "mkv", "compression", SET_CHOICE, "none", 0, 0, compressions,
       "MKV files (the mkv and mkvmerge modes): none stores the subtitles' blocks as they are; zlib compresses each "
       "(lossless, as mkvmerge does by default; a few players and devices cannot read compressed tracks).",

@@ -95,6 +95,8 @@ const DRTimelineHost *ff_disctl_host(void);
 #define DR_F_CTR      0x2000   /**< audio: ctr holds the stream's own number of the frame's first sample */
 #define DR_F_PLACE    0x4000   /**< video: the first picture at or after one or more places of the source
                                     (ff_disctl_title_place()); ctr holds how many */
+#define DR_F_RASL     0x8000   /**< video: a leading picture that cannot be decoded from the key frame
+                                    before it in decoding order alone (HEVC RASL, H.265 7.4.2.2) */
 
 typedef struct DRFrame {
     DrBuf *buf;      /**< owns the bytes (NULL for a marker) */
@@ -157,6 +159,7 @@ typedef struct DRPicture {
     int scan;           /**< DR_SCAN_*, 0 = not read */
     int seq_end;        /**< the unit carries an end of sequence code (MPEG-2, VC-1) */
     int seq_start;      /**< the unit starts a sequence: a sequence header before its picture (MPEG-2, VC-1) */
+    int rasl;           /**< a leading picture that needs pictures before its key frame (DR_F_RASL) */
 } DRPicture;
 
 /* What the core needs to know about a video codec. */
