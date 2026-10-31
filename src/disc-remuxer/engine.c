@@ -480,8 +480,13 @@ int engine_disc_open(const char *source, const EngineChoice *c, EngineDisc **out
     }
     for (int k = 0; c && k < c->nb_cuts; k++) {
         const char *items;
-        int t;
-        if (cut_value(c->cuts[k], &t, &items) < 0 || t >= e->info->nb_titles) {
+        int t = -1;
+        if (cut_value(c->cuts[k], &t, &items) < 0) {
+            log_msg(MSG_USAGE, LOG_ERROR, "--cut %s: <title>:<cuts> is asked, e.g. 1:c5,45:42.323", c->cuts[k]);
+            engine_disc_close(&e);
+            return -1;
+        }
+        if (t >= e->info->nb_titles) {
             log_msg(MSG_TITLE_MISSING, LOG_ERROR, "--cut %s: the disc has no title #%d (it has %d)", c->cuts[k], t,
                     e->info->nb_titles);
             engine_disc_close(&e);
@@ -1255,6 +1260,44 @@ static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cut
     /* the cuts and the parts, in time order */
     qsort(*cuts, n, sizeof(**cuts), by_zero);
     *nb  = n;
+    /* a cut whose key frame fell outside the windows read (a long GOP, a
+     * time far from any key frame): the start-unit tracks' units around it
+     * were not kept, so they are read again around those cuts only */
+    if (ix.nb_audio > 0) {
+        int64_t *again = calloc(2 * (n ? n : 1), sizeof(*again)), last = -1;
+        int nb_again = 0;
+        if (!again)
+            goto end;
+        for (int c = 0; c < n; c++) {
+            int64_t z = (*cuts)[c].zero;
+            int covered = 0;
+            for (int w = 0; w < nb_windows && !covered; w++)
+                covered = windows[2 * w] <= z && z + CUT_START_LIMIT <= windows[2 * w + 1];
+            if (!covered) {
+                again[2 * nb_again]       = z - DR_TICKS_PER_SECOND;
+                again[2 * nb_again++ + 1] = z + 5 * DR_TICKS_PER_SECOND;
+                last = DR_MAX(last, z);
+            }
+        }
+        if (nb_again) {
+            CutIndex ix2 = { 0 };
+            log_text(LOG_INFO, "Cuts: %d cut(s) fell outside the stretch the audio start units were read in: those "
+                     "tracks are read again around them", nb_again);
+            if (cut_index_read(e->disc, t, last, again, nb_again, &ix2) < 0) {
+                free(again);
+                goto end;
+            }
+            for (int a = 0; a < ix.nb_audio; a++)
+                free(ix.audio[a].u);
+            free(ix.audio);
+            ix.audio     = ix2.audio;
+            ix.nb_audio  = ix2.nb_audio;
+            ix2.audio    = NULL;
+            ix2.nb_audio = 0;
+            cut_index_free(&ix2);
+        }
+        free(again);
+    }
     /* where each start-unit track's part starts at each cut */
     if (!(*starts = malloc((size_t)(n ? n : 1) * (nb_streams ? nb_streams : 1) * sizeof(**starts))))
         goto end;
