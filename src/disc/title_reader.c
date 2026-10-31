@@ -94,6 +94,9 @@ struct DiscTitleReader {
 
     /* the title timeline */
     DRTitle       *rip;
+    DRCut         *cut;            /**< a cut part (DrDisc.opt_cuts): the stage that keeps its frames */
+    int            stop;            /**< a cut part is complete: the reading stops (1), the title finished (2) */
+    uint32_t       start_block;     /**< a reading started inside its first clip (dr_disc_title_open_at()): there */
     DRChapterPlan  chapter_plan;
     int            first_clip, last_clip; /**< the clips read: the title's, filler clips at its ends left out */
     int           *pos_clip;        /**< position chapters: per open mark, its clip and byte offset */
@@ -614,6 +617,16 @@ static const char *clip_words(DrDisc *d, char *buf, int size)
 /* Start reading clip k of the title (a segment of the title timeline): its
  * blocks, its PTS wrap reference (Blu-ray: found before the clip is read;
  * else still to be found). */
+/* A clip's wrap reference kept for the readings of the same title from a
+ * place (dr_disc_title_open_at()). */
+static void cache_ref(DrDisc *d, int k)
+{
+    DiscTitleReader *r = reader_of(d);
+
+    if (r->pts_ref >= 0 && d->ref_cache && k < d->nb_ref_cache)
+        d->ref_cache[k] = r->pts_ref;
+}
+
 static int clip_start(DrDisc *d, int k)
 {
     DiscTitleReader *r = reader_of(d);
@@ -637,11 +650,16 @@ static int clip_start(DrDisc *d, int k)
            src->clip_kind, src->clip_name(d, k), k + 1, src->nb_clips, r->nb_blocks, src->ts ? "units" : "blocks");
     ps_read_add(r);
     dr_clip_close(&r->ps);
+    /* a reading from a place: the clip's reference as read before (the same
+     * clip read from its start gives the same one) */
+    if (d->ref_cache && k < d->nb_ref_cache && d->ref_cache[k] >= 0)
+        r->pts_ref = d->ref_cache[k];
     if (src->ts) {
         /* the stretches left out are kept for gaps_said() */
-        if ((ret = ts_reference(d)) < 0 ||
+        if ((r->pts_ref < 0 && (ret = ts_reference(d)) < 0) ||
             (ret = clip_err(dr_clip_ts_open(&r->ps, (void *)d->log, src->pids, src->nb_pids, 0, 1, ps_read, d))) < 0)
             return ret;
+        cache_ref(d, k);
     } else if ((ret = clip_err(dr_clip_ps_open(&r->ps, (void *)d->log, src->lpcm_header, ps_read, d))) < 0)
         return ret;
     return ff_disctl_title_segment(r->rip);
@@ -653,6 +671,7 @@ void ff_disc_title_reader_close(DiscTitleReader **reader)
 
     if (!r)
         return;
+    ff_disctl_cut_close(&r->cut);
     dr_clip_close(&r->ps);
     held_free(r);
     dr_freep(&r->held);
@@ -1191,8 +1210,31 @@ int ff_disc_title_reader_open(DrDisc *d, const DiscTitleSource *src)
             .chapter_rule = d->chapter_rule,
             .nb_segments = r->last_clip - r->first_clip + 1,
             .place = block_words, .place_opaque = d,
+            .has_range  = d->opt_cuts != NULL,
+            .range_from = d->opt_cuts && d->opt_cut_part > 0 ? d->opt_cuts[d->opt_cut_part - 1].zero : INT64_MIN,
+            .range_to   = d->opt_cuts && d->opt_cut_part < d->nb_opt_cuts ? d->opt_cuts[d->opt_cut_part].zero :
+                                                                             INT64_MAX,
         };
         if ((ret = ff_disctl_title_open(&r->rip, (void *)d->log, &cfg)) < 0)
+            return ret;
+    }
+    if (d->opt_cuts) {
+        /* the start units by the reader's tracks (a track's disc info number: its out track's) */
+        int64_t *starts = dr_calloc((size_t)d->nb_opt_cuts * (src->nb_tracks ? src->nb_tracks : 1), sizeof(*starts));
+        if (!starts)
+            return DR_ERR(ENOMEM);
+        for (int c = 0; c < d->nb_opt_cuts; c++)
+            for (int k = 0; k < src->nb_tracks; k++) {
+                int i = k < d->nb_out_tracks ? d->out_tracks[k].number : -1;
+                starts[c * src->nb_tracks + k] = d->opt_starts && i >= 0 && i < d->opt_nb_streams ?
+                                                 d->opt_starts[c * d->opt_nb_streams + i] : INT64_MAX;
+            }
+        ret = ff_disctl_cut_open(&r->cut, (void *)d->log, d->opt_cuts, d->nb_opt_cuts, d->opt_cut_part,
+                                 !src->nb_tracks ? DR_CUT_OTHER : src->tracks[0].codec == DR_CODEC_HEVC ? DR_CUT_HEVC :
+                                 src->tracks[0].codec == DR_CODEC_H264 ? DR_CUT_H264 : DR_CUT_OTHER,
+                                 d->track_cut, src->nb_tracks, starts);
+        dr_free(starts);
+        if (ret < 0)
             return ret;
     }
     for (int i = r->first_clip; i <= r->last_clip; i++)
@@ -1200,6 +1242,31 @@ int ff_disc_title_reader_open(DrDisc *d, const DiscTitleSource *src)
     for (int k = 0; src->ts && k < src->nb_sides; k++)
         if ((ret = read_side(d, k)) < 0)
             return ret;
+    /* the readings of this title from a place keep each clip's reference */
+    if (d->ref_cache_title != d->opt_title) {
+        dr_freep(&d->ref_cache);
+        d->nb_ref_cache    = 0;
+        d->ref_cache_title = d->opt_title;
+    }
+    if (!d->ref_cache && src->nb_clips > 0) {
+        if (!(d->ref_cache = dr_malloc_array(src->nb_clips, sizeof(*d->ref_cache))))
+            return DR_ERR(ENOMEM);
+        for (int i = 0; i < src->nb_clips; i++)
+            d->ref_cache[i] = -1;
+        d->nb_ref_cache = src->nb_clips;
+    }
+    if (d->opt_start_seg >= 0) {
+        /* a reading from a place: that segment's clip from that block on */
+        int k = r->first_clip + d->opt_start_seg;
+        if (k > r->last_clip || (ret = clip_start(d, k)) < 0)
+            return k > r->last_clip ? DR_ERR(EINVAL) : ret;
+        if (d->opt_start_block < 0 || d->opt_start_block >= r->nb_blocks)
+            return DR_ERR(EINVAL);
+        r->block       = (uint32_t)d->opt_start_block;
+        r->skipped     = r->block;      /* the positions read are the clip's */
+        r->start_block = r->block;
+        return 0;
+    }
     return clip_start(d, r->first_clip);
 }
 
@@ -1381,6 +1448,12 @@ static void start_check(DrDisc *d)
         return;
     for (int k = r->first_clip; k <= r->last_clip; k++) {
         int64_t first, at = r->clip_at[k - r->first_clip], diff;
+        /* a cut part's reading stopped: the clips it read to their end only */
+        if (r->stop > 1 && k >= r->clip) {
+            dr_vlog(d->log, DR_VLOG_VERBOSE, "Title check: %s %s: the reading stopped %s it: its start is not "
+                   "checked\n", src->clip_kind, src->clip_name(d, k), k == r->clip ? "in" : "before");
+            continue;
+        }
         if (at == DR_NOPTS_VALUE || ff_disctl_title_segment_start(r->rip, k - r->first_clip, &first) < 0) {
             dr_vlog(d->log, DR_VLOG_VERBOSE, "Title check: %s %s: %s or its first picture not known: its start is not "
                    "checked\n", src->clip_kind, src->clip_name(d, k), src->clip_start_name);
@@ -1415,6 +1488,13 @@ static int read_input(DrDisc *d)
     int64_t sector;
     int first, ret;
 
+    /* a cut part complete: the title ends here, as at the disc's end */
+    if (r->stop) {
+        if (r->stop > 1)
+            return DR_ERR_BUG;
+        r->stop = 2;
+        return ff_disctl_title_finish_stopped(r->rip);
+    }
     ret = clip_err(dr_clip_read(r->ps, &pkt));
     /* Blu-ray: the stretches of the stream file left out so far (all of
      * them at its end) */
@@ -1447,8 +1527,10 @@ static int read_input(DrDisc *d)
     if (r->pts_ref < 0) {
         int64_t limit = DR_MIN(PTS_REF_SECTORS, (int64_t)r->nb_blocks);
 
-        if (pkt.id == d->track_ids[0] && pkt.pts != DR_NOPTS_VALUE && first && sector < limit) {
+        if (pkt.id == d->track_ids[0] && pkt.pts != DR_NOPTS_VALUE && first && sector - r->start_block < limit) {
             r->pts_ref = pkt.pts >= PTS_REF_BACK ? pkt.pts - PTS_REF_BACK : pkt.pts + (1LL << 33) - PTS_REF_BACK;
+            if (!r->start_block)
+                cache_ref(d, r->clip);
             dr_vlog(d->log, DR_VLOG_VERBOSE, "%s %s: first video time %"PRId64" in sector %"PRId64": wrap reference %"
                    PRId64"\n", src->clip_kind, src->clip_name(d, r->clip), pkt.pts, sector, r->pts_ref);
             for (int i = 0; i < r->nb_held; i++) {
@@ -1679,6 +1761,101 @@ static int report_damage(DrDisc *d)
 /* What the title gives the caller at its end: chapters, the untested
  * features met, the caption data taken out of the video, each track's
  * result. */
+/* How far past its end a cut part reads (the video, then its stop). */
+#define CUT_MARGIN (2 * DR_TICKS_PER_SECOND)
+
+/* A cut part's results at the title's end: its key frames met, its frames
+ * and start, its chapters (the title's placed chapters inside it, on its
+ * clock; one at 0 from the chapter it starts in when it starts inside one)
+ * and its length. */
+static int cut_end(DrDisc *d)
+{
+    DiscTitleReader *r = d->reader;
+    const DRCutPlace *from = d->opt_cut_part > 0 ? &d->opt_cuts[d->opt_cut_part - 1] : NULL;
+    const DRCutPlace *to = d->opt_cut_part < d->nb_opt_cuts ? &d->opt_cuts[d->opt_cut_part] : NULL;
+    int64_t zero = from ? from->zero : 0, end = to ? to->zero : d->duration;
+    DrDiscChapter *ch;
+    DRCutResult cr;
+    int n = 0, inside = -1, first = -1, last = -1, ret;
+    char what[64] = "no chapter";
+
+    if ((ret = ff_disctl_cut_finish(r->cut)) < 0)
+        return ret;
+    ff_disctl_cut_result(r->cut, &cr);
+    for (int i = 0; i < d->nb_out_tracks; i++) {
+        DrDiscTrack *t = &d->out_tracks[i];
+        int64_t frames, first;
+        ff_disctl_cut_track(r->cut, i, &frames, &first);
+        t->frames      = frames;
+        t->delay_ticks = first == INT64_MIN ? 0 : first;
+        ff_disctl_cut_bytes(r->cut, i, &t->cut_title_bytes, &t->cut_bytes, &t->cut_left_bytes);
+        t->cut_read_all = r->stop < 2;
+    }
+    if (!(ch = dr_calloc(d->nb_chapters + 1, sizeof(*ch))))
+        return DR_ERR_NOMEM;
+    for (int i = 0; i < d->nb_chapters; i++) {
+        const DrDiscChapter *c = &d->chapters[i];
+        if (c->start < zero) {
+            if (c->end > zero)
+                inside = i;             /* the chapter the part starts in */
+            continue;
+        }
+        if (c->start >= end)
+            break;
+        if (!n && c->start > zero && inside >= 0) {
+            ch[n++] = (DrDiscChapter){ 0, 0, d->chapters[inside].name };
+            first   = inside;
+        }
+        if (first < 0)
+            first = i;
+        ch[n++] = (DrDiscChapter){ c->start - zero, 0, c->name };
+        last = i;
+    }
+    if (!n && inside >= 0) {            /* the part lies inside one chapter */
+        ch[n++] = (DrDiscChapter){ 0, 0, d->chapters[inside].name };
+        first = last = inside;
+    }
+    for (int i = 0; i < n; i++)
+        ch[i].end = i + 1 < n ? ch[i + 1].start : end - zero;
+    dr_free(d->chapters);
+    d->chapters    = ch;
+    d->nb_chapters = n;
+    d->duration    = end - zero;
+    if (n && first == last)
+        snprintf(what, sizeof(what), "the title's chapter %d", first + 1);
+    else if (n)
+        snprintf(what, sizeof(what), "the title's chapters %d-%d", first + 1, last + 1);
+    dr_vlog(d->log, DR_VLOG_INFO, "Cut part %d/%d: %"PRId64" picture(s) from %s; %s\n", d->opt_cut_part + 1,
+            d->nb_opt_cuts + 1, cr.pictures, !from ? "the title's start" :
+            cr.start == DR_START_CLEAN ? "a clean key frame" : cr.start == DR_START_OPEN ? "an open key frame" :
+            cr.start == DR_START_BROKEN ? "a key frame at a broken link" : "a key frame", what);
+    if (cr.left_out)
+        dr_vlog(d->log, DR_VLOG_INFO, "Cut part %d/%d: %"PRId64" picture(s) shown before its key frame need the "
+                "pictures before it: left out (in neither part)\n", d->opt_cut_part + 1, d->nb_opt_cuts + 1,
+                cr.left_out);
+    if (cr.undecodable)
+        dr_vlog(d->log, DR_VLOG_INFO, "Cut part %d/%d: %"PRId64" picture(s) shown before its key frame need the "
+                "pictures before it and cannot be left out (H.264 reference pictures): kept (players do not show "
+                "them)\n",
+                d->opt_cut_part + 1, d->nb_opt_cuts + 1, cr.undecodable);
+    /* each audio track: where it starts on the part's clock */
+    for (int i = 1; i < d->nb_out_tracks && from; i++) {
+        const DrDiscTrack *t = &d->out_tracks[i];
+        int64_t frames, first, ns;
+        ff_disctl_cut_track(r->cut, i, &frames, &first);
+        if (t->type != DISC_MEDIA_AUDIO || !frames)
+            continue;
+        ns = first * 25 / 27;
+        dr_vlog(d->log, DR_VLOG_INFO, "Cut part %d/%d: track %d (%s): starts %"PRId64".%06"PRId64" ms after the "
+                "part's 0 (%s)\n", d->opt_cut_part + 1, d->nb_opt_cuts + 1, t->number,
+                ff_disctl_codec_id_name(r->src->tracks[i].codec), ns / 1000000, ns % 1000000,
+                d->track_cut[i] == DR_CUT_TRACK_PCM   ? "its first sample at or after the cut" :
+                d->track_cut[i] == DR_CUT_TRACK_ENTRY ? "the unit the cuts pass chose" :
+                                                        "its first frame that starts at or after the cut");
+    }
+    return 0;
+}
+
 static int title_end(DrDisc *d)
 {
     DiscTitleReader *r = d->reader;
@@ -1767,7 +1944,7 @@ static int title_end(DrDisc *d)
         }
     }
     (void)ret;
-    return 0;
+    return r->cut ? cut_end(d) : 0;
 }
 
 /* The title timeline's next output frame (times in ticks of
@@ -1791,6 +1968,27 @@ int ff_disc_title_reader_frame(DrDisc *d, DrDiscFrame *out)
                 ff_disctl_frame_unref(&f);
                 return ret;
             }
+            /* a cut part: only its frames, on its clock (PCM cut between two samples) */
+            if (r->cut) {
+                const DrDiscTrack *t = &d->out_tracks[k];
+                if (d->track_cut[k] == DR_CUT_TRACK_PCM)
+                    ff_disctl_cut_pcm(r->cut, k, t->sample_rate,
+                                      t->channels * (t->codec == DR_CODEC_PCM_S24LE ? 3 : 2));
+                ret = ff_disctl_cut_frame(r->cut, k, &f);
+                if (ret >= 0 && !r->stop && ff_disctl_cut_done(r->cut, CUT_MARGIN)) {
+                    r->stop = 1;
+                    dr_vlog(d->log, DR_VLOG_INFO, "Cut part %d/%d: complete: the reading stops here (its end + %d s), "
+                           "%"PRId64"%% of the title read; the title's checks below cover what was read\n",
+                           d->opt_cut_part + 1, d->nb_opt_cuts + 1, (int)(CUT_MARGIN / DR_TICKS_PER_SECOND),
+                           r->blocks_total ? r->blocks_done * 100 / r->blocks_total : 0);
+                }
+                if (ret <= 0) {
+                    ff_disctl_frame_unref(&f);
+                    if (ret < 0)
+                        return ret;
+                    continue;
+                }
+            }
             /* the frame's reference moves to the caller */
             out->buf      = f.buf;
             out->data     = f.data;
@@ -1800,6 +1998,14 @@ int ff_disc_title_reader_frame(DrDisc *d, DrDiscFrame *out)
             out->duration = f.dur;
             out->key      = !!(f.flags & DR_F_KEY);
             out->discard  = !!(f.flags & DR_F_DISCARD);
+            out->rasl     = !!(f.flags & DR_F_RASL);
+            out->ref      = !!(f.flags & DR_F_REF);
+            out->entry    = !!(f.flags & DR_F_ENTRY);
+            out->seg      = f.seg;
+            out->block    = f.block - 1;
+            out->start    = f.flags & DR_F_START_CLEAN  ? DR_DISC_START_CLEAN  :
+                            f.flags & DR_F_START_BROKEN ? DR_DISC_START_BROKEN :
+                            f.flags & DR_F_START_OPEN   ? DR_DISC_START_OPEN   : DR_DISC_START_NONE;
             return 0;
         }
         if (ret == DR_ERR_EOF) {

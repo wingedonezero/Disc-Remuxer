@@ -26,6 +26,7 @@
 #include <QVBoxLayout>
 
 #include "Console.h"
+#include "CutEditor.h"
 #include "DetailsPanel.h"
 #include "PrefsDialog.h"
 #include "QueueTree.h"
@@ -67,7 +68,8 @@ MainWindow::MainWindow(LogRelay *r) : relay(r)
     formatBox->addItem("MKV", "mkv");
     formatBox->addItem("MKV (mkvmerge)", "mkvmerge");
     formatBox->setToolTip("What each title is written as: a file per track (Streams), one Matroska file (MKV), or "
-                          "the stream files muxed by mkvmerge into one Matroska file (MKV (mkvmerge))");
+                          "the stream files muxed by mkvmerge into one Matroska file (MKV (mkvmerge)). A title with "
+                          "cuts is written by Streams or MKV (mkvmerge), not by MKV.");
     buttons->addWidget(new QLabel("Output:"));
     buttons->addWidget(formatBox);
     syncFormatBox();
@@ -369,6 +371,18 @@ void MainWindow::scanned(quint64 id, quintptr handle)
     updateControls();
     updateQueueLabel();
     if (!snapshot.isEmpty() && !pendingScans) {
+        // tests: the titles DISC_REMUXER_GUI_TITLES ripped, the cut list
+        // DISC_REMUXER_GUI_CUT_LIST ("<title>:<cuts>") kept on its title
+        QByteArray titles = qgetenv("DISC_REMUXER_GUI_TITLES"), list = qgetenv("DISC_REMUXER_GUI_CUT_LIST");
+        if (j && j->disc && !titles.isEmpty())
+            engine_select_titles(j->disc, titles.constData());
+        if (j && j->disc && list.contains(':')) {
+            int t = list.left(list.indexOf(':')).toInt();
+            engine_set_title_cuts(j->disc, t, list.mid(list.indexOf(':') + 1).constData());
+            titleCutsChanged(*j, t);
+        }
+        for (int t = 0; j && j->disc && t < j->item->childCount(); t++)
+            showTitleChecks(*j, t);
         if (j && j->item->childCount())
             tree->setCurrentItem(j->item->child(0));
         if (test == "prefs") {
@@ -389,6 +403,15 @@ void MainWindow::scanned(quint64 id, quintptr handle)
             j->item->setCheckState(C_NAME, Qt::Unchecked);
             if (j->item->childCount())
                 j->item->child(0)->setExpanded(true);
+        }
+        if (test.startsWith("cuts:") && j) {
+            // the cut editor of a title: cuts:<title>:<time>:<steps> (CutEditor::setTest())
+            QStringList a = test.split(':');
+            QTimer::singleShot(0, this, [this, id = j->id, a] {
+                openCuts(id, a.value(1).toInt(), a.mid(2, a.size() - 3).join(':'), a.size() > 3 ? a.last() : QString());
+                QApplication::quit();
+            });
+            return;
         }
         if (test == "rip" || test == "stop") {
             startQueue();
@@ -422,7 +445,8 @@ void MainWindow::showTitleChecks(Job &job, int t)
     title->setCheckState(C_NAME, on ? Qt::Checked : Qt::Unchecked);
     // its state (the engine's words) and the fake playlist check's mark
     char state[512], why[1024];
-    int mark = engine_title_state(ti, engine_title_split(job.disc, t), state, sizeof(state), why, sizeof(why));
+    int mark = engine_title_state(ti, engine_title_split(job.disc, t), engine_title_cuts(job.disc, t), state,
+                                  sizeof(state), why, sizeof(why));
     title->setIcon(C_STATUS, QIcon());
     if (mark != DISC_PLAYLIST_NOT_MARKED)
         title->setIcon(C_STATUS, style()->standardIcon(mark == DISC_PLAYLIST_LIKELY_FAKE ? QStyle::SP_MessageBoxWarning
@@ -595,7 +619,7 @@ void MainWindow::currentChanged(QTreeWidgetItem *cur)
     else if (i == R_CHAPTERS)
         details->showChapters(&d->titles[t]);
     else if (i < 0)
-        details->showTitle(&d->titles[t], engine_disc_tracks(j->disc, t));
+        details->showTitle(&d->titles[t], engine_disc_tracks(j->disc, t), engine_title_cuts(j->disc, t));
     else
         details->showTrack(&d->titles[t], i, engine_disc_tracks(j->disc, t));
 }
@@ -624,6 +648,7 @@ void MainWindow::contextMenu(const QPoint &pos)
 
     if (!j)
         return;
+    menu.setToolTipsVisible(true);
     int t = item->data(C_NAME, R_TITLE).toInt();
     const QString out = j->outDir, log = j->logFile;
     if (t >= 0 && j->disc) {
@@ -659,13 +684,28 @@ void MainWindow::contextMenu(const QPoint &pos)
         QAction *a = menu.addAction(QString("Write as %1 Parts (One per %2)").arg(ti.nb_parts).arg(unit));
         a->setCheckable(true);
         a->setChecked(engine_title_split(j->disc, t));
-        a->setEnabled(!running);
+        a->setEnabled(!running && !engine_title_cuts(j->disc, t));
+        if (engine_title_cuts(j->disc, t))
+            a->setToolTip("The title has cuts: they decide its parts");
         connect(a, &QAction::toggled, this, [this, id = j->id, t](bool on) {
             if (Job *x = jobById(id); x && x->disc) {
                 engine_set_title_split(x->disc, t, on);
                 showTitleChecks(*x, t);
             }
         });
+        menu.addSeparator();
+    }
+    if (t >= 0 && j->disc) {
+        // the title's cuts: the editor, or the list dropped
+        menu.addAction("Cuts…", this, [this, id = j->id, t] { QTimer::singleShot(0, this, [this, id, t] { openCuts(id, t); }); })
+            ->setEnabled(!running && !j->scanning);
+        menu.addAction("Clear Cuts", this, [this, id = j->id, t] {
+                if (Job *x = jobById(id); x && x->disc) {
+                    engine_set_title_cuts(x->disc, t, nullptr);
+                    titleCutsChanged(*x, t);
+                }
+            })
+            ->setEnabled(!running && engine_title_cuts(j->disc, t));
         menu.addSeparator();
     }
     menu.addAction("Open the Output Folder", this, [out] { QDesktopServices::openUrl(QUrl::fromLocalFile(out)); })
@@ -682,6 +722,43 @@ void MainWindow::contextMenu(const QPoint &pos)
     menu.addAction("Remove from the Queue", this, [this, item] { tree->setCurrentItem(item); removeSelected(); })
         ->setEnabled(!running);
     menu.exec(tree->viewport()->mapToGlobal(pos));
+}
+
+// The cut editor of title t (window modal: nothing else reads the disc
+// while it is open; OK keeps its cut list on the title).
+void MainWindow::openCuts(quint64 id, int t, const QString &at, const QString &steps)
+{
+    Job *j = jobById(id);
+
+    if (!j || !j->disc || j->scanning || running)
+        return;
+    CutEditor editor(j->disc, t, relay, this);
+    if (!snapshot.isEmpty())
+        editor.setTest(at, steps, snapshot);
+    if (editor.exec() == QDialog::Accepted && (j = jobById(id)))
+        titleCutsChanged(*j, t);
+}
+
+// A title's cut list changed: its row and, when it is shown, its details.
+void MainWindow::titleCutsChanged(Job &job, int t)
+{
+    if (!job.disc || t < 0 || t >= job.item->childCount())
+        return;
+    showTitleChecks(job, t);
+    if (tree->currentItem())
+        currentChanged(tree->currentItem());
+}
+
+// Whether a disc's titles have cut lists, and when they do whether they
+// may go (the user asked).
+bool MainWindow::cutsMayGo(const QList<Job *> &list, const QString &what)
+{
+    int n = 0;
+    for (const Job *j : list)
+        for (int t = 0; j && j->disc && t < engine_disc_info(j->disc)->nb_titles; t++)
+            n += engine_title_cuts(j->disc, t) != nullptr;
+    return !n || QMessageBox::question(this, "Disc Remuxer", QString("%1 title(s) have cuts. %2 drops them too: go on?")
+                                                                 .arg(n).arg(what)) == QMessageBox::Yes;
 }
 
 void MainWindow::removeJob(int row)
@@ -705,6 +782,8 @@ void MainWindow::removeSelected()
         return;
     while (item && item->parent())
         item = item->parent();
+    if (item && !cutsMayGo({ jobOf(item) }, "Removing the disc"))
+        return;
     if (item)
         removeJob(tree->indexOfTopLevelItem(item));
     details->clear();
@@ -714,7 +793,13 @@ void MainWindow::removeSelected()
 
 void MainWindow::clearAll()
 {
+    QList<Job *> all;
+
     if (running)
+        return;
+    for (Job &j : jobs)
+        all << &j;
+    if (!cutsMayGo(all, "Clearing the queue"))
         return;
     while (tree->topLevelItemCount())
         removeJob(0);
@@ -732,7 +817,7 @@ void MainWindow::rescanSelected()
 
     while (item && item->parent())
         item = item->parent();
-    if (running || !(j = jobOf(item)) || j->scanning)
+    if (running || !(j = jobOf(item)) || j->scanning || !cutsMayGo({ j }, "Scanning the disc again"))
         return;
     engine_disc_close(&j->disc);
     updating = true;

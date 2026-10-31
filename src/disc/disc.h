@@ -88,6 +88,11 @@ typedef struct DrDiscTrack {
     int64_t     no_stop, outside;        /**< subtitles: units without a stop time, units outside the canvas */
     unsigned    has_cc:1, has_spu:1, has_forced_objects:1;
     int64_t     forced_objects;          /**< PGS: forced objects shown (with has_forced_objects) */
+    /* a cut part (dr_disc_title_open_cut()): the bytes of the track's frames
+     * read (the title's, all of them when cut_read_all), given to this part,
+     * and (video) its leading pictures left out */
+    int64_t     cut_title_bytes, cut_bytes, cut_left_bytes;
+    unsigned    cut_read_all:1;
 } DrDiscTrack;
 
 /** A chapter of the read title (after DR_ERR_EOF): ticks on the title
@@ -96,6 +101,15 @@ typedef struct DrDiscChapter {
     int64_t     start, end;      /**< DR_TICKS_PER_SECOND ticks */
     const char *name;            /**< NULL: none */
 } DrDiscChapter;
+
+/** How decoding can start at a video key frame (DrDiscFrame.start; the same
+ *  numbers as the title timeline's DRStart). */
+enum DrDiscStart {
+    DR_DISC_START_NONE = 0,     /**< not a key frame, or its codec does not say */
+    DR_DISC_START_CLEAN,        /**< nothing before it is needed (IDR, closed GOP, closed entry point) */
+    DR_DISC_START_BROKEN,       /**< a broken link: the pictures shown before it cannot be decoded */
+    DR_DISC_START_OPEN,         /**< the pictures shown before it may need pictures before it in the stream */
+};
 
 /** A frame of the title timeline: data/size point into buf (one reference,
  *  given to the caller: dr_disc_frame_unref(), or keep your own with
@@ -108,6 +122,15 @@ typedef struct DrDiscFrame {
     int64_t     time;            /**< DR_TICKS_PER_SECOND ticks, DR_NOPTS_VALUE none */
     int64_t     duration;        /**< ticks, 0 not known */
     unsigned    key:1, discard:1;
+    unsigned    rasl:1;          /**< video: a leading picture that cannot be decoded from the key frame before it
+                                      alone (HEVC RASL) */
+    unsigned    ref:1;           /**< video (H.264): a reference picture */
+    unsigned    entry:1;         /**< audio: a stream can start at this unit (nothing of the ones before it needed) */
+    int         seg;             /**< the segment of the title it comes from (from 0) */
+    int64_t     block;           /**< the block of that segment the data holding its first byte is read from
+                                      (a Blu-ray: 6144-byte aligned units; DVD, HD DVD: 2048-byte sectors), -1 not
+                                      known: where a reading can start to reach it */
+    int         start;           /**< video key frames: enum DrDiscStart */
 } DrDiscFrame;
 
 /** Opens the disc at source (an image file, or a disc folder): the disc
@@ -126,6 +149,48 @@ const DiscInfo *dr_disc_info(const DrDisc *d);
  *  before it within before_ms, else the nearest after it within after_ms,
  *  else the mark (0 ms: that stage off). */
 void dr_disc_set_chapter_rule(DrDisc *d, int exact, int before_ms, int after_ms);
+
+/** A cut of a title: a place a part starts that is no clean break of the
+ *  disc (the engine's cuts.h finds them): the part's 0 (its first picture
+ *  that decodes) and its key frame's time, ticks on the title timeline. */
+typedef struct DrDiscCut {
+    int64_t zero, key_time;
+} DrDiscCut;
+
+/** Opens part `part` (0 .. nb_cuts) of title `title` cut at cuts (in time
+ *  order) for reading: the title is read whole and only the part's frames
+ *  are given, on the part's clock (its first picture at 0); the results at
+ *  its end are the part's (frames, delays, its chapters, its length). keep
+ *  must leave out every track dr_disc_cut_left_out() names. starts (nb_cuts
+ *  x the title's tracks, cut by cut): for each track that starts only at
+ *  some units (dr_disc_cut_start_units()) the time (ticks) of the unit its
+ *  part starts at at each cut, INT64_MAX none (the engine's cuts pass finds
+ *  them); may be NULL when no such track is kept. 0, or a negative error
+ *  (the title is closed). */
+int  dr_disc_title_open_cut(DrDisc *d, int title, const DrDiscCut *cuts, int nb_cuts, int part, const uint8_t *keep,
+                            const int64_t *starts);
+/** 1 when a stream of track `track` of title `title` can start only at some
+ *  of its units (TrueHD at a major sync, a DTS-HD stream where its lossless
+ *  data starts fresh: DrDiscFrame.entry), so each cut needs the unit its
+ *  part starts at (dr_disc_title_open_cut() starts). */
+int  dr_disc_cut_start_units(const DrDisc *d, int title, int track);
+/** Why a cut part cannot carry track `track` of title `title` yet (words),
+ *  NULL when it can. */
+const char *dr_disc_cut_left_out(const DrDisc *d, int title, int track);
+
+/** The source name the disc's lines carry from now on (base/vlog.h); the
+ *  one before is returned (a title opened keeps the name it was opened
+ *  with). */
+const char *dr_disc_set_log(DrDisc *d, const char *log);
+
+/** Opens title `title` for reading from a place (DrDiscFrame.seg / block,
+ *  as a reading from its start gave them): segment seg from block block on,
+ *  through the same title timeline. That timeline starts there, so its
+ *  times are those of a title starting at that segment: the caller moves
+ *  them by the difference at the first key frame (the cut editor checks
+ *  every picture against its index). The chapters and results are not the
+ *  title's. 0, or a negative error (the title is closed). */
+int  dr_disc_title_open_at(DrDisc *d, int title, int seg, int64_t block, const uint8_t *keep);
 
 /** Opens title `title` (part >= 0: only that part) for reading; a title
  *  open before is closed first. The disc stays loaded. second_view: a 3-D

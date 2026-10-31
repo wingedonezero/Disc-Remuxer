@@ -183,7 +183,8 @@ static int recovery_broken_link(const uint8_t *p, int n)
  * picture. How decoding can start at a key frame: an IDR picture needs
  * nothing before it; at a recovery point (H.264 D.2.8) the pictures shown
  * before it may use pictures before it, unless its broken_link_flag says
- * they cannot be decoded at all. */
+ * they cannot be decoded at all. A picture whose slices have a nal_ref_idc
+ * is a reference picture (7.4.1). */
 static int picture_h264(DRVideo *v, const DRFrame *f, DRPicture *pic)
 {
     H264State *s = ff_disctl_video_priv(v);
@@ -194,6 +195,9 @@ static int picture_h264(DRVideo *v, const DRFrame *f, DRPicture *pic)
         pic->type = DR_PIC_OTHER;
         return 0;
     }
+    for (int i = next_sc(f->data, f->size, 0); i >= 0 && !pic->ref; i = next_sc(f->data, f->size, i + 3))
+        pic->ref = i + 3 < f->size && ((f->data[i + 3] & 0x1f) == 1 || (f->data[i + 3] & 0x1f) == 5) &&
+                   (f->data[i + 3] & 0x60);
     if (pic->key) {
         int idr = 0;
         for (int i = next_sc(f->data, f->size, 0); i >= 0 && !idr; i = next_sc(f->data, f->size, i + 3))

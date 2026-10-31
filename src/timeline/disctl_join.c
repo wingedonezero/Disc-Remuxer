@@ -139,6 +139,8 @@ static int place_chapters(DRJoin *j)
     for (int i = 0; i < j->cfg.nb_marks; i++) {
         int64_t m = j->cfg.marks[i], mf = INT64_MIN, kb = INT64_MIN, ka = INT64_MAX, c;
         int stage, on_key = 0, clash = 0, at_key;
+        /* a cut part: the lines of marks outside it go to the debug log */
+        int lv = j->cfg.has_range && (m < j->cfg.range_from || m >= j->cfg.range_to) ? DR_VLOG_VERBOSE : DR_VLOG_INFO;
         char next[64] = "no key frame follows";
         if (m == INT64_MAX)                 /* a position never reached */
             continue;
@@ -169,7 +171,7 @@ static int place_chapters(DRJoin *j)
             stage = 4, c = mf != INT64_MIN ? mf : m;
         /* a mark past the video's last frame starts no chapter */
         if ((stage == 0 || stage == 4) && m > last) {
-            dr_vlog(j->log, DR_VLOG_INFO, "  - No chapter for mark %d (%s) - after the video's last frame\n", i + 1,
+            dr_vlog(j->log, lv, "  - No chapter for mark %d (%s) - after the video's last frame\n", i + 1,
                     ns_text(a, sizeof(a), m));
             none++;
             continue;
@@ -177,7 +179,7 @@ static int place_chapters(DRJoin *j)
         /* chapters in order: a chapter not after the one before it keeps its mark (or goes) */
         if (c <= prev) {
             if (m <= prev || (stage == 4 && mf != INT64_MIN && mf <= prev)) {
-                dr_vlog(j->log, DR_VLOG_WARNING, "  - No chapter for mark %d (%s) - not after the chapter before it "
+                dr_vlog(j->log, lv == DR_VLOG_INFO ? DR_VLOG_WARNING : lv, "  - No chapter for mark %d (%s) - not after the chapter before it "
                         "once that one is placed\n", i + 1, ns_text(a, sizeof(a), m));
                 none++;
                 continue;
@@ -191,21 +193,21 @@ static int place_chapters(DRJoin *j)
         /* on the key frame at its mark (snap off: the mark itself, within 1 ms of it) */
         at_key = on_key && (c == mf || stage == 0);
         if (stage == 2 || stage == 3)
-            dr_vlog(j->log, DR_VLOG_INFO, "  - Snapped 'Chapter %02d' (%s) -> %s (moved by %c%.3f ms, %d frame(s))\n",
+            dr_vlog(j->log, lv, "  - Snapped 'Chapter %02d' (%s) -> %s (moved by %c%.3f ms, %d frame(s))\n",
                     j->nb_chap + 1, ns_text(a, sizeof(a), m), ns_text(b, sizeof(b), c), stage == 2 ? '-' : '+',
                     (double)DR_ABS(m - c) * 1000 / DR_TICKS_PER_SECOND,
                     stage == 2 ? frames_between(j, c, m) : frames_between(j, m, c));
         else if (at_key)
-            dr_vlog(j->log, DR_VLOG_INFO, "  - Kept 'Chapter %02d' (%s) - on a key frame\n", j->nb_chap + 1,
+            dr_vlog(j->log, lv, "  - Kept 'Chapter %02d' (%s) - on a key frame\n", j->nb_chap + 1,
                     ns_text(a, sizeof(a), c));
         else if (stage == 0)
-            dr_vlog(j->log, DR_VLOG_INFO, "  - Kept 'Chapter %02d' (%s) - between key frames (%s)\n", j->nb_chap + 1,
+            dr_vlog(j->log, lv, "  - Kept 'Chapter %02d' (%s) - between key frames (%s)\n", j->nb_chap + 1,
                     ns_text(a, sizeof(a), c), next);
         else if (clash)
-            dr_vlog(j->log, DR_VLOG_INFO, "  - Kept 'Chapter %02d' (%s) - between key frames; the key frame before it "
+            dr_vlog(j->log, lv, "  - Kept 'Chapter %02d' (%s) - between key frames; the key frame before it "
                     "holds the chapter before it (%s)\n", j->nb_chap + 1, ns_text(a, sizeof(a), c), next);
         else
-            dr_vlog(j->log, DR_VLOG_INFO, "  - Kept 'Chapter %02d' (%s) - between key frames, none within %d ms "
+            dr_vlog(j->log, lv, "  - Kept 'Chapter %02d' (%s) - between key frames, none within %d ms "
                     "before%s (%s)\n", j->nb_chap + 1, ns_text(a, sizeof(a), c), r.before_ms,
                     after ? " or the time after it" : "", next);
         j->chap[j->nb_chap++] = c;

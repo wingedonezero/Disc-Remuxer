@@ -39,14 +39,26 @@ typedef struct EngineChoice {
     const char *const *tracks;
     int                nb_tracks;
     const char        *second;
+    const char *const *cuts;     /* --cut values: "<title>:<cuts>" (cuts.h cut_parse()) */
+    int                nb_cuts;
 } EngineChoice;
 
-/* Checks the --tracks values; 0, or -1 (logged). */
+/* Checks the --tracks and --cut values; 0, or -1 (logged). */
 int  engine_check_choice(const EngineChoice *c);
 
 /* The info command: the disc and every title with its tracks; details:
  * then everything the GUI shows of them (engine_details()). 0, 1. */
 int  engine_info(const char *source, const EngineChoice *c, int details);
+/* The cuts command: where the cuts asked for (items: "c5,45:42.322",
+ * cuts.h cut_parse()) fall in title `title` (its number as info lists it):
+ * the title's video is read as a rip reads it, each cut is said with its
+ * key frame and the part it starts, nothing is written. 0, 1 (a cut
+ * refused, or the title cannot be read), 2 (bad arguments). */
+int  engine_cuts(const char *source, const char *title, const char *items, const EngineChoice *c);
+/* The frame command: the picture of title `title` shown at time `at` (the
+ * last one starting at or before it), as the cut editor shows it, written to
+ * path as a BMP. 0, 1 (it cannot be read or written), 2 (bad arguments). */
+int  engine_frame(const char *source, const char *title, const char *at, const char *path, const EngineChoice *c);
 /* The demux command: titles ("all": the titles not shorter than the
  * minimum length; "3", "1,3-5") into out_dir, NULL: a folder named after
  * the disc in the main output folder (engine_output_folder()); split: the
@@ -138,6 +150,36 @@ int  engine_select_titles(EngineDisc *d, const char *spec);
 int  engine_title_split(const EngineDisc *d, int t);
 int  engine_set_title_split(EngineDisc *d, int t, int on);
 int  engine_split_titles(EngineDisc *d, const char *spec);
+/* The cut editor's index of title t (cuts.h): every picture of its video
+ * (time, key frame kind, place on the disc) and its chapters, read the way
+ * a rip reads the title (progress through the log sink, stopped by
+ * engine_cancel()) the first time, kept while the disc is open. NULL when
+ * it cannot be read (logged). */
+const struct CutIndex *engine_cut_index(EngineDisc *d, int t);
+/* The cut editor of title t on the open disc: its index (read the first
+ * time) and its pictures (cut_preview.h: only the title is opened on the
+ * disc, read from the place of a key frame); while it is open nothing else
+ * opens a title on the disc (no rip of it). 0, or -1 (logged). Closing it
+ * frees its pictures and the index: only the title's cut list stays. */
+struct CutPreview;
+int  engine_cut_editor_open(EngineDisc *d, int t, struct CutPreview **p);
+void engine_cut_editor_close(EngineDisc *d, int t, struct CutPreview **p);
+/* A title's cut list (the --cut items, "c5,45:42.323"; NULL none), and
+ * setting it (NULL or "": cleared). 0, or -1 (not a list of cuts). */
+const char *engine_title_cuts(const EngineDisc *d, int t);
+/* The cut editor's analysis (cut_modes.h) of an index read to the title's
+ * end, with the mode and values of the settings cuts.helper_* (ticked: the
+ * chapters ticked for Before Chapters): out (cut_mode_result_free()), and
+ * its split points as cut list items in *items ("c5,c9", or times; ""
+ * none; free()). 0, or -1 (no memory). */
+struct CutModeResult;
+int  engine_cut_mode(const struct CutIndex *ix, const int *ticked, int nb_ticked, struct CutModeResult *out,
+                     char **items);
+/* The suggest-cuts command: engine_cut_mode() on title `title`: its log,
+ * the cuts it suggests and the parts they make (the --cut value). 0, 1 (the
+ * title cannot be read), 2 (bad arguments). */
+int  engine_suggest_cuts(const char *source, const char *title, const EngineChoice *c);
+int  engine_set_title_cuts(EngineDisc *d, int t, const char *items);
 int  engine_track_kept(const EngineDisc *d, int t, int i);
 int  engine_set_track_kept(EngineDisc *d, int t, int i, int on);
 int  engine_apply_tracks(EngineDisc *d, int t, const char *steps);

@@ -33,6 +33,7 @@ enum {
     MSG_TITLE_SELECTION      = 3002,
     MSG_TITLE_MISSING        = 3003,
     MSG_TITLE_OPEN_FAILED    = 3004,
+    MSG_CUTS                 = 3005,
 
     MSG_TRACK                = 5001,
     MSG_TRACK_EMPTY          = 5002,

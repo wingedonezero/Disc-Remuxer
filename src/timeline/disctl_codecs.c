@@ -291,9 +291,18 @@ static DRCoreFilter filter_dts(int flags)
     return flags & DR_AUDIO_EXTRACTED ? dr_dca_core : NULL;
 }
 
+/* A DTS stream starts where no lossless data runs in from the frame before
+ * (dr_dca_xll_entry: a core frame alone, or an extension without lossless
+ * data, starts anywhere); a core taken out of DTS-HD starts at every frame. */
+static int entry_dts(DRAudio *a, const uint8_t *data, int size)
+{
+    return (ff_disctl_audio_flags(a) & DR_AUDIO_EXTRACTED) || dr_dca_xll_entry(data, size);
+}
+
 static const DRAudioRules audio_dts = {
     .header   = header_dts,
     .sync     = sync_always,
+    .entry    = entry_dts,
     .duration = duration_dts,
     .filter   = filter_dts,
 };
@@ -410,6 +419,13 @@ static int sync_latm(const uint8_t *d, int size)
     return loas(d, size) && !(d[3] & 0x80);   /* useSameStreamMux */
 }
 
+/* A LATM stream starts at a frame with its own StreamMuxConfig (one that
+ * does not use the one before it). */
+static int entry_latm(DRAudio *a, const uint8_t *d, int size)
+{
+    return sync_latm(d, size);
+}
+
 static int header_latm(DRAudio *a, const DRFrame *f, DRAudioHeader *out)
 {
     if (dr_latm_header(f->data, f->size, &out->rate, &out->samples) < 0 || out->samples <= 0 || out->rate <= 0)
@@ -424,6 +440,7 @@ static void inspect_latm(DRAudio *a, const DRFrame *f)
 
 static const DRAudioRules audio_latm = {
     .header  = header_latm,
+    .entry   = entry_latm,
     .sync    = sync_latm,
     .inspect = inspect_latm,
 };

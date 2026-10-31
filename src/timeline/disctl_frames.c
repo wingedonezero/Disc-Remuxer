@@ -40,6 +40,7 @@ typedef struct Record {
 
 struct DRFrames {
     void                 *log;
+    int                   stopped; /* the reading stopped before the end (ff_disctl_frames_stopped()) */
     const DRCodec        *codec;
     DrSplit              *split;   /* the codec's own rule (DRCodec.split), or */
     DrStock              *hp;      /* the stock cutter */
@@ -221,6 +222,22 @@ static void place_of(DRFrames *c, int64_t off, char *buf, int size)
         buf[0] = '\0';
 }
 
+/* 1 + the block the payload holding stream offset off was read from, 0 not
+ * known; the entries before it are dropped (units come in stream order). */
+static int64_t block_of(DRFrames *c, int64_t off)
+{
+    int i = c->nb_blk - 1;
+
+    while (i >= 0 && c->blk[i][0] > off)
+        i--;
+    if (i > 0) {
+        memmove(c->blk, c->blk + i, (c->nb_blk - i) * sizeof(*c->blk));
+        c->nb_blk -= i;
+        i = 0;
+    }
+    return i < 0 ? 0 : c->blk[i][1] + 1;
+}
+
 /* The run of bytes with no frame start, if any, said: one piece as it
  * came, pieces one after another (a stream with no frame this cutter knows)
  * as one line. */
@@ -280,6 +297,13 @@ static void left_out(DRFrames *c, int64_t off, int k, int what)
     place_of(c, off, where, sizeof(where));
     if (where[0])
         snprintf(at, sizeof(at), " (%s)", where);
+    /* the reading stopped on purpose (a cut part complete): what is left
+     * of the stream at its end is no fault of the disc */
+    if (c->stopped && what != LEFT_START && what != LEFT_REFUSED) {
+        dr_vlog(c->log, DR_VLOG_VERBOSE, "%s: the reading stopped before the %s's end: its last %d bytes (stream offset "
+               "%"PRId64") are left out%s\n", c->label, c->part, k, off, at);
+        return;
+    }
     switch (what) {
     case LEFT_START:
         dr_vlog(c->log, DR_VLOG_INFO, "%s: the first %d bytes of the %s come before its first frame start: left "
@@ -459,7 +483,7 @@ static int unit_take(DRFrames *c, const uint8_t *data, int size, int64_t off,
     c->st.units++;
     if (time != DR_NOPTS_VALUE)
         c->st.timed++;
-    ret = c->cb(c->opaque, &(DRUnit){ data, size, time, off, samples, rate, pic });
+    ret = c->cb(c->opaque, &(DRUnit){ data, size, time, off, samples, rate, pic, block_of(c, off) });
     if (ret < 0 && ret != DR_ERR(ENOMEM) && ret != DR_ERR(EAGAIN)) {
         /* the stage said why (the line before): here where it is */
         char where[256];
@@ -629,6 +653,11 @@ int ff_disctl_frames_write_at(DRFrames *c, const uint8_t *data, int size, int64_
     return 0;
 }
 
+void ff_disctl_frames_stopped(DRFrames *c)
+{
+    c->stopped = 1;
+}
+
 int ff_disctl_frames_flush(DRFrames *c)
 {
     int ret;
@@ -647,6 +676,13 @@ int ff_disctl_frames_flush(DRFrames *c)
             return ret;
         if (!out_size)
             break;
+        /* the reading stopped on purpose (a cut part complete): what the
+         * parser still holds is the start of a frame the reading did not
+         * finish, past the part's end */
+        if (c->stopped) {
+            left_out(c, c->in_pos - out_size, out_size, LEFT_END);
+            continue;
+        }
         if ((ret = unit_out(c, out, out_size)) < 0)
             return ret;
     }

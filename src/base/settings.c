@@ -22,6 +22,9 @@ static const char *const cell_modes[]   = { "auto", "walk", "trim", "walk_trim",
 static const char *const cell_checks[]  = { "all", "spread", "random", NULL };
 static const char *const out_formats[]  = { "streams", "mkv", "mkvmerge", NULL };
 static const char *const compressions[] = { "none", "zlib", NULL };
+static const char *const cut_keys[]     = { "nearest", "next", NULL };
+static const char *const cut_modes[]    = { "time", "pattern", "gap", "shortest", "episodes", "remove_end", "chapters",
+                                            "timestamps", NULL };
 
 static const Setting registry[] = {
     { "read", "attempts", SET_INT, "5", 1, 99, NULL,
@@ -125,6 +128,30 @@ static const Setting registry[] = {
     { "chapters", "after_ms", SET_INT, "0", 0, 5000, NULL,
       "How far after its mark (ms) a chapter may move on to a key frame, when none is close enough before it. "
       "0: never forward.", 0, SET_AT_RIP },
+    { "cuts", "key_frame", SET_CHOICE, "nearest", 0, 0, cut_keys,
+      "Where a cut asked for at a time that is not on a video key frame goes (a cut: a place a title is split at "
+      "that is no clean break of the disc, e.g. between two episodes in one stream): nearest takes the nearest "
+      "key frame (the earlier one when both are as near), next the first key frame after the time (mkvmerge's "
+      "way). A time on a key frame (within 1 ms) is cut there either way.", 0, SET_AT_RIP },
+    { "cuts", "preview_cache_mb", SET_INT, "512", 16, 16384, NULL,
+      "The cut editor keeps the pictures it decoded last for stepping back and forth: how much memory (MB) they "
+      "may take (about 60 pictures of 1080p video in 512 MB, 15 of UHD). All of it is given back when the editor "
+      "closes.", 0, SET_AT_RIP },
+    { "cuts", "helper_mode", SET_CHOICE, "time", 0, 0, cut_modes,
+      "Kept by the cut editor: its analysis mode (time: Time-based Grouping, pattern: Pattern Recognition, gap: "
+      "Statistical Gap Analysis, shortest: Shortest Chapter Analysis, episodes: Manual Episode Count, remove_end: "
+      "Remove Chapters from End, chapters: Before Chapters, timestamps: After Timestamps).", 1, SET_AT_RIP },
+    { "cuts", "helper_target", SET_TEXT, "23:00", 0, 0, NULL,
+      "Kept by the cut editor: Time-based Grouping's target episode duration (mm:ss, or minutes).", 1, SET_AT_RIP },
+    { "cuts", "helper_min_minutes", SET_TEXT, "15.0", 0, 0, NULL,
+      "Kept by the cut editor: the min content duration (minutes, 0.1 to 240) of Pattern Recognition, Statistical "
+      "Gap Analysis, Shortest Chapter Analysis and Manual Episode Count.", 1, SET_AT_RIP },
+    { "cuts", "helper_episodes", SET_INT, "2", 2, 100, NULL,
+      "Kept by the cut editor: Manual Episode Count's expected number of episodes.", 1, SET_AT_RIP },
+    { "cuts", "helper_chapters_from_end", SET_INT, "1", 1, 100, NULL,
+      "Kept by the cut editor: how many chapters Remove Chapters from End takes off.", 1, SET_AT_RIP },
+    { "cuts", "helper_timestamps", SET_TEXT, "", 0, 0, NULL,
+      "Kept by the cut editor: After Timestamps' times.", 1, SET_AT_RIP },
     { "mkv", "compression", SET_CHOICE, "none", 0, 0, compressions,
       "MKV files (the mkv and mkvmerge modes): none stores the subtitles' blocks as they are; zlib compresses each "
       "(lossless, as mkvmerge does by default; a few players and devices cannot read compressed tracks).",
@@ -144,6 +171,8 @@ static const Setting registry[] = {
     { "gui", "columns", SET_LIST, "", 0, 0, NULL, "Kept by the GUI: the widths of the queue's columns.",
       1, SET_IN_GUI },
     { "gui", "panes", SET_LIST, "", 0, 0, NULL, "Kept by the GUI: the sizes of the window's panes.", 1, SET_IN_GUI },
+    { "gui", "cut_editor", SET_LIST, "", 0, 0, NULL,
+      "Kept by the GUI: the cut editor window's place and the sizes of its panes.", 1, SET_IN_GUI },
     { "gui", "last_folder", SET_TEXT, "", 0, 0, NULL,
       "Kept by the GUI: the folder discs were last added from.", 1, SET_IN_GUI },
     { "gui", "show_detail_lines", SET_BOOL, "false", 0, 0, NULL,

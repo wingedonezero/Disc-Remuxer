@@ -10,7 +10,7 @@ from helpers.disctl import dur, run
 
 THD = (DATA / "sine_4813.thd").read_bytes()
 MLP = (DATA / "sine_4813.mlp").read_bytes()
-F_KEY, F_SYNC, F_CTR = lib.DR_F_KEY, lib.DR_F_SYNC, lib.DR_F_CTR
+F_KEY, F_SYNC, F_CTR, F_ENTRY = lib.DR_F_KEY, lib.DR_F_SYNC, lib.DR_F_CTR, lib.DR_F_ENTRY
 
 
 def aus(stream):
@@ -36,8 +36,8 @@ def check_units(outs, units):
     assert len(outs) == len(units)
     for o, au in zip(outs, units):
         assert o.bytes == au
-        sync = F_KEY | F_SYNC if is_major(au) else 0
-        assert o.flags & ~F_CTR == sync, "only major-sync AUs are sync units and key frames"
+        sync = F_KEY | F_SYNC | F_ENTRY if is_major(au) else 0
+        assert o.flags & ~F_CTR == sync, "only major-sync AUs are sync units, key frames and entry units"
 
 
 def test_truehd_aus_last_40_samples_and_the_stream_end_au_its_decoded_13():

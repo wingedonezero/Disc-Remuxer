@@ -240,7 +240,16 @@ struct DrDisc {
                                              (disc_title_open()) */
     int               opt_part;         /**< -1: the whole title, else that part of it (DiscTitleInfo.parts) */
     int               opt_second_view;  /**< 3-D titles: the second view is read (a track of its own) */
-    const uint8_t    *keep;             /**< the opened title's selected tracks (disc_title_open()), NULL all */
+    struct DRCutPlace *opt_cuts;        /**< the opened title's cuts (dr_disc_title_open_cut()), NULL none */
+    int               nb_opt_cuts;
+    int               opt_cut_part;     /**< with opt_cuts: the part given (0 .. nb_opt_cuts) */
+    int               opt_start_seg;    /**< dr_disc_title_open_at(): the segment the reading starts in, -1: its start */
+    int64_t           opt_start_block;  /**< and the block of it */
+    int64_t          *ref_cache;        /**< per clip of the title last opened: its wrap reference, -1 not known */
+    int               nb_ref_cache, ref_cache_title;
+    int64_t          *opt_starts;       /**< with opt_cuts: per cut and disc-info track (opt_nb_streams each) the
+                                             time of the unit a start-unit track's part starts at, or NULL */
+    int               opt_nb_streams;    const uint8_t    *keep;             /**< the opened title's selected tracks (disc_title_open()), NULL all */
     int               opt_details;      /**< the title list (info) reads each track's details from the stream */
     int               opt_dolby_vision; /**< Dolby Vision enhancement layer: 0 merged into the video's frames,
                                              1 a track of its own */
@@ -275,6 +284,7 @@ struct DrDisc {
                                              and PIDs by ff_disc_open_tracks() */
     struct DRTitleTrack *tracks;        /**< src.tracks, the disc layer's own */
     int              *track_ids;        /**< per track: PS its stream id, TS PID | key << 16 */
+    int              *track_cut;        /**< per track: what a cut part does with it (DRCutTrack) */
     DiscTsFeed       *feeds;            /**< src.feeds */
     int              *pids;             /**< src.pids */
     DiscPassCache    *pass_cache;       /**< the stream pass's results per segment */

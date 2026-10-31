@@ -34,6 +34,18 @@ static void usage(FILE *f)
           "                                        (setting output.folder; empty: output next to the program);\n"
           "                                        a folder of discs: each disc in turn into its own folder\n"
           "                                        (the out folder: the main output folder for them)\n"
+          "  cuts  <source> <title> <cuts>         where cuts in a title fall (nothing written): the title's\n"
+          "                                        video is read as a rip reads it; each cut is said with\n"
+          "                                        the key frame it takes and the part it starts. <cuts>:\n"
+          "                                        c<chapter> or a time on the title's timeline (h:mm:ss.fff\n"
+          "                                        or m:ss.fff), comma separated, e.g. c5,45:42.322; a time\n"
+          "                                        not on a key frame: setting cuts.key_frame\n"
+          "  frame <source> <title> <time> <file.bmp>  the picture shown at that time on the title's\n"
+          "                                        timeline, as the cut editor shows it, as a BMP file\n"
+          "  suggest-cuts <source> <title>         the cut editor's analysis of a title's chapters (the mode\n"
+          "                                        and values of settings cuts.helper_*, e.g. --set\n"
+          "                                        cuts.helper_target=23:40): its log, the cuts it suggests,\n"
+          "                                        where their parts start and the --cut value\n"
           "  find  <folder>                        the discs in a folder (as the GUI's queue takes them)\n"
           "  settings [show|path]                  the settings in effect / where the settings file is\n"
           "  version                               program and library versions\n"
@@ -59,6 +71,10 @@ static void usage(FILE *f)
           "  --split <titles>     demux: write these titles' parts one by one (a title that plays whole\n"
           "                       stream files back to back, e.g. episodes; info lists the parts);\n"
           "                       setting output.split_joined_titles does it for every title\n"
+          "  --cut <title>:<cuts>  demux: write this title in parts cut at these places (c<chapter> or a\n"
+          "                       time on the title's timeline, comma separated; the cuts command shows\n"
+          "                       where they fall); repeatable, one title each; a 3-D second view is\n"
+          "                       left out of the parts (said in the log)\n"
           "  -v, -vv              more detail on the terminal\n"
           "\n"
           "DVD-Video, HD DVD and Blu-ray (UHD, 3-D) are wired.\n", f);
@@ -85,8 +101,8 @@ static void cmd_version(void)
 int main(int argc, char **argv)
 {
     const char *config = NULL, *split = NULL, *second = NULL, **sets = calloc(argc, sizeof(char *));
-    const char **tracks = calloc(argc, sizeof(char *));
-    int json = 0, verbose = 0, details = 0, nb_sets = 0, nb_tracks = 0, i, ret;
+    const char **tracks = calloc(argc, sizeof(char *)), **cuts = calloc(argc, sizeof(char *));
+    int json = 0, verbose = 0, details = 0, nb_sets = 0, nb_tracks = 0, nb_cuts = 0, i, ret;
     EngineChoice c;
 
     for (i = 1; i < argc && argv[i][0] == '-'; i++) {
@@ -106,6 +122,8 @@ int main(int argc, char **argv)
             split = argv[++i];
         else if (!strcmp(argv[i], "--second-view") && i + 1 < argc)
             second = argv[++i];
+        else if (!strcmp(argv[i], "--cut") && i + 1 < argc)
+            cuts[nb_cuts++] = argv[++i];
         else if (!strcmp(argv[i], "--tracks") && i + 1 < argc)
             tracks[nb_tracks++] = argv[++i];
         else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
@@ -126,7 +144,9 @@ int main(int argc, char **argv)
     {
         const char *cmd = argv[i];
         int most = !strcmp(cmd, "settings") || !strcmp(cmd, "info") || !strcmp(cmd, "find") ? 1 :
-                   !strcmp(cmd, "demux") ? 3 : !strcmp(cmd, "version") ? 0 : -1;   /* -1: an unknown command */
+                   !strcmp(cmd, "suggest-cuts") ? 2 :
+                   !strcmp(cmd, "demux") || !strcmp(cmd, "cuts") ? 3 : !strcmp(cmd, "frame") ? 4 :
+                   !strcmp(cmd, "version") ? 0 : -1;   /* -1: an unknown command */
         for (int k = i + 1; k < argc; k++) {
             if (argv[k][0] == '-' && argv[k][1]) {
                 fprintf(stderr, "disc-remuxer: option %s after the command %s: options go before the command "
@@ -145,7 +165,7 @@ int main(int argc, char **argv)
     if ((ret = engine_init(config, sets, nb_sets, json, verbose)))
         return ret;
     signal(SIGINT, on_interrupt);
-    c = (EngineChoice){ tracks, nb_tracks, second };
+    c = (EngineChoice){ tracks, nb_tracks, second, cuts, nb_cuts };
     if (engine_check_choice(&c) < 0)
         return 2;
 
@@ -160,6 +180,12 @@ int main(int argc, char **argv)
         ret = 0;
     } else if (!strcmp(argv[i], "info") && i + 1 < argc) {
         ret = engine_info(argv[i + 1], &c, details);
+    } else if (!strcmp(argv[i], "frame") && i + 4 < argc) {
+        ret = engine_frame(argv[i + 1], argv[i + 2], argv[i + 3], argv[i + 4], &c);
+    } else if (!strcmp(argv[i], "suggest-cuts") && i + 2 < argc) {
+        ret = engine_suggest_cuts(argv[i + 1], argv[i + 2], &c);
+    } else if (!strcmp(argv[i], "cuts") && i + 3 < argc) {
+        ret = engine_cuts(argv[i + 1], argv[i + 2], argv[i + 3], &c);
     } else if (!strcmp(argv[i], "find") && i + 1 < argc) {
         ret = engine_find(argv[i + 1]);
     } else if (!strcmp(argv[i], "demux") && i + 2 < argc) {
@@ -171,5 +197,6 @@ int main(int argc, char **argv)
     }
     free(sets);
     free(tracks);
+    free(cuts);
     return ret;
 }

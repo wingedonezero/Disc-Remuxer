@@ -73,11 +73,11 @@ void DetailsPanel::showDisc(const QString &source, const DiscInfo *d)
     showRows(this, engine_disc_rows(d, src.constData(), &r), &r);
 }
 
-void DetailsPanel::showTitle(const DiscTitleInfo *t, const uint8_t *keep)
+void DetailsPanel::showTitle(const DiscTitleInfo *t, const uint8_t *keep, const char *cuts)
 {
     EngineRows r = {};
 
-    showRows(this, engine_title_rows(t, keep, &r), &r);
+    showRows(this, engine_title_rows(t, keep, cuts, &r), &r);
 }
 
 void DetailsPanel::showTrack(const DiscTitleInfo *t, int i, const uint8_t *keep)

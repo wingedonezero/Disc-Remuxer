@@ -242,6 +242,12 @@ static int sync_mlp(const uint8_t *p, int n)
     return major_sync(p, n);
 }
 
+/* A stream starts at a major sync unit: its restart headers come with it. */
+static int entry_mlp(DRAudio *a, const uint8_t *p, int n)
+{
+    return major_sync(p, n);
+}
+
 static int output_timing(const MlpState *m, const uint8_t *p, int n);
 
 static int header_mlp(DRAudio *a, const DRFrame *f, DRAudioHeader *h)
@@ -450,6 +456,7 @@ static int duration_mlp(DRAudio *a, DRFrame *f)
 const DRAudioRules ff_disctl_audio_mlp = {
     .header      = header_mlp,
     .sync        = sync_mlp,
+    .entry       = entry_mlp,
     .duration    = duration_mlp,
     .key_on_sync = 1,
     .priv_size   = sizeof(MlpState),

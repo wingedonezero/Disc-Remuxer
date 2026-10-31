@@ -912,6 +912,8 @@ void title_outcome_free(TitleOutcome *out)
         dr_freep(&out->damage[i]);
     dr_freep(&out->damage);
     out->nb_damage = 0;
+    dr_freep(&out->cut);
+    out->nb_cut = 0;
 }
 
 /* ---- output.format = mkvmerge: the stream files muxed by mkvmerge ----
@@ -1373,13 +1375,27 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     tname = info && job->title < info->nb_titles ? info->titles[job->title].name : NULL;
     {
         const DiscTitleInfo *ti = info && job->title < info->nb_titles ? &info->titles[job->title] : NULL;
-        title_us = !ti ? 0 : job->part >= 0 && job->part < ti->nb_parts ? ti->parts[job->part].duration : ti->duration;
+        if (job->nb_cuts) {             /* a cut part: from its cut to the next one */
+            int64_t from = job->part > 0 ? job->cuts[job->part - 1].zero : 0;
+            int64_t to   = job->part < job->nb_cuts ? job->cuts[job->part].zero : job->cut_end;
+            title_us = (to - from) / (DR_TICKS_PER_SECOND / 1000000);
+        } else
+            title_us = !ti ? 0 : job->part >= 0 && job->part < ti->nb_parts ? ti->parts[job->part].duration :
+                                                                            ti->duration;
         hms(dur, sizeof(dur), title_us > 0 ? title_us / 1000000.0 : 0);
     }
     log_step("=== Title %d/%d: %s %s (%s) ===", job->ordinal, job->count, who + 6, tname ? tname : "", dur);
     dr_disc_set_chapter_rule(d, !setting_bool("chapters.snap"), (int)setting_int("chapters.before_ms"),
                              (int)setting_int("chapters.after_ms"));
-    if ((ret = dr_disc_title_open(d, job->title, job->part, job->second_view, job->keep)) < 0) {
+    if (job->nb_cuts && mkv) {
+        log_msg(MSG_TITLE_OPEN_FAILED, LOG_ERROR, "%s: a cut title is not written by the program's own MKV writer "
+                "(output.format = mkv): use mkvmerge or streams", who);
+        res->failed = 1;
+        return DR_ERR(ENOSYS);
+    }
+    if ((ret = job->nb_cuts ? dr_disc_title_open_cut(d, job->title, job->cuts, job->nb_cuts, job->part, job->keep,
+                                                     job->cut_starts) :
+                              dr_disc_title_open(d, job->title, job->part, job->second_view, job->keep)) < 0) {
         log_msg(MSG_TITLE_OPEN_FAILED, LOG_ERROR, "%s cannot be opened: %s", who, dr_err_text(ret));
         res->failed = 1;
         return ret;
@@ -1532,6 +1548,16 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     }
     if (ret == DR_ERR_EOF)
         ret = 0;
+    /* a cut part: its tracks' bytes, for the check after the title's last part */
+    if (ret >= 0 && job->nb_cuts && (res->cut = dr_calloc(nb_tracks ? nb_tracks : 1, sizeof(*res->cut)))) {
+        for (int i = 0; i < nb_tracks; i++) {
+            const DrDiscTrack *t = dr_disc_track(d, i);
+            int pcm = t->codec == DR_CODEC_PCM_S16LE || t->codec == DR_CODEC_PCM_S24LE;
+            res->cut[res->nb_cut++] = (CutTrackBytes){ t->number, t->cut_title_bytes, t->cut_bytes,
+                                                       t->cut_left_bytes, t->cut_read_all, pcm,
+                                                       pcm ? t->channels * (t->codec == DR_CODEC_PCM_S24LE ? 3 : 2) : 0 };
+        }
+    }
     if (mkv && ret >= 0) {
         /* the file is finished (its chapters are known now); its tracks count as written */
         for (int i = 0; i < nb_tracks; i++) {

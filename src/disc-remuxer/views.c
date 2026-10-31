@@ -14,6 +14,7 @@
 #include "codecs.h"
 #include "engine.h"
 #include "views.h"
+#include "cuts.h"
 
 /* ---- rows ---- */
 
@@ -332,9 +333,10 @@ static int chapter_list(const DiscTitleInfo *t, EngineRows *r)
     return 0;
 }
 
-int engine_title_rows(const DiscTitleInfo *t, const uint8_t *keep, EngineRows *r)
+int engine_title_rows(const DiscTitleInfo *t, const uint8_t *keep, const char *cuts, EngineRows *r)
 {
-    char name[512], tm[48], bt[160], lt[128];
+    char name[512], tm[48], bt[160], lt[128], words[1024];
+    int parts = engine_cuts_text(cuts, words, sizeof(words));
 
     engine_title_file_name(t, name, sizeof(name));
     if (HEAD(r, "Title information: #%d", t->index) < 0 ||
@@ -377,7 +379,8 @@ int engine_title_rows(const DiscTitleInfo *t, const uint8_t *keep, EngineRows *r
     if (FIELD(r, 0, "Language", "%s", language_text(t->language, lt, sizeof(lt))) < 0 ||
         FIELD(r, 0, "Output", "%s/%s_<track>_…  (as parts: %s_p1/%s_p1_<track>_…, one folder per part)",
               name, name, name, name) < 0 ||
-        FIELD(r, 0, "Ripped with all", "%s", t->selected ? "yes" : "no: not the main angle (tick it to rip it)") < 0)
+        FIELD(r, 0, "Ripped with all", "%s", t->selected ? "yes" : "no: not the main angle (tick it to rip it)") < 0 ||
+        (parts && FIELD(r, 0, "Cuts", "%s (%d parts)", words, parts) < 0))
         return -1;
     for (int p = 0; p < t->nb_props; p++)
         if (FIELD(r, 0, t->props[p].name, "%s", t->props[p].value) < 0)
@@ -482,22 +485,52 @@ void engine_title_line(const DiscTitleInfo *t, char *name, size_t nsize, char *d
         snprintf(desc + strlen(desc), dsize - strlen(desc), " (%s)", t->source);
 }
 
-int engine_title_state(const DiscTitleInfo *t, int split, char *state, size_t ssize, char *why, size_t wsize)
+int engine_cuts_text(const char *cuts, char *buf, size_t size)
+{
+    CutRequest *reqs;
+    const char *bad;
+    int nb;
+
+    buf[0] = 0;
+    if (!cuts || !*cuts || cut_parse(cuts, &reqs, &nb, &bad) < 0)
+        return 0;
+    for (int i = 0; i < nb; i++) {
+        char tm[48];
+        if (reqs[i].chapter)
+            snprintf(buf + strlen(buf), size - strlen(buf), "%schapter %d", i ? ", " : "", reqs[i].chapter);
+        else
+            snprintf(buf + strlen(buf), size - strlen(buf), "%s%s", i ? ", " : "",
+                     engine_hms_ms((reqs[i].time + DR_TICKS_PER_SECOND / 2000000) / (DR_TICKS_PER_SECOND / 1000000),
+                                   tm, sizeof(tm)));
+    }
+    free(reqs);
+    return nb + 1;
+}
+
+int engine_title_state(const DiscTitleInfo *t, int split, const char *cuts, char *state, size_t ssize, char *why,
+                       size_t wsize)
 {
     const DiscPropertyInfo *p;
+    char words[1024];
+    int parts = engine_cuts_text(cuts, words, sizeof(words));
 
     state[0] = why[0] = 0;
     if (!t->selected)
         snprintf(state, ssize, "not the main angle");
     if (split)
         snprintf(state, ssize, "written as %d parts", t->nb_parts);
+    if (parts) {
+        /* its cuts decide its parts */
+        snprintf(state, ssize, "cut into %d parts", parts);
+        snprintf(why, wsize, "Cut at %s", words);
+    }
     if (t->playlist_check != DISC_PLAYLIST_NOT_MARKED) {
         char rest[256];
         snprintf(rest, sizeof(rest), "%s", state);
         snprintf(state, ssize, "%s%s%s", t->playlist_check == DISC_PLAYLIST_LIKELY_FAKE ? "likely fake" :
                  "likely real", *rest ? "; " : "", rest);
         if ((p = disc_prop_find(t->props, t->nb_props, DISC_PROP_FAKE_PLAYLIST_CHECK)))
-            snprintf(why, wsize, "%s", p->value);
+            snprintf(why, wsize, "%s%s%s", p->value, parts ? "\n" : "", parts ? words : "");
     }
     return t->playlist_check;
 }

@@ -12,6 +12,9 @@
 #define DR_F_START_CLEAN ...
 #define DR_F_START_BROKEN ...
 #define DR_F_START_OPEN ...
+#define DR_F_RASL ...
+#define DR_F_REF ...
+#define DR_F_ENTRY ...
 #define DR_F_CTR ...
 #define DR_SCAN_KNOWN ...
 #define DR_SCAN_PROGRESSIVE ...
@@ -37,6 +40,7 @@ typedef struct DRFrame {
     int64_t      src;
     int          seg;
     int          ctr;
+    int64_t      block;
 } DRFrame;
 
 typedef int (*DRFrameCb)(void *opaque, DRFrame *frame);
@@ -62,6 +66,8 @@ typedef struct DRPicture {
     int scan;
     int seq_end;
     int seq_start;
+    int rasl;
+    int ref;
 } DRPicture;
 
 typedef struct DRUnit {
@@ -72,6 +78,7 @@ typedef struct DRUnit {
     int            samples;
     int            rate;
     const DRPicture *pic;
+    int64_t        block;
 } DRUnit;
 
 typedef int (*DRUnitCb)(void *opaque, const DRUnit *unit);
@@ -237,6 +244,8 @@ typedef struct DRJoinConfig {
     void          *out_opaque;
     DREventCb      event;
     void          *event_opaque;
+    int            has_range;
+    int64_t        range_from, range_to;
 } DRJoinConfig;
 
 typedef struct DRJoinStats {
@@ -430,6 +439,8 @@ typedef struct DRTitleConfig {
     int                 nb_segments;
     DRPlaceCb           place;
     void               *place_opaque;
+    int                 has_range;
+    int64_t             range_from, range_to;
 } DRTitleConfig;
 
 typedef struct DRTitle DRTitle;
@@ -487,6 +498,7 @@ extern "Python" int tb_py_video_advance(void *opaque, int64_t target, int *ended
 uint16_t dr_crc16_ccitt(uint16_t crc, const uint8_t *buf, size_t len);
 int dr_dca_exss_checksums(const uint8_t *buf, int size, const char **why);
 int dr_dca_dtsx(const uint8_t *buf, int size, uint32_t *marker, int *imax_type);
+int dr_dca_xll_entry(const uint8_t *buf, int size);
 int ff_disctl_mlp_checksums(void *state, const uint8_t *data, int size, const char **why);
 
 /* the WAV header (src/disc-remuxer/writer.h) */

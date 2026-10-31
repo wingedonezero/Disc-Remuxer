@@ -9,7 +9,7 @@ from synth.a52 import with_crcs
 from helpers import AV_NOPTS_VALUE, lib
 from helpers.disctl import dur, run, timed
 
-F_KEY, F_SYNC, F_MARKER = lib.DR_F_KEY, lib.DR_F_SYNC, lib.DR_F_MARKER
+F_KEY, F_SYNC, F_MARKER, F_ENTRY = lib.DR_F_KEY, lib.DR_F_SYNC, lib.DR_F_MARKER, lib.DR_F_ENTRY
 
 
 def ac3(tag):
@@ -45,7 +45,7 @@ def test_ac3_units_take_1536_samples_and_are_sync_units():
         assert o.bytes == frames[k]
         assert o.time == k * 1000
         assert o.dur == 34560000, "1536 samples at 48 kHz"
-        assert o.flags == F_KEY | F_SYNC
+        assert o.flags == F_KEY | F_SYNC | F_ENTRY
     assert header(r) == (48000, 1536)
     assert r.audio.review == 0
 
@@ -54,7 +54,7 @@ def test_eac3_one_block_frames_take_256_samples():
     frames = [eac3(0, 0, 0, 1024, k) for k in range(12)]
     r = run("eac3", timed(frames))
     assert len(r.outs) == 12
-    assert all(o.dur == dur(256, 48000) and o.flags == F_KEY | F_SYNC for o in r.outs)
+    assert all(o.dur == dur(256, 48000) and o.flags == F_KEY | F_SYNC | F_ENTRY for o in r.outs)
     assert header(r) == (48000, 256)
     assert r.audio.review == 0
 

@@ -42,7 +42,8 @@ typedef struct EngineRows {
  * engine_rows_free(). source: the disc's place as the user gave it. keep:
  * per track, 1 ripped. */
 int  engine_disc_rows(const DiscInfo *d, const char *source, EngineRows *out);
-int  engine_title_rows(const DiscTitleInfo *t, const uint8_t *keep, EngineRows *out);
+/* cuts: the title's cut list (engine_title_cuts(), NULL none) */
+int  engine_title_rows(const DiscTitleInfo *t, const uint8_t *keep, const char *cuts, EngineRows *out);
 int  engine_track_rows(const DiscTitleInfo *t, int i, const uint8_t *keep, EngineRows *out);
 int  engine_chapters_rows(const DiscTitleInfo *t, EngineRows *out);
 void engine_rows_free(EngineRows *r);
@@ -54,10 +55,15 @@ int  engine_disc_line(const DiscInfo *d, char *desc, size_t dsize, char *state, 
                       size_t wsize);
 /* A title: "Title #3" and "Name – 12 chapters, 1:42:10, 2 segments, ...". */
 void engine_title_line(const DiscTitleInfo *t, char *name, size_t nsize, char *desc, size_t dsize);
-/* A title's state in the queue (split: written as parts): "likely fake; not
- * the main angle", and why its mark (the fake playlist check's words, ""
+/* A title's state in the queue (split: written as parts; cuts: its cut
+ * list, NULL none, which decides its parts): "likely fake; cut into 3
+ * parts", and why (the fake playlist check's words, the cuts in words, ""
  * none); returns its mark (DiscPlaylistCheck). */
-int  engine_title_state(const DiscTitleInfo *t, int split, char *state, size_t ssize, char *why, size_t wsize);
+int  engine_title_state(const DiscTitleInfo *t, int split, const char *cuts, char *state, size_t ssize, char *why,
+                        size_t wsize);
+/* A cut list (cuts.h, "c5,0:22:50.243875") in words: "chapter 5, 0:22:50.244";
+ * returns the parts it makes, 0 when there is none. */
+int  engine_cuts_text(const char *cuts, char *buf, size_t size);
 /* A track: "Audio #2" and "DTS-HD Master Audio  Surround 5.1  ...  English". */
 void engine_track_line(const DiscTitleInfo *t, int i, char *name, size_t nsize, char *desc, size_t dsize);
 /* A chapter: "0:12:01.250  Name". */

@@ -532,3 +532,20 @@ def test_a_video_frame_without_its_enhancement_picture_goes_on_alone_with_a_warn
     assert len(out[0]) == len(units)
     assert out[0][2 * N - 3] == (without(base[2 * N - 3][0]), base[2 * N - 3][1] - BASE), "the base picture alone"
     assert warnings == 1
+
+
+def test_leading_pictures_that_need_the_pictures_before_a_cra_picture_are_marked():
+    # after GOP 0: a CRA picture shown at 12, then its leading pictures (after it
+    # in decoding order, shown before it): RASL at 10, RADL at 11; then trailing ones
+    def au(t, kind, disp, head=False):
+        a = H.aud() + (H.vps() + H.sps() + H.pps() if head else b"") + H.sei([H.pic_timing(0)])
+        return (a + H.slice_(t, kind, disp % 256, size=300), BASE + disp * 2 * FIELD)
+    units = [(u, t) for u, t, _ in gop(0)]
+    units += [au(H.CRA, H.SLICE_I, 12, head=True), au(H.RASL_N, H.SLICE_B, 10), au(6, H.SLICE_B, 11),
+              au(H.TRAIL_R, H.SLICE_P, 15), au(H.TRAIL_N, H.SLICE_B, 13), au(H.TRAIL_N, H.SLICE_B, 14)]
+    s, _, ret = run(units)
+    assert ret == 0
+    by_time = {o[1]: o[3] for o in s.out}
+    rasl = [d for d in range(16) if by_time.get(BASE + d * 2 * FIELD, 0) & lib.DR_F_RASL]
+    assert rasl == [10], "only the RASL picture; the RADL picture decodes from the CRA picture"
+    assert by_time[BASE + 12 * 2 * FIELD] & lib.DR_F_START_OPEN

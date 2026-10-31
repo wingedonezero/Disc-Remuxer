@@ -171,6 +171,8 @@ static int unit_done(DRAudio *a, DRFrame *f)
         f->flags |= DR_F_SYNC;
     if (!a->rules->key_on_sync || (f->flags & DR_F_SYNC))
         f->flags |= DR_F_KEY;
+    if (!a->rules->entry || a->rules->entry(a, f->data, f->size))
+        f->flags |= DR_F_ENTRY;
     if (a->rules->duration) {
         int size = f->size;
         if ((ret = a->rules->duration(a, f)) < 0) {
@@ -211,7 +213,7 @@ static int unit_done(DRAudio *a, DRFrame *f)
 int ff_disctl_audio_unit(void *opaque, const DRUnit *u)
 {
     DRAudio *a = opaque;
-    DRFrame f = { .time = u->time, .pos = u->pos, .samples = u->samples, .rate = u->rate };
+    DRFrame f = { .time = u->time, .pos = u->pos, .samples = u->samples, .rate = u->rate, .block = u->block };
     int ret;
 
     if (!(f.buf = dr_buf_alloc(u->size + DR_BUF_PADDING)))

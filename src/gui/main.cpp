@@ -5,7 +5,9 @@
 // window saved as a picture once they are scanned (DISC_REMUXER_GUI_TEST=rip:
 // once they are ripped too; =stop: the rip stopped after a second;
 // =uncheck: the disc unchecked; =expand: the first title opened; =prefs:
-// the settings menu), then the
+// the settings menu; =cuts:<title>:<time>:<keys>: the cut editor of a title,
+// CutEditor::setTest()); DISC_REMUXER_GUI_TITLES: the titles ripped,
+// DISC_REMUXER_GUI_CUT_LIST: "<title>:<cuts>", a title's cut list), then the
 // program quits.
 #include <QApplication>
 #include <QMessageBox>

@@ -13,7 +13,7 @@ find_package(PkgConfig REQUIRED)
 # our FFmpeg and the disc layer's libraries only (static, all ours)
 set(ENV{PKG_CONFIG_PATH} "${FFMPEG_PKGCONFIG}")
 set(ENV{PKG_CONFIG_LIBDIR} "${FFMPEG_PKGCONFIG}")
-pkg_check_modules(FF REQUIRED libavformat libavcodec libavutil)
+pkg_check_modules(FF REQUIRED libavformat libavcodec libswscale libavutil)
 pkg_check_modules(DISCDEPS REQUIRED libaacs expat dvdnav dvdread)
 
 add_executable(disc-remuxer-gui
@@ -24,7 +24,8 @@ add_executable(disc-remuxer-gui
     DetailsPanel.cpp DetailsPanel.h
     Console.cpp Console.h
     QueueTree.cpp QueueTree.h
-    PrefsDialog.cpp PrefsDialog.h)
+    PrefsDialog.cpp PrefsDialog.h
+    CutEditor.cpp CutEditor.h)
 
 target_include_directories(disc-remuxer-gui PRIVATE ${ENGINE_INCLUDE} ${SRC_INCLUDE})
 target_compile_definitions(disc-remuxer-gui PRIVATE DISC_REMUXER_VERSION="${DISC_REMUXER_VERSION}")

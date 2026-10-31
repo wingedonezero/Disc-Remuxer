@@ -420,9 +420,24 @@ static void event_text(DRTitle *t, const DREvent *e)
         t->t[k].warnings++;
 }
 
+/* The events whose pos is a time on the title timeline. */
+static int event_timed(int kind)
+{
+    switch (kind) {
+    case DR_EV_DROP:            case DR_EV_AUDIO_COPY:      case DR_EV_AUDIO_COPY_LONG: case DR_EV_SAMPLE_JOIN:
+    case DR_EV_OVERLAP:         case DR_EV_GAP_ABSORBED:    case DR_EV_GAP:             case DR_EV_VIDEO_ENDED:
+    case DR_EV_VIDEO_TIMECODE:  case DR_EV_VIDEO_REPAIR:    case DR_EV_VIDEO_START_HOLE:
+    case DR_EV_VIDEO_START_ODD: case DR_EV_PCM_SILENCE:     case DR_EV_JOIN_START:      case DR_EV_JOIN_NOT_KEY:
+    case DR_EV_JOIN_REPEAT:     case DR_EV_SEQ_END_INSIDE:  case DR_EV_SYNC:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 /* Every event: one structured line at debug level (the first ones of each
- * kind and track), the readable warning where there is one, then the
- * caller's callback. */
+ * kind and track), the readable warning where there is one (a cut part:
+ * only for a time inside it), then the caller's callback. */
 static void on_event(void *opaque, const DREvent *e)
 {
     DRTitle *t = opaque;
@@ -432,6 +447,13 @@ static void on_event(void *opaque, const DREvent *e)
     if (!n || ++*n <= EVENT_LOGGED)
         dr_vlog(t->log, DR_VLOG_DEBUG, "Title timeline: event %s track=%d pos=%"PRId64" dur=%"PRId64" skew=%"PRId64
                " count=%"PRId64"\n", ff_disctl_event_name(e->kind), e->track, e->pos, e->dur, e->skew, e->count);
+    if (t->cfg.has_range && event_timed(e->kind) && (e->pos < t->cfg.range_from || e->pos >= t->cfg.range_to)) {
+        dr_vlog(t->log, DR_VLOG_VERBOSE, "Title timeline: event %s of track %d at %"PRId64" ticks: outside this cut "
+               "part\n", ff_disctl_event_name(e->kind), e->track, e->pos);
+        if (t->cfg.event)
+            t->cfg.event(t->cfg.event_opaque, e);
+        return;
+    }
     event_text(t, e);
     if (e->kind >= DR_EV_VERIFY_UNIT && e->kind <= DR_EV_VERIFY_FORMAT && e->track >= 0 &&
         e->track < t->cfg.nb_tracks)
@@ -1900,6 +1922,7 @@ int ff_disctl_title_open(DRTitle **tp, void *logctx, const DRTitleConfig *cfg)
         DRJoinConfig jc = {
             .nb_tracks = cfg->nb_tracks, .kinds = kinds, .marks = cfg->marks, .nb_marks = cfg->nb_marks,
             .open_marks = cfg->open_marks, .chapter_rule = cfg->chapter_rule,
+            .has_range = cfg->has_range, .range_from = cfg->range_from, .range_to = cfg->range_to,
             .out = joined, .out_opaque = t, .event = on_event, .event_opaque = t,
         };
         if ((ret = ff_disctl_join_open(&t->join, logctx, &jc)) < 0)
@@ -2263,6 +2286,14 @@ const uint8_t *ff_disctl_title_textst_style(const DRTitle *t, int track, int *si
 int ff_disctl_title_finish(DRTitle *t)
 {
     return t->error ? t->error : sticky(t, title_finish(t));
+}
+
+int ff_disctl_title_finish_stopped(DRTitle *t)
+{
+    for (int i = 0; i < t->cfg.nb_tracks; i++)
+        if (t->t[i].cut)
+            ff_disctl_frames_stopped(t->t[i].cut);
+    return ff_disctl_title_finish(t);
 }
 
 int ff_disctl_title_chapter_starts(const DRTitle *t, const int64_t **starts)

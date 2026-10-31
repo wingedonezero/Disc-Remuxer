@@ -85,6 +85,10 @@ private:
     static int titles(const Job &j);
     Job *jobById(quint64 id);
     void queueScan(Job &job);
+    // tests (snapshot): at, steps as CutEditor::setTest() takes them
+    void openCuts(quint64 id, int t, const QString &at = QString(), const QString &steps = QString());
+    void titleCutsChanged(Job &job, int t);
+    bool cutsMayGo(const QList<Job *> &list, const QString &what);
     void fillDisc(Job &job);
     void showTitleChecks(Job &job, int t);
     void showDiscCheck(Job &job);

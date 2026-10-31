@@ -95,6 +95,11 @@ const DRTimelineHost *ff_disctl_host(void);
 #define DR_F_CTR      0x2000   /**< audio: ctr holds the stream's own number of the frame's first sample */
 #define DR_F_PLACE    0x4000   /**< video: the first picture at or after one or more places of the source
                                     (ff_disctl_title_place()); ctr holds how many */
+#define DR_F_RASL     0x8000   /**< video: a leading picture that cannot be decoded from the key frame
+                                    before it in decoding order alone (HEVC RASL, H.265 7.4.2.2) */
+#define DR_F_REF      0x10000  /**< video (H.264): a reference picture (nal_ref_idc not 0, H.264 7.4.1) */
+#define DR_F_ENTRY    0x20000  /**< audio: a unit a stream can start at (DRAudioRules.entry): a part cut there
+                                    loses nothing of what follows */
 
 typedef struct DRFrame {
     DrBuf *buf;      /**< owns the bytes (NULL for a marker) */
@@ -112,6 +117,8 @@ typedef struct DRFrame {
     int          ctr;      /**< with DR_F_CTR: the stream's own sample number of the frame's first sample,
                                 modulo 65536 (TrueHD / MLP: a restart header's output timing, counted on
                                 by the samples of an access unit); with DR_F_PLACE: the places it marks */
+    int64_t      block;    /**< 1 + the block of its segment the payload holding its first byte is read from
+                                (ff_disctl_title_payload_at()); 0: not known */
 } DRFrame;
 
 /** Hands a frame on; the callee owns it (ff_disctl_frame_unref). */
@@ -157,6 +164,8 @@ typedef struct DRPicture {
     int scan;           /**< DR_SCAN_*, 0 = not read */
     int seq_end;        /**< the unit carries an end of sequence code (MPEG-2, VC-1) */
     int seq_start;      /**< the unit starts a sequence: a sequence header before its picture (MPEG-2, VC-1) */
+    int rasl;           /**< a leading picture that needs pictures before its key frame (DR_F_RASL) */
+    int ref;            /**< H.264: a reference picture (DR_F_REF) */
 } DRPicture;
 
 /* What the core needs to know about a video codec. */
@@ -199,6 +208,9 @@ typedef struct DRAudioRules {
     int  (*header)(DRAudio *a, const DRFrame *unit, DRAudioHeader *h);
     /** 1 when the unit is a sync unit (DR_F_SYNC). NULL: never. */
     int  (*sync)(const uint8_t *data, int size);
+    /** 1 when a stream can start at the unit (DR_F_ENTRY: its decoding needs
+     *  nothing of the units before it). NULL: every unit. */
+    int  (*entry)(DRAudio *a, const uint8_t *data, int size);
     /** The unit's duration in ticks; < 0 on failure. NULL: samples / rate
      *  of the header. */
     int  (*duration)(DRAudio *a, DRFrame *frame);
@@ -298,6 +310,7 @@ typedef struct DRUnit {
     int            samples;/**< samples the frame cutter gives the unit, 0 = none */
     int            rate;   /**< and their sample rate */
     const DRPicture *pic;  /**< the picture values the parser gives (DRCodec.parser_picture), or NULL */
+    int64_t        block;  /**< DRFrame.block */
 } DRUnit;
 
 /** Called for every unit, in stream order. A negative return stops the
@@ -350,6 +363,10 @@ int ff_disctl_frames_write_at(DRFrames *c, const uint8_t *data, int size, int64_
 
 /** The end of the segment: the units still buffered in the parser. */
 int ff_disctl_frames_flush(DRFrames *c);
+/** The reading stops before the stream's end on purpose (a cut part is
+ *  complete): what is left at the flush goes to the debug log, not as
+ *  damaged or cut data. */
+void ff_disctl_frames_stopped(DRFrames *c);
 
 void ff_disctl_frames_stats(const DRFrames *c, DRFramesStats *stats);
 
@@ -615,6 +632,9 @@ typedef struct DRJoinConfig {
     DRChapterRule  chapter_rule; /**< how a mark finds its chapter's frame (zero: the default rule) */
     DRJoinOutCb    out;   void *out_opaque;
     DREventCb      event; void *event_opaque;
+    int            has_range;    /**< a cut part (DRTitleConfig.range_*): chapter lines of marks outside go to the
+                                      debug log */
+    int64_t        range_from, range_to;
 } DRJoinConfig;
 
 typedef struct DRJoinStats {
@@ -1053,6 +1073,12 @@ typedef struct DRTitleConfig {
     const char         *cc_helper; /**< the caption converter program (for a DR_KIND_CAPTION track) */
     int                 nb_segments; /**< the segments the title is read in (0: not known) */
     DRPlaceCb           place; void *place_opaque;   /**< where a segment's block lies (NULL: not told) */
+    /** A cut part is read (the whole title, given out in part): the title
+     *  times from range_from up to range_to are the part's. Warnings with a
+     *  time outside it go to the debug log and are not counted for a track;
+     *  so do the chapter lines of marks outside it. */
+    int                 has_range;
+    int64_t             range_from, range_to;
 } DRTitleConfig;
 
 typedef struct DRTitle DRTitle;
@@ -1085,6 +1111,9 @@ int  ff_disctl_title_side_end(DRTitle *t, int track);
 const uint8_t *ff_disctl_title_textst_style(const DRTitle *t, int track, int *size);
 /** The end of the title: every stage finishes. */
 int  ff_disctl_title_finish(DRTitle *t);
+/** The same, when the reading stopped before the title's end on purpose (a
+ *  cut part is complete): the unfinished data at the end is no fault. */
+int  ff_disctl_title_finish_stopped(DRTitle *t);
 /** The next output frame (taken over by the caller): 0, DR_ERR(EAGAIN)
  *  when none is ready yet, DR_ERR_EOF after the last one. */
 int  ff_disctl_title_frame(DRTitle *t, int *track, DRFrame *frame);
@@ -1209,6 +1238,103 @@ int ff_disctl_vobsub_header(char *buf, int size, int width, int height, const ui
 int ff_disctl_mlp_verify(const uint8_t *data, int size);
 /** The DRCodec verify_sums of TrueHD / MLP (state: the substream count). */
 int ff_disctl_mlp_checksums(void *state, const uint8_t *data, int size, const char **why);
+
+/* ---- Cuts: a title split at places that are no clean break of the disc
+ * (disctl_cut.c). A cut is a key frame of the master video; the part it
+ * starts begins with the first picture of the key frame's group that
+ * decodes (its zero) and ends where the next cut's part begins. ---- */
+
+/** What a cut needs to know of the video codec (DRCutCodec). */
+enum DRCutCodec {
+    DR_CUT_OTHER = 0,   /**< MPEG-2, VC-1, ... */
+    DR_CUT_H264,
+    DR_CUT_HEVC,        /**< marks its leading pictures one by one (RADL / RASL) */
+};
+
+/** Whether a leading picture (after its key frame in decoding order, shown
+ *  before it) decodes from the key frame on its own: always after a clean
+ *  key frame (DRStart); after any other only in HEVC and when it is no
+ *  RASL picture. */
+int ff_disctl_leading_decodes(int start, int codec, int rasl);
+/** Whether a part that starts at the key frame keeps the leading picture:
+ *  one that decodes, yes; one that does not is left out (the part starts
+ *  on its key frame: an MPEG-1/2 or VC-1 B picture, which nothing refers
+ *  to, decoders drop them, ISO/IEC 13818-2 broken_link, SMPTE ST 421
+ *  6.2.1; an HEVC RASL picture, H.265 8.1.3), but an H.264 reference
+ *  picture: left out it would leave a frame_num gap the stream does not
+ *  allow (H.264 7.4.3), so it is kept. */
+int ff_disctl_leading_kept(int start, int codec, int rasl, int ref);
+
+/** What a cut part does with a track (ff_disctl_cut_open()). */
+enum DRCutTrack {
+    DR_CUT_TRACK_NONE = 0,  /**< not carried yet: its frames are left out (counted, said) */
+    DR_CUT_TRACK_VIDEO,     /**< the master video (track 0) */
+    DR_CUT_TRACK_EVERY,     /**< audio whose every frame can start a stream (AC-3, E-AC-3, DTS core,
+                                 DTS Express, MPEG audio Layer I / II, AAC ADTS) */
+    DR_CUT_TRACK_PCM,       /**< PCM (LPCM as it leaves the timeline): cut between two samples */
+    DR_CUT_TRACK_ENTRY,     /**< audio that can start only at some units (DR_F_ENTRY: TrueHD, a DTS-HD
+                                 stream, AAC LATM): each part's start unit is given (ff_disctl_cut_open()
+                                 starts) */
+    DR_CUT_TRACK_SUB,       /**< subtitles and captions: each unit by its start time */
+    DR_CUT_TRACK_PGS,       /**< PGS display sets: by their time, and what they show is followed */
+};
+
+/** A cut's place on the title timeline (ticks). */
+typedef struct DRCutPlace {
+    int64_t zero;       /**< the part's 0: its first picture that decodes */
+    int64_t key_time;   /**< the key frame's time */
+} DRCutPlace;
+
+/** What the cut stage did for one part (ff_disctl_cut_result()). */
+typedef struct DRCutResult {
+    int64_t pictures;   /**< video pictures given out */
+    int64_t left_out;   /**< leading pictures of the part's key frame that do not decode: left out */
+    int64_t undecodable;/**< those kept all the same (ff_disctl_leading_kept()) */
+    int64_t first;      /**< the earliest picture given out, on the part's clock (0 when it is right) */
+    int     start;      /**< DRStart of the part's key frame (0 for the first part) */
+} DRCutResult;
+
+typedef struct DRCut DRCut;
+
+/** The stage for part `part` (0 .. nb_cuts) of a title cut at cuts (in
+ *  time order); codec: DRCutCodec of the video; kinds: each of the
+ *  nb_tracks tracks' DRCutTrack; starts (nb_cuts x nb_tracks, cut by cut):
+ *  for a DR_CUT_TRACK_ENTRY track the time of the unit its part starts at
+ *  for each cut (INT64_MAX: none, the track ends before it). 0, or a
+ *  negative base error. */
+int  ff_disctl_cut_open(DRCut **c, void *log, const DRCutPlace *cuts, int nb_cuts, int part, int codec,
+                        const int *kinds, int nb_tracks, const int64_t *starts);
+/** A PCM track's samples per second and bytes per sample frame (all its
+ *  channels), before its first frame. */
+void ff_disctl_cut_pcm(DRCut *c, int track, int rate, int bytes_per_sample_frame);
+/** A frame of the title timeline (in its order): 1 when it belongs to the
+ *  part (its time is now on the part's clock; a PCM frame that holds a cut
+ *  is cut down to the part's samples), 0 when not (the caller drops it),
+ *  a negative base error (a PCM track without its layout). Video: in
+ *  decoding order from the part's key frame to the next cut's; audio whose
+ *  every frame can start: the frames from the part's 0 (the earlier ones
+ *  are the part before's); PCM: from its first sample at or after the
+ *  part's 0. DR_CUT_TRACK_NONE tracks: left out (counted, said at the
+ *  end). */
+int  ff_disctl_cut_frame(DRCut *c, int track, DRFrame *f);
+/** A track's frames given and its first frame's time on the part's clock
+ *  (INT64_MIN: none). */
+void ff_disctl_cut_track(const DRCut *c, int track, int64_t *frames, int64_t *first);
+/** A track's bytes: of every frame the stage saw (the title's, as far as it
+ *  was read), of the frames given (a PCM frame cut down: its part), and of
+ *  the video's leading pictures left out. */
+void ff_disctl_cut_bytes(const DRCut *c, int track, int64_t *title, int64_t *part, int64_t *left);
+/** 1 once the part is complete and the reading may stop: the video past
+ *  the next cut's key frame by margin ticks, every audio track past its
+ *  own end (a unit at or after the next part's start; one that has none:
+ *  the video past the cut by ten times the margin). Never for the last
+ *  part. */
+int  ff_disctl_cut_done(const DRCut *c, int64_t margin);
+/** The end of the title: the part's key frames met where the cuts say
+ *  (said in the log; DR_ERR_INVALID when not). */
+int  ff_disctl_cut_finish(DRCut *c);
+void ff_disctl_cut_result(const DRCut *c, DRCutResult *r);
+void ff_disctl_cut_close(DRCut **c);
 
 
 #endif /* DISC_TIMELINE_DISCTL_H */

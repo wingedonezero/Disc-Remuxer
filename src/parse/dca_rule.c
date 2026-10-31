@@ -404,6 +404,7 @@ typedef struct ExssAsset {
     int max_sample_rate;
     int core_size, xbr_size, xxch_size, x96_size, lbr_size, xll_size;
     int lbr_offset, xll_offset;
+    int xll_sync, xll_delay, xll_sync_offset;   /* XLL sync word present, initial decoding delay (frames), offset to it */
 } ExssAsset;
 
 static void lbr_parameters(DrBits *g, ExssAsset *a)
@@ -416,12 +417,14 @@ static void lbr_parameters(DrBits *g, ExssAsset *a)
 static void xll_parameters(DrBits *g, ExssAsset *a, int size_nbits)
 {
     a->xll_size = dr_bits_get(g, size_nbits) + 1;
+    a->xll_sync = a->xll_delay = a->xll_sync_offset = 0;
     if (dr_bits_get1(g)) {                  /* XLL sync word present */
         int delay_nbits;
+        a->xll_sync = 1;
         dr_bits_skip(g, 4);                 /* peak bit rate smoothing buffer size */
         delay_nbits = dr_bits_get(g, 5) + 1;
-        dr_bits_skip(g, delay_nbits);       /* initial decoding delay */
-        dr_bits_skip(g, size_nbits);        /* offset to the XLL sync */
+        a->xll_delay       = dr_bits_get(g, delay_nbits);   /* initial decoding delay, frames */
+        a->xll_sync_offset = dr_bits_get(g, size_nbits);    /* offset to the XLL sync */
     }
 }
 
@@ -729,6 +732,27 @@ int dr_dca_dtsx(const uint8_t *buf, int size, uint32_t *marker, int *imax_type)
         return 0;
     *imax_type = a.asset_type == 13;
     return xll_walk(buf + off + a.xll_offset, a.xll_size, marker, &why) == XLL_WALKED;
+}
+
+int dr_dca_xll_entry(const uint8_t *buf, int size)
+{
+    ExssAsset a;
+    int off = 0;
+
+    /* a core frame first: the extension substream after it */
+    if (size >= 10 && dr_rb32(buf) == 0x7FFE8001U) {
+        off = disc_core_size(buf);
+        if (off <= 0 || off > size)
+            return 0;
+        if (off == size)
+            return 1;                       /* a core frame alone */
+    }
+    if (size - off < 10 || dr_rb32(buf + off) != 0x64582025U || exss_first_asset(buf + off, size - off, &a) < 0)
+        return 0;
+    if (!(a.mask & EXSS_XLL))
+        return 1;                           /* no lossless data: nothing runs from frame to frame */
+    return a.xll_sync && !a.xll_sync_offset && !a.xll_delay && a.xll_offset + 4 <= size - off &&
+           dr_rb32(buf + off + a.xll_offset) == XLL_SYNC;
 }
 
 int dr_dca_exss_checksums(const uint8_t *buf, int size, const char **why)

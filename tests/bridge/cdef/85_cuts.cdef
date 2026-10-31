@@ -1,0 +1,127 @@
+/* cuts (src/disc-remuxer/cuts.h): the places a part can start and the rule
+ * that turns chapters / times into cuts */
+enum DrDiscStart { DR_DISC_START_NONE = 0, DR_DISC_START_CLEAN, DR_DISC_START_BROKEN, DR_DISC_START_OPEN };
+
+typedef struct CutPicture {
+    int64_t time;
+    int64_t duration;
+    uint8_t key;
+    uint8_t start;
+    uint8_t rasl;
+    uint8_t ref;
+    int     seg;
+    int64_t block;
+} CutPicture;
+
+typedef struct CutPoint {
+    int64_t zero;
+    int64_t key_time;
+    int     start;
+    int     kept;
+    int     undecodable;
+    int     left_out;
+    int     seg;
+    int64_t block;
+    int64_t lost;
+    int64_t shown;
+} CutPoint;
+int cut_point_clean(const CutPoint *p, char *brief, int bsize, char *full, int fsize);
+
+int cut_points(const CutPicture *pics, int nb, int codec, CutPoint **points, int *nb_points);
+
+typedef struct CutRequest {
+    int     chapter;
+    int64_t time;
+    char    text[40];
+} CutRequest;
+
+int cut_parse(const char *spec, CutRequest **reqs, int *nb, const char **bad);
+
+enum CutRule { CUT_NEAREST = 0, CUT_NEXT };
+
+typedef struct CutResult {
+    int64_t     target;
+    int         point;
+    int         on_point;
+    const char *why;
+    int         same_as;
+} CutResult;
+
+int cut_resolve(const CutPoint *points, int nb_points, const int64_t *chapters, int nb_chapters, int64_t end,
+                const CutRequest *reqs, int nb_reqs, int rule, CutResult *res);
+
+const char *cut_time_text(char *buf, int size, int64_t ticks);
+
+typedef struct CutUnit {
+    int64_t time;
+    uint8_t entry;
+} CutUnit;
+typedef struct CutStart {
+    int64_t time;
+    int     entry;
+    int     carried;
+    int     to_entry;
+} CutStart;
+int cut_track_start(const CutUnit *u, int nb, int64_t zero, int64_t limit, CutStart *s);
+
+/* the cut stage of the title timeline (src/timeline/disctl_cut.c) */
+enum DRCutCodec { DR_CUT_OTHER = 0, DR_CUT_H264, DR_CUT_HEVC };
+int ff_disctl_leading_decodes(int start, int codec, int rasl);
+int ff_disctl_leading_kept(int start, int codec, int rasl, int ref);
+typedef struct DRCutPlace {
+    int64_t zero;
+    int64_t key_time;
+} DRCutPlace;
+typedef struct DRCutResult {
+    int64_t pictures;
+    int64_t left_out;
+    int64_t undecodable;
+    int64_t first;
+    int     start;
+} DRCutResult;
+typedef struct DRCut DRCut;
+enum DRCutTrack { DR_CUT_TRACK_NONE = 0, DR_CUT_TRACK_VIDEO, DR_CUT_TRACK_EVERY, DR_CUT_TRACK_PCM, DR_CUT_TRACK_ENTRY,
+                 DR_CUT_TRACK_SUB, DR_CUT_TRACK_PGS };
+int  ff_disctl_cut_open(DRCut **c, void *log, const DRCutPlace *cuts, int nb_cuts, int part, int codec,
+                        const int *kinds, int nb_tracks, const int64_t *starts);
+void ff_disctl_cut_pcm(DRCut *c, int track, int rate, int bytes_per_sample_frame);
+void ff_disctl_cut_track(const DRCut *c, int track, int64_t *frames, int64_t *first);
+void ff_disctl_cut_bytes(const DRCut *c, int track, int64_t *title, int64_t *part, int64_t *left);
+int  ff_disctl_cut_done(const DRCut *c, int64_t margin);
+int  ff_disctl_cut_frame(DRCut *c, int track, DRFrame *f);
+int  ff_disctl_cut_finish(DRCut *c);
+void ff_disctl_cut_result(const DRCut *c, DRCutResult *r);
+void ff_disctl_cut_close(DRCut **c);
+
+/* the cut editor's analysis modes (src/disc-remuxer/cut_modes.h) */
+enum CutMode { CUT_MODE_TIME = 0, CUT_MODE_PATTERN, CUT_MODE_GAP, CUT_MODE_SHORTEST, CUT_MODE_EPISODES,
+               CUT_MODE_REMOVE_END, CUT_MODE_CHAPTERS, CUT_MODE_TIMESTAMPS, CUT_MODE_COUNT };
+extern const char *const cut_mode_names[8];
+extern const char *const cut_mode_keys[8];
+int cut_mode_of_key(const char *key);
+typedef struct CutModeInput {
+    int                mode;
+    const int64_t     *chapters;
+    const char *const *names;
+    int                nb_chapters;
+    int64_t            duration;
+    double             target;
+    double             min_minutes;
+    int                episodes;
+    int                from_end;
+    const int         *ticked;
+    int                nb_ticked;
+    const char        *timestamps;
+} CutModeInput;
+typedef struct CutModeResult {
+    char  *log;
+    int   *chapters;
+    int    nb_chapters;
+    char **stamps;
+    int    nb_stamps;
+} CutModeResult;
+int  cut_mode_run(const CutModeInput *in, CutModeResult *out);
+void cut_mode_result_free(CutModeResult *r);
+int  cut_mode_target(const char *text, double *minutes, char *err, int size);
+void cut_mode_target_text(double minutes, char *buf, int size);
+void cut_mode_start_text(int64_t ns, char *buf, int size);
