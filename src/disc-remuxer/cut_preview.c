@@ -15,6 +15,11 @@
 #include "timeline/disctl.h"
 #include "cut_preview.h"
 
+/* How many pictures past a picture's unit the decoder may still hold it
+ * (H.264 / HEVC reorder at most 16 pictures; the decoder runs on one
+ * thread, so no frame-threading delay adds to it), with room to spare. */
+#define HELD_MAX 64
+
 /* A decoded picture kept. */
 typedef struct Kept {
     int            number, width, height;
@@ -209,7 +214,7 @@ int cut_preview_picture(CutPreview *p, int n, int w, int h, CutFrame *out)
 {
     const CutIndex *ix = p->ix;
     Kept *k;
-    int d, s, ret;
+    int d, s, ret, retried = 0;
 
     memset(out, 0, sizeof(*out));
     if (n < 0 || n >= ix->nb_pics)
@@ -284,6 +289,23 @@ int cut_preview_picture(CutPreview *p, int n, int w, int h, CutFrame *out)
             p->next++;
             if (ret < 0 || (ret = drain(p, w, h)) < 0)
                 return ret;
+            /* the decoder holds at most its reordering depth: a picture not
+             * out that far past its unit never comes from this reading (it
+             * was not decoded, came out with another time, or was decoded
+             * and already let go of). Once more from its key frame; then it
+             * is given up, not read on for to the title's end */
+            if (p->next > d + HELD_MAX && !kept_find(p, n, w, h)) {
+                if (!retried) {
+                    retried = 1;
+                    if ((ret = restart(p, s)) < 0)
+                        return ret;
+                    continue;
+                }
+                log_msg(MSG_CUTS, LOG_ERROR, "Cut editor: picture %d (at %"PRId64" ticks) was not given out by the "
+                        "decoder within %d pictures after its unit, twice: not decoded", n, ix->pics[d].time,
+                        HELD_MAX);
+                return DR_ERR_INVALID;
+            }
         }
     }
     k->used = ++p->clock;
