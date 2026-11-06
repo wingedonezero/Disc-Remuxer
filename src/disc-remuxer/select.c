@@ -204,11 +204,18 @@ static int matches(const DiscStreamInfo *k, int index, const Step *st, int lossl
     }
 }
 
-static void apply_step(void *opaque, const Step *st)
+static void apply_step(void *opaque, const Step *in)
 {
     Apply *a = opaque;
-    int lossless = 0;
+    Step own = *in;
+    const Step *st = &own;
+    int lossless = 0, audio = 0;
 
+    /* lossless in languages the title has no audio in: as if not limited */
+    for (int i = 0; st->word == W_LOSSLESS && i < a->t->nb_streams; i++)
+        audio |= a->t->streams[i].type == DISC_MEDIA_AUDIO && in_langs(&a->t->streams[i], st);
+    if (st->word == W_LOSSLESS && !audio)
+        own.nb_langs = 0;
     for (int i = 0; st->word == W_LOSSLESS && i < a->t->nb_streams; i++) {
         const DiscStreamInfo *k = &a->t->streams[i];
         lossless |= k->type == DISC_MEDIA_AUDIO && in_langs(k, st) && codec_lossless(k);

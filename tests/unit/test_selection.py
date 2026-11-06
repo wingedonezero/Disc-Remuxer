@@ -156,6 +156,18 @@ def test_lossless_without_lossless_audio_in_its_languages_is_all_their_audio(tmp
     assert [k for _, k in tracks(lossy, "--tracks", "-audio,+lossless")] == [True] * 5
 
 
+def test_lossless_in_languages_the_title_has_no_audio_in_is_as_if_not_limited(tmp_path):
+    folder = audio_disc(tmp_path, b"eng", b"fre", b"eng")
+    keep = lambda *opts: [k for _, _, k in kept(folder, *opts)]
+    assert keep("--tracks", "-audio,+lossless=ger") == [True, False, False, True, False]
+    # and without lossless audio: every audio track (Spanish and undetermined AC-3)
+    from test_stream_names import disc
+    lossy = disc(tmp_path / "lossy")
+    assert [k for _, k in tracks(lossy, "--tracks", "-audio,+lossless=eng")] == [True] * 5
+    # a kind of track limited so: none of it
+    assert [k for _, k in tracks(lossy, "--tracks", "-audio,+audio=eng")] == [True, False, False, True, True]
+
+
 def test_a_kind_of_track_limited_to_languages(tmp_path):
     folder = audio_disc(tmp_path, b"eng", b"fre", b"spa")
     keep = lambda *opts: [k for _, _, k in kept(folder, *opts)]

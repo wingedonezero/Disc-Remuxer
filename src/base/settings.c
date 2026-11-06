@@ -49,7 +49,8 @@ static const Setting registry[] = {
       "codes (eng, en) or English names (English). Empty: it unchecks every subtitle.", 0, SET_IN_GUI },
     { "tracks", "audio_languages", SET_LIST, "", 0, 0, NULL,
       "The audio a title's right-click in the GUI leaves checked: Uncheck All Audio but Lossless keeps the "
-      "lossless audio in these languages (their other audio when the title has no lossless audio in them), "
+      "lossless audio in these languages (their other audio when the title has no lossless audio in them; "
+      "when it has no audio in them at all, the lossless audio of any language, or all of it), "
       "Uncheck All Audio but <these languages> keeps all their audio. Codes (eng, en) or English names "
       "(English). Empty: the lossless audio of every language; the second is not offered.", 0, SET_IN_GUI },
     { "output", "folder", SET_TEXT, "", 0, 0, NULL,

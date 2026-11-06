@@ -736,7 +736,8 @@ void MainWindow::contextMenu(const QPoint &pos)
             a->setEnabled(can);
             a->setToolTip(l.limit.isEmpty() ? "When the title has no lossless audio, all its audio stays checked"
                                             : "When the title has no lossless audio in these languages, all their "
-                                              "audio stays checked");
+                                              "audio stays checked; when it has no audio in them at all, its "
+                                              "lossless audio of any language (or all of it)");
             if (!l.limit.isEmpty())
                 add("Uncheck All Audio but " + l.names, "-audio,+audio=" + l.limit, "tracks.audio_languages", l.bad)
                     ->setEnabled(can);

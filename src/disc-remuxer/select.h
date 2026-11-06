@@ -16,10 +16,11 @@
  * them), or all its audio when it has none. A word for a kind of track
  * (all to lossless) may be limited to languages: "audio=eng/fre", each a
  * code or an English name ("subtitle=English"); lossless then looks only at
- * those languages' audio. Track 0, the video, is always ripped; a 3-D
- * second view is put back only by its number (or --second-view). A track
- * number takes the tracks taken out of that track along (its forced
- * subtitles, its core); a word names each track on its own.
+ * those languages' audio (at all of it when the title has none in them).
+ * Track 0, the video, is always ripped; a 3-D second view is put back only
+ * by its number (or --second-view). A track number takes the tracks taken
+ * out of that track along (its forced subtitles, its core); a word names
+ * each track on its own.
  */
 
 #ifndef DISC_REMUXER_SELECT_H
