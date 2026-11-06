@@ -7,13 +7,19 @@
  *
  *   --tracks "-subtitle,+eng"   every title: no subtitles but the English ones
  *   --tracks "3:-2,-5"          title 3: not tracks 2 and 5
+ *   --tracks "-audio,+lossless=eng"   the English lossless audio only
  *
  * A step is + (select) or - (leave out) and a word: all, video, audio,
- * subtitle, forced, a language code (2 or 3 letters) or a track number
- * (as info lists them, from 0). Track 0, the video, is always ripped; a
- * 3-D second view is put back only by its number (or --second-view). A
- * track number takes the tracks taken out of that track along (its forced
- * subtitles, its core).
+ * subtitle, forced, lossless, a language code (2 or 3 letters) or a track
+ * number (as info lists them, from 0). lossless is the title's lossless
+ * audio (TrueHD, MLP, LPCM, DTS-HD Master Audio; not the lossy cores in
+ * them), or all its audio when it has none. A word for a kind of track
+ * (all to lossless) may be limited to languages: "audio=eng/fre", each a
+ * code or an English name ("subtitle=English"); lossless then looks only at
+ * those languages' audio. Track 0, the video, is always ripped; a 3-D
+ * second view is put back only by its number (or --second-view). A track
+ * number takes the tracks taken out of that track along (its forced
+ * subtitles, its core); a word names each track on its own.
  */
 
 #ifndef DISC_REMUXER_SELECT_H

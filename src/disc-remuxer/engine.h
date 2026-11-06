@@ -114,6 +114,10 @@ const char *disc_language(const char *code);
 /* The English name of a language code ("eng": "English"), NULL when not
  * known. */
 const char *disc_language_name(const char *code);
+/* The code of a language given as a code (eng, en) or by its English name
+ * (English, Spanish, Castilian: dr_disc_lang_of_name()), NULL when not
+ * known. */
+const char *disc_language_of(const char *text);
 /* The Matroska codec ID a stream is stored with in a Matroska file
  * ("V_MPEG2", "A_AC3", "S_HDMV/PGS", ...): LPCM as PCM ("A_PCM/INT/LIT"),
  * closed captions as text ("S_TEXT/UTF8"), a 3-D second view as

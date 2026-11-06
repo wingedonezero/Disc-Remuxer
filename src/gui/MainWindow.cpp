@@ -44,6 +44,35 @@ enum { R_CHAPTERS = -2 };
 
 static const int defaultWidths[C_COUNT] = { 190, 520, 75, 170, 110 };
 
+// The languages of a list setting (tracks.subtitle_languages,
+// tracks.audio_languages) for the right-click's track steps: limit the
+// --tracks language list ("eng/fre"), names as the menu says them
+// ("English, French"), bad the items that are no language.
+struct Languages {
+    QString limit, names;
+    QStringList bad;
+};
+
+static Languages languagesOf(const char *setting)
+{
+    const char *const *items;
+    int n = setting_list(setting, &items);
+    Languages l;
+
+    for (int i = 0; i < n; i++) {
+        const char *code = disc_language_of(items[i]);
+        const char *name = code ? disc_language_name(code) : nullptr;
+        if (!code) {
+            l.bad << QString::fromUtf8(items[i]);
+            continue;
+        }
+        l.limit += (l.limit.isEmpty() ? "" : "/") + QString::fromUtf8(items[i]);
+        l.names += (l.names.isEmpty() ? "" : ", ") + (name ? QString::fromUtf8(name).section(';', 0, 0)
+                                                           : QString::fromUtf8(code));
+    }
+    return l;
+}
+
 MainWindow::MainWindow(LogRelay *r) : relay(r)
 {
     auto *central = new QWidget;
@@ -413,6 +442,14 @@ void MainWindow::scanned(quint64 id, quintptr handle)
             });
             return;
         }
+        if (test.startsWith("menu") && j && j->item->childCount()) {
+            // the first title's right-click menu (contextMenu() saves it)
+            QTreeWidgetItem *title = j->item->child(0);
+            tree->scrollToItem(title);
+            contextMenu(tree->visualItemRect(title).center());
+            QApplication::quit();
+            return;
+        }
         if (test == "rip" || test == "stop") {
             startQueue();
             if (test == "stop")
@@ -652,24 +689,56 @@ void MainWindow::contextMenu(const QPoint &pos)
     int t = item->data(C_NAME, R_TITLE).toInt();
     const QString out = j->outDir, log = j->logFile;
     if (t >= 0 && j->disc) {
-        // the title's subtitles all on or off (as --tracks <title>:+subtitle / -subtitle)
+        // the title's tracks by kind (as --tracks <title>:<steps>): its
+        // subtitles all on, or all off but the languages of
+        // tracks.subtitle_languages; its audio all off but the lossless one,
+        // or but all of the languages of tracks.audio_languages
         const DiscTitleInfo &ti = engine_disc_info(j->disc)->titles[t];
-        bool subs = false;
-        for (int k = 0; k < ti.nb_streams; k++)
+        bool subs = false, audio = false, can = !running && engine_title_rip(j->disc, t);
+        for (int k = 0; k < ti.nb_streams; k++) {
             subs |= ti.streams[k].type == DISC_MEDIA_SUBTITLE;
+            audio |= ti.streams[k].type == DISC_MEDIA_AUDIO;
+        }
+        auto add = [&](const QString &label, const QString &steps, const char *setting, const QStringList &bad) {
+            return menu.addAction(label, this, [this, id = j->id, t, steps, setting, bad] {
+                if (!bad.isEmpty()) {
+                    QMessageBox::warning(this, "Disc Remuxer", QString("%1 has %2, which is no language: give codes "
+                                                                       "(eng, en) or English names (English) in "
+                                                                       "Preferences, Tracks.")
+                                                                   .arg(setting, bad.join(", ")));
+                    return;
+                }
+                if (Job *x = jobById(id); x && x->disc) {
+                    engine_apply_tracks(x->disc, t, steps.toUtf8().constData());
+                    showTitleChecks(*x, t);
+                    if (tree->currentItem())
+                        currentChanged(tree->currentItem());
+                    updateQueueLabel();
+                }
+            });
+        };
         if (subs) {
-            bool can = !running && engine_title_rip(j->disc, t);
-            for (const char *steps : { "+subtitle", "-subtitle" })
-                menu.addAction(*steps == '+' ? "Check All Subtitles" : "Uncheck All Subtitles", this,
-                               [this, id = j->id, t, steps] {
-                                   if (Job *x = jobById(id); x && x->disc) {
-                                       engine_apply_tracks(x->disc, t, steps);
-                                       showTitleChecks(*x, t);
-                                       if (tree->currentItem())
-                                           currentChanged(tree->currentItem());
-                                       updateQueueLabel();
-                                   }
-                               })
+            Languages l = languagesOf("tracks.subtitle_languages");
+            add("Check All Subtitles", "+subtitle", "", {})->setEnabled(can);
+            if (l.limit.isEmpty())
+                add("Uncheck All Subtitles", "-subtitle", "tracks.subtitle_languages", l.bad)->setEnabled(can);
+            else
+                add("Uncheck All Subtitles but " + l.names, "-subtitle,+subtitle=" + l.limit,
+                    "tracks.subtitle_languages", l.bad)->setEnabled(can);
+            menu.addSeparator();
+        }
+        if (audio) {
+            Languages l = languagesOf("tracks.audio_languages");
+            QAction *a = l.limit.isEmpty()
+                ? add("Uncheck All Audio but Lossless", "-audio,+lossless", "tracks.audio_languages", l.bad)
+                : add("Uncheck All Audio but Lossless (" + l.names + ")", "-audio,+lossless=" + l.limit,
+                      "tracks.audio_languages", l.bad);
+            a->setEnabled(can);
+            a->setToolTip(l.limit.isEmpty() ? "When the title has no lossless audio, all its audio stays checked"
+                                            : "When the title has no lossless audio in these languages, all their "
+                                              "audio stays checked");
+            if (!l.limit.isEmpty())
+                add("Uncheck All Audio but " + l.names, "-audio,+audio=" + l.limit, "tracks.audio_languages", l.bad)
                     ->setEnabled(can);
             menu.addSeparator();
         }
@@ -721,6 +790,21 @@ void MainWindow::contextMenu(const QPoint &pos)
         ->setEnabled(!running && !j->scanning);
     menu.addAction("Remove from the Queue", this, [this, item] { tree->setCurrentItem(item); removeSelected(); })
         ->setEnabled(!running);
+    if (!snapshot.isEmpty() && test.startsWith("menu")) {
+        // tests: "menu" the menu saved as the picture; "menu:<item>" that
+        // item chosen, then the window with the title opened
+        if (test == "menu") {
+            menu.adjustSize();
+            menu.grab().save(snapshot);
+            return;
+        }
+        for (QAction *a : menu.actions())
+            if (a->text() == test.mid(5))
+                a->trigger();
+        item->setExpanded(true);
+        grab().save(snapshot);
+        return;
+    }
     menu.exec(tree->viewport()->mapToGlobal(pos));
 }
 

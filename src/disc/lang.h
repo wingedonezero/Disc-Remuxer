@@ -22,4 +22,13 @@ const char *dr_disc_lang_code(const char *code);
  */
 const char *dr_disc_lang_name(const char *code);
 
+/**
+ * The ISO 639-2 bibliographic code of a language named in English, as the
+ * ISO 639-2 code list names it, in any case: one of its names ("Spanish"
+ * or "Castilian" for "Spanish; Castilian"), or such a name up to its first
+ * ", " or " (" when only one language's names shorten to it ("Greek" is
+ * none: Ancient and Modern Greek both do); NULL when not known.
+ */
+const char *dr_disc_lang_of_name(const char *name);
+
 #endif /* DISC_DISC_LANG_H */
