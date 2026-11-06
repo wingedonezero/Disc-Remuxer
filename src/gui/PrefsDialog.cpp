@@ -24,7 +24,7 @@ extern "C" {
 static QString groupTitle(const QString &g)
 {
     static const QMap<QString, QString> titles = {
-        { "read", "Reading" }, { "aacs", "AACS" }, { "titles", "Titles" }, { "output", "Output" },
+        { "read", "Reading" }, { "aacs", "AACS" }, { "titles", "Titles" }, { "tracks", "Tracks" }, { "output", "Output" },
         { "bluray", "Blu-ray" }, { "dvd", "DVD" }, { "chapters", "Chapters" }, { "mkv", "MKV" }, { "log", "Log" },
         { "gui", "GUI" },
     };

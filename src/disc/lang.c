@@ -5,6 +5,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "base/macros.h"
 #include "disc/lang.h"
@@ -1054,4 +1055,47 @@ const char *dr_disc_lang_name(const char *code)
         return NULL;
     e = bsearch(b, lang_names, DR_ARRAY_ELEMS(lang_names), sizeof(*e), cmp_name);
     return e ? e->name : NULL;
+}
+
+/* name (len bytes, any case) is one of the names in list ("A; B"): whole,
+ * or (short) up to its first ", " or " (". */
+static int names_hold(const char *list, const char *name, size_t len, int shortened)
+{
+    for (const char *p = list; *p; ) {
+        const char *end = strstr(p, "; ");
+        size_t n = end ? (size_t)(end - p) : strlen(p), m = n;
+        const char *cut = strstr(p, ", ");
+        const char *par = strstr(p, " (");
+        if (cut && cut < p + n)
+            m = cut - p;
+        if (par && par < p + m)
+            m = par - p;
+        if (len == (shortened ? m : n) && !strncasecmp(p, name, len))
+            return 1;
+        if (!end)
+            break;
+        p = end + 2;
+    }
+    return 0;
+}
+
+const char *dr_disc_lang_of_name(const char *name)
+{
+    size_t len = strlen(name);
+    const char *found = NULL;
+
+    if (!len)
+        return NULL;
+    for (size_t i = 0; i < DR_ARRAY_ELEMS(lang_names); i++)
+        if (names_hold(lang_names[i].name, name, len, 0))
+            return lang_names[i].code;
+    /* a shortened name only when one language has it ("Greek" names both
+     * Ancient and Modern Greek: no language) */
+    for (size_t i = 0; i < DR_ARRAY_ELEMS(lang_names); i++)
+        if (names_hold(lang_names[i].name, name, len, 1)) {
+            if (found)
+                return NULL;
+            found = lang_names[i].code;
+        }
+    return found;
 }

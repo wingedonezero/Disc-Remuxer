@@ -103,3 +103,95 @@ def test_a_track_number_takes_its_forced_subtitles_along(tmp_path):
     # a step by kind or language names both on its own
     assert keep("--tracks", "0:-subtitle") == [True, True, True, False, False]
     assert keep("--tracks", "-forced") == [True, True, True, True, False]
+
+
+def audio_disc(tmp_path, ac3, dts, thd):
+    """test_bluray_details.disc with these audio languages: AC-3, DTS (lossy:
+    no DTS-HD extension), TrueHD (lossless) with its AC-3 core."""
+    from test_bluray_details import AC3, DTS, M2V, S, E, THD, frames, stream_packets
+    from synth import bluray as bd
+    from synth.bluray import Item, Stream
+    packets = (stream_packets(0x1011, frames(M2V, 60000), 0xe0) +
+               stream_packets(0x1100, frames(AC3, 768), ext=0x71) +
+               stream_packets(0x1101, frames(DTS, 1884), ext=0x71) +
+               stream_packets(0x1102, frames(THD, 600), ext=0x72) +
+               stream_packets(0x1102, frames(AC3, 768), ext=0x76))
+    data = bd.source_units(packets)
+    audio = [Stream(0x1100, 0x81, b"\x31" + ac3), Stream(0x1101, 0x82, b"\x31" + dts),
+             Stream(0x1102, 0x83, b"\x31" + thd)]
+    streams = ((0x1011, 0x02, b"\x31"),) + tuple((a.pid, a.coding, a.attr) for a in audio)
+    clips = {1: bd.clpi(packets=len(data) // 192, stcs=((0, 0x1001, S, E),), streams=streams)}
+    item = Item("00001", S, E, videos=[Stream(0x1011, 0x02, b"\x31")], audio=audio)
+    files = bd.bdmv(clips, {1: bd.mpls([item])})
+    files["BDMV/STREAM/00001.m2ts"] = data
+    return bd.write(tmp_path / "disc", files)
+
+
+def kept(folder, *opts):
+    code, out = run(*opts, "--json", "info", folder)
+    assert code == 0, out
+    title = next(json.loads(line) for line in out.splitlines() if line.startswith('{"type":"title"'))
+    return [(k["description"], k["language"], k["selected"]) for k in title["tracks"]]
+
+
+def test_lossless_is_the_lossless_audio_without_its_cores(tmp_path):
+    folder = audio_disc(tmp_path, b"eng", b"fre", b"eng")
+    assert [(d, l) for d, l, _ in kept(folder)] == [
+        ("Mpeg2", "eng"), ("Dolby Digital", "eng"), ("DTS", "fre"), ("TrueHD", "eng"), ("Dolby Digital", "eng")]
+    keep = lambda *opts: [k for _, _, k in kept(folder, *opts)]
+    assert keep("--tracks", "-audio,+lossless") == [True, False, False, True, False], "TrueHD alone, not its core"
+    assert keep("--tracks", "-lossless") == [True, True, True, False, True]
+    assert keep("--tracks", "-audio,+lossless=eng") == [True, False, False, True, False]
+
+
+def test_lossless_without_lossless_audio_in_its_languages_is_all_their_audio(tmp_path):
+    folder = audio_disc(tmp_path, b"eng", b"fre", b"eng")
+    keep = lambda *opts: [k for _, _, k in kept(folder, *opts)]
+    # the French audio is lossy only: all of it
+    assert keep("--tracks", "-audio,+lossless=fre") == [True, False, True, False, False]
+    # a title without lossless audio (test_stream_names.disc: two AC-3 and a
+    # PGS with its forced copy): every audio track
+    from test_stream_names import disc
+    lossy = disc(tmp_path / "lossy")
+    assert [k for _, k in tracks(lossy, "--tracks", "-audio,+lossless")] == [True] * 5
+
+
+def test_lossless_in_languages_the_title_has_no_audio_in_is_as_if_not_limited(tmp_path):
+    folder = audio_disc(tmp_path, b"eng", b"fre", b"eng")
+    keep = lambda *opts: [k for _, _, k in kept(folder, *opts)]
+    assert keep("--tracks", "-audio,+lossless=ger") == [True, False, False, True, False]
+    # and without lossless audio: every audio track (Spanish and undetermined AC-3)
+    from test_stream_names import disc
+    lossy = disc(tmp_path / "lossy")
+    assert [k for _, k in tracks(lossy, "--tracks", "-audio,+lossless=eng")] == [True] * 5
+    # a kind of track limited so: none of it
+    assert [k for _, k in tracks(lossy, "--tracks", "-audio,+audio=eng")] == [True, False, False, True, True]
+
+
+def test_a_kind_of_track_limited_to_languages(tmp_path):
+    folder = audio_disc(tmp_path, b"eng", b"fre", b"spa")
+    keep = lambda *opts: [k for _, _, k in kept(folder, *opts)]
+    assert keep("--tracks", "-audio,+audio=eng") == [True, True, False, False, False]
+    assert keep("--tracks", "-audio,+audio=eng/fre") == [True, True, True, False, False]
+    # codes in either form and English names, in any case
+    for same in ("en", "ENG", "English", "english", "Castilian/en"):
+        assert keep("--tracks", "-audio,+audio=" + same)[1] is True, same
+    assert keep("--tracks", "-audio,+audio=Castilian") == [True, False, False, True, True]
+    assert keep("--tracks", "-all=spa") == [True, True, True, False, False]
+
+
+def test_a_language_limit_that_is_no_list_of_languages_stops_the_run(tmp_path):
+    folder = audio_disc(tmp_path, b"eng", b"fre", b"eng")
+    for bad, why in (("+audio=elvish", "'elvish' is no language"), ("+audio=", "is no list of languages"),
+                     ("+audio=eng//fre", "is no list of languages"), ("+eng=fre", "is no step"),
+                     ("+2=eng", "is no step"), ("+audio=Greek", "'Greek' is no language")):
+        code, out = run("--tracks", bad, "info", folder)
+        assert code == 2 and why in out, (bad, out)
+
+
+def test_subtitles_limited_to_languages_take_their_forced_copies_along(tmp_path):
+    from test_stream_names import disc
+    folder = disc(tmp_path)
+    keep = lambda *opts: [k for _, k in tracks(folder, *opts)]
+    assert keep("--tracks", "-subtitle,+subtitle=English") == [True] * 5
+    assert keep("--tracks", "-subtitle,+subtitle=fre") == [True, True, True, False, False]

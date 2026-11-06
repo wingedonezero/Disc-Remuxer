@@ -824,6 +824,13 @@ const char *disc_language_name(const char *code)
     return dr_disc_lang_name(code);
 }
 
+const char *disc_language_of(const char *text)
+{
+    const char *code = dr_disc_lang_code(text);
+
+    return code ? code : dr_disc_lang_of_name(text);
+}
+
 
 int dr_disc_read(DrDisc *d, DrDiscFrame *f)
 {

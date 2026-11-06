@@ -10,16 +10,21 @@
 
 #include "base/log.h"
 #include "base/msg.h"
+#include "codecs.h"
 #include "engine.h"
 #include "select.h"
 
-enum { W_ALL, W_VIDEO, W_AUDIO, W_SUBTITLE, W_FORCED, W_LANGUAGE, W_NUMBER };
+enum { W_ALL, W_VIDEO, W_AUDIO, W_SUBTITLE, W_FORCED, W_LOSSLESS, W_LANGUAGE, W_NUMBER };
+
+#define MAX_LANGS 16
 
 typedef struct Step {
     int  add;           /* + select, - leave out */
     int  word;          /* W_* */
     int  number;        /* W_NUMBER */
     char lang[4];       /* W_LANGUAGE: ISO 639-2 as the disc info has it */
+    int  nb_langs;      /* a word limited to languages ("audio=eng/fre"): their codes */
+    char langs[MAX_LANGS][4];
 } Step;
 
 /* The title a value is for ("3:..."), -1 every title; *rest: its steps. */
@@ -37,14 +42,45 @@ static int spec_title(const char *spec, const char **rest)
     return -1;
 }
 
-/* One step "+word" / "-word" (len bytes) into st; 0, or -1 (logged). */
+/* The languages after a word's "=" (codes or English names, separated by
+ * "/") into st; 0, or -1 (logged). */
+static int parse_langs(const char *list, Step *st)
+{
+    char item[64];
+
+    for (const char *p = list;;) {
+        const char *end = strchr(p, '/');
+        size_t n = end ? (size_t)(end - p) : strlen(p);
+        const char *code;
+        if (!n || n >= sizeof(item) || st->nb_langs == MAX_LANGS)
+            goto bad;
+        memcpy(item, p, n);
+        item[n] = 0;
+        if (!(code = disc_language_of(item))) {
+            log_msg(MSG_TRACK_SELECTION, LOG_ERROR, "--tracks: '%s' is no language: give a code (eng, en) or "
+                    "its English name (English)", item);
+            return -1;
+        }
+        snprintf(st->langs[st->nb_langs++], sizeof(st->langs[0]), "%s", code);
+        if (!end)
+            return 0;
+        p = end + 1;
+    }
+bad:
+    log_msg(MSG_TRACK_SELECTION, LOG_ERROR, "--tracks: '%s' is no list of languages: codes or names separated "
+            "by / (eng/fre), at most %d", list, MAX_LANGS);
+    return -1;
+}
+
+/* One step "+word" / "-word" (len bytes), the word limited to languages
+ * by "=<languages>", into st; 0, or -1 (logged). */
 static int parse_step(const char *s, size_t len, Step *st)
 {
     static const struct { const char *name; int word; } words[] = {
         { "all", W_ALL }, { "video", W_VIDEO }, { "audio", W_AUDIO }, { "subtitle", W_SUBTITLE },
-        { "forced", W_FORCED },
+        { "forced", W_FORCED }, { "lossless", W_LOSSLESS },
     };
-    char w[16];
+    char w[256], *eq;
     size_t i;
 
     while (len && isspace((unsigned char)*s))
@@ -57,11 +93,15 @@ static int parse_step(const char *s, size_t len, Step *st)
     st->add = *s == '+';
     memcpy(w, s + 1, len - 1);
     w[len - 1] = 0;
+    if ((eq = strchr(w, '=')))
+        *eq = 0;
     for (i = 0; i < sizeof(words) / sizeof(*words); i++)
         if (!strcmp(w, words[i].name)) {
             st->word = words[i].word;
-            return 0;
+            return eq ? parse_langs(eq + 1, st) : 0;
         }
+    if (eq)                             /* only a kind of track is limited to languages */
+        goto bad;
     for (i = 0; w[i] && isdigit((unsigned char)w[i]); i++)
         ;
     if (!w[i]) {
@@ -79,7 +119,8 @@ static int parse_step(const char *s, size_t len, Step *st)
     }
 bad:
     log_msg(MSG_TRACK_SELECTION, LOG_ERROR, "--tracks: '%.*s' is no step: use + or - and all, video, audio, subtitle, "
-            "forced, a language code (eng, fr, ...) or a track number", (int)len, s);
+            "forced, lossless (each may be limited to languages: audio=eng/fre), a language code (eng, fr, ...) "
+            "or a track number", (int)len, s);
     return -1;
 }
 
@@ -132,11 +173,24 @@ typedef struct Apply {
     int                  video_kept;   /* track 0 kept against a step: said once */
 } Apply;
 
-static int matches(const DiscStreamInfo *k, int index, const Step *st)
+/* k's language is one the step is limited to (or it has no limit). */
+static int in_langs(const DiscStreamInfo *k, const Step *st)
+{
+    for (int i = 0; i < st->nb_langs; i++)
+        if (!strcmp(k->language, st->langs[i]))
+            return 1;
+    return !st->nb_langs;
+}
+
+/* lossless: the title has lossless audio in the step's languages (then
+ * "lossless" names that, else all its audio in them). */
+static int matches(const DiscStreamInfo *k, int index, const Step *st, int lossless)
 {
     /* a 3-D title's second view is put back only by its number (or
      * --second-view), taken out by any step that names it */
     if (k->second_view && st->add && st->word != W_NUMBER)
+        return 0;
+    if (!in_langs(k, st))
         return 0;
     switch (st->word) {
     case W_ALL:      return 1;
@@ -144,14 +198,28 @@ static int matches(const DiscStreamInfo *k, int index, const Step *st)
     case W_AUDIO:    return k->type == DISC_MEDIA_AUDIO;
     case W_SUBTITLE: return k->type == DISC_MEDIA_SUBTITLE;
     case W_FORCED:   return k->forced;
+    case W_LOSSLESS: return k->type == DISC_MEDIA_AUDIO && (codec_lossless(k) || !lossless);
     case W_LANGUAGE: return !strcmp(k->language, st->lang);
     default:         return index == st->number;
     }
 }
 
-static void apply_step(void *opaque, const Step *st)
+static void apply_step(void *opaque, const Step *in)
 {
     Apply *a = opaque;
+    Step own = *in;
+    const Step *st = &own;
+    int lossless = 0, audio = 0;
+
+    /* lossless in languages the title has no audio in: as if not limited */
+    for (int i = 0; st->word == W_LOSSLESS && i < a->t->nb_streams; i++)
+        audio |= a->t->streams[i].type == DISC_MEDIA_AUDIO && in_langs(&a->t->streams[i], st);
+    if (st->word == W_LOSSLESS && !audio)
+        own.nb_langs = 0;
+    for (int i = 0; st->word == W_LOSSLESS && i < a->t->nb_streams; i++) {
+        const DiscStreamInfo *k = &a->t->streams[i];
+        lossless |= k->type == DISC_MEDIA_AUDIO && in_langs(k, st) && codec_lossless(k);
+    }
 
     /* a number in a value for every title: titles without that track are
      * left as they are */
@@ -159,7 +227,7 @@ static void apply_step(void *opaque, const Step *st)
         log_msg(MSG_TRACK_SELECTION, LOG_WARNING, "--tracks: title #%d has no track %d (it has %d)", a->t->index,
                 st->number, a->t->nb_streams);
     for (int i = 0; i < a->t->nb_streams; i++) {
-        if (!matches(&a->t->streams[i], i, st))
+        if (!matches(&a->t->streams[i], i, st, lossless))
             continue;
         if (!i && !st->add) {
             if (!a->video_kept++)

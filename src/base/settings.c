@@ -44,6 +44,15 @@ static const Setting registry[] = {
       "Titles shorter than this (seconds) are left out of the title list (each one said in the log), so the "
       "title numbers have no gaps. 0: every title.",
       0, SET_AT_OPEN },
+    { "tracks", "subtitle_languages", SET_LIST, "", 0, 0, NULL,
+      "The subtitles the GUI's Uncheck All Subtitles (a title's right-click) leaves checked: these languages, "
+      "codes (eng, en) or English names (English). Empty: it unchecks every subtitle.", 0, SET_IN_GUI },
+    { "tracks", "audio_languages", SET_LIST, "", 0, 0, NULL,
+      "The audio a title's right-click in the GUI leaves checked: Uncheck All Audio but Lossless keeps the "
+      "lossless audio in these languages (their other audio when the title has no lossless audio in them; "
+      "when it has no audio in them at all, the lossless audio of any language, or all of it), "
+      "Uncheck All Audio but <these languages> keeps all their audio. Codes (eng, en) or English names "
+      "(English). Empty: the lossless audio of every language; the second is not offered.", 0, SET_IN_GUI },
     { "output", "folder", SET_TEXT, "", 0, 0, NULL,
       "The main output folder: a disc's files go into a folder of the disc's name in it (its image's or "
       "folder's name; _001, _002, ... when that exists), when demux is given no output folder and in the GUI. "
