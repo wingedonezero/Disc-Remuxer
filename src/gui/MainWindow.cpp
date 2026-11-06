@@ -467,9 +467,20 @@ void MainWindow::snapshotWhenScanned(const QString &file, const QString &t)
     test = t;
 }
 
+// A title ripped with a track of it left out (not counting a 3-D second
+// view, only written when asked for).
+static bool tracksLeftOut(const DiscTitleInfo *ti, const uint8_t *keep)
+{
+    for (int i = 0; i < ti->nb_streams; i++)
+        if (!keep[i] && !ti->streams[i].second_view)
+            return true;
+    return false;
+}
+
 // A title's tracks as its choice stands: an unchecked title's tracks are
 // unchecked and cannot be changed (their own choice comes back with the
-// title); the video is always ripped.
+// title); the video is always ripped. A ripped title with tracks left out
+// shows partly checked.
 void MainWindow::showTitleChecks(Job &job, int t)
 {
     QTreeWidgetItem *title = job.item->child(t);
@@ -479,7 +490,7 @@ void MainWindow::showTitleChecks(Job &job, int t)
     QBrush grey = tree->palette().brush(QPalette::Disabled, QPalette::Text);
 
     updating = true;
-    title->setCheckState(C_NAME, on ? Qt::Checked : Qt::Unchecked);
+    title->setCheckState(C_NAME, !on ? Qt::Unchecked : tracksLeftOut(ti, keep) ? Qt::PartiallyChecked : Qt::Checked);
     // its state (the engine's words) and the fake playlist check's mark
     char state[512], why[1024];
     int mark = engine_title_state(ti, engine_title_split(job.disc, t), engine_title_cuts(job.disc, t), state,
@@ -498,20 +509,24 @@ void MainWindow::showTitleChecks(Job &job, int t)
         track->setForeground(C_NAME, on ? tree->palette().brush(QPalette::Text) : grey);
     }
     updating = false;
+    showDiscCheck(job);
 }
 
 void MainWindow::showDiscCheck(Job &job)
 {
     const DiscInfo *d = engine_disc_info(job.disc);
     int n = titles(job), c = 0;
+    bool part = false;
     int64_t bytes = 0;
     for (int t = 0; t < n; t++)
         if (engine_title_rip(job.disc, t)) {
             c++;
             bytes += d->titles[t].size;
+            part |= tracksLeftOut(&d->titles[t], engine_disc_tracks(job.disc, t));
         }
     updating = true;
-    job.item->setCheckState(C_NAME, !c ? Qt::Unchecked : c == n ? Qt::Checked : Qt::PartiallyChecked);
+    // partly checked: titles, or tracks of a title, left out
+    job.item->setCheckState(C_NAME, !c ? Qt::Unchecked : c == n && !part ? Qt::Checked : Qt::PartiallyChecked);
     // what the checked titles hold
     job.item->setText(C_SIZE, bytes ? sizeText(bytes) : QString());
     updating = false;
@@ -626,12 +641,18 @@ void MainWindow::itemChanged(QTreeWidgetItem *item, int column)
         engine_set_track_kept(j->disc, t, i, on);
         showTitleChecks(*j, t);
     } else if (t >= 0) {
-        engine_set_title_rip(j->disc, t, on);
+        // a partly checked title (tracks left out) clicked goes to checked:
+        // it was ripped, so it is turned off
+        engine_set_title_rip(j->disc, t, on && !engine_title_rip(j->disc, t));
         showTitleChecks(*j, t);
     } else {
-        // the disc: all its titles on or off
+        // the disc: all its titles on or off (partly checked with every
+        // title on, only tracks left out: off)
+        bool all = true;
+        for (int k = 0; k < titles(*j); k++)
+            all &= engine_title_rip(j->disc, k) != 0;
         for (int k = 0; k < titles(*j); k++) {
-            engine_set_title_rip(j->disc, k, on);
+            engine_set_title_rip(j->disc, k, on && !all);
             showTitleChecks(*j, k);
         }
     }
