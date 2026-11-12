@@ -1308,6 +1308,10 @@ typedef struct DRCut DRCut;
  *  negative base error. */
 int  ff_disctl_cut_open(DRCut **c, void *log, const DRCutPlace *cuts, int nb_cuts, int part, int codec,
                         const int *kinds, int nb_tracks, const int64_t *starts);
+/** The part's number and how many there are, as the log names them (the
+ *  default: part + 1 of nb_cuts + 1): a title cut inside its own parts
+ *  counts its files across those parts. */
+void ff_disctl_cut_names(DRCut *c, int number, int of);
 /** A PCM track's samples per second and bytes per sample frame (all its
  *  channels), before its first frame. */
 void ff_disctl_cut_pcm(DRCut *c, int track, int rate, int bytes_per_sample_frame);

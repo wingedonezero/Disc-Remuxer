@@ -243,6 +243,10 @@ struct DrDisc {
     struct DRCutPlace *opt_cuts;        /**< the opened title's cuts (dr_disc_title_open_cut()), NULL none */
     int               nb_opt_cuts;
     int               opt_cut_part;     /**< with opt_cuts: the part given (0 .. nb_opt_cuts) */
+    int               opt_cut_before;   /**< the files written before this reading's first cut part, and how many
+                                             the title gives in all (0: this reading's own), for the log's numbers
+                                             (dr_disc_set_cut_names()) */
+    int               opt_cut_total;
     int               opt_start_seg;    /**< dr_disc_title_open_at(): the segment the reading starts in, -1: its start */
     int64_t           opt_start_block;  /**< and the block of it */
     int64_t          *ref_cache;        /**< per clip of the title last opened: its wrap reference, -1 not known */

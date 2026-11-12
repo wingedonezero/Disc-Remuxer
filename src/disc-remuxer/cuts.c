@@ -269,6 +269,30 @@ int cut_resolve(const CutPoint *points, int nb_points, const int64_t *chapters, 
     return made;
 }
 
+void cut_in_part(const CutRequest *r, const int64_t *starts, const int *chapters, int nb_parts, int k, CutInPart *out)
+{
+    const int64_t ms = DR_TICKS_PER_SECOND / 1000;
+    int last = k == nb_parts - 1;
+
+    memset(out, 0, sizeof(*out));
+    if (k < 0 || k >= nb_parts)
+        return;
+    if (r->chapter) {
+        int local = r->chapter;
+        for (int j = 0; j < k; j++)
+            local -= chapters[j];
+        if (local < 1 || (!last && local > chapters[k]))
+            return;                     /* another part's chapter */
+        out->where   = local == 1 && k > 0 ? CUT_ON_BREAK : CUT_INSIDE;
+        out->chapter = local;
+        return;
+    }
+    if ((k > 0 && r->time < starts[k] - ms) || (!last && r->time >= starts[k + 1] - ms))
+        return;                         /* a time in another part */
+    out->where = k > 0 && r->time <= starts[k] + ms ? CUT_ON_BREAK : CUT_INSIDE;
+    out->time  = r->time - starts[k];
+}
+
 int cut_track_start(const CutUnit *u, int nb, int64_t zero, int64_t limit, CutStart *s)
 {
     int i = 0, k;
@@ -328,7 +352,8 @@ static int add_picture(CutIndex *ix, int *cap, const DrDiscFrame *fr)
     return 0;
 }
 
-int cut_index_read(DrDisc *d, int title, int64_t stop_after, const int64_t *windows, int nb_windows, CutIndex *ix)
+int cut_index_read(DrDisc *d, int title, int part, int64_t stop_after, const int64_t *windows, int nb_windows,
+                   CutIndex *ix)
 {
     const DiscInfo *info = dr_disc_info(d);
     uint8_t *keep;
@@ -358,7 +383,7 @@ int cut_index_read(DrDisc *d, int title, int64_t stop_after, const int64_t *wind
     /* the reading's lines kept to the detail level but its errors (a
      * caption track it does not read is no news) */
     was = dr_disc_set_log(d, "cuts");
-    ret = dr_disc_title_open(d, title, -1, 0, keep);
+    ret = dr_disc_title_open(d, title, part, 0, keep);
     free(keep);
     if (ret < 0) {
         dr_disc_set_log(d, was);

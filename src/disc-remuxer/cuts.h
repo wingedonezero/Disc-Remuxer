@@ -99,6 +99,32 @@ typedef struct CutResult {
 int cut_resolve(const CutPoint *points, int nb_points, const int64_t *chapters, int nb_chapters, int64_t end,
                 const CutRequest *reqs, int nb_reqs, int rule, CutResult *res);
 
+/* A cut asked for on a whole title, seen from one of the parts the disc
+ * itself splits the title into (a title written as its parts is split
+ * there first; each cut is made inside the part it falls in, on that part's
+ * own timeline). */
+enum CutWhere {
+    CUT_ELSEWHERE = 0,       /* in another part */
+    CUT_INSIDE,              /* inside this part: chapter / time are its place there */
+    CUT_ON_BREAK,            /* on this part's start: the disc breaks the title there already (no cut) */
+};
+typedef struct CutInPart {
+    int     where;           /* enum CutWhere */
+    int     chapter;         /* a chapter cut: the part's own chapter number (from 1) */
+    int64_t time;            /* a time cut: ticks from the part's own start */
+} CutInPart;
+
+/* Where request r (a chapter of the title, from 1, or a time on the title's
+ * timeline) lies for part k of nb_parts: starts: each part's start on the
+ * title's timeline (ticks), chapters: each part's number of chapters (the
+ * title's chapters are the parts' one after another). A chapter that is a
+ * part's first, and a time within 1 ms of a part's start, are on that
+ * part's break (the first part's start is the title's start: an ordinary
+ * request there). A chapter past the last part's and a time past its start
+ * stay with the last part (the cut rule refuses them there with its
+ * reason). */
+void cut_in_part(const CutRequest *r, const int64_t *starts, const int *chapters, int nb_parts, int k, CutInPart *out);
+
 /* A unit of an audio track that starts only at some units (TrueHD, a DTS-HD
  * stream: dr_disc_cut_start_units()). */
 typedef struct CutUnit {
@@ -148,13 +174,16 @@ typedef struct CutIndex {
     int         nb_audio;
 } CutIndex;
 
-/* Reads title `title` of the open disc into ix: its video and its tracks
+/* Reads title `title` of the open disc (part >= 0: only that part of it, as
+ * the disc itself splits it, on its own timeline; -1: the whole title) into
+ * ix: its video and its tracks
  * that start only at some units (their units only inside the windows: nb
  * pairs of from / to times, ticks); stop_after >= 0: the reading stops once
  * two key frames after that time and those tracks' units past it by the
  * start limit have been read (what the requests need); < 0: to the title's
  * end (the chapters need it). 0, or a negative base error (logged). */
-int  cut_index_read(DrDisc *d, int title, int64_t stop_after, const int64_t *windows, int nb_windows, CutIndex *ix);
+int  cut_index_read(DrDisc *d, int title, int part, int64_t stop_after, const int64_t *windows, int nb_windows,
+                    CutIndex *ix);
 void cut_index_free(CutIndex *ix);
 
 /* A time on the title timeline in words: 00:22:52.204.166.667 (h, min, s,

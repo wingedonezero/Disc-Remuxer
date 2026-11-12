@@ -86,7 +86,8 @@ static const Setting registry[] = {
       "of its name, as every title), from its own start with its own chapters and its audio as the "
       "file holds it. Off: such a title is one timeline (the audio's overlaps "
       "at the joins are evened out by dropping whole frames). The demux option --split <titles> turns it on "
-      "for chosen titles of one run.", 0, SET_AT_RIP },
+      "for chosen titles of one run. A title that also has cuts is split at these parts first and each cut is made "
+      "inside the part it falls in, so no file holds a join.", 0, SET_AT_RIP },
     { "output", "keep_folder_structure", SET_BOOL, "true", 0, 0, NULL,
       "A disc found in a folder of discs (the GUI's added folder, demux / find of a folder) keeps the folders "
       "from that folder down to it under the main output folder (<main output folder>/<the folder>/<folders>/"

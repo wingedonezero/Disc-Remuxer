@@ -36,6 +36,19 @@
 
 /* The clip demuxer's errors as FFmpeg's values, so nothing above sees a
  * change (the block readers' own values pass through as they are). */
+/* A cut part's number and how many there are, as the log names them: this
+ * reading's own, or counted across the title's parts
+ * (dr_disc_set_cut_names()). */
+static int cut_no(const DrDisc *d)
+{
+    return d->opt_cut_before + d->opt_cut_part + 1;
+}
+
+static int cut_of(const DrDisc *d)
+{
+    return d->opt_cut_total > 0 ? d->opt_cut_total : d->nb_opt_cuts + 1;
+}
+
 static int clip_err(int ret)
 {
     switch (ret) {
@@ -1236,6 +1249,7 @@ int ff_disc_title_reader_open(DrDisc *d, const DiscTitleSource *src)
         dr_free(starts);
         if (ret < 0)
             return ret;
+        ff_disctl_cut_names(r->cut, cut_no(d), cut_of(d));
     }
     for (int i = r->first_clip; i <= r->last_clip; i++)
         r->blocks_total += src->clip_blocks(d, i);
@@ -1777,7 +1791,7 @@ static int cut_end(DrDisc *d)
     DrDiscChapter *ch;
     DRCutResult cr;
     int n = 0, inside = -1, first = -1, last = -1, ret;
-    char what[64] = "no chapter";
+    char what[112] = "no chapter";
 
     if ((ret = ff_disctl_cut_finish(r->cut)) < 0)
         return ret;
@@ -1825,19 +1839,22 @@ static int cut_end(DrDisc *d)
         snprintf(what, sizeof(what), "the title's chapter %d", first + 1);
     else if (n)
         snprintf(what, sizeof(what), "the title's chapters %d-%d", first + 1, last + 1);
-    dr_vlog(d->log, DR_VLOG_INFO, "Cut part %d/%d: %"PRId64" picture(s) from %s; %s\n", d->opt_cut_part + 1,
-            d->nb_opt_cuts + 1, cr.pictures, !from ? "the title's start" :
+    /* (cuts inside one part of the title: the chapters are that part's own, numbered from its start) */
+    if (n && d->opt_part > 0)
+        snprintf(what + strlen(what), sizeof(what) - strlen(what), " as its part %d numbers them", d->opt_part + 1);
+    dr_vlog(d->log, DR_VLOG_INFO, "Cut part %d/%d: %"PRId64" picture(s) from %s; %s\n", cut_no(d),
+            cut_of(d), cr.pictures, !from ? "the title's start" :
             cr.start == DR_START_CLEAN ? "a clean key frame" : cr.start == DR_START_OPEN ? "an open key frame" :
             cr.start == DR_START_BROKEN ? "a key frame at a broken link" : "a key frame", what);
     if (cr.left_out)
         dr_vlog(d->log, DR_VLOG_INFO, "Cut part %d/%d: %"PRId64" picture(s) shown before its key frame need the "
-                "pictures before it: left out (in neither part)\n", d->opt_cut_part + 1, d->nb_opt_cuts + 1,
+                "pictures before it: left out (in neither part)\n", cut_no(d), cut_of(d),
                 cr.left_out);
     if (cr.undecodable)
         dr_vlog(d->log, DR_VLOG_INFO, "Cut part %d/%d: %"PRId64" picture(s) shown before its key frame need the "
                 "pictures before it and cannot be left out (H.264 reference pictures): kept (players do not show "
                 "them)\n",
-                d->opt_cut_part + 1, d->nb_opt_cuts + 1, cr.undecodable);
+                cut_no(d), cut_of(d), cr.undecodable);
     /* each audio track: where it starts on the part's clock */
     for (int i = 1; i < d->nb_out_tracks && from; i++) {
         const DrDiscTrack *t = &d->out_tracks[i];
@@ -1847,7 +1864,7 @@ static int cut_end(DrDisc *d)
             continue;                   /* (a track given whole: its caller says where its samples start) */
         ns = first * 25 / 27;
         dr_vlog(d->log, DR_VLOG_INFO, "Cut part %d/%d: track %d (%s): starts %"PRId64".%06"PRId64" ms after the "
-                "part's 0 (%s)\n", d->opt_cut_part + 1, d->nb_opt_cuts + 1, t->number,
+                "part's 0 (%s)\n", cut_no(d), cut_of(d), t->number,
                 ff_disctl_codec_id_name(r->src->tracks[i].codec), ns / 1000000, ns % 1000000,
                 d->track_cut[i] == DR_CUT_TRACK_PCM   ? "its first sample at or after the cut" :
                 d->track_cut[i] == DR_CUT_TRACK_ENTRY ? "the unit the cuts pass chose" :
@@ -1979,7 +1996,7 @@ int ff_disc_title_reader_frame(DrDisc *d, DrDiscFrame *out)
                     r->stop = 1;
                     dr_vlog(d->log, DR_VLOG_INFO, "Cut part %d/%d: complete: the reading stops here (its end + %d s), "
                            "%"PRId64"%% of the title read; the title's checks below cover what was read\n",
-                           d->opt_cut_part + 1, d->nb_opt_cuts + 1, (int)(CUT_MARGIN / DR_TICKS_PER_SECOND),
+                           cut_no(d), cut_of(d), (int)(CUT_MARGIN / DR_TICKS_PER_SECOND),
                            r->blocks_total ? r->blocks_done * 100 / r->blocks_total : 0);
                 }
                 if (ret <= 0) {

@@ -775,9 +775,10 @@ void MainWindow::contextMenu(const QPoint &pos)
         QAction *a = menu.addAction(QString("Write as %1 Parts (One per %2)").arg(ti.nb_parts).arg(unit));
         a->setCheckable(true);
         a->setChecked(engine_title_split(j->disc, t));
-        a->setEnabled(!running && !engine_title_cuts(j->disc, t));
+        a->setEnabled(!running);
         if (engine_title_cuts(j->disc, t))
-            a->setToolTip("The title has cuts: they decide its parts");
+            a->setToolTip("With its cuts: the title is split at these parts first (the disc's own breaks) and each "
+                          "cut is made inside the part it falls in");
         connect(a, &QAction::toggled, this, [this, id = j->id, t](bool on) {
             if (Job *x = jobById(id); x && x->disc) {
                 engine_set_title_split(x->disc, t, on);

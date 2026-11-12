@@ -1369,7 +1369,7 @@ done:
 static int flac_open(const TitleJob *job, const DrDiscTrack *t, EsOut *o, const char *prefix)
 {
     int64_t *bounds = dr_calloc(job->nb_cuts ? job->nb_cuts : 1, sizeof(*bounds));
-    int64_t zero = job->part > 0 ? job->cuts[job->part - 1].zero : 0;
+    int64_t zero = job->cut_part > 0 ? job->cuts[job->cut_part - 1].zero : 0;
     int ret;
 
     if (!bounds || !(o->flac_tmp = dr_asprintf_str("%s_%02d_flac.part", prefix, t->number))) {
@@ -1379,7 +1379,7 @@ static int flac_open(const TitleJob *job, const DrDiscTrack *t, EsOut *o, const 
     /* the cuts on the part's clock, as the track's units are timed */
     for (int i = 0; i < job->nb_cuts; i++)
         bounds[i] = job->cuts[i].zero - zero;
-    ret = dr_flac_out_open(&o->flac, t->codec, o->flac_tmp, bounds, job->nb_cuts, job->part, DR_TICKS_PER_SECOND);
+    ret = dr_flac_out_open(&o->flac, t->codec, o->flac_tmp, bounds, job->nb_cuts, job->cut_part, DR_TICKS_PER_SECOND);
     dr_free(bounds);
     if (ret < 0)
         log_text(LOG_ERROR, "Track %d (%s): not written as FLAC: its decoder cannot be opened (%s); " FLAC_OFF,
@@ -1459,7 +1459,7 @@ static int flac_finish(const TitleJob *job, const DrDiscTrack *t, EsOut *o, cons
              "cut between two samples: %"PRId64" samples in this part; %"PRId64" unit(s) decoded, %"PRId64
              " sample(s) of the part(s) before it and %"PRId64" of the next left out of the file", t->number, label,
              *o->layout ? " " : "", o->layout, r->rate, r->flac_bits, bits, r->kept, r->units, r->before, r->after);
-    if (job->part > 0) {
+    if (job->cut_part > 0) {
         int64_t ns = r->first * 25 / 27;
         log_text(LOG_INFO, "Cut part %d/%d: track %d (%s as FLAC): starts %"PRId64".%06"PRId64" ms after the part's "
                  "0 (its first sample at or after the cut; a sample lasts %.6f ms)", job->part + 1, job->nb_parts,
@@ -1540,11 +1540,12 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     {
         const DiscTitleInfo *ti = info && job->title < info->nb_titles ? &info->titles[job->title] : NULL;
         if (job->nb_cuts) {             /* a cut part: from its cut to the next one */
-            int64_t from = job->part > 0 ? job->cuts[job->part - 1].zero : 0;
-            int64_t to   = job->part < job->nb_cuts ? job->cuts[job->part].zero : job->cut_end;
+            int64_t from = job->cut_part > 0 ? job->cuts[job->cut_part - 1].zero : 0;
+            int64_t to   = job->cut_part < job->nb_cuts ? job->cuts[job->cut_part].zero : job->cut_end;
             title_us = (to - from) / (DR_TICKS_PER_SECOND / 1000000);
         } else
-            title_us = !ti ? 0 : job->part >= 0 && job->part < ti->nb_parts ? ti->parts[job->part].duration :
+            title_us = !ti ? 0 : job->title_part >= 0 && job->title_part < ti->nb_parts ?
+                                 ti->parts[job->title_part].duration :
                                                                             ti->duration;
         hms(dur, sizeof(dur), title_us > 0 ? title_us / 1000000.0 : 0);
     }
@@ -1557,9 +1558,12 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         res->failed = 1;
         return DR_ERR(ENOSYS);
     }
-    if ((ret = job->nb_cuts ? dr_disc_title_open_cut(d, job->title, job->cuts, job->nb_cuts, job->part, job->keep,
+    /* a cut reading names its part as the title's files are numbered (across the title's own parts) */
+    dr_disc_set_cut_names(d, job->nb_cuts ? job->part - job->cut_part : 0, job->nb_cuts ? job->nb_parts : 0);
+    if ((ret = job->nb_cuts ? dr_disc_title_open_cut(d, job->title, job->title_part, job->cuts, job->nb_cuts,
+                                                     job->cut_part, job->keep,
                                                      job->cut_starts, job->cut_flac) :
-                              dr_disc_title_open(d, job->title, job->part, job->second_view, job->keep)) < 0) {
+                              dr_disc_title_open(d, job->title, job->title_part, job->second_view, job->keep)) < 0) {
         log_msg(MSG_TITLE_OPEN_FAILED, LOG_ERROR, "%s cannot be opened: %s", who, dr_err_text(ret));
         res->failed = 1;
         return ret;
@@ -1627,7 +1631,7 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
             ret = DR_ERR(ENOMEM);
             goto end;
         }
-        if ((ret = mkvout_open(&mo, d, mkv_path, job->title, job->part)) < 0)
+        if ((ret = mkvout_open(&mo, d, mkv_path, job->title, job->title_part)) < 0)
             goto end;
         log_text(LOG_DETAIL, "File: %s", mkv_path);
     }
@@ -1738,7 +1742,7 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
             /* a track written as FLAC: the part's samples, and each range this reading decoded up to the part's */
             if (out[i].flac_done) {
                 const DrFlacResult *r = &out[i].flac_res;
-                int n = DR_MIN(job->part + 1, r->nb_ranges);
+                int n = DR_MIN(job->cut_part + 1, r->nb_ranges);
                 b->flac         = 1;
                 b->flac_samples = r->kept;
                 memcpy(b->flac_md5, r->md5, sizeof(b->flac_md5));

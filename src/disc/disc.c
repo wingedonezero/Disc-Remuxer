@@ -708,8 +708,14 @@ void dr_disc_title_close(DrDisc *d)
 
 static int title_open_with(DrDisc *d, int title, int part, int second_view, const uint8_t *keep);
 
-int dr_disc_title_open_cut(DrDisc *d, int title, const DrDiscCut *cuts, int nb_cuts, int part, const uint8_t *keep,
-                           const int64_t *starts, const uint8_t *whole)
+void dr_disc_set_cut_names(DrDisc *d, int before, int total)
+{
+    d->opt_cut_before = before > 0 ? before : 0;
+    d->opt_cut_total  = total > 0 ? total : 0;
+}
+
+int dr_disc_title_open_cut(DrDisc *d, int title, int title_part, const DrDiscCut *cuts, int nb_cuts, int part,
+                           const uint8_t *keep, const int64_t *starts, const uint8_t *whole)
 {
     int ret;
 
@@ -741,7 +747,7 @@ int dr_disc_title_open_cut(DrDisc *d, int title, const DrDiscCut *cuts, int nb_c
         d->opt_cuts[i] = (DRCutPlace){ cuts[i].zero, cuts[i].key_time };
     d->nb_opt_cuts  = nb_cuts;
     d->opt_cut_part = part;
-    ret = title_open_with(d, title, -1, 0, keep);
+    ret = title_open_with(d, title, title_part, 0, keep);
     return ret;
 }
 
