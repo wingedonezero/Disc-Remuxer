@@ -1459,11 +1459,26 @@ static int flac_finish(const TitleJob *job, const DrDiscTrack *t, EsOut *o, cons
              "cut between two samples: %"PRId64" samples in this part; %"PRId64" unit(s) decoded, %"PRId64
              " sample(s) of the part(s) before it and %"PRId64" of the next left out of the file", t->number, label,
              *o->layout ? " " : "", o->layout, r->rate, r->flac_bits, bits, r->kept, r->units, r->before, r->after);
+    /* where its samples start at the cut: on it, between two samples (less
+     * than one sample after it), or later (the track has none there) */
     if (job->cut_part > 0) {
         int64_t ns = r->first * 25 / 27;
-        log_text(LOG_INFO, "Cut part %d/%d: track %d (%s as FLAC): starts %"PRId64".%06"PRId64" ms after the part's "
-                 "0 (its first sample at or after the cut; a sample lasts %.6f ms)", job->part + 1, job->nb_parts,
-                 t->number, label, ns / 1000000, ns % 1000000, 1000.0 / r->rate);
+        if (!r->first)
+            log_text(LOG_INFO, "Cut part %d/%d: track %d (%s as FLAC): starts exactly at the part's 0: the cut is on a "
+                     "sample, nothing left over (a sample lasts %.6f ms)", job->part + 1, job->nb_parts, t->number,
+                     label, 1000.0 / r->rate);
+        else if (r->first > 0 && r->first < DR_TICKS_PER_SECOND / r->rate + 1)
+            log_text(LOG_INFO, "Cut part %d/%d: track %d (%s as FLAC): starts %"PRId64".%06"PRId64" ms after the "
+                     "part's 0: the cut falls between two samples, so its first sample is the next one (a sample "
+                     "lasts %.6f ms); the part before ends on the sample before it, none lost or twice; a file that "
+                     "places a track to the whole ms has it at %"PRId64" ms", job->part + 1, job->nb_parts, t->number,
+                     label, ns / 1000000, ns % 1000000, 1000.0 / r->rate, o->st.delay_ms);
+        else
+            log_text(LOG_WARNING, "Cut part %d/%d: track %d (%s as FLAC): starts %"PRId64".%06"PRId64" ms after the "
+                     "part's 0, more than one sample (%.6f ms): the track has no sample at the cut (a gap or a "
+                     "later start there); its file starts with its first sample after it (delay %"PRId64" ms)",
+                     job->part + 1, job->nb_parts, t->number, label, ns / 1000000, ns % 1000000, 1000.0 / r->rate,
+                     o->st.delay_ms);
     }
     if (!r->native_layout)
         log_text(LOG_INFO, "Track %d: FLAC has no layout of its own for these %d channels (%s): the file carries the "
