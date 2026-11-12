@@ -1467,8 +1467,9 @@ static int flac_finish(const TitleJob *job, const DrDiscTrack *t, EsOut *o, cons
             log_text(LOG_INFO, "Cut part %d/%d: track %d (%s as FLAC): starts exactly at the part's 0: the cut is on a "
                      "sample, nothing left over (a sample lasts %.6f ms)", job->part + 1, job->nb_parts, t->number,
                      label, 1000.0 / r->rate);
+        /* (a warning so it is seen: nothing is lost, but the cut is not on a sample) */
         else if (r->first > 0 && r->first < DR_TICKS_PER_SECOND / r->rate + 1)
-            log_text(LOG_INFO, "Cut part %d/%d: track %d (%s as FLAC): starts %"PRId64".%06"PRId64" ms after the "
+            log_text(LOG_WARNING, "Cut part %d/%d: track %d (%s as FLAC): starts %"PRId64".%06"PRId64" ms after the "
                      "part's 0: the cut falls between two samples, so its first sample is the next one (a sample "
                      "lasts %.6f ms); the part before ends on the sample before it, none lost or twice; a file that "
                      "places a track to the whole ms has it at %"PRId64" ms", job->part + 1, job->nb_parts, t->number,
