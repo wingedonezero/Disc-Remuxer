@@ -21,7 +21,10 @@ change made to them: `libs/README.md`. The title timeline in detail:
 > missing, every rip would be byte-identical; only reports and checks would
 > degrade.
 
-FFmpeg is linked from one module only (`src/analyze/`); it is the
+FFmpeg is linked from `src/analyze/` and, for the one conversion the program
+makes, from `src/convert/` (off unless asked for: a cut title's Dolby TrueHD
+or DTS-HD Master Audio track decoded and written as FLAC, cut between two
+samples; setting `cuts.lossless_to_flac`); it is the
 maintainer's fork (see `libs/README.md`). Every codec is cut by `src/parse/` (MPEG-1/2 video and
 E-AC-3, which never had a disc rule, by `parse/stock.c`: FFmpeg's own cut,
 ported). The timeline still asks analyze one question (`DRTimelineHost` in
@@ -58,9 +61,15 @@ src/base/         what everything may use: the log, messages, settings,
 beside the path:
 src/mkv/          the Matroska writer (C++ on libebml + libmatroska + zlib, a
                   C interface): a title into one MKV file with mkvmerge's rules
-src/analyze/      the one module that links FFmpeg: stream details, the end
+src/analyze/      links FFmpeg to answer questions: stream details, the end
                   check of written files, the TrueHD end-of-stream decode
                   (the timeline's one question); FFmpeg's log lines into ours
+src/convert/      links FFmpeg for the one conversion: a lossless audio track
+                  of a title with cuts (TrueHD without Atmos, DTS-HD Master
+                  Audio without DTS:X) decoded strictly from the title's
+                  first unit and written as FLAC, each part cut between two
+                  samples; each file read back against the decoded samples
+                  (only with the setting cuts.lossless_to_flac)
 helpers           ccextractor (a separate process: captions to text)
 ```
 

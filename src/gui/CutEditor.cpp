@@ -329,6 +329,12 @@ CutEditor::CutEditor(EngineDisc *d, int t, LogRelay *relay, QWidget *parent)
     setWindowTitle(QString("Cuts - Title #%1%2").arg(t).arg(ti->name ? QString(" (%1)").arg(QString::fromUtf8(ti->name))
                                                                      : QString()));
     rule = strcmp(setting_text("cuts.key_frame"), "next") ? CUT_NEAREST : CUT_NEXT;
+    // written as parts (chosen for the title, or the setting): the rip splits
+    // the title at the disc's own breaks first and makes each cut inside its part
+    if (ti->nb_parts > 1 && (engine_title_split(d, t) || (setting_bool("output.split_joined_titles") &&
+                                                           !ti->parts_on_request)))
+        for (int k = 1; k < ti->nb_parts; k++)
+            breaks << ti->parts[k].start * (DR_TICKS_PER_SECOND / 1000000);
     // the pictures decoded at their display aspect, at most 1920 wide (the
     // window scales them; a size of their own keeps them as the cache holds them)
     if (ti->nb_streams > 0) {
@@ -622,8 +628,14 @@ void CutEditor::buildUi()
 
     auto *partBox = new QGroupBox("Parts");
     auto *pb = new QVBoxLayout(partBox);
-    partList = list({ "Part", "Start", "Length" });
+    partList = list({ "Part", "Start", "Length", "Starts at" });
     pb->addWidget(partList);
+    if (!breaks.isEmpty()) {
+        auto *note = new QLabel(QString("The title is written as its %1 parts: it is split at the disc's own breaks "
+                                        "first, and each cut is made inside the part it falls in.").arg(ti->nb_parts));
+        note->setWordWrap(true);
+        pb->addWidget(note);
+    }
     connect(partList, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem *it) {
         stopPlay();
         showAt(it->data(0, Qt::UserRole).toLongLong());
@@ -937,31 +949,51 @@ void CutEditor::refresh()
     QVector<int64_t> zeros;
     QVector<bool> cleanCuts;
 
+    // a place the disc itself breaks the title at (written as parts), within 1 ms
+    auto onBreak = [this](int64_t t) {
+        for (int64_t x : breaks)
+            if (qAbs(x - t) <= DR_TICKS_PER_SECOND / 1000)
+                return true;
+        return false;
+    };
+    QVector<QPair<int64_t, QString>> starts = { { 0, "the title's start" } };
+
     cutList->clear();
     for (int i = 0; i < cuts.size(); i++) {
         const CutPoint &p = pts[cuts[i].point];
         char brief[64], full[768];
         bool ok = cut_point_clean(&p, brief, sizeof(brief), full, sizeof(full));
-        auto *it = new QTreeWidgetItem(cutList, { QString::number(i + 1), msText(p.zero), QString::fromUtf8(brief),
+        bool spare = onBreak(p.zero);
+        auto *it = new QTreeWidgetItem(cutList, { QString::number(i + 1), msText(p.zero),
+                                                  spare ? QString("not needed") : QString::fromUtf8(brief),
                                                   cuts[i].from });
         it->setData(0, Qt::UserRole, i);
         it->setToolTip(1, QString("The part starts at %1; its key frame at %2").arg(exactText(p.zero),
                                                                                      exactText(p.key_time)));
-        it->setToolTip(2, QString::fromUtf8(full));
-        if (!ok) {
+        it->setToolTip(2, spare ? QString("The disc itself breaks the title here and the title is written as its "
+                                          "parts: the rip splits it there and makes no cut")
+                                : QString::fromUtf8(full));
+        if (!ok || spare) {
             it->setForeground(2, QColor(200, 110, 0));
             it->setIcon(2, style()->standardIcon(QStyle::SP_MessageBoxWarning));
         }
         zeros << p.zero;
         cleanCuts << ok;
+        if (!spare)
+            starts << qMakePair(p.zero, QString("a cut"));
     }
+    for (int64_t x : breaks)
+        if (x > 0 && x < ix->end)
+            starts << qMakePair(x, QString("the disc's own break"));
+    std::sort(starts.begin(), starts.end(), [](const QPair<int64_t, QString> &a, const QPair<int64_t, QString> &b) {
+        return a.first < b.first;
+    });
     partList->clear();
-    QVector<int64_t> b = { 0 };
-    b += zeros;
-    b += ix->end;
-    for (int i = 0; i + 1 < b.size(); i++) {
-        auto *it = new QTreeWidgetItem(partList, { QString::number(i + 1), msText(b[i]), msText(b[i + 1] - b[i]) });
-        it->setData(0, Qt::UserRole, (qlonglong)b[i]);
+    for (int i = 0; i < starts.size(); i++) {
+        int64_t from = starts[i].first, to = i + 1 < starts.size() ? starts[i + 1].first : ix->end;
+        auto *it = new QTreeWidgetItem(partList, { QString::number(i + 1), msText(from), msText(to - from),
+                                                   starts[i].second });
+        it->setData(0, Qt::UserRole, (qlonglong)from);
     }
     timeline->setCuts(zeros, cleanCuts);
     for (QTreeWidget *w : { cutList, partList })

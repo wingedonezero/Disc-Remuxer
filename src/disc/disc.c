@@ -363,6 +363,12 @@ int ff_disc_open_tracks(DrDisc *d, const char *title, const DiscTrack *tracks, i
         {
             const char *why;
             d->track_cut[n] = view ? DR_CUT_TRACK_NONE : cut_track(k, i, &why);
+            /* a cut part's track the caller decodes: every unit from the title's start */
+            if (d->opt_cuts && d->opt_whole && i < d->opt_nb_streams && d->opt_whole[i] &&
+                d->track_cut[n] == DR_CUT_TRACK_ENTRY) {
+                d->track_cut[n] = DR_CUT_TRACK_WHOLE;
+                d->out_tracks[d->nb_out_tracks - 1].cut_whole = 1;
+            }
         }
         t->codec       = codec;
         t->kind        = view ? DR_KIND_LAYER : k->kind;
@@ -463,6 +469,7 @@ static int disc_close(DrDisc *d)
     title_close(d);
     dr_freep(&d->opt_cuts);
     dr_freep(&d->opt_starts);
+    dr_freep(&d->opt_whole);
     dr_freep(&d->ref_cache);
     if (d->fmt && d->part)
         d->fmt->close(d);
@@ -701,8 +708,14 @@ void dr_disc_title_close(DrDisc *d)
 
 static int title_open_with(DrDisc *d, int title, int part, int second_view, const uint8_t *keep);
 
-int dr_disc_title_open_cut(DrDisc *d, int title, const DrDiscCut *cuts, int nb_cuts, int part, const uint8_t *keep,
-                           const int64_t *starts)
+void dr_disc_set_cut_names(DrDisc *d, int before, int total)
+{
+    d->opt_cut_before = before > 0 ? before : 0;
+    d->opt_cut_total  = total > 0 ? total : 0;
+}
+
+int dr_disc_title_open_cut(DrDisc *d, int title, int title_part, const DrDiscCut *cuts, int nb_cuts, int part,
+                           const uint8_t *keep, const int64_t *starts, const uint8_t *whole)
 {
     int ret;
 
@@ -715,11 +728,16 @@ int dr_disc_title_open_cut(DrDisc *d, int title, const DrDiscCut *cuts, int nb_c
     for (int i = 0; i < d->info.titles[title].nb_streams; i++) {
         if (i && keep[i] && dr_disc_cut_left_out(d, title, i))
             return DR_ERR(ENOSYS);      /* a track a cut part does not carry yet */
-        if (keep[i] && dr_disc_cut_start_units(d, title, i) && !starts)
+        if (whole && whole[i] && !dr_disc_cut_start_units(d, title, i))
+            return DR_ERR(EINVAL);      /* only a track that starts at some units is given whole */
+        if (keep[i] && dr_disc_cut_start_units(d, title, i) && !starts && !(whole && whole[i]))
             return DR_ERR(EINVAL);      /* its start units are the cuts pass's */
     }
     dr_freep(&d->opt_starts);
+    dr_freep(&d->opt_whole);
     d->opt_nb_streams = d->info.titles[title].nb_streams;
+    if (whole && !(d->opt_whole = dr_memdup(whole, d->opt_nb_streams ? d->opt_nb_streams : 1)))
+        return DR_ERR(ENOMEM);
     if (starts && !(d->opt_starts = dr_memdup(starts, (size_t)nb_cuts * d->opt_nb_streams * sizeof(*starts))))
         return DR_ERR(ENOMEM);
     dr_freep(&d->opt_cuts);
@@ -729,7 +747,7 @@ int dr_disc_title_open_cut(DrDisc *d, int title, const DrDiscCut *cuts, int nb_c
         d->opt_cuts[i] = (DRCutPlace){ cuts[i].zero, cuts[i].key_time };
     d->nb_opt_cuts  = nb_cuts;
     d->opt_cut_part = part;
-    ret = title_open_with(d, title, -1, 0, keep);
+    ret = title_open_with(d, title, title_part, 0, keep);
     return ret;
 }
 
@@ -749,6 +767,7 @@ int dr_disc_title_open_at(DrDisc *d, int title, int seg, int64_t block, const ui
         return DR_ERR(EINVAL);
     dr_freep(&d->opt_cuts);
     dr_freep(&d->opt_starts);
+    dr_freep(&d->opt_whole);
     d->nb_opt_cuts     = 0;
     d->opt_start_seg   = seg;
     d->opt_start_block = block;
@@ -763,6 +782,7 @@ int dr_disc_title_open(DrDisc *d, int title, int part, int second_view, const ui
         return DR_ERR(EINVAL);
     dr_freep(&d->opt_cuts);
     dr_freep(&d->opt_starts);
+    dr_freep(&d->opt_whole);
     d->nb_opt_cuts = 0;
     return title_open_with(d, title, part, second_view, keep);
 }

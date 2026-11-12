@@ -1277,6 +1277,10 @@ enum DRCutTrack {
                                  starts) */
     DR_CUT_TRACK_SUB,       /**< subtitles and captions: each unit by its start time */
     DR_CUT_TRACK_PGS,       /**< PGS display sets: by their time, and what they show is followed */
+    DR_CUT_TRACK_WHOLE,     /**< audio the caller decodes and cuts between two samples itself: every unit from
+                                 the title's start that starts before the part's end is given, on the part's
+                                 clock (the ones before its 0 below 0), so its decoder runs from the stream's
+                                 first unit */
 };
 
 /** A cut's place on the title timeline (ticks). */
@@ -1304,6 +1308,10 @@ typedef struct DRCut DRCut;
  *  negative base error. */
 int  ff_disctl_cut_open(DRCut **c, void *log, const DRCutPlace *cuts, int nb_cuts, int part, int codec,
                         const int *kinds, int nb_tracks, const int64_t *starts);
+/** The part's number and how many there are, as the log names them (the
+ *  default: part + 1 of nb_cuts + 1): a title cut inside its own parts
+ *  counts its files across those parts. */
+void ff_disctl_cut_names(DRCut *c, int number, int of);
 /** A PCM track's samples per second and bytes per sample frame (all its
  *  channels), before its first frame. */
 void ff_disctl_cut_pcm(DRCut *c, int track, int rate, int bytes_per_sample_frame);
@@ -1314,8 +1322,9 @@ void ff_disctl_cut_pcm(DRCut *c, int track, int rate, int bytes_per_sample_frame
  *  decoding order from the part's key frame to the next cut's; audio whose
  *  every frame can start: the frames from the part's 0 (the earlier ones
  *  are the part before's); PCM: from its first sample at or after the
- *  part's 0. DR_CUT_TRACK_NONE tracks: left out (counted, said at the
- *  end). */
+ *  part's 0; DR_CUT_TRACK_WHOLE: every unit that starts before the part's
+ *  end (those before its 0 at times below 0). DR_CUT_TRACK_NONE tracks: left
+ *  out (counted, said at the end). */
 int  ff_disctl_cut_frame(DRCut *c, int track, DRFrame *f);
 /** A track's frames given and its first frame's time on the part's clock
  *  (INT64_MIN: none). */

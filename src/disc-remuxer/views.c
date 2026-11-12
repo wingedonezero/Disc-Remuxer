@@ -519,7 +519,12 @@ int engine_title_state(const DiscTitleInfo *t, int split, const char *cuts, char
         snprintf(state, ssize, "not the main angle");
     if (split)
         snprintf(state, ssize, "written as %d parts", t->nb_parts);
-    if (parts) {
+    if (parts && split && t->nb_parts) {
+        /* split at the disc's own breaks first, each cut inside the part it falls in */
+        snprintf(state, ssize, "written as %d parts, %d cut%s inside them", t->nb_parts, parts - 1,
+                 parts == 2 ? "" : "s");
+        snprintf(why, wsize, "Cut at %s", words);
+    } else if (parts) {
         /* its cuts decide its parts */
         snprintf(state, ssize, "cut into %d parts", parts);
         snprintf(why, wsize, "Cut at %s", words);

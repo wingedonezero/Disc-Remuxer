@@ -210,3 +210,47 @@ def test_what_is_not_a_cut_is_refused():
 def test_a_time_is_written_to_the_ns():
     buf = ffi.new("char[40]")
     assert ffi.string(lib.cut_time_text(buf, 40, 32900 * F)) == b"00:22:52.204.166.667"
+
+
+# ---- cuts on a title written as its parts: each cut inside the part it falls in ----
+
+def in_part(item, starts, chapters, k):
+    r, n, bad = ffi.new("CutRequest **"), ffi.new("int *"), ffi.new("const char **")
+    assert lib.cut_parse(item.encode(), r, n, bad) == 0 and n[0] == 1
+    out = ffi.new("CutInPart *")
+    lib.cut_in_part(r[0], ffi.new("int64_t[]", starts), ffi.new("int[]", chapters), len(starts), k, out)
+    lib.free(r[0])
+    return {lib.CUT_ELSEWHERE: None, lib.CUT_INSIDE: ("in", out.chapter, out.time),
+            lib.CUT_ON_BREAK: ("break", out.chapter, out.time)}[out.where]
+
+
+def test_a_chapter_cut_goes_to_the_part_that_holds_the_chapter_with_its_own_number():
+    starts, chapters = [0, 1000 * TPS, 1500 * TPS], [29, 4, 2]     # the title's chapters 1-29, 30-33, 34-35
+    assert in_part("c6", starts, chapters, 0) == ("in", 6, 0) and in_part("c6", starts, chapters, 1) is None
+    assert in_part("c29", starts, chapters, 0) == ("in", 29, 0), "a part's last chapter"
+    assert in_part("c31", starts, chapters, 1) == ("in", 2, 0) and in_part("c31", starts, chapters, 0) is None
+    assert in_part("c35", starts, chapters, 2) == ("in", 2, 0)
+    # a part's first chapter is where the disc breaks the title: no cut
+    assert in_part("c30", starts, chapters, 1) == ("break", 1, 0) and in_part("c30", starts, chapters, 0) is None
+    assert in_part("c34", starts, chapters, 2) == ("break", 1, 0)
+    # the title's first chapter is an ordinary request (the cut rule refuses the first picture)
+    assert in_part("c1", starts, chapters, 0) == ("in", 1, 0)
+    # a chapter the title does not have stays with the last part (refused there with its reason)
+    assert in_part("c40", starts, chapters, 2) == ("in", 7, 0) and in_part("c40", starts, chapters, 1) is None
+
+
+def test_a_time_cut_goes_to_the_part_it_lies_in_counted_from_that_parts_start():
+    starts, chapters = [0, 1000 * TPS, 1500 * TPS], [29, 4, 2]
+    assert in_part("10:00", starts, chapters, 0) == ("in", 0, 600 * TPS)
+    assert in_part("20:00", starts, chapters, 1) == ("in", 0, 200 * TPS) and in_part("20:00", starts, chapters, 0) is None
+    assert in_part("30:00", starts, chapters, 2) == ("in", 0, 300 * TPS), "past the last start: the last part's"
+    # on a part's start, within 1 ms either way: the disc's own break, that part's, no cut
+    for t in ("16:40", "16:39.9995", "16:40.0005"):
+        assert in_part(t, starts, chapters, 1)[0] == "break", t
+        assert in_part(t, starts, chapters, 0) is None, t
+    # 2 ms before the break is a cut inside the part before, 2 ms after it one inside the part
+    assert in_part("16:39.998", starts, chapters, 0) == ("in", 0, 1000 * TPS - 2 * MS)
+    assert in_part("16:40.002", starts, chapters, 1) == ("in", 0, 2 * MS)
+    # every request lands in exactly one part
+    for item in ("c1", "c17", "c30", "c33", "c35", "0:01", "16:40", "25:00", "99:00"):
+        assert sum(in_part(item, starts, chapters, k) is not None for k in range(3)) == 1, item

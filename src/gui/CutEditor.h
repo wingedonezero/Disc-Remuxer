@@ -219,6 +219,7 @@ private:
     int              cur = 0;
 
     QVector<Cut>     cuts;
+    QVector<int64_t> breaks;     // written as parts: where the disc itself breaks the title (ticks), else none
     QString          suggested;    // the last analysis' split points as cut list items
 
     // play: pictures at the title's own pace from where it started

@@ -24,7 +24,9 @@ int open_disc(const char *source, DrDisc **disc);
 typedef struct TitleJob {
     DrDisc     *disc;          /* the open disc (open_disc()); the title is opened on it and closed again */
     int         title;         /* index in the disc's title list */
-    int         part, nb_parts;/* part >= 0: only that part of the title's nb_parts (files _p1, _p2, ...) */
+    int         part, nb_parts;/* part >= 0: this is file `part` of the nb_parts the title is written as (files
+                                  _p1, _p2, ...): its parts on the disc, its cut parts, or cut parts inside its
+                                  parts, counted in order */
     int         second_view;   /* a 3-D title's second view as a track of its own (with keep: when kept) */
     const uint8_t *keep;       /* the title's tracks to rip (dr_disc_title_open()), NULL every track */
     int         ordinal, count;/* this is title <ordinal> of <count> selected */
@@ -34,6 +36,11 @@ typedef struct TitleJob {
     int         nb_cuts;
     int64_t     cut_end;       /* with cuts: where the title's video ends (ticks) */
     const int64_t *cut_starts; /* with cuts: per cut and track the unit a start-unit track's part starts at */
+    const uint8_t *cut_flac;   /* with cuts: per track of the title 1 when it is decoded and written as FLAC, cut
+                                  between two samples (setting cuts.lossless_to_flac), NULL none */
+    int         title_part;    /* the part of the title that is read (DiscTitleInfo.parts: one of the pieces the
+                                  disc splits it into), -1 the whole title; with cuts: they are made inside it */
+    int         cut_part;      /* with cuts: the cut part of that reading (0 .. nb_cuts) */
 } TitleJob;
 
 /* A cut part's track: its bytes (DrDiscTrack.cut_*), for the check after
@@ -44,6 +51,16 @@ typedef struct CutTrackBytes {
     int     read_all;          /* the whole title was read (its title bytes are all of them) */
     int     pcm;               /* LPCM (said in samples) */
     int     bytes_per_sample;  /* LPCM: of one sample frame */
+    /* a track written as FLAC: the part's samples and their MD5 (as FLAC
+     * counts it), and what this part's reading decoded between the cuts
+     * from the title's start to the part's end: each range's samples and
+     * MD5, in title order (nb_ranges; freed with the outcome) */
+    int      flac;
+    int64_t  flac_samples;
+    char     flac_md5[33];
+    int64_t *range_samples;
+    char   (*range_md5)[33];
+    int      nb_ranges;
 } CutTrackBytes;
 
 typedef struct TitleOutcome {

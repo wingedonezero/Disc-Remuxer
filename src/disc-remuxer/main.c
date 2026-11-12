@@ -39,7 +39,8 @@ static void usage(FILE *f)
           "                                        the key frame it takes and the part it starts. <cuts>:\n"
           "                                        c<chapter> or a time on the title's timeline (h:mm:ss.fff\n"
           "                                        or m:ss.fff), comma separated, e.g. c5,45:42.322; a time\n"
-          "                                        not on a key frame: setting cuts.key_frame\n"
+          "                                        not on a key frame: setting cuts.key_frame; with\n"
+          "                                        --split <title>: inside the title's own parts\n"
           "  frame <source> <title> <time> <file.bmp>  the picture shown at that time on the title's\n"
           "                                        timeline, as the cut editor shows it, as a BMP file\n"
           "  suggest-cuts <source> <title>         the cut editor's analysis of a title's chapters (the mode\n"
@@ -76,8 +77,12 @@ static void usage(FILE *f)
           "                       setting output.split_joined_titles does it for every title\n"
           "  --cut <title>:<cuts>  demux: write this title in parts cut at these places (c<chapter> or a\n"
           "                       time on the title's timeline, comma separated; the cuts command shows\n"
-          "                       where they fall); repeatable, one title each; a 3-D second view is\n"
-          "                       left out of the parts (said in the log)\n"
+          "                       where they fall); repeatable, one title each; a title also written\n"
+          "                       as its parts (--split) is split at the disc's own breaks first and\n"
+          "                       each cut is made inside the part it falls in; a 3-D second view is\n"
+          "                       left out of the parts (said in the log); setting cuts.lossless_to_flac\n"
+          "                       writes such a title's TrueHD / DTS-HD Master Audio as FLAC, cut\n"
+          "                       between two samples (else they start at their next start unit)\n"
           "  -v, -vv              more detail on the terminal\n"
           "\n"
           "DVD-Video, HD DVD and Blu-ray (UHD, 3-D) are wired.\n", f);
@@ -188,7 +193,7 @@ int main(int argc, char **argv)
     } else if (!strcmp(argv[i], "suggest-cuts") && i + 2 < argc) {
         ret = engine_suggest_cuts(argv[i + 1], argv[i + 2], &c);
     } else if (!strcmp(argv[i], "cuts") && i + 3 < argc) {
-        ret = engine_cuts(argv[i + 1], argv[i + 2], argv[i + 3], &c);
+        ret = engine_cuts(argv[i + 1], argv[i + 2], argv[i + 3], split, &c);
     } else if (!strcmp(argv[i], "find") && i + 1 < argc) {
         ret = engine_find(argv[i + 1]);
     } else if (!strcmp(argv[i], "demux") && i + 2 < argc) {

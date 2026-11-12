@@ -12,7 +12,10 @@
  * part's. Audio by time, as stream-copy cutting does: a frame that starts
  * before the part's 0 is the part before's, so a part's audio starts 0 to
  * one frame after its 0; PCM between two samples, at the first one at or
- * after the part's 0. Subtitles and captions by their start time too; one
+ * after the part's 0; audio the caller decodes (DR_CUT_TRACK_WHOLE): every
+ * unit that starts before the part's end, so the decoder runs from the
+ * stream's first unit and the caller cuts between two samples. Subtitles and
+ * captions by their start time too; one
  * shown across a cut, and a PGS part whose first display set is no epoch
  * start or acquisition point (it refers to objects of the part before), are
  * said.
@@ -56,6 +59,7 @@ struct DRCut {
     DRCutPlace from, to;     /* the part's cut and the next one's (has_from / has_to) */
     int        has_from, has_to;
     int        part, nb_parts;
+    int        no, of;       /* the part's number and how many there are, in the log (ff_disctl_cut_names()) */
     int        codec;        /* DRCutCodec */
     int        phase;
     int        leading;      /* still after the part's key frame, before the next key frame */
@@ -109,6 +113,8 @@ int ff_disctl_cut_open(DRCut **pc, void *log, const DRCutPlace *cuts, int nb_cut
     c->log      = log;
     c->part     = part;
     c->nb_parts = nb_cuts + 1;
+    c->no       = part + 1;
+    c->of       = nb_cuts + 1;
     c->codec    = codec;
     if ((c->has_from = part > 0))
         c->from = cuts[part - 1];
@@ -126,6 +132,12 @@ static int start_of(unsigned flags)
     return flags & DR_F_START_CLEAN  ? DR_START_CLEAN  :
            flags & DR_F_START_BROKEN ? DR_START_BROKEN :
            flags & DR_F_START_OPEN   ? DR_START_OPEN   : DR_START_UNKNOWN;
+}
+
+void ff_disctl_cut_names(DRCut *c, int number, int of)
+{
+    c->no = number;
+    c->of = of;
 }
 
 void ff_disctl_cut_pcm(DRCut *c, int track, int rate, int bytes_per_sample_frame)
@@ -271,6 +283,9 @@ int ff_disctl_cut_frame(DRCut *c, int track, DRFrame *f)
         if (c->r.left_out != left)
             t->left_bytes += size;
     }
+    else if (t->kind == DR_CUT_TRACK_WHOLE)
+        /* a unit without a time too: the decoder needs every unit in order */
+        ret = !c->has_to || f->time == DR_NOPTS_VALUE || f->time < c->to.zero;
     else if (f->time == DR_NOPTS_VALUE)
         ret = 0;                        /* audio without a time has no place in a part */
     else if (t->kind == DR_CUT_TRACK_PCM)
@@ -313,7 +328,8 @@ int ff_disctl_cut_done(const DRCut *c, int64_t margin)
         return 0;
     for (int i = 0; i < c->nb_tracks; i++) {
         const CutTrack *t = &c->t[i];
-        int audio = t->kind == DR_CUT_TRACK_EVERY || t->kind == DR_CUT_TRACK_PCM || t->kind == DR_CUT_TRACK_ENTRY;
+        int audio = t->kind == DR_CUT_TRACK_EVERY || t->kind == DR_CUT_TRACK_PCM || t->kind == DR_CUT_TRACK_ENTRY ||
+                    t->kind == DR_CUT_TRACK_WHOLE;
         if (audio && !t->past_end && !(t->kind == DR_CUT_TRACK_ENTRY && t->to == INT64_MAX) &&
             c->video_max < c->to.zero + 10 * margin)
             return 0;
@@ -342,19 +358,19 @@ int ff_disctl_cut_finish(DRCut *c)
     if (c->has_from && c->phase == BEFORE) {
         ns = c->from.key_time * 25 / 27;
         dr_vlog(c->log, DR_VLOG_ERROR, "Cut part %d/%d: its key frame (at %"PRId64" ns on the title timeline) was not "
-                "met: the cuts do not belong to this reading of the title\n", c->part + 1, c->nb_parts, ns);
+                "met: the cuts do not belong to this reading of the title\n", c->no, c->of, ns);
         return DR_ERR_INVALID;
     }
     if (c->has_to && !c->seen_to) {
         ns = c->to.key_time * 25 / 27;
         dr_vlog(c->log, DR_VLOG_ERROR, "Cut part %d/%d: the next part's key frame (at %"PRId64" ns on the title "
-                "timeline) was not met: the cuts do not belong to this reading of the title\n", c->part + 1,
-                c->nb_parts, ns);
+                "timeline) was not met: the cuts do not belong to this reading of the title\n", c->no,
+                c->of, ns);
         return DR_ERR_INVALID;
     }
     if (c->r.first) {
         dr_vlog(c->log, DR_VLOG_ERROR, "Cut part %d/%d: its first picture is at %+"PRId64" ticks on the part's clock, "
-                "not at 0: the cut's place does not match the title's pictures\n", c->part + 1, c->nb_parts,
+                "not at 0: the cut's place does not match the title's pictures\n", c->no, c->of,
                 c->r.first);
         return DR_ERR_INVALID;
     }
@@ -366,13 +382,13 @@ int ff_disctl_cut_finish(DRCut *c)
         if (c->has_from && t->from != INT64_MAX && (t->first == INT64_MIN || t->first + c->from.zero != t->from)) {
             dr_vlog(c->log, DR_VLOG_ERROR, "Cut part %d/%d: stream %d does not start at the unit the cuts name (at %"
                     PRId64" ticks on the title timeline): the cuts do not belong to this reading of the title\n",
-                    c->part + 1, c->nb_parts, i, t->from);
+                    c->no, c->of, i, t->from);
             return DR_ERR_INVALID;
         }
         if (c->has_to && t->to != INT64_MAX && !t->seen_to) {
             dr_vlog(c->log, DR_VLOG_ERROR, "Cut part %d/%d: stream %d: the next part's start unit (at %"PRId64" ticks "
                     "on the title timeline) was not met: the cuts do not belong to this reading of the title\n",
-                    c->part + 1, c->nb_parts, i, t->to);
+                    c->no, c->of, i, t->to);
             return DR_ERR_INVALID;
         }
     }
@@ -381,25 +397,25 @@ int ff_disctl_cut_finish(DRCut *c)
         const CutTrack *t = &c->t[i];
         if (t->across_start)
             dr_vlog(c->log, DR_VLOG_WARNING, "Cut part %d/%d: stream %d: a subtitle of the part before is still "
-                    "shown at the part's start (it starts before the cut): not in this part\n", c->part + 1,
-                    c->nb_parts, i);
+                    "shown at the part's start (it starts before the cut): not in this part\n", c->no,
+                    c->of, i);
         if (t->across_end)
             dr_vlog(c->log, DR_VLOG_WARNING, "Cut part %d/%d: stream %d: its last subtitle is still shown at the "
-                    "part's end (it ends after the cut)%s\n", c->part + 1, c->nb_parts, i,
+                    "part's end (it ends after the cut)%s\n", c->no, c->of, i,
                     t->kind == DR_CUT_TRACK_PGS ? ": the display set that clears it is the next part's, so it has "
                     "no end in this part's file" : "");
         if (t->normal_start)
             dr_vlog(c->log, DR_VLOG_WARNING, "Cut part %d/%d: stream %d: its first PGS display set is a normal one "
                     "(no epoch start or acquisition point): it refers to objects of the part before\n",
-                    c->part + 1, c->nb_parts, i);
+                    c->no, c->of, i);
     }
     for (int i = 0; i < c->nb_tracks; i++)
         if (c->t[i].left)
             dr_vlog(c->log, DR_VLOG_WARNING, "Cut part %d/%d: stream %d: %"PRId64" frame(s) left out: a cut part does "
-                    "not carry this track yet\n", c->part + 1, c->nb_parts, i, c->t[i].left);
+                    "not carry this track yet\n", c->no, c->of, i, c->t[i].left);
     if (c->has_from)
         dr_vlog(c->log, DR_VLOG_VERBOSE, "Cut part %d/%d: its key frame met (%s), %"PRId64" picture(s) given, %"PRId64
-                " left out, %"PRId64" kept that cannot be decoded\n", c->part + 1, c->nb_parts, start_name(c->r.start),
+                " left out, %"PRId64" kept that cannot be decoded\n", c->no, c->of, start_name(c->r.start),
                 c->r.pictures, c->r.left_out, c->r.undecodable);
     return 0;
 }

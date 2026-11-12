@@ -52,6 +52,14 @@ int cut_resolve(const CutPoint *points, int nb_points, const int64_t *chapters, 
 
 const char *cut_time_text(char *buf, int size, int64_t ticks);
 
+enum CutWhere { CUT_ELSEWHERE = 0, CUT_INSIDE, CUT_ON_BREAK };
+typedef struct CutInPart {
+    int     where;
+    int     chapter;
+    int64_t time;
+} CutInPart;
+void cut_in_part(const CutRequest *r, const int64_t *starts, const int *chapters, int nb_parts, int k, CutInPart *out);
+
 typedef struct CutUnit {
     int64_t time;
     uint8_t entry;
@@ -81,7 +89,7 @@ typedef struct DRCutResult {
 } DRCutResult;
 typedef struct DRCut DRCut;
 enum DRCutTrack { DR_CUT_TRACK_NONE = 0, DR_CUT_TRACK_VIDEO, DR_CUT_TRACK_EVERY, DR_CUT_TRACK_PCM, DR_CUT_TRACK_ENTRY,
-                 DR_CUT_TRACK_SUB, DR_CUT_TRACK_PGS };
+                 DR_CUT_TRACK_SUB, DR_CUT_TRACK_PGS, DR_CUT_TRACK_WHOLE };
 int  ff_disctl_cut_open(DRCut **c, void *log, const DRCutPlace *cuts, int nb_cuts, int part, int codec,
                         const int *kinds, int nb_tracks, const int64_t *starts);
 void ff_disctl_cut_pcm(DRCut *c, int track, int rate, int bytes_per_sample_frame);

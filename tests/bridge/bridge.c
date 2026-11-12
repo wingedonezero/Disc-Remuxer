@@ -32,6 +32,7 @@
 
 #include "disc/bluray/bluray_internal.h"
 #include "analyze/analyze.h"
+#include "convert/flac_out.h"
 #include "timeline/disctl.h"
 #include "disc/dvd/dvd_internal.h"
 #include "disc/dvd/dvd_stream_probe.h"

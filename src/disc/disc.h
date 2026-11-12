@@ -93,6 +93,11 @@ typedef struct DrDiscTrack {
      * and (video) its leading pictures left out */
     int64_t     cut_title_bytes, cut_bytes, cut_left_bytes;
     unsigned    cut_read_all:1;
+    /* a cut part's track given whole (dr_disc_title_open_cut() whole): its
+     * frames are every unit of the title that starts before the part's end,
+     * on the part's clock (below 0 before the part): the caller decodes them
+     * from the first and keeps the part's samples */
+    unsigned    cut_whole:1;
 } DrDiscTrack;
 
 /** A chapter of the read title (after DR_ERR_EOF): ticks on the title
@@ -160,15 +165,28 @@ typedef struct DrDiscCut {
 /** Opens part `part` (0 .. nb_cuts) of title `title` cut at cuts (in time
  *  order) for reading: the title is read whole and only the part's frames
  *  are given, on the part's clock (its first picture at 0); the results at
- *  its end are the part's (frames, delays, its chapters, its length). keep
+ *  its end are the part's (frames, delays, its chapters, its length).
+ *  title_part >= 0: the cuts are made in that part of the title alone (one
+ *  of the pieces the disc itself splits it into, DiscTitleInfo.parts): it is
+ *  read as dr_disc_title_open() reads it, from its own start, and the cuts'
+ *  times are on its own timeline; -1: the whole title. keep
  *  must leave out every track dr_disc_cut_left_out() names. starts (nb_cuts
  *  x the title's tracks, cut by cut): for each track that starts only at
  *  some units (dr_disc_cut_start_units()) the time (ticks) of the unit its
  *  part starts at at each cut, INT64_MAX none (the engine's cuts pass finds
- *  them); may be NULL when no such track is kept. 0, or a negative error
- *  (the title is closed). */
-int  dr_disc_title_open_cut(DrDisc *d, int title, const DrDiscCut *cuts, int nb_cuts, int part, const uint8_t *keep,
-                            const int64_t *starts);
+ *  them); may be NULL when no such track is kept. whole (per track of the
+ *  title, NULL none): 1 gives a track that starts only at some units whole
+ *  instead (DrDiscTrack.cut_whole: every unit from the title's start that
+ *  starts before the part's end), for a caller that decodes it and cuts
+ *  between two samples; it needs no starts. 0, or a negative error (the
+ *  title is closed). */
+int  dr_disc_title_open_cut(DrDisc *d, int title, int title_part, const DrDiscCut *cuts, int nb_cuts, int part,
+                            const uint8_t *keep, const int64_t *starts, const uint8_t *whole);
+/** The numbers the next cut readings' log lines name their part with: the
+ *  files the title has given before the reading's first cut part, and how
+ *  many it gives in all (a title cut inside its own parts counts its files
+ *  across them); 0, 0: each reading's own ("Cut part 2/5"). */
+void dr_disc_set_cut_names(DrDisc *d, int before, int total);
 /** 1 when a stream of track `track` of title `title` can start only at some
  *  of its units (TrueHD at a major sync, a DTS-HD stream where its lossless
  *  data starts fresh: DrDiscFrame.entry), so each cut needs the unit its

@@ -52,9 +52,11 @@ int  engine_info(const char *source, const EngineChoice *c, int details);
 /* The cuts command: where the cuts asked for (items: "c5,45:42.322",
  * cuts.h cut_parse()) fall in title `title` (its number as info lists it):
  * the title's video is read as a rip reads it, each cut is said with its
- * key frame and the part it starts, nothing is written. 0, 1 (a cut
- * refused, or the title cannot be read), 2 (bad arguments). */
-int  engine_cuts(const char *source, const char *title, const char *items, const EngineChoice *c);
+ * key frame and the part it starts, nothing is written. split (NULL
+ * none): the titles written as their parts, as demux takes them: such a
+ * title's cuts are placed inside the disc's own parts, as a rip makes them.
+ * 0, 1 (a cut refused, or the title cannot be read), 2 (bad arguments). */
+int  engine_cuts(const char *source, const char *title, const char *items, const char *split, const EngineChoice *c);
 /* The frame command: the picture of title `title` shown at time `at` (the
  * last one starting at or before it), as the cut editor shows it, written to
  * path as a BMP. 0, 1 (it cannot be read or written), 2 (bad arguments). */

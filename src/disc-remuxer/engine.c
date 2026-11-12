@@ -387,10 +387,62 @@ struct EngineDisc {
 };
 
 static int parse_titles(const char *spec, const DiscInfo *d, int only_selected, char *sel);
-static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cuts, int *nb, int64_t *end,
-                        int64_t **starts);
+static int resolve_cuts(EngineDisc *e, int t, int part, int before, const char *items, DrDiscCut **cuts, int *nb,
+                        int64_t *end, int64_t **starts, const uint8_t *flac);
 static int cut_value(const char *v, int *title, const char **items);
-static int cut_check(int t, const CutTrackBytes *sums, int nb_sums, const CutTrackBytes *title, int nb_title);
+
+/* A piece a title is written from (see title_pieces()). */
+typedef struct Piece {
+    int        title_part;      /* the title's part it is (DiscTitleInfo.parts), -1 the whole title */
+    DrDiscCut *cuts;            /* its cuts in time order (on its own timeline), NULL none */
+    int        nb_cuts;
+    int64_t    cut_end;         /* with cuts: where its video ends (ticks) */
+    int64_t   *starts;          /* with cuts: resolve_cuts() starts */
+} Piece;
+static void pieces_free(Piece **pieces, int *nb);
+static int title_pieces(EngineDisc *e, int t, int split, const char *items, const uint8_t *flac, Piece **pieces,
+                        int *nb);
+/* A part's track written as FLAC: its samples and their MD5, for the check
+ * after the title's last part. */
+typedef struct FlacPart {
+    int     number, part;
+    int64_t samples;
+    char    md5[33];
+} FlacPart;
+
+static int cut_check(const char *of, const char *whole, const CutTrackBytes *sums, int nb_sums,
+                     const CutTrackBytes *title, int nb_title, const FlacPart *flac, int nb_flac, int nb_parts);
+
+/* Whether a cut title's track is written as FLAC (setting
+ * cuts.lossless_to_flac): 1; 0 with *why NULL when the setting does not
+ * concern it (lossy audio, LPCM, a DTS core taken out of its stream, not
+ * audio), 0 with *why in words when it is a lossless track left as it
+ * is. */
+static int flac_track(const DiscStreamInfo *k, const char **why)
+{
+    *why = NULL;
+    if (k->type != DISC_MEDIA_AUDIO)
+        return 0;
+    if (k->codec == DR_CODEC_TRUEHD) {
+        if (k->profile == DISC_PROFILE_TRUEHD_ATMOS) {
+            *why = "it carries Dolby Atmos, which decoding would drop";
+            return 0;
+        }
+    } else if (k->codec == DR_CODEC_DTS && k->from_track < 0 &&
+               (k->profile == DISC_PROFILE_DTS_HD_MA || k->profile == DISC_PROFILE_DTS_HD_MA_X ||
+                k->profile == DISC_PROFILE_DTS_HD_MA_X_IMAX)) {
+        if (k->profile != DISC_PROFILE_DTS_HD_MA) {
+            *why = "it carries DTS:X, which decoding would drop";
+            return 0;
+        }
+    } else
+        return 0;
+    if (k->channels > 8) {
+        *why = "FLAC holds at most 8 channels";
+        return 0;
+    }
+    return 1;
+}
 
 /* Each title's tracks to rip (select.h) into keeps[title] (freed with
  * free_keeps()); 0, or -1 (logged). */
@@ -569,7 +621,7 @@ const CutIndex *engine_cut_index(EngineDisc *d, int t)
     /* the whole title: every picture and the chapters as a rip places them
      * (engine_cancel() stops it; a Stop from before does not) */
     atomic_store(&cancelled, 0);
-    if (cut_index_read(d->disc, t, -1, NULL, 0, ix) < 0) {
+    if (cut_index_read(d->disc, t, -1, -1, NULL, 0, ix) < 0) {
         free(ix);
         return NULL;
     }
@@ -873,12 +925,14 @@ static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
     char *spl = calloc(nb ? nb : 1, 1);
     char **ranges = NULL;               /* every title's damaged ranges, for the summary */
     int nb_ranges = 0;
-    DrDiscCut *cuts = NULL;             /* the title's cuts (a title with cuts) */
+    Piece *pieces = NULL;               /* what the title is written from, with its cuts (title_pieces()) */
+    int nb_pieces = 0, files, file, named, any_cuts;
     CutTrackBytes *cut_sums = NULL, *cut_title = NULL;  /* its parts' bytes added up; its last part's */
     int nb_cut_sums = 0, nb_cut_title = 0;
-    int nb_cuts = 0;
-    int64_t cut_end = 0, *cut_starts = NULL;
     uint8_t *vkeep = NULL;              /* a cut title's tracks: those a cut part carries */
+    uint8_t *vflac = NULL;              /* and those decoded and written as FLAC (cuts.lossless_to_flac) */
+    FlacPart *flac_parts = NULL;        /* each part's FLAC tracks, for the check after the last part */
+    int nb_flac_parts = 0;
 
     if (!spl) {
         log_close_files();
@@ -904,7 +958,7 @@ static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
         if (engine_cancelled())
             break;
         ++ordinal;
-        /* a title with cuts: where they fall first; its parts are the cut's */
+        /* a title with cuts: where they fall first */
         if (e->cut && e->cut[t] && !strcmp(setting_text("output.format"), "mkv")) {
             log_msg(MSG_TITLE_FAILED, LOG_ERROR, "Title #%d is not ripped: a title with cuts is not written by the "
                     "program's own MKV writer (output.format = mkv): use mkvmerge or streams", t);
@@ -913,92 +967,147 @@ static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
         }
         if (e->cut && e->cut[t]) {
             char dur[32];
-            if (parts)
-                log_msg(MSG_TITLE_SELECTION, LOG_INFO, "Title #%d is cut at the cuts asked for, not split at its "
-                        "parts", t);
             hms(dur, sizeof(dur), di->titles[t].duration);
             log_step("=== Cuts: title #%d (%s) ===", t, dur);
-            if (resolve_cuts(e, t, e->cut[t], &cuts, &nb_cuts, &cut_end, &cut_starts) || !nb_cuts ||
-                !(vkeep = calloc(di->titles[t].nb_streams ? di->titles[t].nb_streams : 1, 1))) {
-                log_msg(MSG_TITLE_FAILED, LOG_ERROR, "Title #%d is not ripped: not every cut asked for can be made",
-                        t);
-                failed++;
-                free(cuts);
-                free(cut_starts);
-                cuts       = NULL;
-                cut_starts = NULL;
-                nb_cuts    = 0;
-                continue;
-            }
-            /* the tracks a cut part carries so far; the others said */
-            for (int i = 0; i < di->titles[t].nb_streams; i++) {
-                const char *why = dr_disc_cut_left_out(e->disc, t, i);
-                vkeep[i] = !i || (e->keeps[t][i] && !why);
-                if (i && e->keeps[t][i] && why)
-                    log_msg(MSG_CUTS, LOG_WARNING, "Title #%d: track %d (%s) is left out of its cut parts: %s", t, i,
-                            codec_label(di->titles[t].streams[i].codec, di->titles[t].streams[i].profile), why);
-            }
-            parts = nb_cuts + 1;
-        }
-        for (int p = parts ? 0 : -1; p < parts && !engine_cancelled(); p++) {
-            /* the second view: read when one of its tracks is selected */
-            /* stream files: every title, and each part as a title of its own, in a folder of its name */
-            TitleJob job = { e->disc, t, p, parts, !nb_cuts, nb_cuts ? vkeep : e->keeps[t], ordinal, count, out_dir,
-                             1, cuts, nb_cuts, cut_end, cut_starts };
-            TitleOutcome res;
-            demux_title(&job, &res);
-            /* each range under the title's (part's) number */
-            damaged       += res.damaged_ranges;
-            damaged_bytes += res.damaged_bytes;
-            for (int i = 0; i < res.nb_damage; i++) {
-                char *l = p >= 0 ? dr_asprintf_str("Title #%d part %d: %s", t, p + 1, res.damage[i]) :
-                                   dr_asprintf_str("Title #%d: %s", t, res.damage[i]);
-                if (!l || dr_array_add_ptr(&ranges, &nb_ranges, l) < 0)
-                    dr_free(l);
-            }
-            /* a cut part: its tracks' bytes added up; the last part's title bytes are the whole title's */
-            for (int i = 0; i < res.nb_cut; i++) {
-                CutTrackBytes *s = NULL;
-                for (int k = 0; k < nb_cut_sums && !s; k++)
-                    if (cut_sums[k].number == res.cut[i].number)
-                        s = &cut_sums[k];
-                if (!s) {
-                    CutTrackBytes *n = realloc(cut_sums, (nb_cut_sums + 1) * sizeof(*n));
-                    if (!n)
-                        break;
-                    cut_sums = n;
-                    s = &cut_sums[nb_cut_sums++];
-                    *s = (CutTrackBytes){ res.cut[i].number, 0, 0, 0, 0, res.cut[i].pcm, res.cut[i].bytes_per_sample };
+            /* the lossless tracks written as FLAC (the setting; the selected ones) */
+            if ((vflac = calloc(di->titles[t].nb_streams ? di->titles[t].nb_streams : 1, 1)) &&
+                setting_bool("cuts.lossless_to_flac"))
+                for (int i = 1; i < di->titles[t].nb_streams; i++) {
+                    const DiscStreamInfo *k = &di->titles[t].streams[i];
+                    const char *why;
+                    if (!e->keeps[t][i] || dr_disc_cut_left_out(e->disc, t, i))
+                        continue;
+                    vflac[i] = flac_track(k, &why) && dr_disc_cut_start_units(e->disc, t, i);
+                    if (!vflac[i] && why)
+                        log_text(LOG_INFO, "Cuts: track %d (%s) is not written as FLAC: %s; it is cut at its start "
+                                 "units", i, codec_label(k->codec, k->profile), why);
                 }
-                s->part += res.cut[i].part;
-                s->left += res.cut[i].left;
-            }
-            if (nb_cuts && p == parts - 1 && res.nb_cut && (cut_title = malloc(res.nb_cut * sizeof(*cut_title)))) {
-                memcpy(cut_title, res.cut, res.nb_cut * sizeof(*cut_title));
-                nb_cut_title = res.nb_cut;
-            }
-            title_outcome_free(&res);
-            /* a title stopped as asked is not written, not failed */
-            part_stopped += res.stopped;
-            part_failed  += res.failed && !res.stopped;
-            disk_full    |= res.disk_full;
-            if (disk_full)
-                break;
         }
-        /* a cut title: every track's parts add up to the title */
-        if (nb_cuts && !part_failed && !part_stopped && !disk_full)
-            part_failed += cut_check(t, cut_sums, nb_cut_sums, cut_title, nb_cut_title);
-        free(cut_sums);
-        free(cut_title);
-        cut_sums    = cut_title = NULL;
-        nb_cut_sums = nb_cut_title = 0;
-        free(cuts);
-        free(cut_starts);
+        /* the title's pieces (the whole title, or written as parts: the
+         * disc's own) and its cuts inside them */
+        if ((e->cut && e->cut[t] && !vflac) ||
+            title_pieces(e, t, parts > 0, e->cut ? e->cut[t] : NULL, vflac, &pieces, &nb_pieces) ||
+            !(vkeep = calloc(di->titles[t].nb_streams ? di->titles[t].nb_streams : 1, 1))) {
+            log_msg(MSG_TITLE_FAILED, LOG_ERROR, "Title #%d is not ripped: not every cut asked for can be made", t);
+            failed++;
+            pieces_free(&pieces, &nb_pieces);
+            free(vflac);
+            vflac = NULL;
+            continue;
+        }
+        /* its files: one per piece and cut part, numbered across the pieces */
+        files = 0;
+        any_cuts = 0;
+        for (int k = 0; k < nb_pieces; k++) {
+            files    += pieces[k].nb_cuts + 1;
+            any_cuts |= pieces[k].nb_cuts > 0;
+        }
+        named = parts > 0 || any_cuts;
+        /* the tracks a cut part carries so far; the others said */
+        for (int i = 0; any_cuts && i < di->titles[t].nb_streams; i++) {
+            const char *why = dr_disc_cut_left_out(e->disc, t, i);
+            vkeep[i] = !i || (e->keeps[t][i] && !why);
+            if (i && e->keeps[t][i] && why)
+                log_msg(MSG_CUTS, LOG_WARNING, "Title #%d: track %d (%s) is left out of its cut parts: %s", t, i,
+                        codec_label(di->titles[t].streams[i].codec, di->titles[t].streams[i].profile), why);
+        }
+        file = 0;
+        for (int k = 0; k < nb_pieces && !disk_full && !engine_cancelled(); k++) {
+            const Piece *pc = &pieces[k];
+            int piece_failed = 0, piece_stopped = 0;
+
+            for (int cp = 0; cp <= pc->nb_cuts && !engine_cancelled(); cp++, file++) {
+                /* the second view: read when one of its tracks is selected */
+                /* stream files: every title, and each part as a title of its own, in a folder of its name */
+                TitleJob job = { e->disc, t, named ? file : -1, named ? files : 0, !pc->nb_cuts,
+                                 pc->nb_cuts ? vkeep : e->keeps[t], ordinal, count, out_dir, 1, pc->cuts, pc->nb_cuts,
+                                 pc->cut_end, pc->starts, pc->nb_cuts ? vflac : NULL, pc->title_part, cp };
+                TitleOutcome res;
+                demux_title(&job, &res);
+                /* each range under the title's (part's) number */
+                damaged       += res.damaged_ranges;
+                damaged_bytes += res.damaged_bytes;
+                for (int i = 0; i < res.nb_damage; i++) {
+                    char *l = named ? dr_asprintf_str("Title #%d part %d: %s", t, file + 1, res.damage[i]) :
+                                      dr_asprintf_str("Title #%d: %s", t, res.damage[i]);
+                    if (!l || dr_array_add_ptr(&ranges, &nb_ranges, l) < 0)
+                        dr_free(l);
+                }
+                /* a cut part: its tracks' bytes added up; the piece's last part's title bytes are the whole piece's */
+                for (int i = 0; i < res.nb_cut; i++) {
+                    CutTrackBytes *s = NULL;
+                    for (int j = 0; j < nb_cut_sums && !s; j++)
+                        if (cut_sums[j].number == res.cut[i].number)
+                            s = &cut_sums[j];
+                    if (!s) {
+                        CutTrackBytes *n = realloc(cut_sums, (nb_cut_sums + 1) * sizeof(*n));
+                        if (!n)
+                            break;
+                        cut_sums = n;
+                        s = &cut_sums[nb_cut_sums++];
+                        memset(s, 0, sizeof(*s));
+                        s->number           = res.cut[i].number;
+                        s->pcm              = res.cut[i].pcm;
+                        s->bytes_per_sample = res.cut[i].bytes_per_sample;
+                    }
+                    s->part += res.cut[i].part;
+                    s->left += res.cut[i].left;
+                    /* a track written as FLAC: the part's samples and their MD5 */
+                    if (res.cut[i].flac) {
+                        FlacPart *n = realloc(flac_parts, (nb_flac_parts + 1) * sizeof(*n));
+                        if (!n)
+                            break;
+                        flac_parts = n;
+                        flac_parts[nb_flac_parts] = (FlacPart){ res.cut[i].number, cp, res.cut[i].flac_samples, "" };
+                        memcpy(flac_parts[nb_flac_parts++].md5, res.cut[i].flac_md5, sizeof(flac_parts[0].md5));
+                    }
+                }
+                if (pc->nb_cuts && cp == pc->nb_cuts && res.nb_cut &&
+                    (cut_title = malloc(res.nb_cut * sizeof(*cut_title)))) {
+                    memcpy(cut_title, res.cut, res.nb_cut * sizeof(*cut_title));
+                    nb_cut_title = res.nb_cut;
+                    /* (what each range decoded to is the copy's now) */
+                    for (int i = 0; i < res.nb_cut; i++) {
+                        res.cut[i].range_samples = NULL;
+                        res.cut[i].range_md5     = NULL;
+                    }
+                }
+                title_outcome_free(&res);
+                /* a title stopped as asked is not written, not failed */
+                piece_stopped += res.stopped;
+                piece_failed  += res.failed && !res.stopped;
+                disk_full     |= res.disk_full;
+                if (disk_full)
+                    break;
+            }
+            /* a piece with cuts: every track's parts add up to the piece */
+            if (pc->nb_cuts && !piece_failed && !piece_stopped && !disk_full && !engine_cancelled()) {
+                char of[64];
+                if (pc->title_part >= 0)
+                    snprintf(of, sizeof(of), "title #%d, its part %d/%d on the disc,", t, pc->title_part + 1, nb_pieces);
+                else
+                    snprintf(of, sizeof(of), "title #%d", t);
+                piece_failed += cut_check(of, pc->title_part >= 0 ? "part" : "title", cut_sums, nb_cut_sums, cut_title,
+                                          nb_cut_title, flac_parts, nb_flac_parts, pc->nb_cuts + 1);
+            }
+            for (int i = 0; i < nb_cut_title; i++) {
+                free(cut_title[i].range_samples);
+                free(cut_title[i].range_md5);
+            }
+            free(cut_sums);
+            free(cut_title);
+            free(flac_parts);
+            cut_sums    = cut_title = NULL;
+            flac_parts  = NULL;
+            nb_cut_sums = nb_cut_title = nb_flac_parts = 0;
+            part_failed  += piece_failed;
+            part_stopped += piece_stopped;
+        }
+        pieces_free(&pieces, &nb_pieces);
         free(vkeep);
-        cuts       = NULL;
-        cut_starts = NULL;
-        vkeep      = NULL;
-        nb_cuts    = 0;
+        free(vflac);
+        vkeep = NULL;
+        vflac = NULL;
         failed += !!part_failed;
         done   += !part_failed && !part_stopped;
         /* a full disk: every title after it would fail the same way */
@@ -1125,6 +1234,141 @@ int engine_info(const char *source, const EngineChoice *c, int details)
     return 0;
 }
 
+/* ---- a title's pieces: what it is written from ----
+ * The whole title, or (written as parts: split) each of the parts the disc
+ * itself splits it into, in order; a piece with cuts gives a file per cut
+ * part, one without gives one file. With both split and cuts the title is
+ * split at the disc's own breaks first, as split alone does, and each cut
+ * is made inside the piece it falls in, on that piece's own reading: no
+ * file holds a join of two pieces. */
+
+static void pieces_free(Piece **pieces, int *nb)
+{
+    for (int i = 0; *pieces && i < *nb; i++) {
+        free((*pieces)[i].cuts);
+        free((*pieces)[i].starts);
+    }
+    free(*pieces);
+    *pieces = NULL;
+    *nb     = 0;
+}
+
+/* The cuts asked for on title ti (reqs: on the whole title's timeline, its
+ * chapter numbers) that fall inside its part k, as cuts on that part's own
+ * timeline (its own chapter numbers, times from its own start): the items
+ * (freed with free(); "": none), each said in the log. A cut on the part's
+ * own start is no cut: the disc breaks there already (said). NULL: no
+ * memory. A part's start on the title's timeline is the disc's
+ * (DiscPartInfo.start); a time within 1 ms of it counts as on it. */
+static char *part_cuts(const DiscTitleInfo *ti, const CutRequest *reqs, int nb_reqs, int k)
+{
+    const int64_t tick_us = DR_TICKS_PER_SECOND / 1000000;
+    size_t cap = (size_t)nb_reqs * 48 + 1;
+    char *out = calloc(1, cap), a[40], b[40];
+    int64_t *starts = calloc(ti->nb_parts, sizeof(*starts));
+    int *chapters = calloc(ti->nb_parts, sizeof(*chapters));
+
+    if (!out || !starts || !chapters) {
+        free(out);
+        free(starts);
+        free(chapters);
+        return NULL;
+    }
+    for (int j = 0; j < ti->nb_parts; j++) {
+        starts[j]   = ti->parts[j].start * tick_us;
+        chapters[j] = ti->parts[j].nb_chapters;
+    }
+    for (int i = 0; i < nb_reqs; i++) {
+        const CutRequest *r = &reqs[i];
+        size_t len = strlen(out);
+        CutInPart w;
+
+        cut_in_part(r, starts, chapters, ti->nb_parts, k, &w);
+        if (w.where == CUT_ELSEWHERE)
+            continue;
+        if (w.where == CUT_ON_BREAK) {
+            if (r->chapter)
+                log_text(LOG_INFO, "  - chapter %d: no cut needed - part %d of the title starts there (the disc's own "
+                         "break)", r->chapter, k + 1);
+            else
+                log_text(LOG_INFO, "  - %s: no cut needed - part %d of the title starts there (the disc's own break, "
+                         "at %s)", r->text, k + 1, cut_time_text(a, sizeof(a), starts[k]));
+            continue;
+        }
+        if (r->chapter) {
+            snprintf(out + len, cap - len, "%sc%d", len ? "," : "", w.chapter);
+            if (k > 0)
+                log_text(LOG_INFO, "  - chapter %d of the title: chapter %d of its part %d", r->chapter, w.chapter,
+                         k + 1);
+        } else {
+            int64_t ns = (w.time * 25 + 13) / 27;
+            snprintf(out + len, cap - len, "%s%"PRId64":%02d:%02d.%09d", len ? "," : "", ns / 3600000000000LL,
+                     (int)(ns / 60000000000LL % 60), (int)(ns / 1000000000 % 60), (int)(ns % 1000000000));
+            if (k > 0)
+                log_text(LOG_INFO, "  - %s of the title: %s from the start of its part %d (which starts at %s)", r->text,
+                         cut_time_text(a, sizeof(a), w.time), k + 1, cut_time_text(b, sizeof(b), starts[k]));
+        }
+    }
+    free(starts);
+    free(chapters);
+    return out;
+}
+
+/* Title t's pieces and where its cuts fall in them: split: it is written
+ * as the parts the disc splits it into (a piece each), else it is one
+ * piece; items: its cuts (NULL / "": none), each resolved in the piece it
+ * falls in (resolve_cuts(): said in the log). flac: the tracks written as
+ * FLAC in a piece with cuts (NULL none). *pieces (pieces_free()) / *nb.
+ * 0, or 1 when a cut cannot be made or a piece cannot be read (logged). */
+static int title_pieces(EngineDisc *e, int t, int split, const char *items, const uint8_t *flac, Piece **pieces,
+                        int *nb)
+{
+    const DiscTitleInfo *ti = &e->info->titles[t];
+    CutRequest *reqs = NULL;
+    const char *bad;
+    int nb_reqs = 0, n = split && ti->nb_parts ? ti->nb_parts : 1, before = 0, ret = 0;
+
+    *nb = 0;
+    if (!(*pieces = calloc(n, sizeof(**pieces))))
+        return 1;
+    *nb = n;
+    for (int k = 0; k < n; k++)
+        (*pieces)[k].title_part = split && ti->nb_parts ? k : -1;
+    if (!items || !*items)
+        return 0;
+    if (n == 1 && (*pieces)[0].title_part < 0)
+        return resolve_cuts(e, t, -1, 0, items, &(*pieces)[0].cuts, &(*pieces)[0].nb_cuts, &(*pieces)[0].cut_end,
+                            &(*pieces)[0].starts, flac) || !(*pieces)[0].nb_cuts;
+    if (cut_parse(items, &reqs, &nb_reqs, &bad) < 0) {
+        log_msg(MSG_USAGE, LOG_ERROR, "Cuts \"%s\" cannot be read at \"%s\": the cuts are c<chapter> or a time "
+                "(h:mm:ss.fff or m:ss.fff on the title's timeline), comma separated", items, bad);
+        return 1;
+    }
+    log_text(LOG_INFO, "Cuts: %s; the title is written as its %d parts (the disc's own breaks, as split writes them) "
+             "and each cut is made inside the part it falls in, read on its own", items, n);
+    for (int k = 0; k < n && !ret; k++) {
+        Piece *p = &(*pieces)[k];
+        char *local, dur[32], at[40];
+
+        hms(dur, sizeof(dur), ti->parts[k].duration);
+        log_text(LOG_INFO, "Cuts: part %d/%d of the title (from %s, %s):", k + 1, n,
+                 cut_time_text(at, sizeof(at), ti->parts[k].start * (DR_TICKS_PER_SECOND / 1000000)), dur);
+        if (!(local = part_cuts(ti, reqs, nb_reqs, k))) {
+            ret = 1;
+            break;
+        }
+        if (!*local)
+            log_text(LOG_INFO, "  no cut in it: written whole, as split writes it (file %d)", before + 1);
+        else
+            ret = resolve_cuts(e, t, k, before, local, &p->cuts, &p->nb_cuts, &p->cut_end, &p->starts, flac) ||
+                  !p->nb_cuts;
+        free(local);
+        before += p->nb_cuts + 1;
+    }
+    free(reqs);
+    return ret;
+}
+
 /* The words for a key frame's kind (enum DrDiscStart). */
 static const char *start_text(int start)
 {
@@ -1150,17 +1394,27 @@ static int by_zero(const void *a, const void *b)
     return (x->zero > y->zero) - (x->zero < y->zero);
 }
 
-/* Where the cuts asked for (items) fall in title t: the title's video read
+/* Where the cuts asked for (items) fall in title t (part >= 0: in that
+ * part of it alone, one of the pieces the disc splits it into, read on its
+ * own: the items are on its own timeline, its own chapter numbers): the
+ * video read
  * as a rip reads it, each cut said in the log, then the parts. *cuts (freed
  * with free()) / *nb: the cuts in time order, *end: where the title's
  * video ends (ticks; as the disc records the title's length when it was not
  * read to its end), *starts (freed with free()): per cut and track of the
  * title the unit a start-unit track's part starts at (cuts.h
- * cut_track_start(), INT64_MAX for the other tracks). 0 when every cut is
- * made, 1 when one is refused or the title cannot be read (logged). */
-static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cuts, int *nb, int64_t *end,
-                        int64_t **starts)
+ * cut_track_start(), INT64_MAX for the other tracks). flac (per track of
+ * the title, NULL none): the tracks written as FLAC, which need no start
+ * unit. 0 when every cut is made, 1 when one is refused or the title cannot
+ * be read (logged). before: the files the title gives before this reading's
+ * (its parts are numbered after them in the list). */
+static int resolve_cuts(EngineDisc *e, int t, int part, int before, const char *items, DrDiscCut **cuts, int *nb,
+                        int64_t *end, int64_t **starts, const uint8_t *flac)
 {
+    const DiscTitleInfo *ti = &e->info->titles[t];
+    /* the chapters of what is read (a part: its own, from its own start) */
+    int ch0 = 0, nb_ch = ti->nb_chapters;
+    int64_t us0 = part >= 0 ? ti->parts[part].start : 0;
     CutRequest *reqs = NULL;
     CutResult *res = NULL;
     CutPoint *pts = NULL;
@@ -1173,6 +1427,11 @@ static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cut
     int64_t *windows = NULL;
     int nb_windows = 0, nb_streams = e->info->titles[t].nb_streams;
 
+    if (part >= 0) {
+        for (int k = 0; k < part; k++)
+            ch0 += ti->parts[k].nb_chapters;
+        nb_ch = DR_MIN(ti->parts[part].nb_chapters, ti->nb_chapters - ch0);
+    }
     *cuts   = NULL;
     *nb     = 0;
     *end    = 0;
@@ -1192,23 +1451,23 @@ static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cut
     /* the units of the start-unit tracks are kept around what is asked (a
      * cut's key frame lies within a few seconds of it): each time, each
      * chapter's mark on the disc when a chapter is asked */
-    if (!(windows = calloc(2 * (nb_reqs + e->info->titles[t].nb_chapters + 1), sizeof(*windows))))
+    if (!(windows = calloc(2 * (nb_reqs + (nb_ch > 0 ? nb_ch : 0) + 1), sizeof(*windows))))
         goto end;
     for (int i = 0; i < nb_reqs; i++)
         if (!reqs[i].chapter) {
             windows[2 * nb_windows]       = reqs[i].time - 5 * DR_TICKS_PER_SECOND;
             windows[2 * nb_windows++ + 1] = reqs[i].time + 5 * DR_TICKS_PER_SECOND;
         }
-    for (int c = 0; stop < 0 && c < e->info->titles[t].nb_chapters; c++) {
-        int64_t m = e->info->titles[t].chapters[c].start * (DR_TICKS_PER_SECOND / 1000000);
+    for (int c = 0; stop < 0 && c < nb_ch; c++) {
+        int64_t m = (ti->chapters[ch0 + c].start - us0) * (DR_TICKS_PER_SECOND / 1000000);
         windows[2 * nb_windows]       = m - 5 * DR_TICKS_PER_SECOND;
         windows[2 * nb_windows++ + 1] = m + 5 * DR_TICKS_PER_SECOND;
     }
-    if (cut_index_read(e->disc, t, stop, windows, nb_windows, &ix) < 0 ||
+    if (cut_index_read(e->disc, t, part, stop, windows, nb_windows, &ix) < 0 ||
         cut_points(ix.pics, ix.nb_pics, ix.codec, &pts, &nb_pts) < 0)
         goto end;
-    log_text(LOG_INFO, "Cuts: the title's video read %s: %d picture(s), %d place(s) a part can start",
-             ix.complete ? "to its end" : "as far as the cuts need", ix.nb_pics, nb_pts);
+    log_text(LOG_INFO, "Cuts: the %s's video read %s: %d picture(s), %d place(s) a part can start",
+             part >= 0 ? "part" : "title", ix.complete ? "to its end" : "as far as the cuts need", ix.nb_pics, nb_pts);
     if (!(res = calloc(nb_reqs, sizeof(*res))) || !(zeros = calloc(nb_reqs + 2, sizeof(*zeros))) ||
         !(*cuts = calloc(nb_reqs, sizeof(**cuts))))
         goto end;
@@ -1283,7 +1542,7 @@ static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cut
             CutIndex ix2 = { 0 };
             log_text(LOG_INFO, "Cuts: %d cut(s) fell outside the stretch the audio start units were read in: those "
                      "tracks are read again around them", nb_again);
-            if (cut_index_read(e->disc, t, last, again, nb_again, &ix2) < 0) {
+            if (cut_index_read(e->disc, t, part, last, again, nb_again, &ix2) < 0) {
                 free(again);
                 goto end;
             }
@@ -1310,11 +1569,18 @@ static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cut
                                "unit whose lossless data starts fresh";
             char what[48];
             CutStart st;
-            cut_track_start(au->u, au->nb, (*cuts)[c].zero, CUT_START_LIMIT, &st);
-            (*starts)[c * nb_streams + au->track] = st.time;
             snprintf(what, sizeof(what), "track %d (%s)", au->track,
                      codec_label(e->info->titles[t].streams[au->track].codec,
                                  e->info->titles[t].streams[au->track].profile));
+            /* a track written as FLAC is cut between two samples: no start unit */
+            if (flac && flac[au->track]) {
+                if (!c)
+                    log_text(LOG_INFO, "    %s: decoded from the title's start and written as FLAC in every part, "
+                             "cut between two samples at each cut (setting cuts.lossless_to_flac)", what);
+                continue;
+            }
+            cut_track_start(au->u, au->nb, (*cuts)[c].zero, CUT_START_LIMIT, &st);
+            (*starts)[c * nb_streams + au->track] = st.time;
             if (st.time == INT64_MAX)
                 log_text(LOG_INFO, "    cut %d: %s ends before it", c + 1, what);
             else if (st.entry)
@@ -1330,16 +1596,17 @@ static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cut
                         st.to_entry < 0 ? "the units after it as far as was read" :
                         st.to_entry == 1 ? "1 unit after it" : "the units after it up to the next start unit");
         }
-    *end = ix.complete ? ix.end : e->info->titles[t].duration * (DR_TICKS_PER_SECOND / 1000000);
+    *end = ix.complete ? ix.end : (part >= 0 ? ti->parts[part].duration : ti->duration) *
+                                  (DR_TICKS_PER_SECOND / 1000000);
     zeros[0] = 0;
     for (int i = 0; i < n; i++)
         zeros[i + 1] = (*cuts)[i].zero;
     zeros[n + 1] = *end;
-    log_text(LOG_INFO, "Cuts: %d part(s)%s", n + 1, ix.complete ? "" : " (the last one's end as the disc records "
-             "the title's length)");
+    log_text(LOG_INFO, "Cuts: %d part(s)%s%s", n + 1, ix.complete ? "" : " (the last one's end as the disc records "
+             "the title's length)", part >= 0 ? " (times from this part's own start)" : "");
     for (int i = 0; i <= n; i++) {
         char l[40];
-        log_text(LOG_INFO, "  part %d: %s - %s (%s)", i + 1, cut_time_text(a, sizeof(a), zeros[i]),
+        log_text(LOG_INFO, "  part %d: %s - %s (%s)", before + i + 1, cut_time_text(a, sizeof(a), zeros[i]),
                  cut_time_text(b, sizeof(b), zeros[i + 1]), cut_time_text(l, sizeof(l), zeros[i + 1] - zeros[i]));
     }
     ret = made == nb_reqs ? 0 : 1;
@@ -1360,11 +1627,9 @@ end:
     return ret;
 }
 
-int engine_cuts(const char *source, const char *title, const char *items, const EngineChoice *c)
+int engine_cuts(const char *source, const char *title, const char *items, const char *split, const EngineChoice *c)
 {
     EngineDisc *e = NULL;
-    DrDiscCut *cuts;
-    int64_t end;
     int t, nb, ret = 1;
     char *x, dur[32];
 
@@ -1393,12 +1658,18 @@ int engine_cuts(const char *source, const char *title, const char *items, const 
     }
     hms(dur, sizeof(dur), e->info->titles[t].duration);
     log_step("=== Cuts: title #%d (%s) ===", t, dur);
-    {
-        int64_t *starts;
-        ret = resolve_cuts(e, t, items, &cuts, &nb, &end, &starts);
-        free(starts);
+    /* (written as parts: --split or the setting: the cuts fall inside the disc's own parts) */
+    if (split && engine_split_titles(e, split) < 0) {
+        engine_disc_close(&e);
+        return 2;
     }
-    free(cuts);
+    {
+        Piece *pieces = NULL;
+        int nb_pieces = 0;
+        int parts = e->split[t] || (setting_bool("output.split_joined_titles") && !e->info->titles[t].parts_on_request);
+        ret = title_pieces(e, t, parts && e->info->titles[t].nb_parts, items, NULL, &pieces, &nb_pieces);
+        pieces_free(&pieces, &nb_pieces);
+    }
     engine_disc_close(&e);
     return ret;
 }
@@ -1407,7 +1678,8 @@ int engine_cuts(const char *source, const char *title, const char *items, const 
  * parts (and the video's leading pictures left out) against the title's
  * (the last part read the whole title); said per track. Returns the
  * tracks that do not add up. */
-static int cut_check(int t, const CutTrackBytes *sums, int nb_sums, const CutTrackBytes *title, int nb_title)
+static int cut_check(const char *of, const char *whole, const CutTrackBytes *sums, int nb_sums,
+                     const CutTrackBytes *title, int nb_title, const FlacPart *flac, int nb_flac, int nb_parts)
 {
     int bad = 0;
 
@@ -1421,24 +1693,60 @@ static int cut_check(int t, const CutTrackBytes *sums, int nb_sums, const CutTra
             continue;                   /* a track left out of the parts */
         got = s->part + s->left;
         if (!w->read_all) {
-            log_msg(MSG_CUTS, LOG_ERROR, "Cut check: title #%d track %d: the last part did not read the whole title: "
-                    "not checked", t, w->number);
+            log_msg(MSG_CUTS, LOG_ERROR, "Cut check: %s track %d: the last part did not read the whole %s: "
+                    "not checked", of, w->number, whole);
             bad++;
             continue;
         }
+        /* a track written as FLAC: the last part's reading decoded the
+         * whole title in one go; each part's file must hold the samples
+         * (their number and MD5) that reading found between its cuts */
+        if (w->flac) {
+            int64_t total = 0, parts_total = 0;
+            int wrong = -1, missing = w->nb_ranges != nb_parts;
+            for (int p = 0; p < w->nb_ranges; p++) {
+                const FlacPart *f = NULL;
+                for (int k = 0; k < nb_flac && !f; k++)
+                    if (flac[k].number == w->number && flac[k].part == p)
+                        f = &flac[k];
+                total += w->range_samples[p];
+                if (!f) {
+                    missing = 1;
+                    continue;
+                }
+                parts_total += f->samples;
+                if (wrong < 0 && (f->samples != w->range_samples[p] || strcmp(f->md5, w->range_md5[p])))
+                    wrong = p;
+            }
+            if (missing) {
+                log_msg(MSG_CUTS, LOG_ERROR, "Cut check: %s track %d (FLAC): not every part's samples are "
+                        "known: not checked", of, w->number);
+                bad++;
+            } else if (wrong >= 0) {
+                log_msg(MSG_CUTS, LOG_ERROR, "Cut check: %s track %d (FLAC): part %d's samples are not those "
+                        "the %s decoded in one go has between its cuts (the parts' %"PRId64" samples, the "
+                        "%s's %"PRId64"): FAIL", of, w->number, wrong + 1, whole, parts_total, whole, total);
+                bad++;
+            } else
+                log_msg(MSG_CUTS, LOG_OK, "Cut check: %s track %d (FLAC): the %d parts' %"PRId64" samples = "
+                        "the %s's %"PRId64" decoded in one go, each part's MD5 = that of its stretch: PASS", of,
+                        w->number, w->nb_ranges, parts_total, whole, total);
+            continue;
+        }
         if (w->pcm && w->bytes_per_sample)
-            log_msg(MSG_CUTS, got == w->title ? LOG_OK : LOG_ERROR, "Cut check: title #%d track %d (LPCM): the parts' "
-                    "%"PRId64" samples %s the title's %"PRId64": %s", t, w->number, got / w->bytes_per_sample,
-                    got == w->title ? "=" : "differ from", w->title / w->bytes_per_sample,
+            log_msg(MSG_CUTS, got == w->title ? LOG_OK : LOG_ERROR, "Cut check: %s track %d (LPCM): the parts' "
+                    "%"PRId64" samples %s the %s's %"PRId64": %s", of, w->number, got / w->bytes_per_sample,
+                    got == w->title ? "=" : "differ from", whole, w->title / w->bytes_per_sample,
                     got == w->title ? "PASS" : "FAIL");
         else if (s->left)
-            log_msg(MSG_CUTS, got == w->title ? LOG_OK : LOG_ERROR, "Cut check: title #%d track %d: the parts' %"PRId64
-                    " bytes + %"PRId64" of leading pictures left out %s the title's %"PRId64": %s", t, w->number,
-                    s->part, s->left, got == w->title ? "=" : "differ from", w->title, got == w->title ? "PASS" : "FAIL");
+            log_msg(MSG_CUTS, got == w->title ? LOG_OK : LOG_ERROR, "Cut check: %s track %d: the parts' %"PRId64
+                    " bytes + %"PRId64" of leading pictures left out %s the %s's %"PRId64": %s", of, w->number,
+                    s->part, s->left, got == w->title ? "=" : "differ from", whole, w->title,
+                    got == w->title ? "PASS" : "FAIL");
         else
-            log_msg(MSG_CUTS, got == w->title ? LOG_OK : LOG_ERROR, "Cut check: title #%d track %d: the parts' %"PRId64
-                    " bytes %s the title's %"PRId64": %s", t, w->number, got, got == w->title ? "=" : "differ from",
-                    w->title, got == w->title ? "PASS" : "FAIL");
+            log_msg(MSG_CUTS, got == w->title ? LOG_OK : LOG_ERROR, "Cut check: %s track %d: the parts' %"PRId64
+                    " bytes %s the %s's %"PRId64": %s", of, w->number, got, got == w->title ? "=" : "differ from",
+                    whole, w->title, got == w->title ? "PASS" : "FAIL");
         bad += got != w->title;
     }
     return bad;
@@ -1509,7 +1817,7 @@ int engine_frame(const char *source, const char *title, const char *at, const ch
     }
     /* the title's pictures up to a little past the time, then that picture
      * as the cut editor shows it */
-    if (cut_index_read(e->disc, t, reqs[0].time + 2 * DR_TICKS_PER_SECOND, NULL, 0, &ix) < 0 ||
+    if (cut_index_read(e->disc, t, -1, reqs[0].time + 2 * DR_TICKS_PER_SECOND, NULL, 0, &ix) < 0 ||
         cut_preview_open(&pv, e->disc, t, &ix, (int64_t)setting_int("cuts.preview_cache_mb") << 20) < 0)
         goto end;
     n = cut_preview_at(pv, reqs[0].time);
