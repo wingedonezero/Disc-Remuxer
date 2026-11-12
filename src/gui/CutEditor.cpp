@@ -176,6 +176,12 @@ void CutTimeline::setCuts(const QVector<int64_t> &zeros, const QVector<bool> &cl
     update();
 }
 
+void CutTimeline::setSplits(const QVector<int64_t> &at)
+{
+    splits = at;
+    update();
+}
+
 void CutTimeline::setSuggested(const QVector<int64_t> &zeros)
 {
     suggested = zeros;
@@ -210,6 +216,10 @@ void CutTimeline::paintEvent(QPaintEvent *)
     // the parts, shaded in turn
     QVector<int64_t> b = { 0 };
     b += cuts;
+    for (int64_t s : splits)
+        if (s > 0 && s < end)
+            b += s;
+    std::sort(b.begin(), b.end());
     b += end;
     for (int i = 0; i + 1 < b.size(); i++)
         p.fillRect(QRect(xOf(b[i]), top, xOf(b[i + 1]) - xOf(b[i]) + 1, bar),
@@ -238,6 +248,11 @@ void CutTimeline::paintEvent(QPaintEvent *)
     p.setPen(QPen(QColor(240, 140, 0), 2, Qt::DashLine));
     for (int64_t c : suggested)
         p.drawLine(xOf(c), top, xOf(c), top + bar);
+    // the disc's own breaks (a title written as its parts)
+    p.setPen(QPen(QColor(40, 130, 230), 2));
+    for (int64_t s : splits)
+        if (s > 0 && s < end)
+            p.drawLine(xOf(s), top, xOf(s), top + bar);
     // the cuts; one that is not clean with an orange mark on top
     p.setPen(QPen(QColor(220, 30, 30), 2));
     for (int64_t c : cuts)
@@ -350,6 +365,7 @@ CutEditor::CutEditor(EngineDisc *d, int t, LogRelay *relay, QWidget *parent)
             picSize = QSize(w, h);
     }
     buildUi();
+    timeline->setSplits(breaks);
     loadState();
 
     worker = new PreviewWorker(d, t);
@@ -510,10 +526,9 @@ void CutEditor::buildUi()
     note->setWordWrap(true);
     cb->addWidget(note);
     connect(cutList, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem *it) {
-        int i = it->data(0, Qt::UserRole).toInt();
+        // a cut or one of the disc's own breaks: where its part starts
         stopPlay();
-        if (i >= 0 && i < cuts.size())
-            showAt(pts[cuts[i].point].zero);
+        showAt(it->data(1, Qt::UserRole).toLongLong());
     });
     sideSplit->addWidget(cutBox);
 
@@ -626,21 +641,15 @@ void CutEditor::buildUi()
     }
     connect(modeBox, &QComboBox::currentIndexChanged, this, [this] { modeChanged(); });
 
-    auto *partBox = new QGroupBox("Parts");
+    // the parts the cuts (and the disc's own breaks) give: a tab, with the analysis and the chapters
+    auto *partBox = new QWidget;
     auto *pb = new QVBoxLayout(partBox);
     partList = list({ "Part", "Start", "Length", "Starts at" });
     pb->addWidget(partList);
-    if (!breaks.isEmpty()) {
-        auto *note = new QLabel(QString("The title is written as its %1 parts: it is split at the disc's own breaks "
-                                        "first, and each cut is made inside the part it falls in.").arg(ti->nb_parts));
-        note->setWordWrap(true);
-        pb->addWidget(note);
-    }
     connect(partList, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem *it) {
         stopPlay();
         showAt(it->data(0, Qt::UserRole).toLongLong());
     });
-    sideSplit->addWidget(partBox);
 
     auto *chBox = new QWidget;
     auto *chb = new QVBoxLayout(chBox);
@@ -668,6 +677,7 @@ void CutEditor::buildUi()
     tabs = new QTabWidget;
     tabs->addTab(anBox, "Analysis");
     tabs->addTab(chBox, "Chapters");
+    tabs->addTab(partBox, "Parts");
     tabs->setFocusPolicy(Qt::NoFocus);
     sideSplit->addWidget(tabs);
     split->addWidget(side);
@@ -741,19 +751,20 @@ void CutEditor::buildUi()
     okButton->setEnabled(false);
     resize(1440, 900);
     split->setSizes({ 920, 520 });
-    sideSplit->setSizes({ 260, 170, 470 });
+    sideSplit->setSizes({ 330, 570 });
 }
 
 void CutEditor::loadState()
 {
     const QStringList s = QString::fromUtf8(setting_text("gui.cut_editor")).split(',', Qt::SkipEmptyParts);
 
-    if (s.size() != 7)
+    // (7 values: kept when the parts were a pane of their own between the cuts and the tabs)
+    if (s.size() != 6 && s.size() != 7)
         return;
     restoreGeometry(QByteArray::fromBase64(s[0].toLatin1()));
     split->setSizes({ s[1].toInt(), s[2].toInt() });
-    sideSplit->setSizes({ s[3].toInt(), s[4].toInt(), s[5].toInt() });
-    tabs->setCurrentIndex(s[6].toInt());
+    sideSplit->setSizes({ s[3].toInt(), s.size() == 7 ? s[4].toInt() + s[5].toInt() : s[4].toInt() });
+    tabs->setCurrentIndex(s.last().toInt());
 }
 
 void CutEditor::saveState()
@@ -930,6 +941,10 @@ void CutEditor::loadCuts()
                                                                   : QString::fromUtf8(res[i].why));
             continue;
         }
+        if (onSplit(pts[res[i].point].zero)) {
+            refused << QString("%1 (the disc itself splits the title there)").arg(QString::fromUtf8(reqs[i].text));
+            continue;
+        }
         cuts << Cut{ QString::fromUtf8(reqs[i].text), res[i].point,
                      reqs[i].chapter ? QString("chapter %1").arg(reqs[i].chapter) : QString("manual") };
     }
@@ -937,6 +952,14 @@ void CutEditor::loadCuts()
     sortCuts();
     if (!refused.isEmpty())
         setNote("Not placed, left out of the list: " + refused.join("; "));
+}
+
+bool CutEditor::onSplit(int64_t t) const
+{
+    for (int64_t x : breaks)
+        if (qAbs(x - t) <= DR_TICKS_PER_SECOND / 1000)
+            return true;
+    return false;
 }
 
 void CutEditor::sortCuts()
@@ -949,42 +972,55 @@ void CutEditor::refresh()
     QVector<int64_t> zeros;
     QVector<bool> cleanCuts;
 
-    // a place the disc itself breaks the title at (written as parts), within 1 ms
-    auto onBreak = [this](int64_t t) {
-        for (int64_t x : breaks)
-            if (qAbs(x - t) <= DR_TICKS_PER_SECOND / 1000)
-                return true;
-        return false;
-    };
+    // every place the title is divided at, in time order: its cuts, and
+    // (written as its parts) the disc's own breaks, which the rip splits at
+    // first: first = the time, second = the cut's number, -1 a break
+    QVector<QPair<int64_t, int>> rows;
     QVector<QPair<int64_t, QString>> starts = { { 0, "the title's start" } };
 
+    for (int i = 0; i < cuts.size(); i++)
+        rows << qMakePair(pts[cuts[i].point].zero, i);
+    for (int64_t x : breaks)
+        if (x > 0 && x < ix->end)
+            rows << qMakePair(x, -1);
+    std::sort(rows.begin(), rows.end(), [](const QPair<int64_t, int> &a, const QPair<int64_t, int> &b) {
+        return a.first < b.first;
+    });
     cutList->clear();
-    for (int i = 0; i < cuts.size(); i++) {
+    for (int n = 0; n < rows.size(); n++) {
+        int i = rows[n].second;
+        if (i < 0) {
+            auto *it = new QTreeWidgetItem(cutList, { QString::number(n + 1), msText(rows[n].first), "split",
+                                                      "the disc's own break" });
+            it->setData(0, Qt::UserRole, -1);
+            it->setData(1, Qt::UserRole, (qlonglong)rows[n].first);
+            for (int c = 0; c < 4; c++) {
+                it->setForeground(c, palette().color(QPalette::Disabled, QPalette::Text));
+                it->setToolTip(c, QString("The title is written as its %1 parts: the rip splits it here first, as "
+                                          "the disc does, and each cut is made inside the part it falls in. Not a "
+                                          "cut: it cannot be removed here.").arg(ti->nb_parts));
+            }
+            starts << qMakePair(rows[n].first, QString("the disc's own break"));
+            continue;
+        }
         const CutPoint &p = pts[cuts[i].point];
         char brief[64], full[768];
         bool ok = cut_point_clean(&p, brief, sizeof(brief), full, sizeof(full));
-        bool spare = onBreak(p.zero);
-        auto *it = new QTreeWidgetItem(cutList, { QString::number(i + 1), msText(p.zero),
-                                                  spare ? QString("not needed") : QString::fromUtf8(brief),
+        auto *it = new QTreeWidgetItem(cutList, { QString::number(n + 1), msText(p.zero), QString::fromUtf8(brief),
                                                   cuts[i].from });
         it->setData(0, Qt::UserRole, i);
+        it->setData(1, Qt::UserRole, (qlonglong)p.zero);
         it->setToolTip(1, QString("The part starts at %1; its key frame at %2").arg(exactText(p.zero),
                                                                                      exactText(p.key_time)));
-        it->setToolTip(2, spare ? QString("The disc itself breaks the title here and the title is written as its "
-                                          "parts: the rip splits it there and makes no cut")
-                                : QString::fromUtf8(full));
-        if (!ok || spare) {
+        it->setToolTip(2, QString::fromUtf8(full));
+        if (!ok) {
             it->setForeground(2, QColor(200, 110, 0));
             it->setIcon(2, style()->standardIcon(QStyle::SP_MessageBoxWarning));
         }
         zeros << p.zero;
         cleanCuts << ok;
-        if (!spare)
-            starts << qMakePair(p.zero, QString("a cut"));
+        starts << qMakePair(p.zero, QString("a cut"));
     }
-    for (int64_t x : breaks)
-        if (x > 0 && x < ix->end)
-            starts << qMakePair(x, QString("the disc's own break"));
     std::sort(starts.begin(), starts.end(), [](const QPair<int64_t, QString> &a, const QPair<int64_t, QString> &b) {
         return a.first < b.first;
     });
@@ -1019,6 +1055,11 @@ void CutEditor::addCutHere()
         return;
     }
     const CutPoint &p = pts[r.point];
+    if (onSplit(p.zero)) {
+        setNote(QString("No cut added: the disc itself splits the title at %1, and the title is written as its "
+                        "parts.").arg(msText(p.zero)));
+        return;
+    }
     for (const Cut &c : cuts)
         if (c.point == r.point) {
             setNote(QString("A cut is already at the key frame there (the part starts at %1).").arg(msText(p.zero)));
@@ -1057,6 +1098,11 @@ void CutEditor::addChapterCut()
         return;
     }
     const CutPoint &p = pts[r.point];
+    if (onSplit(p.zero)) {
+        setNote(QString("No cut added: the disc itself splits the title at chapter %1 (%2), and the title is written "
+                        "as its parts.").arg(req.chapter).arg(msText(p.zero)));
+        return;
+    }
     for (const Cut &c : cuts)
         if (c.point == r.point) {
             setNote(QString("A cut is already at chapter %1's key frame (the part starts at %2).")
@@ -1081,8 +1127,14 @@ void CutEditor::removeCut()
 {
     int i = -1;
 
-    if (QTreeWidgetItem *it = cutList->currentItem(); it && it->isSelected())
+    if (QTreeWidgetItem *it = cutList->currentItem(); it && it->isSelected()) {
         i = it->data(0, Qt::UserRole).toInt();
+        if (i < 0) {
+            setNote("That is the disc's own break, not a cut: the title is written as its parts and is split there "
+                    "first. To join it, turn \"Write as Parts\" off for the title.");
+            return;
+        }
+    }
     for (int k = 0; i < 0 && k < cuts.size(); k++)
         if (at(pts[cuts[k].point].zero) == cur || at(pts[cuts[k].point].key_time) == cur)
             i = k;
@@ -1216,6 +1268,10 @@ void CutEditor::addItems(const QString &items, const QString &from)
             left << QString("%1 (%2)").arg(text, res[i].same_as >= 0 ? QString("the same key frame as %1")
                                                                            .arg(QString::fromUtf8(reqs[res[i].same_as].text))
                                                                      : QString::fromUtf8(res[i].why));
+            continue;
+        }
+        if (onSplit(pts[res[i].point].zero)) {
+            left << QString("%1 (the disc itself splits the title there)").arg(text);
             continue;
         }
         for (const Cut &c : cuts)
@@ -1424,8 +1480,11 @@ void CutEditor::goCut(int dir)
 {
     stopPlay();
     int best = -1;
-    for (const Cut &c : cuts) {
-        int n = at(pts[c.point].zero);
+    QVector<int64_t> places = breaks;      // the disc's own breaks are places a part starts too
+    for (const Cut &c : cuts)
+        places << pts[c.point].zero;
+    for (int64_t t : places) {
+        int n = at(t);
         if (dir < 0 ? n < cur && n > best : n > cur && (best < 0 || n < best))
             best = n;
     }

@@ -80,6 +80,8 @@ public:
     void setTitle(int64_t end, const QVector<int64_t> &chapters);
     // clean: per cut, whether nothing is lost there (the others marked)
     void setCuts(const QVector<int64_t> &zeros, const QVector<bool> &clean);
+    // where the disc itself breaks the title (a title written as its parts)
+    void setSplits(const QVector<int64_t> &at);
     // where an analysis' suggestions would start parts (dashed, not cuts yet)
     void setSuggested(const QVector<int64_t> &zeros);
     void setPosition(int64_t t);
@@ -102,7 +104,7 @@ private:
     int     xOf(int64_t t) const;
 
     int64_t          end = 0, pos = 0;
-    QVector<int64_t> chapters, cuts, suggested;
+    QVector<int64_t> chapters, cuts, suggested, splits;
     QVector<bool>    clean;
     bool             dragging = false;
 };
@@ -220,6 +222,7 @@ private:
 
     QVector<Cut>     cuts;
     QVector<int64_t> breaks;     // written as parts: where the disc itself breaks the title (ticks), else none
+    bool onSplit(int64_t t) const;   // t is one of them (within 1 ms)
     QString          suggested;    // the last analysis' split points as cut list items
 
     // play: pictures at the title's own pace from where it started
