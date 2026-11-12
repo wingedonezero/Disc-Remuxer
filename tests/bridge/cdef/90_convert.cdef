@@ -22,6 +22,8 @@ typedef struct DrFlacResult {
     const DrFlacRange *ranges;
     int      nb_ranges;
     char     md5[33];
+    char     content[33];
+    int64_t  content_bytes;
 } DrFlacResult;
 int  dr_flac_out_open(DrFlacOut **f, int codec, const char *path, const int64_t *bounds, int nb_bounds, int part,
                       int64_t ticks);

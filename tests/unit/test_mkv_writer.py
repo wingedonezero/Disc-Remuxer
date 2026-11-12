@@ -566,7 +566,9 @@ def test_mkvmerge_lines_split_at_carriage_returns(tmp_path):
     # warning after an update must still reach the log
     disc, _ = avc_lpcm_disc(tmp_path)
     fake = fake_mkvmerge(tmp_path, "printf 'Progress: 50%%\\rWarning: after an update\\n'\nexit 1\n")
+    # (the stand-in makes no MKV file: nothing to read back)
     p = subprocess.run([*PROGRAM, "--set", "output.format=mkvmerge", "--set", f"mkv.mkvmerge_path={fake}",
+                        "--set", "mkv.read_back=false",
                         "--set", "titles.min_length=0", "demux", str(disc), "0", str(tmp_path / "out")],
                        capture_output=True, text=True)
     assert p.returncode == 0, p.stdout + p.stderr

@@ -177,6 +177,13 @@ static const Setting registry[] = {
       0, SET_AT_RIP },
     { "mkv", "mkvmerge_path", SET_TEXT, "", 0, 0, NULL,
       "The mkvmerge program output.format = mkvmerge runs. Empty: mkvmerge from the PATH.", 0, SET_AT_RIP },
+    { "mkv", "read_back", SET_BOOL, "true", 0, 0, NULL,
+      "After mkvmerge has made a title's MKV file, read the file back from the drive and compare each track with "
+      "what was written to its stream file (a checksum taken in memory while the track was written): a bit that "
+      "changed on the way into the file is found before the stream files are deleted. A track that differs: the "
+      "mux is made once more; one that differs again fails the title and the stream files are kept. Compared so "
+      "far: H.264 video, LPCM, TrueHD, AC-3, FLAC and PGS subtitles; a track of another codec is said as not "
+      "compared. Costs one more read of each MKV file.", 0, SET_AT_RIP },
     { "mkv", "remove_dialog_normalization", SET_BOOL, "false", 0, 0, NULL,
       "MKV files: set the dialogue normalization of every AC-3 and E-AC-3 (DD+) frame to \"none\" (as mkvmerge's "
       "option of that name), so players do not turn those tracks down to the disc's dialogue level. The disc's level "

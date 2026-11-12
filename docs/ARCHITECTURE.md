@@ -63,7 +63,9 @@ src/mkv/          the Matroska writer (C++ on libebml + libmatroska + zlib, a
                   C interface): a title into one MKV file with mkvmerge's rules
 src/analyze/      links FFmpeg to answer questions: stream details, the end
                   check of written files, the TrueHD end-of-stream decode
-                  (the timeline's one question); FFmpeg's log lines into ours
+                  (the timeline's one question), a track's content as one
+                  checksum and the same of a finished MKV file read back
+                  (setting mkv.read_back); FFmpeg's log lines into ours
 src/convert/      links FFmpeg for the one conversion: a lossless audio track
                   of a title with cuts (TrueHD without Atmos, DTS-HD Master
                   Audio without DTS:X) decoded strictly from the title's
@@ -108,7 +110,10 @@ source (image / folder)
             and mkv.remove_dialog_normalization (default off)
             output.format = mkvmerge (the default): the stream files and their timestamp
             files, then mkvmerge @<options file> into <out folder>/<title>.mkv
-            (writer.c), the stream files deleted once it has
+            (writer.c); the MKV file is then read back from the drive and each
+            track compared with what was written (mkv.read_back; a track that
+            differs: the mux once more, then the title fails and its stream
+            files stay); the stream files deleted once it holds
             output.timestamps_file: each video and audio track's picture /
             packet times (mkvmerge's format v4, exact to the ns; audio: AC-3,
             E-AC-3, DTS so far) next to its stream file, or the video's next

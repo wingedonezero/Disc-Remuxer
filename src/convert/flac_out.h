@@ -50,6 +50,11 @@ typedef struct DrFlacResult {
     const DrFlacRange *ranges;
     int      nb_ranges;
     char     md5[33];            /* the kept samples' (the part's range) */
+    /* the FLAC frames written to the file, as one checksum of their bytes
+     * (analyze/content_sum.h, the bytes form): what a Matroska file made
+     * from the file must hold */
+    char     content[33];
+    int64_t  content_bytes;
 } DrFlacResult;
 
 /* A decoder for codec (the library's codec id: TrueHD, DTS) and, from its

@@ -10,11 +10,15 @@
  * .textst (MKVToolNix's layout); the chapters as Matroska XML. A lossless
  * track of a cut title that is asked for as FLAC (cuts.lossless_to_flac) is
  * decoded from the title's start and its part's samples are written as
- * .flac (convert/flac_out.h).
+ * .flac (convert/flac_out.h). With mkvmerge making the MKV file, each track's
+ * content is summed in memory as it is written (analyze/content_sum.h) and
+ * the finished MKV file is read back from the drive and compared with it
+ * (setting mkv.read_back).
  */
 
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <inttypes.h>
 #include <poll.h>
@@ -38,7 +42,9 @@
 #include "base/msg.h"
 #include "names.h"
 #include "parse/rules.h"
+#include "analyze/content_sum.h"
 #include "analyze/details.h"
+#include "analyze/mkv_readback.h"
 #include "convert/flac_out.h"
 #include "disc/disc.h"
 #include "emit.h"
@@ -193,6 +199,14 @@ typedef struct EsOut {
     int           flac_done;        /* written: flac_res holds */
     int           flac_check;       /* its file read back: 1 the decoded samples, -1 not, 0 not run */
     DrFlacResult  flac_res;
+    /* the MKV file's read-back (mkv.read_back): the track's content as it is written */
+    int           want_sum;         /* asked for (mkvmerge makes the MKV file, the setting is on) */
+    int           sum_dialnorm;     /* the muxer is told to remove its dialogue normalization (AC-3) */
+    int           sum_kind;         /* DrContentKind; DR_CONTENT_NONE: no form for its codec yet */
+    DrContentSum *sum;
+    DrContentResult sum_res;        /* once its stream ended (sum_has) */
+    int           sum_has;
+    int           dialnorm_removed; /* the muxer was told so for this track */
 } EsOut;
 
 /* The end check of a written file: its details (read back with FFmpeg's
@@ -499,6 +513,12 @@ static int es_open(const DrDiscTrack *t, EsOut *o, const char *prefix, int64_t f
     o->st.file = o->name;
     if (!(o->f = fopen(o->name, "wb")))
         return DR_ERR(errno);
+    /* the track's content summed as it is written, for the MKV file's read-back */
+    if (o->want_sum && !t->second_view) {
+        o->sum_kind = dr_content_kind(t->codec, o->sum_dialnorm);
+        if (o->sum_kind != DR_CONTENT_NONE && dr_content_sum_open(&o->sum, o->sum_kind) < 0)
+            return DR_ERR(ENOMEM);
+    }
     if (t->codec == DR_CODEC_PCM_S16LE || t->codec == DR_CODEC_PCM_S24LE) {
         /* room for the RF64 sizes when the title's length lets the file
          * come near 4 GiB (a file that cannot stays as it always was) */
@@ -673,6 +693,7 @@ static int sup_write(EsOut *o, const DrDiscFrame *fr)
         if (fwrite(h, 1, sizeof(h), o->f) != sizeof(h) || fwrite(fr->data + off, 1, len, o->f) != (size_t)len)
             return write_failed(o);
         o->st.bytes += sizeof(h) + len;
+        dr_content_sum_data(o->sum, fr->data + off, len);  /* (the segment: the .sup's own header is not content) */
         off += len;
     }
     return off == fr->size ? 0 : DR_ERR_INVALID;
@@ -715,6 +736,7 @@ static int es_write(EsOut *o, const uint8_t *data, int size)
     if (fwrite(data, 1, size, o->f) != (size_t)size)
         return write_failed(o);
     o->st.bytes += size;
+    dr_content_sum_data(o->sum, data, size);
     return 0;
 }
 
@@ -1199,8 +1221,316 @@ static int dialnorm_removable(const DrDiscTrack *t, const EsOut *e)
     return 1;
 }
 
+/* ---- the MKV file read back (setting mkv.read_back) ----
+ * Each track's content was summed in memory as its stream file was written
+ * (EsOut.sum_res). The finished MKV file is brought to the drive, its cached
+ * copy dropped, and read back: each track must hold that content. A track
+ * that differs: its stream file is read back from the drive too, to say
+ * where the bytes changed; with the stream file as written the mux is made
+ * once more. */
+
+/* The file's data on the drive and no longer in the system's cache: the
+ * next read of it comes from the drive. */
+static void to_drive(const char *path)
+{
+    int fd = open(path, O_RDONLY);
+
+    if (fd < 0)
+        return;
+    fsync(fd);
+    posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
+    close(fd);
+}
+
+/* Tests: DR_TEST_MKV_DAMAGE=<n> turns bits of the MKV file of the first n
+ * muxes of each title around (near a quarter, half and three quarters of
+ * the file, elsewhere in each mux, as a failing memory or drive would);
+ * DR_TEST_MKV_DAMAGE_SAME: at the same places in each mux (as a muxer that
+ * stores a track in another form would differ: the same way every time). */
+static void test_damage(const char *path, int attempt)
+{
+    const char *v = getenv("DR_TEST_MKV_DAMAGE");
+    off_t shift = getenv("DR_TEST_MKV_DAMAGE_SAME") ? 0 : (off_t)attempt * 4099;
+    struct stat sb;
+    FILE *f;
+
+    if (!v || attempt > atoi(v) || stat(path, &sb) < 0 || !(f = fopen(path, "r+b")))
+        return;
+    for (int k = 1; k <= 3; k++) {
+        off_t at = sb.st_size / 4 * k + shift;
+        int c;
+        if (at < sb.st_size && fseeko(f, at, SEEK_SET) == 0 && (c = fgetc(f)) != EOF && fseeko(f, at, SEEK_SET) == 0)
+            fputc(c ^ 0x08, f);
+    }
+    fclose(f);
+}
+
+/* A stream file's content in its track's form, read from the drive: the
+ * file's bytes, but a WAVE file's samples (its data chunk), a FLAC file's
+ * frames (after its metadata blocks) and a .sup file's segments (each
+ * after its 10-byte header). 0, or a negative base error. */
+static int file_content(const EsOut *e, int pgs, DrContentResult *r)
+{
+    static uint8_t buf[1 << 16];
+    DrContentSum *sum = NULL;
+    FILE *f;
+    int ret = 0;
+    size_t n;
+
+    memset(r, 0, sizeof(*r));
+    to_drive(e->name);
+    if (!(f = fopen(e->name, "rb")))
+        return DR_ERR(errno);
+    if ((ret = dr_content_sum_open(&sum, e->sum_kind)) < 0) {
+        fclose(f);
+        return ret;
+    }
+    if (pgs) {
+        uint8_t h[13];
+        while (fread(h, 1, 13, f) == 13) {
+            size_t len = dr_rb16(h + 11);
+            if (h[0] != 'P' || h[1] != 'G' || len > sizeof(buf) || fread(buf, 1, len, f) != len) {
+                ret = DR_ERR_INVALID;
+                break;
+            }
+            /* (a segment: its type and length, then its data, as it was summed when written) */
+            dr_content_sum_data(sum, h + 10, 3);
+            dr_content_sum_data(sum, buf, len);
+        }
+    } else {
+        if (e->wav) {
+            /* RIFF / RF64: the chunks after "WAVE" up to "data" */
+            uint8_t h[12];
+            if (fread(h, 1, 12, f) != 12)
+                ret = DR_ERR_INVALID;
+            while (!ret && fread(h, 1, 8, f) == 8 && memcmp(h, "data", 4)) {
+                uint32_t len = dr_rl32(h + 4);
+                if (fseeko(f, len + (len & 1), SEEK_CUR) < 0)
+                    ret = DR_ERR_INVALID;
+            }
+        } else if (e->flac_done) {
+            uint8_t h[4];
+            int last = 0;
+            if (fread(h, 1, 4, f) != 4 || memcmp(h, "fLaC", 4))
+                ret = DR_ERR_INVALID;
+            while (!ret && !last) {
+                if (fread(h, 1, 4, f) != 4 || fseeko(f, dr_rb24(h + 1), SEEK_CUR) < 0)
+                    ret = DR_ERR_INVALID;
+                last = h[0] & 0x80;
+            }
+        }
+        while (!ret && (n = fread(buf, 1, sizeof(buf), f)) > 0)
+            dr_content_sum_data(sum, buf, n);
+    }
+    if (!ret && ferror(f))
+        ret = DR_ERR(EIO);
+    fclose(f);
+    dr_content_sum_finish(sum, r);
+    dr_content_sum_close(&sum);
+    return ret;
+}
+
+/* One run of mkvmerge over the options file: 0, DR_ERR_CANCELLED when a
+ * stop was asked for, or DR_ERR_INVALID (said; the MKV file it left is
+ * removed, the stream files are kept). */
+static int mux_run(const char *program, const char *opts_path, const char *mkv)
+{
+    int st = run_mkvmerge(program, opts_path);
+
+    /* a stop asked for while mkvmerge ran: no MKV file, the stream files are kept */
+    if (engine_cancelled()) {
+        struct stat sb;
+        log_text(LOG_WARNING, "mkvmerge stopped as asked; the stream files are kept");
+        if (stat(mkv, &sb) == 0 && unlink(mkv) == 0)
+            log_text(LOG_INFO, "mkvmerge: its unfinished file %s is removed", mkv);
+        return DR_ERR_CANCELLED;
+    }
+    if (st < 0) {
+        log_text(LOG_ERROR, "mkvmerge (%s) cannot be run: %s; the stream files are kept", program, strerror(-st));
+        return DR_ERR_INVALID;
+    }
+    if (st >= 2) {
+        struct stat sb;
+        log_text(LOG_ERROR, "mkvmerge failed (exit status %d, see its lines above); the stream files are kept", st);
+        /* mkvmerge leaves what it wrote of its output: no unfinished MKV
+         * file stays next to finished ones */
+        if (stat(mkv, &sb) == 0 && unlink(mkv) == 0)
+            log_text(LOG_INFO, "mkvmerge: its unfinished file %s is removed", mkv);
+        return DR_ERR_INVALID;
+    }
+    if (st == 1)
+        log_text(LOG_WARNING, "mkvmerge finished with warnings (see its lines above)");
+    return 0;
+}
+
+/* What a read-back of the MKV file found for the tracks given to mkvmerge
+ * (muxed[k]: the title's track of the file's track k). */
+enum { RB_SAME, RB_DIFFERS, RB_UNREADABLE };
+
+static int mkv_read(const char *mkv, DrDisc *d, EsOut *out, const int *muxed, int nb, DrMkvTrack *tr, int attempt,
+                    char *why, size_t why_size)
+{
+    int differs = 0;
+
+    for (int k = 0; k < nb; k++) {
+        const EsOut *e = &out[muxed[k]];
+        /* compared: a track with a form whose stream had it, the muxer told what the sum expects */
+        int ok = e->sum_has && !e->sum_res.odd &&
+                 e->dialnorm_removed == (e->sum_kind == DR_CONTENT_AC3_NO_DIALNORM);
+        tr[k].kind = ok ? e->sum_kind : DR_CONTENT_NONE;
+    }
+    to_drive(mkv);
+    test_damage(mkv, attempt);
+    if (dr_mkv_read_back(mkv, tr, nb, why, (int)why_size) < 0)
+        return RB_UNREADABLE;
+    for (int k = 0; k < nb; k++) {
+        const EsOut *e = &out[muxed[k]];
+        const DrDiscTrack *t = dr_disc_track(d, muxed[k]);
+        int same;
+
+        if (tr[k].kind == DR_CONTENT_NONE)
+            continue;
+        same = !tr[k].got.odd && tr[k].got.bytes == e->sum_res.bytes && !strcmp(tr[k].got.digest, e->sum_res.digest);
+        log_text(LOG_DETAIL, "MKV read-back: track %d (%s): %s: written %"PRId64" bytes, checksum %s; in the file "
+                 "%"PRId64" bytes, checksum %s: %s", t->number, e->flac_done ? "FLAC" : codec_id_name(t->codec),
+                 dr_content_kind_name(e->sum_kind), e->sum_res.bytes, e->sum_res.digest, tr[k].got.bytes,
+                 tr[k].got.digest, same ? "the same" : "DIFFERENT");
+        differs += !same;
+    }
+    return differs ? RB_DIFFERS : RB_SAME;
+}
+
+/* The read-back after a mux and what follows from it. *compared / *total:
+ * the tracks compared, and given to the muxer. 0: the MKV file holds what
+ * was written (or the read-back is off: *compared -1); DR_ERR_CANCELLED;
+ * DR_ERR_INVALID: it does not (said; the stream files and the file are
+ * kept, the file under <name>_DAMAGED.mkv). */
+static int mkv_read_back(const char *program, const char *opts_path, const char *mkv, DrDisc *d, EsOut *out,
+                         const int *muxed, int nb, int *compared, int *total)
+{
+    DrMkvTrack *tr = dr_calloc(nb ? nb : 1, sizeof(*tr)), *first = dr_calloc(nb ? nb : 1, sizeof(*first));
+    char why[256] = "";
+    int ret = 0, r, gaps = 0;
+
+    *compared = -1;
+    *total    = nb;
+    if (!tr || !first) {
+        ret = DR_ERR(ENOMEM);
+        goto end;
+    }
+    if (!setting_bool("mkv.read_back"))
+        goto end;
+    r = mkv_read(mkv, d, out, muxed, nb, tr, 1, why, sizeof(why));
+    if (r != RB_SAME) {
+        int file_bad = 0;
+
+        /* where the bytes changed: each differing track's stream file, read from the drive */
+        for (int k = 0; r == RB_DIFFERS && k < nb; k++) {
+            const EsOut *e = &out[muxed[k]];
+            const DrDiscTrack *t = dr_disc_track(d, muxed[k]);
+            DrContentResult fc;
+            int same = tr[k].kind == DR_CONTENT_NONE ||
+                       (!tr[k].got.odd && tr[k].got.bytes == e->sum_res.bytes &&
+                        !strcmp(tr[k].got.digest, e->sum_res.digest));
+            if (same)
+                continue;
+            if (file_content(e, t->codec == DR_CODEC_HDMV_PGS_SUBTITLE, &fc) < 0 || fc.odd ||
+                fc.bytes != e->sum_res.bytes || strcmp(fc.digest, e->sum_res.digest)) {
+                log_text(LOG_ERROR, "MKV read-back: track %d: its stream file %s does not hold what was written to it "
+                         "(written %"PRId64" bytes, checksum %s; the file read from the drive %"PRId64" bytes, "
+                         "checksum %s): the bytes changed on the way to the drive or on it", t->number, e->name,
+                         e->sum_res.bytes, e->sum_res.digest, fc.bytes, fc.digest);
+                file_bad++;
+            } else
+                log_text(LOG_WARNING, "MKV read-back: track %d: the MKV file does not hold what was written (see the "
+                         "detail log for the checksums); its stream file read from the drive is as written, so the "
+                         "bytes changed in the mux or on the way into the MKV file", t->number);
+        }
+        if (r == RB_UNREADABLE)
+            log_text(LOG_WARNING, "MKV read-back: the MKV file cannot be read back (%s)", why);
+        if (file_bad) {
+            log_text(LOG_ERROR, "MKV read-back: FAIL: %d stream file(s) are damaged on the drive; the stream files "
+                     "and the MKV file are kept", file_bad);
+            ret = DR_ERR_INVALID;
+            goto damaged;
+        }
+        /* the stream files are as written: the mux once more */
+        log_text(LOG_WARNING, "MKV read-back: the mux is made once more");
+        memcpy(first, tr, nb * sizeof(*tr));
+        if ((ret = mux_run(program, opts_path, mkv)) < 0)
+            goto end;
+        r = mkv_read(mkv, d, out, muxed, nb, tr, 2, why, sizeof(why));
+        if (r == RB_UNREADABLE) {
+            log_text(LOG_ERROR, "MKV read-back: FAIL: the second MKV file cannot be read back either (%s); the stream "
+                     "files and the MKV file are kept", why);
+            ret = DR_ERR_INVALID;
+            goto damaged;
+        }
+        for (int k = 0; k < nb; k++) {
+            const EsOut *e = &out[muxed[k]];
+            const DrDiscTrack *t = dr_disc_track(d, muxed[k]);
+            int same = tr[k].kind == DR_CONTENT_NONE ||
+                       (!tr[k].got.odd && tr[k].got.bytes == e->sum_res.bytes &&
+                        !strcmp(tr[k].got.digest, e->sum_res.digest));
+            if (same)
+                continue;
+            if (first[k].kind != DR_CONTENT_NONE && first[k].got.bytes == tr[k].got.bytes &&
+                !strcmp(first[k].got.digest, tr[k].got.digest)) {
+                /* the same bytes in two muxes, the stream file as written: the muxer keeps this track
+                 * in another form than the sum's, no damage */
+                log_text(LOG_WARNING, "MKV read-back: track %d (%s): both muxes hold the same bytes, other than "
+                         "those written, and its stream file is as written: mkvmerge stores this track in another "
+                         "form than the check knows: not compared [untested on real discs]", t->number,
+                         codec_id_name(t->codec));
+                tr[k].kind     = DR_CONTENT_NONE;
+                first[k].codec = -1;            /* (said) */
+                gaps++;
+            } else {
+                log_text(LOG_ERROR, "MKV read-back: track %d: the second MKV file does not hold what was written "
+                         "either, and differently from the first", t->number);
+                ret = DR_ERR_INVALID;
+            }
+        }
+        if (ret < 0) {
+            log_text(LOG_ERROR, "MKV read-back: FAIL: two muxes in a row left damaged data in the MKV file; the "
+                     "stream files and the MKV file are kept");
+            goto damaged;
+        }
+        if (!gaps || r == RB_SAME)
+            log_text(LOG_WARNING, "MKV read-back: the second MKV file holds what was written: the first mux left "
+                     "damaged data in the file (bytes changed in memory or on the way to the drive: a fault of this "
+                     "machine, not of the disc)");
+    }
+    *compared = 0;
+    for (int k = 0; k < nb; k++) {
+        const DrDiscTrack *t = dr_disc_track(d, muxed[k]);
+        const EsOut *e = &out[muxed[k]];
+        *compared += tr[k].kind != DR_CONTENT_NONE;
+        if (tr[k].kind == DR_CONTENT_NONE && first[k].codec != -1)
+            log_text(LOG_INFO, "MKV read-back: track %d (%s) is not compared: %s", t->number,
+                     codec_id_name(t->codec), e->sum_kind == DR_CONTENT_NONE ? "no rule for this codec yet" :
+                     "its stream did not have the form the check sums");
+    }
+    log_text(LOG_OK, "MKV read back from the drive: %d of %d track%s compared with what was written: PASS", *compared,
+             nb, nb == 1 ? "" : "s");
+    goto end;
+damaged:
+    {
+        /* a file known to be damaged does not keep the title's name */
+        char *bad = dr_asprintf_str("%.*s_DAMAGED.mkv", (int)strlen(mkv) - 4, mkv);
+        if (bad && rename(mkv, bad) == 0)
+            log_text(LOG_ERROR, "MKV read-back: the damaged file is kept as %s", bad);
+        dr_free(bad);
+    }
+end:
+    dr_free(tr);
+    dr_free(first);
+    return ret;
+}
+
 static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_dir, const char *dir, int own_dir,
-                          const char *name, const char *chap, int nb_chapters, int use_ts, char **mkv_out)
+                          const char *name, const char *chap, int nb_chapters, int use_ts, char **mkv_out,
+                          int *rb_compared, int *rb_total)
 {
     const char *program = *setting_text("mkv.mkvmerge_path") ? setting_text("mkv.mkvmerge_path") : "mkvmerge";
     int none = !strcmp(setting_text("mkv.compression"), "none");
@@ -1209,11 +1539,14 @@ static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_
     char *mkv = dr_asprintf_str("%s/%s.mkv", out_dir, name), *opts_path = dr_asprintf_str("%s/%s_mkvmerge.json", dir,
                                                                                           name);
     char order[8192] = "";
-    int nfile = 0, ret = 0, st;
+    int nfile = 0, ret = 0;
+    int *muxed = dr_calloc(nb_tracks ? nb_tracks : 1, sizeof(*muxed));  /* the title's track of each file given */
     FILE *f;
 
     *mkv_out = NULL;
-    if (!mkv || !opts_path) {
+    *rb_compared = -1;
+    *rb_total    = 0;
+    if (!mkv || !opts_path || !muxed) {
         ret = DR_ERR(ENOMEM);
         goto done;
     }
@@ -1267,13 +1600,14 @@ static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_
         if (t->type == DISC_MEDIA_SUBTITLE && none &&
             ((ret = opts_add(&o, "--compression")) < 0 || (ret = opts_add(&o, "0:none")) < 0))
             goto done;
-        if (dialnorm && t->type == DISC_MEDIA_AUDIO && dialnorm_removable(t, e) &&
+        e->dialnorm_removed = dialnorm && t->type == DISC_MEDIA_AUDIO && dialnorm_removable(t, e);
+        if (e->dialnorm_removed &&
             ((ret = opts_add(&o, "--remove-dialog-normalization-gain")) < 0 || (ret = opts_add(&o, "0")) < 0))
             goto done;
         if ((ret = opts_add(&o, "(")) < 0 || (ret = opts_add(&o, file)) < 0 || (ret = opts_add(&o, ")")) < 0)
             goto done;
         snprintf(order + strlen(order), sizeof(order) - strlen(order), "%s%d:0", nfile ? "," : "", nfile);
-        nfile++;
+        muxed[nfile++] = i;
     }
     if (chap && nb_chapters && ((ret = opts_add(&o, "--chapters")) < 0 || (ret = opts_add(&o, chap)) < 0))
         goto done;
@@ -1290,33 +1624,14 @@ static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_
         goto done;
     }
     log_text(LOG_INFO, "mkvmerge: %d file%s into %s (options file %s)", nfile, nfile == 1 ? "" : "s", mkv, opts_path);
-    st = run_mkvmerge(program, opts_path);
-    /* a stop asked for while mkvmerge ran: no MKV file, the stream files are kept */
-    if (engine_cancelled()) {
-        struct stat sb;
-        log_text(LOG_WARNING, "mkvmerge stopped as asked; the stream files are kept");
-        if (stat(mkv, &sb) == 0 && unlink(mkv) == 0)
-            log_text(LOG_INFO, "mkvmerge: its unfinished file %s is removed", mkv);
-        ret = DR_ERR_CANCELLED;
+    if ((ret = mux_run(program, opts_path, mkv)) < 0)
+        goto done;
+    /* the MKV file read back from the drive: each track must hold what was written */
+    if ((ret = mkv_read_back(program, opts_path, mkv, d, out, muxed, nfile, rb_compared, rb_total)) < 0) {
+        if (ret == DR_ERR_INVALID)
+            *rb_compared = -2;              /* (the MKV file was made, but does not hold what was written) */
         goto done;
     }
-    if (st < 0) {
-        log_text(LOG_ERROR, "mkvmerge (%s) cannot be run: %s; the stream files are kept", program, strerror(-st));
-        ret = DR_ERR_INVALID;
-        goto done;
-    }
-    if (st >= 2) {
-        struct stat sb;
-        log_text(LOG_ERROR, "mkvmerge failed (exit status %d, see its lines above); the stream files are kept", st);
-        /* mkvmerge leaves what it wrote of its output: no unfinished MKV
-         * file stays next to finished ones */
-        if (stat(mkv, &sb) == 0 && unlink(mkv) == 0)
-            log_text(LOG_INFO, "mkvmerge: its unfinished file %s is removed", mkv);
-        ret = DR_ERR_INVALID;
-        goto done;
-    }
-    if (st == 1)
-        log_text(LOG_WARNING, "mkvmerge finished with warnings (see its lines above)");
     /* done: the files written for the title go (not the second view's, which
      * mkvmerge was not given: the MKV file does not hold it) */
     {
@@ -1353,6 +1668,7 @@ done:
     dr_free(o.buf);
     dr_free(mkv);
     dr_free(opts_path);
+    dr_free(muxed);
     return ret;
 }
 
@@ -1540,7 +1856,7 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     MkvOut *mo = NULL;
     char *mkv_path = NULL;
     int64_t mkv_bytes = 0;
-    int via_done = 0;
+    int via_done = 0, rb_compared = -1, rb_total = 0;
 
     memset(res, 0, sizeof(*res));
     /* the title's warnings: every warning line from here to its last line */
@@ -1628,6 +1944,9 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         /* LPCM leaves the disc layer as little-endian PCM: its format (with
          * the channel layout) is set when its first frame comes */
         o->probe_late  = t->codec == DR_CODEC_PCM_DVD || t->codec == DR_CODEC_PCM_BLURAY;
+        /* mkvmerge makes the MKV file: each track's content is summed as it is written, for the file's read-back */
+        o->want_sum     = via && setting_bool("mkv.read_back");
+        o->sum_dialnorm = setting_bool("mkv.remove_dialog_normalization") && t->codec == DR_CODEC_AC3;
         /* (a track written as FLAC: its decoder gives the layout) */
         if (t->type == DISC_MEDIA_AUDIO && !t->channels && !o->probe_late && !t->cut_whole) {
             if (!(o->hold = dr_calloc(HOLD_MAX, sizeof(*o->hold)))) {
@@ -1747,6 +2066,20 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     /* the tracks written as FLAC: their files finished and read back */
     for (int i = 0; ret >= 0 && i < nb_tracks; i++)
         ret = flac_finish(job, dr_disc_track(d, i), &out[i], prefix);
+    /* each track's content as it was written, for the MKV file's read-back */
+    for (int i = 0; ret >= 0 && i < nb_tracks; i++) {
+        EsOut *o = &out[i];
+        if (o->sum) {
+            dr_content_sum_finish(o->sum, &o->sum_res);
+            o->sum_has = 1;
+        } else if (o->want_sum && o->flac_done && o->opened) {
+            /* (a FLAC file: the frames its converter wrote) */
+            o->sum_kind = DR_CONTENT_BYTES;
+            memcpy(o->sum_res.digest, o->flac_res.content, sizeof(o->sum_res.digest));
+            o->sum_res.bytes = o->flac_res.content_bytes;
+            o->sum_has       = 1;
+        }
+    }
     /* a cut part: its tracks' bytes, for the check after the title's last part */
     if (ret >= 0 && job->nb_cuts && (res->cut = dr_calloc(nb_tracks ? nb_tracks : 1, sizeof(*res->cut)))) {
         for (int i = 0; i < nb_tracks; i++) {
@@ -1935,7 +2268,7 @@ end:
         int checked = 0, check_failed = 0, unchecked = 0, flac_failed = 0;
         int64_t written = 0;
         int nb_chapters = dr_disc_nb_chapters(d);
-        char made[160], sz[32];
+        char made[224], sz[32], rb[96];
 
         for (int i = 0; i < nb_tracks; i++) {
             const DrDiscTrack *t = dr_disc_track(d, i);
@@ -1951,7 +2284,7 @@ end:
             char *made_mkv = NULL;
             struct stat sb;
             int mret = mkvmerge_title(d, out, nb_tracks, job->out_dir, dir, job->sub_folder, res->name, chap,
-                                      nb_chapters, use_ts, &made_mkv);
+                                      nb_chapters, use_ts, &made_mkv, &rb_compared, &rb_total);
             if (mret == DR_ERR_CANCELLED) {
                 res->stopped = 1;
                 res->failed  = 1;
@@ -2057,12 +2390,24 @@ end:
             written += out[i].opened ? out[i].st.bytes : 0;
         if (mkv || via_done)
             written = mkv_bytes;
+        /* the MKV file: read back from the drive (mkvmerge; setting mkv.read_back) or not */
+        if (mkv || (via_done && rb_compared < 0))
+            snprintf(rb, sizeof(rb), "; the MKV file itself is not read back%s", mkv ? " yet" :
+                     " (setting mkv.read_back is off)");
+        else if (via_done && rb_compared == rb_total)
+            snprintf(rb, sizeof(rb), "; the MKV file read back: PASS");
+        else if (via_done)
+            snprintf(rb, sizeof(rb), "; the MKV file read back: %d of %d tracks compared, PASS", rb_compared, rb_total);
+        else
+            rb[0] = 0;
         snprintf(made, sizeof(made), "(%u chapter%s, %s%s)", (unsigned)nb_chapters, nb_chapters == 1 ? "" : "s",
-                 size_text(sz, sizeof(sz), written),
-                 mkv || via_done ? "; the MKV file itself is not read back yet" : "");
+                 size_text(sz, sizeof(sz), written), rb);
         if (via && res->stopped) {
             log_msg(MSG_TITLE_FAILED, LOG_WARNING, "%s stopped as asked during the mux: its stream files are kept, "
                     "the MKV file is not made", who);
+        } else if (via && !via_done && !check_failed && !flac_failed && rb_compared == -2) {
+            log_msg(MSG_TITLE_DONE, LOG_ERROR, "%s: its stream files are written and kept, but the MKV file made from "
+                    "them does not hold what was written (see above)", who);
         } else if (via && !via_done && !check_failed && !flac_failed) {
             log_msg(MSG_TITLE_DONE, LOG_ERROR, "%s: its stream files are written, but mkvmerge did not make the MKV "
                     "file (see above)", who);
@@ -2108,6 +2453,7 @@ end:
         dr_free(o->hold);
         dr_layout_probe_close(&o->lp);
         details_probe_close(&o->probe);
+        dr_content_sum_close(&o->sum);
         /* a FLAC file not finished (the part failed or was stopped): not left behind */
         dr_flac_out_close(&o->flac);
         if (o->flac_tmp && !o->opened)
