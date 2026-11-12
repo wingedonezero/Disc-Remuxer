@@ -127,7 +127,9 @@ def test_damage_that_takes_no_picture_makes_no_hole_for_the_mkvmerge_mode(tmp_pa
     fake.write_text('#!/bin/sh\nout=$(python3 -c "import json,sys; a=json.load(open(sys.argv[1][1:])); '
                     'print(a[a.index(\'--output\')+1])" "$1")\n: > "$out"\n')
     os.chmod(fake, 0o755)
-    p = subprocess.run([*PROGRAM, "--set", "output.format=mkvmerge", "--set", f"mkv.mkvmerge_path={fake}", "demux",
+    # (the stand-in's file is no Matroska file: nothing to read back)
+    p = subprocess.run([*PROGRAM, "--set", "output.format=mkvmerge", "--set", f"mkv.mkvmerge_path={fake}",
+                        "--set", "mkv.read_back=false", "demux",
                         str(disc(tmp_path, damage)), "0", str(tmp_path / "out")], capture_output=True, text=True)
     assert p.returncode == 0, p.stdout + p.stderr
     assert ("mkvmerge: damaged data was left out, but no picture is missing and no audio gap is left open: no "

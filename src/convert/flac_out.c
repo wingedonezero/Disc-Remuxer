@@ -18,6 +18,7 @@
 #include <libavutil/mem.h>
 #include <libavutil/opt.h>
 
+#include "analyze/content_sum.h"
 #include "base/err.h"
 #include "convert/flac_out.h"
 
@@ -33,6 +34,8 @@ struct DrFlacOut {
     AVPacket        *pkt, *opkt;
     AVFrame         *frame, *eframe;
     AVAudioFifo     *fifo;
+    DrContentSum    *content;        /* the frames written, as one checksum */
+    DrContentResult  content_res;
     char            *path;
     int              codec;
     int64_t         *bounds;
@@ -218,6 +221,7 @@ static int drain(DrFlacOut *f)
     while ((ret = avcodec_receive_packet(f->enc, f->opkt)) >= 0) {
         av_packet_rescale_ts(f->opkt, f->enc->time_base, f->st->time_base);
         f->opkt->stream_index = 0;
+        dr_content_sum_data(f->content, f->opkt->data, f->opkt->size);
         ret = av_write_frame(f->oc, f->opkt);
         av_packet_unref(f->opkt);
         if (ret < 0 || f->oc->pb->error)
@@ -269,7 +273,8 @@ static int open_file(DrFlacOut *f)
         return lib_fail(f, ret, "the FLAC encoder cannot be opened");
     if (f->enc->frame_size <= 0)
         return fail(f, DR_ERR_BUG, "the FLAC encoder names no block size");
-    if (!(f->fifo = av_audio_fifo_alloc(f->enc->sample_fmt, f->channels, f->enc->frame_size * 2)))
+    if (!(f->fifo = av_audio_fifo_alloc(f->enc->sample_fmt, f->channels, f->enc->frame_size * 2)) ||
+        dr_content_sum_open(&f->content, DR_CONTENT_BYTES) < 0)
         return fail(f, DR_ERR(ENOMEM), "out of memory");
     if ((ret = avformat_alloc_output_context2(&f->oc, NULL, "flac", NULL)) < 0)
         return lib_fail(f, ret, "the FLAC file writer");
@@ -452,6 +457,7 @@ int dr_flac_out_finish(DrFlacOut *f, DrFlacResult *res)
                 return write_fail(f, ret < 0 ? ret : f->oc->pb->error);
             if ((ret = avio_closep(&f->oc->pb)) < 0)
                 return write_fail(f, ret);
+            dr_content_sum_finish(f->content, &f->content_res);
         }
         for (int i = 0; i <= f->nb_bounds; i++) {
             uint8_t d[16];
@@ -485,6 +491,8 @@ int dr_flac_out_finish(DrFlacOut *f, DrFlacResult *res)
     res->ranges    = f->ranges;
     res->nb_ranges = f->nb_bounds + 1;
     memcpy(res->md5, f->ranges[f->part].md5, sizeof(res->md5));
+    memcpy(res->content, f->content_res.digest, sizeof(res->content));
+    res->content_bytes = f->content_res.bytes;
     return 0;
 }
 
@@ -517,6 +525,7 @@ void dr_flac_out_close(DrFlacOut **pf)
     av_frame_free(&f->eframe);
     if (f->fifo)
         av_audio_fifo_free(f->fifo);
+    dr_content_sum_close(&f->content);
     for (int i = 0; f->md5 && i <= f->nb_bounds; i++)
         av_free(f->md5[i]);
     av_free(f->md5);

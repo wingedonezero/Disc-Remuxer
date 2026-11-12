@@ -1,0 +1,22 @@
+/* a track's content as one checksum, and a Matroska file read back
+ * (src/analyze/content_sum.h, mkv_readback.h) */
+enum DrContentKind { DR_CONTENT_NONE = 0, DR_CONTENT_BYTES, DR_CONTENT_NAL, DR_CONTENT_AC3_NO_DIALNORM };
+typedef struct DrContentSum DrContentSum;
+typedef struct DrContentResult {
+    char    digest[33];
+    int64_t bytes;
+    int64_t units;
+    int     odd;
+} DrContentResult;
+int  dr_content_kind(int codec, int dialnorm_removed);
+int  dr_content_sum_open(DrContentSum **s, int kind);
+void dr_content_sum_data(DrContentSum *s, const uint8_t *data, size_t size);
+void dr_content_sum_nal(DrContentSum *s, const uint8_t *nal, size_t size);
+void dr_content_sum_finish(DrContentSum *s, DrContentResult *r);
+void dr_content_sum_close(DrContentSum **s);
+typedef struct DrMkvTrack {
+    int             kind;
+    DrContentResult got;
+    int             codec;
+} DrMkvTrack;
+int dr_mkv_read_back(const char *path, DrMkvTrack *tracks, int nb, char *why, int why_size);

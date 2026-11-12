@@ -32,6 +32,8 @@
 
 #include "disc/bluray/bluray_internal.h"
 #include "analyze/analyze.h"
+#include "analyze/content_sum.h"
+#include "analyze/mkv_readback.h"
 #include "convert/flac_out.h"
 #include "timeline/disctl.h"
 #include "disc/dvd/dvd_internal.h"
