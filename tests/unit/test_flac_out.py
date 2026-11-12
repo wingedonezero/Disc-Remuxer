@@ -175,3 +175,36 @@ def test_a_new_piece_that_starts_with_a_major_sync_restarts_the_decoder(stream):
     # a piece that goes on inside the stream (no major sync): decoded on
     r = convert(d / "on.flac", units, pieces=(sync[2] + 1,))
     assert (r["pieces"], r["restarts"]) == (1, 0) and flac_samples(d / "on.flac") == pcm
+
+
+# every layout the TrueHD encoder makes: the ones FLAC has an order of its own for, and the ones it has not
+LAYOUTS = [("mono", 1, 1), ("stereo", 2, 1), ("2.1", 3, 0), ("3.0", 3, 1), ("3.1", 4, 0), ("4.0", 4, 0),
+           ("4.1", 5, 0), ("5.0(side)", 5, 1), ("5.1(side)", 6, 1)]
+
+
+@pytest.mark.parametrize("layout,channels,native", LAYOUTS)
+def test_each_channel_stays_in_its_slot_and_the_layout_is_kept(tmp_path, layout, channels, native):
+    # each channel its own tone, so a channel in another slot changes the samples
+    thd = tmp_path / "in.thd"
+    exprs = "|".join(f"0.4*sin(2*PI*{150 * (c + 1)}*t)" for c in range(channels))
+    run("-f", "lavfi", "-i", f"aevalsrc={exprs}:s={RATE}:c={layout},atrim=end_sample=9600",
+        "-c:a", "truehd", "-strict", "-2", "-sample_fmt", "s32p", "-f", "truehd", str(thd))
+    data, units, at = thd.read_bytes(), [], 0
+    while at < len(data):
+        n = (int.from_bytes(data[at:at + 2], "big") & 0x0fff) * 2
+        units.append(data[at:at + n])
+        at += n
+    r = convert(tmp_path / "out.flac", units)
+    assert (r["channels"], r["native_layout"]) == (channels, native)
+    pcm = run("-f", "truehd", "-i", str(thd), "-f", "s32le", "-")
+    assert flac_samples(tmp_path / "out.flac") == pcm, "every channel in its slot, sample for sample"
+    # the file is the ffmpeg program's, with the layout as a tag where FLAC has no order of its own for it
+    run("-f", "truehd", "-i", str(thd), "-c:a", "flac", "-compression_level", "12", "-max_prediction_order", "12",
+        "-map_metadata", "-1", "-fflags", "+bitexact", str(tmp_path / "program.flac"))
+    ours = (tmp_path / "out.flac").read_bytes()
+    assert ours == (tmp_path / "program.flac").read_bytes()
+    assert (b"WAVEFORMATEXTENSIBLE_CHANNEL_MASK" in ours) == (not native)
+    # read back, the file states the source's layout (side or back surrounds are one layout to FLAC)
+    probe = subprocess.run([str(DIST / "ffprobe"), "-v", "error", "-show_entries", "stream=channel_layout", "-of",
+                            "csv=p=0", str(tmp_path / "out.flac")], capture_output=True, text=True, check=True)
+    assert probe.stdout.strip() == layout
