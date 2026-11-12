@@ -142,6 +142,15 @@ static const Setting registry[] = {
       "that is no clean break of the disc, e.g. between two episodes in one stream): nearest takes the nearest "
       "key frame (the earlier one when both are as near), next the first key frame after the time (mkvmerge's "
       "way). A time on a key frame (within 1 ms) is cut there either way.", 0, SET_AT_RIP },
+    { "cuts", "lossless_to_flac", SET_BOOL, "false", 0, 0, NULL,
+      "In a title with cuts, write its lossless audio that can only start at some of its units as FLAC: Dolby "
+      "TrueHD (not with Dolby Atmos) and DTS-HD Master Audio (not with DTS:X). Such a track is decoded from the "
+      "title's start (strictly: a failed integrity check or a frame that does not come out lossless fails the "
+      "part) and each part gets its samples, cut between two samples at the cut, so it starts with the picture "
+      "(less than one sample after it) instead of at the track's next start unit (up to about 100 ms later). Every "
+      "FLAC file is read back and compared with the decoded samples. Off: the track is written as it is on the "
+      "disc. Titles without cuts, parts at the disc's own breaks, lossy audio, LPCM, Atmos and DTS:X tracks are "
+      "never changed.", 0, SET_AT_RIP },
     { "cuts", "preview_cache_mb", SET_INT, "512", 16, 16384, NULL,
       "The cut editor keeps the pictures it decoded last for stepping back and forth: how much memory (MB) they "
       "may take (about 60 pictures of 1080p video in 512 MB, 15 of UHD). All of it is given back when the editor "

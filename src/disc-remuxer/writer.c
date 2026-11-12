@@ -7,7 +7,10 @@
  * [ ] ( ) { } . + - = #, and finds the delay as "delay <number>");
  * PCM as RIFF WAVE; sub-pictures
  * as a VobSub pair (.sub packs + .idx); PGS as .sup; text subtitles as
- * .textst (MKVToolNix's layout); the chapters as Matroska XML.
+ * .textst (MKVToolNix's layout); the chapters as Matroska XML. A lossless
+ * track of a cut title that is asked for as FLAC (cuts.lossless_to_flac) is
+ * decoded from the title's start and its part's samples are written as
+ * .flac (convert/flac_out.h).
  */
 
 #include <dirent.h>
@@ -36,6 +39,7 @@
 #include "names.h"
 #include "parse/rules.h"
 #include "analyze/details.h"
+#include "convert/flac_out.h"
 #include "disc/disc.h"
 #include "emit.h"
 #include "engine.h"
@@ -182,6 +186,13 @@ typedef struct EsOut {
     int           checked;          /* the end check ran: 1 pass, -1 fail, 0 not run */
     int           write_err;        /* a write to its file failed: why (errno), for the title's failure line */
     char          problems[1024];   /* its findings */
+    /* a cut part's lossless track written as FLAC (DrDiscTrack.cut_whole) */
+    DrFlacOut    *flac;             /* its decoder and FLAC writer */
+    int           flac_seg;         /* the title's segment its last unit came from */
+    char         *flac_tmp;         /* the file while it is written (its name needs the first sample's time) */
+    int           flac_done;        /* written: flac_res holds */
+    int           flac_check;       /* its file read back: 1 the decoded samples, -1 not, 0 not run */
+    DrFlacResult  flac_res;
 } EsOut;
 
 /* The end check of a written file: its details (read back with FFmpeg's
@@ -912,6 +923,10 @@ void title_outcome_free(TitleOutcome *out)
         dr_freep(&out->damage[i]);
     dr_freep(&out->damage);
     out->nb_damage = 0;
+    for (int i = 0; out->cut && i < out->nb_cut; i++) {
+        dr_freep(&out->cut[i].range_samples);
+        dr_freep(&out->cut[i].range_md5);
+    }
     dr_freep(&out->cut);
     out->nb_cut = 0;
 }
@@ -1216,7 +1231,8 @@ static int mkvmerge_title(DrDisc *d, EsOut *out, int nb_tracks, const char *out_
         if (out[i].opened && t->type == DISC_MEDIA_AUDIO && !out[i].ts_path && !is_lpcm(t))
             log_text(LOG_WARNING, "Track %d (%s): no timestamp file (how mkvmerge cuts this codec into packets "
                      "is not built in yet): in the MKV file it closes the title's gaps, so after a hole it "
-                     "runs ahead of the picture", t->number, codec_id_name(t->codec));
+                     "runs ahead of the picture", t->number, out[i].flac_done ? "written as FLAC" :
+                     codec_id_name(t->codec));
         if (out[i].opened && t->type == DISC_MEDIA_AUDIO && out[i].ts_path && out[i].st.delay_ms < 0)
             log_text(LOG_WARNING, "Track %d starts %"PRId64" ms before the video and the title has holes: its "
                      "timestamp file starts below 0, so mkvmerge moves the whole file later (the video does "
@@ -1340,6 +1356,154 @@ done:
     return ret;
 }
 
+/* ---- a cut part's lossless track written as FLAC (cuts.lossless_to_flac) ----
+ * The disc layer gives such a track whole (DrDiscTrack.cut_whole: every
+ * unit from the title's start that starts before the part's end, on the
+ * part's clock); it is decoded from the first unit and the part's samples
+ * go into the file, the first one at or after the part's 0. */
+
+/* The setting's name in a failure line: how the track is kept as it is. */
+#define FLAC_OFF "with the setting cuts.lossless_to_flac off the track is written as it is on the disc"
+
+/* The decoder and the FLAC writer of track t, at its first unit. */
+static int flac_open(const TitleJob *job, const DrDiscTrack *t, EsOut *o, const char *prefix)
+{
+    int64_t *bounds = dr_calloc(job->nb_cuts ? job->nb_cuts : 1, sizeof(*bounds));
+    int64_t zero = job->part > 0 ? job->cuts[job->part - 1].zero : 0;
+    int ret;
+
+    if (!bounds || !(o->flac_tmp = dr_asprintf_str("%s_%02d_flac.part", prefix, t->number))) {
+        dr_free(bounds);
+        return DR_ERR(ENOMEM);
+    }
+    /* the cuts on the part's clock, as the track's units are timed */
+    for (int i = 0; i < job->nb_cuts; i++)
+        bounds[i] = job->cuts[i].zero - zero;
+    ret = dr_flac_out_open(&o->flac, t->codec, o->flac_tmp, bounds, job->nb_cuts, job->part, DR_TICKS_PER_SECOND);
+    dr_free(bounds);
+    if (ret < 0)
+        log_text(LOG_ERROR, "Track %d (%s): not written as FLAC: its decoder cannot be opened (%s); " FLAC_OFF,
+                 t->number, codec_label(t->codec, t->profile), dr_err_text(ret));
+    return ret;
+}
+
+/* A unit of the track, in the title's order. */
+static int flac_unit(const TitleJob *job, const DrDiscTrack *t, EsOut *o, const char *prefix, const DrDiscFrame *fr)
+{
+    int ret;
+
+    if (!o->flac) {
+        if ((ret = flac_open(job, t, o, prefix)) < 0)
+            return ret;
+        o->flac_seg = fr->seg;
+    }
+    /* (a unit of the title's next segment: a new piece of the stream) */
+    ret = dr_flac_out_unit(o->flac, fr->data, fr->size, fr->time, fr->seg != o->flac_seg);
+    o->flac_seg = fr->seg;
+    if (ret < 0) {
+        o->write_err = dr_flac_out_write_error(o->flac);
+        log_text(LOG_ERROR, "Track %d (%s): not written as FLAC: %s; " FLAC_OFF, t->number,
+                 codec_label(t->codec, t->profile), dr_flac_out_error(o->flac));
+    }
+    return ret;
+}
+
+/* The end of the track's units: the file finished, named, read back. */
+static int flac_finish(const TitleJob *job, const DrDiscTrack *t, EsOut *o, const char *prefix)
+{
+    DrFlacResult *r = &o->flac_res;
+    const char *label = codec_label(t->codec, t->profile);
+    char layout[64] = "", roles[64], bits[48] = "", md5[33], header_md5[33], why[200];
+    int64_t samples, header_samples;
+    struct stat sb;
+    int ret;
+
+    if (!o->flac)
+        return 0;
+    if ((ret = dr_flac_out_finish(o->flac, r)) < 0) {
+        o->write_err = dr_flac_out_write_error(o->flac);
+        log_text(LOG_ERROR, "Track %d (%s): not written as FLAC: %s; " FLAC_OFF, t->number, label,
+                 dr_flac_out_error(o->flac));
+        return ret;
+    }
+    o->flac_done = 1;
+    if (!r->kept) {
+        log_text(LOG_INFO, "Track %d (%s as FLAC): none of its samples lies in this part (%"PRId64" unit(s) decoded, "
+                 "all of them the parts' before it): no file", t->number, label, r->units);
+        return 0;
+    }
+    if (dr_layout_of(r->layout, r->channels, layout + 1, sizeof(layout) - 1)) {
+        layout[0] = '_';
+        snprintf(o->layout, sizeof(o->layout), "%s", layout + 1);
+    } else {
+        layout[0] = 0;
+        log_text(LOG_WARNING, "Track %d: channel layout not known: not in the file name", t->number);
+    }
+    snprintf(roles, sizeof(roles), "%s%s", t->commentary ? " (commentary)" : "",
+             t->visually_impaired ? " (visually impaired)" : "");
+    o->st.delay_ms = ticks_in(r->first, 1000);
+    if (!(o->name = dr_asprintf_str("%s_%02d_[%s]_FLAC%s%s DELAY %"PRId64"ms.flac", prefix, t->number,
+                                    *o->st.lang ? o->st.lang : "und", layout, roles, o->st.delay_ms)))
+        return DR_ERR(ENOMEM);
+    if (rename(o->flac_tmp, o->name) < 0) {
+        o->write_err = errno ? errno : EIO;
+        return DR_ERR(o->write_err);
+    }
+    o->opened   = 1;
+    o->profile  = t->profile;
+    o->st.file  = o->name;
+    o->st.bytes = stat(o->name, &sb) == 0 ? (int64_t)sb.st_size : 0;
+    if (r->bits != r->flac_bits)
+        snprintf(bits, sizeof(bits), ", its %d-bit samples in %d-bit words", r->bits, r->flac_bits);
+    log_text(LOG_INFO, "Track %d (%s%s%s): decoded from the title's start and written as FLAC (%d Hz, %d bits%s), "
+             "cut between two samples: %"PRId64" samples in this part; %"PRId64" unit(s) decoded, %"PRId64
+             " sample(s) of the part(s) before it and %"PRId64" of the next left out of the file", t->number, label,
+             *o->layout ? " " : "", o->layout, r->rate, r->flac_bits, bits, r->kept, r->units, r->before, r->after);
+    if (job->part > 0) {
+        int64_t ns = r->first * 25 / 27;
+        log_text(LOG_INFO, "Cut part %d/%d: track %d (%s as FLAC): starts %"PRId64".%06"PRId64" ms after the part's "
+                 "0 (its first sample at or after the cut; a sample lasts %.6f ms)", job->part + 1, job->nb_parts,
+                 t->number, label, ns / 1000000, ns % 1000000, 1000.0 / r->rate);
+    }
+    if (!r->native_layout)
+        log_text(LOG_INFO, "Track %d: FLAC has no layout of its own for these %d channels (%s): the file carries the "
+                 "layout as a tag (WAVEFORMATEXTENSIBLE_CHANNEL_MASK); a player that does not read the tag takes "
+                 "FLAC's own order for %d channels", t->number, r->channels, *o->layout ? o->layout : "not known",
+                 r->channels);
+    /* the title's joins the decoder passed (up to the part's end) */
+    if (r->pieces && t->codec == DR_CODEC_TRUEHD)
+        log_text(LOG_INFO, "Track %d: %d join(s) of the title passed: the decoder started afresh at %d (the next "
+                 "stream file starts with a major sync, as a stream does) and decoded on across %d", t->number,
+                 r->pieces, r->restarts, r->pieces - r->restarts);
+    else if (r->pieces)
+        log_text(LOG_WARNING, "Track %d (%s as FLAC): %d join(s) of the title passed: the decoder ran on across "
+                 "them, as on one stream; when the next stream file was encoded on its own, its first frames (up "
+                 "to about 0.3 s) do not come out exact [untested on real discs]", t->number, label, r->pieces);
+    if (r->odd_units)
+        log_text(LOG_INFO, "Track %d: at %"PRId64" place(s) a unit does not start where the samples before it end (a "
+                 "join or a gap of the title): in the FLAC file the samples follow each other, as the units of the "
+                 "stream file would", t->number, r->odd_units);
+    /* the file read back: the samples the decoder gave, and what its header states */
+    ret = dr_flac_read_back(o->name, &samples, md5, &header_samples, header_md5, why, sizeof(why));
+    if (ret < 0)
+        snprintf(o->problems, sizeof(o->problems), "the FLAC file cannot be read back: %s", why);
+    else if (samples != r->kept || strcmp(md5, r->md5))
+        snprintf(o->problems, sizeof(o->problems), "the FLAC file holds %"PRId64" samples with MD5 %s, the decoder "
+                 "gave %"PRId64" with MD5 %s", samples, md5, r->kept, r->md5);
+    else if (header_samples != r->kept || strcmp(header_md5, r->md5))
+        snprintf(o->problems, sizeof(o->problems), "the FLAC file's header states %"PRId64" samples with MD5 %s, the "
+                 "decoder gave %"PRId64" with MD5 %s", header_samples, header_md5, r->kept, r->md5);
+    else
+        o->problems[0] = 0;
+    o->flac_check = o->problems[0] ? -1 : 1;
+    if (o->flac_check > 0)
+        log_text(LOG_OK, "Track %d: FLAC file read back: %"PRId64" samples, MD5 %s = the decoded samples' and the "
+                 "file header's: PASS", t->number, samples, md5);
+    else
+        log_text(LOG_ERROR, "Track %d: FLAC file read back: %s: FAIL", t->number, o->problems);
+    return 0;
+}
+
 int demux_title(const TitleJob *job, TitleOutcome *res)
 {
     DrDisc *d = job->disc;
@@ -1394,7 +1558,7 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         return DR_ERR(ENOSYS);
     }
     if ((ret = job->nb_cuts ? dr_disc_title_open_cut(d, job->title, job->cuts, job->nb_cuts, job->part, job->keep,
-                                                     job->cut_starts) :
+                                                     job->cut_starts, job->cut_flac) :
                               dr_disc_title_open(d, job->title, job->part, job->second_view, job->keep)) < 0) {
         log_msg(MSG_TITLE_OPEN_FAILED, LOG_ERROR, "%s cannot be opened: %s", who, dr_err_text(ret));
         res->failed = 1;
@@ -1444,7 +1608,8 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         /* LPCM leaves the disc layer as little-endian PCM: its format (with
          * the channel layout) is set when its first frame comes */
         o->probe_late  = t->codec == DR_CODEC_PCM_DVD || t->codec == DR_CODEC_PCM_BLURAY;
-        if (t->type == DISC_MEDIA_AUDIO && !t->channels && !o->probe_late) {
+        /* (a track written as FLAC: its decoder gives the layout) */
+        if (t->type == DISC_MEDIA_AUDIO && !t->channels && !o->probe_late && !t->cut_whole) {
             if (!(o->hold = dr_calloc(HOLD_MAX, sizeof(*o->hold)))) {
                 ret = DR_ERR(ENOMEM);
                 goto end;
@@ -1473,7 +1638,8 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
                      "pictures are decoded with the base view's)", t->number);
             continue;
         }
-        if ((t->type == DISC_MEDIA_VIDEO || t->type == DISC_MEDIA_AUDIO) && !out[i].probe_late &&
+        /* (a track written as FLAC: its file is checked sample by sample, not by its details) */
+        if ((t->type == DISC_MEDIA_VIDEO || t->type == DISC_MEDIA_AUDIO) && !out[i].probe_late && !t->cut_whole &&
             details_probe_open_track(&out[i].probe, t) < 0)
             log_text(LOG_DETAIL, "Track %d: no decoder for %s: its details are not checked", t->number,
                      codec_id_name(t->codec));
@@ -1493,6 +1659,16 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
         const DrDiscTrack *t = dr_disc_track(d, fr.track);
         EsOut *o = &out[fr.track];
 
+        /* a lossless track written as FLAC: every unit to its decoder */
+        if (t->cut_whole) {
+            log_progress(job->title, dr_disc_progress(d) / 10000.0);
+            o->st.packets++;
+            ret = flac_unit(job, t, o, prefix, &fr);
+            dr_disc_frame_unref(&fr);
+            if (ret < 0)
+                goto end;
+            continue;
+        }
         if (o->probe_late && !mkv) {
             o->probe_late = 0;
             if (details_probe_open_track(&o->probe, t) < 0)
@@ -1548,14 +1724,33 @@ int demux_title(const TitleJob *job, TitleOutcome *res)
     }
     if (ret == DR_ERR_EOF)
         ret = 0;
+    /* the tracks written as FLAC: their files finished and read back */
+    for (int i = 0; ret >= 0 && i < nb_tracks; i++)
+        ret = flac_finish(job, dr_disc_track(d, i), &out[i], prefix);
     /* a cut part: its tracks' bytes, for the check after the title's last part */
     if (ret >= 0 && job->nb_cuts && (res->cut = dr_calloc(nb_tracks ? nb_tracks : 1, sizeof(*res->cut)))) {
         for (int i = 0; i < nb_tracks; i++) {
             const DrDiscTrack *t = dr_disc_track(d, i);
             int pcm = t->codec == DR_CODEC_PCM_S16LE || t->codec == DR_CODEC_PCM_S24LE;
-            res->cut[res->nb_cut++] = (CutTrackBytes){ t->number, t->cut_title_bytes, t->cut_bytes,
-                                                       t->cut_left_bytes, t->cut_read_all, pcm,
-                                                       pcm ? t->channels * (t->codec == DR_CODEC_PCM_S24LE ? 3 : 2) : 0 };
+            CutTrackBytes *b = &res->cut[res->nb_cut++];
+            *b = (CutTrackBytes){ t->number, t->cut_title_bytes, t->cut_bytes, t->cut_left_bytes, t->cut_read_all, pcm,
+                                  pcm ? t->channels * (t->codec == DR_CODEC_PCM_S24LE ? 3 : 2) : 0 };
+            /* a track written as FLAC: the part's samples, and each range this reading decoded up to the part's */
+            if (out[i].flac_done) {
+                const DrFlacResult *r = &out[i].flac_res;
+                int n = DR_MIN(job->part + 1, r->nb_ranges);
+                b->flac         = 1;
+                b->flac_samples = r->kept;
+                memcpy(b->flac_md5, r->md5, sizeof(b->flac_md5));
+                if ((b->range_samples = dr_calloc(n, sizeof(*b->range_samples))) &&
+                    (b->range_md5 = dr_calloc(n, sizeof(*b->range_md5)))) {
+                    for (int k = 0; k < n; k++) {
+                        b->range_samples[k] = r->ranges[k].samples;
+                        memcpy(b->range_md5[k], r->ranges[k].md5, sizeof(b->range_md5[k]));
+                    }
+                    b->nb_ranges = n;
+                }
+            }
         }
     }
     if (mkv && ret >= 0) {
@@ -1717,7 +1912,7 @@ end:
         res->failed = 1;
     } else {
         int64_t untested = dr_disc_untested(d);
-        int checked = 0, check_failed = 0, unchecked = 0;
+        int checked = 0, check_failed = 0, unchecked = 0, flac_failed = 0;
         int64_t written = 0;
         int nb_chapters = dr_disc_nb_chapters(d);
         char made[160], sz[32];
@@ -1727,11 +1922,12 @@ end:
             end_check(t, &out[i]);
             checked      += out[i].checked != 0;
             check_failed += out[i].checked < 0;
-            unchecked    += !mkv && out[i].opened && !out[i].probe &&
+            unchecked    += !mkv && out[i].opened && !out[i].probe && !t->cut_whole &&
                             (t->type == DISC_MEDIA_VIDEO || t->type == DISC_MEDIA_AUDIO) && !t->second_view;
+            flac_failed  += out[i].flac_check < 0;
         }
         /* mkvmerge: the checked stream files into the MKV file (not when a check failed: they are kept) */
-        if (via && !check_failed) {
+        if (via && !check_failed && !flac_failed) {
             char *made_mkv = NULL;
             struct stat sb;
             int mret = mkvmerge_title(d, out, nb_tracks, job->out_dir, dir, job->sub_folder, res->name, chap,
@@ -1756,14 +1952,16 @@ end:
         for (int i = 0; i < nb_tracks; i++) {
             const DrDiscTrack *t = dr_disc_track(d, i);
             EsOut *o = &out[i];
-            int64_t frames = t->frames, warn = t->warnings;
+            int64_t frames = o->flac_done ? o->flac_res.kept : t->frames, warn = t->warnings;
             char what[160], state[96], delay[48] = "";
             DrEvent ev = { .kind = DR_EVENT_TRACK_RESULT };
             DrEventTrackResult *e = &ev.u.track;
-            const char *unit = t->type == DISC_MEDIA_SUBTITLE ? "subtitles" : "frames";
+            const char *unit = t->type == DISC_MEDIA_SUBTITLE ? "subtitles" : o->flac_done ? "samples" : "frames";
             int empty_cc = !o->opened && t->caption;
 
-            snprintf(what, sizeof(what), "%s %s%s%s", *o->st.lang ? o->st.lang : "   ",
+            /* (a track written as FLAC: "FLAC from TrueHD") */
+            snprintf(what, sizeof(what), "%s %s%s%s%s", *o->st.lang ? o->st.lang : "   ",
+                     o->flac_done && o->opened ? "FLAC from " : "",
                      stream_label(t, o->opened ? o->profile : t->profile), *o->layout ? " " : "", o->layout);
             if (empty_cc)
                 snprintf(state, sizeof(state), "no caption text: %s", mkv ? "not in the MKV" : "no file");
@@ -1794,12 +1992,14 @@ end:
                 e->details_check = o->checked > 0 ? 1 : -1;
                 e->details       = o->problems;
             }
+            if (o->flac_check < 0)
+                log_text(LOG_ERROR, "      %s", o->problems);
             if (o->opened)
                 log_text(LOG_DETAIL, "      %s", o->name);
             e->title    = job->title;
             e->part     = job->part;
             e->index    = t->number;
-            e->codec    = stream_label(t, o->opened ? o->profile : t->profile);
+            e->codec    = o->flac_done && o->opened ? "FLAC" : stream_label(t, o->opened ? o->profile : t->profile);
             e->language = o->st.lang;
             e->layout   = o->layout;
             e->frames   = frames;
@@ -1843,9 +2043,14 @@ end:
         if (via && res->stopped) {
             log_msg(MSG_TITLE_FAILED, LOG_WARNING, "%s stopped as asked during the mux: its stream files are kept, "
                     "the MKV file is not made", who);
-        } else if (via && !via_done && !check_failed) {
+        } else if (via && !via_done && !check_failed && !flac_failed) {
             log_msg(MSG_TITLE_DONE, LOG_ERROR, "%s: its stream files are written, but mkvmerge did not make the MKV "
                     "file (see above)", who);
+        } else if (flac_failed) {
+            log_msg(MSG_DETAILS_DIFFER, LOG_ERROR, "%s: its files are written, but %d FLAC file%s not read back as "
+                    "the samples the decoder gave (see above); " FLAC_OFF, who, flac_failed,
+                    flac_failed == 1 ? " is" : "s are");
+            res->failed = 1;
         } else if (check_failed) {
             log_msg(MSG_DETAILS_DIFFER, LOG_ERROR, "%s: its files are written, but %d of them do not keep "
                     "the disc stream's details (see above)", who, check_failed);
@@ -1883,6 +2088,11 @@ end:
         dr_free(o->hold);
         dr_layout_probe_close(&o->lp);
         details_probe_close(&o->probe);
+        /* a FLAC file not finished (the part failed or was stopped): not left behind */
+        dr_flac_out_close(&o->flac);
+        if (o->flac_tmp && !o->opened)
+            remove(o->flac_tmp);
+        dr_free(o->flac_tmp);
         dr_free(o->name);
         dr_free(o->ts);
         dr_free(o->ts_path);

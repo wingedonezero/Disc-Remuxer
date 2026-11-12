@@ -250,6 +250,8 @@ struct DrDisc {
     int64_t          *opt_starts;       /**< with opt_cuts: per cut and disc-info track (opt_nb_streams each) the
                                              time of the unit a start-unit track's part starts at, or NULL */
     int               opt_nb_streams;
+    uint8_t          *opt_whole;        /**< with opt_cuts: per disc-info track (opt_nb_streams) 1 when its units
+                                             are given whole for decoding (DR_CUT_TRACK_WHOLE), or NULL */
     const uint8_t    *keep;             /**< the opened title's selected tracks (disc_title_open()), NULL all */
     int               opt_details;      /**< the title list (info) reads each track's details from the stream */
     int               opt_dolby_vision; /**< Dolby Vision enhancement layer: 0 merged into the video's frames,

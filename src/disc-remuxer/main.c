@@ -77,7 +77,9 @@ static void usage(FILE *f)
           "  --cut <title>:<cuts>  demux: write this title in parts cut at these places (c<chapter> or a\n"
           "                       time on the title's timeline, comma separated; the cuts command shows\n"
           "                       where they fall); repeatable, one title each; a 3-D second view is\n"
-          "                       left out of the parts (said in the log)\n"
+          "                       left out of the parts (said in the log); setting cuts.lossless_to_flac\n"
+          "                       writes such a title's TrueHD / DTS-HD Master Audio as FLAC, cut\n"
+          "                       between two samples (else they start at their next start unit)\n"
           "  -v, -vv              more detail on the terminal\n"
           "\n"
           "DVD-Video, HD DVD and Blu-ray (UHD, 3-D) are wired.\n", f);

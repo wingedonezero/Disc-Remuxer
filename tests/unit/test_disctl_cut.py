@@ -5,7 +5,7 @@ the two are checked against each other: every picture lands in exactly one
 part (but the leading pictures left out at an open key frame), each part
 starts at 0, and its pictures are the title's from its key frame on."""
 
-from helpers import ffi, install_log, lib, logged
+from helpers import AV_NOPTS_VALUE, ffi, install_log, lib, logged
 
 F = 45_045_000                      # one picture at 23.976 (ticks)
 CLEAN, BROKEN, OPEN = lib.DR_START_CLEAN, lib.DR_START_BROKEN, lib.DR_START_OPEN
@@ -314,6 +314,22 @@ def test_a_start_unit_not_where_the_table_says_fails_the_part():
     assert run_audio.finish < 0, "no unit at that time"
     run_audio([(zero, zero)], 0, frames, lib.DR_CUT_TRACK_ENTRY, starts=[384 * U + 5])
     assert run_audio.finish < 0, "the next part's start unit not met"
+
+
+def test_a_track_given_whole_gets_every_unit_that_starts_before_the_parts_end():
+    # the caller decodes such a track from its first unit and cuts between two samples itself
+    frames = [(i * U, U, bytes([i % 256])) for i in range(600)]
+    a, b = 200 * U + 7, 400 * U + 7     # two cuts, both inside a unit
+    cuts = [(a, a), (b, b)]
+    p0, p1, p2 = (run_audio(cuts, k, frames, lib.DR_CUT_TRACK_WHOLE) for k in (0, 1, 2))
+    assert [p[2] for p in p0] == [f[2] for f in frames[:201]], "part 1: up to the unit that holds the cut"
+    assert [p[2] for p in p1] == [f[2] for f in frames[:401]], "part 2: from the title's first unit"
+    assert [p[2] for p in p2] == [f[2] for f in frames], "the last part: every unit"
+    assert p0[0][0] == 0 and p1[0][0] == -a and p2[0][0] == -b, "on the part's clock: below 0 before the part"
+    assert p1[200][0] == 200 * U - a < 0 <= p1[201][0], "the unit that holds the cut starts before the part's 0"
+    # a unit without a time is given too (the decoder needs every unit in order)
+    odd = frames[:10] + [(AV_NOPTS_VALUE, U, b"n")] + frames[10:]
+    assert len(run_audio(cuts, 1, odd, lib.DR_CUT_TRACK_WHOLE)) == 402
 
 
 # ---- subtitles and captions ----

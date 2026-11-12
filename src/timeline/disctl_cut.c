@@ -12,7 +12,10 @@
  * part's. Audio by time, as stream-copy cutting does: a frame that starts
  * before the part's 0 is the part before's, so a part's audio starts 0 to
  * one frame after its 0; PCM between two samples, at the first one at or
- * after the part's 0. Subtitles and captions by their start time too; one
+ * after the part's 0; audio the caller decodes (DR_CUT_TRACK_WHOLE): every
+ * unit that starts before the part's end, so the decoder runs from the
+ * stream's first unit and the caller cuts between two samples. Subtitles and
+ * captions by their start time too; one
  * shown across a cut, and a PGS part whose first display set is no epoch
  * start or acquisition point (it refers to objects of the part before), are
  * said.
@@ -271,6 +274,9 @@ int ff_disctl_cut_frame(DRCut *c, int track, DRFrame *f)
         if (c->r.left_out != left)
             t->left_bytes += size;
     }
+    else if (t->kind == DR_CUT_TRACK_WHOLE)
+        /* a unit without a time too: the decoder needs every unit in order */
+        ret = !c->has_to || f->time == DR_NOPTS_VALUE || f->time < c->to.zero;
     else if (f->time == DR_NOPTS_VALUE)
         ret = 0;                        /* audio without a time has no place in a part */
     else if (t->kind == DR_CUT_TRACK_PCM)
@@ -313,7 +319,8 @@ int ff_disctl_cut_done(const DRCut *c, int64_t margin)
         return 0;
     for (int i = 0; i < c->nb_tracks; i++) {
         const CutTrack *t = &c->t[i];
-        int audio = t->kind == DR_CUT_TRACK_EVERY || t->kind == DR_CUT_TRACK_PCM || t->kind == DR_CUT_TRACK_ENTRY;
+        int audio = t->kind == DR_CUT_TRACK_EVERY || t->kind == DR_CUT_TRACK_PCM || t->kind == DR_CUT_TRACK_ENTRY ||
+                    t->kind == DR_CUT_TRACK_WHOLE;
         if (audio && !t->past_end && !(t->kind == DR_CUT_TRACK_ENTRY && t->to == INT64_MAX) &&
             c->video_max < c->to.zero + 10 * margin)
             return 0;

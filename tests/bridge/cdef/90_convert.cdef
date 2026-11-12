@@ -1,0 +1,34 @@
+/* lossless audio decoded and written as FLAC, cut between two samples
+ * (src/convert/flac_out.h) */
+typedef struct DrFlacOut DrFlacOut;
+typedef struct DrFlacRange {
+    int64_t samples;
+    char    md5[33];
+} DrFlacRange;
+typedef struct DrFlacResult {
+    int      rate, channels;
+    int      bits;
+    int      flac_bits;
+    uint64_t layout;
+    int      native_layout;
+    int64_t  units;
+    int64_t  decoded;
+    int64_t  before, kept, after;
+    int64_t  first;
+    int64_t  odd_units;
+    int      pieces;
+    int      restarts;
+    int      block;
+    const DrFlacRange *ranges;
+    int      nb_ranges;
+    char     md5[33];
+} DrFlacResult;
+int  dr_flac_out_open(DrFlacOut **f, int codec, const char *path, const int64_t *bounds, int nb_bounds, int part,
+                      int64_t ticks);
+int  dr_flac_out_unit(DrFlacOut *f, const uint8_t *data, int size, int64_t time, int piece);
+int  dr_flac_out_finish(DrFlacOut *f, DrFlacResult *res);
+const char *dr_flac_out_error(const DrFlacOut *f);
+int  dr_flac_out_write_error(const DrFlacOut *f);
+void dr_flac_out_close(DrFlacOut **f);
+int  dr_flac_read_back(const char *path, int64_t *samples, char *md5, int64_t *header_samples, char *header_md5,
+                       char *why, int why_size);

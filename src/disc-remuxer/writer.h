@@ -34,6 +34,8 @@ typedef struct TitleJob {
     int         nb_cuts;
     int64_t     cut_end;       /* with cuts: where the title's video ends (ticks) */
     const int64_t *cut_starts; /* with cuts: per cut and track the unit a start-unit track's part starts at */
+    const uint8_t *cut_flac;   /* with cuts: per track of the title 1 when it is decoded and written as FLAC, cut
+                                  between two samples (setting cuts.lossless_to_flac), NULL none */
 } TitleJob;
 
 /* A cut part's track: its bytes (DrDiscTrack.cut_*), for the check after
@@ -44,6 +46,16 @@ typedef struct CutTrackBytes {
     int     read_all;          /* the whole title was read (its title bytes are all of them) */
     int     pcm;               /* LPCM (said in samples) */
     int     bytes_per_sample;  /* LPCM: of one sample frame */
+    /* a track written as FLAC: the part's samples and their MD5 (as FLAC
+     * counts it), and what this part's reading decoded between the cuts
+     * from the title's start to the part's end: each range's samples and
+     * MD5, in title order (nb_ranges; freed with the outcome) */
+    int      flac;
+    int64_t  flac_samples;
+    char     flac_md5[33];
+    int64_t *range_samples;
+    char   (*range_md5)[33];
+    int      nb_ranges;
 } CutTrackBytes;
 
 typedef struct TitleOutcome {

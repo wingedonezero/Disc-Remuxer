@@ -1,5 +1,5 @@
 /*
- * src/analyze: the one module of ours that links the processing library.
+ * src/analyze: a module of ours that links the processing library (the other: convert/).
  * It is handed COPIES of data and answers questions; nothing on the byte
  * path from disc sector to output file passes through it. If it were
  * absent, every rip would be byte-identical; only reports and checks would

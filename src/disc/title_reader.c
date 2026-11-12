@@ -1843,8 +1843,8 @@ static int cut_end(DrDisc *d)
         const DrDiscTrack *t = &d->out_tracks[i];
         int64_t frames, first, ns;
         ff_disctl_cut_track(r->cut, i, &frames, &first);
-        if (t->type != DISC_MEDIA_AUDIO || !frames)
-            continue;
+        if (t->type != DISC_MEDIA_AUDIO || !frames || d->track_cut[i] == DR_CUT_TRACK_WHOLE)
+            continue;                   /* (a track given whole: its caller says where its samples start) */
         ns = first * 25 / 27;
         dr_vlog(d->log, DR_VLOG_INFO, "Cut part %d/%d: track %d (%s): starts %"PRId64".%06"PRId64" ms after the "
                 "part's 0 (%s)\n", d->opt_cut_part + 1, d->nb_opt_cuts + 1, t->number,

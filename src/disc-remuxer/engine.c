@@ -388,9 +388,49 @@ struct EngineDisc {
 
 static int parse_titles(const char *spec, const DiscInfo *d, int only_selected, char *sel);
 static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cuts, int *nb, int64_t *end,
-                        int64_t **starts);
+                        int64_t **starts, const uint8_t *flac);
 static int cut_value(const char *v, int *title, const char **items);
-static int cut_check(int t, const CutTrackBytes *sums, int nb_sums, const CutTrackBytes *title, int nb_title);
+/* A part's track written as FLAC: its samples and their MD5, for the check
+ * after the title's last part. */
+typedef struct FlacPart {
+    int     number, part;
+    int64_t samples;
+    char    md5[33];
+} FlacPart;
+
+static int cut_check(int t, const CutTrackBytes *sums, int nb_sums, const CutTrackBytes *title, int nb_title,
+                     const FlacPart *flac, int nb_flac, int nb_parts);
+
+/* Whether a cut title's track is written as FLAC (setting
+ * cuts.lossless_to_flac): 1; 0 with *why NULL when the setting does not
+ * concern it (lossy audio, LPCM, a DTS core taken out of its stream, not
+ * audio), 0 with *why in words when it is a lossless track left as it
+ * is. */
+static int flac_track(const DiscStreamInfo *k, const char **why)
+{
+    *why = NULL;
+    if (k->type != DISC_MEDIA_AUDIO)
+        return 0;
+    if (k->codec == DR_CODEC_TRUEHD) {
+        if (k->profile == DISC_PROFILE_TRUEHD_ATMOS) {
+            *why = "it carries Dolby Atmos, which decoding would drop";
+            return 0;
+        }
+    } else if (k->codec == DR_CODEC_DTS && k->from_track < 0 &&
+               (k->profile == DISC_PROFILE_DTS_HD_MA || k->profile == DISC_PROFILE_DTS_HD_MA_X ||
+                k->profile == DISC_PROFILE_DTS_HD_MA_X_IMAX)) {
+        if (k->profile != DISC_PROFILE_DTS_HD_MA) {
+            *why = "it carries DTS:X, which decoding would drop";
+            return 0;
+        }
+    } else
+        return 0;
+    if (k->channels > 8) {
+        *why = "FLAC holds at most 8 channels";
+        return 0;
+    }
+    return 1;
+}
 
 /* Each title's tracks to rip (select.h) into keeps[title] (freed with
  * free_keeps()); 0, or -1 (logged). */
@@ -879,6 +919,9 @@ static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
     int nb_cuts = 0;
     int64_t cut_end = 0, *cut_starts = NULL;
     uint8_t *vkeep = NULL;              /* a cut title's tracks: those a cut part carries */
+    uint8_t *vflac = NULL;              /* and those decoded and written as FLAC (cuts.lossless_to_flac) */
+    FlacPart *flac_parts = NULL;        /* each part's FLAC tracks, for the check after the last part */
+    int nb_flac_parts = 0;
 
     if (!spl) {
         log_close_files();
@@ -918,15 +961,30 @@ static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
                         "parts", t);
             hms(dur, sizeof(dur), di->titles[t].duration);
             log_step("=== Cuts: title #%d (%s) ===", t, dur);
-            if (resolve_cuts(e, t, e->cut[t], &cuts, &nb_cuts, &cut_end, &cut_starts) || !nb_cuts ||
+            /* the lossless tracks written as FLAC (the setting; the selected ones) */
+            if ((vflac = calloc(di->titles[t].nb_streams ? di->titles[t].nb_streams : 1, 1)) &&
+                setting_bool("cuts.lossless_to_flac"))
+                for (int i = 1; i < di->titles[t].nb_streams; i++) {
+                    const DiscStreamInfo *k = &di->titles[t].streams[i];
+                    const char *why;
+                    if (!e->keeps[t][i] || dr_disc_cut_left_out(e->disc, t, i))
+                        continue;
+                    vflac[i] = flac_track(k, &why) && dr_disc_cut_start_units(e->disc, t, i);
+                    if (!vflac[i] && why)
+                        log_text(LOG_INFO, "Cuts: track %d (%s) is not written as FLAC: %s; it is cut at its start "
+                                 "units", i, codec_label(k->codec, k->profile), why);
+                }
+            if (!vflac || resolve_cuts(e, t, e->cut[t], &cuts, &nb_cuts, &cut_end, &cut_starts, vflac) || !nb_cuts ||
                 !(vkeep = calloc(di->titles[t].nb_streams ? di->titles[t].nb_streams : 1, 1))) {
                 log_msg(MSG_TITLE_FAILED, LOG_ERROR, "Title #%d is not ripped: not every cut asked for can be made",
                         t);
                 failed++;
                 free(cuts);
                 free(cut_starts);
+                free(vflac);
                 cuts       = NULL;
                 cut_starts = NULL;
+                vflac      = NULL;
                 nb_cuts    = 0;
                 continue;
             }
@@ -944,7 +1002,7 @@ static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
             /* the second view: read when one of its tracks is selected */
             /* stream files: every title, and each part as a title of its own, in a folder of its name */
             TitleJob job = { e->disc, t, p, parts, !nb_cuts, nb_cuts ? vkeep : e->keeps[t], ordinal, count, out_dir,
-                             1, cuts, nb_cuts, cut_end, cut_starts };
+                             1, cuts, nb_cuts, cut_end, cut_starts, nb_cuts ? vflac : NULL };
             TitleOutcome res;
             demux_title(&job, &res);
             /* each range under the title's (part's) number */
@@ -972,10 +1030,24 @@ static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
                 }
                 s->part += res.cut[i].part;
                 s->left += res.cut[i].left;
+                /* a track written as FLAC: the part's samples and their MD5 */
+                if (res.cut[i].flac) {
+                    FlacPart *n = realloc(flac_parts, (nb_flac_parts + 1) * sizeof(*n));
+                    if (!n)
+                        break;
+                    flac_parts = n;
+                    flac_parts[nb_flac_parts] = (FlacPart){ res.cut[i].number, p, res.cut[i].flac_samples, "" };
+                    memcpy(flac_parts[nb_flac_parts++].md5, res.cut[i].flac_md5, sizeof(flac_parts[0].md5));
+                }
             }
             if (nb_cuts && p == parts - 1 && res.nb_cut && (cut_title = malloc(res.nb_cut * sizeof(*cut_title)))) {
                 memcpy(cut_title, res.cut, res.nb_cut * sizeof(*cut_title));
                 nb_cut_title = res.nb_cut;
+                /* (what each range decoded to is the copy's now) */
+                for (int i = 0; i < res.nb_cut; i++) {
+                    res.cut[i].range_samples = NULL;
+                    res.cut[i].range_md5     = NULL;
+                }
             }
             title_outcome_free(&res);
             /* a title stopped as asked is not written, not failed */
@@ -987,17 +1059,26 @@ static int run_titles(EngineDisc *e, const char *out_dir, const char *logp)
         }
         /* a cut title: every track's parts add up to the title */
         if (nb_cuts && !part_failed && !part_stopped && !disk_full)
-            part_failed += cut_check(t, cut_sums, nb_cut_sums, cut_title, nb_cut_title);
+            part_failed += cut_check(t, cut_sums, nb_cut_sums, cut_title, nb_cut_title, flac_parts, nb_flac_parts,
+                                     parts);
+        for (int i = 0; i < nb_cut_title; i++) {
+            free(cut_title[i].range_samples);
+            free(cut_title[i].range_md5);
+        }
         free(cut_sums);
         free(cut_title);
+        free(flac_parts);
         cut_sums    = cut_title = NULL;
-        nb_cut_sums = nb_cut_title = 0;
+        flac_parts  = NULL;
+        nb_cut_sums = nb_cut_title = nb_flac_parts = 0;
         free(cuts);
         free(cut_starts);
         free(vkeep);
+        free(vflac);
         cuts       = NULL;
         cut_starts = NULL;
         vkeep      = NULL;
+        vflac      = NULL;
         nb_cuts    = 0;
         failed += !!part_failed;
         done   += !part_failed && !part_stopped;
@@ -1156,10 +1237,12 @@ static int by_zero(const void *a, const void *b)
  * video ends (ticks; as the disc records the title's length when it was not
  * read to its end), *starts (freed with free()): per cut and track of the
  * title the unit a start-unit track's part starts at (cuts.h
- * cut_track_start(), INT64_MAX for the other tracks). 0 when every cut is
- * made, 1 when one is refused or the title cannot be read (logged). */
+ * cut_track_start(), INT64_MAX for the other tracks). flac (per track of
+ * the title, NULL none): the tracks written as FLAC, which need no start
+ * unit. 0 when every cut is made, 1 when one is refused or the title cannot
+ * be read (logged). */
 static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cuts, int *nb, int64_t *end,
-                        int64_t **starts)
+                        int64_t **starts, const uint8_t *flac)
 {
     CutRequest *reqs = NULL;
     CutResult *res = NULL;
@@ -1310,11 +1393,18 @@ static int resolve_cuts(EngineDisc *e, int t, const char *items, DrDiscCut **cut
                                "unit whose lossless data starts fresh";
             char what[48];
             CutStart st;
-            cut_track_start(au->u, au->nb, (*cuts)[c].zero, CUT_START_LIMIT, &st);
-            (*starts)[c * nb_streams + au->track] = st.time;
             snprintf(what, sizeof(what), "track %d (%s)", au->track,
                      codec_label(e->info->titles[t].streams[au->track].codec,
                                  e->info->titles[t].streams[au->track].profile));
+            /* a track written as FLAC is cut between two samples: no start unit */
+            if (flac && flac[au->track]) {
+                if (!c)
+                    log_text(LOG_INFO, "    %s: decoded from the title's start and written as FLAC in every part, "
+                             "cut between two samples at each cut (setting cuts.lossless_to_flac)", what);
+                continue;
+            }
+            cut_track_start(au->u, au->nb, (*cuts)[c].zero, CUT_START_LIMIT, &st);
+            (*starts)[c * nb_streams + au->track] = st.time;
             if (st.time == INT64_MAX)
                 log_text(LOG_INFO, "    cut %d: %s ends before it", c + 1, what);
             else if (st.entry)
@@ -1395,7 +1485,7 @@ int engine_cuts(const char *source, const char *title, const char *items, const 
     log_step("=== Cuts: title #%d (%s) ===", t, dur);
     {
         int64_t *starts;
-        ret = resolve_cuts(e, t, items, &cuts, &nb, &end, &starts);
+        ret = resolve_cuts(e, t, items, &cuts, &nb, &end, &starts, NULL);
         free(starts);
     }
     free(cuts);
@@ -1407,7 +1497,8 @@ int engine_cuts(const char *source, const char *title, const char *items, const 
  * parts (and the video's leading pictures left out) against the title's
  * (the last part read the whole title); said per track. Returns the
  * tracks that do not add up. */
-static int cut_check(int t, const CutTrackBytes *sums, int nb_sums, const CutTrackBytes *title, int nb_title)
+static int cut_check(int t, const CutTrackBytes *sums, int nb_sums, const CutTrackBytes *title, int nb_title,
+                     const FlacPart *flac, int nb_flac, int nb_parts)
 {
     int bad = 0;
 
@@ -1424,6 +1515,41 @@ static int cut_check(int t, const CutTrackBytes *sums, int nb_sums, const CutTra
             log_msg(MSG_CUTS, LOG_ERROR, "Cut check: title #%d track %d: the last part did not read the whole title: "
                     "not checked", t, w->number);
             bad++;
+            continue;
+        }
+        /* a track written as FLAC: the last part's reading decoded the
+         * whole title in one go; each part's file must hold the samples
+         * (their number and MD5) that reading found between its cuts */
+        if (w->flac) {
+            int64_t total = 0, parts_total = 0;
+            int wrong = -1, missing = w->nb_ranges != nb_parts;
+            for (int p = 0; p < w->nb_ranges; p++) {
+                const FlacPart *f = NULL;
+                for (int k = 0; k < nb_flac && !f; k++)
+                    if (flac[k].number == w->number && flac[k].part == p)
+                        f = &flac[k];
+                total += w->range_samples[p];
+                if (!f) {
+                    missing = 1;
+                    continue;
+                }
+                parts_total += f->samples;
+                if (wrong < 0 && (f->samples != w->range_samples[p] || strcmp(f->md5, w->range_md5[p])))
+                    wrong = p;
+            }
+            if (missing) {
+                log_msg(MSG_CUTS, LOG_ERROR, "Cut check: title #%d track %d (FLAC): not every part's samples are "
+                        "known: not checked", t, w->number);
+                bad++;
+            } else if (wrong >= 0) {
+                log_msg(MSG_CUTS, LOG_ERROR, "Cut check: title #%d track %d (FLAC): part %d's samples are not those "
+                        "the title decoded in one go has between its cuts (the parts' %"PRId64" samples, the "
+                        "title's %"PRId64"): FAIL", t, w->number, wrong + 1, parts_total, total);
+                bad++;
+            } else
+                log_msg(MSG_CUTS, LOG_OK, "Cut check: title #%d track %d (FLAC): the %d parts' %"PRId64" samples = "
+                        "the title's %"PRId64" decoded in one go, each part's MD5 = that of its stretch: PASS", t,
+                        w->number, w->nb_ranges, parts_total, total);
             continue;
         }
         if (w->pcm && w->bytes_per_sample)
