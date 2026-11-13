@@ -24,8 +24,64 @@ typedef struct ParamSet {
     int64_t len;
 } ParamSet;
 
+/* A checksum fed in pieces. The library's routine is only handed whole
+ * 16-byte blocks, and what is left once at the end: given pieces of other
+ * sizes it does not always come to the same value for the same bytes (a
+ * piece that ends exactly where a block it had begun is full), and the same
+ * track is summed here from pieces of two kinds (as written; as a Matroska
+ * file's blocks). */
+typedef struct Hash {
+    struct AVMurMur3 *m;
+    uint8_t hold[16];
+    int     held;
+} Hash;
+
+static int hash_alloc(Hash *h)
+{
+    return (h->m = av_murmur3_alloc()) ? 0 : -1;
+}
+
+static void hash_init(Hash *h)
+{
+    av_murmur3_init(h->m);
+    h->held = 0;
+}
+
+static void hash_update(Hash *h, const uint8_t *p, size_t n)
+{
+    size_t whole;
+
+    if (h->held) {
+        size_t take = sizeof(h->hold) - h->held < n ? sizeof(h->hold) - h->held : n;
+
+        memcpy(h->hold + h->held, p, take);
+        h->held += (int)take;
+        p += take;
+        n -= take;
+        if (h->held < (int)sizeof(h->hold))
+            return;
+        av_murmur3_update(h->m, h->hold, sizeof(h->hold));
+        h->held = 0;
+    }
+    whole = n & ~(size_t)15;
+    if (whole)
+        av_murmur3_update(h->m, p, whole);
+    if (n - whole) {
+        memcpy(h->hold, p + whole, n - whole);
+        h->held = (int)(n - whole);
+    }
+}
+
+static void hash_final(Hash *h, uint8_t out[16])
+{
+    if (h->held)
+        av_murmur3_update(h->m, h->hold, h->held);
+    h->held = 0;
+    av_murmur3_final(h->m, out);
+}
+
 struct DrContentSum {
-    struct AVMurMur3 *h;
+    Hash     h;
     int      kind;
     int64_t  bytes, units;
     int      odd, done;
@@ -35,7 +91,7 @@ struct DrContentSum {
     int      zeros;          /* zero bytes held back: a unit's own, or the next start code's */
     int64_t  nal_len;
     /* the stream's parameter sets, each distinct one once */
-    struct AVMurMur3 *u;     /* the one in hand */
+    Hash     u;              /* the one in hand */
     int      in_set;         /* the unit in hand is a parameter set */
     ParamSet *sets;
     int      nb_sets;
@@ -75,13 +131,13 @@ int dr_content_sum_open(DrContentSum **ps, int kind)
     *ps = NULL;
     if (kind != DR_CONTENT_BYTES && kind != DR_CONTENT_NAL && kind != DR_CONTENT_AC3_NO_DIALNORM)
         return DR_ERR(EINVAL);
-    if (!(s = av_mallocz(sizeof(*s))) || !(s->h = av_murmur3_alloc()) || !(s->u = av_murmur3_alloc())) {
+    if (!(s = av_mallocz(sizeof(*s))) || hash_alloc(&s->h) < 0 || hash_alloc(&s->u) < 0) {
         if (s)
-            av_free(s->h);
+            av_free(s->h.m);
         av_free(s);
         return DR_ERR(ENOMEM);
     }
-    av_murmur3_init(s->h);
+    hash_init(&s->h);
     s->kind = kind;
     *ps = s;
     return 0;
@@ -90,7 +146,7 @@ int dr_content_sum_open(DrContentSum **ps, int kind)
 static void sum(DrContentSum *s, const uint8_t *p, size_t n)
 {
     if (n) {
-        av_murmur3_update(s->h, p, n);
+        hash_update(&s->h, p, n);
         s->bytes += n;
     }
 }
@@ -122,7 +178,7 @@ static void set_end(DrContentSum *s)
 {
     ParamSet ps = { .len = s->nal_len };
 
-    av_murmur3_final(s->u, ps.sum);
+    hash_final(&s->u, ps.sum);
     for (int i = 0; i < s->nb_sets; i++)
         if (!set_cmp(&s->sets[i], &ps))
             return;
@@ -147,7 +203,7 @@ static void nal_end(DrContentSum *s)
         } else {
             for (int i = 0; i < 8; i++)
                 len[i] = (uint8_t)(s->nal_len >> (8 * i));
-            av_murmur3_update(s->h, len, 8);
+            hash_update(&s->h, len, 8);
             s->units++;
         }
     }
@@ -160,9 +216,9 @@ static void nal_bytes(DrContentSum *s, const uint8_t *p, size_t n)
     if (!n)
         return;
     if (!s->nal_len && (s->in_set = param_set(p[0])))
-        av_murmur3_init(s->u);                  /* the unit's first byte says what it is */
+        hash_init(&s->u);                       /* the unit's first byte says what it is */
     if (s->in_set)
-        av_murmur3_update(s->u, p, n);
+        hash_update(&s->u, p, n);
     else
         sum(s, p, n);
     s->nal_len += n;
@@ -180,8 +236,8 @@ static void sets_end(DrContentSum *s)
     for (int k = 0; k < s->nb_sets; k++) {
         for (int i = 0; i < 8; i++)
             len[i] = (uint8_t)(s->sets[k].len >> (8 * i));
-        av_murmur3_update(s->h, s->sets[k].sum, sizeof(s->sets[k].sum));
-        av_murmur3_update(s->h, len, 8);
+        hash_update(&s->h, s->sets[k].sum, sizeof(s->sets[k].sum));
+        hash_update(&s->h, len, 8);
         s->bytes += s->sets[k].len;
     }
 }
@@ -372,7 +428,7 @@ void dr_content_sum_finish(DrContentSum *s, DrContentResult *r)
         }
         if (s->kind == DR_CONTENT_AC3_NO_DIALNORM && s->have)
             s->odd = 1;                         /* the stream ends inside a frame */
-        av_murmur3_final(s->h, d);
+        hash_final(&s->h, d);
         for (int i = 0; i < 16; i++)
             snprintf(s->digest + 2 * i, 3, "%02x", d[i]);
         s->done = 1;
@@ -386,8 +442,8 @@ void dr_content_sum_finish(DrContentSum *s, DrContentResult *r)
 void dr_content_sum_close(DrContentSum **ps)
 {
     if (*ps) {
-        av_free((*ps)->h);
-        av_free((*ps)->u);
+        av_free((*ps)->h.m);
+        av_free((*ps)->u.m);
         av_free((*ps)->sets);
     }
     av_freep(ps);

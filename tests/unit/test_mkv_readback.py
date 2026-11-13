@@ -41,6 +41,28 @@ def test_only_codecs_whose_bytes_a_muxer_was_measured_to_keep_have_a_form():
     assert lib.dr_content_kind(MPEG2, 0) == lib.DR_CONTENT_NONE, "not measured: its track is said as not compared"
 
 
+def test_the_same_bytes_sum_the_same_however_they_are_cut_into_pieces():
+    # also when a piece ends exactly where a 16-byte block that an earlier piece began is full, and when the
+    # whole is a multiple of 16 bytes (a subtitle track summed per segment as written, per block as read back)
+    data = bytes((i * 7 + i // 5) & 0xFF for i in range(1024))
+    for size in (1024, 1023, 1009, 64, 48, 33, 16, 15, 1):
+        whole = data[:size]
+        want = summed(lib.DR_CONTENT_BYTES, [whole])[:2]
+        for a in (1, 3, 5, 11, 13, 14, 16, 17, 30):
+            pieces = [whole[i:i + a] for i in range(0, size, a)]
+            assert summed(lib.DR_CONTENT_BYTES, pieces)[:2] == want, (size, a)
+            for b in (3, 13, 16, 19):
+                mixed = [whole[:b], whole[b:b + a], whole[b + a:b + a + 16], whole[b + a + 16:]]
+                assert summed(lib.DR_CONTENT_BYTES, [m for m in mixed if m])[:2] == want, (size, a, b)
+    # a parameter set of 32 bytes, from a byte stream cut inside it and as one unit
+    sps = b"\x67" + bytes(range(1, 32))
+    units = [b"\x09\x10", sps, b"\x65\x88\x84\x21" * 9]
+    want = summed(lib.DR_CONTENT_NAL, nals=units)
+    stream = b"".join(b"\x00\x00\x01" + n for n in units)
+    for cut in range(1, len(stream)):
+        assert summed(lib.DR_CONTENT_NAL, [stream[:cut], stream[cut:]]) == want, cut
+
+
 def test_nal_units_sum_the_same_from_a_byte_stream_and_from_units():
     nals = [b"\x09\x10", b"\x67\x64\x00\x29\xac", b"\x68\xee\x3c\x80", b"\x65\x88\x00\x00\x03\x00\x01\xff" * 50,
             b"\x41\x9a\x00\x00\x03\x00\x00\x03\x01\x23"]
